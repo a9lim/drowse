@@ -256,7 +256,7 @@ class LensFitRequest(NativeRequest):
     prompt_batch: int | None = Field(default=None, ge=1, le=64)
     layers: str = "all"
     force: bool = False
-    relp: bool = False
+    relp: bool = True
 
 
 class SaeFetchRequest(NativeRequest):

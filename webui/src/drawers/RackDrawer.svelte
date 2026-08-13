@@ -521,7 +521,7 @@
                       : `fit ${key} first to steer to ${label}`}
                   >
                     <span class="node-name">{label}</span>
-                    {#if role}<span class="node-role" title="role-baselined node">{role}</span>{/if}
+                    {#if role}<span class="node-role" title="role baseline">{role}</span>{/if}
                   </button>
                 </li>
               {/each}
@@ -544,7 +544,7 @@
             <span class="row-sub">
               {m.domain_label} · {m.node_count} nodes
               {#if badge}<span class="fit-badge fit-{badge}">{badge}</span>{/if}
-              {#if isRoleAugmented(m)}<span class="fit-badge fit-persona" title="persona / role-paired manifold">persona</span>{/if}
+              {#if isRoleAugmented(m)}<span class="fit-badge fit-persona" title="role-paired manifold">persona</span>{/if}
               {#if m.stale}<span class="stale">stale</span>{/if}
             </span>
           </div>
@@ -562,8 +562,8 @@
               disabled={busy || isRacked(m)}
               onclick={() => onSteer(m)}
               title={isRacked(m)
-                ? `${key} is already racked`
-                : `rack ${key} for steering`}
+                ? `${key} already racked`
+                : `steer with ${key}`}
             >+steer</button>
             <button
                 type="button"
@@ -571,15 +571,15 @@
                 disabled={busy || isProbed(m)}
                 onclick={() => void onProbe(m)}
                 title={isProbed(m)
-                  ? `${key} is already attached as a probe`
-                  : `attach ${key} as a read-side probe`}
+                  ? `${key} already attached`
+                  : `probe with ${key}`}
             >+probe</button>
             <button
               type="button"
               class="act fit"
               disabled={busy}
               onclick={() => onFit(m)}
-              title={`re-fit ${key} for the current model`}
+              title={`re-fit ${key}`}
             >{busy ? "…" : "re-fit"}</button>
             <button
               type="button"
@@ -631,7 +631,7 @@
               class="act fit"
               disabled={busy}
               onclick={() => onFit(m)}
-              title={`fit ${key} for the current model`}
+              title={`fit ${key}`}
             >{busy ? "…" : "fit"}</button>
             <button
               type="button"

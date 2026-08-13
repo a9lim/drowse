@@ -71,7 +71,7 @@ saklas experiment naturalness <model> "<prompt>" --manifold F -S EXPR [--max-tok
 saklas template create <name> --slot TOKEN --values V... --contexts FILE [--description TEXT] [-f]
 saklas template ls [-j] | show <name> [-j] | rm <name> [-y]
 saklas template score <name> -m MODEL [-S EXPR] [--by sum|mean] [-j]   # restricted-choice value distribution
-saklas lens fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K] [--prompt-batch B] [--relp] [-f]   # per-model Jacobian lens (backward passes; resumes by default; --relp fits the R-lens beside it)
+saklas lens fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K] [--prompt-batch B] [--standard] [-f]   # per-model R-lens by default (backward passes; resumes; --standard fits local:default instead)
 saklas lens fetch <model> [neuronpedia|workspace-r|workspace-j] | ls <model> | show <model> [source] | use <model> <source> | rm <model> [source] [-y]
 saklas lens top <model> "<prompt>" [-k K] [--layers L1,L2] [--position P] [-j]   # workspace readout on a raw prompt
 saklas lens decompose <selector> -m MODEL [-k K] [--layers L1,L2] [-j]   # J-space share + tokens of a direction
@@ -305,8 +305,9 @@ matched RelP/standard pairs, estimator validated against the payload's
 embedded provenance at fetch); `jlens/active.json` selects the runtime
 source.
 
-**R-lens (RelP).** `lens fit --relp` runs the *same* estimator through an
-LRP-modified backward graph (`core/relp.py`; RelP, arXiv:2508.21258): the
+**R-lens (RelP).** `lens fit` defaults to the R-lens and runs the *same*
+estimator through an LRP-modified backward graph (`core/relp.py`; RelP,
+arXiv:2508.21258): the
 LN-rule (RMSNorm `rsqrt` detached), identity-rule (the gated activation
 backprops its detached `act(x)/x` factor), and half-rule (the `gate·up`
 product splits β = 0.5 per factor). Forward passes stay bit-identical — the

@@ -45,8 +45,8 @@
   );
 
   const TAB_ITEMS: Array<{ value: Tab; label: string; title: string }> = [
-    { value: "score", label: "score", title: "Score a template's restricted-choice distribution" },
-    { value: "build", label: "build", title: "Author a new template" },
+    { value: "score", label: "score", title: "restricted-choice scores" },
+    { value: "build", label: "build", title: "new template" },
   ];
 
   // ----- shared: template catalog --------------------------------------

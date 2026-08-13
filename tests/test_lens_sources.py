@@ -105,6 +105,25 @@ def test_local_lens_layout_and_source_selection() -> None:
     assert len(rows) == 1 and rows[0]["source"] == "local:default" and rows[0]["active"]
 
 
+def test_lens_source_default_preference_order() -> None:
+    from saklas.io.lens_sources import lens_source_preference_key
+
+    shuffled = [
+        "local:default",
+        "workspace-j",
+        "local:relp",
+        "neuronpedia",
+        "workspace-r",
+    ]
+    assert sorted(shuffled, key=lens_source_preference_key) == [
+        "workspace-r",
+        "neuronpedia",
+        "workspace-j",
+        "local:relp",
+        "local:default",
+    ]
+
+
 def test_lens_registry_requires_an_active_source() -> None:
     from saklas.core.jlens import JacobianLens
     from saklas.io.lens import load_lens, save_lens

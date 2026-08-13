@@ -295,9 +295,10 @@ saklas pack search creativity
 saklas pack install OWNER/REPO
 saklas pack push local/patient.impatient -a OWNER/REPO -m google/gemma-3-4b-it
 
-# Fetch an official J-LENS or fit one locally
+# Fetch a provider J-LENS or fit a local R-lens (RelP is the fit default)
 saklas lens fetch google/gemma-3-4b-it
 saklas lens fit org/model --prompts 100
+# Use --standard when you specifically want local:default instead
 
 # Fetch an SAE or train a local source
 saklas sae fetch google/gemma-3-4b-it saelens:gemma-scope-2-4b-it-res

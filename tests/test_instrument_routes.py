@@ -382,6 +382,11 @@ class TestSourceSwitch:
 # ---------------------------------------------------------------------------
 
 class TestPreparations:
+    def test_lens_fit_request_defaults_to_relp(self) -> None:
+        from saklas.server.instrument_routes import LensFitRequest
+
+        assert LensFitRequest().relp is True
+
     def test_geometry_404(self, session_and_client: Any) -> None:
         _session, client = session_and_client
         assert client.get(f"{_BASE}/geometry/preparations").status_code == 404

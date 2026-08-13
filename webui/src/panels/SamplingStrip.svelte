@@ -230,7 +230,7 @@
 
   <!-- Row 2: top-k, repetition (frequency) penalty, presence penalty -->
   <div class="row">
-    <label class="control" title="top-k (blank = disabled)">
+    <label class="control" title="top-k · blank disables">
       <span class="label">K</span>
       <span class="num-cell">
         <NumberInput

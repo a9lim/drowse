@@ -78,13 +78,13 @@
       lensFetch.state.running || lensFit.state.running,
   );
   const LENS_PROVIDER_OPTIONS = [
-    { value: "neuronpedia", label: "neuronpedia" },
     { value: "workspace-r", label: "workspace-r (RelP)" },
+    { value: "neuronpedia", label: "neuronpedia" },
     { value: "workspace-j", label: "workspace-j" },
   ];
   let fitPrompts = $state(100);
   let fitLayers = $state("all");
-  let fitRelp = $state(false);
+  let fitRelp = $state(true);
   let fitConfirm = $state(false);
   let selectedSource = $state("");
   const fitReady = $derived(
@@ -381,7 +381,7 @@
           bind:value={fitLayers}
           placeholder="workspace | all | 13,14,…"
           aria-label="J-lens source layers"
-          title="workspace, all, or layer ids"
+          title="workspace | all | layer ids"
         />
       </label>
       <label class="setup-field setup-field-medium">
@@ -392,7 +392,7 @@
           class:relp-on={fitRelp}
           onclick={() => (fitRelp = !fitRelp)}
           aria-pressed={fitRelp}
-          title="RelP backward rules — the R-lens, saved beside the standard fit as local:relp"
+          title="RelP (default) · saves as local:relp"
         >{fitRelp ? "relp (R-lens)" : "standard"}</button>
       </label>
     {/snippet}
@@ -516,8 +516,8 @@
         live={liveOn}
         liveBusy={lensState.busy}
         liveTitle={liveOn
-          ? "disable live readout"
-          : "enable live readout"}
+          ? "turn live readout off"
+          : "turn live readout on"}
         onLiveToggle={onToggleLive}
         sortValue={lensState.workspaceSortMode}
         sortOptions={SORT_OPTIONS}

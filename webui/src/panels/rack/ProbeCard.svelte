@@ -278,7 +278,7 @@
         <span
           class="nearest"
           title={topNearest
-            ? `nearest node: ${nearestLabel} (distance ${fmtDistance(nearestDistance)})`
+            ? `nearest · ${nearestLabel} · d ${fmtDistance(nearestDistance)}`
             : "awaiting first token"}
         >
           {#if topNearest}

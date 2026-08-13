@@ -533,8 +533,8 @@
         live={saeState.live}
         liveBusy={saeState.busy}
         liveTitle={saeState.live
-          ? "disable live readout"
-          : "enable live readout"}
+          ? "turn live readout off"
+          : "turn live readout on"}
         onLiveToggle={() => void setLiveSae(!saeState.live)}
         sortValue={saeState.sortMode}
         sortOptions={SORT_OPTIONS}

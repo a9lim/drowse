@@ -138,7 +138,7 @@
                 <DetailCardHeader
                   primary={displayToken(chip.token)}
                   meta={`@${chip.com.toFixed(2)} ±${chip.spread.toFixed(2)}`}
-                  metaTitle="depth center of mass ± spread"
+                  metaTitle="depth center ± spread"
                   badge={chip.token.trim() === readout.data?.token_text.trim() ? "generated" : null}
                 >
                   {#snippet lead()}<span>#{i + 1}</span>{/snippet}

@@ -37,25 +37,25 @@
       value: "subspace",
       label: "subspace",
       color: "var(--pillar-subspace)",
-      title: "Flat/affine fits — concept axes, personas",
+      title: "flat fits · concepts, personas",
     },
     {
       value: "manifold",
       label: "manifold",
       color: "var(--pillar-manifold)",
-      title: "Curved fits — emotions, months",
+      title: "curved fits · emotions, months",
     },
     {
       value: "sae",
       label: "sae",
       color: "var(--pillar-sae)",
-      title: "Sparse-autoencoder features",
+      title: "sparse features",
     },
     {
       value: "lens",
       label: "lens",
       color: "var(--pillar-lens)",
-      title: "Jacobian lens — the workspace readout",
+      title: "workspace readout",
     },
   ];
 

@@ -156,7 +156,7 @@
       {#snippet left()}
         <span
           class="row-label"
-          title="mean fitted-layer probability"
+          title="mean layer probability"
         >strength</span>
       {/snippet}
       {#snippet bar()}

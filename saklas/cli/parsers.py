@@ -949,13 +949,18 @@ def _build_lens_fit(p: argparse.ArgumentParser) -> None:
              "readout surfaces then cover only the fitted layers. Pass "
              "`workspace` as shorthand for that band or `all` explicitly.",
     )
-    p.add_argument(
-        "--relp", action="store_true",
-        help="Fit the R-lens: the same estimator through the LRP-modified "
-             "backward graph (RelP rules — forward passes stay bit-identical, "
-             "early-layer reads get more faithful). Lands beside the standard "
-             "lens as local:relp, so a matched J/R pair coexists per model.",
+    estimator = p.add_mutually_exclusive_group()
+    estimator.add_argument(
+        "--relp", dest="relp", action="store_true",
+        help="Fit the R-lens (default): the same estimator through the "
+             "LRP-modified backward graph. Lands at local:relp.",
     )
+    estimator.add_argument(
+        "--standard", dest="relp", action="store_false",
+        help="Fit the standard Jacobian lens at local:default instead of the "
+             "default RelP R-lens.",
+    )
+    p.set_defaults(relp=True)
     p.add_argument(
         "-f", "--force", action="store_true",
         help="Restart from zero (default: resume a matching partial fit)",

@@ -36,6 +36,14 @@ WORKSPACE_PROVIDER = "workspace-lenses"
 #: token (``lens fetch``/``use``/``show``/``rm`` all speak it), so both arms of
 #: a matched J/R pair coexist per model and switch with ``lens use``.
 WORKSPACE_ARMS = {"workspace-r": "r-lens", "workspace-j": "j-lens"}
+#: Automatic attachment and source-picker order.  The provider R-lens is the
+#: strongest default, followed by the official paper lens and the matched
+#: workspace J-lens; Saklas-fitted local artifacts are the fallback tier.
+DEFAULT_LENS_SOURCE_ORDER = (
+    "workspace-r",
+    NEURONPEDIA_BINDING,
+    "workspace-j",
+)
 #: The estimator each arm must declare in its embedded provenance config —
 #: a mismatch means the repository layout changed under us.
 _WORKSPACE_ARM_ESTIMATORS = {"r-lens": "relp", "j-lens": "standard"}
@@ -43,6 +51,28 @@ _LOCAL_NAME_RE = NAME_REGEX
 # The local-source grammar prefix, spelled once (the external tier addresses
 # its single binding by bare name).
 LOCAL_SOURCE_PREFIX = "local:"
+
+
+def lens_source_preference_key(source: str) -> tuple[int, int, str]:
+    """Stable default ordering for prepared J-lens sources.
+
+    Local RelP wins within the final local tier, then the historical standard
+    fit, then any other named local fit. Unknown external binding names sort
+    after the four supported fallback tiers.
+    """
+    try:
+        return (DEFAULT_LENS_SOURCE_ORDER.index(source), 0, source)
+    except ValueError:
+        pass
+    if source.startswith(LOCAL_SOURCE_PREFIX):
+        local_name = source[len(LOCAL_SOURCE_PREFIX):]
+        local_rank = (
+            0 if local_name == "relp"
+            else 1 if local_name == "default"
+            else 2
+        )
+        return (len(DEFAULT_LENS_SOURCE_ORDER), local_rank, local_name)
+    return (len(DEFAULT_LENS_SOURCE_ORDER) + 1, 0, source)
 
 
 def lens_root(model_id: str) -> Path:
@@ -915,6 +945,7 @@ def list_lens_sources(model_id: str) -> list[dict[str, Any]]:
         if isinstance(binding, WorkspaceLensBinding):
             row["estimator"] = binding.estimator
         rows.append(row)
+    rows.sort(key=lambda row: lens_source_preference_key(str(row["source"])))
     return rows
 
 

@@ -141,7 +141,9 @@ pre-extracts and registers every referenced atom) → `create_app` →
 fires on a realistic prefill; serve is its only caller) →
 `_enable_serve_live_lens_if_compatible` → (web only)
 `_enable_serve_live_sae_if_available` → `uvicorn.run`. The lens helper adopts a
-cached source whose identity matches the loaded weights; the SAE helper prefers
+compatible cached source in `workspace-r` → `neuronpedia` → `workspace-j` →
+`local` order (reapplying that startup default even when another compatible
+source was active); the SAE helper prefers
 an already-active source, else `_best_serve_sae_release` (provider-hosted and
 Neuronpedia-labelled first, canonical over broad variant sets, curated base over
 its `-all` sibling, name as the stable tie-break). `--no-web` skips implicit SAE
@@ -337,13 +339,14 @@ exits 2.
 and a required `-m`.
 
 - `fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K]
-  [--prompt-batch B] [--checkpoint-every N] [--layers …] [--relp] [-f] [-d] [-q]`.
+  [--prompt-batch B] [--checkpoint-every N] [--layers …] [--standard] [-f] [-d] [-q]`.
   Defaults: 100 prompts, seq-len 128, dim-batch 8, prompt-batch 4 (2 on MPS),
-  checkpoint every 25. All numeric fit flags are positive-only. `--relp` fits
-  the R-lens (LRP-modified backward graph, `core/relp.py`), landing at
-  `local:relp` beside the standard `local:default` artifact with its own
-  estimator policy — the no-op preflight, resume, and checkpoint transactions
-  are all name-scoped, so the two never touch each other. `--corpus` reads
+  checkpoint every 25. All numeric fit flags are positive-only. The default
+  fits the R-lens (LRP-modified backward graph, `core/relp.py`) at
+  `local:relp`; `--standard` instead fits `local:default`. `--relp` remains an
+  explicit spelling of the default. Each has its own estimator policy — the
+  no-op preflight, resume, and checkpoint transactions are all name-scoped, so
+  the two never touch each other. `--corpus` reads
   one document per line (a JSONL line with a `text` field also works, each
   sliced to `_LENS_DOC_CHARS = 4000` before tokenization); unset, it streams the
   default web-text sample via the optional `datasets` dependency. `--layers`
@@ -356,7 +359,7 @@ and a required `-m`.
   identity, and payload digests, then reaps a crash-left checkpoint the
   validated final artifact provably subsumes.
 - `fetch <model> [source] [--revision REV] [--repo REPO] [-f] [-j]` — pure IO,
-  no model load. Source is `neuronpedia` (default), `workspace-r` (the RelP
+  no model load. Source is `neuronpedia` (the fetch default), `workspace-r` (the RelP
   arm), or `workspace-j` (its matched standard arm); revision defaults to
   `main` and `--repo` overrides the source's own repository. Provider bytes
   stay in the Hugging Face cache; Saklas writes only the pinned binding.
