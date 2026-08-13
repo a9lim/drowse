@@ -5,7 +5,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "5.2.0"
+__version__ = "5.3.0"
 
 _EXPORTS: dict[str, tuple[str, str]] = {
     "SaklasSession": ("saklas.core.session", "SaklasSession"),
@@ -92,6 +92,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "JacobianLensError": ("saklas.core.jlens", "JacobianLensError"),
     "LensNotFittedError": ("saklas.core.jlens", "LensNotFittedError"),
     "MultiTokenWordError": ("saklas.core.jlens", "MultiTokenWordError"),
+    "RelpUnsupportedError": ("saklas.core.errors", "RelpUnsupportedError"),
 }
 
 __all__ = [
@@ -178,6 +179,7 @@ __all__ = [
     "JacobianLensError",
     "LensNotFittedError",
     "MultiTokenWordError",
+    "RelpUnsupportedError",
 ]
 
 
@@ -196,7 +198,10 @@ def __dir__() -> list[str]:
 
 
 if TYPE_CHECKING:
-    from saklas.core.errors import SaklasError as SaklasError
+    from saklas.core.errors import (
+        RelpUnsupportedError as RelpUnsupportedError,
+        SaklasError as SaklasError,
+    )
     from saklas.core.events import (
         EventBus as EventBus,
         GenerationFinished as GenerationFinished,

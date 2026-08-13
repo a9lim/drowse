@@ -103,8 +103,8 @@
   let branch: Branch = $state<Branch>("primary");
 
   const BRANCH_ITEMS: Array<{ value: Branch; label: string; title: string }> = [
-    { value: "primary", label: "steered", title: "The steered (primary) turn" },
-    { value: "shadow", label: "unsteered", title: "The unsteered A/B shadow turn" },
+    { value: "primary", label: "steered", title: "primary turn" },
+    { value: "shadow", label: "unsteered", title: "A/B shadow turn" },
   ];
 
   $effect(() => {
@@ -362,27 +362,27 @@
       label: "geometry",
       meta: String(Object.keys(token?.measurements?.instruments.geometry?.readings ?? {}).length),
       color: "var(--fg-dim)",
-      title: "Activation geometry",
+      title: "activation geometry",
     },
     {
       value: "logits",
       label: "logits",
       meta: String(token?.topAlts?.length ?? 0),
-      title: "Sampling alternatives",
+      title: "sampling alternatives",
     },
     {
       value: "sae",
       label: "sae",
       meta: String(token?.measurements?.instruments.sae?.readout?.features.length ?? 0),
       color: "var(--pillar-sae)",
-      title: "Sparse feature field",
+      title: "sparse features",
     },
     {
       value: "lens",
       label: "j-lens",
       meta: String(token?.measurements?.instruments.lens?.readout?.layers.length ?? 0),
       color: "var(--pillar-lens)",
-      title: "J-lens workspace",
+      title: "workspace readout",
     },
   ]);
 
@@ -589,7 +589,7 @@
       <span class="eyebrow">token drilldown</span>
       {#if token && effCursor}
         <div class="name-row">
-          <code class="tok-text" title={`generated token ${JSON.stringify(token.text)}`}>
+          <code class="tok-text" title={`token ${JSON.stringify(token.text)}`}>
             {JSON.stringify(token.text)}
           </code>
           <button
@@ -598,7 +598,7 @@
             disabled={!otherSeg}
             onclick={toggleSeg}
             title={otherSeg
-              ? `jump to this turn's ${otherSeg} tokens`
+              ? `${otherSeg} tokens in this turn`
               : "turn segment"}
           >
             turn {effCursor.turnIdx} · {roleLabel} · {effCursor.seg}
@@ -607,13 +607,13 @@
             <span class="kv-chip" title="vocabulary id">id {token.tokenId}</span>
           {/if}
           {#if token.rawIndex != null}
-            <span class="kv-chip" title="raw decode-step index — the fork / replay join key">
+            <span class="kv-chip" title="fork / replay key">
               raw {token.rawIndex}
             </span>
           {:else}
             <span
               class="kv-chip warn"
-              title="no raw decode record — logit forks and instrument replay are unavailable for this token"
+              title="no raw record · fork/replay unavailable"
             >
               no replay
             </span>
@@ -621,7 +621,7 @@
           {#if token.logprob != null}
             <span
               class="kv-chip"
-              title="chosen-token probability under the post-temperature / post-top-p / post-top-k distribution the sampler drew from"
+              title="sampler p · after temperature + top-k/p"
             >
               p {fmtP(Math.exp(token.logprob))} · logp {token.logprob.toFixed(3)}{chosenRank !== null
                 ? ` · rank ${chosenRank}/${token.topAlts?.length ?? 0}`
@@ -630,7 +630,7 @@
           {/if}
         </div>
         <div class="nav-row">
-          <span class="scrub" title="Walk token sequence">
+          <span class="scrub" title="previous / next token">
             <button
               type="button"
               class="scrub-btn"
@@ -647,7 +647,7 @@
               aria-label="Next token"
             >▶</button>
           </span>
-          <span class="scrub" title="Jump turns">
+          <span class="scrub" title="previous / next turn">
             <button
               type="button"
               class="scrub-btn"
@@ -669,7 +669,7 @@
               type="button"
               class="scrub-btn scrub-home"
               onclick={resetToAnchor}
-              title="back to the clicked token"
+              title="clicked token"
             >↩</button>
           {/if}
         </div>

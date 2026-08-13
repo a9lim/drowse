@@ -89,8 +89,8 @@
     live={liveOn}
     liveBusy={probesLiveState.busy}
     liveTitle={liveOn
-      ? "Stop live per-token probe scoring (probes settle to the end-of-gen aggregate; gates still fire)"
-      : "Score probes live every token (per-token stream, loom rows, trait events)"}
+      ? "live off · keep final aggregate; gates stay active"
+      : "live on · score every token"}
     onLiveToggle={onToggleLive}
     sortValue={sortMode}
     sortOptions={SORT_OPTIONS}

@@ -105,19 +105,19 @@
       ...(reading.nearest ?? []).map(([label, dist]) => ({
         label,
         value: `d=${dist.toFixed(2)}`,
-        title: `whitened distance ${dist.toFixed(3)}`,
+        title: `whitened distance · ${dist.toFixed(3)}`,
       })),
       ...(reading.assignment ?? []).map(([label, prob]) => ({
         label: `~${label}`,
         value: `${(prob * 100).toFixed(0)}%`,
-        title: `soft-assignment posterior ${(prob * 100).toFixed(1)}%`,
+        title: `soft assignment · ${(prob * 100).toFixed(1)}%`,
         soft: true,
       })),
       ...(reading.residual !== 0
         ? [{
             label: "residual",
             value: reading.residual.toFixed(3),
-            title: "normalized off-surface distance",
+            title: "off-surface distance",
           }]
         : []),
       ...(reading.membership != null
@@ -166,7 +166,7 @@
               meta={reading.depth_com?.[0] != null
                 ? `@${reading.depth_com[0].toFixed(2)} ±${(reading.depth_spread?.[0] ?? 0).toFixed(2)}`
                 : null}
-              metaTitle="depth center of mass ± spread"
+              metaTitle="depth center ± spread"
             >
               {#snippet lead()}
                 <RackMarker shape={affine ? "circle" : "diamond"} filled />
@@ -206,7 +206,7 @@
                 {#if reading.depth_com && reading.depth_com[axis] != null}
                   <span
                     class="geo-depth"
-                    title={`depth center of mass ±${(reading.depth_spread?.[axis] ?? 0).toFixed(2)} (0 = first block, 1 = last)`}
+                    title={`depth center ±${(reading.depth_spread?.[axis] ?? 0).toFixed(2)} · 0 first, 1 last`}
                   >
                     @{reading.depth_com[axis].toFixed(2)}
                   </span>

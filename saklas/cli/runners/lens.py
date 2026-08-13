@@ -119,10 +119,14 @@ def _try_lens_fit_noop_preflight(
         return False
     from saklas.io.lens import lens_fit_lock
 
-    with lens_fit_lock(args.model):
+    with lens_fit_lock(args.model, _lens_fit_name(args)):
         return _try_lens_fit_noop_preflight_locked(
             args, requested_layers, docs=docs,
         )
+
+
+def _lens_fit_name(args: argparse.Namespace) -> str:
+    return "relp" if getattr(args, "relp", False) else "default"
 
 
 def _try_lens_fit_noop_preflight_locked(
@@ -138,15 +142,22 @@ def _try_lens_fit_noop_preflight_locked(
     from saklas.core.model import model_source_fingerprint
     from saklas.io.lens import (
         lens_artifact_size,
+        lens_estimator_policy,
         lens_paths,
         lens_payloads_match,
-        load_lens_sidecar,
+        load_local_lens_sidecar,
         remove_subsumed_lens_checkpoint,
         resolved_default_lens_corpus_spec,
     )
 
-    sidecar = load_lens_sidecar(args.model)
+    name = _lens_fit_name(args)
+    backward_rules = "relp" if getattr(args, "relp", False) else "standard"
+    sidecar = load_local_lens_sidecar(args.model, name)
     if sidecar is None:
+        return False
+    if sidecar.get("estimator_policy") != lens_estimator_policy(
+        backward_rules=backward_rules,
+    ):
         return False
     source_fp = model_source_fingerprint(
         args.model, quantize=args.quantize, device=args.device,
@@ -180,13 +191,13 @@ def _try_lens_fit_noop_preflight_locked(
     usable_count = int(sidecar.get("usable_prompt_count", -1))
     if usable_count < 0 or int(sidecar.get("n_prompts", -1)) < usable_count:
         return False
-    _ts_path, sidecar_path = lens_paths(args.model)
-    if not lens_payloads_match(args.model, sidecar):
+    _ts_path, sidecar_path = lens_paths(args.model, name)
+    if not lens_payloads_match(args.model, sidecar, name=name):
         return False
     remove_subsumed_lens_checkpoint(
-        args.model, verified_final_sidecar=sidecar,
+        args.model, name=name, verified_final_sidecar=sidecar,
     )
-    size_mb = lens_artifact_size(args.model, sidecar) / 1024**2
+    size_mb = lens_artifact_size(args.model, sidecar, name=name) / 1024**2
     source_layers = [int(layer) for layer in sidecar["source_layers"]]
     print(
         f"Fitted Jacobian lens: {len(source_layers)} layers, "
@@ -200,7 +211,11 @@ def _try_lens_fit_noop_preflight_locked(
 
 def _run_lens_fit(args: argparse.Namespace) -> None:
     from saklas.core.session import SaklasSession
-    from saklas.io.lens import lens_artifact_size, lens_paths, load_lens_sidecar
+    from saklas.io.lens import (
+        lens_artifact_size,
+        lens_paths,
+        load_local_lens_sidecar,
+    )
 
     requested_layers = _parse_layer_list(getattr(args, "layers", None))
     if requested_layers == "sample":
@@ -226,6 +241,8 @@ def _run_lens_fit(args: argparse.Namespace) -> None:
         _pkg._print_model_info(session)
         if args.force:
             print("Refitting from zero (-f).")
+        if getattr(args, "relp", False):
+            print("Fitting with RelP backward rules (R-lens).")
         lens = session.fit_jlens(
             docs,
             corpus_spec=spec,
@@ -235,12 +252,16 @@ def _run_lens_fit(args: argparse.Namespace) -> None:
             seq_len=args.seq_len,
             force=args.force,
             checkpoint_every=args.checkpoint_every,
+            backward_rules=(
+                "relp" if getattr(args, "relp", False) else "standard"
+            ),
             on_progress=lambda m: print(f"  {m}"),
         )
-    _ts_path, sidecar_path = lens_paths(args.model)
-    sidecar = load_lens_sidecar(args.model)
+    name = _lens_fit_name(args)
+    _ts_path, sidecar_path = lens_paths(args.model, name)
+    sidecar = load_local_lens_sidecar(args.model, name)
     size_mb = (
-        lens_artifact_size(args.model, sidecar) / 1024**2
+        lens_artifact_size(args.model, sidecar, name=name) / 1024**2
         if sidecar is not None else 0.0
     )
     print(
@@ -253,15 +274,24 @@ def _run_lens_fit(args: argparse.Namespace) -> None:
 def _run_lens_fetch(args: argparse.Namespace) -> None:
     import json as _json
 
-    from saklas.io.lens_sources import fetch_neuronpedia_lens
+    from saklas.io.lens_sources import (
+        NEURONPEDIA_BINDING,
+        WORKSPACE_ARMS,
+        fetch_lens_source,
+    )
 
-    if args.source != "neuronpedia":
-        print("lens fetch: source must be neuronpedia", file=sys.stderr)
+    known = [NEURONPEDIA_BINDING, *sorted(WORKSPACE_ARMS)]
+    if args.source not in known:
+        print(
+            f"lens fetch: source must be one of {', '.join(known)}",
+            file=sys.stderr,
+        )
         sys.exit(2)
     if not args.json_output:
-        print(f"Fetching official Jacobian lens for {args.model} into Hugging Face cache...")
-    binding = fetch_neuronpedia_lens(
+        print(f"Fetching external Jacobian lens for {args.model} into Hugging Face cache...")
+    binding = fetch_lens_source(
         args.model,
+        args.source,
         repo_id=args.repo,
         revision=args.revision,
         force=args.force,
@@ -271,11 +301,14 @@ def _run_lens_fetch(args: argparse.Namespace) -> None:
         print(_json.dumps(payload, indent=2))
         return
     print(
-        f"Fetched neuronpedia for {args.model}: {len(binding.source_layers)} layers, "
+        f"Fetched {binding.name} for {args.model}: {len(binding.source_layers)} layers, "
         f"{binding.n_prompts} prompts"
     )
     print(f"  provider: {binding.repo_id}@{binding.repo_revision}")
     print(f"  checkpoint: {binding.checkpoint}")
+    estimator = getattr(binding, "estimator", None)
+    if estimator is not None:
+        print(f"  estimator: {estimator}")
     print("Provider payload remains in the Hugging Face cache; binding is active.")
 
 
@@ -325,28 +358,44 @@ def _run_lens_show(args: argparse.Namespace) -> None:
         sidecar = load_lens_sidecar(args.model)
         selected = active
     elif source.startswith("local:"):
-        if source != "local:default":
+        from saklas.io.integrity import NAME_REGEX
+
+        local_name = source[len("local:"):]
+        if NAME_REGEX.fullmatch(local_name) is None:
             print(f"no local lens source {source}", file=sys.stderr)
             sys.exit(1)
-        sidecar = load_local_lens_sidecar(args.model)
-        selected = {"kind": "local", "name": "default"}
-    elif source == "neuronpedia":
-        binding = load_external_lens_binding(args.model)
-        sidecar = None if binding is None else external_lens_sidecar(binding)
-        selected = {"kind": "huggingface", "name": "neuronpedia"}
+        sidecar = load_local_lens_sidecar(args.model, local_name)
+        selected = {"kind": "local", "name": local_name}
     else:
-        print("lens show: source must be local:default or neuronpedia", file=sys.stderr)
-        sys.exit(2)
+        from saklas.io.integrity import NAME_REGEX
+
+        if NAME_REGEX.fullmatch(source) is None:
+            print(
+                "lens show: source must be local:default or a fetched "
+                "binding name (neuronpedia, workspace-r, workspace-j)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        binding = load_external_lens_binding(args.model, source)
+        sidecar = None if binding is None else external_lens_sidecar(binding)
+        selected = {"kind": "huggingface", "name": source}
     if sidecar is None:
         print(f"no Jacobian lens for {args.model}", file=sys.stderr)
         sys.exit(1)
     external = isinstance(sidecar.get("_source"), dict)
     if external:
-        sidecar_path = lens_binding_path(args.model, "neuronpedia")
+        sidecar_path = lens_binding_path(args.model, sidecar["_source"]["name"])
         size_mb = None
     else:
-        _ts_path, sidecar_path = lens_paths(args.model)
-        size_mb = lens_artifact_size(args.model, sidecar) / 1024**2
+        shown_name = (
+            str(selected["name"])
+            if selected is not None and selected.get("kind") == "local"
+            else "default"
+        )
+        _ts_path, sidecar_path = lens_paths(args.model, shown_name)
+        size_mb = lens_artifact_size(
+            args.model, sidecar, name=shown_name,
+        ) / 1024**2
     source_layers = [int(layer) for layer in sidecar["source_layers"]]
     if getattr(args, "json_output", False):
         print(_json.dumps({
@@ -513,15 +562,26 @@ def _run_lens_rm(args: argparse.Namespace) -> None:
             if active["kind"] == "local" else active["name"]
         )
     local = source.startswith("local:")
-    if local and source != "local:default":
-        print(f"no local lens source {source}", file=sys.stderr)
-        sys.exit(1)
-    if not local and source != "neuronpedia":
-        print("lens rm: source must be local:default or neuronpedia", file=sys.stderr)
-        sys.exit(2)
+    local_name = source[len("local:"):] if local else "default"
+    if local:
+        from saklas.io.integrity import NAME_REGEX
+
+        if NAME_REGEX.fullmatch(local_name) is None:
+            print(f"no local lens source {source}", file=sys.stderr)
+            sys.exit(1)
+    if not local:
+        from saklas.io.integrity import NAME_REGEX
+
+        if NAME_REGEX.fullmatch(source) is None:
+            print(
+                "lens rm: source must be local:default or a fetched "
+                "binding name (neuronpedia, workspace-r, workspace-j)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     sidecar_path = (
-        lens_paths(args.model)[1]
-        if local else lens_binding_path(args.model, "neuronpedia")
+        lens_paths(args.model, local_name)[1]
+        if local else lens_binding_path(args.model, source)
     )
     if not sidecar_path.exists():
         print(f"no lens source {source} for {args.model}", file=sys.stderr)
@@ -533,8 +593,8 @@ def _run_lens_rm(args: argparse.Namespace) -> None:
             print("Aborted.")
             return
     removed = (
-        remove_lens(args.model)
-        if local else remove_external_lens_binding(args.model)
+        remove_lens(args.model, local_name)
+        if local else remove_external_lens_binding(args.model, source)
     )
     if not removed:
         print(f"no lens source {source} for {args.model}", file=sys.stderr)
@@ -542,7 +602,9 @@ def _run_lens_rm(args: argparse.Namespace) -> None:
     if local:
         print(f"Removed Saklas-owned lens {source} for {args.model}.")
     else:
-        print("Forgot Neuronpedia binding; Hugging Face cache was not modified.")
+        print(
+            f"Forgot {source} binding; Hugging Face cache was not modified."
+        )
 
 
 _LENS_RUNNERS = {

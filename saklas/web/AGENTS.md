@@ -375,7 +375,9 @@ the mount-time resume probe and only reflects a job when it is *this* operation
 (cancelled → info, error → sticky, else the success line) and run after
 `onSettled` so the panel is consistent first. Local fit/train fields stay hidden
 until the synthetic `local` selector option is chosen, and prepared cached sources
-win the default selection.
+win the default selection. The J-lens provider/default-attachment order is
+`workspace-r → neuronpedia → workspace-j → local`; local fitting defaults to
+RelP and exposes standard Jacobian fitting as the explicit alternate estimator.
 
 ## Steering expression
 

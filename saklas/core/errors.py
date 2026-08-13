@@ -132,6 +132,18 @@ class SaeFeatureError(ValueError, SaklasError):
         return (400, str(self) or self.__class__.__name__)
 
 
+class RelpUnsupportedError(RuntimeError, SaklasError):
+    """Raised when a model's decoder layers do not fit the dense RelP rule
+    shape (one standard gated MLP plus residual RMSNorms per layer) — MoE
+    experts and fused gate-up projections need per-arch rule arms that are
+    not implemented, and a silently partial RelP fit would be a wrong
+    artifact rather than a degraded one.
+    """
+
+    def user_message(self) -> tuple[int, str]:
+        return (422, str(self) or self.__class__.__name__)
+
+
 class UnsupportedProbeChannelError(ValueError, SaklasError):
     """Raised at steering-composition preflight when a probe gate references
     a channel its instrument family can never produce (e.g.

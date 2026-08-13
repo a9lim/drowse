@@ -290,9 +290,9 @@
       label: "inspect",
       disabled: mode !== "inspect" && !canInspect,
       title: canInspect || mode === "inspect"
-        ? "inspect tokens — click any token for alternatives + fork"
+        ? "click a token · alternatives + fork"
         : dirty || committing
-          ? "append or revert the edit to inspect tokens"
+          ? "append or revert before inspecting"
           : "generate tokens first",
     },
   ]);

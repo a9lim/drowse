@@ -626,10 +626,10 @@
                           <th class="lp-tok">token</th>
                           <th class="lp-num">lp(A)</th>
                           <th class="lp-num">lp(B)</th>
-                          <th class="lp-num" title="lp(A's token under B's distribution) − lp(A's own)">
+                          <th class="lp-num" title="log pB(A token) − log pA(A token)">
                             Δ lp(A)
                           </th>
-                          <th class="lp-num" title="approx KL(A ∥ B), top-K truncated">
+                          <th class="lp-num" title="approx KL(A ∥ B) · top-K">
                             ≈KL
                           </th>
                           <th class="lp-flag" title="argmax differs">rk1Δ</th>

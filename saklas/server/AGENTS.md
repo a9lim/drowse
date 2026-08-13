@@ -467,6 +467,11 @@ Preparation operation names match the CLI verbs exactly on both surfaces.
 Jobs keep the `app.state.lens_fit` / `lens_fetch` / `sae_load` / `sae_train`
 attributes and register `_stop_lens_fit` / `_stop_sae_train` shutdown hooks.
 
+Lens `fit` defaults `relp=true`; callers can explicitly send `false` for the
+standard Jacobian estimator. Serve startup attaches the first compatible cached
+source in the deterministic order `workspace-r → neuronpedia → workspace-j →
+local` before enabling live readout.
+
 ### WS /saklas/v1/sessions/{id}/stream (ws_stream.py)
 
 Bidirectional; only the exact `session_id == "default"` is accepted, and

@@ -14,19 +14,24 @@ from saklas.cli.runners.shared import (
 
 @_saklas_error_exit
 def _enable_serve_live_lens_if_compatible(session: Any) -> bool:
-    """Apply serve's default-live policy to an active or cached lens."""
+    """Attach the highest-priority compatible cached lens and make it live."""
     try:
-        compatible = session.has_compatible_jlens()
+        compatible = False
         model_id = getattr(session, "model_id", None)
-        if not compatible and isinstance(model_id, str) and model_id:
-            from saklas.io.lens_sources import list_lens_sources
+        if isinstance(model_id, str) and model_id:
+            from saklas.io.lens_sources import (
+                lens_source_preference_key,
+                list_lens_sources,
+            )
 
-            # An older cache can predate active-source pointers. Prefer a
-            # prepared local lens, then another cached provider binding, and
-            # adopt the first one whose identity matches the loaded weights.
+            # Startup applies one deterministic attachment policy even when a
+            # prior fit/fetch left another source active. Explicit switches
+            # still take effect immediately for the running session.
             rows = sorted(
                 list_lens_sources(model_id),
-                key=lambda row: (not bool(row.get("active")), row.get("kind") != "local"),
+                key=lambda row: lens_source_preference_key(
+                    str(row.get("source", "")),
+                ),
             )
             for row in rows:
                 source = row.get("source")
@@ -39,6 +44,8 @@ def _enable_serve_live_lens_if_compatible(session: Any) -> bool:
                     continue
                 if compatible:
                     break
+        else:
+            compatible = session.has_compatible_jlens()
         if not compatible:
             return False
         layers = session.lens.set_live(True).layers or ()

@@ -988,7 +988,7 @@
        when a ``sort:`` filter directive is active. -->
   {#if loomUiState.siblingSort !== "default"}
     <div class="weight-bar">
-      <span class="weight-label" title="active sibling sort directive">
+      <span class="weight-label" title="sibling sort">
         sort:{loomUiState.siblingSort}
       </span>
     </div>
@@ -1003,7 +1003,7 @@
       class="action-btn"
       onclick={compareBranch}
       disabled={comparableNodes.length < 2}
-      title="Compare generated continuations from the current branch point"
+      title="compare siblings"
     >
       {comparableNodes.length >= 2
         ? `${comparableNodes.length} continuations`
@@ -1131,7 +1131,7 @@
       role="menuitem"
       onclick={menuCompareBranch}
       disabled={cmpCount < 2}
-      title={cmpCount < 2 ? "needs ≥2 generated continuations" : ""}
+      title={cmpCount < 2 ? "need ≥2 continuations" : ""}
     >compare continuations…</button>
     <button type="button" role="menuitem" onclick={menuFanOut}>fan out…</button>
     <hr />

@@ -63,14 +63,20 @@
   } = $props();
 
   const options = $derived.by(() => {
-    const providers = new Map(providerOptions.map((option) => [option.value, option]));
-    const result: ProviderOption[] = sources.map((source) => ({
-      value: source.source,
-      label: providers.get(source.source)?.label ?? source.source,
+    const prepared = new Map(sources.map((source) => [source.source, source]));
+    const providers = new Set(providerOptions.map((option) => option.value));
+    // Provider options define the product order whether each source is
+    // already prepared or still needs fetching. Provider-specific labels and
+    // disabled state therefore stay stable across lifecycle transitions.
+    const result: ProviderOption[] = providerOptions.map((option) => ({
+      ...option,
+      value: prepared.get(option.value)?.source ?? option.value,
     }));
-    const prepared = new Set(sources.map((source) => source.source));
-    for (const option of providerOptions) {
-      if (!prepared.has(option.value)) result.push(option);
+    // Named local fits and any future external bindings follow the supported
+    // provider tier in the order supplied by the server.
+    for (const source of sources) {
+      if (providers.has(source.source)) continue;
+      result.push({ value: source.source, label: source.source });
     }
     if (!prepared.has("local")) result.push({ value: "local", label: "local" });
     return result;

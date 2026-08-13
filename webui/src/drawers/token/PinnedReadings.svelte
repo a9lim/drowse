@@ -90,7 +90,7 @@
               meta={reading.depth?.center?.[0] != null
                 ? `@${reading.depth.center[0].toFixed(2)} ±${(reading.depth.spread?.[0] ?? 0).toFixed(2)}`
                 : null}
-              metaTitle="depth center of mass ± spread (0 = first block, 1 = last)"
+              metaTitle="depth center ± spread · 0 first, 1 last"
             >
               {#snippet lead()}<RackMarker {shape} filled />{/snippet}
             </DetailCardHeader>

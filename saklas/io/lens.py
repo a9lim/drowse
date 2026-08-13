@@ -53,6 +53,7 @@ _LENS_LABEL = "J-lens"
 _LENS_NAME = "jlens"
 _LENS_CHECKPOINT_NAME = "jlens.partial"
 _LENS_METHOD = "jlens_cotangent_sum"
+_RELP_METHOD = "relp_cotangent_sum"
 LENS_CORPUS_PREPROCESS_VERSION = 1
 
 _LENS_SIDECAR_FIELDS = {
@@ -99,19 +100,19 @@ def _proof_matches(
     return proof == _lens_payload_proof(anchor, sidecar) if proof is not None else False
 
 
-def _lens_anchor_paths(model_id: str) -> tuple[Path, Path]:
+def _lens_anchor_paths(model_id: str, name: str = "default") -> tuple[Path, Path]:
     """Stable lock anchor and atomic durable pointer."""
     from saklas.io.lens_sources import local_lens_dir
 
-    root = local_lens_dir(model_id)
+    root = local_lens_dir(model_id, name)
     return root / f"{_LENS_NAME}.safetensors", root / "manifest.json"
 
 
-def _checkpoint_anchor_paths(model_id: str) -> tuple[Path, Path]:
+def _checkpoint_anchor_paths(model_id: str, name: str = "default") -> tuple[Path, Path]:
     """Stable lock anchor and atomic checkpoint pointer."""
     from saklas.io.lens_sources import local_lens_dir
 
-    md = local_lens_dir(model_id)
+    md = local_lens_dir(model_id, name)
     return (
         md / f"{_LENS_CHECKPOINT_NAME}.safetensors",
         md / "checkpoint.json",
@@ -153,28 +154,29 @@ def _public_pointer_paths(
         return anchor, sidecar_path
 
 
-def lens_paths(model_id: str) -> tuple[Path, Path]:
+def lens_paths(model_id: str, name: str = "default") -> tuple[Path, Path]:
     """Return a representative tensor shard and stable sidecar pointer path.
 
     The current format uses immutable per-layer generations and atomically
     switches ``jlens/local/default/manifest.json`` to the complete shard map. Use
     :func:`lens_tensor_paths` when every layer path is required.
     """
-    return _public_pointer_paths(*_lens_anchor_paths(model_id))
+    return _public_pointer_paths(*_lens_anchor_paths(model_id, name))
 
 
-def lens_checkpoint_paths(model_id: str) -> tuple[Path, Path]:
+def lens_checkpoint_paths(model_id: str, name: str = "default") -> tuple[Path, Path]:
     """Return the current checkpoint generation and stable sidecar pointer."""
-    return _public_pointer_paths(*_checkpoint_anchor_paths(model_id))
+    return _public_pointer_paths(*_checkpoint_anchor_paths(model_id, name))
 
 
 def lens_tensor_paths(
     model_id: str, sidecar: Mapping[str, Any], *, checkpoint: bool = False,
+    name: str = "default",
 ) -> dict[int, Path]:
     """Return every tensor generation named by a validated sidecar."""
     anchor, _ = (
-        _checkpoint_anchor_paths(model_id) if checkpoint
-        else _lens_anchor_paths(model_id)
+        _checkpoint_anchor_paths(model_id, name) if checkpoint
+        else _lens_anchor_paths(model_id, name)
     )
     layers = [int(layer) for layer in sidecar.get("source_layers", [])]
     return _sidecar_tensor_paths(anchor, sidecar, layers)
@@ -182,12 +184,13 @@ def lens_tensor_paths(
 
 def lens_artifact_size(
     model_id: str, sidecar: Mapping[str, Any], *, checkpoint: bool = False,
+    name: str = "default",
 ) -> int:
     """Total bytes in the current pointer, retrying a stale caller snapshot."""
     del sidecar  # the stable pointer is authoritative under its anchor lock
     anchor, sc_path = (
-        _checkpoint_anchor_paths(model_id) if checkpoint
-        else _lens_anchor_paths(model_id)
+        _checkpoint_anchor_paths(model_id, name) if checkpoint
+        else _lens_anchor_paths(model_id, name)
     )
     with artifact_lock(anchor):
         current = _load_sidecar_at(
@@ -207,12 +210,15 @@ def lens_artifact_size(
 
 def lens_payloads_match(
     model_id: str, sidecar: Mapping[str, Any], *, checkpoint: bool = False,
+    name: str = "default",
 ) -> bool:
     """Validate exact payload digests without materializing fp32 matrices."""
     from saklas.io.integrity import hash_file
 
     try:
-        paths = lens_tensor_paths(model_id, sidecar, checkpoint=checkpoint)
+        paths = lens_tensor_paths(
+            model_id, sidecar, checkpoint=checkpoint, name=name,
+        )
         expected = sidecar.get("tensor_sha256")
         if not isinstance(expected, Mapping):
             return False
@@ -226,9 +232,9 @@ def lens_payloads_match(
 
 
 @contextmanager
-def lens_fit_lock(model_id: str):
+def lens_fit_lock(model_id: str, name: str = "default"):
     """Serialize the complete per-model fit/lifecycle transaction cross-process."""
-    anchor, _ = _lens_anchor_paths(model_id)
+    anchor, _ = _lens_anchor_paths(model_id, name)
     with fit_lock(anchor):
         yield
 
@@ -286,18 +292,26 @@ def _cleanup_unreferenced_generations(model_folder: Path) -> None:
                 log.warning("could not remove old J-lens generation %s: %s", path, exc)
 
 
-def cleanup_lens_artifacts(model_id: str) -> None:
+def cleanup_lens_artifacts(model_id: str, name: str = "default") -> None:
     """Reap crash-left lens shards before a new fit allocates replacements."""
-    anchor, _ = _lens_anchor_paths(model_id)
-    with lens_fit_lock(model_id):
+    anchor, _ = _lens_anchor_paths(model_id, name)
+    with lens_fit_lock(model_id, name):
         _cleanup_unreferenced_generations(anchor.parent)
 
 
-def lens_estimator_policy(*, skip_first: int | None = None) -> dict[str, Any]:
-    """Fit semantics that must match before any final/checkpoint reuse."""
+def lens_estimator_policy(
+    *, skip_first: int | None = None, backward_rules: str = "standard",
+) -> dict[str, Any]:
+    """Fit semantics that must match before any final/checkpoint reuse.
+
+    A ``"standard"`` policy keeps the exact historical shape, so artifacts
+    fitted before the RelP rules existed stay valid; a ``"relp"`` fit takes
+    its own method plus the rule set, so the two estimators can never
+    resume or reuse each other's shards.
+    """
     from saklas.core.jlens import SKIP_FIRST_POSITIONS
 
-    return {
+    policy: dict[str, Any] = {
         "method": _LENS_METHOD,
         "skip_first_positions": (
             SKIP_FIRST_POSITIONS if skip_first is None else int(skip_first)
@@ -305,6 +319,16 @@ def lens_estimator_policy(*, skip_first: int | None = None) -> dict[str, Any]:
         "corpus_preprocess_version": LENS_CORPUS_PREPROCESS_VERSION,
         "doc_chars": LENS_DOC_CHARS,
     }
+    if backward_rules == "relp":
+        from saklas.core.relp import RELP_RULES
+
+        policy["method"] = _RELP_METHOD
+        policy["backward_rules"] = dict(RELP_RULES)
+    elif backward_rules != "standard":
+        raise ValueError(
+            f"backward_rules must be 'standard' or 'relp', got {backward_rules!r}"
+        )
+    return policy
 
 
 def _load_sidecar_at(
@@ -332,7 +356,11 @@ def _load_sidecar_at(
                 label, model_id, version, LENS_FORMAT_VERSION,
             )
             return None
-        if sidecar.get("estimator_policy") != lens_estimator_policy():
+        policy = sidecar.get("estimator_policy")
+        if policy not in (
+            lens_estimator_policy(),
+            lens_estimator_policy(backward_rules="relp"),
+        ):
             log.warning(
                 "%s for %s uses a different estimator/preprocessing policy; "
                 "ignoring — re-fit with `saklas lens fit`", label, model_id,
@@ -351,7 +379,7 @@ def _load_sidecar_at(
                 for layer in source_layers_raw
             )
             or source_layers_raw != sorted(set(source_layers_raw))
-            or sidecar["method"] != _LENS_METHOD
+            or sidecar["method"] != policy["method"]
             or sidecar["dtype"] != "float32"
             or any(
                 not isinstance(sidecar[key], str) or not sidecar[key]
@@ -457,9 +485,11 @@ def _load_sidecar_at(
         return None
 
 
-def load_local_lens_sidecar(model_id: str) -> dict[str, Any] | None:
+def load_local_lens_sidecar(
+    model_id: str, name: str = "default",
+) -> dict[str, Any] | None:
     """Load Saklas-owned local/default metadata without its matrices."""
-    anchor, sc_path = _lens_anchor_paths(model_id)
+    anchor, sc_path = _lens_anchor_paths(model_id, name)
     with artifact_lock(anchor):
         return _load_sidecar_at(model_id, anchor, sc_path, label="jlens cache")
 
@@ -476,12 +506,14 @@ def load_lens_sidecar(model_id: str) -> dict[str, Any] | None:
         return None
     if active["kind"] == "huggingface":
         return load_external_lens_sidecar(model_id, active["name"])
-    return load_local_lens_sidecar(model_id)
+    return load_local_lens_sidecar(model_id, active["name"])
 
 
-def load_lens_checkpoint_sidecar(model_id: str) -> dict[str, Any] | None:
+def load_lens_checkpoint_sidecar(
+    model_id: str, name: str = "default",
+) -> dict[str, Any] | None:
     """Load validated checkpoint metadata without materializing its matrices."""
-    anchor, sc_path = _checkpoint_anchor_paths(model_id)
+    anchor, sc_path = _checkpoint_anchor_paths(model_id, name)
     with artifact_lock(anchor):
         return _load_sidecar_at(
             model_id, anchor, sc_path, label="jlens checkpoint",
@@ -492,6 +524,8 @@ def save_lens(
     lens: JacobianLens,
     model_id: str,
     *,
+    name: str = "default",
+    backward_rules: str = "standard",
     corpus_spec: str,
     corpus_sha256: str,
     seq_len: int,
@@ -514,10 +548,11 @@ def save_lens(
     durable artifact (the missing-layer top-up path). Valid v6 shard pointers
     are carried forward; every other layer is converted and written anew.
     """
-    anchor, sc_path = _lens_anchor_paths(model_id)
-    with lens_fit_lock(model_id):
+    anchor, sc_path = _lens_anchor_paths(model_id, name)
+    with lens_fit_lock(model_id, name):
         path = _save_lens_at(
             lens, anchor, sc_path,
+            backward_rules=backward_rules,
             corpus_spec=corpus_spec,
             corpus_sha256=corpus_sha256,
             seq_len=seq_len,
@@ -536,7 +571,7 @@ def save_lens(
         )
     from saklas.io.lens_sources import set_active_local_lens
 
-    set_active_local_lens(model_id)
+    set_active_local_lens(model_id, name)
     return path
 
 
@@ -546,6 +581,8 @@ def save_lens_checkpoint_accumulator(
     d_model: int,
     model_id: str,
     *,
+    name: str = "default",
+    backward_rules: str = "standard",
     base: JacobianLens | None,
     corpus_spec: str,
     corpus_sha256: str,
@@ -569,9 +606,9 @@ def save_lens_checkpoint_accumulator(
     ``base_n_prompts=0`` and can therefore survive any number of interruptions
     without depending on a separate full artifact.
     """
-    anchor, sc_path = _checkpoint_anchor_paths(model_id)
+    anchor, sc_path = _checkpoint_anchor_paths(model_id, name)
     total_prompts = int(n_prompts) + (base.n_prompts if base is not None else 0)
-    with lens_fit_lock(model_id), artifact_lock(anchor):
+    with lens_fit_lock(model_id, name), artifact_lock(anchor):
         return _save_lens_components(
             sums, total_prompts, d_model, anchor, sc_path,
             corpus_spec=corpus_spec,
@@ -607,6 +644,7 @@ def _save_lens_at(
     ts_path: Path,
     sc_path: Path,
     *,
+    backward_rules: str = "standard",
     corpus_spec: str,
     corpus_sha256: str,
     seq_len: int,
@@ -627,6 +665,7 @@ def _save_lens_at(
     with artifact_lock(ts_path):
         return _save_lens_components(
             lens.jacobians, lens.n_prompts, lens.d_model, ts_path, sc_path,
+            backward_rules=backward_rules,
             corpus_spec=corpus_spec,
             corpus_sha256=corpus_sha256,
             seq_len=seq_len,
@@ -653,6 +692,7 @@ def _save_lens_components(
     ts_path: Path,
     sc_path: Path,
     *,
+    backward_rules: str = "standard",
     corpus_spec: str,
     corpus_sha256: str,
     seq_len: int,
@@ -752,7 +792,9 @@ def _save_lens_components(
         raise
     sidecar: dict[str, Any] = {
         "format_version": LENS_FORMAT_VERSION,
-        "method": _LENS_METHOD,
+        "method": (
+            _RELP_METHOD if backward_rules == "relp" else _LENS_METHOD
+        ),
         "n_prompts": int(n_prompts),
         "d_model": int(d_model),
         "source_layers": sorted(int(layer) for layer in jacobians),
@@ -763,7 +805,9 @@ def _save_lens_components(
         "seq_len": seq_len,
         "dim_batch": dim_batch,
         "skip_first_positions": skip_first,
-        "estimator_policy": lens_estimator_policy(skip_first=skip_first),
+        "estimator_policy": lens_estimator_policy(
+            skip_first=skip_first, backward_rules=backward_rules,
+        ),
         "tensor_sha256": tensor_sha256,
         "tensor_files": tensor_files,
         "raw_corpus_sha256": raw_corpus_sha256,
@@ -886,7 +930,9 @@ def _lens_safetensors_header(
     return struct.pack("<Q", padded_len), raw_header
 
 
-def load_local_lens(model_id: str) -> tuple[JacobianLens, dict[str, Any]] | None:
+def load_local_lens(
+    model_id: str, name: str = "default",
+) -> tuple[JacobianLens, dict[str, Any]] | None:
     """Load the Saklas-owned local/default lens when usable.
 
     Self-healing like the neutral-activation cache: a wrong format version,
@@ -894,7 +940,7 @@ def load_local_lens(model_id: str) -> tuple[JacobianLens, dict[str, Any]] | None
     "no lens" (the caller decides whether to error or re-fit) rather than
     crashing the session.
     """
-    loaded = _load_lens_verified(model_id)
+    loaded = _load_lens_verified(model_id, name=name)
     return None if loaded is None else (loaded[0], loaded[1])
 
 
@@ -910,19 +956,20 @@ def load_lens(model_id: str) -> tuple[JacobianLens, dict[str, Any]] | None:
         return None
     if active["kind"] == "huggingface":
         return load_external_lens(model_id, active["name"])
-    return load_local_lens(model_id)
+    return load_local_lens(model_id, active["name"])
 
 
 def _load_lens_verified(
     model_id: str,
     *,
+    name: str = "default",
     requested_layers: set[int] | None = None,
 ) -> tuple[
     JacobianLens, dict[str, Any], _LensPayloadProof | None,
 ] | None:
     """Load a durable lens plus a proof reusable under the fit transaction."""
-    anchor, sc_path = _lens_anchor_paths(model_id)
-    with lens_fit_lock(model_id), artifact_lock(anchor):
+    anchor, sc_path = _lens_anchor_paths(model_id, name)
+    with lens_fit_lock(model_id, name), artifact_lock(anchor):
         sidecar = _load_sidecar_at(
             model_id, anchor, sc_path, label="jlens cache",
         )
@@ -946,10 +993,12 @@ def _load_lens_verified(
         )
 
 
-def load_lens_checkpoint(model_id: str) -> tuple[JacobianLens, dict[str, Any]] | None:
+def load_lens_checkpoint(
+    model_id: str, name: str = "default",
+) -> tuple[JacobianLens, dict[str, Any]] | None:
     """Load a resumable partial lens shard, or ``None`` when absent/unusable."""
-    anchor, sc_path = _checkpoint_anchor_paths(model_id)
-    with lens_fit_lock(model_id), artifact_lock(anchor):
+    anchor, sc_path = _checkpoint_anchor_paths(model_id, name)
+    with lens_fit_lock(model_id, name), artifact_lock(anchor):
         sidecar = _load_sidecar_at(
             model_id, anchor, sc_path, label="jlens checkpoint",
         )
@@ -964,6 +1013,7 @@ def load_lens_checkpoint(model_id: str) -> tuple[JacobianLens, dict[str, Any]] |
 def promote_lens_checkpoint(
     model_id: str,
     *,
+    name: str = "default",
     n_prompts: int,
     source_layers: list[int],
     corpus_sha256: str,
@@ -981,9 +1031,9 @@ def promote_lens_checkpoint(
     potentially multi-GiB write. Promote only after cheap exact
     identity checks; callers fall back to :func:`save_lens` on ``False``.
     """
-    checkpoint_anchor, checkpoint_sc = _checkpoint_anchor_paths(model_id)
-    final_anchor, final_sc = _lens_anchor_paths(model_id)
-    with lens_fit_lock(model_id), artifact_lock(checkpoint_anchor), artifact_lock(final_anchor):
+    checkpoint_anchor, checkpoint_sc = _checkpoint_anchor_paths(model_id, name)
+    final_anchor, final_sc = _lens_anchor_paths(model_id, name)
+    with lens_fit_lock(model_id, name), artifact_lock(checkpoint_anchor), artifact_lock(final_anchor):
         sidecar = _load_sidecar_at(
             model_id, checkpoint_anchor, checkpoint_sc, label="jlens checkpoint",
         )
@@ -1033,7 +1083,7 @@ def promote_lens_checkpoint(
         fsync_directory(final_sc.parent)
         from saklas.io.lens_sources import set_active_local_lens
 
-        set_active_local_lens(model_id)
+        set_active_local_lens(model_id, name)
         return True
 
 
@@ -1179,6 +1229,7 @@ def _final_lens_subsumes_checkpoint(
 def remove_subsumed_lens_checkpoint(
     model_id: str,
     *,
+    name: str = "default",
     verified_final_sidecar: Mapping[str, Any] | None = None,
 ) -> bool:
     """Reap a crash-left checkpoint only when the durable lens proves it redundant.
@@ -1190,10 +1241,10 @@ def remove_subsumed_lens_checkpoint(
     point. Callers that just validated the exact current final sidecar may pass it
     to avoid hashing a multi-GiB lens twice.
     """
-    final_anchor, final_sc = _lens_anchor_paths(model_id)
-    checkpoint_anchor, checkpoint_sc = _checkpoint_anchor_paths(model_id)
+    final_anchor, final_sc = _lens_anchor_paths(model_id, name)
+    checkpoint_anchor, checkpoint_sc = _checkpoint_anchor_paths(model_id, name)
     with (
-        lens_fit_lock(model_id),
+        lens_fit_lock(model_id, name),
         artifact_lock(final_anchor),
         artifact_lock(checkpoint_anchor),
     ):
@@ -1224,10 +1275,10 @@ def remove_subsumed_lens_checkpoint(
         return True
 
 
-def remove_lens_checkpoint(model_id: str) -> bool:
+def remove_lens_checkpoint(model_id: str, name: str = "default") -> bool:
     """Delete a resumable checkpoint shard. Returns True when anything was removed."""
-    anchor, sc_path = _checkpoint_anchor_paths(model_id)
-    with lens_fit_lock(model_id), artifact_lock(anchor):
+    anchor, sc_path = _checkpoint_anchor_paths(model_id, name)
+    with lens_fit_lock(model_id, name), artifact_lock(anchor):
         before = set(anchor.parent.glob("jlens*.safetensors"))
         removed = sc_path.exists()
         sc_path.unlink(missing_ok=True)
@@ -1238,12 +1289,12 @@ def remove_lens_checkpoint(model_id: str) -> bool:
         return removed or before != after
 
 
-def remove_lens(model_id: str) -> bool:
+def remove_lens(model_id: str, name: str = "default") -> bool:
     """Delete a model's lens artifact. Returns True when anything was removed."""
-    final_anchor, final_sc = _lens_anchor_paths(model_id)
-    checkpoint_anchor, checkpoint_sc = _checkpoint_anchor_paths(model_id)
+    final_anchor, final_sc = _lens_anchor_paths(model_id, name)
+    checkpoint_anchor, checkpoint_sc = _checkpoint_anchor_paths(model_id, name)
     with (
-        lens_fit_lock(model_id),
+        lens_fit_lock(model_id, name),
         artifact_lock(final_anchor),
         artifact_lock(checkpoint_anchor),
     ):

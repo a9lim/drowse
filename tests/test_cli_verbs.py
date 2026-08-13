@@ -83,6 +83,19 @@ def test_lens_and_sae_lifecycle_shapes_are_parallel() -> None:
     assert lens_ls.json_output and sae_ls.json_output
 
 
+def test_lens_fit_defaults_to_relp_with_explicit_standard_opt_out() -> None:
+    default = cli.parse_args(["lens", "fit", "m/x"])
+    relp = cli.parse_args(["lens", "fit", "m/x", "--relp"])
+    standard = cli.parse_args(["lens", "fit", "m/x", "--standard"])
+    assert default.relp is True
+    assert relp.relp is True
+    assert standard.relp is False
+
+    with pytest.raises(SystemExit) as exc:
+        cli.parse_args(["lens", "fit", "m/x", "--relp", "--standard"])
+    assert exc.value.code == 2
+
+
 def test_template_verb_parses() -> None:
     args = cli.parse_args(["template", "score", "weekday", "-m", "m/x"])
     assert args.command == "template"

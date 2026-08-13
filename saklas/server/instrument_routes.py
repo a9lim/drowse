@@ -256,6 +256,7 @@ class LensFitRequest(NativeRequest):
     prompt_batch: int | None = Field(default=None, ge=1, le=64)
     layers: str = "all"
     force: bool = False
+    relp: bool = True
 
 
 class SaeFetchRequest(NativeRequest):
@@ -652,15 +653,23 @@ def register_instrument_routes(app: FastAPI) -> None:
     # =====================================================================
 
     async def _lens_fetch_body(body: LensFetchRequest) -> None:
-        from saklas.io.lens_sources import fetch_neuronpedia_lens
+        from saklas.io.lens_sources import (
+            NEURONPEDIA_BINDING,
+            WORKSPACE_ARMS,
+            fetch_lens_source,
+        )
 
         st = lens_fetch_job.state
-        if body.source != "neuronpedia":
-            raise ValueError("J-lens source must be neuronpedia")
-        st["message"] = "fetching official lens into the Hugging Face cache…"
+        if body.source != NEURONPEDIA_BINDING and body.source not in WORKSPACE_ARMS:
+            raise ValueError(
+                "J-lens source must be one of "
+                + ", ".join([NEURONPEDIA_BINDING, *sorted(WORKSPACE_ARMS)])
+            )
+        st["message"] = "fetching external lens into the Hugging Face cache…"
         binding = await asyncio.to_thread(
-            fetch_neuronpedia_lens,
+            fetch_lens_source,
             session.model_id,
+            body.source,
             force=body.force,
             activate=False,
         )
@@ -709,6 +718,7 @@ def register_instrument_routes(app: FastAPI) -> None:
             seq_len=body.seq_len,
             prompt_batch=body.prompt_batch,
             force=body.force,
+            backward_rules="relp" if body.relp else "standard",
             on_progress=on_progress,
             cancel_event=lens_fit_job.cancel_event,
         )

@@ -62,8 +62,8 @@
     const s = strengthOf(f);
     const parts = [
       `sae/${f.id}`,
-      s != null ? `strength ${s.toFixed(2)}` : "no Neuronpedia metadata (raw scale)",
-      `activation ${f.activation.toFixed(3)}`,
+      s != null ? `strength ${s.toFixed(2)}` : "raw scale · no maxAct",
+      `activation · ${f.activation.toFixed(3)}`,
     ];
     return parts.join(" · ");
   }
@@ -74,12 +74,12 @@
       {
         label: "activation",
         value: f.activation.toFixed(3),
-        title: `raw feature activation ${f.activation.toFixed(3)}`,
+        title: `raw activation · ${f.activation.toFixed(3)}`,
       },
       {
         label: "maxActApprox",
         value: f.max_act.toFixed(3),
-        title: `Neuronpedia maxActApprox ${f.max_act.toFixed(3)}`,
+        title: `Neuronpedia maxActApprox · ${f.max_act.toFixed(3)}`,
       },
     ];
   }
@@ -124,7 +124,7 @@
                   secondary={feature.label ?? "unlabeled feature"}
                   secondaryTitle={feature.label ?? "unlabeled feature"}
                   tail={`L${readout.data?.layer ?? "—"}`}
-                  tailTitle="resident SAE layer"
+                  tailTitle="SAE layer"
                 >
                   {#snippet lead()}<span>#{index + 1}</span>{/snippet}
                 </DetailCardHeader>

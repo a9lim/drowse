@@ -78,10 +78,13 @@
       lensFetch.state.running || lensFit.state.running,
   );
   const LENS_PROVIDER_OPTIONS = [
+    { value: "workspace-r", label: "workspace-r (RelP)" },
     { value: "neuronpedia", label: "neuronpedia" },
+    { value: "workspace-j", label: "workspace-j" },
   ];
   let fitPrompts = $state(100);
   let fitLayers = $state("all");
+  let fitRelp = $state(true);
   let fitConfirm = $state(false);
   let selectedSource = $state("");
   const fitReady = $derived(
@@ -101,6 +104,7 @@
     void lensFit.start({
       prompts: fitPrompts,
       layers: fitLayers.trim(),
+      relp: fitRelp,
     });
   }
 
@@ -377,8 +381,19 @@
           bind:value={fitLayers}
           placeholder="workspace | all | 13,14,…"
           aria-label="J-lens source layers"
-          title="workspace, all, or layer ids"
+          title="workspace | all | layer ids"
         />
+      </label>
+      <label class="setup-field setup-field-medium">
+        <span class="setup-field-label">estimator</span>
+        <button
+          type="button"
+          class="add-input relp-toggle"
+          class:relp-on={fitRelp}
+          onclick={() => (fitRelp = !fitRelp)}
+          aria-pressed={fitRelp}
+          title="RelP (default) · saves as local:relp"
+        >{fitRelp ? "relp (R-lens)" : "standard"}</button>
       </label>
     {/snippet}
     {#snippet progress()}
@@ -501,8 +516,8 @@
         live={liveOn}
         liveBusy={lensState.busy}
         liveTitle={liveOn
-          ? "disable live readout"
-          : "enable live readout"}
+          ? "turn live readout off"
+          : "turn live readout on"}
         onLiveToggle={onToggleLive}
         sortValue={lensState.workspaceSortMode}
         sortOptions={SORT_OPTIONS}
@@ -726,4 +741,13 @@
     cursor: default;
   }
 
+  .relp-toggle {
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .relp-on {
+    color: var(--pillar-lens);
+    border-color: var(--pillar-lens);
+  }
 </style>

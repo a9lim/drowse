@@ -553,6 +553,37 @@ def test_serve_selects_cached_lens_when_active_pointer_is_missing(
     assert session.lens.live_enabled
 
 
+def test_serve_prefers_workspace_r_over_active_lower_priority_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Lens:
+        def set_live(self, enabled: bool, **_kwargs: Any) -> Any:
+            return LensLiveState(enabled=enabled, layers=(4, 5))
+
+    class _Session:
+        model_id = "org/model"
+        selected = "local:default"
+        lens = _Lens()
+
+        def has_compatible_jlens(self) -> bool:
+            return self.selected in {"local:default", "workspace-r"}
+
+        def select_jlens_source(self, source: str) -> None:
+            self.selected = source
+
+    monkeypatch.setattr(
+        "saklas.io.lens_sources.list_lens_sources",
+        lambda _model: [
+            {"source": "local:default", "kind": "local", "active": True},
+            {"source": "workspace-j", "kind": "huggingface", "active": False},
+            {"source": "workspace-r", "kind": "huggingface", "active": False},
+        ],
+    )
+    session = _Session()
+    assert cli_runners._enable_serve_live_lens_if_compatible(session)
+    assert session.selected == "workspace-r"
+
+
 def test_best_serve_sae_release_prefers_official_canonical_provider() -> None:
     rows = [
         {
