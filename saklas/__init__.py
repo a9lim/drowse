@@ -198,7 +198,10 @@ def __dir__() -> list[str]:
 
 
 if TYPE_CHECKING:
-    from saklas.core.errors import SaklasError as SaklasError
+    from saklas.core.errors import (
+        RelpUnsupportedError as RelpUnsupportedError,
+        SaklasError as SaklasError,
+    )
     from saklas.core.events import (
         EventBus as EventBus,
         GenerationFinished as GenerationFinished,

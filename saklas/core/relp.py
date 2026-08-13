@@ -45,10 +45,10 @@ Scope and caveats:
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from types import MethodType
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -86,8 +86,9 @@ class _DetachedFactorProduct(torch.autograd.Function):
 
     @staticmethod
     def backward(
-        ctx: Any, grad: torch.Tensor,
+        ctx: Any, *grad_outputs: torch.Tensor,
     ) -> tuple[torch.Tensor, None, None]:
+        (grad,) = grad_outputs
         (factor,) = ctx.saved_tensors
         # Multiply in the factor's fp32 and round the product once — a
         # pre-cast factor would round twice on a low-precision grad.
@@ -104,8 +105,9 @@ class _HalfProduct(torch.autograd.Function):
 
     @staticmethod
     def backward(
-        ctx: Any, grad: torch.Tensor,
+        ctx: Any, *grad_outputs: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        (grad,) = grad_outputs
         a, b = ctx.saved_tensors
         return _HALF_RULE_BETA * (grad * b), _HALF_RULE_BETA * (grad * a)
 
@@ -215,15 +217,19 @@ def _relp_norm_forward(self: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
 
 def _relp_gated_mlp_forward(self: nn.Module, x: torch.Tensor) -> torch.Tensor:
-    gate_pre = self.gate_proj(x)
-    act_value = self.act_fn(gate_pre.detach())
-    factor = _act_backward_factor(self.act_fn, gate_pre)
+    gate_proj = cast(nn.Module, getattr(self, "gate_proj"))
+    up_proj = cast(nn.Module, getattr(self, "up_proj"))
+    down_proj = cast(nn.Module, getattr(self, "down_proj"))
+    act_fn = cast(Callable[[torch.Tensor], torch.Tensor], getattr(self, "act_fn"))
+    gate_pre = cast(torch.Tensor, gate_proj(x))
+    act_value = act_fn(gate_pre.detach())
+    factor = _act_backward_factor(act_fn, gate_pre)
     _verify_once(
         self, gate_pre.detach().float() * factor, act_value, "activation",
     )
     gate = _DetachedFactorProduct.apply(gate_pre, act_value, factor)
-    up = self.up_proj(x)
-    result = self.down_proj(_HalfProduct.apply(gate, up))
+    up = cast(torch.Tensor, up_proj(x))
+    result = cast(torch.Tensor, down_proj(_HalfProduct.apply(gate, up)))
     if not getattr(self, _MLP_VERIFIED_FLAG, False):
         # A module can duck-type the gated shape while its real forward adds
         # scaling, dropout, or routing; the rewrite must reproduce the true

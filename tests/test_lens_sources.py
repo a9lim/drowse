@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
@@ -169,10 +170,10 @@ def test_external_lens_identity_binds_model_commit_and_shape() -> None:
 
 def _workspace_payload(
     estimator: str = "relp", model_id: str = "org/model",
-) -> dict:
+) -> dict[str, Any]:
     import json
 
-    config = {"estimator": estimator}
+    config: dict[str, Any] = {"estimator": estimator}
     if estimator == "relp":
         config["rules"] = {
             "ln_rule": True,
@@ -200,7 +201,7 @@ def _workspace_payload(
 def _mock_workspace_hub(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    payload: dict,
+    payload: dict[str, Any],
     *,
     files: list[str] | None = None,
 ) -> Path:

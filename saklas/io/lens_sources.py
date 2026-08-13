@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import torch
 import yaml
@@ -301,6 +301,9 @@ _WORKSPACE_BINDING_FIELDS = {
 }
 
 AnyLensBinding = ExternalLensBinding | WorkspaceLensBinding
+_LensBindingT = TypeVar(
+    "_LensBindingT", ExternalLensBinding, WorkspaceLensBinding,
+)
 
 
 def _parse_binding(payload: Any, model_id: str, name: str) -> AnyLensBinding:
@@ -319,6 +322,8 @@ def _parse_workspace_binding(
         raise ValueError("workspace J-lens binding has an invalid schema")
     layers = payload.get("source_layers")
     arm = payload.get("arm")
+    if not isinstance(arm, str):
+        raise ValueError("workspace J-lens binding has invalid identity metadata")
     if (
         payload.get("format_version") != LENS_SOURCE_FORMAT_VERSION
         or payload.get("kind") != "huggingface"
@@ -609,8 +614,8 @@ def fetch_neuronpedia_lens(
 
 
 def _publish_external_binding(
-    binding: AnyLensBinding, *, force: bool, activate: bool,
-) -> AnyLensBinding:
+    binding: _LensBindingT, *, force: bool, activate: bool,
+) -> _LensBindingT:
     """Write a binding under its lock, keeping an identical one untouched."""
     path = lens_binding_path(binding.model_id, binding.name)
     with artifact_lock(path):

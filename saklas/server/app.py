@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, cast
 
 if TYPE_CHECKING:
     from saklas.core.results import GenerationResult
@@ -591,16 +591,17 @@ def create_app(session: SaklasSession,
         every other prefix keeps FastAPI's default rendering.
         """
         response = await http_exception_handler(request, exc)
+        detail = cast(object, exc.detail)
         if (
             request.url.path.startswith(NATIVE_PREFIX)
-            and not isinstance(exc.detail, str)
+            and not isinstance(detail, str)
             # A bodiless status (204 / 304) comes back as a bare ``Response``
             # from the default handler — leave those alone.
             and isinstance(response, JSONResponse)
         ):
             return JSONResponse(
                 status_code=exc.status_code,
-                content={"detail": _detail_text(exc.detail)},
+                content={"detail": _detail_text(detail)},
                 headers=getattr(exc, "headers", None),
             )
         return response
