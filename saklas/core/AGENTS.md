@@ -471,6 +471,37 @@ calls between generations — never inside the decode loop — and persists thro
 block-output token activations under model inference mode; decoder rows are
 unit-normalized so L1 cannot be evaded by rescaling.
 
+## relp.py
+
+LRP-modified backward rules for the Jacobian-lens estimator — the R-lens
+(RelP, arXiv:2508.21258). `relp_backward_rules(layer_modules)` is a context
+manager applying three dense-model rules to every decoder block for the
+duration: **LN-rule** (an RMSNorm backprops the diagonal
+`weight·rsqrt(mean(x²)+eps)` — the rank-one `∂rms/∂x` term dropped),
+**identity-rule** (the gated activation backprops its detached per-element
+factor: `sigmoid(x)` for SiLU, the tanh/erf CDF factor for GELU), and
+**half-rule** (the `gate·up` product splits β = 0.5 per factor).
+
+Forward values are **bit-identical by construction**: each rewrite routes the
+module's own output through a custom `autograd.Function`
+(`_DetachedFactorProduct` / `_HalfProduct`) that returns it untouched and only
+substitutes the backward factor — no forward arithmetic exists to round,
+overflow, or lose `-0`. Backward factors are division-free fp32, so `x = 0`
+coordinates keep the exact detached-factor gradient (`w/rms`, `act'(0)`).
+Robustness is verification-based, not trust-based: patching refuses a module
+with a pre-existing instance `forward`; each patched norm checks its
+reconstructed factor against the module's real output on first forward
+(the plain-`w` vs zero-centered `(1+w)` weight convention is detected empirically per module — qwen3_5 adopted gemma's form, so a name heuristic would mis-factor); each patched MLP checks bitwise
+whole-forward equality against `type(self).forward` (catching duck-typed
+modules with extra scaling/routing). Any mismatch raises
+`RelpUnsupportedError` (422) rather than fitting a silently wrong artifact.
+Scope: direct RMSNorm children + one standard gated MLP per block; attention-
+internal norms (q/k, gated linear-attention) keep true gradients
+(`include_qk_norms: false`); MoE and fused gate-up projections are refused.
+Patching is instance-scoped, strictly reversible, and process-visible — the
+session fit holds `_model_exclusive` and passes the eager (`_orig_mod`) block
+list. `RELP_RULES` is the provenance dict the estimator policy embeds.
+
 ## jlens.py, jlens_fit.py
 
 The Jacobian lens (Gurnee et al., "Verbalizable Representations Form a Global

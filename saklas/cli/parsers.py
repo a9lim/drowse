@@ -950,6 +950,13 @@ def _build_lens_fit(p: argparse.ArgumentParser) -> None:
              "`workspace` as shorthand for that band or `all` explicitly.",
     )
     p.add_argument(
+        "--relp", action="store_true",
+        help="Fit the R-lens: the same estimator through the LRP-modified "
+             "backward graph (RelP rules — forward passes stay bit-identical, "
+             "early-layer reads get more faithful). Lands beside the standard "
+             "lens as local:relp, so a matched J/R pair coexists per model.",
+    )
+    p.add_argument(
         "-f", "--force", action="store_true",
         help="Restart from zero (default: resume a matching partial fit)",
     )
@@ -963,10 +970,13 @@ def _build_lens_fetch(p: argparse.ArgumentParser) -> None:
     p.add_argument("model", help="HuggingFace model ID")
     p.add_argument(
         "source", nargs="?", default="neuronpedia",
-        help="External source (currently: neuronpedia)",
+        help="External source: neuronpedia, workspace-r (RelP), workspace-j",
     )
     p.add_argument("--revision", default="main", help="Provider revision to resolve and pin")
-    p.add_argument("--repo", default="neuronpedia/jacobian-lens", metavar="REPO")
+    p.add_argument(
+        "--repo", default=None, metavar="REPO",
+        help="Override the provider repository (default: the source's own)",
+    )
     p.add_argument("-f", "--force", action="store_true", help="Refresh the binding")
     p.add_argument("-j", "--json", dest="json_output", action="store_true")
 
@@ -978,7 +988,9 @@ def _build_lens_ls(p: argparse.ArgumentParser) -> None:
 
 def _build_lens_use(p: argparse.ArgumentParser) -> None:
     p.add_argument("model", help="Model ID whose active lens to change")
-    p.add_argument("source", help="local:NAME or neuronpedia")
+    p.add_argument(
+        "source", help="local:NAME or a fetched binding (neuronpedia, workspace-r, workspace-j)",
+    )
 
 
 def _build_lens_show(p: argparse.ArgumentParser) -> None:

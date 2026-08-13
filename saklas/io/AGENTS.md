@@ -525,11 +525,24 @@ neutral cache.
 ## lens.py / lens_sources.py
 
 `lens.py` owns the Saklas-fitted per-model Jacobian lens:
-`models/<safe_model_id>/jlens/local/default/manifest.json`, an atomic pointer to
-immutable per-layer `jlens.layer-<L>.gen-<uuid>.safetensors` generations.
-`LENS_FORMAT_VERSION = 6`, required exactly. Storage is **fp32**, which keeps the
-estimator accumulator lossless across save and resume. The fit itself is
-`core/jlens_fit.py::fit_jacobian_lens`.
+`models/<safe_model_id>/jlens/local/<name>/manifest.json`, an atomic pointer to
+immutable per-layer `jlens.layer-<L>.gen-<uuid>.safetensors` generations. Every
+path, lock, save, load, and checkpoint function takes `name="default"` — the
+standard fit lives at `local/default` and the RelP fit at `local/relp`, so a
+matched J/R pair coexists per model with fully independent
+fit/checkpoint/remove transactions. `LENS_FORMAT_VERSION = 6`, required
+exactly. Storage is **fp32**, which keeps the estimator accumulator lossless
+across save and resume. The fit itself is `core/jlens_fit.py::fit_jacobian_lens`
+(wrapped in `core/relp.py::relp_backward_rules` for a RelP fit — the estimator
+itself is rule-agnostic).
+
+`lens_estimator_policy(backward_rules=)` is the fit-semantics identity: the
+`"standard"` policy keeps the exact historical dict shape (pre-RelP artifacts
+stay valid), `"relp"` takes `method = "relp_cotangent_sum"` plus the rule set.
+`_load_sidecar_at` accepts either canonical policy and pins `method` to the
+sidecar's own policy; the session's resume predicates compare the *requested*
+policy for equality, so a RelP fit can never resume or extend a standard
+artifact (or vice versa).
 
 The sidecar records the estimator settings (`method`, `n_prompts`, `d_model`,
 `source_layers`, `seq_len`, `dim_batch`, `skip_first_positions`), the corpus spec
@@ -576,10 +589,20 @@ Surface: `lens_paths` / `lens_checkpoint_paths` / `save_lens` /
 `lens_sources.py` owns `jlens/active.json` through `LENS_SOURCES`, an
 `ActiveSourceRegistry` over the kinds `local` and `huggingface` (both addressed by
 an artifact-name slug), plus commit-pinned external bindings under
-`jlens/bindings/<name>.json` at `LENS_SOURCE_FORMAT_VERSION = 1`. It also owns
-Neuronpedia discovery against `neuronpedia/jacobian-lens` and the weights-only
-adapter that reads `.pt` payloads offline from the Hugging Face cache without
-copying them into `SAKLAS_HOME`. Its Hub calls go through `io.hf`.
+`jlens/bindings/<name>.json` at `LENS_SOURCE_FORMAT_VERSION = 1`. Two external
+providers share that version, discriminated by the binding's `provider` field:
+`neuronpedia` (`ExternalLensBinding` — discovery against
+`neuronpedia/jacobian-lens`, config-file pinned) and `workspace-lenses`
+(`WorkspaceLensBinding` — the `camilablank/workspace-lenses` matched J/R pairs,
+binding names `workspace-r`/`workspace-j` per `WORKSPACE_ARMS`, validated
+against the payload's embedded provenance: model id, arm↔estimator agreement,
+recipe fields, checkpoint sha256). Both fetchers publish through
+`_publish_external_binding` and dispatch via `fetch_lens_source` (the CLI and
+server entry point); the weights-only adapter reads `.pt` payloads offline from
+the Hugging Face cache without copying them into `SAKLAS_HOME`
+(`weights_only=True` — the workspace payload's extra `provenance` key is
+schema-checked per provider). `use_lens_source` accepts `local:NAME` or any
+fetched binding name. Its Hub calls go through `io.hf`.
 
 ## sae.py / sae_artifacts.py
 

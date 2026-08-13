@@ -317,8 +317,12 @@ def test_lens_noop_preflight_requires_exact_model_source(
         "n_prompts": 100,
         "d_model": 6,
     }
+    from saklas.io.lens import lens_estimator_policy
+
+    sidecar["estimator_policy"] = lens_estimator_policy()
     monkeypatch.setattr(
-        "saklas.io.lens.load_lens_sidecar", lambda _model: sidecar,
+        "saklas.io.lens.load_local_lens_sidecar",
+        lambda _model, _name="default": sidecar,
     )
     monkeypatch.setattr(
         "saklas.core.model.model_source_fingerprint",
@@ -356,8 +360,12 @@ def test_lens_noop_preflight_rejects_changed_default_dataset_revision(
         "raw_prompt_count": 100, "usable_prompt_count": 100,
         "n_prompts": 100, "d_model": 6,
     }
+    from saklas.io.lens import lens_estimator_policy
+
+    sidecar["estimator_policy"] = lens_estimator_policy()
     monkeypatch.setattr(
-        "saklas.io.lens.load_lens_sidecar", lambda _model: sidecar,
+        "saklas.io.lens.load_local_lens_sidecar",
+        lambda _model, _name="default": sidecar,
     )
     monkeypatch.setattr(
         "saklas.core.model.model_source_fingerprint",
@@ -384,7 +392,7 @@ def test_lens_noop_preflight_holds_fit_lock_during_sidecar_read(
     held = False
 
     @contextmanager
-    def fake_lock(_model: str):
+    def fake_lock(_model: str, _name: str = "default"):
         nonlocal held
         held = True
         try:
@@ -392,12 +400,12 @@ def test_lens_noop_preflight_holds_fit_lock_during_sidecar_read(
         finally:
             held = False
 
-    def read_sidecar(_model: str) -> None:
+    def read_sidecar(_model: str, _name: str = "default") -> None:
         assert held
         return None
 
     monkeypatch.setattr(lens_io, "lens_fit_lock", fake_lock)
-    monkeypatch.setattr(lens_io, "load_lens_sidecar", read_sidecar)
+    monkeypatch.setattr(lens_io, "load_local_lens_sidecar", read_sidecar)
     args = argparse.Namespace(
         force=False, model="toy/model", quantize=None, device="cpu",
         seq_len=None, corpus=None, prompts=100,

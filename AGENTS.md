@@ -71,8 +71,8 @@ saklas experiment naturalness <model> "<prompt>" --manifold F -S EXPR [--max-tok
 saklas template create <name> --slot TOKEN --values V... --contexts FILE [--description TEXT] [-f]
 saklas template ls [-j] | show <name> [-j] | rm <name> [-y]
 saklas template score <name> -m MODEL [-S EXPR] [--by sum|mean] [-j]   # restricted-choice value distribution
-saklas lens fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K] [--prompt-batch B] [-f]   # per-model Jacobian lens (backward passes; resumes by default)
-saklas lens fetch <model> [neuronpedia] | ls <model> | show <model> [source] | use <model> <source> | rm <model> [source] [-y]
+saklas lens fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K] [--prompt-batch B] [--relp] [-f]   # per-model Jacobian lens (backward passes; resumes by default; --relp fits the R-lens beside it)
+saklas lens fetch <model> [neuronpedia|workspace-r|workspace-j] | ls <model> | show <model> [source] | use <model> <source> | rm <model> [source] [-y]
 saklas lens top <model> "<prompt>" [-k K] [--layers L1,L2] [--position P] [-j]   # workspace readout on a raw prompt
 saklas lens decompose <selector> -m MODEL [-k K] [--layers L1,L2] [-j]   # J-space share + tokens of a direction
 saklas sae train <model> <name> [--corpus FILE] [--layer L] [--tokens N] [-f]
@@ -296,11 +296,31 @@ Transformer Circuits 2026). The lens is one matrix per source layer, `J_l =
 E[∂h_final/∂h_l]` — the average first-order effect of a layer's residual on the
 final-layer residual over positions and a web-text corpus — stored as immutable
 per-layer fp32 shards. Saklas-fitted lenses live at
-`models/<safe_model_id>/jlens/local/default/manifest.json`
-(`LENS_FORMAT_VERSION = 6`, required exactly). Official Neuronpedia lenses stay
-in the Hugging Face cache behind a commit-pinned
-`jlens/bindings/neuronpedia.json`; `jlens/active.json` selects the runtime
-source. The sidecar records the immutable corpus spec + token-id sha256, exact
+`models/<safe_model_id>/jlens/local/<name>/manifest.json`
+(`LENS_FORMAT_VERSION = 6`, required exactly; `default` is the standard fit,
+`relp` the R-lens). External lenses stay in the Hugging Face cache behind
+commit-pinned `jlens/bindings/<name>.json` — `neuronpedia` (official paper
+lenses) and `workspace-r`/`workspace-j` (the camilablank/workspace-lenses
+matched RelP/standard pairs, estimator validated against the payload's
+embedded provenance at fetch); `jlens/active.json` selects the runtime
+source.
+
+**R-lens (RelP).** `lens fit --relp` runs the *same* estimator through an
+LRP-modified backward graph (`core/relp.py`; RelP, arXiv:2508.21258): the
+LN-rule (RMSNorm `rsqrt` detached), identity-rule (the gated activation
+backprops its detached `act(x)/x` factor), and half-rule (the `gate·up`
+product splits β = 0.5 per factor). Forward passes stay bit-identical — the
+rewrites route each module's own output through custom autograd Functions,
+so a J/R pair shares one forward distribution and only gradients differ; the
+measured win is faithful early-layer reads. The artifact lands at
+`local/relp` beside `local/default` (switch with `lens use <model>
+local:relp`), stamped `method = "relp_cotangent_sum"` with its own
+`estimator_policy`, so the two estimators never resume or reuse each other's
+shards and pre-RelP artifacts stay valid. Dense architectures only (one
+gated MLP + RMSNorm children per block, structurally verified on first
+forward); MoE and fused projections raise `RelpUnsupportedError`. Every read
+surface is estimator-agnostic — probes, atoms, gates, decompose, and the
+live wire consume whichever lens is active. The sidecar records the immutable corpus spec + token-id sha256, exact
 source/live model identities, and one payload sha256 per layer. `lens fit` runs
 the estimator (`core/jlens_fit.py::fit_jacobian_lens` — the **only** backward
 passes in saklas; resumable, checkpointed, OOM-adaptive — see
@@ -838,7 +858,7 @@ All state under `~/.saklas/` (override via `$SAKLAS_HOME`):
     jlens/
       active.json                      # selected local/external J-lens source
       bindings/<provider>.json         # commit-pinned external source metadata
-      local/default/
+      local/<name>/                    # default (standard) / relp (R-lens)
         manifest.json                  # atomic immutable-shard pointer
         checkpoint.json                # present only during a resumable local fit
         jlens*.gen-*.safetensors       # immutable fp32 J_l layer shards

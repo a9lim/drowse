@@ -337,9 +337,13 @@ exits 2.
 and a required `-m`.
 
 - `fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K]
-  [--prompt-batch B] [--checkpoint-every N] [--layers …] [-f] [-d] [-q]`.
+  [--prompt-batch B] [--checkpoint-every N] [--layers …] [--relp] [-f] [-d] [-q]`.
   Defaults: 100 prompts, seq-len 128, dim-batch 8, prompt-batch 4 (2 on MPS),
-  checkpoint every 25. All numeric fit flags are positive-only. `--corpus` reads
+  checkpoint every 25. All numeric fit flags are positive-only. `--relp` fits
+  the R-lens (LRP-modified backward graph, `core/relp.py`), landing at
+  `local:relp` beside the standard `local:default` artifact with its own
+  estimator policy — the no-op preflight, resume, and checkpoint transactions
+  are all name-scoped, so the two never touch each other. `--corpus` reads
   one document per line (a JSONL line with a `text` field also works, each
   sliced to `_LENS_DOC_CHARS = 4000` before tokenization); unset, it streams the
   default web-text sample via the optional `datasets` dependency. `--layers`
@@ -352,11 +356,13 @@ and a required `-m`.
   identity, and payload digests, then reaps a crash-left checkpoint the
   validated final artifact provably subsumes.
 - `fetch <model> [source] [--revision REV] [--repo REPO] [-f] [-j]` — pure IO,
-  no model load. Source defaults to `neuronpedia`, revision to `main`, repo to
-  `neuronpedia/jacobian-lens`. Provider bytes stay in the Hugging Face cache;
-  Saklas writes only the pinned binding.
+  no model load. Source is `neuronpedia` (default), `workspace-r` (the RelP
+  arm), or `workspace-j` (its matched standard arm); revision defaults to
+  `main` and `--repo` overrides the source's own repository. Provider bytes
+  stay in the Hugging Face cache; Saklas writes only the pinned binding.
 - `ls <model> [-j]`, `show <model> [source] [-j]`, `use <model> <source>` —
-  sources are `local:default` or `neuronpedia`.
+  sources are `local:<name>` (every fitted `local/*` lens is listed) or a
+  fetched binding name (`neuronpedia`, `workspace-r`, `workspace-j`).
 - `top <model> <prompt> [-k K] [--layers …] [--position P] [-d] [-q] [-j]` —
   raw prompt, no chat template. `-k` defaults to 8, layers to every fitted
   layer, `--position` is repeatable and accepts negatives (default: final

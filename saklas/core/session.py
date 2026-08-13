@@ -2127,14 +2127,27 @@ class SaklasSession:
         seq_len: int | None = None,
         force: bool = False,
         checkpoint_every: int | None = None,
+        backward_rules: str = "standard",
         on_progress: Callable[[str], None] | None = None,
         cancel_event: "Any | None" = None,
     ) -> "Any":
-        """Fit/resume one per-model J-lens under its cross-process transaction."""
+        """Fit/resume one per-model J-lens under its cross-process transaction.
+
+        ``backward_rules="relp"`` fits the R-lens: the same estimator run
+        through the LRP-modified backward graph (``core.relp``), landing at
+        ``local/relp`` beside the standard ``local/default`` artifact so a
+        matched J/R pair coexists per model (switch with
+        ``lens use <model> local:relp``).
+        """
         from saklas.io.lens import cleanup_lens_artifacts, lens_fit_lock
 
-        with lens_fit_lock(self.model_id):
-            cleanup_lens_artifacts(self.model_id)
+        if backward_rules not in ("standard", "relp"):
+            raise ValueError(
+                f"backward_rules must be 'standard' or 'relp', got {backward_rules!r}"
+            )
+        lens_name = "relp" if backward_rules == "relp" else "default"
+        with lens_fit_lock(self.model_id, lens_name):
+            cleanup_lens_artifacts(self.model_id, lens_name)
             if cancel_event is not None and cancel_event.is_set():
                 from saklas.core.jlens import JacobianLensCancelled
 
@@ -2151,6 +2164,7 @@ class SaklasSession:
                 seq_len=seq_len,
                 force=force,
                 checkpoint_every=checkpoint_every,
+                backward_rules=backward_rules,
                 on_progress=on_progress,
                 cancel_event=cancel_event,
             )
@@ -2166,6 +2180,7 @@ class SaklasSession:
         seq_len: int | None = None,
         force: bool = False,
         checkpoint_every: int | None = None,
+        backward_rules: str = "standard",
         on_progress: Callable[[str], None] | None = None,
         cancel_event: "Any | None" = None,
     ) -> "Any":
@@ -2205,6 +2220,7 @@ class SaklasSession:
         )
         from saklas.io.lens import (
             _load_lens_verified,
+            lens_estimator_policy,
             load_lens_checkpoint,
             load_lens_checkpoint_sidecar,
             promote_lens_checkpoint,
@@ -2213,6 +2229,8 @@ class SaklasSession:
             save_lens_checkpoint_accumulator,
         )
 
+        lens_name = "relp" if backward_rules == "relp" else "default"
+        expected_policy = lens_estimator_policy(backward_rules=backward_rules)
         dim_batch = dim_batch or DEFAULT_DIM_BATCH
         seq_len = seq_len or DEFAULT_SEQ_LEN
         checkpoint_every = checkpoint_every or DEFAULT_CHECKPOINT_EVERY
@@ -2237,6 +2255,18 @@ class SaklasSession:
             SaklasSession._assert_unsteered_artifact_operation(self)
             fit_model = getattr(self._model, "_orig_mod", self._model)
             fit_layers = list(get_layers(fit_model))
+
+            def _run_estimator(*args: "Any", **kwargs: "Any") -> "Any":
+                if backward_rules == "relp":
+                    from saklas.core.relp import relp_backward_rules
+
+                    with relp_backward_rules(fit_layers):
+                        return fit_jacobian_lens(
+                            fit_model, self._tokenizer, *args, **kwargs,
+                        )
+                return fit_jacobian_lens(
+                    fit_model, self._tokenizer, *args, **kwargs,
+                )
             model_fingerprint = loaded_model_fingerprint(
                 fit_model, self.model_id,
             )
@@ -2248,7 +2278,7 @@ class SaklasSession:
             )
             expected_set = set(expected_sources)
             if force:
-                remove_lens_checkpoint(self.model_id)
+                remove_lens_checkpoint(self.model_id, lens_name)
 
             usable: list[str] = []
             consumed_ids: list[list[int]] = []
@@ -2305,7 +2335,7 @@ class SaklasSession:
             durable_fallback_after_checkpoint = False
             existing_reuse_proof: Any = None
             if not force:
-                checkpoint_sidecar = load_lens_checkpoint_sidecar(self.model_id)
+                checkpoint_sidecar = load_lens_checkpoint_sidecar(self.model_id, lens_name)
                 checkpoint_progress = _checkpoint_progress(checkpoint_sidecar)
                 checkpoint_prefix_matches = bool(
                     checkpoint_sidecar is not None
@@ -2321,6 +2351,8 @@ class SaklasSession:
                     )
                     and checkpoint_sidecar.get("corpus_hash_kind")
                     == corpus_hash_kind
+                    and checkpoint_sidecar.get("estimator_policy")
+                    == expected_policy
                     and checkpoint_progress > 0
                     and checkpoint_sidecar.get("seq_len") == seq_len
                     and checkpoint_sidecar.get("model_fingerprint")
@@ -2336,13 +2368,14 @@ class SaklasSession:
                         checkpoint_sidecar.get("base_n_prompts", -1)
                     )
                     checkpoint_n = int(checkpoint_sidecar.get("n_prompts", -1))
-                sidecar = load_lens_sidecar(self.model_id)
+                sidecar = load_lens_sidecar(self.model_id, lens_name)
                 saved_n = 0
                 if (
                     sidecar is not None
                     and sidecar.get("corpus_hash_kind") == corpus_hash_kind
                     and sidecar.get("seq_len") == seq_len
                     and sidecar.get("model_fingerprint") == model_fingerprint
+                    and sidecar.get("estimator_policy") == expected_policy
                 ):
                     saved_n = int(sidecar.get("n_prompts", 0))
                     saved_sha = sidecar.get("corpus_sha256")
@@ -2433,6 +2466,7 @@ class SaklasSession:
                             )
                             verified_existing = _load_lens_verified(
                                 self.model_id,
+                                name=lens_name,
                                 requested_layers=selective_layers,
                             )
                             if verified_existing is None:
@@ -2467,6 +2501,7 @@ class SaklasSession:
                             # not farther ahead or semantically different.
                             remove_subsumed_lens_checkpoint(
                                 self.model_id,
+                                name=lens_name,
                                 verified_final_sidecar=(
                                     sidecar if existing_payload_verified else None
                                 ),
@@ -2495,7 +2530,7 @@ class SaklasSession:
                                 f"J-lens layers {missing_sources}"
                             )
                         missing_base = None
-                        topup_sidecar = load_lens_checkpoint_sidecar(self.model_id)
+                        topup_sidecar = load_lens_checkpoint_sidecar(self.model_id, lens_name)
                         topup_progress = _checkpoint_progress(topup_sidecar)
                         topup_corpus_matches = bool(
                             topup_sidecar is not None
@@ -2520,12 +2555,14 @@ class SaklasSession:
                             and topup_sidecar.get("seq_len") == seq_len
                             and topup_sidecar.get("model_fingerprint")
                             == model_fingerprint
+                            and topup_sidecar.get("estimator_policy")
+                            == expected_policy
                             and topup_sidecar.get("base_n_prompts") == 0
                             and [int(l) for l in topup_sidecar.get("source_layers", [])]
                             == missing_sources
                         )
                         topup_ckpt = (
-                            load_lens_checkpoint(self.model_id)
+                            load_lens_checkpoint(self.model_id, lens_name)
                             if topup_meta_matches else None
                         )
                         if topup_ckpt is not None:
@@ -2553,6 +2590,8 @@ class SaklasSession:
                                 sums, completed, d_model, self.model_id,
                                 # ``fit_jacobian_lens`` owns/mutates the prefix
                                 # as part of this raw accumulator.
+                                name=lens_name,
+                                backward_rules=backward_rules,
                                 base=None,
                                 corpus_spec=corpus_spec,
                                 corpus_sha256=corpus_sha,
@@ -2572,8 +2611,8 @@ class SaklasSession:
                             )
 
                         if topup_prompts:
-                            missing_tail = fit_jacobian_lens(
-                                fit_model, self._tokenizer, topup_prompts,
+                            missing_tail = _run_estimator(
+                                topup_prompts,
                                 fit_layers, source_layers=missing_sources,
                                 dim_batch=dim_batch, max_seq_len=seq_len,
                                 prompt_batch=prompt_batch,
@@ -2594,6 +2633,7 @@ class SaklasSession:
                         merged = JacobianLens.union_layers([lens, missing])
                         save_lens(
                             merged, self.model_id,
+                            name=lens_name, backward_rules=backward_rules,
                             corpus_spec=corpus_spec, corpus_sha256=corpus_sha,
                             corpus_hash_kind=corpus_hash_kind,
                             seq_len=seq_len, dim_batch=dim_batch,
@@ -2608,11 +2648,11 @@ class SaklasSession:
                             reuse_layers=existing_set,
                             _verified_reuse_proof=existing_reuse_proof,
                         )
-                        remove_lens_checkpoint(self.model_id)
+                        remove_lens_checkpoint(self.model_id, lens_name)
                         selected = merged.select_layers(expected_sources)
                         SaklasSession._adopt_fitted_jlens(
                             self, merged,
-                            sidecar=load_lens_sidecar(self.model_id),
+                            sidecar=load_lens_sidecar(self.model_id, lens_name),
                         )
                         return selected
                     if existing_set >= expected_set:
@@ -2651,7 +2691,7 @@ class SaklasSession:
                     SaklasSession._evict_resident_jlens(self)
                     resident_evicted_early = True
                 ckpt = (
-                    load_lens_checkpoint(self.model_id)
+                    load_lens_checkpoint(self.model_id, lens_name)
                     if load_checkpoint_payload else None
                 )
                 if (
@@ -2664,7 +2704,7 @@ class SaklasSession:
                     # fail its full digest/finite validation. Load the durable
                     # artifact only after that failed payload is gone instead
                     # of silently restarting from prompt zero.
-                    fallback = load_lens(self.model_id)
+                    fallback = load_lens(self.model_id, lens_name)
                     if fallback is not None:
                         fallback_lens, fallback_sidecar = fallback
                         if set(fallback_lens.source_layers) >= expected_set:
@@ -2724,6 +2764,7 @@ class SaklasSession:
             def _save_full(lens: "Any") -> "Any":
                 save_lens(
                     lens, self.model_id,
+                    name=lens_name, backward_rules=backward_rules,
                     corpus_spec=corpus_spec, corpus_sha256=corpus_sha,
                     corpus_hash_kind=corpus_hash_kind,
                     seq_len=seq_len, dim_batch=dim_batch,
@@ -2736,7 +2777,7 @@ class SaklasSession:
                     model_fingerprint=model_fingerprint,
                     model_source_fingerprint=model_source_fp,
                 )
-                remove_lens_checkpoint(self.model_id)
+                remove_lens_checkpoint(self.model_id, lens_name)
                 return lens
 
             checkpoint_written = False
@@ -2753,6 +2794,8 @@ class SaklasSession:
                     sums, completed, d_model, self.model_id,
                     # The prefix is already folded into ``sums`` by the
                     # single-accumulator resume path.
+                    name=lens_name,
+                    backward_rules=backward_rules,
                     base=None,
                     corpus_spec=corpus_spec,
                     corpus_sha256=corpus_sha,
@@ -2787,11 +2830,11 @@ class SaklasSession:
                         return SaklasSession._adopt_fitted_jlens(
                             self,
                             merged,
-                            sidecar=load_lens_sidecar(self.model_id),
+                            sidecar=load_lens_sidecar(self.model_id, lens_name),
                         )
                 except BaseException:
                     if resident_evicted_early:
-                        restored = load_lens(self.model_id)
+                        restored = load_lens(self.model_id, lens_name)
                         if restored is not None:
                             with self._lens_instrument.state_lock:
                                 if pre_evicted_live is not None:
@@ -2825,8 +2868,8 @@ class SaklasSession:
                 SaklasSession._evict_resident_jlens(self)
                 resident = None
             try:
-                merged = fit_jacobian_lens(
-                    fit_model, self._tokenizer, usable, fit_layers,
+                merged = _run_estimator(
+                    usable, fit_layers,
                     source_layers=expected_sources, dim_batch=dim_batch,
                     prompt_batch=prompt_batch,
                     max_seq_len=seq_len,
@@ -2840,6 +2883,7 @@ class SaklasSession:
                 )
                 if checkpoint_written and promote_lens_checkpoint(
                     self.model_id,
+                    name=lens_name,
                     n_prompts=merged.n_prompts,
                     source_layers=merged.source_layers,
                     corpus_sha256=corpus_sha,
@@ -2849,10 +2893,10 @@ class SaklasSession:
                     model_fingerprint=model_fingerprint,
                     _verified_proof=checkpoint_proof,
                 ):
-                    sidecar = load_lens_sidecar(self.model_id)
+                    sidecar = load_lens_sidecar(self.model_id, lens_name)
                 else:
                     merged = _save_full(merged)
-                    sidecar = load_lens_sidecar(self.model_id)
+                    sidecar = load_lens_sidecar(self.model_id, lens_name)
                 with self._lens_instrument.state_lock:
                     if resume_live is not None:
                         self._lens_instrument.live = resume_live
@@ -2861,7 +2905,7 @@ class SaklasSession:
                     )
             except BaseException:
                 if had_resident:
-                    restored = load_lens(self.model_id)
+                    restored = load_lens(self.model_id, lens_name)
                     if restored is not None:
                         restored_lens, restored_sidecar = restored
                         with self._lens_instrument.state_lock:

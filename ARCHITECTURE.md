@@ -136,9 +136,12 @@ does not require a manifold fit.
 The Jacobian lens and SAE are model-scoped sources, not concept manifolds.
 
 - A J-lens contains one fp32 transport matrix `J_l` per fitted source layer.
-  Saklas-owned fits use immutable shards behind a manifest; external
-  Neuronpedia payloads remain in the Hugging Face cache behind a pinned local
-  binding.
+  Saklas-owned fits use immutable shards behind a manifest, one named local
+  lens per estimator (`local/default` for the standard Jacobian fit,
+  `local/relp` for the R-lens — the same estimator run through the
+  LRP-modified backward graph in `core/relp.py`, forward passes
+  bit-identical); external payloads (Neuronpedia, workspace-lenses J/R
+  pairs) remain in the Hugging Face cache behind pinned local bindings.
 - A Saklas-trained SAE stores local encoder/decoder weights. A SAELens source
   remains provider-owned; Saklas stores only its selected release/layer binding
   and optional feature metadata.
@@ -184,7 +187,7 @@ All Saklas-owned state resolves through `io.paths.saklas_home()` and honors
     jlens/
       active.json
       bindings/<provider>.json
-      local/default/
+      local/<name>/                        default (standard) / relp (R-lens)
         manifest.json
         checkpoint.json                    only while a resumable fit exists
         jlens*.gen-*.safetensors
