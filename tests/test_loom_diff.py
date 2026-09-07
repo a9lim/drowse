@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from saklas import (
+from drowse import (
     LoomTree,
     Recipe,
     per_token_diff,
@@ -11,7 +11,7 @@ from saklas import (
     steering_delta,
     text_diff,
 )
-from saklas.core.loom_diff import NodeDiff
+from drowse.core.loom_diff import NodeDiff
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ def test_session_diff_nodes_via_synthetic_session():
     """The session method is a thin wrapper; exercise via a small shim."""
     # Build a minimal stand-in that exposes ``.tree`` so we can call the
     # method via __get__ binding.  Avoids loading a real model.
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
     tree, u, a1, a2 = _seed_tree_with_siblings()
 
@@ -165,7 +165,7 @@ def test_session_diff_nodes_via_synthetic_session():
             self.tree = tree
 
     stub = _Stub(tree)
-    diff = SaklasSession.diff_nodes.__get__(stub, _Stub)(a1, a2)
+    diff = DrowseSession.diff_nodes.__get__(stub, _Stub)(a1, a2)
     assert isinstance(diff, NodeDiff)
     assert diff.a_id == a1
     assert diff.b_id == a2

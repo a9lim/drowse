@@ -7,14 +7,14 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.io import bake
-from saklas.io.manifolds import (
+from drowse.io import bake
+from drowse.io.manifolds import (
     ManifoldFolder, ManifoldSidecar,
     create_baked_manifold_folder, save_baked_manifold_tensor,
 )
-from saklas.io.manifold_tensors import load_manifold
-from saklas.core.capture import fold_directions_to_subspace, folded_directions
-from saklas.io.paths import encode_release_id, model_dir, safe_model_id, tensor_filename
+from drowse.io.manifold_tensors import load_manifold
+from drowse.core.capture import fold_directions_to_subspace, folded_directions
+from drowse.io.paths import encode_release_id, model_dir, safe_model_id, tensor_filename
 from tests._whitener import isotropic_whitener
 
 
@@ -24,7 +24,7 @@ def test_parse_expr_two_components(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     """Parser rejects bare (non-namespaced) components; the happy path
     below uses a namespace-qualified expression, which shared_models
     round-trips through the parser."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     profile = {0: torch.tensor([1.0])}
     _make_concept_with_tensors(tmp_path, "default", "happy", {"gemma": profile})
     _make_concept_with_tensors(tmp_path, "a9lim", "archaic", {"gemma": profile})
@@ -168,7 +168,7 @@ def _seed_neutral_cache(model_id: str, profile: dict[int, torch.Tensor]) -> None
     """Give offline bake the persisted metric its current contract requires."""
     import json
     from safetensors.torch import save_file
-    from saklas.io.integrity import hash_file
+    from drowse.io.integrity import hash_file
 
     md = model_dir(model_id)
     md.mkdir(parents=True, exist_ok=True)
@@ -196,7 +196,7 @@ def _seed_neutral_cache(model_id: str, profile: dict[int, torch.Tensor]) -> None
 
 
 def test_shared_models_intersection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     profile = {0: torch.tensor([1.0])}
     _make_concept_with_tensors(tmp_path, "default", "happy",
                                 {"gemma": profile, "qwen": profile})
@@ -207,7 +207,7 @@ def test_shared_models_intersection(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
 
 def test_shared_models_empty_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     profile = {0: torch.tensor([1.0])}
     _make_concept_with_tensors(tmp_path, "default", "happy", {"gemma": profile})
     _make_concept_with_tensors(tmp_path, "a9lim", "archaic", {"qwen": profile})
@@ -218,7 +218,7 @@ def test_shared_models_empty_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 def test_merge_resolves_each_component_model_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     profile = {0: torch.tensor([1.0])}
     _make_concept_with_tensors(
         tmp_path, "default", "happy", {"gemma": profile},
@@ -247,7 +247,7 @@ def test_merge_resolves_each_component_model_once(
 def test_role_variant_uses_and_validates_canonical_tensor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = _make_concept_with_tensors(
         tmp_path, "default", "happy", {"gemma": {0: torch.tensor([1.0])}},
     )
@@ -272,7 +272,7 @@ def test_role_variant_uses_and_validates_canonical_tensor(
 def test_transfer_variant_routes_concrete_tensor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = _make_concept_with_tensors(
         tmp_path, "default", "happy", {"src": {0: torch.tensor([1.0])}},
     )
@@ -300,7 +300,7 @@ def test_transfer_variant_routes_concrete_tensor(
 
 
 def test_merge_into_manifold_single_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p1 = {0: torch.tensor([1.0, 0.0])}
     p2 = {0: torch.tensor([0.0, 2.0])}
     _make_concept_with_tensors(tmp_path, "default", "happy", {"gemma": p1})
@@ -335,7 +335,7 @@ def test_merge_into_manifold_single_model(monkeypatch: pytest.MonkeyPatch, tmp_p
 
 
 def test_merge_into_manifold_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = {0: torch.tensor([1.0])}
     _make_concept_with_tensors(tmp_path, "default", "happy", {"gemma": p})
     _make_concept_with_tensors(tmp_path, "a9lim", "archaic", {"gemma": p})
@@ -353,7 +353,7 @@ def test_merge_into_manifold_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path:
 def test_merge_retry_repairs_later_unproven_baked_pair(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     profiles = {
         "gemma": {0: torch.tensor([1.0])},
         "qwen": {0: torch.tensor([2.0])},
@@ -382,7 +382,7 @@ def test_merge_retry_repairs_later_unproven_baked_pair(
 
 
 def test_merge_into_manifold_explicit_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = {0: torch.tensor([1.0])}
     _make_concept_with_tensors(tmp_path, "default", "happy",
                                 {"google/gemma-2-2b-it": p, "qwen": p})
@@ -401,7 +401,7 @@ def test_merge_into_manifold_explicit_model(monkeypatch: pytest.MonkeyPatch, tmp
 def test_legacy_projected_bake_requires_rebake(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = _make_concept_with_tensors(
         tmp_path, "local", "legacy", {"gemma": {0: torch.tensor([1.0, 2.0])}},
     )

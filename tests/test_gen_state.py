@@ -1,4 +1,4 @@
-"""Tests for the typed ``GenState`` lifecycle on ``SaklasSession``.
+"""Tests for the typed ``GenState`` lifecycle on ``DrowseSession``.
 
 GPU-gated for the same reason as ``test_session.py``: ``GenState``
 transitions are exercised through real generation, which needs a model
@@ -11,8 +11,9 @@ from typing import Any
 import pytest
 import torch
 
-from saklas import GenState
-from saklas.core.session import ConcurrentGenerationError
+from drowse import GenState
+from drowse.core.session import ConcurrentGenerationError
+from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
 
 _HAS_GPU = torch.cuda.is_available() or torch.backends.mps.is_available()
 pytestmark = [
@@ -23,13 +24,16 @@ pytestmark = [
     ),
 ]
 
-MODEL_ID = "google/gemma-3-4b-it"
+MODEL_ID = gpu_model_id()
 
 
 @pytest.fixture(scope="module")
 def session():
-    from saklas.core.session import SaklasSession
-    s = SaklasSession.from_pretrained(MODEL_ID, device="auto", probes=["register"])
+    from drowse.core.session import DrowseSession
+    s = load_or_skip_inaccessible(
+        lambda: DrowseSession.from_pretrained(MODEL_ID, device="auto", probes=["register"]),
+        MODEL_ID,
+    )
     yield s
     s.close()
 
@@ -49,7 +53,7 @@ class TestGenStateTransitions:
         def _tap(*args: Any, **kwargs: Any) -> None:
             observed.append(session.gen_state)
 
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
         session.generate(
             "Say hi.",
             sampling=SamplingConfig(max_tokens=4),
@@ -62,7 +66,7 @@ class TestGenStateTransitions:
 
     def test_returns_to_idle_after_success(self, session: Any) -> None:
         session.clear_history()
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
         session.generate(
             "Say hi.",
             sampling=SamplingConfig(max_tokens=4),
@@ -79,7 +83,7 @@ class TestGenStateTransitions:
         ``IDLE`` for the next call to succeed.
         """
         session.clear_history()
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
         with pytest.raises(Exception):
             session.generate(
                 "Say hi.",
@@ -104,7 +108,7 @@ class TestConcurrentGuard:
         top of the threading lock.
         """
         session.clear_history()
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
 
         captured: list[BaseException] = []
 

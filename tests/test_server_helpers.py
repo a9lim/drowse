@@ -1,7 +1,7 @@
 """Tests for the shared server request/response helpers.
 
 These cover the normalizations the three protocols (OpenAI, Ollama, native
-WebSocket) share through :mod:`saklas.server.request_helpers` — the single
+WebSocket) share through :mod:`drowse.server.request_helpers` — the single
 ``SamplingConfig`` construction site — plus the streaming aggregate helpers.
 """
 
@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import pytest
 
-from saklas.server.request_helpers import (
+from drowse.server.request_helpers import (
     build_sampling_config,
     logprob_count,
     normalize_stop,
@@ -94,8 +94,8 @@ class TestBuildSamplingConfig:
 
 class TestWsAdapterSharesTheConstructor:
     def test_ws_params_lower_onto_the_same_config(self) -> None:
-        from saklas.server.ws_models import WSSamplingParams
-        from saklas.server.ws_models import (
+        from drowse.server.ws_models import WSSamplingParams
+        from drowse.server.ws_models import (
             build_sampling_config as ws_build_sampling_config,
         )
 
@@ -115,7 +115,7 @@ class TestWsAdapterSharesTheConstructor:
         assert sc.persist_per_layer_scores is True
 
     def test_none_body_is_none(self) -> None:
-        from saklas.server.ws_models import (
+        from drowse.server.ws_models import (
             build_sampling_config as ws_build_sampling_config,
         )
 
@@ -133,7 +133,7 @@ class TestWSInputMessageLabel:
     """
 
     def test_label_survives_the_lowering(self) -> None:
-        from saklas.server.ws_models import WSInputMessage, build_input
+        from drowse.server.ws_models import WSInputMessage, build_input
 
         lowered = build_input([
             WSInputMessage(role="user", content="ahoy", label="captain"),
@@ -147,14 +147,14 @@ class TestWSInputMessageLabel:
     def test_label_is_optional_and_still_rejects_unknown_keys(self) -> None:
         import pydantic
 
-        from saklas.server.ws_models import WSInputMessage
+        from drowse.server.ws_models import WSInputMessage
 
         assert WSInputMessage(role="user", content="hi").label is None
         with pytest.raises(pydantic.ValidationError):
             WSInputMessage(role="user", content="hi", name="old")  # type: ignore[call-arg]
 
     def test_string_and_none_inputs_pass_through(self) -> None:
-        from saklas.server.ws_models import build_input
+        from drowse.server.ws_models import build_input
 
         assert build_input("plain prompt") == "plain prompt"
         assert build_input(None) is None
@@ -171,7 +171,7 @@ class TestWSGenerateSchemaValidation:
     def _errors(**kwargs: Any) -> list[dict[str, Any]]:
         import pydantic
 
-        from saklas.server.ws_models import WSGenerateMessage
+        from drowse.server.ws_models import WSGenerateMessage
 
         with pytest.raises(pydantic.ValidationError) as excinfo:
             WSGenerateMessage(type="generate", **kwargs)
@@ -183,6 +183,31 @@ class TestWSGenerateSchemaValidation:
         # ``PydanticCustomError`` keeps the message verbatim — a plain
         # ValueError would reach the wire as ``"Value error, fork ..."``.
         assert errors[0]["msg"].startswith("fork requires ")
+
+    def test_fork_accepts_exactly_one_replacement_kind(self) -> None:
+        from drowse.server.ws_models import WSGenerateMessage
+
+        authored = WSGenerateMessage(
+            type="generate",
+            fork_node_id="n1",
+            fork_raw_index=3,
+            fork_replacement_text="a longer replacement",
+        )
+        assert authored.fork_replacement_text == "a longer replacement"
+        for kwargs in (
+            {
+                "fork_node_id": "n1",
+                "fork_raw_index": 3,
+                "fork_replacement_text": "",
+            },
+            {
+                "fork_node_id": "n1",
+                "fork_raw_index": 3,
+                "fork_alt_token_id": 7,
+                "fork_replacement_text": "replacement",
+            },
+        ):
+            assert self._errors(**kwargs)[0]["type"] == "fork_fields"
 
     def test_prefill_requires_text(self) -> None:
         for text in (None, ""):
@@ -199,7 +224,7 @@ class TestWSGenerateSchemaValidation:
     def test_n_is_bounded_on_both_frames(self) -> None:
         import pydantic
 
-        from saklas.server.ws_models import WSGenerateMessage, WSSubmitMessage
+        from drowse.server.ws_models import WSGenerateMessage, WSSubmitMessage
 
         assert self._errors(n=0)[0]["loc"] == ("n",)
         # ``submit`` needs the same bound: ``_normalize_submit`` forwards ``n``
@@ -210,7 +235,7 @@ class TestWSGenerateSchemaValidation:
         assert WSGenerateMessage(type="generate", n=1).n == 1
 
     def test_well_formed_modes_construct(self) -> None:
-        from saklas.server.ws_models import WSGenerateMessage
+        from drowse.server.ws_models import WSGenerateMessage
 
         assert WSGenerateMessage(
             type="generate",

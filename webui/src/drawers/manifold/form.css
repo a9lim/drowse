@@ -14,10 +14,11 @@
 }
 .mb-form .grid2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
 }
 .mb-form .field {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -27,6 +28,9 @@
   font-size: var(--text-sm);
 }
 .mb-form .input {
+  min-width: 0;
+  width: 100%;
+  min-height: var(--control-target);
   background: var(--input-well);
   color: var(--fg);
   border: 1px solid transparent;
@@ -70,6 +74,7 @@
   gap: var(--space-2);
 }
 .mb-form .kind-btn {
+  min-height: var(--control-target);
   background: var(--glass);
   color: var(--fg-dim);
   border: 1px solid transparent;
@@ -99,15 +104,16 @@
 }
 .mb-form .axis-card {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr auto;
+  grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(4.5rem, 1fr));
   align-items: end;
   gap: var(--space-2);
-  border-radius: var(--radius);
-  background: var(--glass);
+  border-radius: var(--radius-lg);
+  background: var(--surface-sheen), var(--glass);
   box-shadow: var(--shadow-well);
-  padding: var(--space-3);
+  padding: var(--surface-padding);
 }
 .mb-form .axis-field {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -118,6 +124,7 @@
   text-transform: uppercase;
 }
 .mb-form .axis-check {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -157,19 +164,22 @@
   gap: var(--space-2);
 }
 .mb-form .node-card {
-  border-radius: var(--radius);
-  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  padding: var(--surface-padding);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  background: var(--bg-deep);
+  background: var(--surface-sheen), var(--bg-deep);
 }
 .mb-form .node-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex-wrap: wrap;
 }
 .mb-form .node-expand {
+  min-width: var(--control-target);
+  min-height: var(--control-target);
   background: transparent;
   border: 0;
   color: var(--fg-muted);
@@ -178,12 +188,14 @@
   padding: 0 var(--space-1);
 }
 .mb-form .node-label {
-  flex: 0 0 8em;
+  flex: 1 1 8em;
 }
 .mb-form .node-coords {
   display: flex;
   gap: var(--space-1);
-  flex: 1 1 auto;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  order: 1;
 }
 /* Wraps the themed NumberInput in the node-coords flex row. */
 .mb-form .coord-cell {
@@ -192,6 +204,8 @@
   display: inline-flex;
 }
 .mb-form .node-remove {
+  min-width: var(--control-target);
+  min-height: var(--control-target);
   background: transparent;
   border: 0;
   color: var(--fg-muted);
@@ -220,6 +234,7 @@
   border-color: var(--accent);
 }
 .mb-form .add-node {
+  min-height: var(--control-target);
   background: var(--accent-subtle);
   color: var(--accent);
   border: 1px solid transparent;
@@ -238,6 +253,7 @@
 /* Radio pair for the fit-method picker. */
 .mb-form .radio-row {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-5);
   padding: var(--space-1) 0 var(--space-3);
 }
@@ -254,8 +270,9 @@
 }
 
 .mb-form .save-btn {
-  background: var(--accent);
-  color: var(--text-on-accent);
+  min-height: var(--control-target);
+  background: var(--action-bg);
+  color: var(--action-ink);
   border: 1px solid transparent;
   border-radius: var(--radius);
   padding: var(--space-3) var(--space-5);
@@ -265,7 +282,7 @@
   transition: background var(--dur) var(--ease-out);
 }
 .mb-form .save-btn:hover:not(:disabled) {
-  background: var(--accent-light);
+  background: var(--action-hover);
 }
 .mb-form .save-btn:disabled {
   background: var(--bg-elev);

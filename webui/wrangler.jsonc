@@ -1,0 +1,8 @@
+{
+  // Static output only. Pages authentication, production publication, and credentials
+  // are external release controls and are never stored in this file.
+  "name": "drowse-web",
+  "pages_build_output_dir": "./dist-hosted",
+  "compatibility_date": "2026-08-25",
+  "send_metrics": false
+}

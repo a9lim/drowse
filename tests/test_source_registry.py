@@ -13,12 +13,12 @@ from typing import Any
 
 import pytest
 
-from saklas.io.source_registry import ActiveSourceRegistry
+from drowse.io.source_registry import ActiveSourceRegistry
 
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
 
 def _registry(**overrides: Any) -> ActiveSourceRegistry:
@@ -112,9 +112,9 @@ def test_clear_if_active_only_matches_exactly(tmp_path: Path) -> None:
 
 def test_both_families_use_the_shared_registry() -> None:
     """The mirror claim has to be structural, not a comment."""
-    from saklas.io.lens_sources import LENS_SOURCES
-    from saklas.io.sae import SAE_SOURCES
-    from saklas.io.source_registry import ActiveSourceRegistry
+    from drowse.io.lens_sources import LENS_SOURCES
+    from drowse.io.sae import SAE_SOURCES
+    from drowse.io.source_registry import ActiveSourceRegistry
 
     for reg in (LENS_SOURCES, SAE_SOURCES):
         assert isinstance(reg, ActiveSourceRegistry)
@@ -124,7 +124,7 @@ def test_both_families_use_the_shared_registry() -> None:
 
 def test_sae_selection_is_validated_and_precondition_checked() -> None:
     """The SAE half now carries the lens's discipline, not a bare non-empty check."""
-    from saklas.io.sae import set_active_sae_source
+    from drowse.io.sae import set_active_sae_source
 
     with pytest.raises(ValueError, match="unknown SAE source kind"):
         set_active_sae_source("org/model", "bogus", "x")
@@ -149,7 +149,7 @@ def _weights() -> dict[str, Any]:
 
 
 def _save_local(name: str = "mine", *, activate: bool = True):
-    from saklas.io.sae_artifacts import save_local_sae
+    from drowse.io.sae_artifacts import save_local_sae
 
     return save_local_sae(
         "org/model", name, _weights(),
@@ -162,7 +162,7 @@ def _save_local(name: str = "mine", *, activate: bool = True):
 
 
 def _active_sae_source() -> dict[str, Any]:
-    from saklas.io.sae import load_active_sae_source
+    from drowse.io.sae import load_active_sae_source
 
     source = load_active_sae_source("org/model")
     assert source is not None
@@ -178,7 +178,7 @@ def test_save_local_sae_activate_opt_out() -> None:
 
 
 def test_save_sae_metadata_activate_opt_out() -> None:
-    from saklas.io.sae import save_sae_metadata
+    from drowse.io.sae import save_sae_metadata
 
     payload = {
         "layer": 3, "width": 16, "revision": "rev", "fingerprint": "fp",
@@ -192,7 +192,7 @@ def test_save_sae_metadata_activate_opt_out() -> None:
 
 def test_load_active_sae_owns_the_prefix_convention() -> None:
     """``load_active_sae`` is the io-side mirror of ``io.lens.load_lens``."""
-    from saklas.io.sae import load_active_sae, save_sae_metadata
+    from drowse.io.sae import load_active_sae, save_sae_metadata
 
     assert load_active_sae("org/model") is None
 
@@ -216,10 +216,10 @@ def test_load_active_sae_owns_the_prefix_convention() -> None:
 
 def test_removing_a_source_unpublishes_the_selection() -> None:
     """The selection can never outlive what it points at."""
-    from saklas.io.sae import (
+    from drowse.io.sae import (
         load_active_sae_source, remove_sae_binding, save_sae_metadata,
     )
-    from saklas.io.sae_artifacts import remove_local_sae
+    from drowse.io.sae_artifacts import remove_local_sae
 
     _save_local("mine")
     assert remove_local_sae("org/model", "mine") is True
@@ -234,7 +234,7 @@ def test_removing_a_source_unpublishes_the_selection() -> None:
 
 
 def test_removing_a_different_source_keeps_the_selection() -> None:
-    from saklas.io.sae_artifacts import remove_local_sae
+    from drowse.io.sae_artifacts import remove_local_sae
 
     _save_local("keep")
     _save_local("drop", activate=False)
@@ -257,8 +257,8 @@ def test_the_engine_does_not_respell_the_local_source_prefix() -> None:
     routes, and the CLI render for clients is a separate grammar with its own
     duplication.
     """
-    import saklas.core.sae as sae_mod
-    import saklas.core.session as session_mod
+    import drowse.core.sae as sae_mod
+    import drowse.core.session as session_mod
 
     offenders = []
     for mod in (sae_mod, session_mod):
@@ -273,7 +273,7 @@ def test_the_engine_does_not_respell_the_local_source_prefix() -> None:
 
 
 def test_lens_source_label_inverts_use_lens_source() -> None:
-    from saklas.io.lens_sources import (
+    from drowse.io.lens_sources import (
         lens_source_label, load_active_lens_source, local_lens_dir,
         set_active_lens_source,
     )

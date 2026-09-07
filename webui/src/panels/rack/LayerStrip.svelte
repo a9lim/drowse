@@ -110,7 +110,7 @@
   }
   .cells {
     display: flex;
-    gap: 1px;
+    gap: var(--data-mark-gap);
     flex: 0 0 auto;
   }
   .endcap {

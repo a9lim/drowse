@@ -9,7 +9,8 @@
     patchSessionDefaults,
     closeDrawer,
   } from "../lib/stores.svelte";
-  import { ApiError } from "../lib/api";
+  import { ApiError } from "../lib/runtime/services";
+  import { userFacingError } from "../lib/runtime/userFacingError";
 
   let _drawerProps: { params?: unknown } = $props();
   $effect(() => {
@@ -33,9 +34,9 @@
           e.body && typeof e.body === "object" && "detail" in (e.body as object)
             ? String((e.body as { detail: unknown }).detail)
             : e.message;
-        errorMsg = `${e.status}: ${detail}`;
+        errorMsg = userFacingError(e, `Unable to save the system prompt. ${detail}`);
       } else {
-        errorMsg = e instanceof Error ? e.message : String(e);
+        errorMsg = userFacingError(e, "Unable to save the system prompt. Try again.");
       }
     } finally {
       busy = false;
@@ -45,25 +46,25 @@
 
 <section class="drawer-shell" aria-label="System prompt drawer">
   <header class="header">
-    <span class="title">system prompt</span>
+    <h2 class="title">System prompt</h2>
     <DrawerCloseButton onclick={closeDrawer} />
   </header>
 
   <div class="body">
     <p class="hint">
-      sets the default system prompt for new generations on this session.
-      Per-message overrides via the OpenAI / Ollama protocols still take
-      precedence.  Empty string clears the system prompt.
+      Sets the default system prompt for new generations in this session.
+      Per-request OpenAI or Ollama system messages take precedence. Leaving it
+      empty clears the system prompt.
     </p>
 
     <label class="field">
-      <span class="label">prompt</span>
+      <span class="label">System prompt</span>
       <textarea
         class="textarea"
         rows="12"
         bind:value={value}
         disabled={busy}
-        placeholder="none"
+        placeholder="No system prompt"
         spellcheck="false"
       ></textarea>
       <span class="char-count">{value.length} char{value.length === 1 ? "" : "s"}</span>
@@ -80,13 +81,15 @@
       class="btn"
       onclick={closeDrawer}
       disabled={busy}
-    >cancel</button>
+    >Cancel</button>
     <button
       type="button"
       class="btn primary"
+      class:loading-pulse={busy}
+      aria-busy={busy}
       onclick={save}
       disabled={busy}
-    >{busy ? "saving…" : "save as session default"}</button>
+    >{busy ? "Saving…" : "Save system prompt"}</button>
   </footer>
 </section>
 
@@ -104,11 +107,10 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     color: var(--accent);
-    text-transform: lowercase;
     letter-spacing: 0;
     font-size: var(--text-md);
     font-weight: var(--weight-medium);
@@ -116,7 +118,7 @@
   .body {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -138,7 +140,6 @@
   .label {
     color: var(--fg-muted);
     font-size: var(--text-sm);
-    text-transform: lowercase;
   }
   .textarea {
     background: var(--input-well);
@@ -146,7 +147,7 @@
     border: 1px solid transparent;
     padding: var(--space-3) var(--space-4);
     font: inherit;
-    font-family: var(--font-mono);
+    font-family: var(--font-reading);
     line-height: 1.4;
     resize: vertical;
     min-height: 200px;
@@ -169,8 +170,9 @@
   .footer {
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-3);
-    padding: var(--space-3) var(--space-6);
+    flex-wrap: wrap;
+    gap: var(--drawer-gutter-block);
+    padding: 0 var(--drawer-gutter-inline) var(--drawer-gutter-block);
     color: var(--fg-muted);
   }
   .btn {
@@ -178,8 +180,10 @@
     color: var(--fg-strong);
     border: 1px solid transparent;
     padding: var(--space-3) var(--space-5);
-    font: inherit;
-    font-family: var(--font-mono);
+    min-height: var(--control-target);
+    font-family: var(--font-structure);
+    font-size: inherit;
+    font-weight: var(--weight-structure);
     cursor: pointer;
   }
   .btn:hover:not(:disabled) {
@@ -190,12 +194,12 @@
     cursor: not-allowed;
   }
   .btn.primary {
-    background: var(--accent);
-    color: var(--text-on-accent);
+    background: var(--action-bg);
+    color: var(--action-ink);
     border-color: transparent;
   }
   .btn.primary:hover:not(:disabled) {
-    background: var(--accent-light);
+    background: var(--action-hover);
   }
   .btn.primary:disabled {
     background: var(--bg-elev);

@@ -1,4 +1,5 @@
 <script lang="ts" generics="T extends string | number">
+  import FluentIcon from "./ui/FluentIcon.svelte";
   // Themed single-select dropdown — replacement for native `<select>`
   // across the webui.  Built to match the flat-dark aesthetic in
   // ``tokens.css``: same border / radius / focus ring as `.input`,
@@ -22,6 +23,7 @@
   // mechanical from ``<option value=…>…</option>``.
 
   import { onMount, tick } from "svelte";
+  import { dropdownMotion } from "./dropdownMotion.svelte";
 
   interface Option<U> {
     value: U;
@@ -35,6 +37,8 @@
     placeholder?: string;
     disabled?: boolean;
     ariaLabel?: string;
+    invalid?: boolean;
+    ariaDescribedby?: string;
     title?: string;
     /** Optional callback fired on commit.  ``bind:value`` works without it. */
     onchange?: (value: T) => void;
@@ -46,11 +50,14 @@
     placeholder = "",
     disabled = false,
     ariaLabel,
+    invalid = false,
+    ariaDescribedby,
     title,
     onchange,
   }: Props = $props();
 
   let open = $state(false);
+  const presence = dropdownMotion();
   let highlight = $state(-1);
   let trigger: HTMLButtonElement | null = $state(null);
   let listbox: HTMLUListElement | null = $state(null);
@@ -61,6 +68,8 @@
   // flushes the buffer.
   let typeBuffer = $state("");
   let typeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  $effect(() => { if (disabled && open) closePopover(false); });
 
   const currentIndex = $derived(
     options.findIndex((opt) => opt.value === value),
@@ -81,8 +90,10 @@
   async function openPopover(): Promise<void> {
     if (disabled) return;
     open = true;
+    presence.mount();
     highlight = currentIndex >= 0 ? currentIndex : firstEnabled(0, 1);
     await tick();
+    if (!open) return;
     try {
       listbox?.showPopover();
     } catch {
@@ -90,17 +101,16 @@
       // browsers without the Popover API; the top layer is progressive.
     }
     placeListbox();
+    await tick();
+    if (!open || !listbox) return;
+    presence.show(listbox);
     listbox?.focus();
   }
 
   function closePopover(restoreFocus: boolean): void {
     if (!open) return;
-    try {
-      listbox?.hidePopover();
-    } catch {
-      /* already closed or Popover API unavailable */
-    }
     open = false;
+    presence.close(listbox);
     typeBuffer = "";
     if (restoreFocus) queueMicrotask(() => trigger?.focus());
   }
@@ -216,6 +226,7 @@
         break;
       case "Escape":
         ev.preventDefault();
+        ev.stopPropagation();
         closePopover(true);
         break;
       case "Tab":
@@ -234,22 +245,28 @@
     const tr = trigger.getBoundingClientRect();
     const gutter = 8;
     const gap = 2;
-    const below = Math.max(0, window.innerHeight - tr.bottom - gutter - gap);
-    const above = Math.max(0, tr.top - gutter - gap);
+    const viewport = window.visualViewport;
+    const viewportLeft = viewport?.offsetLeft ?? 0;
+    const viewportTop = viewport?.offsetTop ?? 0;
+    const viewportWidth = viewport?.width ?? window.innerWidth;
+    const viewportBottom = viewportTop + (viewport?.height ?? window.innerHeight);
+    const below = Math.max(0, viewportBottom - tr.bottom - gutter - gap);
+    const above = Math.max(0, tr.top - viewportTop - gutter - gap);
     const desired = Math.min(280, Math.max(40, listbox.scrollHeight));
     const flipUp = below < Math.min(desired, 200) && above > below;
     const available = flipUp ? above : below;
     const maxHeight = Math.max(40, Math.min(280, available));
     const renderedHeight = Math.min(desired, maxHeight);
-    const popoverWidth = Math.min(tr.width, window.innerWidth - gutter * 2);
+    const popoverWidth = Math.min(tr.width, viewportWidth - gutter * 2);
     const left = Math.max(
-      gutter,
-      Math.min(tr.left, window.innerWidth - popoverWidth - gutter),
+      viewportLeft + gutter,
+      Math.min(tr.left, viewportLeft + viewportWidth - popoverWidth - gutter),
     );
     const top = flipUp
-      ? Math.max(gutter, tr.top - renderedHeight - gap)
-      : Math.min(window.innerHeight - renderedHeight - gutter, tr.bottom + gap);
+      ? Math.max(viewportTop + gutter, tr.top - renderedHeight - gap)
+      : Math.min(viewportBottom - renderedHeight - gutter, tr.bottom + gap);
     popoverStyle = `left:${left}px;top:${top}px;width:${popoverWidth}px;max-height:${maxHeight}px`;
+    listbox.dataset.origin = flipUp ? "bottom-left" : "top-left";
   }
 
   function onDocumentMouseDown(ev: MouseEvent): void {
@@ -267,11 +284,16 @@
     document.addEventListener("mousedown", onDocumentMouseDown, true);
     window.addEventListener("resize", onWindowResize);
     window.addEventListener("scroll", onWindowResize, true);
+    window.visualViewport?.addEventListener("resize", onWindowResize);
+    window.visualViewport?.addEventListener("scroll", onWindowResize);
     return () => {
       document.removeEventListener("mousedown", onDocumentMouseDown, true);
       window.removeEventListener("resize", onWindowResize);
       window.removeEventListener("scroll", onWindowResize, true);
+      window.visualViewport?.removeEventListener("resize", onWindowResize);
+      window.visualViewport?.removeEventListener("scroll", onWindowResize);
       if (typeTimer) clearTimeout(typeTimer);
+      presence.destroy();
     };
   });
 </script>
@@ -280,28 +302,33 @@
   <button
     bind:this={trigger}
     type="button"
-    class="sk-select-trigger"
+    class="sk-select-trigger field-focus"
     {disabled}
     {title}
     aria-haspopup="listbox"
     aria-expanded={open}
+    aria-controls={open ? `${uid}-listbox` : undefined}
     aria-label={ariaLabel}
+    data-invalid={invalid || undefined}
+    aria-describedby={ariaDescribedby}
     onclick={toggle}
     onkeydown={onTriggerKeydown}
   >
     <span class="sk-select-label" class:is-placeholder={currentIndex < 0}>
       {currentLabel || placeholder}
     </span>
-    <span class="sk-select-caret" aria-hidden="true">▾</span>
+    <span class="sk-select-caret" aria-hidden="true"><FluentIcon name="down" /></span>
   </button>
 
-  {#if open}
+  {#if presence.mounted}
     <ul
       bind:this={listbox}
-      class="sk-select-popover"
+      id={`${uid}-listbox`}
+      class="sk-select-popover t-dropdown"
       popover="manual"
       style={popoverStyle}
       role="listbox"
+      aria-invalid={invalid}
       tabindex="-1"
       aria-label={ariaLabel}
       aria-activedescendant={highlight >= 0
@@ -347,40 +374,44 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    min-height: var(--control-target);
     width: 100%;
     min-width: 0;
     max-width: 100%;
     box-sizing: border-box;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
+    gap: var(--control-label-gap);
+    padding: var(--space-3) var(--space-4);
     /* Borderless input: recessed well fill is the "pick here" affordance;
      * the ring appears on focus only. */
-    background: var(--input-well);
+    background: var(--control-sheen), var(--input-well);
     color: var(--fg);
     border: 1px solid transparent;
     border-radius: var(--radius);
     font: inherit;
     font-family: var(--font-mono);
     font-size: var(--text-sm);
-    text-align: left;
+    text-align: start;
     cursor: pointer;
-    transition: background var(--dur-fast) var(--ease-out),
-      border-color var(--dur-fast) var(--ease-out);
+    box-shadow: var(--shadow-well);
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
   }
   .sk-select-trigger:hover:not(:disabled) {
-    background: var(--surface-hi);
+    background: var(--control-sheen), var(--surface-hi);
+    box-shadow: var(--shadow-control-hover);
   }
-  .sk-select-trigger:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 1px;
-  }
+  .sk-select-trigger:active:not(:disabled) { scale: var(--press-scale); }
   .sk-select.is-open .sk-select-trigger {
-    background: var(--surface-hi);
+    background: var(--control-sheen), var(--surface-hi);
   }
   .sk-select-trigger:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
+  .sk-select-trigger[data-invalid] { border-color: var(--accent-red); }
 
   .sk-select-label {
     flex: 1 1 0;
@@ -407,12 +438,12 @@
     position: fixed;
     inset: auto;
     margin: 0;
-    padding: var(--space-1) 0;
+    padding: var(--surface-padding);
     list-style: none;
-    background: var(--surface-hi);
-    border: 1px solid var(--glass-line);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-overlay);
+    background: var(--surface-sheen), var(--popup-bg);
+    border: 1px solid var(--popup-border);
+    border-radius: var(--popup-radius);
+    box-shadow: var(--popup-shadow);
     box-sizing: border-box;
     overflow-y: auto;
     z-index: var(--z-modal);
@@ -423,24 +454,24 @@
     align-items: center;
     min-height: var(--control-target);
     padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius);
     color: var(--fg-strong);
     cursor: pointer;
     font-size: var(--text-sm);
-    line-height: 1.3;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.45;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .sk-select-opt.is-highlight:not(.is-disabled) {
-    background: var(--bg-hover);
+    background: var(--control-sheen), var(--bg-hover);
     color: var(--fg);
   }
   .sk-select-opt.is-active {
-    background: var(--accent-subtle);
+    background: var(--control-sheen), var(--accent-subtle);
     color: var(--fg);
   }
   .sk-select-opt.is-active.is-highlight {
-    background: var(--accent-strong);
+    background: var(--control-sheen), var(--accent-strong);
   }
   .sk-select-opt.is-disabled {
     color: var(--fg-muted);

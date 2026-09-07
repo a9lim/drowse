@@ -18,13 +18,13 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core import capture as V
-from saklas.core.events import EventBus
-from saklas.core.extraction import ManifoldExtractionPipeline
-from saklas.core.sae import MockSaeBackend
-from saklas.core.capture import folded_directions
-from saklas.io.manifolds import ManifoldFolder, create_discover_manifold_folder
-from saklas.io.paths import manifold_dir
+from drowse.core import capture as V
+from drowse.core.events import EventBus
+from drowse.core.extraction import ManifoldExtractionPipeline
+from drowse.core.sae import MockSaeBackend
+from drowse.core.capture import folded_directions
+from drowse.io.manifolds import ManifoldFolder, create_discover_manifold_folder
+from drowse.io.paths import manifold_dir
 from tests._whitener import synthetic_whitener
 
 _DIM = 8
@@ -93,7 +93,7 @@ class _Handle:
 @pytest.fixture(autouse=True)
 def _stub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     torch.manual_seed(0)
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _concept_encoder_batch)
     # Single baseline prompt → any corpus length is a multiple of k=1.
     monkeypatch.setattr(V, "_load_baseline_prompts", lambda: ["baseline prompt"])
@@ -128,6 +128,12 @@ def test_monopolar_fits_one_node_ray() -> None:
     # ``method`` is the persisted monopolar discriminator; the fit stamps no
     # separate flag, so what the sidecar records is what a reader can rely on.
     assert manifold.metadata.get("method") == "manifold_monopolar"
+    assert manifold.metadata.get("fit_mode") == "pca"
+    assert manifold.metadata.get("hyperparams") == {
+        "max_dim": 1,
+        "var_threshold": 0.7,
+    }
+    assert manifold.metadata.get("diagnostics") == {}
     # Every layer is an affine rank-1 ray, so it folds to a steering vector.
     dirs = folded_directions(manifold)
     assert sorted(dirs) == list(range(_N_LAYERS))

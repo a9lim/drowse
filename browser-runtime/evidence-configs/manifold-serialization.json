@@ -1,0 +1,7 @@
+{
+  "$schema": "../evidence-config.schema.json",
+  "schemaVersion": 1,
+  "evidenceType": "manifoldSerialization",
+  "observer": "webui/scripts/hosted-release-local-observer.mjs",
+  "arguments": ["--evidence-type", "manifoldSerialization"]
+}

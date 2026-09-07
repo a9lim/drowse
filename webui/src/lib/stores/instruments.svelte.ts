@@ -3,7 +3,9 @@
 // One slice per the server's own split: the live J-lens readout, the live
 // SAE feature readout, and the geometry (CAA) live toggle — plus the two
 // things every family shares, the source registry (list / switch / fetch)
-// and the background preparation jobs (lens fetch|fit, SAE fetch|train).
+// and the browser-safe fetch jobs. Python-only SAE training and J-lens
+// fitting live in instrumentAuthoring.svelte.ts so the hosted bundle never
+// imports their stores.
 //
 // ``tokenHoverState`` is the non-destructive token-anchored overlay across
 // all three: hovering a transcript token shows THAT token's readings, and
@@ -13,7 +15,12 @@
 // shape is decoded in exactly one place.
 
 import { SvelteMap } from "svelte/reactivity";
-import { apiInstruments } from "../api";
+import { apiInstruments } from "../runtime/services";
+import {
+  cachedTokenReadout,
+  invalidateTokenReadoutCache,
+} from "../runtime/tokenReadoutCache";
+import { userFacingError } from "../runtime/userFacingError";
 import type {
   AnyReadingJSON,
   InstrumentSourceJSON,
@@ -27,7 +34,7 @@ import { pushToast } from "./toasts.svelte";
 import { createPreparationSlice } from "./preparations.svelte";
 import { effectiveRawMode } from "./chat.svelte";
 import { samplingState } from "./sampling.svelte";
-import { refreshProbeList } from "./probes.svelte";
+import { MAX_SPARKLINE, refreshProbeList } from "./probes.svelte";
 import {
   instrumentFamily,
   refreshSession,
@@ -91,7 +98,7 @@ export async function refreshLensSources(): Promise<void> {
     lensSourceState.sources = (await apiInstruments.sources("lens")).sources;
     lensSourceState.error = null;
   } catch (e) {
-    lensSourceState.error = e instanceof Error ? e.message : String(e);
+    lensSourceState.error = userFacingError(e, "Word-likelihood sources could not be refreshed.");
   } finally {
     lensSourceState.loading = false;
   }
@@ -100,15 +107,29 @@ export async function refreshLensSources(): Promise<void> {
 export async function useLensSource(source: string): Promise<void> {
   if (lensSourceState.busy || !source) return;
   lensSourceState.busy = true;
+  lensSourceState.error = null;
   try {
-    const out = await apiInstruments.setLensSource(source);
-    lensState.layers = out.live_layers;
+    const block = instrumentFamily("lens");
+    if (block?.capabilities.source_switch === true) {
+      const out = await apiInstruments.setLensSource(source);
+      lensState.layers = out.live_layers;
+    } else {
+      const out = await apiInstruments.activateInstalledPack("lens", { source });
+      lensState.layers = out.live.enabled && "layers" in out.live
+        ? out.live.layers ?? []
+        : null;
+    }
+    invalidateTokenReadoutCache("lens");
     await refreshSession();
     await refreshLensSources();
     pushToast(`J-lens · ${source}`, { kind: "info" });
   } catch (e) {
+    lensSourceState.error = userFacingError(
+      e,
+      "Word insights could not start. Close and reopen the model after changing its tools.",
+    );
     pushToast(
-      `J-lens source: ${e instanceof Error ? e.message : String(e)}`,
+      `J-lens source: ${lensSourceState.error}`,
       { kind: "error" },
     );
   } finally {
@@ -174,6 +195,8 @@ export interface TokenHoverState {
   saeReadout: SaeFeatureJSON[] | null;
   lensLoading: boolean;
   saeLoading: boolean;
+  lensError: string | null;
+  saeError: string | null;
 }
 
 export const tokenHoverState: TokenHoverState = $state({
@@ -189,6 +212,8 @@ export const tokenHoverState: TokenHoverState = $state({
   saeReadout: null,
   lensLoading: false,
   saeLoading: false,
+  lensError: null,
+  saeError: null,
 });
 
 interface LensHoverSnapshot {
@@ -246,12 +271,14 @@ function _fetchLensHover(
   rawIndex: number,
   raw: boolean,
 ): Promise<LensHoverSnapshot | null> {
-  return apiInstruments.tokenReadout("lens", nodeId, rawIndex, {
+  return cachedTokenReadout("lens", nodeId, rawIndex, {
     topK: resolveReadoutTopK(samplingState.return_top_k),
     steered: true,
     raw,
     layers: "all",
-  }).then((res) => lensReadoutSnapshot(res.measurements.instruments.lens?.readout));
+  }, undefined, "background").then((res) => (
+    lensReadoutSnapshot(res.measurements.instruments.lens?.readout)
+  ));
 }
 
 function _fetchSaeHover(
@@ -259,11 +286,13 @@ function _fetchSaeHover(
   rawIndex: number,
   raw: boolean,
 ): Promise<SaeFeatureJSON[]> {
-  return apiInstruments.tokenReadout("sae", nodeId, rawIndex, {
+  return cachedTokenReadout("sae", nodeId, rawIndex, {
     topK: resolveReadoutTopK(samplingState.return_top_k),
     steered: true,
     raw,
-  }).then((res) => res.measurements.instruments.sae?.readout?.features ?? []);
+  }, undefined, "background").then(
+    (res) => res.measurements.instruments.sae?.readout?.features ?? [],
+  );
 }
 
 /** Begin showing one transcript token in the inspector. Loom-owned captures
@@ -301,6 +330,8 @@ export function beginTokenHover(
   tokenHoverState.saeReadout = capturedSae?.features ?? null;
   tokenHoverState.lensLoading = false;
   tokenHoverState.saeLoading = false;
+  tokenHoverState.lensError = null;
+  tokenHoverState.saeError = null;
 
   const lensSnapshot = lensReadoutSnapshot(capturedLens);
   if (lensSnapshot) {
@@ -310,8 +341,10 @@ export function beginTokenHover(
 
   if (!nodeId || rawIndex === null) return;
   const needsLens = capturedLens === undefined &&
-    sessionState.info?.jlens_fitted === true;
-  const needsSae = capturedSae === undefined && saeLoaded();
+    sessionState.info?.jlens_fitted === true &&
+    instrumentFamily("lens")?.capabilities.token_readout === true;
+  const needsSae = capturedSae === undefined && saeLoaded() &&
+    instrumentFamily("sae")?.capabilities.token_readout === true;
   tokenHoverState.lensLoading = needsLens;
   tokenHoverState.saeLoading = needsSae;
   if (!needsLens && !needsSae) return;
@@ -326,7 +359,13 @@ export function beginTokenHover(
           tokenHoverState.lensReadout = snapshot.readout;
           tokenHoverState.lensAggregate = snapshot.aggregate;
         })
-        .catch(() => { /* Opportunistic hover read: fall through to the empty hint. */ })
+        .catch((error) => {
+          if (!tokenHoverState.active || tokenHoverState.key !== key) return;
+          tokenHoverState.lensError = userFacingError(
+            error,
+            "This token's word-likelihood reading could not be rebuilt. Try again, or close and reopen the model.",
+          );
+        })
         .finally(() => {
           if (tokenHoverState.active && tokenHoverState.key === key) {
             tokenHoverState.lensLoading = false;
@@ -339,7 +378,13 @@ export function beginTokenHover(
           if (!tokenHoverState.active || tokenHoverState.key !== key) return;
           tokenHoverState.saeReadout = features;
         })
-        .catch(() => { /* Opportunistic hover read: fall through to the empty hint. */ })
+        .catch((error) => {
+          if (!tokenHoverState.active || tokenHoverState.key !== key) return;
+          tokenHoverState.saeError = userFacingError(
+            error,
+            "This token's feature reading could not be rebuilt. Try again, or close and reopen the model.",
+          );
+        })
         .finally(() => {
           if (tokenHoverState.active && tokenHoverState.key === key) {
             tokenHoverState.saeLoading = false;
@@ -361,6 +406,8 @@ export function endTokenHover(): void {
     tokenHoverState.tokenText = "";
     tokenHoverState.lensLoading = false;
     tokenHoverState.saeLoading = false;
+    tokenHoverState.lensError = null;
+    tokenHoverState.saeError = null;
     _hoverClearTimer = null;
   }, 45);
 }
@@ -380,8 +427,9 @@ export function saeReadoutForDisplay(): SaeFeatureJSON[] {
 export const saeSourceState: {
   sources: InstrumentSourceJSON[];
   loading: boolean;
+  busy: boolean;
   error: string | null;
-} = $state({ sources: [], loading: false, error: null });
+} = $state({ sources: [], loading: false, busy: false, error: null });
 
 export async function refreshSaeSources(): Promise<void> {
   if (saeSourceState.loading) return;
@@ -390,7 +438,7 @@ export async function refreshSaeSources(): Promise<void> {
     saeSourceState.sources = (await apiInstruments.sources("sae")).sources;
     saeSourceState.error = null;
   } catch (e) {
-    saeSourceState.error = e instanceof Error ? e.message : String(e);
+    saeSourceState.error = userFacingError(e, "Learned-feature sources could not be refreshed.");
   } finally {
     saeSourceState.loading = false;
   }
@@ -406,6 +454,31 @@ export function setSaeSortMode(mode: SaeSortMode): void {
  *  Neuronpedia stays a miss, so don't re-ask every generation.  Not
  *  reactive state (never rendered). */
 const _saeMetaRequested = new Set<number>();
+let saeMetadataEpoch = 0;
+export const MAX_SAE_HISTORY_FEATURES = 512;
+
+export function recordSaeReadoutFrame(features: SaeFeatureJSON[]): void {
+  saeState.readout = features;
+  for (const feature of features) {
+    const prior = saeState.history.get(feature.id) ?? [];
+    const next = [...prior, feature.activation].slice(-MAX_SPARKLINE);
+    saeState.history.delete(feature.id);
+    saeState.history.set(feature.id, next);
+    if (feature.max_act != null || feature.label != null) {
+      saeState.meta.set(feature.id, {
+        label: feature.label ?? saeState.meta.get(feature.id)?.label ?? null,
+        max_act: feature.max_act ?? saeState.meta.get(feature.id)?.max_act ?? null,
+      });
+    }
+  }
+  while (saeState.history.size > MAX_SAE_HISTORY_FEATURES) {
+    const oldest = saeState.history.keys().next().value;
+    if (oldest === undefined) break;
+    saeState.history.delete(oldest);
+    saeState.meta.delete(oldest);
+    _saeMetaRequested.delete(oldest);
+  }
+}
 
 /** Between-generation discovery backfill: fetch-and-cache Neuronpedia
  *  metadata (label + maxActApprox) for every feature the live top-k
@@ -415,15 +488,17 @@ export async function backfillSaeMeta(): Promise<void> {
   if (!saeLoaded()) return;
   const wanted: number[] = [];
   for (const id of saeState.history.keys()) {
-    if (saeState.meta.get(id)?.max_act != null) continue;
+    if (saeState.meta.get(id)?.max_act != null && saeState.meta.get(id)?.label?.trim()) continue;
     if (_saeMetaRequested.has(id)) continue;
     wanted.push(id);
     if (wanted.length >= 64) break;
   }
   if (wanted.length === 0) return;
   for (const id of wanted) _saeMetaRequested.add(id);
+  const epoch = saeMetadataEpoch;
   try {
     const out = await apiInstruments.saeFeaturesMetadata(wanted);
+    if (epoch !== saeMetadataEpoch) return;
     for (const [key, entry] of Object.entries(out.features)) {
       saeState.meta.set(Number(key), {
         label: entry.label ?? null,
@@ -431,6 +506,7 @@ export async function backfillSaeMeta(): Promise<void> {
       });
     }
   } catch {
+    if (epoch !== saeMetadataEpoch) return;
     // Best-effort — allow a retry on the next generation.
     for (const id of wanted) _saeMetaRequested.delete(id);
   }
@@ -443,13 +519,16 @@ export async function setLiveSae(enabled: boolean): Promise<void> {
     const out = await apiInstruments.setLive("sae", { enabled });
     saeState.live = out.enabled;
     if (!out.enabled) {
+      saeMetadataEpoch++;
       saeState.readout = [];
       saeState.history.clear();
+      saeState.meta.clear();
+      _saeMetaRequested.clear();
     }
   } catch (e) {
     pushToast(
       `SAE live: ` +
-        (e instanceof Error ? e.message : String(e)),
+        userFacingError(e, "That learned-feature reading is not available."),
       { kind: "error" },
     );
   } finally {
@@ -457,10 +536,8 @@ export async function setLiveSae(enabled: boolean): Promise<void> {
   }
 }
 
-/** The four background preparations, one slice each — see
- *  ``lib/stores/preparations.svelte.ts`` for the shared contract.  Each
- *  supplies only its poll cadence, its toast wording, and the refreshes
- *  its result invalidates. */
+/** Browser-safe source preparation — see
+ *  ``lib/stores/preparations.svelte.ts`` for the shared contract. */
 // The SAE source-binding preparation.  The HTTP operation is ``fetch``,
 // matching the CLI verb and the lens family (it used to be spelled
 // ``load`` over HTTP alone).
@@ -475,24 +552,39 @@ export const saeLoad = createPreparationSlice("sae", "fetch", {
   },
 });
 
-export const saeTrain = createPreparationSlice("sae", "train", {
-  label: "SAE train",
-  intervalMs: 1500,
-  successMessage: "SAE trained · live",
-  onSettled: async () => {
-    await refreshSession();
-    await refreshSaeSources();
-    await refreshProbeList();
-  },
-});
-
 /** Load a resident SAE — ``local:<name>`` or ``saelens:<release>``, with an
  *  optional hook layer.  Thin wrapper over the slice: the release is the
  *  only field that needs trimming + an empty check. */
-export function loadSae(release: string, layer: number | null = null): void {
+export async function loadSae(release: string, layer: number | null = null): Promise<void> {
   const trimmed = release.trim();
   if (!trimmed) return;
-  void saeLoad.start({ release: trimmed, layer });
+  const block = instrumentFamily("sae");
+  if (block?.capabilities.preparations.includes("fetch") === true) {
+    await saeLoad.start({ release: trimmed, layer });
+    return;
+  }
+  if (saeSourceState.busy) return;
+  saeSourceState.busy = true;
+  saeSourceState.error = null;
+  try {
+    await apiInstruments.activateInstalledPack("sae", {
+      source: trimmed,
+      layer,
+    });
+    invalidateTokenReadoutCache("sae");
+    await refreshSession();
+    await refreshSaeSources();
+    await refreshProbeList();
+    pushToast(`SAE · ${trimmed}`, { kind: "info" });
+  } catch (error) {
+    saeSourceState.error = userFacingError(
+      error,
+      "Model features could not start. Close and reopen the model after changing its tools.",
+    );
+    pushToast(`SAE source: ${saeSourceState.error}`, { kind: "error" });
+  } finally {
+    saeSourceState.busy = false;
+  }
 }
 
 // ------------------------------------ live toggles + preparations ----
@@ -516,7 +608,7 @@ export async function setLiveProbes(enabled: boolean): Promise<void> {
   } catch (e) {
     pushToast(
       `probe live: ` +
-        (e instanceof Error ? e.message : String(e)),
+        userFacingError(e, "That concept reading is not available."),
       { kind: "error" },
     );
   } finally {
@@ -557,7 +649,7 @@ export async function setLiveLens(enabled: boolean): Promise<void> {
   } catch (e) {
     pushToast(
       `lens live: ` +
-        (e instanceof Error ? e.message : String(e)),
+        userFacingError(e, "Word-likelihood details could not be loaded."),
       { kind: "error" },
     );
   } finally {
@@ -575,22 +667,10 @@ export const lensFetch = createPreparationSlice("lens", "fetch", {
   },
 });
 
-/** The background Jacobian-lens fit.  On completion the session info is
- *  refreshed (``jlens_fitted`` flips, and the server's post-fit
- *  auto-enable lands in the lens block's ``live.layers`` → the toggle reads
- *  on).  A cancel stops the worker after its current estimator pass; any
- *  prior complete checkpoint stays resumable. */
-export const lensFit = createPreparationSlice("lens", "fit", {
-  label: "J-lens fit",
-  intervalMs: 3000,
-  successMessage: "J-lens fitted · live",
-  onSettled: async () => {
-    await refreshSession();
-    await refreshLensSources();
-  },
-});
-
 // ------------------------------------ session-info rehydration -------
+
+let replayLensIdentity: string | null = null;
+let replaySaeIdentity: string | null = null;
 
 /** Rehydrate every family's live/source state from ONE server
  *  representation — the same per-family blocks ``GET .../instruments``
@@ -600,6 +680,14 @@ export function rehydrateInstrumentsFromSession(): void {
   const lens = instrumentFamily("lens");
   const sae = instrumentFamily("sae");
   const geometry = instrumentFamily("geometry");
+  const lensIdentity = lens?.source ?? null;
+  const saeIdentity = sae === undefined
+    ? null
+    : `${sae.source ?? ""}:${"layer" in sae.live ? sae.live.layer ?? "" : ""}`;
+  if (lensIdentity !== replayLensIdentity) invalidateTokenReadoutCache("lens");
+  if (saeIdentity !== replaySaeIdentity) invalidateTokenReadoutCache("sae");
+  replayLensIdentity = lensIdentity;
+  replaySaeIdentity = saeIdentity;
   lensState.layers = lens?.live.enabled
     ? ("layers" in lens.live ? lens.live.layers : null)
     : null;
@@ -609,6 +697,7 @@ export function rehydrateInstrumentsFromSession(): void {
   const release = sae?.source ?? null;
   const layer = sae && "layer" in sae.live ? sae.live.layer : null;
   if (release !== saeState.release || layer !== saeState.layer) {
+    saeMetadataEpoch++;
     saeState.release = release;
     saeState.layer = layer;
     saeState.readout = [];

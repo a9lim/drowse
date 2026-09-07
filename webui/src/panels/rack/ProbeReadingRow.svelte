@@ -1,8 +1,4 @@
 <script lang="ts">
-  // Canonical four-column probe meter used by every inspector pillar.
-  // Callers supply semantics; this component owns the exact label/bar/
-  // context/value geometry so tab switches cannot drift by a pixel.
-
   import type { Snippet } from "svelte";
 
   let {
@@ -21,26 +17,38 @@
 </script>
 
 <div class="reading" role="group" aria-label={ariaLabel}>
-  {@render left()}
+  <div class="label">{@render left()}</div>
   <div class="bar">{@render bar()}</div>
   <div class="middle">{@render middle()}</div>
-  {@render right()}
+  <div class="value">{@render right()}</div>
 </div>
 
 <style>
   .reading {
     display: grid;
-    grid-template-columns:
-      minmax(2.5em, 1fr) minmax(60px, 2.6fr) minmax(2.5em, 1fr)
-      3.5em;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-2) var(--space-3);
+    padding-block: var(--space-2);
     min-width: 0;
     min-height: var(--control-target);
   }
-  .bar,
-  .middle {
+  .label,
+  .middle,
+  .value {
     min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .middle { text-align: end; }
+  .value { text-align: end; }
+  .bar {
+    min-width: 0;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-block: var(--space-1);
+  }
+  .label :global(*), .middle :global(*), .value :global(*) {
+    white-space: normal;
   }
   .bar :global(.bar) {
     width: 100%;

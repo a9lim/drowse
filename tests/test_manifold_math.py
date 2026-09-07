@@ -1,4 +1,4 @@
-"""RBF + domain + manifold math for saklas.core.manifold.
+"""RBF + domain + manifold math for drowse.core.manifold.
 
 Pure CPU tests — no model, no IO beyond a save/load round-trip in a
 temp directory.
@@ -12,12 +12,12 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.io.manifold_tensors import (
+from drowse.io.manifold_tensors import (
     ActivationRowStore,
     load_manifold,
     save_manifold,
 )
-from saklas.core.manifold import (
+from drowse.core.manifold import (
     BoxAxis,
     BoxDomain,
     CustomDomain,
@@ -506,7 +506,7 @@ def test_fit_layer_subspace_neutral_anchored():
 def test_fit_affine_subspace_reuses_precomputed_whitened_gram():
     """Extraction precomputes ``X Σ⁻¹ Xᵀ`` for diagnostics / discover coords;
     the affine fit should consume that Gram instead of recomputing it."""
-    from saklas.core.manifold import fit_affine_subspace
+    from drowse.core.manifold import fit_affine_subspace
     from tests._whitener import synthetic_means, synthetic_whitener
 
     torch.manual_seed(19)
@@ -675,7 +675,7 @@ def test_invert_parameterization_recovers_known_position():
 # ----------------------------------------------------------------- save/load ---
 
 def test_save_load_manifold_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     ca, domain, node_params = _circle(7, dim=20)
     cb = ca * 1.3
     manifold = Manifold(
@@ -736,7 +736,7 @@ def test_save_rejects_manifold_with_empty_share_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Persistence rejects geometry without complete Mahalanobis shares."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     ca, domain, node_params = _circle(7, dim=20)
     manifold = Manifold(
         name="mood",
@@ -1012,8 +1012,8 @@ def test_node_stats_returns_normalized_accumulator_ownership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Centroid normalization does not allocate a second K x D roster."""
-    import saklas.core.manifold as manifold_module
-    from saklas.core import capture
+    import drowse.core.manifold as manifold_module
+    from drowse.core import capture
 
     captured_accumulators: list[torch.Tensor] = []
     real_zeros = torch.zeros
@@ -1499,7 +1499,7 @@ def test_save_load_affine_manifold_round_trip(
     """A flat (folded-vector) manifold survives save/load: ``is_affine``
     preserved, mean/basis bit-identical, eval matches, and the on-disk
     payload carries *no* RBF triple (the absence-of-node_params marker)."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     sub_a, _ = _folded_vector(dim=18, seed=1)
     sub_b, _ = _folded_vector(dim=18, seed=2)
     real_node_coords = torch.tensor([[0.8], [-0.8]])

@@ -9,11 +9,11 @@ from typing import Any, cast
 import pytest
 import torch
 
-from saklas.core.sae import MockSaeBackend, sae_device_str, select_runtime_layer
-from saklas.core.session import SaklasSession
-from saklas.core.steering_composer import SteeringComposer
-from saklas.core.steering_expr import parse_expr
-from saklas.core.steering_expr import format_expr
+from drowse.core.sae import MockSaeBackend, sae_device_str, select_runtime_layer
+from drowse.core.session import DrowseSession
+from drowse.core.steering_composer import SteeringComposer
+from drowse.core.steering_expr import parse_expr
+from drowse.core.steering_expr import format_expr
 
 
 class _Capture:
@@ -34,8 +34,8 @@ class _Capture:
         return {self.layer: self.row.unsqueeze(0)}
 
 
-def _session() -> SaklasSession:
-    session: Any = SaklasSession.__new__(SaklasSession)
+def _session() -> DrowseSession:
+    session: Any = DrowseSession.__new__(DrowseSession)
     session._layers = [object(), object(), object(), object()]
     session._device = torch.device("cpu")
     session._dtype = torch.float32
@@ -59,7 +59,7 @@ def _session() -> SaklasSession:
     session._sae_instrument.active_for_generation = True
     session._invalidate_prefix_cache = lambda: None  # type: ignore[method-assign]
     session._invalidate_analytics_cache = lambda: None  # type: ignore[method-assign]
-    return cast(SaklasSession, session)
+    return cast(DrowseSession, session)
 
 
 def test_sae_device_str_strips_mps_index() -> None:
@@ -82,10 +82,10 @@ def test_select_runtime_layer_prefers_workspace_near_65_percent() -> None:
 def test_failed_provider_binding_does_not_half_adopt_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from saklas.core import sae as sae_module
-    from saklas.io import sae as sae_io
+    from drowse.core import sae as sae_module
+    from drowse.io import sae as sae_io
 
-    session: Any = SaklasSession.__new__(SaklasSession)
+    session: Any = DrowseSession.__new__(DrowseSession)
     previous = MockSaeBackend(
         layers=frozenset({0}), d_model=4, release="previous",
     )
@@ -348,8 +348,8 @@ def test_composer_detects_attached_sae_gate() -> None:
 def test_unsupported_sae_gate_channel_raises_at_preflight() -> None:
     """A gate on a channel the SAE family can never produce is a preflight
     error (the 5.x replacement for the silently-constant fake channels)."""
-    from saklas.core.errors import UnsupportedProbeChannelError
-    from saklas.core.instruments.sae import SaeInstrument
+    from drowse.core.errors import UnsupportedProbeChannelError
+    from drowse.core.instruments.sae import SaeInstrument
 
     stub = SimpleNamespace(_monitor=SimpleNamespace(probe_names=()))
     instrument = SaeInstrument(stub)  # type: ignore[arg-type]
@@ -392,8 +392,8 @@ def test_sae_integer_atom_grammar_roundtrips(expr: str) -> None:
 def test_sae_runtime_metadata_roundtrip(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.sae import load_sae_metadata, save_sae_metadata
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.sae import load_sae_metadata, save_sae_metadata
 
     path = save_sae_metadata("org/model", "release/name", {
         "layer": 14, "width": 16_384, "revision": "main",
@@ -418,8 +418,8 @@ def test_sae_runtime_metadata_roundtrip(
 def test_sae_feature_meta_roundtrip(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.sae import (
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.sae import (
         load_sae_feature_meta,
         save_sae_feature_meta,
     )
@@ -450,10 +450,10 @@ def test_sae_feature_meta_rejects_non_current_shapes(
     tmp_path: Path,
     mutation: Any,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     import json
 
-    from saklas.io.sae import (
+    from drowse.io.sae import (
         SAE_RUNTIME_FORMAT_VERSION,
         load_sae_feature_meta,
         sae_features_path,
@@ -477,8 +477,8 @@ def test_stream_aggregate_keeps_lens_and_sae_probe_readings() -> None:
     # lens/SAE probes live on their own session registries (readout channels,
     # not the Monitor), so the filter must union all three rosters — it used
     # to drop their end-of-gen aggregates from every streaming done frame.
-    from saklas.core.results import ProbeReading
-    from saklas.server.streaming import probe_reading_aggregate
+    from drowse.core.results import ProbeReading
+    from drowse.server.streaming import probe_reading_aggregate
 
     readings = {
         "confident.uncertain": ProbeReading(0.1, [], coords=(0.3,)),
@@ -500,7 +500,7 @@ def test_stream_aggregate_keeps_lens_and_sae_probe_readings() -> None:
 def test_fetch_sae_feature_meta_batch_caches_and_updates_probes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     session = _session()
     session._model_info = {"model_id": "org/model"}
     session._sae_instrument.probes["sae/1"] = {
@@ -527,7 +527,7 @@ def test_fetch_sae_feature_meta_batch_caches_and_updates_probes(
     assert session._sae_instrument.probes["sae/1"]["max_act"] == 4.0
     assert "sae/1" not in session._probe_hash_cache
     # Persisted — a fresh load sees the merged cache.
-    from saklas.io.sae import load_sae_feature_meta
+    from drowse.io.sae import load_sae_feature_meta
 
     on_disk = load_sae_feature_meta("org/model", "mock-release")
     assert on_disk["1"]["max_act"] == 4.0
@@ -564,7 +564,7 @@ def test_sae_registry_lock_snapshots_idle_reads() -> None:
 
     def _detach() -> None:
         entered.set()
-        SaklasSession.remove_probe(cast(Any, session), "sae/1")
+        DrowseSession.remove_probe(cast(Any, session), "sae/1")
 
     with inst.state_lock:
         detacher = threading.Thread(target=_detach)
@@ -584,7 +584,7 @@ def test_bound_run_freezes_sae_unit_against_metadata_backfill() -> None:
     generation lock) must not change a running generation's strength unit.
     Between generations (idle run) the refresh applies immediately, as
     before."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -618,7 +618,7 @@ def test_sae_bind_resolves_unit_from_meta_cache() -> None:
     unit exists in the metadata cache freezes the RESOLVED unit — the
     live-cache fallback never runs under a bound run, so a mid-generation
     cache mutation cannot flip the unit either."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -659,7 +659,7 @@ def test_sae_negative_step_observe_never_caches() -> None:
     """``step_id < 0`` never populates the SAE run's observe memo —
     repeated negative observations rescore (the family-parameterized pin
     of the shared negative-step fix)."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -688,7 +688,7 @@ def test_detach_during_bound_generation_keeps_aggregate_roster() -> None:
     (e.g. the synchronous DELETE route, which takes no generation lock)
     stays in the bound generation's aggregate roster; the next bind sees
     the removal."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -735,7 +735,7 @@ def test_bound_run_reads_its_bind_time_live_snapshot() -> None:
     live-discovery config its generation started with, so a toggle from
     another thread cannot flip a running generation mid-stream.  Idle runs
     pass the current config through."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -779,8 +779,8 @@ def test_idle_observe_never_memoizes_stale_readings() -> None:
 def test_sae_feature_meta_rejects_nonfinite_scale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_act: float,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.sae import save_sae_feature_meta
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.sae import save_sae_feature_meta
 
     with pytest.raises(ValueError, match="invalid SAE feature metadata"):
         save_sae_feature_meta("org/model", "release", {
@@ -792,8 +792,8 @@ def test_sae_feature_meta_rejects_nonfinite_scale(
 def test_sae_feature_meta_rejects_noncanonical_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feature_id: str,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.sae import save_sae_feature_meta
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.sae import save_sae_feature_meta
 
     with pytest.raises(ValueError, match="feature id"):
         save_sae_feature_meta("org/model", "release", {

@@ -39,10 +39,26 @@
     border-radius: var(--radius-sm);
     font-size: var(--text-xs);
     flex: 0 0 auto;
+    box-shadow: var(--shadow-control);
+    transition:
+      color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
   }
   .highlight-action:hover,
   .highlight-action.on {
     color: var(--card-accent);
     background: color-mix(in srgb, var(--card-accent) 10%, var(--glass));
+  }
+  .highlight-action:hover {
+    box-shadow: var(--shadow-control-hover);
+  }
+  .highlight-action:active {
+    scale: var(--press-scale);
+  }
+  .highlight-action:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
   }
 </style>

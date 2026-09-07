@@ -1,4 +1,4 @@
-"""Real-tokenizer drift tests for :data:`saklas.core.role_templates.ROLE_HEADERS`.
+"""Real-tokenizer drift tests for :data:`drowse.core.role_templates.ROLE_HEADERS`.
 
 Complement to ``test_role_templates.py``.  That file uses synthetic Jinja
 templates that mirror the *registered* per-family chat-template shapes,
@@ -16,7 +16,7 @@ test-time.
 Per-family tokenizers are tiny config-file downloads (no model weights),
 but some require HF auth + license acceptance (Gemma, Llama).  Ordinary
 test runs use only the local Hugging Face cache so CI never blocks on an
-external service.  Set ``SAKLAS_TEST_LIVE_TOKENIZERS=1`` to permit downloads
+external service.  Set ``DROWSE_TEST_LIVE_TOKENIZERS=1`` to permit downloads
 and refresh every family before a release.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ import os
 
 import pytest
 
-from saklas.core.role_templates import ROLE_HEADERS
+from drowse.core.role_templates import ROLE_HEADERS
 
 # Representative tokenizer per family.  Picked smallest available so the
 # download is cheap.  Public/no-auth where possible; the gated ones
@@ -91,7 +91,7 @@ def test_role_header_matches_live_template(family: str):
     from transformers import AutoTokenizer
 
     model_id = _REPRESENTATIVE_TOKENIZERS[family]
-    allow_download = os.environ.get("SAKLAS_TEST_LIVE_TOKENIZERS") == "1"
+    allow_download = os.environ.get("DROWSE_TEST_LIVE_TOKENIZERS") == "1"
     try:
         tok = AutoTokenizer.from_pretrained(
             model_id,
@@ -100,7 +100,7 @@ def test_role_header_matches_live_template(family: str):
     except Exception as e:
         pytest.skip(
             f"could not load tokenizer for {family} ({model_id}): {e}. "
-            "set SAKLAS_TEST_LIVE_TOKENIZERS=1 (plus HF_TOKEN and any gated "
+            "set DROWSE_TEST_LIVE_TOKENIZERS=1 (plus HF_TOKEN and any gated "
             "license acceptance) to download and run this family."
         )
         return
@@ -127,6 +127,6 @@ def test_role_header_matches_live_template(family: str):
         f"{family} ({model_id}): registered splice key {splice_key!r} "
         f"not found in rendered chat template. The chat template likely "
         f"changed upstream — update ROLE_HEADERS[{family!r}] in "
-        f"saklas/core/role_templates.py to match. Rendered template "
+        f"drowse/core/role_templates.py to match. Rendered template "
         f"sample:\n{rendered[:300]!r}"
     )

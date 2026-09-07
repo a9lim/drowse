@@ -1,8 +1,8 @@
-"""Unified probe wiring into SaklasSession.
+"""Unified probe wiring into DrowseSession.
 
 CPU-only: a full session load needs a GPU + 8GB model download, so
 these tests build a stand-in session by binding the real
-``SaklasSession`` methods to a minimal stub.  The goal is to verify
+``DrowseSession`` methods to a minimal stub.  The goal is to verify
 wiring shape — capture widening, score-callback merging, finalize
 populates ``GenerationResult.probe_readings``, stream populates
 ``TokenEvent.probe_readings`` — without paying the model-load cost.
@@ -24,21 +24,21 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from saklas.core.manifold import BoxAxis, BoxDomain, LayerSubspace, Manifold
-from saklas.core.manifold import (
+from drowse.core.manifold import BoxAxis, BoxDomain, LayerSubspace, Manifold
+from drowse.core.manifold import (
     fit_layer_subspace as _fit_layer_subspace_with_ev,
 )
-from saklas.core.monitor import Monitor
-from saklas.core.results import (
+from drowse.core.monitor import Monitor
+from drowse.core.results import (
     GenerationResult,
     ProbeReading,
     TokenEvent,
 )
-from saklas.core.session import (
+from drowse.core.session import (
     CaptureMode,
     CaptureState,
     ReadDemand,
-    SaklasSession,
+    DrowseSession,
 )
 
 
@@ -88,7 +88,7 @@ def _toy_manifold(*, dim: int = 8, n_layers: int = 2) -> Manifold:
     )
 
 
-def _stub_session() -> SaklasSession:
+def _stub_session() -> DrowseSession:
     """Build a session-like object with the live methods + minimal state.
 
     Only the surface the unified-probe wiring touches needs to be real:
@@ -103,7 +103,7 @@ def _stub_session() -> SaklasSession:
     from tests._whitener import isotropic_whitener
     _whit = isotropic_whitener([0, 1, 2, 3], 8)
 
-    session = MagicMock(spec=SaklasSession)
+    session = MagicMock(spec=DrowseSession)
     session._monitor = Monitor(whitener=_whit)
     session._manifolds = {}
     session._profiles = {}
@@ -113,7 +113,7 @@ def _stub_session() -> SaklasSession:
     session._gen_lock = threading.RLock()
     session._analytics_cpu_cache = {}
     session._invalidate_analytics_cache = types.MethodType(
-        SaklasSession._invalidate_analytics_cache, session,
+        DrowseSession._invalidate_analytics_cache, session,
     )
     # Capture has a single ``_per_layer`` dict we read for streaming.
     session._capture = types.SimpleNamespace(
@@ -135,9 +135,9 @@ def _stub_session() -> SaklasSession:
     # their ``plan()`` demand — a MagicMock plan would poison the capture
     # layer union.  Lens/SAE state (live config, probe registry) lives ON
     # the instruments; tests set ``session._lens_instrument.live`` etc.
-    from saklas.core.instruments.geometry import GeometryInstrument
-    from saklas.core.instruments.lens import LensInstrument
-    from saklas.core.instruments.sae import SaeInstrument
+    from drowse.core.instruments.geometry import GeometryInstrument
+    from drowse.core.instruments.lens import LensInstrument
+    from drowse.core.instruments.sae import SaeInstrument
     session._geometry_instrument = GeometryInstrument(session)
     session._lens_instrument = LensInstrument(session)
     session._sae_instrument = SaeInstrument(session)
@@ -145,7 +145,7 @@ def _stub_session() -> SaklasSession:
     # through this helper; the MagicMock default would hand it an empty
     # iterable instead of the three real plans.
     session._bind_instrument_runs = types.MethodType(
-        SaklasSession._bind_instrument_runs, session,
+        DrowseSession._bind_instrument_runs, session,
     )
     session._lens_instrument.step_stash = None
     session._lens_instrument.active_for_generation = True
@@ -164,14 +164,14 @@ def _stub_session() -> SaklasSession:
     # rides ``_resolve_probe_manifold`` (which consults ``_profiles`` then
     # ``ensure_manifold_loaded`` → ``_manifolds``), so bind that too; tests
     # stub the public loader to populate ``_manifolds`` in place.
-    session.add_probe = types.MethodType(SaklasSession.add_probe, session)
-    session.remove_probe = types.MethodType(SaklasSession.remove_probe, session)
+    session.add_probe = types.MethodType(DrowseSession.add_probe, session)
+    session.remove_probe = types.MethodType(DrowseSession.remove_probe, session)
     session._resolve_probe_manifold = types.MethodType(
-        SaklasSession._resolve_probe_manifold, session,
+        DrowseSession._resolve_probe_manifold, session,
     )
     # The steering collaborator owns the gating-score-callback builder; wire a
     # real one explicitly.
-    from saklas.core.steering_composer import SteeringComposer
+    from drowse.core.steering_composer import SteeringComposer
     session._steering_composer = SteeringComposer(session)
     return session
 
@@ -260,7 +260,7 @@ def test_begin_capture_widens_to_manifold_layers():
     session._incremental_gate_scores = []
 
     # Bind the real _begin_capture and run it.
-    ok = SaklasSession._begin_capture(session, widen=False)
+    ok = DrowseSession._begin_capture(session, widen=False)
     assert ok
     # Manifold covers layers 0, 1, 2 — capture must attach to all of them.
     assert set(attached_layers) == {0, 1, 2}
@@ -275,7 +275,7 @@ def test_begin_capture_no_probes_returns_false():
     session._capture.attach = lambda *args, **kw: None
     session._capture.clear = lambda: None
     session._incremental_readings = []
-    ok = SaklasSession._begin_capture(session, widen=False)
+    ok = DrowseSession._begin_capture(session, widen=False)
     assert ok is False
 
 
@@ -311,7 +311,7 @@ def test_begin_capture_live_lens_uses_persistent_capture_when_available():
     session._capture.clear = lambda: None
     session._capture.set_aggregate_tail = lambda depth: tail_depths.append(depth)
 
-    ok = SaklasSession._begin_capture(session, widen=False)
+    ok = DrowseSession._begin_capture(session, widen=False)
 
     assert ok is True
     assert set(persistent_layers) == {1, 3}
@@ -330,7 +330,7 @@ def test_begin_capture_live_lens_ignored_without_consumer():
     session._capture.clear = lambda: None
     session._incremental_readings = []
 
-    ok = SaklasSession._begin_capture(
+    ok = DrowseSession._begin_capture(
         session, ReadDemand(live_lens_active=False), widen=False,
     )
 
@@ -344,14 +344,14 @@ def test_geometry_detach_rejects_while_generation_holds_the_lock():
     the same exclusive section ``attach`` takes."""
     import threading as _threading
 
-    from saklas.core.session import ConcurrentExtractionError
+    from drowse.core.session import ConcurrentExtractionError
 
     session = _stub_session()
     # The MagicMock default no-ops the exclusive section; this test is
     # about exactly that guard, so bind the real one (it needs only
     # ``_gen_lock``, which the fixture provides).
     session._model_exclusive = types.MethodType(
-        SaklasSession._model_exclusive, session,
+        DrowseSession._model_exclusive, session,
     )
     m = _toy_manifold()
     session.ensure_manifold_loaded = lambda key: session._manifolds.update(
@@ -479,7 +479,7 @@ def test_geometry_roster_reads_do_not_tear_under_concurrent_detach():
     exception on either thread fails."""
     import time as _time
 
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session = _stub_session()
     manifolds = {f"toy{i}": _toy_manifold() for i in range(6)}
@@ -591,7 +591,7 @@ def test_manifold_promotion_walk_holds_geometry_state_lock():
     held_at_call = _record_roster_mutations(session, shim)
 
     m_new = _toy_manifold()
-    SaklasSession._adopt_fitted_manifold(session, "default/toy", m_new)
+    DrowseSession._adopt_fitted_manifold(session, "default/toy", m_new)
 
     assert ("remove", True) in held_at_call
     assert ("add", True) in held_at_call
@@ -615,7 +615,7 @@ def test_failed_override_eviction_holds_geometry_state_lock():
     inst.state_lock = shim  # type: ignore[assignment]
     held_at_call = _record_roster_mutations(session, shim)
 
-    SaklasSession._evict_failed_manifold_override(
+    DrowseSession._evict_failed_manifold_override(
         session, "default/toy", sae=None,
     )
 
@@ -644,7 +644,7 @@ def test_geometry_run_prime_observation_contract():
     idle.prime_observation(5, {"toy": object()})
     assert idle._memo_step is None
 
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
     prep = inst.prepare(ReadRequest(final_aggregate=True))
     run = inst.bind(inst.plan(prep), prep)
 
@@ -672,7 +672,7 @@ def _wire_begin_capture(session: Any) -> dict[str, Any]:
     # bind the real method (the MagicMock default no-ops it, leaving the
     # lens/SAE runs bound and poisoning a second transaction).
     session._close_instrument_runs = types.MethodType(
-        SaklasSession._close_instrument_runs, session,
+        DrowseSession._close_instrument_runs, session,
     )
     session._capture.attach = lambda *_a, **_k: None
     session._capture.clear = lambda: None
@@ -700,7 +700,7 @@ def test_full_incremental_sink_primes_geometry_observe_memo():
     session.add_probe("toy")
     holder = _wire_begin_capture(session)
 
-    ok = SaklasSession._begin_capture(
+    ok = DrowseSession._begin_capture(
         session, ReadDemand(need_per_token=True), widen=False,
     )
     assert ok is True
@@ -735,7 +735,7 @@ def test_lean_and_gating_sinks_never_prime_observe_memo():
     session.add_probe("toy")
     holder = _wire_begin_capture(session)
 
-    ok = SaklasSession._begin_capture(
+    ok = DrowseSession._begin_capture(
         session,
         ReadDemand(need_per_token=True, lean_per_token=True),
         widen=False,
@@ -756,7 +756,7 @@ def test_lean_and_gating_sinks_never_prime_observe_memo():
     # Gating-subset sink: same contract.
     session._incremental_readings = []
     session._incremental_gate_scores = []
-    ok = SaklasSession._begin_capture(
+    ok = DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=True,
@@ -788,7 +788,7 @@ def test_negative_step_never_caches_or_primes():
     )
     session.add_probe("toy")
     inst = session._geometry_instrument
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
     prep = inst.prepare(ReadRequest(final_aggregate=True))
     run = inst.bind(inst.plan(prep), prep)
 
@@ -819,7 +819,7 @@ def test_gate_callback_consumes_the_full_incremental_memo():
     )
     session.add_probe("toy")
     holder = _wire_begin_capture(session)
-    ok = SaklasSession._begin_capture(
+    ok = DrowseSession._begin_capture(
         session, ReadDemand(need_per_token=True), widen=False,
     )
     assert ok is True
@@ -845,7 +845,7 @@ def test_gate_callback_consumes_the_full_incremental_memo():
 def test_token_payload_consumes_the_full_incremental_memo():
     """``build_token_probe_payload``'s FULL-incremental branch is a memo
     hit too — the payload's geometry readings ARE the sink's row."""
-    from saklas.core.token_payloads import build_token_probe_payload
+    from drowse.core.token_payloads import build_token_probe_payload
 
     session = _stub_session()
     m = _toy_manifold()
@@ -854,7 +854,7 @@ def test_token_payload_consumes_the_full_incremental_memo():
     )
     session.add_probe("toy")
     holder = _wire_begin_capture(session)
-    ok = SaklasSession._begin_capture(
+    ok = DrowseSession._begin_capture(
         session, ReadDemand(need_per_token=True), widen=False,
     )
     assert ok is True
@@ -897,7 +897,7 @@ def test_batch_geometry_aggregate_routes_through_the_run():
     )
     session.add_probe("toy")
     session._empty_readings = types.MethodType(
-        SaklasSession._empty_readings, session,
+        DrowseSession._empty_readings, session,
     )
     pooled = {
         layer_idx: sub.mean + sub.basis[0]
@@ -912,7 +912,7 @@ def test_batch_geometry_aggregate_routes_through_the_run():
         return orig(p)
 
     run.observe_aggregate = _spy  # type: ignore[method-assign]
-    out = SaklasSession._batch_probe_aggregate_for_row(
+    out = DrowseSession._batch_probe_aggregate_for_row(
         session, 0, [1, 2, 3], ["toy"], pooled=pooled,
     )
     assert seen and seen[0] is pooled
@@ -966,17 +966,17 @@ def test_pooled_aggregate_slice_is_one_position_for_every_family():
     )
 
     session._capture_state = CaptureState(mode=CaptureMode.FULL)
-    full = SaklasSession._pooled_aggregate_slice(session, [1, 2, 3, 4])
+    full = DrowseSession._pooled_aggregate_slice(session, [1, 2, 3, 4])
     assert torch.equal(full[0], rows[1])
 
     session._capture_state = CaptureState(mode=CaptureMode.AGGREGATE_ONLY)
-    ring = SaklasSession._pooled_aggregate_slice(session, [1, 2, 3, 4])
+    ring = DrowseSession._pooled_aggregate_slice(session, [1, 2, 3, 4])
     assert torch.equal(ring[0], rows[-1])
 
     session._aggregate_forward_index = types.MethodType(
         lambda _self, _ids: None, session,
     )
-    assert SaklasSession._pooled_aggregate_slice(session, [1, 2]) == {}
+    assert DrowseSession._pooled_aggregate_slice(session, [1, 2]) == {}
 
 
 # ===================================================== gating callback ===

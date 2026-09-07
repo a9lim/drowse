@@ -1,0 +1,18 @@
+{
+  "$schema": "./benchmark-evidence.schema.json",
+  "schemaVersion": 4,
+  "status": "feasibility-required",
+  "polytheticRevision": null,
+  "requiredMatrix": {
+    "modelIds": ["smollm2-360m-instruct", "gemma3-270m-instruct", "qwen3-1.7b"],
+    "contextTokens": [2048, 4096],
+    "platforms": ["macos", "windows", "linux", "android"],
+    "browsers": ["chrome", "edge"]
+  },
+  "supportPolicy": {
+    "minimumChromeMajor": null,
+    "minimumEdgeMajor": null,
+    "maximumEvidenceAgeDays": 180
+  },
+  "runs": []
+}

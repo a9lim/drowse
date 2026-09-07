@@ -1,7 +1,7 @@
 """Templated discover-manifold authoring (template_ref flow) — CPU-only, no model.
 
 A *templated* manifold is a discover manifold whose node corpora derive from a
-standalone template artifact (:mod:`saklas.io.templates`). The manifold stores the
+standalone template artifact (:mod:`drowse.io.templates`). The manifold stores the
 derived corpus in ``nodes/`` like any discover folder and carries a
 ``template_ref`` so the fit can resolve the template's multi-turn contexts as the
 per-node elicitation prefixes. These tests cover the authoring round-trip, the
@@ -16,14 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from saklas.io.manifolds import (
+from drowse.io.manifolds import (
     MANIFOLD_FORMAT_VERSION,
     ManifoldFolder,
     ManifoldFormatError,
     create_discover_manifold_folder,
     create_manifold_from_template,
 )
-from saklas.io.templates import create_template_folder
+from drowse.io.templates import create_template_folder
 
 SLOT = "[DAY]"
 VALUES = ["Monday", "Tuesday", "Sunday"]
@@ -46,7 +46,7 @@ def _author_template(name: str = "weekday") -> None:
 
 
 def test_from_template_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_template()
     folder = create_manifold_from_template(
         "local", "weekday", "days", template_ref="weekday", fit_mode="auto",
@@ -65,7 +65,7 @@ def test_from_template_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_from_template_default_namespace_and_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_template("colours")
     # ns/name form for the manifold; bare template name resolves cross-namespace.
     folder = create_manifold_from_template(
@@ -78,7 +78,7 @@ def test_from_template_default_namespace_and_name(
 def test_templated_write_metadata_preserves_ref(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_template()
     folder = create_manifold_from_template(
         "local", "weekday", "", template_ref="weekday", fit_mode="auto",
@@ -100,7 +100,7 @@ def test_templated_sha_sensitive_to_template_context_edit(
     don't capture (they're only the slotted assistant turns), so editing a
     context must invalidate the cached fit.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_template()
     folder = create_manifold_from_template(
         "local", "weekday", "", template_ref="weekday", fit_mode="auto",
@@ -123,7 +123,7 @@ def test_non_templated_discover_has_no_ref(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """An ordinary discover folder carries an explicit null template_ref."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "plain", "", fit_mode="pca",
         node_corpora={"a": ["a says", "a too"], "b": ["b says", "b too"]},

@@ -12,15 +12,15 @@ from __future__ import annotations
 import pytest
 import torch
 
-from saklas.core.mahalanobis import LayerWhitener
-from saklas.core.manifold import (
+from drowse.core.mahalanobis import LayerWhitener
+from drowse.core.manifold import (
     BoxAxis,
     BoxDomain,
     LayerSubspace,
     Manifold,
     fit_layer_subspace,
 )
-from saklas.core.monitor import Monitor, _layer_geometry
+from drowse.core.monitor import Monitor, _layer_geometry
 from tests._whitener import isotropic_whitener
 
 
@@ -91,7 +91,7 @@ def _toy_manifold(*, dim: int = 8, n_layers: int = 1, seed: int = 0) -> Manifold
 
 class TestMonitorWhitened:
     def test_whitened_cache_built_all_or_nothing(self) -> None:
-        from saklas.core.mahalanobis import WhitenerError
+        from drowse.core.mahalanobis import WhitenerError
 
         m = _toy_manifold(dim=8, n_layers=2)
         w = _make_whitener(layers=(0, 1), d=8)

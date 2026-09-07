@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from saklas.cli.alpha_grid import AlphaListError, parse_alpha_list
+from drowse.cli.alpha_grid import AlphaListError, parse_alpha_list
 
 
 def test_parse_alpha_list_comma_list() -> None:

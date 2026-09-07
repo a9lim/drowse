@@ -18,8 +18,9 @@
 //   * settle toasts are uniform — cancelled → info, error → sticky error,
 //     otherwise the slice's success line.
 
-import { apiInstruments } from "../api";
-import type { InstrumentFamily } from "../api";
+import { apiInstruments } from "../runtime/services";
+import { userFacingError } from "../runtime/userFacingError";
+import type { InstrumentFamily } from "../types";
 import type { PreparationOp, PreparationStatusJSON } from "../types";
 import { pushToast } from "./toasts.svelte";
 
@@ -62,7 +63,7 @@ export interface PreparationSliceOptions {
 }
 
 function describe(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  return userFacingError(e, "The model tool could not be prepared.");
 }
 
 export function createPreparationSlice(
@@ -85,7 +86,7 @@ export function createPreparationSlice(
     state.current = st.progress?.current ?? 0;
     state.total = st.progress?.total ?? 0;
     state.message = st.message;
-    state.error = st.error;
+    state.error = st.error ? describe(st.error) : null;
     if (st.state !== "running") state.cancelling = false;
   }
 
@@ -94,8 +95,8 @@ export function createPreparationSlice(
     if (st.finished_at === null) return;
     if (st.message === "cancelled") {
       pushToast(`${label} cancelled`, { kind: "info" });
-    } else if (st.error) {
-      pushToast(`${label}: ${st.error}`, { kind: "error", ttlMs: null });
+    } else if (state.error) {
+      pushToast(`${label}: ${state.error}`, { kind: "error", ttlMs: null });
     } else {
       pushToast(successMessage, { kind: "info" });
     }

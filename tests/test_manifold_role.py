@@ -10,7 +10,7 @@ manifold-composition next-steps plan:
   ``UnknownManifoldLabelError`` on unknown labels.
 - ``Manifold.nearest_node_role`` returns the role at the closest node
   (or ``None`` when no role is recorded).
-- The grammar (``saklas.core.steering_expr``) parses both
+- The grammar (``drowse.core.steering_expr``) parses both
   ``persona%0.3,0.8`` and ``persona%pirate`` and round-trips both forms.
 - ``io.selectors.resolve_manifold_label`` and ``resolve_bare_name``
   resolve a bare name to a manifold-label hit and raise on cross-tier
@@ -25,12 +25,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from saklas.core.manifold import (
+from drowse.core.manifold import (
     CustomDomain,
     Manifold,
     UnknownManifoldLabelError,
 )
-from saklas.core.steering_expr import (
+from drowse.core.steering_expr import (
     ManifoldTerm,
     format_expr,
     parse_expr,
@@ -41,7 +41,7 @@ from saklas.core.steering_expr import (
 
 def _author_role_folder(root: Path, *, with_roles: bool = True) -> Path:
     """Hand-author a discover-mode persona manifold under ``root``."""
-    from saklas.io.manifolds import MANIFOLD_FORMAT_VERSION
+    from drowse.io.manifolds import MANIFOLD_FORMAT_VERSION
 
     folder = root / "persona"
     (folder / "nodes").mkdir(parents=True)
@@ -72,7 +72,7 @@ def _author_role_folder(root: Path, *, with_roles: bool = True) -> Path:
 
 
 def test_per_node_role_round_trip(tmp_path: Path):
-    from saklas.io.manifolds import ManifoldFolder
+    from drowse.io.manifolds import ManifoldFolder
 
     folder = _author_role_folder(tmp_path)
     mf = ManifoldFolder.load(folder)
@@ -85,7 +85,7 @@ def test_per_node_role_round_trip(tmp_path: Path):
 
 def test_explicit_null_roles_load_as_all_none(tmp_path: Path):
     """Explicit null roles produce the standard-assistant role roster."""
-    from saklas.io.manifolds import ManifoldFolder
+    from drowse.io.manifolds import ManifoldFolder
 
     folder = _author_role_folder(tmp_path, with_roles=False)
     mf = ManifoldFolder.load(folder)
@@ -94,7 +94,7 @@ def test_explicit_null_roles_load_as_all_none(tmp_path: Path):
 
 
 def test_role_field_invalidates_nodes_sha256(tmp_path: Path):
-    from saklas.io.manifolds import ManifoldFolder
+    from drowse.io.manifolds import ManifoldFolder
 
     folder_legacy = _author_role_folder(tmp_path / "a", with_roles=False)
     folder_role = _author_role_folder(tmp_path / "b", with_roles=True)
@@ -105,7 +105,7 @@ def test_role_field_invalidates_nodes_sha256(tmp_path: Path):
 
 
 def test_invalid_role_slug_rejected(tmp_path: Path):
-    from saklas.io.manifolds import ManifoldFolder, ManifoldFormatError
+    from drowse.io.manifolds import ManifoldFolder, ManifoldFormatError
 
     folder = tmp_path / "persona"
     (folder / "nodes").mkdir(parents=True)
@@ -114,7 +114,7 @@ def test_invalid_role_slug_rejected(tmp_path: Path):
         (folder / "nodes" / f"{idx:02d}_{label}.json").write_text(
             json.dumps(["x"])
         )
-    from saklas.io.manifolds import MANIFOLD_FORMAT_VERSION
+    from drowse.io.manifolds import MANIFOLD_FORMAT_VERSION
 
     nodes = [{"label": label, "role": None, "kind": None} for label in labels]
     # Uppercase fails the slug regex.
@@ -138,12 +138,12 @@ def test_invalid_role_slug_rejected(tmp_path: Path):
 
 
 def test_create_discover_folder_with_roles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from saklas.io.manifolds import (
+    from drowse.io.manifolds import (
         ManifoldFolder, create_discover_manifold_folder,
     )
 
-    # Redirect SAKLAS_HOME so the folder lands inside tmp_path.
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    # Redirect DROWSE_HOME so the folder lands inside tmp_path.
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "persona", "test",
         fit_mode="pca",
@@ -254,7 +254,7 @@ def test_grammar_mixed_forms_compose():
 
 
 def test_grammar_label_form_rejects_projection():
-    from saklas.core.steering_expr import SteeringExprError
+    from drowse.core.steering_expr import SteeringExprError
 
     with pytest.raises(SteeringExprError, match="does not compose"):
         parse_expr("0.5 persona%pirate~angry.calm")
@@ -263,10 +263,10 @@ def test_grammar_label_form_rejects_projection():
 # -- selector resolution + cross-tier ambiguity ----------------------------
 
 def test_resolve_manifold_label_unique_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from saklas.io.manifolds import create_discover_manifold_folder
-    from saklas.io.selectors import resolve_manifold_label
+    from drowse.io.manifolds import create_discover_manifold_folder
+    from drowse.io.selectors import resolve_manifold_label
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "persona", "test",
         fit_mode="pca",
@@ -285,20 +285,20 @@ def test_resolve_manifold_label_unique_match(tmp_path: Path, monkeypatch: pytest
 
 
 def test_resolve_manifold_label_miss_returns_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from saklas.io.selectors import resolve_manifold_label
+    from drowse.io.selectors import resolve_manifold_label
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     assert resolve_manifold_label("pirate") is None
 
 
 def test_resolve_manifold_label_ambiguous_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from saklas.io.manifolds import create_discover_manifold_folder
-    from saklas.io.selectors import (
+    from drowse.io.manifolds import create_discover_manifold_folder
+    from drowse.io.selectors import (
         AmbiguousSelectorError,
         resolve_manifold_label,
     )
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "alice", "personas_a", "test",
         fit_mode="pca",
@@ -322,9 +322,9 @@ def test_resolve_manifold_label_ambiguous_raises(tmp_path: Path, monkeypatch: py
 
 
 def test_bare_name_resolves_to_manifold_term(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from saklas.io.manifolds import create_discover_manifold_folder
+    from drowse.io.manifolds import create_discover_manifold_folder
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "persona", "test",
         fit_mode="pca",
@@ -353,10 +353,10 @@ def test_parse_bare_name_resolves_on_manifold_tier_only(
     (Pre-4.0 this raised ``AmbiguousSelectorError`` because ``pirate`` was both
     a bipolar pole of ``civilian.pirate`` and a node of ``persona``.)
     """
-    from saklas.io.manifolds import create_discover_manifold_folder
-    from saklas.io.selectors import AmbiguousSelectorError, invalidate
+    from drowse.io.manifolds import create_discover_manifold_folder
+    from drowse.io.selectors import AmbiguousSelectorError, invalidate
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
     # A ``civilian.pirate`` manifold — its node labels are ``civilian``/``pirate``,
     # but the manifold *name* (with a ``.``) is addressed via ``resolve_manifold_name``
@@ -385,9 +385,9 @@ def test_parse_bare_name_resolves_on_manifold_tier_only(
 
 
 def test_namespace_qualified_bare_name_still_resolves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from saklas.io.manifolds import create_discover_manifold_folder
+    from drowse.io.manifolds import create_discover_manifold_folder
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "persona", "test",
         fit_mode="pca",
@@ -413,17 +413,17 @@ def test_vector_authoring_rejects_role_cache_alias(
     from typing import Any, cast
     from types import SimpleNamespace
 
-    from saklas.core.session import SaklasSession
-    from saklas.io.manifolds import create_discover_manifold_folder
+    from drowse.core.session import DrowseSession
+    from drowse.io.manifolds import create_discover_manifold_folder
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "honest.deceptive", "", fit_mode="pca",
         node_corpora={"honest": ["yes"], "deceptive": ["no"]},
         node_roles={"honest": "pirate", "deceptive": "pirate"},
     )
     with pytest.raises(ValueError, match="not uniformly None"):
-        SaklasSession._author_and_fit_2node(
+        DrowseSession._author_and_fit_2node(
             cast(Any, SimpleNamespace()), "local", "honest.deceptive", "",
             node_corpora=None,
             node_kinds={"honest": "abstract", "deceptive": "abstract"},
@@ -436,10 +436,10 @@ def test_vector_authoring_centrally_rejects_sae_plus_role() -> None:
     from typing import Any, cast
     from types import SimpleNamespace
 
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
     with pytest.raises(ValueError, match="mutually exclusive"):
-        SaklasSession._author_and_fit_2node(
+        DrowseSession._author_and_fit_2node(
             cast(Any, SimpleNamespace()), "local", "honest.deceptive", "",
             node_corpora=None,
             node_kinds={"honest": "abstract", "deceptive": "abstract"},

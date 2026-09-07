@@ -2,31 +2,40 @@
 
 from __future__ import annotations
 
+import gc
 from types import SimpleNamespace
 from typing import Any, Callable, cast
+import weakref
 
 import pytest
 import torch
 
-from saklas.core.generation import (
+from drowse.core.generation import (
     GenerationConfig,
     GenerationState,
     _PenaltyState,
+    _TOKEN_TABLE_CACHE_MAX,
+    _detect_think_delimiters,
+    _get_eos_ids,
+    _get_token_table,
+    _logits_keep_kwarg,
+    _think_delim_cache,
+    _token_table_cache,
     generate_steered,
 )
-from saklas.core.instruments.types import ScalarReading
-from saklas.core.results import GenerationResult, ProbeReading
-from saklas.core.sampling import SamplingConfig
-from saklas.core.session import (
+from drowse.core.instruments.types import ScalarReading
+from drowse.core.results import GenerationResult, ProbeReading
+from drowse.core.sampling import SamplingConfig
+from drowse.core.session import (
     CaptureMode,
     CaptureState,
     GenState,
     PreparedCall,
     ReadDemand,
-    SaklasSession,
+    DrowseSession,
 )
-from saklas.core.steering import Steering
-from saklas.core.token_payloads import TokenProbePayload
+from drowse.core.steering import Steering
+from drowse.core.token_payloads import TokenProbePayload
 from tests.conftest import FakeLogitsModel
 
 
@@ -54,6 +63,58 @@ class _StopTokenizer:
                 continue
             pieces.append(self._pieces[int(tid)])
         return "".join(pieces)
+
+
+def test_token_tables_are_shape_keyed_and_lru_bounded() -> None:
+    _token_table_cache.clear()
+    try:
+        tokenizer = _StopTokenizer()
+        assert len(_get_token_table(cast(Any, tokenizer), 4)) == 4
+        assert len(_get_token_table(cast(Any, tokenizer), 5)) == 5
+        for index in range(_TOKEN_TABLE_CACHE_MAX + 1):
+            other = _StopTokenizer()
+            other.name_or_path = f"tokenizer-{index}"
+            _get_token_table(cast(Any, other), 4)
+        assert len(_token_table_cache) == _TOKEN_TABLE_CACHE_MAX
+        assert all(key[0] != "tokenizer-0" for key in _token_table_cache)
+    finally:
+        _token_table_cache.clear()
+
+
+def test_logits_keep_detection_is_keyed_by_forward_implementation() -> None:
+    class CurrentModel:
+        def forward(self, input_ids: Any, logits_to_keep: int | None = None) -> Any:
+            del input_ids, logits_to_keep
+
+    class LegacyModel:
+        def forward(self, input_ids: Any, num_logits_to_keep: int | None = None) -> Any:
+            del input_ids, num_logits_to_keep
+
+    assert _logits_keep_kwarg(cast(Any, CurrentModel())) == "logits_to_keep"
+    assert _logits_keep_kwarg(cast(Any, LegacyModel())) == "num_logits_to_keep"
+
+
+def test_eos_ids_are_not_shared_between_models_with_the_same_tokenizer() -> None:
+    tokenizer = _StopTokenizer()
+    first = SimpleNamespace(generation_config=SimpleNamespace(eos_token_id=1))
+    second = SimpleNamespace(generation_config=SimpleNamespace(eos_token_id=2))
+
+    assert _get_eos_ids(cast(Any, first), cast(Any, tokenizer)) == {1, 3}
+    assert _get_eos_ids(cast(Any, second), cast(Any, tokenizer)) == {2, 3}
+
+
+def test_thinking_delimiter_cache_releases_collected_tokenizers() -> None:
+    _think_delim_cache.clear()
+    tokenizer = _StopTokenizer()
+    cast(Any, tokenizer).chat_template = None
+    _detect_think_delimiters(cast(Any, tokenizer))
+    ref = weakref.ref(tokenizer)
+
+    del tokenizer
+    gc.collect()
+
+    assert ref() is None
+    assert len(_think_delim_cache) == 0
 
 
 def _stub_instruments(
@@ -87,7 +148,7 @@ def _complete_finalizer_session(session: Any) -> None:
     session._scene_grammar_resolved = True
 
 
-class _CurrentSessionStub(SaklasSession):
+class _CurrentSessionStub(DrowseSession):
     """Narrow current-shape session whose lens is supplied in memory."""
 
     def __new__(cls) -> "_CurrentSessionStub":
@@ -172,7 +233,7 @@ class _OffsetEchoTokenizer:
 
 
 def test_authored_prompt_targets_map_to_producer_rows_after_prefix_cache() -> None:
-    from saklas.core.loom import LoomTree, Recipe
+    from drowse.core.loom import LoomTree, Recipe
 
     tree = LoomTree()
     user_id = tree.add_user_turn(" ab ")
@@ -181,7 +242,7 @@ def test_authored_prompt_targets_map_to_producer_rows_after_prefix_cache() -> No
     session._tokenizer = _OffsetEchoTokenizer()
     session.tree = tree
 
-    targets = SaklasSession._pending_authored_prompt_targets(
+    targets = DrowseSession._pending_authored_prompt_targets(
         session, assistant_id, raw=False,
     )
     assert len(targets) == 1
@@ -190,7 +251,7 @@ def test_authored_prompt_targets_map_to_producer_rows_after_prefix_cache() -> No
     prompt = torch.tensor(
         [[1, *targets[0].token_ids, 2]], dtype=torch.long,
     )
-    matches, producer_positions = SaklasSession._match_authored_prompt_targets(
+    matches, producer_positions = DrowseSession._match_authored_prompt_targets(
         session, targets, prompt, cache_position_offset=2,
     )
 
@@ -203,7 +264,7 @@ def test_authored_prompt_targets_map_to_producer_rows_after_prefix_cache() -> No
 def test_authored_prompt_match_excludes_generation_role_and_preserves_trim() -> None:
     session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
     session._tokenizer = _OffsetEchoTokenizer()
-    target = SaklasSession._tokenize_authored_prompt_text(
+    target = DrowseSession._tokenize_authored_prompt_text(
         session, "node", " assistant ", thinking=False,
     )
     assert target is not None
@@ -213,7 +274,7 @@ def test_authored_prompt_match_excludes_generation_role_and_preserves_trim() -> 
     prompt = torch.tensor(
         [[1, *content_ids, 2, *content_ids, 3]], dtype=torch.long,
     )
-    matches, _positions = SaklasSession._match_authored_prompt_targets(
+    matches, _positions = DrowseSession._match_authored_prompt_targets(
         session,
         [target],
         prompt,
@@ -226,8 +287,8 @@ def test_authored_prompt_match_excludes_generation_role_and_preserves_trim() -> 
 
 
 def test_persist_authored_prompt_capture_writes_all_measurement_channels() -> None:
-    from saklas.core.loom import LoomTree, Recipe
-    from saklas.core.session import _AuthoredPromptMatch, _AuthoredPromptTarget
+    from drowse.core.loom import LoomTree, Recipe
+    from drowse.core.session import _AuthoredPromptMatch, _AuthoredPromptTarget
 
     tree = LoomTree()
     user_id = tree.add_user_turn("x")
@@ -277,7 +338,7 @@ def test_persist_authored_prompt_capture_writes_all_measurement_channels() -> No
         (0,),
     )
 
-    SaklasSession._persist_authored_prompt_captures(
+    DrowseSession._persist_authored_prompt_captures(
         session,
         [match],
         monitor_active=True,
@@ -311,17 +372,17 @@ def test_prepare_generation_uses_session_thinking_default(monkeypatch: pytest.Mo
     session._tokenizer = object()
     session._default_return_top_k = 0
     session.config = GenerationConfig(thinking=False)
-    monkeypatch.setattr("saklas.core.session.supports_thinking", lambda _tok: True)
+    monkeypatch.setattr("drowse.core.session.supports_thinking", lambda _tok: True)
 
-    assert SaklasSession._prepare_generation_call(
+    assert DrowseSession._prepare_generation_call(
         session, None, None, None,
     ).use_thinking_req is False
 
-    assert SaklasSession._prepare_generation_call(
+    assert DrowseSession._prepare_generation_call(
         session, Steering(alphas={}, thinking=True), None, None,
     ).use_thinking_req is True
 
-    assert SaklasSession._prepare_generation_call(
+    assert DrowseSession._prepare_generation_call(
         session, None, None, True,
     ).use_thinking_req is True
 
@@ -330,27 +391,27 @@ def test_readout_top_k_shares_logit_alternative_width() -> None:
     session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
     session._default_return_top_k = 6
 
-    assert SaklasSession._effective_return_top_k(session, None) == 6
-    assert SaklasSession._effective_return_top_k(
+    assert DrowseSession._effective_return_top_k(session, None) == 6
+    assert DrowseSession._effective_return_top_k(
         session, SamplingConfig(return_top_k=13),
     ) == 13
     # Per-call zero inherits the same session default as the logit pass.
-    assert SaklasSession._effective_return_top_k(
+    assert DrowseSession._effective_return_top_k(
         session, SamplingConfig(return_top_k=0),
     ) == 6
-    assert SaklasSession._effective_readout_top_k(
+    assert DrowseSession._effective_readout_top_k(
         session, SamplingConfig(return_top_k=13),
     ) == 13
 
     # Read-side discovery remains useful when alts are disabled.
     session._default_return_top_k = 0
-    assert SaklasSession._effective_readout_top_k(session, None) == 8
+    assert DrowseSession._effective_readout_top_k(session, None) == 8
 
 
 def test_prepare_input_raw_feeds_flat_active_path():
     """raw=True walks the loom tree as flat text — no chat template, no
     role markers — and appends the call's own input."""
-    from saklas.core.loom import LoomTree
+    from drowse.core.loom import LoomTree
 
     tree = LoomTree()
     u1 = tree.add_user_turn("once upon a ")
@@ -363,19 +424,19 @@ def test_prepare_input_raw_feeds_flat_active_path():
     session.tree = tree
 
     # Non-stateless: prefix is the flattened active path; input rides on top.
-    ids = SaklasSession._prepare_input(
+    ids = DrowseSession._prepare_input(
         session, " the fox", raw=True, parent_node_id=a1,
     )
     assert _decode_echo(ids) == "once upon a time the fox"
 
     # Stateless: the tree is ignored — only the input string is encoded.
-    ids = SaklasSession._prepare_input(
+    ids = DrowseSession._prepare_input(
         session, " the fox", raw=True, stateless=True, parent_node_id=a1,
     )
     assert _decode_echo(ids) == " the fox"
 
     # Empty input is a bare continuation — just the flattened buffer.
-    ids = SaklasSession._prepare_input(
+    ids = DrowseSession._prepare_input(
         session, "", raw=True, parent_node_id=a1,
     )
     assert _decode_echo(ids) == "once upon a time"
@@ -476,7 +537,7 @@ def test_stop_sequence_trimmed_text_is_final_result_text():
     session._last_result = None
 
     _complete_finalizer_session(session)
-    result = SaklasSession._finalize_generation(
+    result = DrowseSession._finalize_generation(
         session,
         generated_ids,
         elapsed=1.0,
@@ -493,7 +554,7 @@ def test_decode_loop_hands_one_step_id_to_sink_gate_and_tap():
     one forward, and the value is ``len(generated_ids)`` before that
     forward — what lets the instrument runs' step-keyed memos pair one
     forward's gate and display reads."""
-    from saklas.core.triggers import TriggerContext
+    from drowse.core.triggers import TriggerContext
 
     model: Any = _scripted_model([0, 1, 2])
     tokenizer: Any = _StopTokenizer()
@@ -732,7 +793,7 @@ def test_stop_sequence_probe_aggregate_uses_visible_endpoint():
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = SaklasSession._finalize_generation(
+    result = DrowseSession._finalize_generation(
         session,
         generated_ids,
         elapsed=1.0,
@@ -834,7 +895,7 @@ def test_finalize_reuses_scored_probe_aggregate() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = SaklasSession._finalize_generation(
+    result = DrowseSession._finalize_generation(
         session,
         [0, 1],
         elapsed=1.0,
@@ -866,6 +927,60 @@ def test_generate_stream_exposes_current_result() -> None:
     events = list(stream)
     assert [e.text for e in events] == ["ok"]
     assert stream.result is result
+
+
+def test_token_fork_accepts_multitoken_authored_replacement() -> None:
+    result = GenerationResult(
+        text="kept replacement", tokens=[10, 41, 42], token_count=3,
+        tok_per_sec=1.0, elapsed=1.0,
+    )
+    captured: dict[str, Any] = {}
+    recipe = SimpleNamespace(
+        steering="0.2 calm",
+        sampling=SamplingConfig(max_tokens=4, seed=9),
+        thinking=False,
+    )
+    node = SimpleNamespace(
+        raw_token_ids=[10, 11, 12],
+        parent_id="parent",
+        recipe=recipe,
+        role="assistant",
+        role_label="guide",
+    )
+    session: Any = DrowseSession.__new__(DrowseSession)
+    session.tree = SimpleNamespace(get=lambda node_id: node)
+    session._tokenizer = SimpleNamespace(
+        encode=lambda text, add_special_tokens: [41, 42],
+    )
+    session.config = GenerationConfig(max_new_tokens=16)
+
+    def _generate_core(input_text: Any, **kwargs: Any) -> GenerationResult:
+        captured["input"] = input_text
+        captured.update(kwargs)
+        return result
+
+    session._generate_core = _generate_core
+    actual = DrowseSession.fork_from_token(
+        session,
+        "source",
+        1,
+        replacement_text="replacement phrase",
+    )
+
+    assert actual is result
+    assert captured["forced_prefix"] == [10, 41, 42]
+    assert captured["parent_node_id"] == "parent"
+    assert captured["gen_seat"] == "assistant"
+    assert captured["steering"] == "0.2 calm"
+    assert captured["thinking"] is False
+    assert captured["sampling"].max_tokens == 7
+    assert captured["sampling"].seed == 9
+    assert captured["sampling"].assistant_role == "guide"
+
+    DrowseSession.fork_from_token(session, "source", 1, 11, seed=123)
+    assert captured["forced_prefix"] == [10, 11]
+    assert captured["sampling"].seed == 123
+    assert recipe.sampling.seed == 9
 
 
 def test_generate_stream_live_readouts_false_suppresses_readout_flags() -> None:
@@ -924,8 +1039,8 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
 ) -> None:
     import threading
 
-    import saklas.core.token_payloads as token_payloads
-    from saklas.core.triggers import TriggerContext
+    import drowse.core.token_payloads as token_payloads
+    from drowse.core.triggers import TriggerContext
 
     session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
     session._gen_lock = threading.Lock()
@@ -1049,7 +1164,7 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
     ) -> None:
         seen_tokens.append(text)
 
-    result = SaklasSession._generate_core(
+    result = DrowseSession._generate_core(
         session,
         "prompt",
         stateless=True,
@@ -1103,7 +1218,7 @@ def test_finalize_incremental_probe_path_does_not_stack_capture() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = SaklasSession._finalize_generation(
+    result = DrowseSession._finalize_generation(
         session,
         [0, 1],
         elapsed=1.0,
@@ -1198,7 +1313,7 @@ def test_finalize_lean_incremental_probe_path() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = SaklasSession._finalize_generation(
+    result = DrowseSession._finalize_generation(
         session,
         [0, 1],
         elapsed=1.0,
@@ -1281,7 +1396,7 @@ def test_finalize_gating_subset_probe_path() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = SaklasSession._finalize_generation(
+    result = DrowseSession._finalize_generation(
         session,
         [0, 1],
         elapsed=1.0,
@@ -1368,7 +1483,7 @@ def test_finalize_reuses_one_aggregate_pool_for_monitor_lens_and_sae() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = SaklasSession._finalize_generation(
+    result = DrowseSession._finalize_generation(
         session,
         [0, 1],
         elapsed=1.0,
@@ -1389,7 +1504,7 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
     """Full per-token readings can truncate label channels; gates still need the
     exact requested scalar keys."""
 
-    from saklas.core.steering_composer import SteeringComposer
+    from drowse.core.steering_composer import SteeringComposer
 
     class Capture:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
@@ -1489,8 +1604,8 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
     score_attr: str,
     expected: dict[str, float],
 ) -> None:
-    from saklas.core.steering_composer import SteeringComposer
-    from saklas.core.steering_expr import parse_expr
+    from drowse.core.steering_composer import SteeringComposer
+    from drowse.core.steering_expr import parse_expr
 
     class Capture:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
@@ -1538,8 +1653,8 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
 
 
 def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
-    from saklas.core.steering_composer import SteeringComposer
-    from saklas.core.steering_expr import parse_expr
+    from drowse.core.steering_composer import SteeringComposer
+    from drowse.core.steering_expr import parse_expr
 
     class Capture:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
@@ -1624,7 +1739,7 @@ def test_stateless_zero_token_probe_result_does_not_use_history() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = SaklasSession._finalize_generation(
+    result = DrowseSession._finalize_generation(
         session,
         [],
         elapsed=1.0,
@@ -1666,7 +1781,7 @@ def test_return_probe_readings_false_skips_probe_finalization() -> None:
     )
 
     _complete_finalizer_session(session)
-    result = SaklasSession._finalize_generation(
+    result = DrowseSession._finalize_generation(
         session,
         [0],
         elapsed=1.0,
@@ -1717,7 +1832,7 @@ def test_lens_only_without_final_probe_aggregate_keeps_latest_tail() -> None:
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
-    SaklasSession._begin_capture(
+    DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=False,
@@ -1758,7 +1873,7 @@ def test_dormant_lens_probe_without_final_aggregate_does_not_attach_capture() ->
     session._sae_instrument.probes = {}
 
     _complete_capture_session(session)
-    attached = SaklasSession._begin_capture(
+    attached = DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=False,
@@ -1814,7 +1929,7 @@ def test_lens_gate_without_final_aggregate_attaches_gated_probe_layers() -> None
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
-    attached = SaklasSession._begin_capture(
+    attached = DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=False,
@@ -1874,7 +1989,7 @@ def test_sae_only_without_final_probe_aggregate_keeps_latest_tail() -> None:
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
-    SaklasSession._begin_capture(
+    DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=False,
@@ -1916,7 +2031,7 @@ def test_dormant_sae_probe_without_final_aggregate_does_not_attach_capture() -> 
     session._sae_layer = 5
 
     _complete_capture_session(session)
-    attached = SaklasSession._begin_capture(
+    attached = DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=False,
@@ -1970,7 +2085,7 @@ def test_sae_gate_without_final_aggregate_attaches_sae_layer() -> None:
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
-    attached = SaklasSession._begin_capture(
+    attached = DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=False,
@@ -2014,7 +2129,7 @@ def test_monitor_probe_without_final_aggregate_and_no_per_token_skips_capture() 
     session._sae_layer = None
 
     _complete_capture_session(session)
-    attached = SaklasSession._begin_capture(
+    attached = DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=False,
@@ -2036,13 +2151,13 @@ class _RecordingInstrument:
         self.requests: list[Any] = []
 
     def prepare(self, request: Any) -> Any:
-        from saklas.core.instruments.types import InstrumentPrep
+        from drowse.core.instruments.types import InstrumentPrep
 
         self.requests.append(request)
         return InstrumentPrep(family=self.family, request=request)
 
     def plan(self, prep: Any) -> Any:
-        from saklas.core.instruments.types import InstrumentPlan
+        from drowse.core.instruments.types import InstrumentPlan
 
         return InstrumentPlan(family=self.family, prep_token=prep.token)
 
@@ -2071,7 +2186,7 @@ def test_begin_capture_takes_per_token_full_consumer_from_the_demand() -> None:
     session.__dict__["_lens_instrument"] = lens
     session.__dict__["_sae_instrument"] = sae
 
-    attached = SaklasSession._begin_capture(
+    attached = DrowseSession._begin_capture(
         session,
         ReadDemand(need_per_token=True, per_token_full_consumer=False),
     )
@@ -2105,7 +2220,7 @@ def _resolve_demand(*, gated: bool = False, **kwargs: Any) -> ReadDemand:
         capture_prompt=False,
     )
     defaults.update(kwargs)
-    return SaklasSession._resolve_read_demand(session, **defaults)
+    return DrowseSession._resolve_read_demand(session, **defaults)
 
 
 def test_resolve_read_demand_routes_a_gate_only_generation_to_the_subset() -> None:
@@ -2197,7 +2312,7 @@ def test_monitor_probe_final_aggregate_still_attaches_capture() -> None:
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
-    attached = SaklasSession._begin_capture(
+    attached = DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=False,
@@ -2278,7 +2393,7 @@ def test_gate_only_without_final_probe_aggregate_narrows_capture_layers() -> Non
     session._lens_instrument.live = None
 
     _complete_capture_session(session)
-    SaklasSession._begin_capture(
+    DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=True,
@@ -2370,7 +2485,7 @@ def test_gate_only_capture_reuses_preplanned_gate_scalars() -> None:
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
-    SaklasSession._begin_capture(
+    DrowseSession._begin_capture(
         session,
         ReadDemand(
             need_per_token=True,
@@ -2441,7 +2556,7 @@ def test_full_incremental_capture_deep_tail_only_for_readout_aggregate_layers() 
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
-    attached = SaklasSession._begin_capture(
+    attached = DrowseSession._begin_capture(
         session,
         ReadDemand(need_per_token=True, final_probe_aggregate=True),
     )
@@ -2501,7 +2616,7 @@ def _stub_session_with_lock() -> Any:
     touches."""
     import threading
 
-    s: Any = SaklasSession.__new__(SaklasSession)
+    s: Any = DrowseSession.__new__(DrowseSession)
     s._gen_phase = GenState.IDLE
     s._gen_lock = threading.Lock()
     return s
@@ -2511,7 +2626,7 @@ def test_extract_acquires_gen_lock_against_concurrent_generation():
     """If ``_gen_lock`` is already held (generation in flight), extract
     must raise ``ConcurrentExtractionError`` rather than reading
     ``_gen_phase`` and racing the generation that's about to flip it."""
-    from saklas.core.session import ConcurrentExtractionError
+    from drowse.core.session import ConcurrentExtractionError
 
     s = _stub_session_with_lock()
     # Simulate "generation just acquired the lock" — phase still IDLE
@@ -2530,9 +2645,9 @@ def test_extract_releases_lock_on_path_through_phase_gate():
     can proceed once the phase clears."""
     import threading
 
-    from saklas.core.session import ConcurrentExtractionError
+    from drowse.core.session import ConcurrentExtractionError
 
-    s: Any = SaklasSession.__new__(SaklasSession)
+    s: Any = DrowseSession.__new__(DrowseSession)
     s._gen_phase = GenState.RUNNING
     s._gen_lock = threading.Lock()
     s._extraction = SimpleNamespace(extract=lambda *a, **kw: ("x", None))
@@ -2549,7 +2664,7 @@ def _transaction_stub_session() -> Any:
     """A stub carrying only what ``_generation_transaction`` touches."""
     import threading
 
-    s: Any = SaklasSession.__new__(SaklasSession)
+    s: Any = DrowseSession.__new__(DrowseSession)
     s._gen_phase = GenState.IDLE
     s._gen_lock = threading.Lock()
     s._end_capture_calls = 0
@@ -2618,7 +2733,7 @@ def test_generation_transaction_leaves_a_popped_scope_alone():
 
 
 def test_generation_transaction_rejects_a_reentrant_generation():
-    from saklas.core.session import ConcurrentGenerationError
+    from drowse.core.session import ConcurrentGenerationError
 
     s = _transaction_stub_session()
     with s._generation_transaction():

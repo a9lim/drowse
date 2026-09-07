@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FluentIcon from "./ui/FluentIcon.svelte";
   // Themed collapsible — the existing ``▸/▾ caret + button row`` pattern
   // packaged as one component.  Backs the ad-hoc ``advancedOpen`` toggles
   // (e.g. ManifoldBuilderDrawer) and inline grammar-reference disclosures.
@@ -6,6 +7,8 @@
   // Default slot is the body; the trigger row shows the caret + summary.
 
   import type { Snippet } from "svelte";
+  import { slide } from "svelte/transition";
+  import { collapseIn, collapseOut } from "./motion";
 
   interface Props {
     /** Bindable open state. */
@@ -38,12 +41,16 @@
     onclick={toggle}
   >
     <span class="sk-disclosure-caret" aria-hidden="true">
-      {expanded ? "▾" : "▸"}
+      <FluentIcon name="next" />
     </span>
     <span class="sk-disclosure-summary">{summary}</span>
   </button>
   {#if expanded}
-    <div class="sk-disclosure-body">
+    <div
+      class="sk-disclosure-body"
+      in:slide={collapseIn()}
+      out:slide={collapseOut()}
+    >
       {@render children()}
     </div>
   {/if}
@@ -52,8 +59,8 @@
 <style>
   .sk-disclosure {
     border: 1px solid transparent;
-    border-radius: var(--radius);
-    background: var(--glass);
+    border-radius: var(--radius-lg);
+    background: var(--surface-sheen), var(--glass);
     box-shadow: var(--shadow-well);
     overflow: hidden;
   }
@@ -66,24 +73,31 @@
   .sk-disclosure-trigger {
     display: flex;
     align-items: center;
+    min-height: var(--control-target);
     gap: var(--space-3);
     width: 100%;
-    padding: var(--space-2) var(--space-3);
+    padding: var(--space-sm) var(--surface-padding);
     background: transparent;
     color: var(--fg-strong);
     border: 0;
     border-bottom: 1px solid transparent;
-    text-align: left;
+    text-align: start;
     cursor: pointer;
-    font-family: var(--font-mono);
+    font-family: var(--font-structure);
     font-size: var(--text-sm);
-    transition: background var(--dur-fast) var(--ease-out);
+    font-weight: var(--weight-structure);
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
   }
   .sk-disclosure.is-flush .sk-disclosure-trigger {
     padding: var(--space-2) 0;
   }
   .sk-disclosure-trigger:hover {
     background: var(--bg-hover);
+  }
+  .sk-disclosure-trigger:active {
+    scale: var(--press-scale);
   }
   .sk-disclosure-trigger:focus-visible {
     outline: 2px solid var(--focus-ring);
@@ -101,9 +115,14 @@
     color: var(--fg-muted);
     font-size: var(--text-sm);
     line-height: 1;
+    transform: rotate(0deg);
+    transition:
+      color var(--dur-fast) var(--ease-enter),
+      transform var(--dur) var(--ease-enter);
   }
   .sk-disclosure.is-open .sk-disclosure-caret {
     color: var(--accent);
+    transform: rotate(90deg);
   }
 
   .sk-disclosure-summary {
@@ -112,8 +131,8 @@
   }
 
   .sk-disclosure-body {
-    padding: var(--space-4) var(--space-4);
-    background: color-mix(in srgb, var(--input-well) 72%, transparent);
+    padding: var(--surface-padding);
+    background: var(--surface-sheen), color-mix(in srgb, var(--input-well) 72%, transparent);
   }
   .sk-disclosure.is-flush .sk-disclosure-body {
     padding: var(--space-3) 0;

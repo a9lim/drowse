@@ -7,11 +7,11 @@ from pathlib import Path
 import json
 from typing import Any
 
-from saklas.io import selectors as sel
-from saklas.io.manifolds import (
+from drowse.io import selectors as sel
+from drowse.io.manifolds import (
     create_discover_manifold_folder,
 )
-from saklas.io.manifold_folder import canonical_manifold_sidecar_payload
+from drowse.io.manifold_folder import canonical_manifold_sidecar_payload
 
 
 def test_parse_bare_name():
@@ -89,7 +89,7 @@ def _mk(tmp_path: Path, ns: str, name: str, tags: list[str] | None = None) -> Pa
 
 
 def test_resolve_bare_unique(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk(tmp_path, "default", "happy")
     results = sel.resolve(sel.parse("happy"))
     assert len(results) == 1
@@ -97,7 +97,7 @@ def test_resolve_bare_unique(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 
 
 def test_resolve_bare_ambiguous_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk(tmp_path, "default", "happy")
     _mk(tmp_path, "a9lim", "happy")
     with pytest.raises(sel.AmbiguousSelectorError) as ei:
@@ -107,7 +107,7 @@ def test_resolve_bare_ambiguous_raises(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 def test_resolve_namespaced(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk(tmp_path, "default", "happy")
     _mk(tmp_path, "a9lim", "happy")
     results = sel.resolve(sel.parse("a9lim/happy"))
@@ -116,7 +116,7 @@ def test_resolve_namespaced(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
 
 
 def test_resolve_tag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk(tmp_path, "default", "happy", tags=["emotion"])
     _mk(tmp_path, "default", "calm", tags=["emotion"])
     _mk(tmp_path, "default", "honest", tags=["personality"])
@@ -126,7 +126,7 @@ def test_resolve_tag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 def test_resolve_namespace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk(tmp_path, "default", "happy")
     _mk(tmp_path, "a9lim", "archaic")
     results = sel.resolve(sel.parse("namespace:a9lim"))
@@ -134,7 +134,7 @@ def test_resolve_namespace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
 
 
 def test_resolve_all(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk(tmp_path, "default", "happy")
     _mk(tmp_path, "a9lim", "archaic")
     results = sel.resolve(sel.parse("all"))
@@ -151,7 +151,7 @@ def _fake_fitted_tensor(folder: Path, filename: str) -> None:
     (folder / filename).write_bytes(b"x")
     sidecar = Path(folder) / (Path(filename).stem + ".json")
     sidecar.write_text(json.dumps(canonical_manifold_sidecar_payload(
-        name=folder.name, method="manifold_discover_pca", saklas_version="0",
+        name=folder.name, method="manifold_discover_pca", drowse_version="0",
         domain={"type": "custom", "embed_dim": 1, "bounds": None},
         node_labels=["pos", "neg"],
         feature_space="raw", fit_mode="pca",
@@ -165,8 +165,8 @@ def test_resolve_model_matches_raw_and_sae_tensors(monkeypatch: pytest.MonkeyPat
     ``<safe>.safetensors`` and missed concepts that shipped only a
     ``_sae-<release>`` tensor for that model.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.paths import safe_model_id, tensor_filename
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.paths import safe_model_id, tensor_filename
 
     model_id = "google/gemma-3-4b-it"
     sid = safe_model_id(model_id)
@@ -190,7 +190,7 @@ def test_resolve_model_matches_raw_and_sae_tensors(monkeypatch: pytest.MonkeyPat
 
 
 def test_parse_args_concept_plus_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     args, model_scope = sel.parse_args(["tag:emotion", "model:google/gemma-2-2b-it"])
     assert args.kind == "tag"
     assert args.value == "emotion"
@@ -241,7 +241,7 @@ class TestCanonicalizeAtom:
 
 
 def test_canonicalize_atom_strips_raw_variant() -> None:
-    from saklas.io.selectors import canonicalize_atom
+    from drowse.io.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("honest:raw")
     assert canonical == "honest"
@@ -249,7 +249,7 @@ def test_canonicalize_atom_strips_raw_variant() -> None:
 
 
 def test_canonicalize_atom_sae_variant() -> None:
-    from saklas.io.selectors import canonicalize_atom
+    from drowse.io.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("honest:sae")
     assert canonical == "honest"
@@ -257,14 +257,14 @@ def test_canonicalize_atom_sae_variant() -> None:
 
 
 def test_canonicalize_atom_sae_with_release() -> None:
-    from saklas.io.selectors import canonicalize_atom
+    from drowse.io.selectors import canonicalize_atom
 
     _canonical, variant = canonicalize_atom("honest:sae-gemma-scope-2b-pt-res-canonical")
     assert variant == "sae-gemma-scope-2b-pt-res-canonical"
 
 
 def test_canonicalize_atom_no_variant_defaults_to_raw() -> None:
-    from saklas.io.selectors import canonicalize_atom
+    from drowse.io.selectors import canonicalize_atom
 
     _canonical, variant = canonicalize_atom("honest")
     assert variant == "raw"
@@ -276,7 +276,7 @@ def test_canonicalize_atom_variant_strips_suffix() -> None:
     (Pre-4.0 this asserted a bipolar sign flip for ``wolf:sae`` →
     ``deer.wolf @ -1``; that resolution moved to the manifold tier.)
     """
-    from saklas.io.selectors import canonicalize_atom
+    from drowse.io.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("wolf:sae")
     assert canonical == "wolf"
@@ -284,7 +284,7 @@ def test_canonicalize_atom_variant_strips_suffix() -> None:
 
 
 def test_canonicalize_atom_rejects_invalid_variant() -> None:
-    from saklas.io.selectors import canonicalize_atom, SelectorError
+    from drowse.io.selectors import canonicalize_atom, SelectorError
 
     with pytest.raises(SelectorError):
         canonicalize_atom("honest:weird-variant")
@@ -292,7 +292,7 @@ def test_canonicalize_atom_rejects_invalid_variant() -> None:
 
 def test_parse_accepts_variant_suffix():
     """parse() with a :variant suffix strips the variant, keeps Selector.value as the bare name."""
-    from saklas.io.selectors import parse
+    from drowse.io.selectors import parse
     s = parse("honest.deceptive:sae")
     assert s.kind == "name"
     assert s.value == "honest.deceptive"
@@ -300,14 +300,14 @@ def test_parse_accepts_variant_suffix():
 
 def test_parse_rejects_unknown_variant():
     import pytest as _pt
-    from saklas.io.selectors import parse, SelectorError
+    from drowse.io.selectors import parse, SelectorError
     with _pt.raises(SelectorError):
         parse("honest:garbage")
 
 
 def test_parse_role_variant():
     """parse() with a :role-<id> suffix strips the variant, keeps Selector.value as the bare name."""
-    from saklas.io.selectors import parse
+    from drowse.io.selectors import parse
     s = parse("honest:role-pirate")
     assert s.kind == "name"
     assert s.value == "honest"
@@ -315,7 +315,7 @@ def test_parse_role_variant():
 
 
 def test_canonicalize_atom_role_variant() -> None:
-    from saklas.io.selectors import canonicalize_atom
+    from drowse.io.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("angry:role-pirate")
     assert canonical == "angry"
@@ -323,7 +323,7 @@ def test_canonicalize_atom_role_variant() -> None:
 
 
 def test_canonicalize_atom_role_with_dotted_id() -> None:
-    from saklas.io.selectors import canonicalize_atom
+    from drowse.io.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("happy.sad:role-mad-scientist")
     assert canonical == "happy.sad"
@@ -333,13 +333,13 @@ def test_canonicalize_atom_role_with_dotted_id() -> None:
 def test_parse_role_variant_invalid_slug():
     """Uppercase id rejected — matches the SAE precedent for `sae-FOO`."""
     import pytest as _pt
-    from saklas.io.selectors import parse, SelectorError
+    from drowse.io.selectors import parse, SelectorError
     with _pt.raises(SelectorError):
         parse("honest:role-PIRATE")
 
 
 def test_parse_role_with_namespace():
-    from saklas.io.selectors import parse
+    from drowse.io.selectors import parse
     s = parse("default/honest:role-pirate")
     assert s.kind == "name"
     assert s.value == "honest"
@@ -359,7 +359,7 @@ def _mk_nodes(ns: str, name: str, labels: list[str]) -> Path:
 
 def test_bare_atom_label_tier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A bare slug matching a multi-node manifold's node label → label hit."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk_nodes("default", "personas", ["pirate", "wizard", "vandal"])
     sel.invalidate()
     atom = sel.resolve_bare_atom("pirate")
@@ -374,7 +374,7 @@ def test_bare_atom_name_tier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 
     The ``.`` makes it skip the label tier and land on the name tier.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk_nodes("default", "deer.wolf", ["deer", "wolf"])
     sel.invalidate()
     atom = sel.resolve_bare_atom("deer.wolf")
@@ -386,7 +386,7 @@ def test_bare_atom_name_tier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 
 def test_bare_atom_pole_fallthrough(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """No manifold match → pole canonicalization (peel variant + slug)."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     sel.invalidate()
     atom = sel.resolve_bare_atom("Xyzzy-Thing", variant="sae")
     assert atom.kind == "pole"
@@ -395,7 +395,7 @@ def test_bare_atom_pole_fallthrough(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
 def test_bare_atom_variant_skips_label_tier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A non-``raw`` variant skips both manifold tiers (variant addressing)."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk_nodes("default", "personas", ["pirate"])
     sel.invalidate()
     atom = sel.resolve_bare_atom("pirate", variant="sae")
@@ -407,7 +407,7 @@ def test_bare_atom_typed_namespace_skips_label_tier(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """A user-typed namespace skips the bare-label tier (but not the name tier)."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk_nodes("alice", "personas", ["pirate"])
     sel.invalidate()
     atom = sel.resolve_bare_atom("pirate", typed_namespace="alice")
@@ -419,7 +419,7 @@ def test_bare_atom_cross_manifold_label_collision_raises(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Two manifolds owning the same node label → AmbiguousSelectorError."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk_nodes("default", "personas", ["pirate"])
     _mk_nodes("default", "roles", ["pirate"])
     sel.invalidate()
@@ -432,7 +432,7 @@ def test_bare_atom_cross_manifold_label_collision_raises(
 # ---------------------------------------------------------------------------
 #
 # In a one-command-one-process CLI run a stale resolver index is invisible: the
-# process exits before anything re-resolves. In a long-lived ``saklas serve``
+# process exits before anything re-resolves. In a long-lived ``drowse serve``
 # process it is not — a dashboard-authored manifold's node labels would not
 # resolve until restart. These pin that every io entry point which changes the
 # installed roster drops the index itself, with no caller-side help.
@@ -447,7 +447,7 @@ def _warm_index() -> None:
 def test_create_discover_folder_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _warm_index()
     _mk_nodes("local", "personas", ["pirate", "wizard"])
     # No ``sel.invalidate()`` here — that is the point.
@@ -458,8 +458,8 @@ def test_create_discover_folder_invalidates(
 def test_create_authored_folder_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifolds import create_manifold_folder
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifolds import create_manifold_folder
 
     _warm_index()
     create_manifold_folder(
@@ -479,8 +479,8 @@ def test_update_manifold_folder_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Re-authoring node labels must not leave the old roster resolvable."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifolds import create_manifold_folder, update_manifold_folder
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifolds import create_manifold_folder, update_manifold_folder
 
     domain = {"type": "box",
               "axes": [{"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
@@ -505,8 +505,8 @@ def test_update_manifold_folder_invalidates(
 def test_merge_discover_manifolds_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifolds import merge_discover_manifolds
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifolds import merge_discover_manifolds
 
     _mk_nodes("local", "a", ["alpha"])
     _mk_nodes("local", "b", ["beta"])
@@ -522,8 +522,8 @@ def test_merge_discover_manifolds_invalidates(
 def test_remove_manifold_folder_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifolds import remove_manifold_folder
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifolds import remove_manifold_folder
 
     _mk_nodes("local", "personas", ["pirate", "wizard"])
     assert sel.resolve_manifold_label("pirate") is not None
@@ -542,8 +542,8 @@ def test_streaming_authoring_path_invalidates(
     ``append_discover_manifold_node`` that makes the manifold discoverable —
     that call has to drop the index too.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifolds import (
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifolds import (
         append_discover_manifold_node, init_discover_manifold_folder,
     )
 
@@ -562,9 +562,9 @@ def test_bundled_materialization_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """A cold resolve before bootstrap must not pin an empty roster."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io import manifolds as manifolds_mod
-    from saklas.io.bootstrap import materialize_bundled_artifacts
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io import manifolds as manifolds_mod
+    from drowse.io.bootstrap import materialize_bundled_artifacts
 
     monkeypatch.setattr(manifolds_mod, "_materialized_home", None)
     sel.invalidate()
@@ -577,7 +577,7 @@ def test_invalidate_clears_every_view(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """All three views come from one walk, so one clear drops all of them."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _mk_nodes("local", "deer.wolf", ["deer", "wolf"])
     sel.invalidate()
     assert sel.all_concepts()
@@ -592,8 +592,8 @@ def test_single_walk_serves_all_three_views(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """A cold compound resolve parses the manifold tree exactly once."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io import manifolds as manifolds_mod
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io import manifolds as manifolds_mod
 
     _mk_nodes("local", "deer.wolf", ["deer", "wolf"])
     sel.invalidate()

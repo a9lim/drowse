@@ -14,9 +14,9 @@ from typing import Any, cast
 import pytest
 import torch
 
-from saklas.core.loom import InvalidNodeOperationError, LoomTree
-from saklas.core.generation import build_chat_input as _real_build_chat_input
-from saklas.core.scene import (
+from drowse.core.loom import InvalidNodeOperationError, LoomTree
+from drowse.core.generation import build_chat_input as _real_build_chat_input
+from drowse.core.scene import (
     SceneRenderError,
     SceneTurn,
     TurnGrammar,
@@ -205,7 +205,7 @@ def test_user_seat_sibling_under_user_parent():
 
 
 def test_ws_generate_message_accepts_seat():
-    from saklas.server.ws_models import WSGenerateMessage
+    from drowse.server.ws_models import WSGenerateMessage
 
     msg = WSGenerateMessage(type="generate", generate_seat="user")
     assert msg.generate_seat == "user"
@@ -215,14 +215,14 @@ def test_ws_generate_message_accepts_seat():
 def test_ws_generate_message_rejects_bad_seat():
     from pydantic import ValidationError
 
-    from saklas.server.ws_models import WSGenerateMessage
+    from drowse.server.ws_models import WSGenerateMessage
 
     with pytest.raises(ValidationError):
         WSGenerateMessage(type="generate", generate_seat="narrator")  # type: ignore[arg-type]
 
 
 def test_ws_submit_message_uses_structural_roles():
-    from saklas.server.ws_models import WSSubmitMessage
+    from drowse.server.ws_models import WSSubmitMessage
 
     msg = WSSubmitMessage(
         type="submit",
@@ -240,7 +240,7 @@ def test_ws_submit_message_uses_structural_roles():
 
 
 def _grammar_with_closes(user_close: str, assistant_close: str) -> "TurnGrammar":
-    from saklas.core.scene import SeatWrapper, TurnGrammar
+    from drowse.core.scene import SeatWrapper, TurnGrammar
 
     return TurnGrammar(
         model_type="fake",
@@ -267,10 +267,10 @@ def _augment(
 ) -> list[str] | None:
     from typing import cast as _cast
 
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
-    return SaklasSession._seat_stop_augmentation(
-        _cast(SaklasSession, _StopStub(grammar)), stop_list,
+    return DrowseSession._seat_stop_augmentation(
+        _cast(DrowseSession, _StopStub(grammar)), stop_list,
         gen_seat=gen_seat, raw=raw,
     )
 
@@ -359,14 +359,14 @@ def test_commit_thinking_gate():
     can't render it (no grammar / no think delimiters)."""
     from typing import cast as _cast
 
-    from saklas.core.scene import SceneThinkingUnsupportedError
-    from saklas.core.session import SaklasSession
+    from drowse.core.scene import SceneThinkingUnsupportedError
+    from drowse.core.session import DrowseSession
     from tests.test_scene import QWEN_STRIP_TEMPLATE
 
     class _CommitStub:
         # The real gate, borrowed the way test_loom's
         # _bind_commit_methods borrows session methods.
-        _check_thinking_commit = SaklasSession._check_thinking_commit
+        _check_thinking_commit = DrowseSession._check_thinking_commit
 
         def __init__(self, grammar: Any) -> None:
             self.scene_grammar = grammar
@@ -376,8 +376,8 @@ def test_commit_thinking_gate():
             return None
 
     def commit(stub: Any, thinking: str | None) -> str:
-        return SaklasSession.append_user_turn(
-            _cast(SaklasSession, stub), None, "hm", thinking=thinking,
+        return DrowseSession.append_user_turn(
+            _cast(DrowseSession, stub), None, "hm", thinking=thinking,
         )
 
     # No grammar at all (fallback family).
@@ -409,7 +409,7 @@ def test_authored_same_roles_coalesce_before_scene_seating_rules():
     still permits distinct-label same-seat turns that legacy templates reject."""
     from typing import cast as _cast
 
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
     from tests.test_scene import QWEN_STRIP_TEMPLATE
 
     class _WordTok:
@@ -417,38 +417,38 @@ def test_authored_same_roles_coalesce_before_scene_seating_rules():
             return [3000 + i for i, _w in enumerate(text.split())]
 
     class _SeatStub:
-        _check_thinking_commit = SaklasSession._check_thinking_commit
-        _check_user_send_target = SaklasSession._check_user_send_target
+        _check_thinking_commit = DrowseSession._check_thinking_commit
+        _check_user_send_target = DrowseSession._check_user_send_target
 
         def __init__(self, grammar: Any) -> None:
             self.scene_grammar = grammar
             self.tree = LoomTree()
             self._tokenizer = _WordTok()
 
-    def as_sess(stub: Any) -> SaklasSession:
-        return _cast(SaklasSession, stub)
+    def as_sess(stub: Any) -> DrowseSession:
+        return _cast(DrowseSession, stub)
 
     tok = _tok(QWEN_STRIP_TEMPLATE)
     grammar = extract_turn_grammar(tok, "qwen3")
 
     # Matching roles coalesce, regardless of renderer.
     stub = _SeatStub(grammar)
-    u1 = SaklasSession.append_user_turn(as_sess(stub), None, "one")
-    u2 = SaklasSession.append_user_turn(as_sess(stub), u1, " two")
+    u1 = DrowseSession.append_user_turn(as_sess(stub), None, "one")
+    u2 = DrowseSession.append_user_turn(as_sess(stub), u1, " two")
     assert u2 == u1
     assert stub.tree.nodes[u1].text == "one two"
-    a1 = SaklasSession.append_assistant_turn(as_sess(stub), u1, "three")
-    a2 = SaklasSession.append_assistant_turn(as_sess(stub), a1, " four")
+    a1 = DrowseSession.append_assistant_turn(as_sess(stub), u1, "three")
+    a2 = DrowseSession.append_assistant_turn(as_sess(stub), a1, " four")
     assert a2 == a1
     assert stub.tree.nodes[a1].text == "three four"
-    root_a = SaklasSession.append_assistant_turn(
+    root_a = DrowseSession.append_assistant_turn(
         as_sess(stub), stub.tree.root_id, "first",
     )
     assert stub.tree.nodes[root_a].role == "assistant"
 
     # Distinct labels are distinct messages; scene mode can render the
     # resulting same-seat adjacency.
-    u3 = SaklasSession.append_user_turn(
+    u3 = DrowseSession.append_user_turn(
         as_sess(stub), u1, "other", role_label="narrator",
     )
     assert u3 != u1
@@ -457,17 +457,17 @@ def test_authored_same_roles_coalesce_before_scene_seating_rules():
     # Legacy templates coalesce matching labels but still reject distinct
     # same-seat messages.
     legacy = _SeatStub(None)
-    lu = SaklasSession.append_user_turn(as_sess(legacy), None, "one")
-    lu2 = SaklasSession.append_user_turn(as_sess(legacy), lu, " two")
+    lu = DrowseSession.append_user_turn(as_sess(legacy), None, "one")
+    lu2 = DrowseSession.append_user_turn(as_sess(legacy), lu, " two")
     assert lu2 == lu
     with pytest.raises(InvalidNodeOperationError):
-        SaklasSession.append_user_turn(
+        DrowseSession.append_user_turn(
             as_sess(legacy), lu, "two", role_label="narrator",
         )
-    la = SaklasSession.append_assistant_turn(as_sess(legacy), lu, "reply")
-    la2 = SaklasSession.append_assistant_turn(as_sess(legacy), la, " again")
+    la = DrowseSession.append_assistant_turn(as_sess(legacy), lu, "reply")
+    la2 = DrowseSession.append_assistant_turn(as_sess(legacy), la, " again")
     assert la2 == la
     with pytest.raises(InvalidNodeOperationError):
-        SaklasSession.append_assistant_turn(
+        DrowseSession.append_assistant_turn(
             as_sess(legacy), la, "again", role_label="narrator",
         )

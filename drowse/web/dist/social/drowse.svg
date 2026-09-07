@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0b0e17"/>
+  <g transform="translate(76 72) scale(1.25)" style="--tile:#c5b3ff;--ink:#141822"><path data-squircle="true" d="M32 2C8 2 2 8 2 32s6 30 30 30 30-6 30-30S56 2 32 2Z" fill="var(--tile)"/><g style="color:var(--ink);--well:var(--tile)" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" transform="translate(10 10) scale(.6875)"><g data-fluent="home" transform="translate(4 4) scale(2.333333)" fill="currentColor" stroke="none"><path d="M13.45 2.533c-0.837-0.707-2.063-0.707-2.9 0L3.8 8.228C3.291 8.655 3 9.284 3 9.948v9.305c0 0.966 0.784 1.75 1.75 1.75h3c0.966 0 1.75-0.784 1.75-1.75V15.25c0-0.68 0.542-1.232 1.217-1.25h2.566c0.675 0.018 1.217 0.57 1.217 1.25v4.003c0 0.966 0.784 1.75 1.75 1.75h3c0.966 0 1.75-0.784 1.75-1.75V9.947c0-0.662-0.292-1.292-0.8-1.72l-6.75-5.694z"/></g></g></g>
+  <g font-family="Arial, sans-serif" fill="#f4f1ff">
+  <text x="184" y="127" font-size="48" font-weight="700" letter-spacing="-2">Drowse</text>
+  <text x="76" y="287" font-size="76" font-weight="700" letter-spacing="-3">See inside</text>
+  <text x="76" y="371" font-size="76" font-weight="700" letter-spacing="-3">your model.</text>
+  <text x="80" y="459" font-size="27" fill="#c9c2dd">Run, inspect, steer, and branch language models.</text>
+  <text x="80" y="504" font-size="27" fill="#c9c2dd">On your device. In your browser.</text></g>
+  <g fill="none" stroke="#a48be9" stroke-width="3">
+  <path d="M858 308h66c35 0 22-100 59-100h95M924 308h154M924 308c35 0 22 100 59 100h95"/>
+  </g><g fill="#211738" stroke="#a48be9" stroke-width="3">
+  <rect x="794" y="276" width="84" height="64" rx="18"/>
+  <rect x="1044" y="180" width="84" height="56" rx="16"/>
+  <rect x="1044" y="280" width="84" height="56" rx="16"/>
+  <rect x="1044" y="380" width="84" height="56" rx="16"/>
+  </g><g fill="#c1adff"><circle cx="816" cy="308" r="4"/><circle cx="834" cy="308" r="4"/><circle cx="852" cy="308" r="4"/></g></svg>

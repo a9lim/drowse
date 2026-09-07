@@ -1,7 +1,7 @@
 """Grammar tests for the manifold ``%`` operator in steering expressions.
 
 Bare names that don't match an installed pack resolve to themselves, so
-these run in an isolated SAKLAS_HOME with no packs installed.
+these run in an isolated DROWSE_HOME with no packs installed.
 """
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from saklas.io import selectors as sel
-from saklas.core.steering_expr import (
+from drowse.io import selectors as sel
+from drowse.core.steering_expr import (
     ManifoldTerm,
     ProjectedTerm,
     SteeringExprError,
@@ -18,12 +18,12 @@ from saklas.core.steering_expr import (
     parse_expr,
     referenced_selectors,
 )
-from saklas.core.triggers import Trigger
+from drowse.core.triggers import Trigger
 
 
 @pytest.fixture(autouse=True)
 def _isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     sel.invalidate()
     yield
     sel.invalidate()
@@ -135,7 +135,7 @@ def test_rejects_ablation_composition():
 def test_manifold_compose_guards_share_one_message():
     """The ``%``-with-projection guard and the ``!``-with-``%`` guard emit
     the same consolidated message (parse-time, ``SteeringExprError``)."""
-    from saklas.core.steering_expr import _MANIFOLD_COMPOSE_MSG
+    from drowse.core.steering_expr import _MANIFOLD_COMPOSE_MSG
 
     with pytest.raises(SteeringExprError) as proj:
         parse_expr("emotions%0.5~angry")
@@ -294,7 +294,7 @@ def test_mixed_sign_manifold_term_round_trips():
     # format→parse round-trip.  The parser propagates the leading sign across
     # the run, so ``_fmt_manifold`` renders ``onto`` relative to ``along``'s
     # sign to keep the values intact.
-    from saklas.core.steering import Steering
+    from drowse.core.steering import Steering
 
     term = ManifoldTerm(
         along=-0.6, onto=0.3, trigger=Trigger.BOTH,

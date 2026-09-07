@@ -1,7 +1,8 @@
-"""Smoke tests for saklas.
+"""Smoke tests for drowse.
 
-Requires a GPU (CUDA or Apple Silicon MPS) and downloads google/gemma-3-4b-it
-(~8GB) on first run. Run with: pytest tests/test_smoke.py -v
+Requires a GPU (CUDA or Apple Silicon MPS) and downloads the public
+SmolLM2-360M-Instruct test model on first run. Override with
+``DROWSE_TEST_MODEL``. Run with: pytest tests/test_smoke.py -v
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from typing import Any
 import pytest
 import torch
 
+from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
+
 # Skip entire module if no GPU backend is available.
 _HAS_GPU = torch.cuda.is_available() or torch.backends.mps.is_available()
 pytestmark = [
@@ -25,7 +28,7 @@ pytestmark = [
     ),
 ]
 
-MODEL_ID = "google/gemma-3-4b-it"
+MODEL_ID = gpu_model_id()
 # MPS runs ~3-5x slower than CUDA for this model; relax absolute timing budgets.
 _IS_MPS = not torch.cuda.is_available() and torch.backends.mps.is_available()
 _EXTRACTION_BUDGET_S = 60.0 if _IS_MPS else 10.0
@@ -33,15 +36,16 @@ _EXTRACTION_BUDGET_S = 60.0 if _IS_MPS else 10.0
 
 @pytest.fixture(scope="module")
 def model_and_tokenizer():
-    from saklas.core.model import load_model
+    from drowse.core.model import load_model
     # device="auto" picks cuda > mps > cpu; the skipif above guarantees a GPU.
-    model, tokenizer = load_model(MODEL_ID, quantize=None, device="auto")
-    return model, tokenizer
+    return load_or_skip_inaccessible(
+        lambda: load_model(MODEL_ID, quantize=None, device="auto"), MODEL_ID,
+    )
 
 
 @pytest.fixture(scope="module")
 def layers(model_and_tokenizer: Any) -> Any:
-    from saklas.core.model import get_layers
+    from drowse.core.model import get_layers
     model, _ = model_and_tokenizer
     return get_layers(model)
 
@@ -61,7 +65,7 @@ def _extract_profile(model: Any, tokenizer: Any, concept: str, layers: Any) -> A
     (``folded_directions``).  Same centroid-difference direction the old
     DiM extractor produced, through the surviving fold primitive.
     """
-    from saklas.core.capture import (
+    from drowse.core.capture import (
         _encode_and_capture_all,
         fold_directions_to_subspace,
         folded_directions,
@@ -90,7 +94,7 @@ def layer_means(model_and_tokenizer: Any, layers: Any) -> Any:
     # The probe-centering mean is the per-layer mean of the neutral activation
     # stack (X.mean(0)) — same corpus, same pooling — so there is no separate
     # compute_layer_means pass.
-    from saklas.core.capture import compute_neutral_activations
+    from drowse.core.capture import compute_neutral_activations
     model, tokenizer = model_and_tokenizer
     acts = compute_neutral_activations(model, tokenizer, layers)
     return {idx: X.mean(dim=0) for idx, X in acts.items()}
@@ -111,7 +115,7 @@ def _steer_subspace(mgr: Any, *pairs: Any) -> None:
     Anchored at zero (enough for the smoke "steering changes the output"
     assertions; the GPU gate owns strength calibration).
     """
-    from saklas.core.manifold import synthesize_subspace
+    from drowse.core.manifold import synthesize_subspace
 
     push: list[Any] = []
     neutral_means: dict[int, torch.Tensor] = {}
@@ -165,8 +169,8 @@ class TestVectorExtraction:
 
 class TestSteering:
     def test_steered_output_differs(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any) -> None:
-        from saklas.core.hooks import SteeringManager
-        from saklas.core.generation import GenerationConfig, GenerationState, generate_steered
+        from drowse.core.hooks import SteeringManager
+        from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
 
         model, tokenizer = model_and_tokenizer
         device = next(model.parameters()).device
@@ -197,8 +201,8 @@ class TestSteering:
         assert ids0 != ids1, "Steered output should differ from unsteered"
 
     def test_hook_cleanup(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any) -> None:
-        from saklas.core.hooks import SteeringManager
-        from saklas.core.generation import GenerationConfig, GenerationState, generate_steered
+        from drowse.core.hooks import SteeringManager
+        from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
 
         model, tokenizer = model_and_tokenizer
         p = next(model.parameters())
@@ -240,7 +244,7 @@ class TestSteering:
 
 class TestSaveLoad:
     def test_roundtrip(self, happy_profile: Any) -> None:
-        from saklas.core.profile import load_profile, save_profile
+        from drowse.core.profile import load_profile, save_profile
 
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "test_profile.safetensors")
@@ -261,10 +265,10 @@ class TestSaveLoad:
 
 class TestMonitor:
     def test_monitor_records_history(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any, layer_means: Any) -> None:
-        from saklas.core.hooks import SteeringManager
-        from saklas.core.monitor import Monitor
-        from saklas.core.capture import fold_directions_to_subspace
-        from saklas.core.generation import GenerationConfig, GenerationState, generate_steered
+        from drowse.core.hooks import SteeringManager
+        from drowse.core.monitor import Monitor
+        from drowse.core.capture import fold_directions_to_subspace
+        from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
         from tests._whitener import isotropic_whitener
 
         model, tokenizer = model_and_tokenizer
@@ -307,7 +311,7 @@ class TestMonitor:
 
         # Measure on generated text via the surviving hidden-state scoring API.
         text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-        from saklas.core.capture import _encode_and_capture_all
+        from drowse.core.capture import _encode_and_capture_all
 
         hidden = _encode_and_capture_all(
             model, tokenizer, "How are you feeling?", text, layers, device,
@@ -333,8 +337,8 @@ class TestMonitor:
 
     def test_throughput_regression(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any, layer_means: Any) -> None:
         """Steered generation should be at least 85% of vanilla throughput."""
-        from saklas.core.hooks import SteeringManager
-        from saklas.core.generation import GenerationConfig, GenerationState, generate_steered
+        from drowse.core.hooks import SteeringManager
+        from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
 
         model, tokenizer = model_and_tokenizer
         device = next(model.parameters()).device
@@ -346,42 +350,70 @@ class TestMonitor:
         ).to(device)
         config = GenerationConfig(max_new_tokens=100, temperature=0.7)
 
-        # Vanilla timing
-        state0 = GenerationState()
-        t0 = time.perf_counter()
-        ids0 = generate_steered(model, tokenizer, input_ids.clone(), config, state0)
-        vanilla_time = time.perf_counter() - t0
-        vanilla_tps = len(ids0) / vanilla_time
-
-        # Steered + monitored timing
-        # 3 steering vectors
-        mgr = SteeringManager()
+        # Finish every setup forward before either timed run.  Extracting the
+        # two remaining profiles between vanilla and steered timing heats MPS
+        # and made this ratio depend on test order rather than hook overhead.
         curious_profile = _extract_profile(model, tokenizer, "curious", layers)
         concise_profile = _extract_profile(model, tokenizer, "concise", layers)
-        # 3 vectors → one merged affine subspace (the dispatch composes them).
+
+        def synchronize() -> None:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            elif device.type == "mps":
+                torch.mps.synchronize()
+
+        # Three vectors lower to one merged affine subspace.
+        mgr = SteeringManager()
         _steer_subspace(
             mgr, (happy_profile, 0.8), (curious_profile, 0.5), (concise_profile, 0.3),
         )
-        mgr.apply_to_model(layers, device, dtype)
 
-        state1 = GenerationState()
-        t1 = time.perf_counter()
-        ids1 = generate_steered(model, tokenizer, input_ids.clone(), config, state1)
-        steered_time = time.perf_counter() - t1
-        steered_tps = len(ids1) / steered_time
+        def timed(steered: bool) -> float:
+            if steered:
+                mgr.apply_to_model(layers, device, dtype)
+            else:
+                mgr.detach_transient_hooks()
+            state = GenerationState()
+            synchronize()
+            started = time.perf_counter()
+            ids = generate_steered(
+                model, tokenizer, input_ids.clone(), config, state, seed=0,
+            )
+            synchronize()
+            return len(ids) / max(time.perf_counter() - started, 0.1)
+
+        # MPS throughput drifts materially with command-cache warmup and device
+        # temperature. One vanilla-then-steered pair can report anything from
+        # 64% to >100% for this tiny model even though the hook path is
+        # unchanged. Warm both graph shapes, then balance ordering and compare
+        # medians. The 85% product gate itself remains unchanged.
+        warm_config = GenerationConfig(max_new_tokens=2, temperature=0.7)
+        original_config = config
+        config = warm_config
+        timed(False)
+        timed(True)
+        config = original_config
+        vanilla_samples: list[float] = []
+        steered_samples: list[float] = []
+        for steered in (False, True, True, False, False, True):
+            (steered_samples if steered else vanilla_samples).append(timed(steered))
+
+        vanilla_tps = sorted(vanilla_samples)[1]
+        steered_tps = sorted(steered_samples)[1]
 
         mgr.clear_all()
 
         ratio = steered_tps / vanilla_tps
         assert ratio >= 0.85, (
             f"Steered throughput ({steered_tps:.1f} tok/s) is only "
-            f"{ratio:.0%} of vanilla ({vanilla_tps:.1f} tok/s), expected >= 85%"
+            f"{ratio:.0%} of vanilla ({vanilla_tps:.1f} tok/s), expected >= 85%; "
+            f"vanilla samples={vanilla_samples!r}, steered samples={steered_samples!r}"
         )
 
 
 class TestBuildChatInput:
     def test_chat_template_path(self, model_and_tokenizer: Any) -> None:
-        from saklas.core.generation import build_chat_input
+        from drowse.core.generation import build_chat_input
         _, tokenizer = model_and_tokenizer
         messages = [{"role": "user", "content": "Hello"}]
         ids = build_chat_input(tokenizer, messages)
@@ -390,13 +422,14 @@ class TestBuildChatInput:
         assert ids.shape[1] > 0
 
     def test_with_system_prompt(self, model_and_tokenizer: Any) -> None:
-        from saklas.core.generation import build_chat_input
+        from drowse.core.generation import build_chat_input
         _, tokenizer = model_and_tokenizer
         messages = [{"role": "user", "content": "Hello"}]
         ids_no_sys = build_chat_input(tokenizer, messages)
         ids_sys = build_chat_input(tokenizer, messages, system_prompt="You are helpful.")
-        # System prompt should add tokens
-        assert ids_sys.shape[1] > ids_no_sys.shape[1]
+        # Some instruction tokenizers supply a longer default system message,
+        # so an explicit replacement can be shorter while still being applied.
+        assert not torch.equal(ids_sys, ids_no_sys)
 
 
 class TestAblationPerformance:
@@ -406,22 +439,51 @@ class TestAblationPerformance:
     does one extra matmul per active ablation layer per step. Intentional.
     """
 
-    def test_throughput_with_ablation(self, model_and_tokenizer: Any, layers: Any, layer_means: Any) -> None:
-        from saklas.core.session import SaklasSession
+    def test_throughput_with_ablation(
+        self, model_and_tokenizer: Any, layers: Any, layer_means: Any,
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from drowse.core.sampling import SamplingConfig
+        from drowse.core.session import DrowseSession
 
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         model, tokenizer = model_and_tokenizer
-        session = SaklasSession(model, tokenizer, probes=["register"])
+        session = DrowseSession(model, tokenizer, probes=["register"])
 
         try:
             prompt = "Write a 200-word essay on the history of bicycles."
+            sampling = SamplingConfig(
+                max_tokens=128, temperature=0.0, seed=0,
+            )
+
+            def synchronize() -> None:
+                if session.device.type == "cuda":
+                    torch.cuda.synchronize(session.device)
+                elif session.device.type == "mps":
+                    torch.mps.synchronize()
+
+            # Pay one-time tokenizer, scene-template, and backend warmup before
+            # either timed path. Both measurements then run the same fixed
+            # decode budget; comparing a 510-token EOS completion with a
+            # 1,024-token length completion mostly measures the latter's longer
+            # KV-cache horizon, not steering overhead.
+            session.generate(
+                prompt,
+                sampling=SamplingConfig(max_tokens=1, temperature=0.0, seed=0),
+                stateless=True,
+            )
 
             # Vanilla baseline.
+            synchronize()
             t0 = time.perf_counter()
             # Keep the two measurements on identical prompt state.  Without
             # stateless mode the second call includes the first call's entire
             # essay in its prefill, so the old test mostly measured a much
             # longer conversation rather than steering overhead.
-            r_vanilla = session.generate(prompt, stateless=True).first
+            r_vanilla = session.generate(
+                prompt, sampling=sampling, stateless=True,
+            ).first
+            synchronize()
             dt_vanilla = max(time.perf_counter() - t0, 0.1)
             tok_s_vanilla = max(len(r_vanilla.tokens) / dt_vanilla, 1e-6)
 
@@ -431,10 +493,17 @@ class TestAblationPerformance:
             additive_name, ablation_name = probes[0], probes[1]
 
             expr = f"0.3 {additive_name} + !{ablation_name}"
-            t0 = time.perf_counter()
             with session.steering(expr):
-                r_combined = session.generate(prompt, stateless=True).first
-            dt_combined = max(time.perf_counter() - t0, 0.1)
+                # Hook composition is a cold setup cost, not per-token hot-path
+                # throughput. Time the same fixed decode only after the scope is
+                # installed.
+                synchronize()
+                t0 = time.perf_counter()
+                r_combined = session.generate(
+                    prompt, sampling=sampling, stateless=True,
+                ).first
+                synchronize()
+                dt_combined = max(time.perf_counter() - t0, 0.1)
             tok_s_combined = max(len(r_combined.tokens) / dt_combined, 1e-6)
 
             ratio = tok_s_combined / tok_s_vanilla
@@ -480,22 +549,22 @@ class TestDiscoverManifoldEndToEnd:
     _FIT_BUDGET_S = _EXTRACTION_BUDGET_S * 2
 
     def test_discover_pipeline(self, model_and_tokenizer: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from saklas.core.manifold import CustomDomain
-        from saklas.core.session import SaklasSession
-        from saklas.io.manifolds import create_discover_manifold_folder
+        from drowse.core.manifold import CustomDomain
+        from drowse.core.session import DrowseSession
+        from drowse.io.manifolds import create_discover_manifold_folder
 
-        # Pin SAKLAS_HOME to a per-test temp dir so the manifold folder
+        # Pin DROWSE_HOME to a per-test temp dir so the manifold folder
         # lands somewhere disposable; bundled neutrals still copy in
         # fresh on first session init.
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
         model, tokenizer = model_and_tokenizer
         # probes=[] — the smoke test doesn't need probe scoring and
         # skipping bootstrap shaves seconds off the discover gate.
-        session = SaklasSession(model, tokenizer, probes=[])
+        session = DrowseSession(model, tokenizer, probes=[])
         try:
             # ---- 1. generate per-concept corpora (A2 conversational) ----
-            from saklas.core.capture import _load_baseline_prompts
+            from drowse.core.capture import _load_baseline_prompts
             n_prompts = len(_load_baseline_prompts())
             t0 = time.perf_counter()
             corpora = session.generate_responses(
@@ -568,7 +637,7 @@ class TestDiscoverManifoldEndToEnd:
             )
             prompt = "Describe what you see in this room."
 
-            from saklas.core.sampling import SamplingConfig
+            from drowse.core.sampling import SamplingConfig
             sampling = SamplingConfig(
                 temperature=0.0, max_tokens=48, seed=0,
             )

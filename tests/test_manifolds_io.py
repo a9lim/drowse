@@ -1,4 +1,4 @@
-"""On-disk format tests for saklas.io.manifolds — CPU-only, no model."""
+"""On-disk format tests for drowse.io.manifolds — CPU-only, no model."""
 from __future__ import annotations
 
 import json
@@ -10,8 +10,8 @@ import pytest
 
 import torch
 
-from saklas.io.alignment import LayerAlignment
-from saklas.io.manifolds import (
+from drowse.io.alignment import LayerAlignment
+from drowse.io.manifolds import (
     MANIFOLD_FORMAT_VERSION,
     BakedManifoldError,
     DiscoverGenerationPlan,
@@ -36,7 +36,7 @@ from saklas.io.manifolds import (
     transfer_manifold,
     update_manifold_folder,
 )
-from saklas.io.paths import safe_model_id, tensor_filename
+from drowse.io.paths import safe_model_id, tensor_filename
 
 
 def _alignment(dense: torch.Tensor) -> LayerAlignment:
@@ -126,7 +126,7 @@ def _sidecar_payload(
         "format_version": MANIFOLD_FORMAT_VERSION,
         "name": name,
         "method": "manifold_pca",
-        "saklas_version": "0",
+        "drowse_version": "0",
         "domain": domain or {
             "type": "box",
             "axes": [
@@ -149,6 +149,7 @@ def _sidecar_payload(
         "sae_ids_by_layer": {},
         "sae_full_coverage": False,
         "model_fingerprint": None,
+        "context_binding_sha256": None,
         "model_source_fingerprint": None,
         "capture_sha256": None,
         "capture_version": None,
@@ -216,7 +217,7 @@ def test_stale_format_version_raises(tmp_path: Path):
 
 
 def test_newer_format_version_raises(tmp_path: Path):
-    # A manifold authored by a future Saklas must not load silently.
+    # A manifold authored by a future Drowse must not load silently.
     folder = _author_manifold(tmp_path)
     meta = json.loads((folder / "manifold.json").read_text())
     meta["format_version"] = MANIFOLD_FORMAT_VERSION + 1
@@ -392,7 +393,7 @@ def test_fit_parse_can_skip_historical_manifest_hashing(
     mf = ManifoldFolder.load(folder)
     mf.write_metadata()
 
-    import saklas.io.manifold_folder as folder_module
+    import drowse.io.manifold_folder as folder_module
 
     def _must_not_verify(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("fit-specific parse hashed the full manifest")
@@ -445,7 +446,7 @@ def test_update_file_hashes_only_reads_new_artifact(
     new_tensor.write_bytes(b"new tensor")
     new_sidecar.write_bytes((folder / "stub-model.json").read_bytes())
 
-    from saklas.io import manifold_folder as folder_mod
+    from drowse.io import manifold_folder as folder_mod
     real_hash = folder_mod.hash_file
     hashed: list[Path] = []
 
@@ -473,7 +474,7 @@ def test_update_file_hashes_rejects_unreadable_future_manifest(
     tensor = folder / "new-model.safetensors"
     tensor.write_bytes(b"future tensor")
 
-    from saklas.io import manifold_folder as folder_mod
+    from drowse.io import manifold_folder as folder_mod
 
     def _unexpected_hash(_path: Path) -> str:
         pytest.fail("an unreadable manifest must be rejected before payload hashing")
@@ -486,7 +487,7 @@ def test_update_file_hashes_rejects_unreadable_future_manifest(
 
 
 def test_bundle_drift_ignores_local_fit_transaction_state() -> None:
-    from saklas.io.manifolds import _manifest_content_sha256
+    from drowse.io.manifolds import _manifest_content_sha256
 
     base = {"format_version": MANIFOLD_FORMAT_VERSION, "name": "mood", "files": {}}
     local = {
@@ -556,7 +557,7 @@ def test_manifold_sidecar_load(tmp_path: Path):
     )
     payload.update({
         "method": "manifold_sae",
-        "saklas_version": "3.1.0",
+        "drowse_version": "3.1.0",
         "feature_space": "sae-gemma",
         "nodes_sha256": "deadbeef",
         "sae_release": "gemma",
@@ -586,7 +587,7 @@ def test_manifold_sidecar_node_spread_round_trips(tmp_path: Path):
     )
     payload.update({
         "method": "manifold_discover_pca",
-        "saklas_version": "4.0.0",
+        "drowse_version": "4.0.0",
         "fitted_layers": [5, 12, 20],
         "node_spread_per_layer": {"5": 0.5, "12": 8.25, "20": 3.0},
     })
@@ -634,10 +635,10 @@ def test_manifold_sidecar_topology_provenance_round_trips(tmp_path: Path):
     extraction tests stayed green while the round-trip lost them.
     """
     import torch
-    from saklas.core.manifold import (
+    from drowse.core.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
     )
-    from saklas.io.manifold_tensors import load_manifold, save_manifold
+    from drowse.io.manifold_tensors import load_manifold, save_manifold
 
     g = torch.Generator().manual_seed(0)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -694,10 +695,10 @@ def test_save_manifold_rejects_unknown_metadata_key(tmp_path: Path):
     load → transfer → save round-trip still works.
     """
     import torch
-    from saklas.core.manifold import (
+    from drowse.core.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
     )
-    from saklas.io.manifold_tensors import load_manifold, save_manifold
+    from drowse.io.manifold_tensors import load_manifold, save_manifold
 
     g = torch.Generator().manual_seed(0)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -743,7 +744,7 @@ def _author_nodes(labels: list[str]) -> list[dict[str, Any]]:
 
 
 def test_create_manifold_folder_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     nodes = _author_nodes(["calm", "uneasy", "afraid"])
@@ -761,7 +762,7 @@ def test_create_manifold_folder_round_trip(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_create_manifold_folder_conflict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     nodes = _author_nodes(["a", "b", "c"])
@@ -771,7 +772,7 @@ def test_create_manifold_folder_conflict(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 def test_create_manifold_folder_too_few_nodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     with pytest.raises(ManifoldFormatError):
@@ -781,7 +782,7 @@ def test_create_manifold_folder_too_few_nodes(tmp_path: Path, monkeypatch: pytes
 
 
 def test_create_manifold_folder_bad_coords_arity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     nodes = [
@@ -794,7 +795,7 @@ def test_create_manifold_folder_bad_coords_arity(tmp_path: Path, monkeypatch: py
 
 
 def test_create_manifold_folder_empty_statements(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     nodes = _author_nodes(["a", "b", "c"])
@@ -804,7 +805,7 @@ def test_create_manifold_folder_empty_statements(tmp_path: Path, monkeypatch: py
 
 
 def test_create_manifold_folder_bad_namespace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     with pytest.raises(ManifoldFormatError):
@@ -814,7 +815,7 @@ def test_create_manifold_folder_bad_namespace(tmp_path: Path, monkeypatch: pytes
 
 
 def test_update_manifold_folder_statements(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     nodes = _author_nodes(["a", "b", "c"])
@@ -831,7 +832,7 @@ def test_update_manifold_folder_statements(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_update_manifold_folder_relabels_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -850,14 +851,14 @@ def test_update_manifold_folder_relabels_cleanly(tmp_path: Path, monkeypatch: py
 def test_update_manifold_folder_does_not_hash_fitted_payloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
         "local", "mood", "", domain, _author_nodes(["a", "b", "c"]),
     )
     _fake_fit_tensor(folder, "test/model")
-    from saklas.io import integrity
+    from drowse.io import integrity
 
     hashed: list[Path] = []
 
@@ -1020,7 +1021,7 @@ def test_manifest_and_nodes_reject_unknown_fields(tmp_path: Path) -> None:
 
 
 def test_iter_manifold_folders_skips_malformed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1034,7 +1035,7 @@ def test_iter_manifold_folders_skips_malformed(tmp_path: Path, monkeypatch: pyte
 
 
 def test_iter_manifold_folders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     create_manifold_folder("local", "one", "", domain, _author_nodes(["a", "b", "c"]))
@@ -1048,9 +1049,9 @@ def test_iter_manifold_folders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_iter_manifold_folders_is_metadata_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from saklas.io import manifold_folder as manifold_folder_module
+    from drowse.io import manifold_folder as manifold_folder_module
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1087,7 +1088,7 @@ def _discover_corpora(labels: list[str]) -> dict[str, list[str]]:
 
 def test_create_discover_manifold_folder_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A freshly authored discover folder loads with the expected shape."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "personas", "five personas",
         fit_mode="pca",
@@ -1112,7 +1113,7 @@ def test_create_discover_manifold_folder_round_trip(tmp_path: Path, monkeypatch:
 
 
 def test_create_discover_manifold_rejects_unknown_fit_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(ManifoldFormatError, match="fit_mode"):
         create_discover_manifold_folder(
             "local", "bad", "",
@@ -1123,7 +1124,7 @@ def test_create_discover_manifold_rejects_unknown_fit_mode(tmp_path: Path, monke
 
 def test_create_discover_manifold_rejects_authored_fit_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """``authored`` is not a valid discover-mode fit_mode."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(ManifoldFormatError, match="fit_mode"):
         create_discover_manifold_folder(
             "local", "wrong", "",
@@ -1174,7 +1175,7 @@ def test_discover_manifold_rejects_domain_field(tmp_path: Path):
 
 def test_discover_nodes_sha256_sensitive_to_hyperparams(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A hyperparam edit invalidates the fit cache — the staleness key changes."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "pca_a", "",
         fit_mode="pca",
@@ -1191,7 +1192,7 @@ def test_discover_nodes_sha256_sensitive_to_hyperparams(tmp_path: Path, monkeypa
 
 def test_discover_nodes_sha256_sensitive_to_fit_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Switching ``pca`` ↔ ``spectral`` invalidates the fit cache."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "mode_a", "",
         fit_mode="pca",
@@ -1208,7 +1209,7 @@ def test_discover_nodes_sha256_sensitive_to_fit_mode(tmp_path: Path, monkeypatch
 
 def test_discover_nodes_sha256_sensitive_to_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """The standing invariant: a corpus edit invalidates the fit cache."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "corp_a", "",
         fit_mode="pca",
@@ -1224,7 +1225,7 @@ def test_discover_nodes_sha256_sensitive_to_corpus(tmp_path: Path, monkeypatch: 
 
 def test_discover_write_metadata_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A re-written discover folder loads identically."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "rw", "round-trip",
         fit_mode="spectral",
@@ -1244,7 +1245,7 @@ def test_discover_write_metadata_round_trip(tmp_path: Path, monkeypatch: pytest.
 def test_discover_create_rejects_cross_method_hyperparams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(ManifoldFormatError, match="k_nn"):
         create_discover_manifold_folder(
             "local", "sanity_pca", "",
@@ -1257,7 +1258,7 @@ def test_discover_create_rejects_cross_method_hyperparams(
 def test_discover_create_rejects_unknown_hyperparams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(ManifoldFormatError, match="foo"):
         create_discover_manifold_folder(
             "local", "sanity_spec", "",
@@ -1276,7 +1277,7 @@ def test_merge_discover_unions_nodes(tmp_path: Path, monkeypatch: pytest.MonkeyP
     """Two discover sources merge into a fresh discover folder whose
     node corpus is the union (in source order) of both inputs.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "src_a", "first heap",
         fit_mode="pca",
@@ -1311,7 +1312,7 @@ def test_merge_discover_unions_nodes(tmp_path: Path, monkeypatch: pytest.MonkeyP
 def test_merge_discover_does_not_hash_source_fitted_payloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folders = [
         create_discover_manifold_folder(
             "local", name, "", fit_mode="pca",
@@ -1324,7 +1325,7 @@ def test_merge_discover_does_not_hash_source_fitted_payloads(
     ]
     for folder in folders:
         _fake_fit_tensor(folder, "test/model")
-    from saklas.io import integrity
+    from drowse.io import integrity
 
     hashed: list[Path] = []
 
@@ -1345,7 +1346,7 @@ def test_merge_discover_refuses_authored_source(tmp_path: Path, monkeypatch: pyt
     """Authored manifolds carry user-declared geometry; merge refuses
     them because there's no shared coordinate system to reconcile.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_manifold(tmp_path / "manifolds" / "local", name="authored_src")
     create_discover_manifold_folder(
         "local", "discover_src", "",
@@ -1364,7 +1365,7 @@ def test_merge_discover_refuses_label_collision(tmp_path: Path, monkeypatch: pyt
     user resolves the collision deliberately (renaming hides
     provenance otherwise).
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "src_a", "",
         fit_mode="pca",
@@ -1389,7 +1390,7 @@ def test_merge_discover_refuses_mixed_fit_modes_without_override(
     the merged folder has one ``fit_mode``, so picking implicitly
     would silently lose information.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "src_pca", "",
         fit_mode="pca",
@@ -1419,7 +1420,7 @@ def test_merge_discover_refuses_mixed_fit_modes_without_override(
 def test_merge_discover_refuses_missing_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A non-existent source raises FileNotFoundError before any folder
     is written — atomic-on-failure discipline."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "exists", "",
         fit_mode="pca",
@@ -1436,7 +1437,7 @@ def test_merge_discover_force_overwrites(tmp_path: Path, monkeypatch: pytest.Mon
     """An existing destination raises FileExistsError without
     ``force=True``; with ``force=True`` it's rebuilt clean.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     for nm, labels in (("src_a", ["a", "b"]), ("src_b", ["c", "d"])):
         create_discover_manifold_folder(
             "local", nm, "",
@@ -1457,7 +1458,7 @@ def test_merge_discover_force_overwrites(tmp_path: Path, monkeypatch: pytest.Mon
 
 def test_merge_discover_refuses_under_two_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Single-source 'merge' is meaningless — refuse with a clear error."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "only", "",
         fit_mode="pca",
@@ -1494,7 +1495,7 @@ def test_dotted_node_label_rejected_authored_load(tmp_path: Path):
 
 def test_dotted_node_label_rejected_create(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """``create_manifold_folder`` rejects a dotted label up front."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     nodes = _author_nodes(["a", "b", "c"])
@@ -1505,7 +1506,7 @@ def test_dotted_node_label_rejected_create(tmp_path: Path, monkeypatch: pytest.M
 
 def test_dotted_node_label_rejected_discover_create(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """``create_discover_manifold_folder`` rejects a dotted label too."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(ManifoldFormatError, match="grammar-addressable"):
         create_discover_manifold_folder(
             "local", "dotted_disc", "",
@@ -1516,7 +1517,7 @@ def test_dotted_node_label_rejected_discover_create(tmp_path: Path, monkeypatch:
 
 def test_underscore_and_hyphen_labels_still_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """The stricter regex still admits ``_`` and ``-`` — only ``.`` is dropped."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     nodes = _author_nodes(["snake_case", "kebab-case", "plain"])
@@ -1536,7 +1537,7 @@ def _fake_fit_tensor(folder: Path, model_id: str, *, release: str | None = None)
 
     No model needed — the lifecycle functions only glob/parse filenames.
     """
-    from saklas.io.paths import sidecar_filename, tensor_filename
+    from drowse.io.paths import sidecar_filename, tensor_filename
     ts = folder / tensor_filename(model_id, release=release)
     sc = folder / sidecar_filename(model_id, release=release)
     ts.write_bytes(b"placeholder-tensor")
@@ -1550,7 +1551,7 @@ def _fake_fit_tensor(folder: Path, model_id: str, *, release: str | None = None)
 def test_clear_manifold_tensors_removes_tensors_keeps_corpus(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1565,7 +1566,7 @@ def test_clear_manifold_tensors_removes_tensors_keeps_corpus(
     ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
         fitted, sidecar_path,
     )
-    from saklas.io.paths import model_dir
+    from drowse.io.paths import model_dir
 
     capture_dir = model_dir("google/gemma-3-4b-it") / "manifold_capture"
     capture_dir.mkdir(parents=True)
@@ -1587,7 +1588,7 @@ def test_clear_manifold_tensors_removes_tensors_keeps_corpus(
 def test_shared_capture_survives_until_last_fitted_owner_is_removed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folders = [
@@ -1607,7 +1608,7 @@ def test_shared_capture_survives_until_last_fitted_owner_is_removed(
             fitted, sidecar_path,
         )
 
-    from saklas.io.paths import model_dir
+    from drowse.io.paths import model_dir
 
     capture_dir = model_dir("google/gemma-3-4b-it") / "manifold_capture"
     capture_dir.mkdir(parents=True)
@@ -1623,7 +1624,7 @@ def test_shared_capture_survives_until_last_fitted_owner_is_removed(
 def test_clear_reaps_capture_when_sidecar_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1631,7 +1632,7 @@ def test_clear_reaps_capture_when_sidecar_is_missing(
     )
     fitted = _fake_fit_tensor(folder, "model/a")
     fitted.with_suffix(".json").unlink()
-    from saklas.io.paths import model_dir
+    from drowse.io.paths import model_dir
 
     capture_sha = "1" * 64
     capture_dir = model_dir("model/a") / "manifold_capture"
@@ -1646,7 +1647,7 @@ def test_clear_reaps_capture_when_sidecar_is_missing(
 def test_clear_reaps_capture_when_both_fitted_halves_are_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1655,7 +1656,7 @@ def test_clear_reaps_capture_when_both_fitted_halves_are_missing(
     fitted = _fake_fit_tensor(folder, "model/a")
     fitted.unlink()
     fitted.with_suffix(".json").unlink()
-    from saklas.io.paths import model_dir
+    from drowse.io.paths import model_dir
 
     capture_sha = "4" * 64
     capture_dir = model_dir("model/a") / "manifold_capture"
@@ -1670,7 +1671,7 @@ def test_clear_reaps_capture_when_both_fitted_halves_are_missing(
 def test_rm_reaps_capture_when_sidecar_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1678,7 +1679,7 @@ def test_rm_reaps_capture_when_sidecar_is_corrupt(
     )
     fitted = _fake_fit_tensor(folder, "model/a")
     fitted.with_suffix(".json").write_text("{")
-    from saklas.io.paths import model_dir
+    from drowse.io.paths import model_dir
 
     capture_sha = "2" * 64
     capture_dir = model_dir("model/a") / "manifold_capture"
@@ -1693,7 +1694,7 @@ def test_rm_reaps_capture_when_sidecar_is_corrupt(
 def test_rm_reaps_capture_when_both_fitted_halves_are_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1702,7 +1703,7 @@ def test_rm_reaps_capture_when_both_fitted_halves_are_missing(
     fitted = _fake_fit_tensor(folder, "model/a")
     fitted.unlink()
     fitted.with_suffix(".json").unlink()
-    from saklas.io.paths import model_dir
+    from drowse.io.paths import model_dir
 
     capture_sha = "5" * 64
     capture_dir = model_dir("model/a") / "manifold_capture"
@@ -1717,7 +1718,7 @@ def test_rm_reaps_capture_when_both_fitted_halves_are_missing(
 def test_corrupt_owner_cleanup_preserves_capture_with_readable_shared_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folders = [
@@ -1737,7 +1738,7 @@ def test_corrupt_owner_cleanup_preserves_capture_with_readable_shared_owner(
     ManifoldFolder.load(folders[1], verify_manifest=False).update_file_hashes(
         live, live_sidecar,
     )
-    from saklas.io.paths import model_dir
+    from drowse.io.paths import model_dir
 
     capture_dir = model_dir("model/a") / "manifold_capture"
     capture_dir.mkdir(parents=True)
@@ -1751,7 +1752,7 @@ def test_corrupt_owner_cleanup_preserves_capture_with_readable_shared_owner(
 def test_clear_manifold_tensors_repairs_orphan_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1769,7 +1770,7 @@ def test_clear_manifold_tensors_repairs_orphan_sidecar(
 def test_clear_manifold_tensors_repairs_orphan_tensor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1786,7 +1787,7 @@ def test_clear_manifold_tensors_repairs_orphan_tensor(
 def test_clear_manifold_tensors_repairs_corrupt_fitted_pair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1804,7 +1805,7 @@ def test_clear_manifold_tensors_repairs_corrupt_fitted_pair(
 def test_scoped_clear_never_launders_unselected_corruption(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1822,7 +1823,7 @@ def test_scoped_clear_never_launders_unselected_corruption(
 def test_clear_manifold_tensors_variant_filter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1841,7 +1842,7 @@ def test_clear_manifold_tensors_model_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """A model scope deletes only that model's tensors, keeping others."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1860,13 +1861,13 @@ def test_clear_manifold_tensors_model_scope(
 
 
 def test_clear_manifold_tensors_missing_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(FileNotFoundError):
         clear_manifold_tensors("local", "nope")
 
 
 def test_remove_manifold_folder_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1882,7 +1883,7 @@ def test_remove_manifold_folder_local(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_remove_manifold_folder_removes_referenced_capture_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1895,7 +1896,7 @@ def test_remove_manifold_folder_removes_referenced_capture_cache(
     sidecar["capture_sha256"] = capture_sha
     sidecar_path.write_text(json.dumps(sidecar))
     ManifoldFolder.load(folder, verify_manifest=False).write_metadata()
-    from saklas.io.paths import model_dir
+    from drowse.io.paths import model_dir
 
     capture_dir = model_dir("google/gemma-3-4b-it") / "manifold_capture"
     capture_dir.mkdir(parents=True)
@@ -1909,7 +1910,7 @@ def test_remove_manifold_folder_bundled_namespace_rematerializes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """A folder under ``default/`` reports the bundled-respawn flag."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1921,14 +1922,14 @@ def test_remove_manifold_folder_bundled_namespace_rematerializes(
 
 
 def test_remove_manifold_folder_missing_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(FileNotFoundError):
         remove_manifold_folder("local", "nope")
 
 
 def test_refresh_manifold_skips_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A local manifold has no upstream — refresh is a silent skip."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     create_manifold_folder(
@@ -1940,14 +1941,14 @@ def test_refresh_manifold_skips_local(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_metadata_only_lifecycle_does_not_hash_fitted_payloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
         "local", "mood", "", domain, _author_nodes(["a", "b", "c"]),
     )
     _fake_fit_tensor(folder, "test/model")
-    from saklas.io import integrity
+    from drowse.io import integrity
 
     hashed: list[Path] = []
 
@@ -1963,7 +1964,7 @@ def test_metadata_only_lifecycle_does_not_hash_fitted_payloads(
 
 def test_refresh_manifold_hf_repulls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """An ``hf://``-sourced manifold re-pulls via pull_manifold."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -1975,7 +1976,7 @@ def test_refresh_manifold_hf_repulls(tmp_path: Path, monkeypatch: pytest.MonkeyP
     mf.write_metadata()
 
     captured: dict[str, Any] = {}
-    import saklas.io.hf_manifolds as hfm
+    import drowse.io.hf_manifolds as hfm
 
     def fake_pull(coord: str, *, target_folder: Path, force: bool, revision: str | None = None) -> Path:
         captured.update(coord=coord, target=target_folder,
@@ -1998,7 +1999,7 @@ def test_refresh_manifold_model_scope_clears_fit_no_repull(
     so a single-model refresh is a tensors-only delete (re-fits on next
     use), even on an ``hf://``-sourced manifold.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2011,7 +2012,7 @@ def test_refresh_manifold_model_scope_clears_fit_no_repull(
     _fake_fit_tensor(folder, "google/gemma-3-4b-it")
     _fake_fit_tensor(folder, "Qwen/Qwen3-4B")
 
-    import saklas.io.hf_manifolds as hfm
+    import drowse.io.hf_manifolds as hfm
 
     def boom(*a: object, **k: object) -> None:  # pragma: no cover - asserted not to fire
         raise AssertionError("scoped refresh must not re-pull from HF")
@@ -2025,7 +2026,7 @@ def test_refresh_manifold_model_scope_clears_fit_no_repull(
 
 
 def test_refresh_manifold_missing_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(FileNotFoundError):
         refresh_manifold("local", "nope")
 
@@ -2033,7 +2034,7 @@ def test_refresh_manifold_missing_raises(tmp_path: Path, monkeypatch: pytest.Mon
 def test_manifold_pair_lock_identity_is_external_stable_and_bounded(
     tmp_path: Path,
 ) -> None:
-    from saklas.io.manifold_folder import manifold_pair_lock_path
+    from drowse.io.manifold_folder import manifold_pair_lock_path
 
     folder = tmp_path / "manifolds" / "local" / "mood"
     tensor = folder / ("model_" + "x" * 220 + ".safetensors")
@@ -2053,9 +2054,9 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
-    from saklas.io.manifold_folder import manifold_pair_lock
+    from drowse.io.manifold_folder import manifold_pair_lock
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     namespace = "alice" if operation == "refresh" else "local"
@@ -2067,7 +2068,7 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
         mf = ManifoldFolder.load(folder)
         mf.source = "hf://alice/mood@v1"
         mf.write_metadata()
-        import saklas.io.hf_manifolds as hfm
+        import drowse.io.hf_manifolds as hfm
 
         monkeypatch.setattr(
             hfm,
@@ -2108,9 +2109,9 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
 def test_force_authoring_reset_waits_for_stable_pair_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from saklas.io.manifold_folder import manifold_pair_lock
+    from drowse.io.manifold_folder import manifold_pair_lock
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "mood", "", fit_mode="pca",
         node_corpora={"old": ["old response"]},
@@ -2158,12 +2159,12 @@ def test_rectangular_affine_transfer_preserves_points_frame_and_steering(
     tmp_path: Path,
 ) -> None:
     import torch
-    from saklas.core.manifold import (
+    from drowse.core.manifold import (
         CustomDomain, LayerSubspace, Manifold,
         transfer_manifold_subspaces,
     )
-    from saklas.io.manifold_tensors import load_manifold, save_manifold
-    from saklas.io.alignment import LayerAlignment
+    from drowse.io.manifold_tensors import load_manifold, save_manifold
+    from drowse.io.alignment import LayerAlignment
 
     basis = torch.tensor([
         [1.0, 0.0, 0.0, 0.0],
@@ -2223,10 +2224,10 @@ def test_rectangular_affine_transfer_preserves_points_frame_and_steering(
 
 
 def test_monopolar_affine_transfer_rebakes_positive_world_direction_share() -> None:
-    from saklas.core.manifold import (
+    from drowse.core.manifold import (
         CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
     )
-    from saklas.io.alignment import LayerAlignment
+    from drowse.io.alignment import LayerAlignment
 
     basis = torch.tensor([[1.0, 0.0, 0.0]])
     real_coord = torch.tensor([[2.5]])
@@ -2257,11 +2258,11 @@ def test_monopolar_affine_transfer_rebakes_positive_world_direction_share() -> N
 def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
     import torch
     from dataclasses import replace
-    from saklas.core.manifold import (
+    from drowse.core.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
         fit_rbf_interpolant, transfer_manifold_subspaces,
     )
-    from saklas.io.alignment import LayerAlignment
+    from drowse.io.alignment import LayerAlignment
 
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
     coords = torch.tensor([[0.0], [0.5], [1.0]])
@@ -2301,8 +2302,8 @@ def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
 
 def test_rectangular_transfer_rejects_collapsed_subspace_rank() -> None:
     import torch
-    from saklas.core.manifold import CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces
-    from saklas.io.alignment import LayerAlignment
+    from drowse.core.manifold import CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces
+    from drowse.io.alignment import LayerAlignment
 
     source = Manifold(
         name="collapsed", domain=CustomDomain(2), node_labels=["a", "b"],
@@ -2326,10 +2327,10 @@ def test_rectangular_transfer_rejects_collapsed_subspace_rank() -> None:
 def test_rectangular_transfer_rejects_oblique_rank_collapse() -> None:
     """Rank detection uses singular values, not unpivoted QR diagonals."""
     import torch
-    from saklas.core.manifold import (
+    from drowse.core.manifold import (
         CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
     )
-    from saklas.io.alignment import LayerAlignment
+    from drowse.io.alignment import LayerAlignment
 
     source = Manifold(
         name="oblique-collapse", domain=CustomDomain(3),
@@ -2362,7 +2363,7 @@ def _target_whitener(*, dim: int = 6, layers: tuple[int, ...] = (4, 5, 6)):
     whitener covering the transferred layers.
     """
     import torch
-    from saklas.core.mahalanobis import LayerWhitener
+    from drowse.core.mahalanobis import LayerWhitener
     g = torch.Generator().manual_seed(99)
     acts = {L: torch.randn(120, dim, generator=g) for L in layers}
     means = {L: torch.zeros(dim) for L in layers}
@@ -2376,11 +2377,11 @@ def _fit_real_manifold(folder: Path, model_id: str, *, dim: int = 6, seed: int =
     """
     import torch
     from dataclasses import replace
-    from saklas.core.manifold import (
+    from drowse.core.manifold import (
         MANIFOLD_FIT_POLICY_VERSION, BoxAxis, BoxDomain, Manifold,
         fit_layer_subspace, fit_rbf_interpolant,
     )
-    from saklas.io.manifold_tensors import save_manifold
+    from drowse.io.manifold_tensors import save_manifold
 
     g = torch.Generator().manual_seed(seed)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -2414,7 +2415,7 @@ def _fit_real_manifold(folder: Path, model_id: str, *, dim: int = 6, seed: int =
         mahalanobis_share={4: 1.0, 5: 2.0, 6: 3.0},
         origin=origins,
     )
-    from saklas.io.paths import tensor_filename
+    from drowse.io.paths import tensor_filename
     out = folder / tensor_filename(model_id)
     mf = ManifoldFolder.load(folder, verify_manifest=False)
     save_manifold(man, out, {
@@ -2461,7 +2462,7 @@ def test_transfer_rejects_source_generation_changed_after_preflight(
             expected_source_proof=proof,
         )
 
-    from saklas.io.paths import tensor_filename
+    from drowse.io.paths import tensor_filename
 
     assert not (
         folder / tensor_filename("tgt/model", transferred_from="src/model")
@@ -2487,7 +2488,7 @@ def test_transfer_preflight_rejects_non_object_manifest_before_payload_hash(
     _fit_real_manifold(folder, "src/model", dim=4)
     (folder / "manifold.json").write_text(root)
     monkeypatch.setattr(
-        "saklas.io.integrity.verify_integrity",
+        "drowse.io.integrity.verify_integrity",
         lambda *_args, **_kwargs: pytest.fail(
             "non-object manifest reached payload hashing"
         ),
@@ -2510,7 +2511,7 @@ def test_transfer_preflight_rejects_invalid_selected_digest_before_hashing(
     manifest["files"][source.name] = digest
     manifest_path.write_text(json.dumps(manifest))
     monkeypatch.setattr(
-        "saklas.io.integrity.verify_integrity",
+        "drowse.io.integrity.verify_integrity",
         lambda *_args, **_kwargs: pytest.fail(
             "malformed selected digest reached payload hashing"
         ),
@@ -2533,7 +2534,7 @@ def test_transfer_preflight_rejects_future_manifest_before_payload_hash(
     manifest_path.write_text(json.dumps(manifest))
 
     monkeypatch.setattr(
-        "saklas.io.integrity.verify_integrity",
+        "drowse.io.integrity.verify_integrity",
         lambda *_args, **_kwargs: pytest.fail(
             "future manifest reached payload hashing"
         ),
@@ -2545,7 +2546,7 @@ def test_transfer_preflight_rejects_future_manifest_before_payload_hash(
 
 
 def test_strict_fitted_load_rejects_non_object_manifest(tmp_path: Path) -> None:
-    from saklas.io.manifold_tensors import load_manifold
+    from drowse.io.manifold_tensors import load_manifold
 
     folder = _author_manifold(tmp_path)
     source = _fit_real_manifold(folder, "src/model", dim=4)
@@ -2561,8 +2562,8 @@ def test_strict_fitted_load_rejects_non_object_manifest(tmp_path: Path) -> None:
 def test_strict_fitted_load_normalizes_trusted_corrupt_sidecar(
     tmp_path: Path, payload: str, message: str,
 ) -> None:
-    from saklas.io.manifold_tensors import load_manifold
-    from saklas.io.integrity import hash_file
+    from drowse.io.manifold_tensors import load_manifold
+    from drowse.io.integrity import hash_file
 
     folder = _author_manifold(tmp_path)
     source = _fit_real_manifold(folder, "src/model", dim=4)
@@ -2580,7 +2581,7 @@ def test_strict_fitted_load_normalizes_trusted_corrupt_sidecar(
 def test_strict_fitted_load_rejects_invalid_digest_before_hashing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from saklas.io.manifold_tensors import load_manifold
+    from drowse.io.manifold_tensors import load_manifold
 
     folder = _author_manifold(tmp_path)
     source = _fit_real_manifold(folder, "src/model", dim=4)
@@ -2589,7 +2590,7 @@ def test_strict_fitted_load_rejects_invalid_digest_before_hashing(
     manifest["files"][source.name] = "invalid"
     manifest_path.write_text(json.dumps(manifest))
     monkeypatch.setattr(
-        "saklas.io.integrity.verify_integrity",
+        "drowse.io.integrity.verify_integrity",
         lambda *_args, **_kwargs: pytest.fail(
             "invalid digest reached fitted payload hashing"
         ),
@@ -2605,9 +2606,9 @@ def test_transfer_manifold_identity_alignment_preserves_geometry(
     """An identity alignment leaves the per-layer subspace unchanged and
     writes the transferred tensor at the ``_from-<safe_src>`` filename."""
     import torch
-    from saklas.io.manifold_tensors import load_manifold
+    from drowse.io.manifold_tensors import load_manifold
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2631,7 +2632,7 @@ def test_transfer_manifold_identity_alignment_preserves_geometry(
         target_layer_means=target_whitener.layer_means,
     )
     # Filename uses the transfer variant suffix.
-    from saklas.io.paths import tensor_filename
+    from drowse.io.paths import tensor_filename
     assert out.name == tensor_filename(tgt_model, transferred_from=src_model)
 
     tgt_man = load_manifold(out)
@@ -2662,10 +2663,10 @@ def test_transfer_manifold_rebakes_share_in_target_space(
     Mahalanobis share in target space (instead of dropping it) and records
     ``share_metric == "mahalanobis"``."""
     import torch
-    from saklas.core.mahalanobis import LayerWhitener
-    from saklas.io.manifold_tensors import load_manifold
+    from drowse.core.mahalanobis import LayerWhitener
+    from drowse.io.manifold_tensors import load_manifold
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2709,9 +2710,9 @@ def test_transfer_manifold_rotation_maps_subspace(
     transferred world-space activation at a node equals Q applied to the
     source activation."""
     import torch
-    from saklas.io.manifold_tensors import load_manifold
+    from drowse.io.manifold_tensors import load_manifold
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2748,9 +2749,9 @@ def test_transfer_manifold_drops_uncovered_layers(
 ):
     """Layers the alignment doesn't cover are dropped from the transfer."""
     import torch
-    from saklas.io.manifold_tensors import load_manifold
+    from drowse.io.manifold_tensors import load_manifold
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2776,7 +2777,7 @@ def test_transfer_manifold_missing_source_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     import torch
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2795,7 +2796,7 @@ def test_transfer_manifold_missing_source_raises(
 def test_transfer_manifold_empty_alignment_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2816,7 +2817,7 @@ def test_transfer_manifold_no_overlap_raises(
 ):
     """An alignment covering no fitted layer raises rather than write empty."""
     import torch
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2837,9 +2838,9 @@ def test_transfer_manifold_refuses_overwrite_without_force(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     import torch
-    from saklas.io.manifold_tensors import load_manifold
+    from drowse.io.manifold_tensors import load_manifold
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2853,7 +2854,7 @@ def test_transfer_manifold_refuses_overwrite_without_force(
         source_model_fingerprint="fp:src/m", target_layer_means=w.layer_means,
         target_model_fingerprint="fp:tgt/m",
     )
-    import saklas.core.manifold as manifold_mod
+    import drowse.core.manifold as manifold_mod
 
     real_transfer = manifold_mod.transfer_manifold_subspaces
     monkeypatch.setattr(
@@ -2883,10 +2884,10 @@ def test_transfer_retries_pair_committed_before_manifest_update(
 ) -> None:
     """An unproven transferred pair is repaired without requiring force."""
     import torch
-    from saklas.io.manifold_tensors import load_manifold
-    from saklas.io.paths import tensor_filename
+    from drowse.io.manifold_tensors import load_manifold
+    from drowse.io.paths import tensor_filename
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2941,7 +2942,7 @@ def test_transfer_retries_pair_committed_before_manifest_update(
 
 
 def test_manifold_summary_authored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -2970,7 +2971,7 @@ def test_manifold_summary_authored(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_manifold_summary_discover_unfitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "personas", "five personas",
         fit_mode="pca",
@@ -2997,9 +2998,9 @@ def test_manifold_summary_reports_transfer_variant(
 ):
     """A transferred tensor surfaces under tensor_variants as ``from-...``."""
     import torch
-    from saklas.io.manifold_tensors import load_manifold
+    from drowse.io.manifold_tensors import load_manifold
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -3017,7 +3018,7 @@ def test_manifold_summary_reports_transfer_variant(
     )
     summ = manifold_summary(folder)
     src_safe = safe_model_id("src/m")
-    from saklas.io.paths import encode_release_id
+    from drowse.io.paths import encode_release_id
     tgt_safe = safe_model_id("tgt/m")
     assert summ["tensor_variants"][src_safe] == ["raw"]
     assert summ["tensor_variants"][tgt_safe] == [
@@ -3043,9 +3044,9 @@ def test_manifold_summary_reports_template_ref(
     lives in the template — exactly what a user needs to know before editing
     ``nodes/`` by hand.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifolds import create_manifold_from_template
-    from saklas.io.templates import create_template_folder
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifolds import create_manifold_from_template
+    from drowse.io.templates import create_template_folder
 
     create_template_folder(
         "local", "weekday", slot="[DAY]",
@@ -3075,12 +3076,12 @@ def test_manifold_fit_summary_surfaces_auto_topology_evidence(tmp_path: Path):
     they were written and schema-validated but no reader lifted them.
     """
     import torch
-    from saklas.core.manifold import (
+    from drowse.core.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
     )
-    from saklas.io.manifold_folder import ManifoldSidecar
-    from saklas.io.manifold_tensors import save_manifold
-    from saklas.io.manifolds import manifold_fit_summary
+    from drowse.io.manifold_folder import ManifoldSidecar
+    from drowse.io.manifold_tensors import save_manifold
+    from drowse.io.manifolds import manifold_fit_summary
 
     g = torch.Generator().manual_seed(0)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -3129,7 +3130,7 @@ def test_init_and_append_discover_streaming(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """The streaming skeleton + per-node append round-trips through load."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     labels = ["alpha", "beta", "gamma", "default"]
     folder = init_discover_manifold_folder(
         "local", "stream", "streamed discover", fit_mode="pca",
@@ -3155,7 +3156,7 @@ def test_create_discover_does_not_write_scenarios(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """Current all-at-once discover authoring has no scenario provenance."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "noscn", "d", fit_mode="pca",
         node_corpora={"a": ["x"], "b": ["y"], "default": ["z"]},
@@ -3166,7 +3167,7 @@ def test_create_discover_does_not_write_scenarios(
 def test_init_discover_rejects_duplicate_and_bad_label(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(ManifoldFormatError):
         init_discover_manifold_folder(
             "local", "dup", "", fit_mode="pca", labels=["a", "a"],
@@ -3184,7 +3185,7 @@ def test_init_discover_rejects_duplicate_and_bad_label(
 def test_append_discover_rejects_empty_statements(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = init_discover_manifold_folder(
         "local", "emptychk", "", fit_mode="pca", labels=["a", "b"],
     )
@@ -3214,7 +3215,7 @@ def test_plan_fresh_creates_skeleton_all_pending(tmp_path: Path):
 def test_plan_force_reset_and_skeleton_share_manifest_transaction(
     tmp_path: Path,
 ) -> None:
-    from saklas.io.manifold_folder import _locked_manifest
+    from drowse.io.manifold_folder import _locked_manifest
 
     folder = tmp_path / "m"
     first = plan_discover_generation(
@@ -3357,7 +3358,7 @@ def test_plan_resume_requires_exact_partial_manifest(
 def test_plan_rejects_non_discover_existing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
     folder, _ = create_manifold_folder(
@@ -3371,7 +3372,7 @@ def test_plan_rejects_non_discover_existing(
 
 def test_bundled_materialization_helpers_ignore_non_json_payloads(tmp_path: Path) -> None:
     """Package-data materialization should not mirror local metadata files."""
-    from saklas.io import manifolds as M
+    from drowse.io import manifolds as M
 
     pkg = tmp_path / "pkg"
     (pkg / "nodes").mkdir(parents=True)
@@ -3417,7 +3418,7 @@ def test_bundled_refresh_ignores_local_fit_proofs(
     "manifest changed", refreshed the manifest from the bundle, and wiped
     the proofs, orphaning every fitted tensor of every bundled manifold.
     """
-    from saklas.io import manifolds as M
+    from drowse.io import manifolds as M
 
     root = tmp_path / "bundled"
     pkg = root / "axis"
@@ -3440,7 +3441,7 @@ def test_bundled_refresh_ignores_local_fit_proofs(
     (pkg / "nodes" / "01_neg.json").write_text('["b"]')
     monkeypatch.setattr(
         M._resources, "files",
-        lambda package: root if package == "saklas.data.manifolds" else None,
+        lambda package: root if package == "drowse.data.manifolds" else None,
     )
 
     default_dir = tmp_path / "default"
@@ -3477,7 +3478,7 @@ def test_bundled_refresh_carries_tensor_proofs_forward(
     the files.  Entries for since-deleted files and for bundle-shipped
     files are dropped.
     """
-    from saklas.io import manifolds as M
+    from drowse.io import manifolds as M
 
     root = tmp_path / "bundled"
     pkg = root / "axis"
@@ -3497,7 +3498,7 @@ def test_bundled_refresh_carries_tensor_proofs_forward(
     (pkg / "nodes" / "01_neg.json").write_text('["b"]')
     monkeypatch.setattr(
         M._resources, "files",
-        lambda package: root if package == "saklas.data.manifolds" else None,
+        lambda package: root if package == "drowse.data.manifolds" else None,
     )
 
     default_dir = tmp_path / "default"
@@ -3533,7 +3534,7 @@ def test_bundled_manifold_names_skips_incomplete_package_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A partial generation directory must not materialize as a bundled manifold."""
-    from saklas.io import manifolds as M
+    from drowse.io import manifolds as M
 
     root = tmp_path / "bundled"
     complete = root / "complete"
@@ -3557,7 +3558,7 @@ def test_bundled_manifold_names_skips_incomplete_package_data(
 
     monkeypatch.setattr(
         M._resources, "files",
-        lambda package: root if package == "saklas.data.manifolds" else None,
+        lambda package: root if package == "drowse.data.manifolds" else None,
     )
 
     assert M.bundled_manifold_names() == ["complete"]
@@ -3572,7 +3573,7 @@ def test_bundled_manifold_names_skips_incomplete_package_data(
 
 def _baked_manifold(name: str = "merged", n_layers: int = 3):
     """Build an affine R=1 Manifold (the merge/import shape) via the fold."""
-    from saklas.core.capture import fold_directions_to_subspace
+    from drowse.core.capture import fold_directions_to_subspace
 
     directions = {i: torch.randn(8) for i in range(n_layers)}
     whitener = _target_whitener(dim=8, layers=tuple(range(n_layers)))
@@ -3586,9 +3587,9 @@ def _baked_manifold(name: str = "merged", n_layers: int = 3):
 
 
 def test_baked_manifold_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifold_tensors import load_manifold
-    from saklas.core.capture import folded_directions
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifold_tensors import load_manifold
+    from drowse.core.capture import folded_directions
 
     manifold, directions = _baked_manifold("merged")
     folder, mf = create_baked_manifold_folder(
@@ -3617,8 +3618,8 @@ def test_baked_manifold_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 def test_baked_publication_hashes_each_new_file_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io import manifold_folder as folder_module, integrity
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io import manifold_folder as folder_module, integrity
 
     real_hash = folder_module.hash_file
     hashed: list[Path] = []
@@ -3643,7 +3644,7 @@ def test_baked_publication_hashes_each_new_file_once(
 def test_baked_first_publication_retry_repairs_unproven_pair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     manifold, _directions = _baked_manifold("merged")
     real_update = ManifoldFolder.update_file_hashes
     failed = False
@@ -3673,8 +3674,8 @@ def test_baked_first_publication_retry_repairs_unproven_pair(
 def test_baked_force_replaces_manifestless_partial_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.paths import manifold_dir
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.paths import manifold_dir
 
     folder = manifold_dir("local", "merged")
     folder.mkdir(parents=True)
@@ -3699,7 +3700,7 @@ def test_baked_force_replaces_manifestless_partial_folder(
 def test_baked_manifold_clear_and_scoped_refresh_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     manifold, _ = _baked_manifold("merged")
     create_baked_manifold_folder(
         "local", "merged", "", manifold, "test/model", method="folded_vector",
@@ -3714,7 +3715,7 @@ def test_baked_manifold_clear_and_scoped_refresh_refused(
 
 
 def test_baked_manifold_node_groups_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     manifold, _ = _baked_manifold("merged")
     _, mf = create_baked_manifold_folder(
         "local", "merged", "", manifold, "test/model", method="folded_vector",

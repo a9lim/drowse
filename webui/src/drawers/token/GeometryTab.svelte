@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // Geometry tab — the full whitened Monitor reading for every attached
   // geometry probe at the forward that produced this token: all
   // coordinate axes, subspace fraction, nearest nodes, soft assignment,
@@ -10,10 +11,13 @@
 
   import Bar from "../../lib/charts/Bar.svelte";
   import LayerStrip from "../../panels/rack/LayerStrip.svelte";
+  import GeometryLayerReadings from "./GeometryLayerReadings.svelte";
   import ProbeReadingRow from "../../panels/rack/ProbeReadingRow.svelte";
   import RackCard from "../../panels/rack/RackCard.svelte";
   import RackMarker from "../../panels/rack/RackMarker.svelte";
-  import { probeRack, probeAxisScale } from "../../lib/stores.svelte";
+  import { probeRack, probeAxisScale, openDrawer } from "../../lib/stores.svelte";
+  import Button from "../../lib/ui/Button.svelte";
+  import { drawerAvailability } from "../../lib/runtime/ui-capabilities";
   import type { ProbeReadingJSON } from "../../lib/types";
   import type { GeometryTokenReadout, ReplayReadout } from "./readout.svelte";
   import EmptyState from "./EmptyState.svelte";
@@ -27,6 +31,8 @@
     steered = $bindable(),
     hasGeometryProbes,
     hasReplayContext,
+    replayAvailable,
+    returnToToken,
   }: {
     readout: ReplayReadout<GeometryTokenReadout>;
     steered: boolean;
@@ -35,6 +41,8 @@
     hasGeometryProbes: boolean;
     /** The token has a raw decode index + backing loom node. */
     hasReplayContext: boolean;
+    replayAvailable: boolean;
+    returnToToken: { turnIdx: number; tokenIdx: number; isThinking: boolean };
   } = $props();
 
   const rows = $derived<[string, ProbeReadingJSON][]>(
@@ -42,17 +50,39 @@
       a.localeCompare(b, undefined, { sensitivity: "base" }),
     ),
   );
+  const authoring = drawerAvailability("manifold_builder");
+
+  function setupProbe(create = false): void {
+    openDrawer(create ? "manifold_builder" : "subspace", {
+      returnToToken,
+      ...(create ? { mode: "discover" } : {}),
+    });
+  }
 
   const showToggle = $derived(
-    (readout.data?.steering ?? null) !== null || !steered,
+    replayAvailable && ((readout.data?.steering ?? null) !== null || !steered),
   );
 
-  /** The attached row's flat/curved flag; a reading with no off-surface
-   *  residual is the fallback when the probe is no longer attached. */
-  function affineOf(name: string, reading: ProbeReadingJSON): boolean {
+  const determinateProgress = $derived(
+    readout.progress !== null && readout.progress.progress > 0,
+  );
+
+  const progressPercent = $derived(
+    Math.round((readout.progress?.progress ?? 0) * 100),
+  );
+
+  const progressTitle = $derived(
+    readout.progress?.phase === "readout"
+      ? "Reading geometry"
+      : readout.progress?.phase === "queued"
+        ? "Waiting for the model"
+        : "Preparing this token",
+  );
+
+  function affineOf(name: string): boolean | null {
     const info = probeRack.entries.get(name)?.info;
     if (info?.family === "geometry") return info.is_affine;
-    return reading.residual === 0;
+    return null;
   }
 
   /** Axis label: the positive pole for a rank-1 two-node concept axis
@@ -73,7 +103,7 @@
     name: string,
     reading: ProbeReadingJSON,
   ): { layer: number; value: number | null; title: string }[] {
-    const curved = !affineOf(name, reading);
+    const curved = affineOf(name) === false;
     const source: Record<string, number> = {};
     if (curved) {
       Object.assign(source, reading.fraction_per_layer ?? {});
@@ -96,7 +126,7 @@
   }
 
   function stripScale(name: string, reading: ProbeReadingJSON): number {
-    if (!affineOf(name, reading)) return 1; // fraction strip is [0, 1]
+    if (affineOf(name) === false) return 1; // fraction strip is [0, 1]
     return probeAxisScale(name, 0);
   }
 
@@ -132,7 +162,26 @@
 </script>
 
 {#if readout.loading}
-  <EmptyState title="computing…" />
+  <div class="readout-progress loading-pulse" role="status" aria-live="polite">
+    <div class="progress-heading">
+      <span>{progressTitle}</span>
+      <code>{#if determinateProgress}<RollingNumber value={progressPercent} />%{:else}starting{/if}</code>
+    </div>
+    <div
+      class="progress-track"
+      class:indeterminate={!determinateProgress}
+      role="progressbar"
+      aria-label="Geometry readout progress"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow={determinateProgress ? progressPercent : undefined}
+      aria-valuetext={determinateProgress ? `${progressPercent}%` : "Starting"}
+    >
+      <span style={determinateProgress ? `width: ${progressPercent}%` : undefined}></span>
+    </div>
+    <p>{readout.progress?.message ?? "Waiting for the model"}</p>
+    <p class="progress-note">You can inspect another token while this finishes. This result will be kept.</p>
+  </div>
 {:else if readout.error}
   <EmptyState title={`readout: ${readout.error}`} />
 {:else if readout.data && rows.length > 0}
@@ -147,37 +196,37 @@
   <DetailSection
     title="PROBE READINGS"
     count={`${rows.length} attached`}
-    description="Flat subspaces use a circle and white accent; curved manifolds use a diamond and violet accent."
   >
     <div class="geo-list">
       {#each rows as [name, reading] (name)}
         {@const rank = reading.coords.length}
         {@const cells = stripCells(name, reading)}
-        {@const affine = affineOf(name, reading)}
-        {@const cardAccent = affine ? "--pillar-subspace" : "--pillar-manifold"}
+        {@const affine = affineOf(name)}
+        {@const cardAccent = affine === false ? "--pillar-manifold" : "--pillar-subspace"}
         {@const evidence = geometryEvidence(reading)}
         <RackCard accent={cardAccent} disabled={false}>
           {#snippet statline()}
             <DetailCardHeader
               primary={name}
               primaryTitle={name}
-              secondary={affine ? "subspace" : "manifold"}
+              secondary={affine === null ? "geometry" : affine ? "subspace" : "manifold"}
               secondaryAccent
               meta={reading.depth_com?.[0] != null
                 ? `@${reading.depth_com[0].toFixed(2)} ±${(reading.depth_spread?.[0] ?? 0).toFixed(2)}`
                 : null}
-              metaTitle="depth center ± spread"
+              metaTitle="Where this probe’s signal is concentrated across layers: 0 is the first layer, 1 is the last. The ± value shows how widely it is spread."
             >
               {#snippet lead()}
-                <RackMarker shape={affine ? "circle" : "diamond"} filled />
+                <RackMarker shape={affine === false ? "diamond" : "circle"} filled />
               {/snippet}
             </DetailCardHeader>
           {/snippet}
           {#snippet body()}
+            <p class="aggregate-label">Across fitted layers</p>
             <ProbeReadingRow ariaLabel={`Subspace fraction ${reading.fraction.toFixed(3)}`}>
               {#snippet left()}<span class="geo-axis-label">subspace</span>{/snippet}
               {#snippet bar()}
-                <Bar value={reading.fraction} max={1} color="var(--fg)" />
+                <Bar percentage value={reading.fraction} max={1} color="var(--fg)" />
               {/snippet}
               {#snippet middle()}
                 {#if (reading.nearest ?? []).length > 0}
@@ -221,11 +270,14 @@
               <LayerStrip
                 {cells}
                 scale={stripScale(name, reading)}
-                positiveColor={affine ? undefined : "var(--pillar-manifold)"}
+                positiveColor={affine === false ? "var(--pillar-manifold)" : undefined}
                 ariaLabel={`${name} per-layer readings`}
               />
             {/if}
             <EvidenceChips items={evidence} ariaLabel={`Geometry evidence for ${name}`} />
+            {#if affine}
+              <GeometryLayerReadings {name} {reading} axisLabels={reading.coords.map((_, axis) => axisLabel(name, axis, rank))} />
+            {/if}
           {/snippet}
         </RackCard>
       {/each}
@@ -233,9 +285,17 @@
   </DetailSection>
 {:else if !hasGeometryProbes}
   <EmptyState
-    title="no geometry probes attached"
-    detail="attach a concept or manifold probe to read its whitened coordinates here"
-  />
+    title="Add a probe to see concept readings"
+    detail="Choose a fitted concept, or create and train one for this model. Add it as a probe to inspect its readings here."
+  >
+    <div class="setup-actions">
+      <Button variant="solid" onclick={() => setupProbe()}>Add a probe</Button>
+      {#if authoring.available}
+        <Button onclick={() => setupProbe(true)}>Create a concept</Button>
+      {/if}
+    </div>
+    {#if !authoring.available}<p class="setup-note">Concept training isn’t available in this session. You can still add a fitted concept as a probe.</p>{/if}
+  </EmptyState>
 {:else if !hasReplayContext}
   <EmptyState
     title="no raw decode record"
@@ -246,10 +306,74 @@
 {/if}
 
 <style>
+  .aggregate-label { margin: 0 0 var(--space-3); color: var(--fg-muted); font-size: var(--text-xs); }
+  .setup-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+  .setup-note { margin-top: var(--space-3); color: var(--fg-muted); font-size: var(--text-sm); }
+  .readout-progress {
+    max-width: 62ch;
+    padding: var(--surface-padding);
+    border-radius: var(--radius);
+  }
+  .progress-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-4);
+    color: var(--fg-dim);
+    font-family: var(--font-ui);
+    font-weight: var(--weight-medium);
+  }
+  .progress-heading code {
+    color: var(--pillar-subspace);
+    font-family: var(--font-mono);
+    font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
+  }
+  .progress-track {
+    height: 6px;
+    margin-top: var(--space-3);
+    overflow: hidden;
+    border-radius: var(--radius-pill);
+    background: var(--bg);
+    box-shadow: var(--shadow-rack);
+  }
+  .progress-track span {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    border-radius: inherit;
+    background: var(--pillar-subspace);
+    transition: width var(--dur) linear;
+  }
+  .progress-track.indeterminate span {
+    width: 38%;
+    min-width: 72px;
+    animation: readout-wait 1.15s linear infinite;
+  }
+  @keyframes readout-wait {
+    from { transform: translateX(-110%); }
+    to { transform: translateX(290%); }
+  }
+  .readout-progress p {
+    margin: var(--space-2) 0 0;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+  .readout-progress .progress-note {
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+  }
   .geo-list {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-3);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .progress-track.indeterminate span {
+      animation: none;
+      transform: none;
+    }
   }
   .geo-axis-label {
     color: var(--fg-muted);
@@ -270,7 +394,7 @@
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
-    text-align: right;
+    text-align: end;
   }
   .nearest {
     color: var(--fg-muted);

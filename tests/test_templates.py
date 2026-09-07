@@ -1,4 +1,4 @@
-"""Standalone template artifact (``saklas.io.templates``) — CPU-only, no model.
+"""Standalone template artifact (``drowse.io.templates``) — CPU-only, no model.
 
 Covers the multi-turn schema, the ``expand``/``score_inputs`` derived views, the
 on-disk round-trip + content hash, resolution (bare / ns-qualified / ambiguous),
@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from saklas.io.templates import (
+from drowse.io.templates import (
     AmbiguousTemplateError,
     TemplateFolder,
     TemplateFormatError,
@@ -38,7 +38,7 @@ CONTEXTS = [
 
 @pytest.fixture(autouse=True)
 def _home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
 
 def _make(name: str = "weekday", **kw: Any) -> TemplateFolder:

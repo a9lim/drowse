@@ -8,12 +8,12 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.model import loaded_model_fingerprint
-from saklas.core.steering_composer import SteeringComposer
-from saklas.core.capture import fold_directions_to_subspace
-from saklas.io.manifold_folder import ManifoldFormatError
-from saklas.io.manifolds import create_baked_manifold_folder, transfer_manifold
-from saklas.io.paths import encode_release_id
+from drowse.core.model import loaded_model_fingerprint
+from drowse.core.steering_composer import SteeringComposer
+from drowse.core.capture import fold_directions_to_subspace
+from drowse.io.manifold_folder import ManifoldFormatError
+from drowse.io.manifolds import create_baked_manifold_folder, transfer_manifold
+from drowse.io.paths import encode_release_id
 from tests._whitener import synthetic_means, synthetic_whitener
 
 
@@ -37,7 +37,7 @@ def _fold(name: str, directions: dict[int, torch.Tensor], *, label: str) -> Any:
 def test_baked_manifold_cold_loads_with_proven_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     model = torch.nn.Linear(4, 4, bias=False)
     model_id = "test/model"
     fingerprint = loaded_model_fingerprint(model, model_id)
@@ -57,7 +57,7 @@ def test_baked_manifold_cold_loads_with_proven_fingerprint(
 def test_cold_load_rejects_finite_tensor_corruption(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     model = torch.nn.Linear(4, 4, bias=False)
     model_id = "test/model"
     fingerprint = loaded_model_fingerprint(model, model_id)
@@ -80,7 +80,7 @@ def test_cold_load_rejects_finite_tensor_corruption(
 def test_cold_load_rejects_untracked_fitted_pair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     model = torch.nn.Linear(4, 4, bias=False)
     model_id = "test/model"
     fingerprint = loaded_model_fingerprint(model, model_id)
@@ -105,7 +105,7 @@ def test_cold_load_rejects_untracked_fitted_pair(
 def test_transfer_variant_cold_loads_for_target_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     source_id = "src/model"
     target_id = "tgt/model"
     source_fp = "source-fingerprint"
@@ -118,8 +118,8 @@ def test_transfer_variant_cold_loads_for_target_identity(
         "local", "merged", "", manifold, source_id, method="folded_vector",
         model_fingerprint=source_fp,
     )
-    from saklas.core.mahalanobis import LayerWhitener
-    from saklas.io.alignment import LayerAlignment
+    from drowse.core.mahalanobis import LayerWhitener
+    from drowse.io.alignment import LayerAlignment
 
     acts = {0: torch.randn(32, 4)}
     whitener = LayerWhitener.from_neutral_activations(

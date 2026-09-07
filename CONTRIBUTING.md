@@ -1,4 +1,4 @@
-# Contributing to saklas
+# Contributing to drowse
 
 Bug reports, focused fixes, new model support, and documentation improvements are
 all welcome. The repository supports Python 3.11–3.13 and uses `pip` plus
@@ -7,8 +7,8 @@ setuptools; there is no lockfile-based development workflow.
 ## Dev setup
 
 ```bash
-git clone https://github.com/a9lim/saklas
-cd saklas
+git clone https://github.com/a9lim/polythetic
+cd drowse
 pip install -e ".[dev]"
 ```
 
@@ -43,28 +43,28 @@ package, tests, examples, and maintained scripts according to `pyproject.toml`.
 
 ## Working on the web UI
 
-The dashboard source is a Svelte 5 and Vite app at the repo's top-level `webui/` directory. The committed `saklas/web/dist/` bundle is the source of truth that ships in the wheel.
+The dashboard source is a Svelte 5 and Vite app at the repo's top-level `webui/` directory. The committed `drowse/web/dist/` bundle is the source of truth that ships in the wheel.
 
 ```bash
 cd webui
 npm ci
 npm run dev     # vite dev server on http://localhost:5173 with hot reload
 npm run check   # svelte-check + theme-token validation
-npm run build   # writes ../saklas/web/dist/
+npm run build   # writes ../drowse/web/dist/
 ```
 
-`npm run dev` proxies `/saklas`, `/v1`, and `/api` (including WebSockets) to
-`http://localhost:8000`. Keep `saklas serve <model>` running in another shell.
-The production bundle under `saklas/web/dist/` is committed package data, so UI
+`npm run dev` proxies `/drowse`, `/v1`, and `/api` (including WebSockets) to
+`http://localhost:8000`. Keep `drowse serve <model>` running in another shell.
+The production bundle under `drowse/web/dist/` is committed package data, so UI
 changes must include the rebuilt bundle. CI rebuilds it and fails on any diff.
 
 ## Adding a new model architecture
 
-If you want to add another model's architecture, add an entry to `saklas/core/model.py:_ARCH_PROFILES`, keyed by the HuggingFace `model_type`: `_prof(accessor)`, or `_prof(accessor, tested=True)` once it has a real-model smoke result. The accessor takes a loaded model and returns the list of transformer blocks; `_LAYER_ACCESSORS` and `_TESTED_ARCHS` are derived views over that one registry. The rest of the code (`capture.py`, `hooks.py`, `monitor.py`) doesn't depend on the architecture.
+If you want to add another model's architecture, add an entry to `drowse/core/model.py:_ARCH_PROFILES`, keyed by the HuggingFace `model_type`: `_prof(accessor)`, or `_prof(accessor, tested=True)` once it has a real-model smoke result. The accessor takes a loaded model and returns the list of transformer blocks; `_LAYER_ACCESSORS` and `_TESTED_ARCHS` are derived views over that one registry. The rest of the code (`capture.py`, `hooks.py`, `monitor.py`) doesn't depend on the architecture.
 
 If the model is quirky (multimodal text extraction, FP8 dequantization,
 nonstandard tokenizer behavior), inspect the existing text-only multimodal path
-and architecture-specific workarounds in `saklas/core/model.py`. Include a focused
+and architecture-specific workarounds in `drowse/core/model.py`. Include a focused
 accessor test and a real-model smoke result when possible.
 
 ## PRs
@@ -74,7 +74,7 @@ accessor test and a real-model smoke result when possible.
   manifold is the most useful end-to-end proof.
 - If you change a cross-cutting runtime contract, update `ARCHITECTURE.md` and the
   owning subtree `AGENTS.md` in the same change. Check CLI examples against live
-  `saklas <verb> --help` output rather than copying an older command list.
+  `drowse <verb> --help` output rather than copying an older command list.
 - Please don't bump the version in your PR unless you want a new release; the PyPI publish workflow is triggered by a version update.
 
 ## Questions

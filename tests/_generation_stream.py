@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable, Iterator
 
-from saklas.core.results import GenerationResult, TokenEvent
+from drowse.core.results import GenerationResult, TokenEvent
 
 
 class TestGenerationStream(Iterator[TokenEvent]):

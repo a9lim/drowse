@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-06T16:06:11Z",
+  "evidenceKind": "observed-app-ui-smoke",
+  "origin": "http://127.0.0.1:4173",
+  "browserSurface": "Codex in-app browser",
+  "existingOrigin": true,
+  "siteStorageCleared": false,
+  "existingUserChatRetained": true,
+  "catalog": {
+    "repository": "logitsml/drowse-web-catalog",
+    "revision": "da488a3de729bc649ca70465b1da56409a0b98eb",
+    "sequence": 7,
+    "previousPublishedSequence": 3,
+    "minimumAcceptedSequence": 7,
+    "entriesChanged": false,
+    "publicPreflight": {
+      "passed": true,
+      "immutableFiles": 126,
+      "bytes": 2731824423
+    },
+    "signatureAndRollbackProtectionRetained": true
+  },
+  "conditions": {
+    "initialPrompt": "I love marmots because",
+    "temperature": 0,
+    "newTokensPerGeneration": 24,
+    "steeringExpression": "0.1 default/welcoming.detached%welcoming",
+    "optionalInstrumentPacksInstalled": 0,
+    "semanticQualityEvaluation": false
+  },
+  "models": [
+    {
+      "id": "gpt2-base",
+      "signedInstallAndOpen": "passed",
+      "ordinaryGeneration": "passed",
+      "coreSteeredGeneration": "passed",
+      "fullPageReopen": "passed",
+      "continuedGenerationAfterReopen": "passed",
+      "samePageUnloadReopenAndContinuation": "passed"
+    },
+    {
+      "id": "pythia-70m-base",
+      "signedInstallAndOpen": "passed",
+      "ordinaryGeneration": "passed",
+      "coreSteeredGeneration": "passed",
+      "fullPageReopen": "passed",
+      "continuedGenerationAfterReopen": "passed",
+      "crossModelSwitchAndContinuation": "passed"
+    },
+    {
+      "id": "gemma3-1b-pt",
+      "signedInstallAndOpen": "passed",
+      "ordinaryGeneration": "passed",
+      "coreSteeredGeneration": "passed",
+      "fullPageReopen": "passed",
+      "continuedGenerationAfterReopen": "passed"
+    },
+    {
+      "id": "qwen35-2b-base",
+      "signedInstallAndOpen": "passed",
+      "downloadPauseAndResume": "passed",
+      "ordinaryGeneration": "passed",
+      "coreSteeredGeneration": "passed",
+      "fullPageReopen": "passed",
+      "continuedGenerationAfterReopen": "passed",
+      "steeredRepeatTextMatched": true
+    }
+  ],
+  "reproducedAndFixed": [
+    "catalog sequence rejected by an existing client's higher accepted sequence",
+    "normal unload invalidated compatibility approval before the next model load",
+    "negative-infinite forced-replay log probabilities prevented session persistence",
+    "different models sharing a session id incorrectly shared tree revision ordering",
+    "model switches retained the previous model's live performance counters"
+  ],
+  "sourceSha256": {
+    "webui/src/hosted/runtime/worker.ts": "7304ff9f35d02f6338bf9df5b67763c1b6f30ad02fd3dbaf273f59c2f053234f",
+    "webui/src/hosted/runtime/webLlmGeneration.ts": "fe3e1a86201412f50eb67b7986521c6be201cc2d05008ef1cec737751d73479c",
+    "webui/src/lib/stores/loom.svelte.ts": "e74f64966bcdffa89936b62ab0d95e0ff8383709e780f498f48abd4e7112dda6"
+  },
+  "verification": {
+    "runtimeTestRunnersPassed": 44,
+    "workerOrchestrationTestsPassed": 115,
+    "publisherRegressions": "passed",
+    "svelteAndUiChecks": "passed",
+    "nativeBuild": "passed",
+    "hostedBuild": "passed",
+    "newBrowserWarningsOrErrorsInFinalModelChecks": 0,
+    "modelSwitchResetsStatusToReady": true,
+    "knownBuildWarnings": ["existing large bundle chunk warning"]
+  },
+  "numericalArtifactEvidence": "base-model-release-evidence.json",
+  "numericalArtifactEvidenceReplaced": false,
+  "productionWebsiteDeployed": false,
+  "gitPushed": false,
+  "versionBumped": false
+}

@@ -20,9 +20,9 @@ from typing import Any
 
 import pytest
 
-from saklas.core.instruments.types import DepthSummary, ScalarReading
-from saklas.core.measurements import MEASUREMENTS_VERSION, build_measurements
-from saklas.core.results import ProbeReading
+from drowse.core.instruments.types import DepthSummary, ScalarReading
+from drowse.core.measurements import MEASUREMENTS_VERSION, build_measurements
+from drowse.core.results import ProbeReading
 
 # The eight fields a synthesized ``ProbeReading`` used to ship for every
 # lens/SAE probe on every token — constants masquerading as measurements.
@@ -229,7 +229,7 @@ class TestDoneAggregate:
         """The finalize path — not the server — owns the aggregate
         envelope, so the lens/SAE channels keep their native shape and the
         ``done`` frame is a forward, not a re-split."""
-        from saklas.core.results import GenerationResult
+        from drowse.core.results import GenerationResult
 
         result = GenerationResult(
             text="", tokens=[], token_count=0, tok_per_sec=0.0, elapsed=0.0,
@@ -302,9 +302,9 @@ class TestReplayEnvelopes:
     def test_every_family_returns_the_same_envelope_wrapper(self) -> None:
         """``Instrument.token_readout`` is uniform: ``{"measurements": …}``
         from all three families, so the route dispatches without a branch."""
-        from saklas.core.instruments.geometry import GeometryInstrument
-        from saklas.core.instruments.lens import LensInstrument
-        from saklas.core.instruments.sae import SaeInstrument
+        from drowse.core.instruments.geometry import GeometryInstrument
+        from drowse.core.instruments.lens import LensInstrument
+        from drowse.core.instruments.sae import SaeInstrument
 
         native = {
             "steering": "0.3 formal.casual",
@@ -343,8 +343,8 @@ class TestRejectedKnobs:
 
     @staticmethod
     def _instrument(family: str) -> Any:
-        from saklas.core.instruments.geometry import GeometryInstrument
-        from saklas.core.instruments.sae import SaeInstrument
+        from drowse.core.instruments.geometry import GeometryInstrument
+        from drowse.core.instruments.sae import SaeInstrument
 
         session = SimpleNamespace(
             model_id="test/model",
@@ -375,18 +375,18 @@ class TestRejectedKnobs:
 def test_payload_family_slots_match_the_registry() -> None:
     """``token_payloads``' per-family slots are pinned to the registry, so a
     fourth read family cannot land a slot-less payload."""
-    from saklas.core.session import SaklasSession
-    from saklas.core.token_payloads import _FAMILY_SLOTS
+    from drowse.core.session import DrowseSession
+    from drowse.core.token_payloads import _FAMILY_SLOTS
 
-    session = SaklasSession.__new__(SaklasSession)
+    session = DrowseSession.__new__(DrowseSession)
     assert set(_FAMILY_SLOTS) == set(session.instruments)
 
 
 def test_capability_table_covers_every_family() -> None:
-    from saklas.core.session import SaklasSession
-    from saklas.server.instrument_routes import CAPABILITIES
+    from drowse.core.session import DrowseSession
+    from drowse.server.instrument_routes import CAPABILITIES
 
-    session = SaklasSession.__new__(SaklasSession)
+    session = DrowseSession.__new__(DrowseSession)
     assert set(CAPABILITIES) == set(session.instruments)
 
 

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "description": "Paired Python/browser parity corpus used by the sharedGoldenResults release observer.",
+  "fixtures": [
+    "browser-runtime/fixtures/post-block-rank-one-v2.json",
+    "browser-runtime/fixtures/structured-program-parity-v1.json",
+    "browser-runtime/fixtures/measurement-envelope-v1.json",
+    "browser-runtime/fixtures/loom-operation-transcript-v1.json",
+    "browser-runtime/fixtures/sampling-parity-v1.json",
+    "browser-runtime/fixtures/topology-rbf-parity-v1.json",
+    "browser-runtime/fixtures/drowse-interchange-v1.json"
+  ],
+  "claims": [
+    "expression parsing",
+    "authoritative loom mutations",
+    "measurement envelopes",
+    "structured steering and instruments",
+    "top-k/top-p sampling distribution",
+    "manifold geometry and fitting",
+    "reciprocal artifact interchange and compatibility rejection"
+  ]
+}

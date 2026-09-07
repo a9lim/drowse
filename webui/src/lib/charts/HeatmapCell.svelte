@@ -75,7 +75,7 @@
       : "var(--fg)",
   );
   const tip = $derived(
-    title ?? (isNull ? "—" : (value as number).toFixed(3)),
+    title ?? (isNull ? "-" : (value as number).toFixed(3)),
   );
   const text = $derived(showValue && !isNull ? (value as number).toFixed(2) : "");
 </script>

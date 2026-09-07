@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:drowse:schema:browser-benchmark-evidence-v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "status",
+    "drowseRevision",
+    "requiredMatrix",
+    "supportPolicy",
+    "runs"
+  ],
+  "properties": {
+    "$schema": { "const": "./benchmark-evidence.schema.json" },
+    "schemaVersion": { "const": 4 },
+    "status": { "enum": ["feasibility-required", "verified"] },
+    "drowseRevision": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Git commit whose executable source produced these benchmark results"
+    },
+    "requiredMatrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["modelIds", "contextTokens", "platforms", "browsers"],
+      "properties": {
+        "modelIds": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "enum": ["smollm2-360m-instruct", "gemma3-270m-instruct", "qwen3-1.7b"]
+          },
+          "uniqueItems": true
+        },
+        "contextTokens": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "enum": [2048, 4096] },
+          "uniqueItems": true
+        },
+        "platforms": {
+          "type": "array",
+          "minItems": 4,
+          "items": { "enum": ["macos", "windows", "linux", "android"] },
+          "uniqueItems": true
+        },
+        "browsers": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "enum": ["chrome", "edge"] },
+          "uniqueItems": true
+        }
+      }
+    },
+    "supportPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimumChromeMajor", "minimumEdgeMajor", "maximumEvidenceAgeDays"],
+      "properties": {
+        "minimumChromeMajor": { "type": ["integer", "null"], "minimum": 100 },
+        "minimumEdgeMajor": { "type": ["integer", "null"], "minimum": 100 },
+        "maximumEvidenceAgeDays": { "type": "integer", "minimum": 1, "maximum": 180 }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "producerId", "producerConfigPath", "producerConfigSha256", "producerToolVersion",
+          "modelId", "contextTokens", "contextBindingSha256", "platform", "browser",
+          "browserVersion", "browserFlags", "deviceLabel", "drowseRevision", "runtimeIdentitySha256",
+          "webLlmSha256", "modelArtifactManifestSha256", "convertedManifestSha256",
+          "modelLibrarySha256", "coreArtifactManifestSha256",
+          "jlensArtifactManifestSha256", "saeArtifactManifestSha256",
+          "adapterIsFallback", "calibrationScore", "deviceMemoryGiB", "adapterFeatures",
+          "adapterLimits", "prefillTokensPerSecond", "decodeTokensPerSecond",
+          "loadSucceeded", "measuredAt"
+        ],
+        "properties": {
+          "producerId": { "const": "physical-browser-benchmark-v1" },
+          "producerConfigPath": {
+            "type": "string",
+            "pattern": "^browser-runtime/evidence-configs/[a-z0-9][a-z0-9._-]*\\.json$"
+          },
+          "producerConfigSha256": { "$ref": "#/$defs/sha256" },
+          "producerToolVersion": {
+            "type": "string",
+            "pattern": "^physical-browser-benchmark-v1\\+sha256\\.[0-9a-f]{64}$"
+          },
+          "modelId": { "type": "string", "minLength": 1 },
+          "contextTokens": { "enum": [2048, 4096] },
+          "contextBindingSha256": { "$ref": "#/$defs/sha256" },
+          "platform": { "enum": ["macos", "windows", "linux", "android"] },
+          "browser": { "enum": ["chrome", "edge"] },
+          "browserVersion": { "type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+){0,3}$" },
+          "browserFlags": { "const": "normal" },
+          "deviceLabel": { "type": "string", "minLength": 1 },
+          "drowseRevision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "Must equal the enclosing evidence set's tested source revision"
+          },
+          "runtimeIdentitySha256": { "$ref": "#/$defs/sha256" },
+          "webLlmSha256": { "$ref": "#/$defs/sha256" },
+          "modelArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+          "convertedManifestSha256": { "$ref": "#/$defs/sha256" },
+          "modelLibrarySha256": { "$ref": "#/$defs/sha256" },
+          "coreArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+          "jlensArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+          "saeArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+          "adapterIsFallback": { "const": false },
+          "calibrationScore": { "type": "number", "exclusiveMinimum": 0 },
+          "deviceMemoryGiB": {
+            "type": ["number", "null"],
+            "exclusiveMinimum": 0
+          },
+          "adapterFeatures": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
+          "adapterLimits": {
+            "type": "object",
+            "additionalProperties": { "type": "number", "minimum": 0 }
+          },
+          "prefillTokensPerSecond": { "type": "number", "exclusiveMinimum": 0 },
+          "decodeTokensPerSecond": { "type": "number", "exclusiveMinimum": 0 },
+          "loadSucceeded": { "const": true },
+          "measuredAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

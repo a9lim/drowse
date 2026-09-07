@@ -1,6 +1,6 @@
 """Shared test infrastructure for the CPU-only suite.
 
-The bulk of saklas' CPU tests need a tiny HF-causal-LM-like stub: something
+The bulk of drowse' CPU tests need a tiny HF-causal-LM-like stub: something
 that, called with ``input_ids``, returns an object exposing ``.logits`` of
 shape ``(1, T, V)``.  Before this module each test file rolled its own
 (``_MockModel`` lived in both ``test_joint_logprobs`` and ``test_naturalness``,

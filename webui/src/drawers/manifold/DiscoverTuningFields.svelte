@@ -7,7 +7,10 @@
   import NumberInput from "../../lib/NumberInput.svelte";
   import type { DiscoverTuning } from "./shared";
 
-  let { tuning }: { tuning: DiscoverTuning } = $props();
+  let {
+    tuning,
+    maxDimLimit = null,
+  }: { tuning: DiscoverTuning; maxDimLimit?: number | null } = $props();
 </script>
 
 <div class="grid2">
@@ -16,11 +19,17 @@
     <NumberInput
       value={tuning.maxDim}
       min={1}
+      max={maxDimLimit ?? undefined}
       step={1}
       oninput={(v) => {
         if (v !== null) tuning.maxDim = v;
       }}
     />
+    {#if maxDimLimit !== null}
+      <span class="dim-note">
+        hosted browser limit · <strong>{maxDimLimit}</strong> dimensions
+      </span>
+    {/if}
   </label>
   {#if tuning.fitMode === "pca" || tuning.fitMode === "auto"}
     <label class="field">

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from saklas.io import shards
+from drowse.io import shards
 
 
 def _anchor(tmp_path: Path) -> Path:
@@ -117,7 +117,7 @@ def test_fit_lock_is_a_sibling_of_the_anchor(tmp_path: Path) -> None:
 
 def test_families_route_through_the_shared_primitive() -> None:
     """The three families must not carry private copies of this machinery."""
-    from saklas.io import alignment, lens
+    from drowse.io import alignment, lens
 
     assert alignment.generation_path is shards.generation_path
     assert alignment._json_pointer_matches is shards.json_pointer_matches

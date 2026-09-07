@@ -8,17 +8,17 @@ import json
 import pytest
 import torch
 
-from saklas.core.errors import SaklasError
-from saklas.core.profile import Profile, ProfileError
-from saklas.io.integrity import PROFILE_FORMAT_VERSION
+from drowse.core.errors import DrowseError
+from drowse.core.profile import Profile, ProfileError
+from drowse.io.integrity import PROFILE_FORMAT_VERSION
 
 
 def _mk(layers: Any = (0, 5, 10), dim: int = 8, dtype: Any = torch.float32) -> dict[int, torch.Tensor]:
     return {i: torch.randn(dim, dtype=dtype) for i in layers}
 
 
-def test_mro_profile_error_is_saklas_and_value_error():
-    assert issubclass(ProfileError, SaklasError)
+def test_mro_profile_error_is_drowse_and_value_error():
+    assert issubclass(ProfileError, DrowseError)
     assert issubclass(ProfileError, ValueError)
 
 
@@ -61,7 +61,7 @@ def test_weight_at_missing_raises_profile_error():
 
 
 def test_metadata_is_copy():
-    meta = {"method": "profile", "saklas_version": "1.4.0"}
+    meta = {"method": "profile", "drowse_version": "1.4.0"}
     p = Profile(_mk(), metadata=meta)
     out = p.metadata
     out["method"] = "mutated"
@@ -99,7 +99,7 @@ def test_merged_union_semantics():
 def test_merged_strict_refuses_drop():
     a = Profile({0: torch.ones(4), 1: torch.ones(4)})
     b = Profile({1: torch.ones(4), 2: torch.ones(4)})
-    from saklas.io.bake import MergeError
+    from drowse.io.bake import MergeError
     with pytest.raises(MergeError):
         Profile.merged([(a, 1.0), (b, 1.0)], strict=True)
 
@@ -224,7 +224,7 @@ def test_cosine_similarity_empty_intersection_raises():
 
 def test_cosine_similarity_missing_whitener_raises():
     """Mahalanobis-only: a missing / non-covering whitener is a hard error."""
-    from saklas.core.mahalanobis import WhitenerError
+    from drowse.core.mahalanobis import WhitenerError
 
     tensors = _mk(layers=(0, 1), dim=8)
     a = Profile(tensors)
@@ -399,14 +399,14 @@ def test_sidecar_schema_is_exactly_five_fields(tmp_path: Path) -> None:
     })
     sidecar = json.loads(path.with_suffix(".json").read_text())
     assert set(sidecar) == {
-        "format_version", "saklas_version", "method",
+        "format_version", "drowse_version", "method",
         "tensor_sha256", "provenance",
     }
     assert sidecar["provenance"] == {"note": "hello"}
 
 
 def test_extract_shaped_profile_round_trips(tmp_path: Path) -> None:
-    """The Profile ``SaklasSession.extract`` returns saves and loads.
+    """The Profile ``DrowseSession.extract`` returns saves and loads.
 
     ``extract`` stamps ``{"method": "manifold_pca", "name": ..., "share_metric":
     ...}`` on the folded 2-node manifold view; the schema has to take that shape
@@ -448,13 +448,13 @@ def test_merged_profile_saves(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# SaklasError hierarchy — the v2 guarantee that every custom error
-# reparents to SaklasError while preserving its stdlib MRO.
+# DrowseError hierarchy — the v2 guarantee that every custom error
+# reparents to DrowseError while preserving its stdlib MRO.
 # ---------------------------------------------------------------------------
 
-def test_saklas_error_family_mro_contract():
-    """Every saklas-raised exception is a SaklasError AND its stdlib parent."""
-    from saklas.core.errors import (
+def test_drowse_error_family_mro_contract():
+    """Every drowse-raised exception is a DrowseError AND its stdlib parent."""
+    from drowse.core.errors import (
         AmbiguousVariantError,
         SaeBackendImportError,
         SaeCoverageError,
@@ -472,5 +472,5 @@ def test_saklas_error_family_mro_contract():
         (UnknownVariantError, KeyError),
     ]
     for exc, stdlib_parent in cases:
-        assert issubclass(exc, SaklasError), exc
+        assert issubclass(exc, DrowseError), exc
         assert issubclass(exc, stdlib_parent), exc

@@ -5,13 +5,13 @@ from typing import Any
 
 import pytest
 
-from saklas import (
+from drowse import (
     FilterParseError,
     LoomTree,
     Recipe,
     parse_filter,
 )
-from saklas.core.tree_filter import node_token_series
+from drowse.core.tree_filter import node_token_series
 
 
 # ---------------------------------------------------------------------------
@@ -330,12 +330,12 @@ def test_filter_route_matches_all_three_ops():
 
     from fastapi.testclient import TestClient
 
-    from saklas.core.session import SaklasSession
-    from saklas.server import create_app
+    from drowse.core.session import DrowseSession
+    from drowse.server import create_app
     from tests.test_server_loom import _StubSession
 
     session = _StubSession()
-    client = TestClient(create_app(cast(SaklasSession, session), default_steering=None))
+    client = TestClient(create_app(cast(DrowseSession, session), default_steering=None))
     tree = session.tree
 
     u = tree.add_user_turn("hi")
@@ -351,7 +351,7 @@ def test_filter_route_matches_all_three_ops():
 
     def matches(expr: str) -> set[str]:
         resp = client.get(
-            "/saklas/v1/sessions/default/tree/filter", params={"expr": expr},
+            "/drowse/v1/sessions/default/tree/filter", params={"expr": expr},
         )
         assert resp.status_code == 200, resp.text
         return set(resp.json()["matching_node_ids"])
@@ -362,6 +362,6 @@ def test_filter_route_matches_all_three_ops():
     assert matches("any:a > 0.05, last:a < 0.15") == {spiky}
     # Bad expressions still land as 400.
     bad = client.get(
-        "/saklas/v1/sessions/default/tree/filter", params={"expr": "mean:a > 1"},
+        "/drowse/v1/sessions/default/tree/filter", params={"expr": "mean:a > 1"},
     )
     assert bad.status_code == 400

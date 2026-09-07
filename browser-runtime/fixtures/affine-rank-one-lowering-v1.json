@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "source": "drowse.core.manifold.synthesize_subspace+drowse.core.hooks._lower_affine_subspaces",
+  "coefficient": 0.5,
+  "layers": [
+    {
+      "layer": 0,
+      "basis": [1.0, 0.0],
+      "neutral": [0.0, 0.0],
+      "nodeCoordinates": [-1.0, 1.0],
+      "selectedNode": 1,
+      "mahalanobisShare": 1.4142135623730951,
+      "expectedTarget": 0.5,
+      "expectedAlong": 10.666666666666666
+    },
+    {
+      "layer": 1,
+      "basis": [0.0, 1.0],
+      "neutral": [0.0, 0.0],
+      "nodeCoordinates": [-2.0, 2.0],
+      "selectedNode": 1,
+      "mahalanobisShare": 2.8284271247461903,
+      "expectedTarget": 0.5,
+      "expectedAlong": 21.333333333333332
+    }
+  ]
+}

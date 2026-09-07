@@ -15,13 +15,13 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.loom import (
+from drowse.core.loom import (
     InvalidNodeOperationError,
     Recipe,
     UnknownNodeError,
 )
-from saklas.core.results import ProbeReading
-from saklas.core.session import SaklasSession
+from drowse.core.results import ProbeReading
+from drowse.core.session import DrowseSession
 from tests.test_jlens_session import (
     _PROMPT_RENDER,
     _TreeStubSession,
@@ -60,7 +60,7 @@ class _StubMonitor:
 
 
 class _GeometryStubSession(_TreeStubSession):
-    geometry_token_readout = SaklasSession.geometry_token_readout
+    geometry_token_readout = DrowseSession.geometry_token_readout
 
     def __init__(self) -> None:
         super().__init__()
@@ -73,7 +73,7 @@ def test_geometry_token_readout_shape_and_position() -> None:
     node_id = _tree_with_assistant(s, raw_ids)
 
     seen: list[tuple[int, int | None, tuple[int, ...]]] = []
-    import saklas.core.capture as _capture_mod
+    import drowse.core.capture as _capture_mod
 
     real_capture = _capture_mod._capture_all_hidden_states
 

@@ -65,11 +65,11 @@
     flex-direction: column;
     min-width: 0;
     max-width: 100%;
-    gap: var(--space-2);
-    padding: var(--space-3) var(--space-4);
+    gap: var(--space-5);
+    padding: var(--surface-padding);
     border: 1px solid transparent;
     border-radius: var(--radius-lg);
-    background: var(--glass);
+    background: var(--surface-card);
     box-shadow: var(--shadow-rack);
     font-size: var(--text-sm);
     transition:
@@ -79,7 +79,8 @@
       opacity var(--dur) var(--ease-out);
   }
   .card:hover {
-    background: var(--glass-strong);
+    background: var(--surface-card-hover);
+    box-shadow: var(--shadow-rack-hover);
   }
   .card.active {
     border-color: color-mix(in srgb, var(--card-accent) 40%, transparent);
@@ -89,7 +90,7 @@
     /* Off is a reversible state, not unavailable content. Keep labels and
      * the re-enable action at full contrast; the hollow marker, struck name,
      * and quieter surface communicate state without dimming the whole card. */
-    background: color-mix(in srgb, var(--glass) 55%, transparent);
+    background: var(--surface-sheen), color-mix(in srgb, var(--glass) 55%, transparent);
     box-shadow: none;
   }
 
@@ -107,7 +108,7 @@
   .body {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: var(--space-4);
     min-width: 0;
   }
 </style>

@@ -13,8 +13,9 @@
 // surface).
 
 import { SvelteMap } from "svelte/reactivity";
-import { apiManifolds, apiProfiles } from "../api";
-import type { CorrelationData, ManifoldInfo, VectorInfo } from "../api";
+import { apiManifolds, apiProfiles } from "../runtime/services";
+import { userFacingError } from "../runtime/userFacingError";
+import type { CorrelationData, ManifoldInfo, VectorInfo } from "../types";
 import type {
   AtomMode,
   AtomSteerEntry,
@@ -36,7 +37,7 @@ export interface SteerRack {
   /** Rack key = atom display form (``honest``, ``ns/foo``, ``happy.sad``,
    *  ``personas``).  One entry per name; ``mode`` discriminates subspace
    *  (flat) vs manifold (curved).  Variant lives on the entry, not the key —
-   *  matching the saklas parser's Steering.alphas semantics. */
+   *  matching the drowse parser's Steering.alphas semantics. */
   entries: Map<string, SteerEntry>;
   /** Advanced full-grammar expression. ``null`` means serialize the visual
    * rack; a string (including empty = explicitly unsteered) is authoritative. */
@@ -79,10 +80,20 @@ export const steerRack: SteerRack = $state({
  * change. */
 export const vectorsState: { names: string[] } = $state({ names: [] });
 
+let correlationEpoch = 0;
+
+/** Drop the cached matrix and prevent an older in-flight request from
+ * repopulating it after the direction/probe roster changes. */
+export function invalidateCorrelation(): void {
+  correlationEpoch += 1;
+  steerRack.correlation = null;
+}
+
 export async function refreshVectorList(): Promise<void> {
   const r = await apiProfiles.list();
   vectorsState.names = r.profiles.map((v) => v.name);
   // Cache profile metadata — cheap, server already serialized.
+  steerRack.profiles.clear();
   for (const v of r.profiles) {
     steerRack.profiles.set(v.name, v);
   }
@@ -91,11 +102,12 @@ export async function refreshVectorList(): Promise<void> {
 export async function refreshCorrelation(
   names?: string[] | null,
 ): Promise<void> {
+  const requestedAt = correlationEpoch;
   try {
     const data = await apiProfiles.correlation(names);
-    steerRack.correlation = data;
+    if (requestedAt === correlationEpoch) steerRack.correlation = data;
   } catch {
-    steerRack.correlation = null;
+    if (requestedAt === correlationEpoch) steerRack.correlation = null;
   }
 }
 
@@ -104,8 +116,17 @@ export async function refreshCorrelation(
 function defaultSubspaceEntry(
   coords: number[] = [],
   label: string | null = null,
+  variant: Variant = "raw",
 ): SubspaceSteerEntry {
-  return { mode: "subspace", coords, label, variant: "raw", trigger: "BOTH", enabled: true };
+  return {
+    mode: "subspace",
+    ablate: false,
+    coords,
+    label,
+    variant,
+    trigger: "BOTH",
+    enabled: true,
+  };
 }
 
 /** Reassign a subspace-mode (flat) entry through ``fn``; no-op if the entry is
@@ -176,11 +197,17 @@ export function setSubspaceEnabled(name: string, enabled: boolean): void {
   });
 }
 
+export function setSubspaceAblate(name: string, ablate: boolean): void {
+  enqueueOrApply(`${ablate ? "ablate" : "push"} ${name}`, () => {
+    mutateSubspace(name, (e) => ({ ...e, ablate }));
+  });
+}
+
 /** Add a flat (subspace) term.  A 2-node concept defaults to its positive
  *  pole (label form); a higher-rank flat (personas) to the domain centroid;
  *  an uncatalogued typed name to its positive pole label.  Magnitude is the
  *  shared ``subspaceAlong`` master, not per-card. */
-export function addSubspaceToRack(name: string): void {
+export function addSubspaceToRack(name: string, variant: Variant = "raw"): void {
   if (steerRack.entries.has(name)) return;
   steerRack.customExpression = null;
   const info = manifoldByName(name);
@@ -195,7 +222,7 @@ export function addSubspaceToRack(name: string): void {
     const bare = name.includes("/") ? name.slice(name.indexOf("/") + 1) : name;
     label = bare.split(".")[0];
   }
-  steerRack.entries.set(name, defaultSubspaceEntry(coords, label));
+  steerRack.entries.set(name, defaultSubspaceEntry(coords, label, variant));
 }
 
 export function removeSubspaceFromRack(name: string): void {
@@ -231,7 +258,7 @@ export async function refreshManifoldList(): Promise<void> {
     steerRack.error = null;
   } catch (e) {
     steerRack.catalog = [];
-    steerRack.error = e instanceof Error ? e.message : String(e);
+    steerRack.error = userFacingError(e, "Saved directions could not be refreshed.");
   } finally {
     steerRack.loading = false;
   }
@@ -271,7 +298,7 @@ function mutateManifold(
 }
 
 /** Add a curved manifold to the rack at its domain centroid, along 0.5. */
-export function addManifoldToRack(name: string): void {
+export function addManifoldToRack(name: string, variant: Variant = "raw"): void {
   if (steerRack.entries.has(name)) return;
   steerRack.customExpression = null;
   const info = manifoldByName(name);
@@ -282,7 +309,7 @@ export function addManifoldToRack(name: string): void {
     onto: 0,
     coords,
     label: null,
-    variant: "raw",
+    variant,
     trigger: "BOTH",
     enabled: true,
   });
@@ -315,6 +342,7 @@ export const ATOM_PREFIX: Record<AtomMode, string> = {
 export interface AtomRackActions {
   remove(name: string): void;
   setAlpha(name: string, alpha: number): void;
+  setAblate(name: string, ablate: boolean): void;
   setEnabled(name: string, enabled: boolean): void;
   setTrigger(name: string, trigger: Trigger): void;
 }
@@ -338,6 +366,11 @@ function buildAtomActions(mode: AtomMode, label: string): AtomRackActions {
     setAlpha(name, alpha) {
       enqueueOrApply(`${label} alpha ${name} ${alpha.toFixed(3)}`, () => {
         mutate(name, (e) => ({ ...e, alpha }));
+      });
+    },
+    setAblate(name, ablate) {
+      enqueueOrApply(`${ablate ? "ablate" : "push"} ${name}`, () => {
+        mutate(name, (e) => ({ ...e, ablate }));
       });
     },
     setEnabled(name, enabled) {
@@ -369,6 +402,7 @@ function addAtomToRack(mode: AtomMode, id: string): void {
   steerRack.customExpression = null;
   steerRack.entries.set(name, {
     mode,
+    ablate: false,
     alpha: ATOM_DEFAULT_ALPHA,
     trigger: "BOTH",
     enabled: true,

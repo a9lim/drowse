@@ -1,67 +1,61 @@
 <script lang="ts">
-  // Active-workbench card — model id and device/dtype.  Lives at the
-  // bottom of the threads column.  The tok/s · ppl · tree meters were
-  // removed as redundant: the status footer already carries t/s and ppl.
-
   import { sessionState } from "../lib/stores.svelte";
+  import { DROWSE_UI_VERSION } from "../lib/version";
+  import ModelProviderLogo from "../hosted/ui/ModelProviderLogo.svelte";
+  import BaseModelTag from "../lib/ui/BaseModelTag.svelte";
 
-  const model = $derived(sessionState.info?.model_id ?? "no session");
-  const device = $derived(
-    sessionState.info
-      ? `${sessionState.info.device}/${sessionState.info.dtype}`
-      : "offline",
-  );
+  const model = $derived(sessionState.info?.model_id ?? "");
+  const shortId = $derived(model.split("/").at(-1) ?? model);
+  const modelName = $derived.by(() => {
+    const known = shortId.match(/^(gemma|qwen)-?(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?b)(?:-|$)/i);
+    if (!known) return shortId || "No model open";
+    const family = known[1].toLowerCase() === "gemma" ? `Gemma ${known[2]}` : `Qwen${known[2]}`;
+    return `${family} ${known[3].toUpperCase()}`;
+  });
 </script>
 
-<section class="workbench" aria-label="Active workbench">
-  <h2 title={model}>{model}</h2>
-  <span class="sub" title={device}>{device}</span>
-</section>
+<span class="workbench">
+  <span class="model-identity">
+    <ModelProviderLogo modelId={shortId} />
+    <span class="model">{modelName}{#if sessionState.info?.is_base_model}<BaseModelTag />{/if}</span>
+  </span>
+  <span class="version">Drowse {DROWSE_UI_VERSION}</span>
+</span>
 
 <style>
   .workbench {
-    /* margin-top:auto pins the card to the column floor even when the
-     * tree above it is short (empty / error states don't flex-grow).
-     * Borderless — the gap above carries the separation.  Model id and
-     * device/dtype sit on one baseline row (model left, device right)
-     * rather than stacked. */
-    margin-top: auto;
-    flex: 0 0 auto;
     display: flex;
-    flex-direction: row;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--space-4);
-    padding: var(--space-3) var(--space-4);
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+    min-width: 0;
+    padding: var(--space-3);
   }
 
-  .sub {
-    margin: 0;
-    flex: 0 0 auto;
-    padding: 1px 7px;
-    border-radius: var(--radius-pill);
-    background: var(--glass-strong);
-    border: 1px solid transparent;
+  .model-identity {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .version {
     color: var(--fg-muted);
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    white-space: nowrap;
+    line-height: 1.5;
   }
 
-  h2 {
+  .model {
     margin: 0;
-    /* Take the row's slack and ellipsize so a long model id never
-     * pushes the device readout off the right edge. */
     flex: 1 1 auto;
     min-width: 0;
-    font-family: var(--font-mono);
+    font-family: var(--font-structure);
     font-size: var(--text-sm);
+    font-weight: var(--weight-structure);
     line-height: 1.25;
     color: var(--fg-strong);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 </style>

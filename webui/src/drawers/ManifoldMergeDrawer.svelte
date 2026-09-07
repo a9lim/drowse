@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FluentIcon from "../lib/ui/FluentIcon.svelte";
+  import Select from "../lib/Select.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // ManifoldMergeDrawer — discover-mode node-union merge.
   //
@@ -12,7 +14,7 @@
 
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import { apiManifolds, describeError } from "../lib/api";
+  import { apiManifolds, describeError } from "../lib/runtime/services";
   import {
     closeDrawer,
     steerRack,
@@ -28,7 +30,7 @@
     return `${m.namespace}/${m.name}`;
   }
   function isDiscoverMode(m: ManifoldInfo): boolean {
-    return m.fit_mode === "pca" || m.fit_mode === "spectral";
+    return m.fit_mode === "pca" || m.fit_mode === "spectral" || m.fit_mode === "auto";
   }
 
   // ----- form state ----------------------------------------------------
@@ -94,13 +96,13 @@
       await refreshManifoldList();
       dismissToast(toastId);
       pushToast(
-        `merged into local/${target} — run fit next`,
+        `Merged into local/${target}. Fit the merged manifold next.`,
         { kind: "info" },
       );
       closeDrawer();
     } catch (e) {
       dismissToast(toastId);
-      pushToast(`merge failed — ${describeError(e)}`, {
+      pushToast(`Couldn't merge the manifolds: ${describeError(e)}`, {
         kind: "error",
         ttlMs: null,
       });
@@ -114,25 +116,21 @@
   });
 </script>
 
-<section class="drawer-shell" aria-label="Merge manifolds">
+<section class="drawer-shell" aria-label="Combine response controls">
   <header class="header">
-    <span class="title">merge manifolds</span>
+    <h2 class="title">Combine response controls</h2>
     <DrawerCloseButton onclick={closeDrawer} />
   </header>
 
   <div class="body">
-    <p class="hint">
-      Union nodes from ≥2 discover manifolds.
-    </p>
-
     {#if discoverManifolds.length < 2}
       <p class="muted">
-        need ≥2 discover manifolds
+        Create or download at least two learned response controls first.
       </p>
     {:else}
       <form class="form" onsubmit={onSubmit}>
         <fieldset class="sources">
-          <legend>sources <span class="optional">(pick ≥ 2)</span></legend>
+          <legend>Response controls <span class="optional">(choose at least two)</span></legend>
           <ul class="source-list" role="list">
             {#each discoverManifolds as m (rowKey(m))}
               {@const key = rowKey(m)}
@@ -156,11 +154,11 @@
         </fieldset>
 
         <label class="field">
-          <span class="label">target name</span>
+          <span class="label">New control name</span>
           <input
             type="text"
             placeholder="combined"
-            aria-label="merged manifold name (under local/)"
+            aria-label="New combined response control name"
             bind:value={targetName}
             disabled={merging}
             autocomplete="off"
@@ -169,42 +167,40 @@
         </label>
 
         <label class="field">
-          <span class="label">fit mode</span>
-          <select
-            aria-label="merged manifold fit mode"
+          <span class="label">Layout method</span>
+          <Select
+            ariaLabel="Combined response control layout method"
             bind:value={fitMode}
             disabled={merging || selected.size === 0}
-          >
-            {#if sourceModes.length <= 1}
-              <option value="">inherit ({sourceModes[0] ?? "—"})</option>
-            {/if}
-            <option value="pca">pca</option>
-            <option value="spectral">spectral</option>
-          </select>
+            options={[
+              ...(sourceModes.length <= 1 ? [{ value: "", label: `Match the source (${sourceModes[0] ?? "automatic"})` }] : []),
+              { value: "pca", label: "pca" }, { value: "spectral", label: "spectral" },
+            ]}
+          />
         </label>
         {#if sourceModes.length > 1}
           <p class="warn">
-            mixed fit modes: {sourceModes.join(", ")}
+            The selected controls use different layout methods: {sourceModes.join(", ")}.
           </p>
         {/if}
 
         <footer class="foot">
           <button type="button" class="secondary" onclick={closeDrawer}
-            >cancel</button>
+            >Cancel</button>
           <button
             type="submit"
             class="primary"
             disabled={!canSubmit}
             title={selected.size < 2
-                ? "pick ≥2"
+                ? "Choose at least two response controls"
               : !targetName.trim()
-                ? "target name required"
-                : "merge"}
+                ? "Enter a name for the combined control"
+                : "Combine controls"}
           >
             {#if merging}
-              <span class="spinner" aria-hidden="true"></span> merging…
+              <FluentIcon name="refresh" spin /> Combining…
             {:else}
-              merge {selected.size} → local/{targetName.trim() || "…"}
+              Combine {selected.size} controls
             {/if}
           </button>
         </footer>
@@ -227,7 +223,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     color: var(--accent);
@@ -238,17 +234,11 @@
   .body {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
     min-height: 0;
-  }
-  .hint {
-    margin: 0;
-    color: var(--fg-dim);
-    font-size: var(--text-sm);
-    line-height: 1.5;
   }
   .muted {
     margin: 0;
@@ -265,8 +255,8 @@
   }
   .sources {
     border-radius: var(--radius);
-    background: var(--bg-deep);
-    padding: var(--space-3) var(--space-4);
+    background: var(--surface-sheen), var(--bg-deep);
+    padding: var(--surface-padding);
     margin: 0;
   }
   .sources legend {
@@ -322,8 +312,7 @@
     letter-spacing: 0;
     padding: 0;
   }
-  input[type="text"],
-  select {
+  input[type="text"] {
     background: var(--input-well);
     color: var(--fg);
     border: 1px solid transparent;
@@ -334,8 +323,7 @@
     box-sizing: border-box;
     width: 100%;
   }
-  input[type="text"]:focus,
-  select:focus {
+  input[type="text"]:focus {
     outline: 1px solid var(--pillar-manifold);
     border-color: var(--pillar-manifold);
   }
@@ -387,19 +375,5 @@
   .secondary:hover {
     background: var(--glass-strong);
     color: var(--fg);
-  }
-  .spinner {
-    width: 0.7em;
-    height: 0.7em;
-    border-radius: 50%;
-    border: 1px solid var(--bg-deep);
-    border-right-color: transparent;
-    animation: spin var(--dur-spin) linear infinite;
-    display: inline-block;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
 </style>

@@ -10,6 +10,7 @@
   // discovery readout, not the pinned roster).
 
   import Bar from "../../lib/charts/Bar.svelte";
+  import { chartValue } from "../../lib/charts/chartValues";
   import LayerStrip from "../../panels/rack/LayerStrip.svelte";
   import ProbeReadingRow from "../../panels/rack/ProbeReadingRow.svelte";
   import RackCard from "../../panels/rack/RackCard.svelte";
@@ -32,6 +33,9 @@
   } = $props();
 
   const accentColor = $derived(`var(${accent})`);
+  const rawScale = $derived(Math.max(1, ...Object.values(readings)
+    .filter((reading) => reading.unit === "raw_activation")
+    .map((reading) => reading.value)));
 
   const rows = $derived(
     Object.entries(readings).sort(([a], [b]) =>
@@ -54,7 +58,7 @@
       .map((layer) => ({
         layer: Number(layer),
         value: perLayer[layer],
-        title: `L${layer} · ${perLayer[layer].toPrecision(3)}`,
+        title: `L${layer} · ${chartValue(perLayer[layer], reading.unit === "mean_token_probability")} · ${UNIT_LABEL[reading.unit]}`,
       }));
   }
 
@@ -76,7 +80,6 @@
   <DetailSection
     title="PINNED PROBES"
     count={`${rows.length} captured`}
-    description="Persistent probe channels recorded on this exact token, including their depth profile."
     accent={accentColor}
   >
     <div class="pinned-grid" aria-label="Pinned probe readings">
@@ -90,7 +93,7 @@
               meta={reading.depth?.center?.[0] != null
                 ? `@${reading.depth.center[0].toFixed(2)} ±${(reading.depth.spread?.[0] ?? 0).toFixed(2)}`
                 : null}
-              metaTitle="depth center ± spread · 0 first, 1 last"
+              metaTitle="Where this probe’s signal is concentrated across layers: 0 is the first layer, 1 is the last. The ± value shows how widely it is spread."
             >
               {#snippet lead()}<RackMarker {shape} filled />{/snippet}
             </DetailCardHeader>
@@ -99,13 +102,14 @@
             <ProbeReadingRow ariaLabel={`Pinned probe ${name}`}>
               {#snippet left()}
                 <span class="row-label" title={UNIT_LABEL[reading.unit]}>
-                  strength
+                  {reading.unit === "raw_activation" ? "activation" : "strength"}
                 </span>
               {/snippet}
               {#snippet bar()}
                 <Bar
+                  percentage={reading.unit === "mean_token_probability"}
                   value={Math.max(reading.value, 0)}
-                  max={1}
+                  max={reading.unit === "raw_activation" ? rawScale : 1}
                   color={accentColor}
                 />
               {/snippet}
@@ -140,13 +144,13 @@
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
-    text-align: right;
+    text-align: end;
   }
   .row-label {
     color: var(--fg-muted);
     font-family: var(--font-mono);
     font-size: var(--text-xs);
-    text-align: right;
+    text-align: end;
   }
   @media (max-width: 760px) {
     .pinned-grid {

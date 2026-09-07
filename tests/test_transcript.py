@@ -7,7 +7,7 @@ from typing import Iterable
 
 import pytest
 
-from saklas import (
+from drowse import (
     LoomTree,
     ProbeRef,
     Recipe,
@@ -37,7 +37,7 @@ class _Config:
 
 
 class _StubSession:
-    """Tiny replacement for SaklasSession exposing the transcript API surface."""
+    """Tiny replacement for DrowseSession exposing the transcript API surface."""
 
     def __init__(
         self,
@@ -101,7 +101,7 @@ def test_schema_round_trip():
 @pytest.mark.parametrize("version", [1, 99])
 def test_from_yaml_rejects_unsupported_version(version: int):
     with pytest.raises(TranscriptFormatError, match="version"):
-        Transcript.from_yaml(f"saklas_transcript: {version}\nturns: []\n")
+        Transcript.from_yaml(f"drowse_transcript: {version}\nturns: []\n")
 
 
 def test_from_yaml_rejects_non_mapping_root():
@@ -361,8 +361,8 @@ def test_guard_probe_drift_warns_then_strict_raises():
 
 
 def test_cli_verb_registered():
-    from saklas.cli.parsers import _build_root_parser
-    from saklas.cli.runners import _COMMAND_RUNNERS
+    from drowse.cli.parsers import _build_root_parser
+    from drowse.cli.runners import _COMMAND_RUNNERS
 
     parser = _build_root_parser()
     ns = parser.parse_args([
@@ -382,7 +382,7 @@ def test_cli_verb_registered():
 
 
 def test_v2_round_trip_speaker_and_cast(tmp_path: Path):
-    from saklas import CastMember
+    from drowse import CastMember
 
     t = Transcript(
         model_id="m",
@@ -443,7 +443,7 @@ def test_import_reattaches_generated_user_seat_turn():
 
 
 def test_import_merges_cast_and_flags_conflicts():
-    from saklas import CastMember
+    from drowse import CastMember
 
     sess = _StubSession()
     sess.tree.set_cast_member(

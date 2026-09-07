@@ -8,12 +8,24 @@
   import Button from "../../lib/ui/Button.svelte";
   import ProbeReadingRow from "../../panels/rack/ProbeReadingRow.svelte";
   import RackCard from "../../panels/rack/RackCard.svelte";
-  import { samplingState, sendFork, closeDrawer } from "../../lib/stores.svelte";
+  import {
+    samplingState,
+    sendFork,
+    closeDrawer,
+    loomUiState,
+    instrumentFamily,
+  } from "../../lib/stores.svelte";
   import type { TokenScore } from "../../lib/types";
   import EmptyState from "./EmptyState.svelte";
   import InstrumentHeader from "./InstrumentHeader.svelte";
   import DetailSection from "./DetailSection.svelte";
   import DetailCardHeader from "./DetailCardHeader.svelte";
+  import { getRuntimeClient } from "../../lib/runtime/registry";
+  import {
+    tokenAlternativeDefault,
+    tokenAlternativeLimit,
+  } from "../../lib/runtime/samplingCapabilities";
+  import { userFacingError } from "../../lib/runtime/userFacingError";
 
   let {
     token,
@@ -22,6 +34,15 @@
     token: TokenScore;
     nodeId: string | null;
   } = $props();
+
+  const runtimeMode = getRuntimeClient().mode;
+  const retainedAlternativeCount = tokenAlternativeDefault(runtimeMode);
+  const tokenAlternativesAvailable = tokenAlternativeLimit(runtimeMode) > 0;
+  const tokenForkAvailable = $derived(
+    runtimeMode === "http" ||
+      runtimeMode === "browser" &&
+        instrumentFamily("geometry")?.capabilities.token_readout === true,
+  );
 
   interface RankRow {
     rank: number;
@@ -52,22 +73,25 @@
       chosen: token.tokenId != null && a.id === token.tokenId,
     }));
   });
+  const nearCertainChosenToken = $derived(
+    rankRows.length === 1 && rankRows[0].chosen && rankRows[0].p >= 0.9995,
+  );
 
   let branchingRank = $state<number | null>(null);
   let branchError = $state<string | null>(null);
 
   function fmtLogprob(v: number | null | undefined): string {
-    if (v == null || !Number.isFinite(v)) return "—";
+    if (v == null || !Number.isFinite(v)) return "-";
     return v.toFixed(3);
   }
   function fmtProb(p: number): string {
-    if (!Number.isFinite(p)) return "—";
+    if (!Number.isFinite(p)) return "-";
     if (p >= 0.001) return p.toFixed(4);
     return p.toExponential(2);
   }
   function fmtDelta(d: number, rank: number): string {
-    if (rank === 1) return "—";
-    if (!Number.isFinite(d)) return "—";
+    if (rank === 1) return "-";
+    if (!Number.isFinite(d)) return "-";
     return d.toFixed(3);
   }
 
@@ -75,8 +99,8 @@
    *  effect on the next generation — the current token's alts weren't
    *  captured and can't be recovered. */
   function enableAlts(): void {
-    if (samplingState.return_top_k === 0) {
-      samplingState.return_top_k = 8;
+    if (tokenAlternativesAvailable && (samplingState.return_top_k ?? 0) === 0) {
+      samplingState.return_top_k = retainedAlternativeCount;
     }
   }
 
@@ -98,8 +122,13 @@
     try {
       await sendFork(nodeId, token.rawIndex, row.id);
       closeDrawer();
+      loomUiState.view = "map";
+      window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: "branches" }));
     } catch (e) {
-      branchError = e instanceof Error ? e.message : String(e);
+      branchError = userFacingError(
+        e,
+        "Unable to create a branch from this word choice. Try another alternative.",
+      );
     } finally {
       branchingRank = null;
     }
@@ -118,10 +147,15 @@
 <DetailSection
   title="RANKED ALTERNATIVES"
   count={rankRows.length > 0 ? `${rankRows.length} retained` : "capture unavailable"}
-  description="Every card uses the same absolute probability scale; branch swaps that token into the raw decode prefix and resamples a sibling."
   accent="var(--pillar-lens)"
 >
   {#if rankRows.length > 0}
+    {#if nearCertainChosenToken}
+      <p class="sampler-note">
+        This token has almost all of the probability after sampling settings.
+        That is not a measure of factual accuracy.
+      </p>
+    {/if}
     <div class="logit-grid" aria-label="Ranked token alternatives">
       {#each rankRows as row (row.rank)}
         <RackCard accent="--pillar-lens" disabled={false} active={row.chosen}>
@@ -138,7 +172,7 @@
             <ProbeReadingRow ariaLabel={`Probability ${fmtProb(row.p)}`}>
               {#snippet left()}<span class="row-label">probability</span>{/snippet}
               {#snippet bar()}
-                <Bar value={row.p} max={1} color="var(--pillar-lens)" />
+                <Bar percentage value={row.p} max={1} color="var(--pillar-lens)" />
               {/snippet}
               {#snippet middle()}
                 <span class="row-context">logp {fmtLogprob(row.logprob)}</span>
@@ -151,11 +185,17 @@
               <span class="spacer"></span>
               <Button
                 size="sm"
-                disabled={row.chosen || branchingRank !== null}
+                disabled={!tokenForkAvailable || row.chosen || branchingRank !== null}
                 onclick={() => branchFromAlt(row)}
-                title="fork with token"
+                title={tokenForkAvailable
+                  ? undefined
+                  : "Token branching is not available in the browser runtime yet"}
               >
-                {branchingRank === row.rank ? "branching…" : row.chosen ? "selected" : "branch"}
+                {branchingRank === row.rank
+                  ? "Starting…"
+                  : row.chosen
+                    ? "Used"
+                    : tokenForkAvailable ? "Start branch" : "View only"}
               </Button>
             </div>
           {/snippet}
@@ -167,14 +207,24 @@
     {/if}
   {:else if token.logprob != null}
     <EmptyState title={`logprob ${fmtLogprob(token.logprob)} · no alternatives captured`}>
-      <Button onclick={enableAlts} disabled={samplingState.return_top_k > 0}>
-        {samplingState.return_top_k > 0 ? "alts on next run" : "enable alts"}
+      <Button
+        onclick={enableAlts}
+        disabled={!tokenAlternativesAvailable || samplingState.return_top_k > 0}
+      >
+        {!tokenAlternativesAvailable
+          ? "alts unavailable"
+          : samplingState.return_top_k > 0 ? "alts on next run" : "enable alts"}
       </Button>
     </EmptyState>
   {:else}
     <EmptyState title="no logprob data">
-      <Button onclick={enableAlts} disabled={samplingState.return_top_k > 0}>
-        {samplingState.return_top_k > 0 ? "alts on next run" : "enable alts"}
+      <Button
+        onclick={enableAlts}
+        disabled={!tokenAlternativesAvailable || samplingState.return_top_k > 0}
+      >
+        {!tokenAlternativesAvailable
+          ? "alts unavailable"
+          : samplingState.return_top_k > 0 ? "alts on next run" : "enable alts"}
       </Button>
     </EmptyState>
   {/if}
@@ -185,6 +235,14 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-3);
+  }
+  .sampler-note {
+    color: var(--fg-muted);
+    font-family: var(--font-reading);
+    font-size: var(--text-sm);
+    line-height: 1.55;
+    margin: 0 0 var(--space-4);
+    max-width: 72ch;
   }
   .spacer {
     flex: 1 1 auto;
@@ -205,7 +263,7 @@
   }
   .row-label,
   .row-value {
-    text-align: right;
+    text-align: end;
   }
   .row-value {
     color: var(--pillar-lens);

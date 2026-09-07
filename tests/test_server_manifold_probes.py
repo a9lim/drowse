@@ -1,12 +1,12 @@
 """Tests for the unified probe server surface (no GPU required).
 
-Covers the native ``/saklas/v1/sessions/{id}/probes`` route family (the
+Covers the native ``/drowse/v1/sessions/{id}/probes`` route family (the
 post-unification collapse of the old vector-probe ``/probes`` +
 manifold-probe ``/manifold-probes`` split) plus the
-``x-saklas-probe-readings`` extension surfaced on OpenAI chat /
+``x-drowse-probe-readings`` extension surfaced on OpenAI chat /
 completions and Ollama chat / generate responses (streaming and
 non-streaming), plus per-token ``probe_readings`` on the native WS
-``/saklas/v1/sessions/{id}/stream`` ``token`` frame.  All exercises mock
+``/drowse/v1/sessions/{id}/stream`` ``token`` frame.  All exercises mock
 the session — the goal is to pin the wire shape, not re-run engine
 integration.
 
@@ -29,7 +29,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from saklas.core.results import (
+from drowse.core.results import (
     GenerationResult,
     ProbeReading,
     RunSet,
@@ -83,7 +83,7 @@ def _single_run(**kwargs: Any) -> RunSet:
 
 # The single session id the native tree resolves to.
 _SID = "default"
-_PROBES = f"/saklas/v1/sessions/{_SID}/probes"
+_PROBES = f"/drowse/v1/sessions/{_SID}/probes"
 
 
 # ---------------------------------------------------------------------------
@@ -173,14 +173,14 @@ def _mock_session():
 
 @pytest.fixture
 def session_and_client():
-    from saklas.server import create_app
+    from drowse.server import create_app
     session = _mock_session()
     app = create_app(session, default_steering=None)
     return session, TestClient(app)
 
 
 # ---------------------------------------------------------------------------
-# /saklas/v1/sessions/{id}/probes route family
+# /drowse/v1/sessions/{id}/probes route family
 # ---------------------------------------------------------------------------
 
 
@@ -314,7 +314,7 @@ class TestProbeRoutes:
 
 
 # ---------------------------------------------------------------------------
-# /saklas/v1/manifolds/* route family (search / merge / install)
+# /drowse/v1/manifolds/* route family (search / merge / install)
 # ---------------------------------------------------------------------------
 #
 # These ride the still-present ``manifold_routes`` module — unaffected by
@@ -324,7 +324,7 @@ class TestProbeRoutes:
 
 class TestManifoldCrudRoutes:
     def test_search_route_returns_results(self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``GET /saklas/v1/manifolds/search`` proxies to
+        """``GET /drowse/v1/manifolds/search`` proxies to
         ``hf_manifolds.search_manifolds`` and returns the row shape the
         webui's HF picker expects.  Mocks the HF call so the test runs
         offline.
@@ -335,7 +335,7 @@ class TestManifoldCrudRoutes:
                 "name": "personas",
                 "namespace": "a9lim",
                 "description": "100 persona archetypes",
-                "tags": ["saklas-manifold"],
+                "tags": ["drowse-manifold"],
                 "node_count": 100,
                 "domain_label": "discover-pca",
                 "fit_mode": "pca",
@@ -343,10 +343,10 @@ class TestManifoldCrudRoutes:
             },
         ]
         monkeypatch.setattr(
-            "saklas.server.manifold_routes.search_manifolds",
+            "drowse.server.manifold_routes.search_manifolds",
             lambda _q: rows,
         )
-        resp = client.get("/saklas/v1/manifolds/search?q=persona")
+        resp = client.get("/drowse/v1/manifolds/search?q=persona")
         assert resp.status_code == 200
         body = resp.json()
         assert body["results"] == rows
@@ -362,15 +362,15 @@ class TestManifoldCrudRoutes:
             raise ImportError("huggingface_hub")
 
         monkeypatch.setattr(
-            "saklas.server.manifold_routes.search_manifolds", _raise,
+            "drowse.server.manifold_routes.search_manifolds", _raise,
         )
-        resp = client.get("/saklas/v1/manifolds/search?q=anything")
+        resp = client.get("/drowse/v1/manifolds/search?q=anything")
         assert resp.status_code == 503
 
     def test_merge_route_round_trip(self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``POST /saklas/v1/manifolds/merge`` orchestrates the discover-
+        """``POST /drowse/v1/manifolds/merge`` orchestrates the discover-
         merge under the session lock and returns the same manifold-detail
-        JSON ``GET /saklas/v1/manifolds/{ns}/{name}`` ships."""
+        JSON ``GET /drowse/v1/manifolds/{ns}/{name}`` ships."""
         from pathlib import Path
         from unittest.mock import MagicMock
 
@@ -387,25 +387,25 @@ class TestManifoldCrudRoutes:
             return merged_dir
 
         monkeypatch.setattr(
-            "saklas.server.manifold_routes.merge_discover_manifolds",
+            "drowse.server.manifold_routes.merge_discover_manifolds",
             _merge,
         )
         fake_folder = MagicMock()
         fake_folder.name = "combined"
-        fake_folder.folder = Path("/tmp/.saklas/manifolds/local/combined")
+        fake_folder.folder = Path("/tmp/.drowse/manifolds/local/combined")
         monkeypatch.setattr(
-            "saklas.server.manifold_routes._find_manifold",
+            "drowse.server.manifold_routes._find_manifold",
             lambda ns, name: fake_folder,
         )
         monkeypatch.setattr(
-            "saklas.server.manifold_routes._manifold_json",
+            "drowse.server.manifold_routes._manifold_json",
             lambda mf, sess, *, full=False: manifold_json_stub(
                 mf.folder.parent.name, mf.name, fit_mode="pca",
             ),
         )
 
         resp = client.post(
-            "/saklas/v1/manifolds/merge",
+            "/drowse/v1/manifolds/merge",
             json={
                 "name": "combined",
                 "description": "fold heap",
@@ -432,7 +432,7 @@ class TestManifoldCrudRoutes:
         """Single-source merge fails fast at the route layer."""
         _, client = session_and_client
         resp = client.post(
-            "/saklas/v1/manifolds/merge",
+            "/drowse/v1/manifolds/merge",
             json={
                 "name": "combined",
                 "sources": [{"namespace": "local", "name": "only"}],
@@ -441,9 +441,9 @@ class TestManifoldCrudRoutes:
         assert resp.status_code == 400
 
     def test_install_route_round_trip(self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``POST /saklas/v1/manifolds/install`` orchestrates the HF
+        """``POST /drowse/v1/manifolds/install`` orchestrates the HF
         pull under the session lock and returns the same detail JSON
-        ``GET /saklas/v1/manifolds/{ns}/{name}`` ships.
+        ``GET /drowse/v1/manifolds/{ns}/{name}`` ships.
         """
         from pathlib import Path
         from unittest.mock import MagicMock
@@ -452,10 +452,10 @@ class TestManifoldCrudRoutes:
         installed_dir = MagicMock(spec=Path)
         installed_dir.parent.name = "local"
         installed_dir.name = "personas"
-        installed_dir.parent.parent = Path("/tmp/.saklas/manifolds")
+        installed_dir.parent.parent = Path("/tmp/.drowse/manifolds")
 
         monkeypatch.setattr(
-            "saklas.server.manifold_routes.install_manifold",
+            "drowse.server.manifold_routes.install_manifold",
             lambda *_args, **_kwargs: installed_dir,
         )
         # _find_manifold + _manifold_json read the loaded folder back
@@ -463,7 +463,7 @@ class TestManifoldCrudRoutes:
         # an on-disk fixture.
         fake_folder = MagicMock()
         fake_folder.name = "personas"
-        fake_folder.folder = Path("/tmp/.saklas/manifolds/local/personas")
+        fake_folder.folder = Path("/tmp/.drowse/manifolds/local/personas")
         fake_folder.description = "100 personas"
         fake_folder.domain = {"type": "custom", "embed_dim": 8}
         fake_folder.node_labels = ["hacker", "caveman"]
@@ -480,18 +480,18 @@ class TestManifoldCrudRoutes:
         # manifold_dir(ns, name); the simpler route is patching the
         # _find_manifold helper itself.
         monkeypatch.setattr(
-            "saklas.server.manifold_routes._find_manifold",
+            "drowse.server.manifold_routes._find_manifold",
             lambda ns, name: fake_folder,
         )
         monkeypatch.setattr(
-            "saklas.server.manifold_routes._manifold_json",
+            "drowse.server.manifold_routes._manifold_json",
             lambda mf, sess, *, full=False: manifold_json_stub(
                 mf.folder.parent.name, mf.name, fitted=[],
             ),
         )
 
         resp = client.post(
-            "/saklas/v1/manifolds/install",
+            "/drowse/v1/manifolds/install",
             json={"target": "a9lim/personas"},
         )
         assert resp.status_code == 201
@@ -520,24 +520,24 @@ class TestManifoldCrudRoutes:
             return installed_dir
 
         monkeypatch.setattr(
-            "saklas.server.manifold_routes.install_manifold", _install,
+            "drowse.server.manifold_routes.install_manifold", _install,
         )
         fake_folder = MagicMock()
         fake_folder.name = "personas"
-        fake_folder.folder = Path("/tmp/.saklas/manifolds/local/personas")
+        fake_folder.folder = Path("/tmp/.drowse/manifolds/local/personas")
         monkeypatch.setattr(
-            "saklas.server.manifold_routes._find_manifold",
+            "drowse.server.manifold_routes._find_manifold",
             lambda ns, name: fake_folder,
         )
         monkeypatch.setattr(
-            "saklas.server.manifold_routes._manifold_json",
+            "drowse.server.manifold_routes._manifold_json",
             lambda mf, sess, *, full=False: {
                 "namespace": mf.folder.parent.name, "name": mf.name,
             },
         )
 
         with client.stream(
-            "POST", "/saklas/v1/manifolds/install",
+            "POST", "/drowse/v1/manifolds/install",
             json={"target": "a9lim/personas"},
             headers={"Accept": "text/event-stream"},
         ) as resp:
@@ -555,7 +555,7 @@ class TestManifoldCrudRoutes:
         self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A conflict surfaces its own safe message, not the generic scrub."""
-        from saklas.io.hf_manifolds import ManifoldInstallConflict
+        from drowse.io.hf_manifolds import ManifoldInstallConflict
 
         _session, client = session_and_client
 
@@ -563,10 +563,10 @@ class TestManifoldCrudRoutes:
             raise ManifoldInstallConflict("destination already exists")
 
         monkeypatch.setattr(
-            "saklas.server.manifold_routes.install_manifold", _install,
+            "drowse.server.manifold_routes.install_manifold", _install,
         )
         with client.stream(
-            "POST", "/saklas/v1/manifolds/install",
+            "POST", "/drowse/v1/manifolds/install",
             json={"target": "a9lim/personas"},
             headers={"Accept": "text/event-stream"},
         ) as resp:
@@ -579,7 +579,7 @@ class TestManifoldCrudRoutes:
         self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The non-streaming branch keeps its typed status table."""
-        from saklas.io.hf_manifolds import ManifoldInstallConflict
+        from drowse.io.hf_manifolds import ManifoldInstallConflict
 
         _session, client = session_and_client
 
@@ -587,16 +587,16 @@ class TestManifoldCrudRoutes:
             raise ManifoldInstallConflict("destination already exists")
 
         monkeypatch.setattr(
-            "saklas.server.manifold_routes.install_manifold", _install,
+            "drowse.server.manifold_routes.install_manifold", _install,
         )
         resp = client.post(
-            "/saklas/v1/manifolds/install", json={"target": "a9lim/personas"},
+            "/drowse/v1/manifolds/install", json={"target": "a9lim/personas"},
         )
         assert resp.status_code == 409
 
 
 # ---------------------------------------------------------------------------
-# OpenAI extension: x-saklas-probe-readings
+# OpenAI extension: x-drowse-probe-readings
 # ---------------------------------------------------------------------------
 
 
@@ -638,7 +638,7 @@ class TestOpenAIProbeExtension:
         })
         assert resp.status_code == 200
         choice = resp.json()["choices"][0]
-        ext = choice.get("x-saklas-probe-readings")
+        ext = choice.get("x-drowse-probe-readings")
         assert ext is not None
         assert "circumplex" in ext
         assert ext["circumplex"]["fraction"] == pytest.approx(0.42)
@@ -657,7 +657,7 @@ class TestOpenAIProbeExtension:
         assert resp.status_code == 200
         body = resp.json()
         choice = body["choices"][0]
-        assert "x-saklas-probe-readings" not in choice
+        assert "x-drowse-probe-readings" not in choice
         assert "probe_readings" not in body
 
     def test_text_completion_carries_extension_on_choice(self, session_and_client: Any) -> None:
@@ -668,7 +668,7 @@ class TestOpenAIProbeExtension:
 
         resp = client.post("/v1/completions", json={"prompt": "x"})
         assert resp.status_code == 200
-        ext = resp.json()["choices"][0].get("x-saklas-probe-readings")
+        ext = resp.json()["choices"][0].get("x-drowse-probe-readings")
         assert ext is not None
         assert ext["circumplex"]["fraction"] == pytest.approx(0.42)
 
@@ -701,20 +701,20 @@ class TestOpenAIProbeExtension:
         token_chunks = [c for c in chunks if c["choices"][0].get("delta", {}).get("content")]
         assert token_chunks
         for c in token_chunks:
-            assert "x-saklas-probe-readings" not in c["choices"][0]
+            assert "x-drowse-probe-readings" not in c["choices"][0]
 
         # Final chunk carries the aggregate.
         final = next(
             c for c in chunks
             if c["choices"][0].get("finish_reason") == "stop"
         )
-        agg = final["choices"][0].get("x-saklas-probe-readings")
+        agg = final["choices"][0].get("x-drowse-probe-readings")
         assert agg is not None
         assert agg["circumplex"]["fraction"] == pytest.approx(0.42)
 
 
 # ---------------------------------------------------------------------------
-# Ollama extension: x-saklas-probe-readings (top-level)
+# Ollama extension: x-drowse-probe-readings (top-level)
 # ---------------------------------------------------------------------------
 
 
@@ -732,7 +732,7 @@ class TestOllamaProbeExtension:
         })
         assert resp.status_code == 200
         body = resp.json()
-        ext = body.get("x-saklas-probe-readings")
+        ext = body.get("x-drowse-probe-readings")
         assert ext is not None
         assert ext["circumplex"]["fraction"] == pytest.approx(0.42)
 
@@ -747,7 +747,7 @@ class TestOllamaProbeExtension:
             "stream": False,
         })
         assert resp.status_code == 200
-        assert "x-saklas-probe-readings" not in resp.json()
+        assert "x-drowse-probe-readings" not in resp.json()
 
     def test_generate_non_streaming_carries_extension(self, session_and_client: Any) -> None:
         session, client = session_and_client
@@ -760,7 +760,7 @@ class TestOllamaProbeExtension:
             "stream": False,
         })
         assert resp.status_code == 200
-        ext = resp.json().get("x-saklas-probe-readings")
+        ext = resp.json().get("x-drowse-probe-readings")
         assert ext is not None
         assert ext["circumplex"]["fraction"] == pytest.approx(0.42)
 
@@ -788,11 +788,11 @@ class TestOllamaProbeExtension:
         # First chunk: compatible streams do not opt into live per-token readings.
         first = chunks[0]
         assert first["done"] is False
-        assert "x-saklas-probe-readings" not in first
+        assert "x-drowse-probe-readings" not in first
         # Final chunk: aggregate.
         final = chunks[-1]
         assert final["done"] is True
-        agg = final.get("x-saklas-probe-readings")
+        agg = final.get("x-drowse-probe-readings")
         assert agg is not None
         assert agg["circumplex"]["fraction"] == pytest.approx(0.42)
 
@@ -803,7 +803,7 @@ class TestOllamaProbeExtension:
 
 
 class TestWebSocketProbeReadings:
-    """The native ``/saklas/v1/sessions/{id}/stream`` WS must carry the 5.x
+    """The native ``/drowse/v1/sessions/{id}/stream`` WS must carry the 5.x
     ``measurements`` envelope on every ``token`` frame when probes are attached,
     and the final ``done`` event still carries the aggregate ``probe_readings``
     (plus its own aggregate-scope ``measurements`` envelope).  Manifold readings
@@ -846,7 +846,7 @@ class TestWebSocketProbeReadings:
     def _attach_generate(self, session: Any, tokens: Any, aggregate: Any = None) -> None:
         """Install a fake ``session.generate`` that drives ``on_token``.
 
-        Mirrors the pattern in ``test_saklas_api.TestWebSocket``.  When
+        Mirrors the pattern in ``test_drowse_api.TestWebSocket``.  When
         ``aggregate`` is provided it is stashed on the returned result's
         ``probe_readings`` so the ``done`` event surfaces the aggregate
         alongside the per-token frames.
@@ -856,7 +856,7 @@ class TestWebSocketProbeReadings:
             raw: bool = False, thinking: Any = None, on_token: Callable[..., Any] | None = None,
             parent_node_id: Any = None, n: int = 1, recipe_override: Any = None,
         ) -> RunSet:
-            from saklas.core.measurements import build_measurements
+            from drowse.core.measurements import build_measurements
 
             for i, tok in enumerate(tokens):
                 if on_token is not None:
@@ -903,7 +903,7 @@ class TestWebSocketProbeReadings:
         self._attach_generate(session, ["Hello", " ", "world"])
 
         with client.websocket_connect(
-            f"/saklas/v1/sessions/{_SID}/stream",
+            f"/drowse/v1/sessions/{_SID}/stream",
         ) as ws:
             ws.send_json({"type": "generate", "input": "hi"})
             started = ws.receive_json()
@@ -953,7 +953,7 @@ class TestWebSocketProbeReadings:
         self._attach_generate(session, ["Hello"], aggregate=aggregate)
 
         with client.websocket_connect(
-            f"/saklas/v1/sessions/{_SID}/stream",
+            f"/drowse/v1/sessions/{_SID}/stream",
         ) as ws:
             ws.send_json({"type": "generate", "input": "hi"})
             assert ws.receive_json()["type"] == "started"
@@ -988,7 +988,7 @@ class TestWebSocketProbeReadings:
         self._attach_generate(session, ["Hi"])
 
         with client.websocket_connect(
-            f"/saklas/v1/sessions/{_SID}/stream",
+            f"/drowse/v1/sessions/{_SID}/stream",
         ) as ws:
             ws.send_json({"type": "generate", "input": "hi"})
             assert ws.receive_json()["type"] == "started"
@@ -1027,7 +1027,7 @@ def _author_manifold_on_disk(
     name: str = "mood",
     labels: list[str] | None = None,
 ) -> Any:
-    """Hand-author a current authored 1-D box manifold under ``$SAKLAS_HOME``.
+    """Hand-author a current authored 1-D box manifold under ``$DROWSE_HOME``.
 
     Mirrors the minimal fixture ``test_manifolds_io`` uses, but writes
     into the live ``manifolds/<ns>/<name>/`` tree so the server routes
@@ -1037,7 +1037,7 @@ def _author_manifold_on_disk(
     import json as _json
     from pathlib import Path
 
-    from saklas.io.manifolds import MANIFOLD_FORMAT_VERSION
+    from drowse.io.manifolds import MANIFOLD_FORMAT_VERSION
 
     labels = labels or ["calm", "uneasy", "afraid", "frantic"]
     k = len(labels)
@@ -1080,11 +1080,11 @@ class TestManifoldSharedSerializer:
 
     @pytest.fixture
     def home_and_client(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
-        # Point $SAKLAS_HOME at a tmp tree so manifold_dir resolves into
+        # Point $DROWSE_HOME at a tmp tree so manifold_dir resolves into
         # an isolated, empty manifolds root (the mock session never runs
         # bundled materialization).
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        from saklas.server import create_app
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        from drowse.server import create_app
 
         session = _mock_session()
         app = create_app(session, default_steering=None)
@@ -1093,14 +1093,14 @@ class TestManifoldSharedSerializer:
     def test_get_one_shares_summary_keys(self, home_and_client: Any) -> None:
         """Every key the GET-one route shares with ``manifold_summary``
         carries an identical value — the refactor's core guarantee."""
-        from saklas.io.manifolds import manifold_summary
+        from drowse.io.manifolds import manifold_summary
 
         home, _session, client = home_and_client
         folder = _author_manifold_on_disk(home, namespace="local", name="mood")
 
         summary = manifold_summary(folder)
 
-        resp = client.get("/saklas/v1/manifolds/local/mood")
+        resp = client.get("/drowse/v1/manifolds/local/mood")
         assert resp.status_code == 200
         body = resp.json()
 
@@ -1123,13 +1123,13 @@ class TestManifoldSharedSerializer:
 
     def test_list_shares_summary_keys(self, home_and_client: Any) -> None:
         """The list route builds the same shared keys from the summary."""
-        from saklas.io.manifolds import manifold_summary
+        from drowse.io.manifolds import manifold_summary
 
         home, _session, client = home_and_client
         folder = _author_manifold_on_disk(home, namespace="local", name="mood")
         summary = manifold_summary(folder)
 
-        resp = client.get("/saklas/v1/manifolds")
+        resp = client.get("/drowse/v1/manifolds")
         assert resp.status_code == 200
         rows = resp.json()["manifolds"]
         assert len(rows) == 1
@@ -1151,7 +1151,7 @@ class TestManifoldSharedSerializer:
         folder = _author_manifold_on_disk(home, namespace="local", name="doomed")
         assert (folder / "manifold.json").exists()
 
-        resp = client.delete("/saklas/v1/manifolds/local/doomed")
+        resp = client.delete("/drowse/v1/manifolds/local/doomed")
         assert resp.status_code == 200
         body = resp.json()
         assert body["namespace"] == "local"
@@ -1171,7 +1171,7 @@ class TestManifoldSharedSerializer:
             home, namespace="default", name="circumplex",
         )
 
-        resp = client.delete("/saklas/v1/manifolds/default/circumplex")
+        resp = client.delete("/drowse/v1/manifolds/default/circumplex")
         assert resp.status_code == 200
         body = resp.json()
         assert body["removed"] is True
@@ -1181,7 +1181,7 @@ class TestManifoldSharedSerializer:
     def test_delete_missing_404(self, home_and_client: Any) -> None:
         """DELETE on a folder that was never authored → 404 (pre-lock check)."""
         _home, _session, client = home_and_client
-        resp = client.delete("/saklas/v1/manifolds/local/ghost")
+        resp = client.delete("/drowse/v1/manifolds/local/ghost")
         assert resp.status_code == 404
 
 
@@ -1196,17 +1196,17 @@ class TestManifoldSharedSerializer:
 
 
 def _fitted_discover_manifold(model_id: str, name: str = "heap") -> Any:
-    """Author a discover folder under ``$SAKLAS_HOME`` and land a flat fit."""
+    """Author a discover folder under ``$DROWSE_HOME`` and land a flat fit."""
     import torch
 
-    from saklas.core.capture import fold_directions_to_subspace
-    from saklas.core.manifold import MANIFOLD_FIT_POLICY_VERSION
-    from saklas.io.manifold_tensors import save_manifold
-    from saklas.io.manifolds import (
+    from drowse.core.capture import fold_directions_to_subspace
+    from drowse.core.manifold import MANIFOLD_FIT_POLICY_VERSION
+    from drowse.io.manifold_tensors import save_manifold
+    from drowse.io.manifolds import (
         ManifoldFolder,
         create_discover_manifold_folder,
     )
-    from saklas.io.paths import tensor_filename
+    from drowse.io.paths import tensor_filename
     from tests._whitener import isotropic_whitener
 
     folder = create_discover_manifold_folder(
@@ -1238,8 +1238,8 @@ def _fitted_discover_manifold(model_id: str, name: str = "heap") -> Any:
 class TestFittedGeometryRead:
     @pytest.fixture
     def home_and_client(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        from saklas.server import create_app
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        from drowse.server import create_app
 
         session = _mock_session()
         app = create_app(session, default_steering=None)
@@ -1247,9 +1247,9 @@ class TestFittedGeometryRead:
 
     def test_matches_full_load(self, home_and_client: Any) -> None:
         """The header read answers exactly what a full load would."""
-        from saklas.core.manifold import manifold_is_affine
-        from saklas.io.manifold_tensors import load_manifold
-        from saklas.server.manifold_routes import _fitted_geometry
+        from drowse.core.manifold import manifold_is_affine
+        from drowse.io.manifold_tensors import load_manifold
+        from drowse.server.manifold_routes import _fitted_geometry
 
         _home, session, _client = home_and_client
         _folder, path = _fitted_discover_manifold(session.model_id)
@@ -1266,7 +1266,7 @@ class TestFittedGeometryRead:
         import torch
         from safetensors.torch import save_file
 
-        from saklas.server.manifold_routes import _fitted_geometry
+        from drowse.server.manifold_routes import _fitted_geometry
 
         path = tmp_path / "curved.safetensors"
         save_file({
@@ -1280,7 +1280,7 @@ class TestFittedGeometryRead:
         assert is_affine is False
 
     def test_missing_artifact_is_unresolved(self, tmp_path: Any) -> None:
-        from saklas.server.manifold_routes import _fitted_geometry
+        from drowse.server.manifold_routes import _fitted_geometry
 
         assert _fitted_geometry(tmp_path / "nope.safetensors") == ([], None)
 
@@ -1288,9 +1288,9 @@ class TestFittedGeometryRead:
         self, home_and_client: Any, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The list route derives both answers without ``load_manifold``."""
-        import saklas.io.manifold_tensors as manifold_tensors
+        import drowse.io.manifold_tensors as manifold_tensors
 
-        from saklas.server.manifold_routes import _fitted_geometry
+        from drowse.server.manifold_routes import _fitted_geometry
 
         _home, session, client = home_and_client
         _folder, path = _fitted_discover_manifold(session.model_id)
@@ -1303,7 +1303,7 @@ class TestFittedGeometryRead:
 
         monkeypatch.setattr(manifold_tensors, "load_manifold", _boom)
 
-        resp = client.get("/saklas/v1/manifolds")
+        resp = client.get("/drowse/v1/manifolds")
         assert resp.status_code == 200
         rows = resp.json()["manifolds"]
         assert len(rows) == 1

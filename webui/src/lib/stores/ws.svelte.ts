@@ -1,4 +1,4 @@
-// The singleton WebSocket and the message dispatcher over it.
+// The singleton runtime event channel and the message dispatcher over it.
 //
 // One connection owned at module level — the chat panel is not
 // responsible for lifecycle.  Subscribers register via ``onWsMessage(cb)``
@@ -17,8 +17,11 @@
 // user gesture on a specific node.
 
 import { SvelteSet } from "svelte/reactivity";
-import { apiTree, connectWs } from "../api";
-import type { WSClientMessage, WSServerMessage } from "../api";
+import type { RuntimeEventChannel } from "../runtime/contracts";
+import { runtimeClient } from "../runtime/client";
+import { apiTree } from "../runtime/services";
+import { userFacingError } from "../runtime/userFacingError";
+import type { WSClientMessage, WSServerMessage } from "../types";
 import type {
   ChatRole,
   ChatTurn,
@@ -30,8 +33,7 @@ import { pushToast } from "./toasts.svelte";
 import {
   abState,
   autoRegenState,
-  currentRecipeOverride,
-  sendShadowGenerate,
+  scheduleAutoComparison,
 } from "./ab.svelte";
 import { chatLog, genStatus, geometricMeanPpl, liveTokenStream } from "./chat.svelte";
 import {
@@ -39,19 +41,18 @@ import {
   lensReadoutSnapshot,
   lensState,
   mergedReadings,
+  recordSaeReadoutFrame,
   saeState,
 } from "./instruments.svelte";
 import {
   applyTreeDelta,
   applyTreeSnapshot,
   castState,
-  loomRegenerateActive,
   loomTree,
   recomputeActivePath,
   refreshLoomTree,
   syncChatLogFromTree,
 } from "./loom.svelte";
-import { pinNodeForComparison } from "./loomUi.svelte";
 import {
   drainNextPendingAction,
   enqueuePending,
@@ -78,47 +79,64 @@ import {
 
 type WsListener = (msg: WSServerMessage) => void;
 
-interface WsConnection {
-  socket: WebSocket | null;
+interface RuntimeConnection {
+  channel: RuntimeEventChannel | null;
+  unsubscribe: (() => void) | null;
+  unsubscribeState: (() => void) | null;
   listeners: Set<WsListener>;
-  /** Promise resolved on first ``open`` — used by ``sendGenerate`` to
-   * wait through reconnects without burying the API key. */
+  opening: boolean;
+  recoveringGap: boolean;
+  treeRecovery: Promise<void> | null;
   ready: Promise<void> | null;
 }
 
-const wsConn: WsConnection = {
-  socket: null,
+const wsConn: RuntimeConnection = {
+  channel: null,
+  unsubscribe: null,
+  unsubscribeState: null,
   listeners: new SvelteSet(),
+  opening: false,
+  recoveringGap: false,
+  treeRecovery: null,
   ready: null,
 };
+
+let firstDecodeTokenAt: number | null = null;
 
 export function onWsMessage(cb: WsListener): () => void {
   wsConn.listeners.add(cb);
   return () => wsConn.listeners.delete(cb);
 }
 
-export function ensureWebSocket(): Promise<WebSocket> {
-  // Reuse an open or connecting socket; reconnect cleanly when the
-  // last one closed.
-  if (
-    wsConn.socket &&
-    (wsConn.socket.readyState === WebSocket.OPEN ||
-      wsConn.socket.readyState === WebSocket.CONNECTING)
-  ) {
-    if (wsConn.ready) return wsConn.ready.then(() => wsConn.socket!);
-    return Promise.resolve(wsConn.socket);
+export function ensureRuntimeChannel(): Promise<RuntimeEventChannel> {
+  if (wsConn.opening && wsConn.channel && wsConn.ready) {
+    return wsConn.ready.then(() => wsConn.channel!);
   }
-  const socket = connectWs();
-  wsConn.socket = socket;
+  if (wsConn.channel?.isOpen) {
+    if (wsConn.treeRecovery) {
+      return wsConn.treeRecovery.then(() => wsConn.channel!);
+    }
+    return Promise.resolve(wsConn.channel);
+  }
+
+  wsConn.unsubscribe?.();
+  wsConn.unsubscribeState?.();
+  const channel = runtimeClient.events;
+  wsConn.channel = channel;
+  wsConn.opening = true;
   // A socket can reconnect to a freshly restarted server whose tree has a
   // lower revision and entirely different node ids.  Buffer wire events until
   // we have replaced the local cache with the new authoritative snapshot;
   // otherwise the first post-restart generation splices new nodes into the
   // stale pre-restart sidebar.
   let rehydrating = true;
+  let connectionFailure: string | null = null;
   const bufferedMessages: WSServerMessage[] = [];
-  const dispatch = (msg: WSServerMessage): void => {
-    handleWsMessage(msg);
+  const treeRecoveryBuffer: WSServerMessage[] = [];
+  let treeRecovering = false;
+  let requiredTreeRevision = 0;
+  let treeRecoverySerial = 0;
+  const notifyListeners = (msg: WSServerMessage): void => {
     for (const cb of wsConn.listeners) {
       try {
         cb(msg);
@@ -127,81 +145,218 @@ export function ensureWebSocket(): Promise<WebSocket> {
       }
     }
   };
-  wsConn.ready = new Promise<void>((resolve, reject) => {
-    socket.addEventListener("open", () => {
-      void (async () => {
-        try {
-          const snap = await apiTree.get();
-          applyTreeSnapshot(snap);
-          rehydrating = false;
-          // The snapshot already includes deltas at or below its revision.
-          // Replay only genuinely newer tree frames; non-tree frames retain
-          // their original arrival order.
-          for (const msg of bufferedMessages) {
-            if (msg.type === "tree_mutated" && msg.rev <= snap.rev) continue;
-            dispatch(msg);
-          }
-          bufferedMessages.length = 0;
-          // Other server-owned surfaces may also have changed across a
-          // restart.  Refresh them before callers are allowed to submit the
-          // next generation against this connection.
-          await Promise.allSettled([
-            refreshSession(),
-            refreshVectorList(),
-            refreshProbeList(),
-            refreshCorrelation(),
-            refreshManifoldList(),
-          ]);
-          resolve();
-        } catch (e) {
-          rehydrating = false;
-          loomTree.error = e instanceof Error ? e.message : String(e);
-          pushToast(`reconnect: ${loomTree.error}`, { kind: "error" });
-          // Never leave an apparently reusable OPEN socket behind after its
-          // authoritative snapshot failed.  A later send must establish a
-          // fresh connection and retry the complete rehydration barrier.
-          socket.close();
-          reject(e);
-        }
-      })();
-    }, { once: true });
-    socket.addEventListener("error", (e) => reject(e), { once: true });
-  });
-  socket.addEventListener("message", (ev: MessageEvent) => {
-    let msg: WSServerMessage;
-    try {
-      msg = JSON.parse(ev.data) as WSServerMessage;
-    } catch {
+  const dispatch = (msg: WSServerMessage): void => {
+    if (treeRecovering) {
+      treeRecoveryBuffer.push(msg);
+      if (msg.type === "tree_mutated") {
+        requiredTreeRevision = Math.max(requiredTreeRevision, msg.rev);
+      }
       return;
     }
-    if (rehydrating) bufferedMessages.push(msg);
-    else dispatch(msg);
-  });
-  socket.addEventListener("close", () => {
-    if (wsConn.socket === socket) {
-      wsConn.socket = null;
-      wsConn.ready = null;
+    const disposition = handleWsMessage(msg);
+    if (disposition === "tree_resync" && msg.type === "tree_mutated") {
+      beginTreeRecovery(msg.rev);
+      return;
+    }
+    notifyListeners(msg);
+  };
+  const clearConnection = (): void => {
+    if (wsConn.channel !== channel) return;
+    treeRecoverySerial += 1;
+    treeRecovering = false;
+    requiredTreeRevision = 0;
+    treeRecoveryBuffer.length = 0;
+    wsConn.unsubscribe?.();
+    wsConn.unsubscribeState?.();
+    wsConn.unsubscribe = null;
+    wsConn.unsubscribeState = null;
+    wsConn.channel = null;
+    wsConn.opening = false;
+    wsConn.recoveringGap = false;
+    wsConn.treeRecovery = null;
+    wsConn.ready = null;
+  };
+  const beginTreeRecovery = (minimumRevision: number): void => {
+    requiredTreeRevision = Math.max(requiredTreeRevision, minimumRevision);
+    if (treeRecovering || wsConn.channel !== channel) return;
+    treeRecovering = true;
+    const serial = ++treeRecoverySerial;
+    const recovery = (async () => {
+      try {
+        let snap: Awaited<ReturnType<typeof apiTree.get>> | null = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          snap = await apiTree.get();
+          if (wsConn.channel !== channel || serial !== treeRecoverySerial) return;
+          if (snap.rev >= requiredTreeRevision) break;
+        }
+        if (!snap || snap.rev < requiredTreeRevision) {
+          throw new Error(
+            `Authoritative tree revision ${requiredTreeRevision} was not available`,
+          );
+        }
+        if (!applyTreeSnapshot(snap)) {
+          throw new Error("The authoritative tree snapshot was older than local state");
+        }
+        treeRecovering = false;
+        requiredTreeRevision = 0;
+        const pending = treeRecoveryBuffer.splice(0);
+        for (const buffered of pending) {
+          if (
+            buffered.type === "tree_mutated" &&
+            buffered.rev <= loomTree.rev
+          ) continue;
+          dispatch(buffered);
+        }
+      } catch (error) {
+        if (wsConn.channel !== channel || serial !== treeRecoverySerial) return;
+        treeRecovering = false;
+        const detail = userFacingError(error, "The conversation could not be restored.");
+        channel.close();
+        clearConnection();
+        const failure: Extract<WSServerMessage, { type: "error" }> = {
+          type: "error",
+          code: "TREE_RESYNC_FAILED",
+          message: `The conversation could not be resynchronized: ${detail}`,
+        };
+        handleWsMessage(failure);
+        notifyListeners(failure);
+      }
+    })();
+    wsConn.treeRecovery = recovery;
+    void recovery.finally(() => {
+      if (wsConn.channel === channel && wsConn.treeRecovery === recovery) {
+        wsConn.treeRecovery = null;
+      }
+    });
+  };
+  const recoverSequenceGap = (message: Extract<WSServerMessage, { type: "error" }>): void => {
+    if (wsConn.channel !== channel || wsConn.recoveringGap) return;
+    wsConn.recoveringGap = true;
+    void (async () => {
+      try {
+        await channel.stop();
+        const snap = await apiTree.get();
+        if (wsConn.channel !== channel) return;
+        applyTreeSnapshot(snap, { preserveLiveTokens: false });
+        channel.acknowledgeSnapshot();
+        dispatch({
+          type: "error",
+          code: message.code,
+          message: "The event stream lost synchronization. Generation was stopped and the authoritative conversation was restored.",
+        });
+      } catch (error) {
+        if (wsConn.channel !== channel) return;
+        const detail = userFacingError(error, "The conversation could not be restored.");
+        channel.close();
+        clearConnection();
+        dispatch({
+          type: "error",
+          code: "TREE_RESYNC_FAILED",
+          message: `The event stream could not be recovered: ${detail}`,
+        });
+      } finally {
+        if (wsConn.channel === channel) wsConn.recoveringGap = false;
+      }
+    })();
+  };
+  wsConn.unsubscribe = channel.subscribe((msg) => {
+    if (rehydrating) {
+      bufferedMessages.push(msg);
+    } else if (msg.type === "error" && msg.code === "EVENT_SEQUENCE_GAP") {
+      recoverSequenceGap(msg);
+    } else {
+      dispatch(msg);
     }
   });
-  return wsConn.ready.then(() => socket);
+  wsConn.unsubscribeState = channel.subscribeState((state) => {
+    if (
+      state.state !== "closed" || state.expected || wsConn.channel !== channel
+    ) return;
+    const reason = state.reason ?? "The Drowse runtime connection closed unexpectedly";
+    const friendly = userFacingError(
+      { code: "RUNTIME_CHANNEL_CLOSED", message: reason },
+      "The local model connection closed. Reopen the model and try again.",
+    );
+    if (rehydrating) {
+      connectionFailure = reason;
+      return;
+    }
+    clearConnection();
+    loomTree.error = friendly;
+    if (
+      genStatus.active || chatLog.pendingIndex !== null ||
+      loomTree.pendingNodeId !== null || abState.processingAb || isPendingBusy()
+    ) {
+      dispatch({ type: "error", code: "RUNTIME_CHANNEL_CLOSED", message: reason });
+    } else {
+      pushToast(friendly, { kind: "error", ttlMs: null });
+    }
+  });
+
+  const ready = (async () => {
+    try {
+      await channel.open();
+      const snap = await apiTree.get();
+      if (connectionFailure || !channel.isOpen) {
+        throw new Error(connectionFailure ?? "The Drowse runtime connection closed during setup");
+      }
+      applyTreeSnapshot(snap, {
+        preserveLiveTokens: false,
+        allowRevisionRegression: true,
+      });
+      rehydrating = false;
+      for (const msg of bufferedMessages) {
+        if (msg.type === "tree_mutated" && msg.rev <= snap.rev) continue;
+        if (msg.type === "error" && msg.code === "EVENT_SEQUENCE_GAP") {
+          recoverSequenceGap(msg);
+        } else {
+          dispatch(msg);
+        }
+      }
+      bufferedMessages.length = 0;
+      if (wsConn.treeRecovery) await wsConn.treeRecovery;
+      if (wsConn.channel !== channel || !channel.isOpen) {
+        throw new Error("The Drowse runtime connection closed during tree recovery");
+      }
+      await Promise.allSettled([
+        refreshSession(),
+        refreshVectorList(),
+        refreshProbeList(),
+        refreshCorrelation(),
+        refreshManifoldList(),
+      ]);
+    } catch (error) {
+      rehydrating = false;
+      loomTree.error = userFacingError(error, "The conversation could not reconnect.");
+      pushToast(`reconnect: ${loomTree.error}`, { kind: "error" });
+      channel.close();
+      if (wsConn.channel === channel) {
+        clearConnection();
+      }
+      throw error;
+    } finally {
+      if (wsConn.channel === channel) wsConn.opening = false;
+    }
+  })();
+  wsConn.ready = ready;
+  return ready.then(() => channel);
 }
 
-export function disconnectWebSocket(): void {
-  if (wsConn.socket) {
-    try {
-      wsConn.socket.close();
-    } catch {
-      /* ignore */
-    }
-    wsConn.socket = null;
-    wsConn.ready = null;
-  }
+export function disconnectRuntimeChannel(): void {
+  wsConn.unsubscribe?.();
+  wsConn.unsubscribeState?.();
+  wsConn.channel?.close();
+  wsConn.channel = null;
+  wsConn.unsubscribe = null;
+  wsConn.unsubscribeState = null;
+  wsConn.opening = false;
+  wsConn.recoveringGap = false;
+  wsConn.treeRecovery = null;
+  wsConn.ready = null;
 }
 
 if (typeof window !== "undefined") {
-  // Tear down the singleton on page unload so the server doesn't see
-  // a leaked half-open connection.
-  window.addEventListener("beforeunload", disconnectWebSocket);
+  window.addEventListener("beforeunload", disconnectRuntimeChannel);
 }
 
 /** Resolve the assistant turn that's currently receiving streamed tokens.
@@ -234,9 +389,11 @@ function _currentWriteTurn(): ChatTurn | null {
  * this binds the stream to that already-authoritative node. */
 function adoptStreamingNode(nodeId: string | null | undefined): void {
   if (!nodeId || abState.processingAb || !loomTree.loaded) return;
+  if (loomTree.pendingNodeId === nodeId && loomTree.active_node_id === nodeId &&
+    chatLog.pendingIndex !== null && chatLog.turns[chatLog.pendingIndex]?.nodeId === nodeId) return;
   loomTree.pendingNodeId = nodeId;
   if (!loomTree.nodes.has(nodeId)) {
-    loomTree.error = `Token arrived before authoritative node ${nodeId}`;
+    loomTree.error = "The conversation lost sync while the reply was arriving. Reload it and try again.";
     pushToast(loomTree.error, { kind: "error" });
     return;
   }
@@ -259,7 +416,7 @@ function adoptStreamingNode(nodeId: string | null | undefined): void {
 /** Default WS message handler — owns the gen-status lifecycle and the
  * live token stream.  External subscribers (panels) layer additional
  * behavior via ``onWsMessage``. */
-function handleWsMessage(msg: WSServerMessage): void {
+function handleWsMessage(msg: WSServerMessage): void | "tree_resync" {
   switch (msg.type) {
     case "tree_mutated": {
       // The roster is derived from every observed turn label, so any tree
@@ -273,18 +430,20 @@ function handleWsMessage(msg: WSServerMessage): void {
       // former parent, so every connected client crosses an authoritative
       // full-snapshot barrier for this operation.
       if (msg.op === "restore") {
-        void refreshLoomTree();
-        return;
+        return "tree_resync";
       }
       // Apply the delta; on rev gap, full re-fetch.
       const ok = applyTreeDelta(msg);
-      if (!ok) void refreshLoomTree();
+      if (!ok) return "tree_resync";
       return;
     }
     case "started": {
       genStatus.active = true;
+      genStatus.replay = null;
       genStatus.tokensSoFar = 0;
       genStatus.startedAt = performance.now();
+      firstDecodeTokenAt = null;
+      genStatus.finishedAt = null;
       genStatus.tokPerSec = 0;
       genStatus.ppl = { logSum: 0, count: 0, mean: null };
       genStatus.finishReason = null;
@@ -319,10 +478,9 @@ function handleWsMessage(msg: WSServerMessage): void {
         // pulse on Chat.svelte still highlights "this turn is live".
         chatLog.pendingIndex = abState.pendingTurnIdx;
       } else if (loomTree.loaded && msg.node_id) {
-        // Loom path: the assistant node is already created server-side
-        // (we got a ``tree_mutated`` add event before ``started``).  The
-        // active-path sync seeds an empty turn for it; ensure the turn
-        // has token arrays ready so the ``token`` handler can append.
+        // Loom path: sync an already-created node when the tree mutation
+        // arrived first. When ``started`` arrives first, the pending node id
+        // is retained and the following authoritative mutation creates it.
         syncChatLogFromTree();
         const pidx = chatLog.pendingIndex;
         if (pidx !== null) {
@@ -341,14 +499,28 @@ function handleWsMessage(msg: WSServerMessage): void {
         chatLog.pendingIndex = null;
         syncChatLogFromTree();
       } else {
-        loomTree.error = "Generation started before the required tree was loaded";
+        loomTree.error = "The conversation was not ready when generation started. Reload it and try again.";
         pushToast(loomTree.error, { kind: "error" });
       }
       return;
     }
+    case "generation_progress": {
+      adoptStreamingNode(msg.node_id);
+      genStatus.replay = { completed: msg.completed, total: msg.total };
+      return;
+    }
     case "token": {
       adoptStreamingNode(msg.node_id);
-      genStatus.tokensSoFar += 1;
+      const writeTurn = _currentWriteTurn();
+      const existingTokens = msg.thinking
+        ? writeTurn?.thinkingTokens
+        : writeTurn?.tokens;
+      if (
+        msg.raw_index != null &&
+        msg.raw_index <= (existingTokens?.findLast((token) => token.rawIndex != null)?.rawIndex ?? -1)
+      ) return;
+      const isNewToken = msg.raw_index == null || msg.raw_index >= (genStatus.replay?.total ?? 0);
+      if (isNewToken) genStatus.tokensSoFar += 1;
       if (
         typeof msg.perplexity === "number"
         && Number.isFinite(msg.perplexity)
@@ -360,9 +532,16 @@ function handleWsMessage(msg: WSServerMessage): void {
           genStatus.ppl.logSum / genStatus.ppl.count,
         );
       }
-      if (genStatus.startedAt) {
-        const elapsed = (performance.now() - genStatus.startedAt) / 1000;
-        if (elapsed > 0) genStatus.tokPerSec = genStatus.tokensSoFar / elapsed;
+      if (isNewToken) {
+        const tokenReceivedAt = performance.now();
+        if (firstDecodeTokenAt === null) {
+          firstDecodeTokenAt = tokenReceivedAt;
+        } else {
+          const elapsed = (tokenReceivedAt - firstDecodeTokenAt) / 1000;
+          if (elapsed > 0) {
+            genStatus.tokPerSec = (genStatus.tokensSoFar - 1) / elapsed;
+          }
+        }
       }
       // The 5.x measurement envelope is the single read-side record.  Probe
       // readings merge the three families (the rack keys by name); ``scores``
@@ -390,6 +569,8 @@ function handleWsMessage(msg: WSServerMessage): void {
         // from Phase 1's engine capture; absent when ``return_top_k == 0``
         // and no other on-token consumer requested capture.
         logprob: msg.logprob ?? null,
+        samplerEntropy: msg.sampler_entropy ?? null,
+        perplexity: msg.perplexity ?? null,
         topAlts: msg.top_alts ?? null,
         // Raw decode-step index — the join key the logit fork slices
         // ``raw_token_ids`` on.  Rides the WS ``token`` event directly.
@@ -416,11 +597,11 @@ function handleWsMessage(msg: WSServerMessage): void {
         }
         if (Object.keys(byProbe).length > 0) tokenScore.coordsByProbe = byProbe;
       }
-      const turn = _currentWriteTurn();
+      const turn = writeTurn;
       if (turn) {
         if (msg.thinking) {
           turn.thinking = true;
-          turn.thinkingTokens = [...(turn.thinkingTokens ?? []), tokenScore];
+          (turn.thinkingTokens ??= []).push(tokenScore);
           // Live-stream buffer is steered-only — the shadow run doesn't
           // feed the main chat highlight pipeline.
           if (!abState.processingAb) {
@@ -428,7 +609,7 @@ function handleWsMessage(msg: WSServerMessage): void {
           }
         } else {
           turn.text = (turn.text ?? "") + msg.text;
-          turn.tokens = [...(turn.tokens ?? []), tokenScore];
+          (turn.tokens ??= []).push(tokenScore);
           if (!abState.processingAb) {
             liveTokenStream.responseTokens.push(tokenScore);
           }
@@ -454,26 +635,13 @@ function handleWsMessage(msg: WSServerMessage): void {
           const frame: [string, number][] = liveLensAggregate.map(
             ([tok, strength]) => [tok, strength],
           );
-          const hist = lensState.aggHistory.slice();
-          hist.push(frame);
-          if (hist.length > MAX_SPARKLINE) hist.shift();
-          lensState.aggHistory = hist;
+          lensState.aggHistory.push(frame);
+          if (lensState.aggHistory.length > MAX_SPARKLINE) {
+            lensState.aggHistory.shift();
+          }
         }
         if (liveSaeReadout) {
-          saeState.readout = liveSaeReadout;
-          for (const feature of liveSaeReadout) {
-            const prior = saeState.history.get(feature.id) ?? [];
-            const next = [...prior, feature.activation].slice(-MAX_SPARKLINE);
-            saeState.history.set(feature.id, next);
-            // Server-cached metadata rides each row; the backfill fills
-            // the gaps between generations.
-            if (feature.max_act != null || feature.label != null) {
-              saeState.meta.set(feature.id, {
-                label: feature.label ?? null,
-                max_act: feature.max_act ?? null,
-              });
-            }
-          }
+          recordSaeReadoutFrame(liveSaeReadout);
         }
       }
       return;
@@ -481,6 +649,7 @@ function handleWsMessage(msg: WSServerMessage): void {
     case "done": {
       adoptStreamingNode(msg.node_id);
       genStatus.active = false;
+      genStatus.finishedAt = performance.now();
       genStatus.finishReason = msg.result?.finish_reason ?? "stop";
       // Probe rack — end-of-gen aggregate (the settled ``ProbeReading`` per
       // probe: coords / fraction / nearest / residual + per-layer traces),
@@ -508,7 +677,7 @@ function handleWsMessage(msg: WSServerMessage): void {
       // ``max_new_tokens`` differs from the client's local view (e.g.
       // before the first PATCH lands).  Trust the server on close.
       if (typeof msg.result?.tokens === "number" && Number.isFinite(msg.result.tokens)) {
-        genStatus.tokensSoFar = msg.result.tokens;
+        genStatus.tokensSoFar = Math.max(0, msg.result.tokens - (genStatus.replay?.total ?? 0));
       }
 
       const wasShadow = abState.processingAb;
@@ -538,63 +707,35 @@ function handleWsMessage(msg: WSServerMessage): void {
         return;
       }
 
-      // Snapshot probe baselines + drain the next deferred mutation on
-      // the steered done event only.  Single-pop semantics: each
-      // queued item kicks its own work whose ``done`` will re-enter
-      // here and drain the next, preserving FIFO.
+      // Snapshot probe baselines on the steered done event only.
       snapshotProbeBaseline();
       void refreshCorrelation();
-      void drainNextPendingAction();
       // SAE discovery backfill — fetch Neuronpedia metadata (label +
       // maxActApprox) for features the live top-k surfaced this
       // generation.  Between generations only, never per token.
       void backfillSaeMeta();
 
-      // Auto-regen with ``mode === "unsteered"`` *is* the A/B shadow.
-      // Branch on the resolved recipe-override:
-      //
-      //   * ``"unsteered"`` → fire the shadow-replay path
-      //     (``_sendShadowGenerate``).  Tokens land on the steered turn's
-      //     ``abPair`` so the chat's right column renders them in place.
-      //
-      //   * any other override → fire a loom regen with the override.
-      //     The engine drops the result as a sibling under the same
-      //     user-parent; pin it so the chat's right column picks it up.
-      if (autoRegenState.enabled) {
-        const override = currentRecipeOverride();
-        if (
-          override === "unsteered" &&
-          steeredIdx !== null &&
-          chatLog.turns[steeredIdx]?.generated === true
-        ) {
-          void sendShadowGenerate(steeredIdx);
-        } else if (
-          override !== null &&
-          loomTree.loaded &&
-          loomTree.active_node_id
-        ) {
-          // Pin the new sibling so the chat's right column shows it.
-          // We pin after the regen lands; ``done`` from the regen will
-          // set ``loomTree.active_node_id`` to the new sibling.
-          const activeBefore = loomTree.active_node_id;
-          void (async () => {
-            await loomRegenerateActive(1, { recipe_override: override });
-            // The engine moves the active node to the new sibling.
-            if (
-              loomTree.active_node_id &&
-              loomTree.active_node_id !== activeBefore
-            ) {
-              pinNodeForComparison(loomTree.active_node_id);
-            }
-          })();
-        }
-      }
+      // Automatic comparisons are stateless for every mode. Start only after
+      // the transport has fully released this request; sending from inside
+      // ``done`` races worker busy guards. Keep pending user actions behind
+      // the comparison, then drain them when its own ``done`` arrives.
+      const comparisonScheduled =
+        autoRegenState.enabled &&
+        steeredIdx !== null &&
+        chatLog.turns[steeredIdx]?.generated === true &&
+        scheduleAutoComparison(steeredIdx);
+      if (!comparisonScheduled) void drainNextPendingAction();
       return;
     }
     case "error": {
       genStatus.active = false;
+      genStatus.finishedAt = performance.now();
       adoptStreamingNode(msg.node_id);
       const wasShadow = abState.processingAb;
+      const friendly = userFacingError(
+        msg,
+        "Generation stopped before the answer was complete. Try again or reopen the model.",
+      );
       // Surface the error inline.  When the steered run errored we don't
       // want to spawn a shadow — clear A/B routing flags so a subsequent
       // successful gen behaves normally.  When the shadow itself errored
@@ -605,13 +746,13 @@ function handleWsMessage(msg: WSServerMessage): void {
         if (steered) {
           steered.abPair = {
             role: "system",
-            text: `shadow gen error: ${msg.message}`,
+            text: `Alternative generation stopped: ${friendly}`,
           };
         }
       } else {
         chatLog.turns = [
           ...chatLog.turns,
-          { role: "system", text: `error: ${msg.message}` },
+          { role: "system", text: `Drowse stopped: ${friendly}` },
         ];
       }
       chatLog.pendingIndex = null;
@@ -624,7 +765,7 @@ function handleWsMessage(msg: WSServerMessage): void {
       // server-owned log rendered generation errors as a silent empty
       // node.  A sticky toast survives every tree sync — errors must
       // never be silent.
-      pushToast(`generation: ${msg.message}`, {
+      pushToast(`Generation: ${friendly}`, {
         kind: "error",
         ttlMs: null,
       });
@@ -644,6 +785,7 @@ function handleWsMessage(msg: WSServerMessage): void {
 // ------------------------------------------------- send primitives ---
 
 export interface SendGenerateOpts {
+  append_same_role?: boolean;
   stateless?: boolean;
   raw?: boolean;
   /** Cast model: which seat the generated turn occupies.  Absent /
@@ -766,7 +908,7 @@ async function sendSubmitNow(
       throw new Error("Conversation tree is not ready; retry after it loads");
     }
   }
-  const sock = await ensureWebSocket();
+  const channel = await ensureRuntimeChannel();
   const steering =
     opts.steering === undefined ? currentSteeringExpression() : opts.steering;
   const sampling = buildSamplingPayload();
@@ -793,9 +935,7 @@ async function sendSubmitNow(
       ? { recipe_override: opts.recipe_override }
       : {}),
   };
-  const send = () => sock.send(JSON.stringify(payload));
-  if (sock.readyState === WebSocket.OPEN) send();
-  else sock.addEventListener("open", send, { once: true });
+  channel.send(payload);
 }
 
 /** Send a bare-continuation generate request over the WS — the
@@ -821,7 +961,7 @@ export async function sendGenerate(
       throw new Error("Conversation tree is not ready; retry after it loads");
     }
   }
-  const sock = await ensureWebSocket();
+  const channel = await ensureRuntimeChannel();
   const steering =
     opts.steering === undefined ? currentSteeringExpression() : opts.steering;
   const steeringPayload =
@@ -836,6 +976,7 @@ export async function sendGenerate(
   genStatus.maxTokens = sampling?.max_tokens ?? samplingState.max_tokens;
   const payload: WSClientMessage = {
     type: "generate",
+    ...(opts.append_same_role !== undefined ? { append_same_role: opts.append_same_role } : {}),
     // A continue: no committed turn, the model speaks next from the
     // anchor node.
     input: null,
@@ -861,40 +1002,59 @@ export async function sendGenerate(
       ? { generate_seat: opts.generate_seat }
       : {}),
   };
-  const send = () => sock.send(JSON.stringify(payload));
-  if (sock.readyState === WebSocket.OPEN) send();
-  else sock.addEventListener("open", send, { once: true });
+  channel.send(payload);
 }
 
 /** Logit fork — regenerate an existing assistant node as a sibling with
  *  one token swapped.  The server reuses the source node's stamped
  *  recipe (steering / sampling / seed / thinking) and replays its raw
  *  decode sequence up to ``rawIndex``, forcing ``altTokenId`` there
- *  before sampling the continuation.  Streams in like any regen: the
+ *  before sampling the continuation. ``resample`` gives Continue a fresh
+ *  seed; replacements keep the original seed. Streams in like any regen: the
  *  new sibling lands via the WS ``tree_mutated`` / ``token`` / ``done``
  *  events and becomes the active branch. */
 export async function sendFork(
   nodeId: string,
   rawIndex: number,
   altTokenId: number,
+  resample = false,
 ): Promise<void> {
-  const sock = await ensureWebSocket();
+  const channel = await ensureRuntimeChannel();
   const payload: WSClientMessage = {
     type: "generate",
     fork_node_id: nodeId,
     fork_raw_index: rawIndex,
     fork_alt_token_id: altTokenId,
+    ...(resample ? { fork_seed: crypto.getRandomValues(new Uint32Array(1))[0]! & 0x7fffffff } : {}),
   };
-  const send = () => sock.send(JSON.stringify(payload));
-  if (sock.readyState === WebSocket.OPEN) send();
-  else sock.addEventListener("open", send, { once: true });
+  channel.send(payload);
+}
+
+/** Replace the selected raw token with arbitrary authored text, then sample
+ *  the rest of the sibling branch with the source node's saved recipe. */
+export async function sendTextFork(
+  nodeId: string,
+  rawIndex: number,
+  replacementText: string,
+): Promise<void> {
+  const channel = await ensureRuntimeChannel();
+  const payload: WSClientMessage = {
+    type: "generate",
+    fork_node_id: nodeId,
+    fork_raw_index: rawIndex,
+    fork_replacement_text: replacementText,
+  };
+  channel.send(payload);
 }
 
 export function sendStop(): void {
-  if (
-    wsConn.socket &&
-    wsConn.socket.readyState === WebSocket.OPEN
-  ) {
-    wsConn.socket.send(JSON.stringify({ type: "stop" }));
-  }
+  const channel = wsConn.channel;
+  if (!channel) return;
+  void channel.stop().catch((error) => {
+    handleWsMessage({
+      type: "error",
+      code: "RUNTIME_STOP_FAILED",
+      message: userFacingError(error, "The model could not be stopped cleanly."),
+    });
+  });
 }

@@ -11,12 +11,12 @@ from typing import Any
 
 import pytest
 
-from saklas.core import capture as V
-from saklas.core.session import SaklasSession, _role_for, _system_for
-from saklas.core.capture import _LENGTH_DIRECTIVE
+from drowse.core import capture as V
+from drowse.core.session import DrowseSession, _role_for, _system_for
+from drowse.core.capture import _LENGTH_DIRECTIVE
 
 
-class _FakeSession(SaklasSession):
+class _FakeSession(DrowseSession):
     """Bypass real construction; record each generator call."""
 
     def __init__(self) -> None:
@@ -38,6 +38,34 @@ class _FakeSession(SaklasSession):
             # Echo so the caller can see which prompt produced which response.
             out.append(f"resp::{prompt}")
         return out
+
+
+class _BlankThenContentSession(_FakeSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.retry_calls: list[dict[str, Any]] = []
+
+    def _run_generator_batch(
+        self, system_msg: str, prompts: list[str], max_new_tokens: int,
+        **kw: Any,
+    ) -> list[str]:
+        if kw.get("deterministic"):
+            self.retry_calls.append({
+                "system": system_msg,
+                "prompts": list(prompts),
+                "role": kw.get("role"),
+                "min_new_tokens": kw.get("min_new_tokens"),
+            })
+            return [f"repaired::{prompt}" for prompt in prompts]
+        return ["" if prompt == "P1" else f"sampled::{prompt}" for prompt in prompts]
+
+
+class _AlwaysBlankSession(_BlankThenContentSession):
+    def _run_generator_batch(
+        self, system_msg: str, prompts: list[str], max_new_tokens: int,
+        **kw: Any,
+    ) -> list[str]:
+        return ["" for _ in prompts]
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +138,27 @@ def test_multiple_concepts_keyed_separately() -> None:
     out = s.generate_responses(["happy", "sad"], ["abstract", "abstract"])
     assert set(out) == {"happy", "sad"}
     assert len(out["happy"]) == 3 and len(out["sad"]) == 3
+
+
+def test_blank_row_is_retried_in_place_with_same_elicitation_frame() -> None:
+    s = _BlankThenContentSession()
+    out = s.generate_responses(["sad"], ["abstract"])
+
+    assert out["sad"] == ["sampled::P0", "repaired::P1", "sampled::P2"]
+    assert s.retry_calls == [{
+        "system": (
+            f"{_LENGTH_DIRECTIVE} You are someone sad. "
+            "Respond exactly as someone sad would."
+        ),
+        "prompts": ["P1"],
+        "role": "someone_sad",
+        "min_new_tokens": 8,
+    }]
+
+
+def test_blank_deterministic_retry_fails_before_authoring() -> None:
+    with pytest.raises(RuntimeError, match="including the deterministic retry"):
+        _AlwaysBlankSession().generate_responses(["sad"], ["abstract"])
 
 
 # --- generate_neutral_responses -------------------------------------------

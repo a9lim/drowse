@@ -1,4 +1,4 @@
-// Typed REST + WS + SSE client for the native /saklas/v1/* API.
+// Typed REST + WS + SSE client for the native /drowse/v1/* API.
 //
 // Scope policy: this is a client for the routes the dashboard actually
 // calls, NOT an exhaustive mirror of the native API.  A route with no
@@ -59,6 +59,14 @@ import type {
   WSClientMessage,
   WSServerMessage,
 } from "./types";
+import { ApiError, describeError } from "./runtime/errors";
+import {
+  getApiKey,
+  httpAuthHeaders,
+  setApiKey,
+} from "./runtime/http-auth";
+
+export { ApiError, describeError, getApiKey, setApiKey };
 
 // Re-export the wire-shape types other modules consume.  Doing this here
 // rather than via barrel-export keeps `import { ApiError, getSession }`
@@ -116,42 +124,13 @@ export type {
  * the WS route doesn't declare as a ``:path`` param). */
 const SESSION = "default";
 
-const SESSION_BASE = (id: string = SESSION) => `/saklas/v1/sessions/${id}`;
-const MANIFOLDS_BASE = "/saklas/v1/manifolds";
+const SESSION_BASE = (id: string = SESSION) => `/drowse/v1/sessions/${id}`;
+const MANIFOLDS_BASE = "/drowse/v1/manifolds";
 
 // --------------------------------------------------------- auth --
 
-let _apiKey: string | null = readApiKeyFromMeta();
-
-function readApiKeyFromMeta(): string | null {
-  if (typeof document === "undefined") return null;
-  const tag = document.querySelector<HTMLMetaElement>('meta[name="api-key"]');
-  const v = tag?.content?.trim();
-  return v ? v : null;
-}
-
-/** Override the in-memory API key.  Pass ``null`` to clear. */
-export function setApiKey(key: string | null): void {
-  _apiKey = key && key.trim() ? key.trim() : null;
-}
-
-export function getApiKey(): string | null {
-  return _apiKey;
-}
-
 function authHeaders(extra: HeadersInit = {}): HeadersInit {
-  const h: Record<string, string> = {};
-  if (_apiKey) h["Authorization"] = `Bearer ${_apiKey}`;
-  // Merge extra last so the caller can override (e.g. drop Authorization
-  // for an open endpoint).
-  if (extra instanceof Headers) {
-    extra.forEach((v, k) => (h[k] = v));
-  } else if (Array.isArray(extra)) {
-    for (const [k, v] of extra) h[k] = v;
-  } else {
-    Object.assign(h, extra);
-  }
-  return h;
+  return httpAuthHeaders(extra);
 }
 
 // --------------------------------------------------------- error type --
@@ -159,54 +138,16 @@ function authHeaders(extra: HeadersInit = {}): HeadersInit {
 /** Wraps a non-2xx HTTP response with structured detail.  Always thrown
  * from the typed helpers below — call sites can ``catch (e) { if (e
  * instanceof ApiError) ... }`` to extract status / parsed body / raw text. */
-export class ApiError extends Error {
-  readonly status: number;
-  readonly path: string;
-  readonly body: unknown;
-  readonly rawBody: string;
-
-  constructor(status: number, path: string, rawBody: string, parsed: unknown) {
-    const record =
-      parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-    const nestedError =
-      record?.error && typeof record.error === "object"
-        ? (record.error as Record<string, unknown>)
-        : null;
-    const detail = record?.detail ?? nestedError?.message;
-    super(
-      typeof detail === "string" && detail.trim()
-        ? detail
-        : rawBody.trim().slice(0, 200) || `Request failed (${status})`,
-    );
-    this.name = "ApiError";
-    this.status = status;
-    this.path = path;
-    this.rawBody = rawBody;
-    this.body = parsed;
-  }
-}
-
 /** THE error → user-facing message formatter.  Every surface that shows
  *  a failed request — toast, inline form error, empty-state reason —
  *  goes through this one, so the same backend failure reads identically
  *  wherever it surfaces.
  *
  *  An :class:`ApiError` renders as ``"<status>: <detail>"``, preferring
- *  the saklas error body's structured ``detail`` over the generic HTTP
+ *  the drowse error body's structured ``detail`` over the generic HTTP
  *  message.  The status code carries real meaning across this API (400
  *  malformed vs 404 missing vs 409 busy vs 503 unavailable), so it is
  *  always shown.  Anything else falls back to its ``message``. */
-export function describeError(e: unknown): string {
-  if (e instanceof ApiError) {
-    const detail =
-      e.body && typeof e.body === "object" && "detail" in (e.body as object)
-        ? String((e.body as { detail: unknown }).detail)
-        : e.message;
-    return `${e.status}: ${detail}`;
-  }
-  return e instanceof Error ? e.message : String(e);
-}
-
 // --------------------------------------------------------- core fetch --
 
 async function parseBody(r: Response): Promise<{ text: string; json: unknown }> {
@@ -257,7 +198,7 @@ function jsonBody(body: unknown): RequestInit {
 
 export const apiSessions = {
   list(): Promise<{ sessions: SessionInfo[] }> {
-    return request("/saklas/v1/sessions");
+    return request("/drowse/v1/sessions");
   },
   get(id: string = SESSION): Promise<SessionInfo> {
     return request(SESSION_BASE(id));
@@ -278,6 +219,7 @@ export const apiSessions = {
   validateSteering(
     expression: string,
     id: string = SESSION,
+    _options?: import("./runtime/contracts").SteeringValidationOptions,
   ): Promise<{ valid: boolean; expression: string; error: string | null }> {
     return request(
       `${SESSION_BASE(id)}/steering/validate`,
@@ -348,6 +290,9 @@ export const apiProbes = {
 /** Steering-manifold endpoints — top-level (not session-scoped), like
  *  packs.  These routes are required by the current dashboard. */
 export const apiManifolds = {
+  inspectSurface(points: number[][]): Promise<import("./types.gen").SurfaceEvidence> {
+    return request(`${MANIFOLDS_BASE}/surface-evidence`, jsonBody({ points }));
+  },
   list(): Promise<ManifoldListResponse> {
     return request(MANIFOLDS_BASE);
   },
@@ -386,7 +331,7 @@ export const apiManifolds = {
       { method: "DELETE" },
     );
   },
-  /** HF-hub search proxy for ``saklas-manifold``-tagged repos — rows
+  /** HF-hub search proxy for ``drowse-manifold``-tagged repos — rows
    *  carry the manifold-specific ``domain_label`` / ``node_count`` /
    *  ``fit_mode`` fields.  503 when the server lacks ``huggingface_hub``,
    *  502 on HF transport error. */
@@ -416,7 +361,7 @@ export const apiManifolds = {
   },
 };
 
-const TEMPLATES_BASE = "/saklas/v1/templates";
+const TEMPLATES_BASE = "/drowse/v1/templates";
 
 /** The standalone templated-completion artifact — a slot + candidate values
  *  + multi-turn contexts, read by both the completion scorer and a
@@ -626,9 +571,23 @@ export async function apiExtractStream(
 // Required loom tree REST surface.
 
 export const apiTree = {
+  /** The Python runtime always supports exact sibling replay scoring. Hosted
+   *  runtimes answer this through their loaded model backend instead. */
+  async replayCapabilities() {
+    return {
+      jointLogprobs: {
+        available: true,
+        reason: null,
+      },
+    };
+  },
   /** Full tree dump.  Cheap enough to fetch on every reconcile. */
   get(id: string = SESSION): Promise<LoomTreeJSON> {
     return request(`${SESSION_BASE(id)}/tree`);
+  },
+  /** Drop every branch and replace the conversation with a fresh root. */
+  reset(id: string = SESSION): Promise<void> {
+    return request(`${SESSION_BASE(id)}/tree/reset`, { method: "POST" });
   },
   /** Replace the complete server-owned Loom tree from a saved snapshot. */
   restore(
@@ -982,7 +941,7 @@ export interface SseEvent {
   event: string;
   /** Parsed JSON if the data line was JSON, otherwise the raw string. */
   data: unknown;
-  /** Optional event id from ``id:`` line.  None of the saklas SSE endpoints
+  /** Optional event id from ``id:`` line.  None of the drowse SSE endpoints
    * set it today, but exposing the field future-proofs. */
   id?: string;
 }
@@ -1096,11 +1055,12 @@ function parseSseFrame(frame: string): SseEvent | null {
 export function connectWs(id: string = SESSION): WebSocket {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   let url = `${proto}://${location.host}${SESSION_BASE(id)}/stream`;
-  if (_apiKey) {
+  const apiKey = getApiKey();
+  if (apiKey) {
     // Token-as-query-param is the standard fallback for browser WS auth
     // since the constructor can't set Authorization.  Server-side
     // middleware must accept it via ``ws_auth_ok``.
-    url += `?token=${encodeURIComponent(_apiKey)}`;
+    url += `?token=${encodeURIComponent(apiKey)}`;
   }
   return new WebSocket(url);
 }

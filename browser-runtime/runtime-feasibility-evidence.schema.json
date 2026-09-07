@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:drowse:schema:browser-runtime-feasibility-evidence-v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "status", "drowseRevision", "gates"],
+  "properties": {
+    "$schema": { "const": "./runtime-feasibility-evidence.schema.json" },
+    "schemaVersion": { "const": 3 },
+    "status": { "enum": ["feasibility-required", "verified"] },
+    "drowseRevision": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Git commit whose executable source produced the referenced evidence"
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gemmaTinyFp32Parity",
+        "llamaTinyFp32Parity",
+        "qwenTinyFp32Parity",
+        "gemmaProductionQ4Parity",
+        "smolProductionQ4Parity",
+        "qwenProductionQ4Parity",
+        "gemmaLongPrefill",
+        "runtimeLifecycle"
+      ],
+      "properties": {
+        "gemmaTinyFp32Parity": { "$ref": "#/$defs/reference" },
+        "llamaTinyFp32Parity": { "$ref": "#/$defs/reference" },
+        "qwenTinyFp32Parity": { "$ref": "#/$defs/reference" },
+        "gemmaProductionQ4Parity": { "$ref": "#/$defs/reference" },
+        "smolProductionQ4Parity": { "$ref": "#/$defs/reference" },
+        "qwenProductionQ4Parity": { "$ref": "#/$defs/reference" },
+        "gemmaLongPrefill": { "$ref": "#/$defs/reference" },
+        "runtimeLifecycle": { "$ref": "#/$defs/reference" }
+      }
+    }
+  },
+  "$defs": {
+    "reference": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": { "type": "string", "pattern": "^evidence/[a-z0-9][a-z0-9._/-]*\\.json$" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      ]
+    }
+  }
+}

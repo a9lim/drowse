@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { slidingSelection } from "../lib/slidingSelection";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Transcript export / import drawer — phase 5.  Two tabs:
   //
@@ -11,7 +12,7 @@
   //     Guard warnings (model / system-prompt / probe drift) surface
   //     in a banner with the diff list.
 
-  import { apiTree, describeError } from "../lib/api";
+  import { apiTree, describeError } from "../lib/runtime/services";
   import {
     closeDrawer,
     loomTree,
@@ -27,6 +28,24 @@
 
   type Tab = "export" | "import";
   let tab: Tab = $state("export");
+
+  function selectTab(next: Tab): void {
+    tab = next;
+  }
+
+  function onTabKeydown(ev: KeyboardEvent): void {
+    const tabs = ["export", "import"] as const;
+    const current = tabs.indexOf(tab);
+    let next = current;
+    if (ev.key === "ArrowRight") next = (current + 1) % tabs.length;
+    else if (ev.key === "ArrowLeft") next = (current - 1 + tabs.length) % tabs.length;
+    else if (ev.key === "Home") next = 0;
+    else if (ev.key === "End") next = tabs.length - 1;
+    else return;
+    ev.preventDefault();
+    selectTab(tabs[next]);
+    document.getElementById(`transcript-${tabs[next]}-tab`)?.focus();
+  }
 
   // -------------------------------------------------- export state ---
 
@@ -79,7 +98,7 @@
     const a = document.createElement("a");
     a.href = url;
     const tsId = exportLeafId ? exportLeafId.slice(0, 8) : "active";
-    a.download = `saklas-transcript-${tsId}.yaml`;
+    a.download = `drowse-transcript-${tsId}.yaml`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -165,23 +184,36 @@
 
 <section class="drawer-shell" aria-label="Transcript drawer">
   <header class="header">
-    <span class="title">transcript</span>
-    <div class="tabs" role="tablist">
+    <h2 class="title">Conversation transcript</h2>
+    <div
+      class="tabs"
+      use:slidingSelection
+      role="tablist"
+      aria-label="Transcript action"
+    >
       <button
+        id="transcript-export-tab"
         type="button"
         class="tab"
         class:active={tab === "export"}
         role="tab"
         aria-selected={tab === "export"}
-        onclick={() => (tab = "export")}
+        aria-controls="transcript-export-panel"
+        tabindex={tab === "export" ? 0 : -1}
+        onclick={() => selectTab("export")}
+        onkeydown={onTabKeydown}
       >export</button>
       <button
+        id="transcript-import-tab"
         type="button"
         class="tab"
         class:active={tab === "import"}
         role="tab"
         aria-selected={tab === "import"}
-        onclick={() => (tab = "import")}
+        aria-controls="transcript-import-panel"
+        tabindex={tab === "import" ? 0 : -1}
+        onclick={() => selectTab("import")}
+        onkeydown={onTabKeydown}
       >import</button>
     </div>
     <DrawerCloseButton onclick={closeDrawer} />
@@ -189,15 +221,24 @@
 
   <div class="body">
     {#if tab === "export"}
-      <p class="hint">blank = active path</p>
+      <div
+        id="transcript-export-panel"
+        class="tab-panel"
+        role="tabpanel"
+        aria-labelledby="transcript-export-tab"
+        tabindex="0"
+      >
+      <p class="hint">
+        Export the active conversation path, or end at a specific node.
+      </p>
 
       <label class="field">
-        <span class="label">node</span>
+        <span class="label">end at node <span class="optional">optional</span></span>
         <input
           type="text"
           class="input"
           bind:value={exportTargetId}
-          placeholder={`active: ${loomTree.active_node_id?.slice(0, 12) ?? "—"}`}
+          placeholder={`Active node · ${loomTree.active_node_id?.slice(0, 12) ?? "-"}`}
           autocomplete="off"
           spellcheck="false"
         />
@@ -209,7 +250,7 @@
           class="btn primary"
           onclick={runExport}
           disabled={exportBusy}
-        >{exportBusy ? "rendering…" : "render YAML"}</button>
+        >{exportBusy ? "preparing…" : "preview YAML"}</button>
       </div>
 
       {#if exportError}
@@ -222,38 +263,39 @@
           readonly
           rows="20"
           value={exportYaml}
+          aria-label="Rendered transcript YAML"
         ></textarea>
         <div class="form-actions">
-          <button type="button" class="btn" onclick={copyYaml}>copy</button>
+          <button type="button" class="btn" data-cursor="copy" onclick={copyYaml}>copy</button>
           <button type="button" class="btn primary" onclick={downloadYaml}
             >download .yaml</button>
         </div>
       {/if}
+      </div>
     {:else}
-      <p class="hint">paste or upload YAML</p>
+      <div
+        id="transcript-import-panel"
+        class="tab-panel"
+        role="tabpanel"
+        aria-labelledby="transcript-import-tab"
+        tabindex="0"
+      >
+      <p class="hint">
+        Import a Drowse transcript from a local YAML file or pasted text.
+      </p>
 
-      <div class="field">
-        <span class="label">mode</span>
-        <span class="mode-opt">
-          <Radio bind:group={importMode} value="default" ariaLabel="default" />
-          <span><strong>default</strong> · root</span>
-        </span>
-        <span class="mode-opt">
-          <Radio bind:group={importMode} value="here" ariaLabel="here" />
-          <span><strong>here</strong> · active node</span>
-        </span>
-        <span class="mode-opt">
-          <Radio bind:group={importMode} value="merge" ariaLabel="merge" />
-          <span><strong>merge</strong> · deepest match</span>
-        </span>
+      <div class="field" role="radiogroup" aria-labelledby="import-mode-label">
+        <span class="label" id="import-mode-label">place imported turns</span>
+        <Radio bind:group={importMode} value="default" label="start a new path at the root" />
+        <Radio bind:group={importMode} value="here" label="continue from the active node" />
+        <Radio bind:group={importMode} value="merge" label="merge after the deepest matching turn" />
       </div>
 
       <span class="mode-opt">
-        <Checkbox bind:checked={importStrict} ariaLabel="strict mode" />
-        <span>strict probe hashes</span>
+        <Checkbox bind:checked={importStrict} label="Require matching reading settings" />
       </span>
 
-      <div class="field">
+      <label class="field">
         <span class="label">file</span>
         <input
           type="file"
@@ -261,7 +303,7 @@
           bind:this={fileInputRef}
           onchange={onFileChange}
         />
-      </div>
+      </label>
 
       <textarea
         class="yaml"
@@ -269,6 +311,7 @@
         bind:value={importYaml}
         placeholder="paste transcript YAML here…"
         spellcheck="false"
+        aria-label="Transcript YAML to import"
       ></textarea>
 
       <div class="form-actions">
@@ -301,6 +344,7 @@
           <code>{importLeafId.slice(0, 12)}</code>
         </p>
       {/if}
+      </div>
     {/if}
   </div>
 
@@ -323,11 +367,12 @@
     display: flex;
     align-items: center;
     gap: var(--space-4);
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
-    color: var(--accent);
-    text-transform: lowercase;
+    margin: 0;
+    min-width: 0;
+    color: var(--fg);
     letter-spacing: 0;
     font-size: var(--text-md);
     font-weight: var(--weight-medium);
@@ -338,6 +383,11 @@
     flex: 1 1 auto;
     justify-content: center;
   }
+  @media (max-width: 680px) {
+    .header { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+    .tabs { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
+    .tab { flex: 1; }
+  }
   .tab {
     background: var(--glass);
     color: var(--fg-dim);
@@ -347,6 +397,8 @@
     font-family: var(--font-mono);
     font-size: var(--text-sm);
     cursor: pointer;
+    min-height: var(--control-target);
+    border-radius: var(--radius-sm);
   }
   .tab:hover {
     color: var(--fg-strong);
@@ -359,11 +411,16 @@
   .body {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
     min-height: 0;
+  }
+  .tab-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--drawer-gutter-block);
   }
   .hint {
     color: var(--fg-muted);
@@ -380,6 +437,12 @@
     font-size: var(--text-sm);
     text-transform: lowercase;
   }
+  .optional {
+    color: var(--fg-subtle);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    margin-inline-start: var(--space-2);
+  }
   .input {
     background: var(--input-well);
     color: var(--fg);
@@ -387,6 +450,7 @@
     padding: var(--space-2) var(--space-3);
     font: inherit;
     font-family: var(--font-mono);
+    min-height: var(--control-field);
   }
   .input:focus {
     outline: none;
@@ -396,7 +460,7 @@
     background: var(--input-well);
     color: var(--fg);
     border: 1px solid transparent;
-    padding: var(--space-3) var(--space-4);
+    padding: var(--surface-padding);
     font: inherit;
     font-family: var(--font-mono);
     font-size: var(--text-sm);
@@ -416,7 +480,8 @@
   .form-actions {
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-3);
+    flex-wrap: wrap;
+    gap: var(--drawer-gutter-block);
   }
   .error {
     color: var(--accent-red);
@@ -431,7 +496,7 @@
   .banner {
     background: color-mix(in srgb, var(--accent-amber) 14%, transparent);
     border: 1px solid transparent;
-    padding: var(--space-4) var(--space-4);
+    padding: var(--surface-padding);
     color: var(--accent-yellow);
     font-size: var(--text-sm);
   }
@@ -442,14 +507,15 @@
     margin-bottom: var(--space-1);
   }
   .banner ul {
-    margin: var(--space-1) 0 var(--space-1) 1em;
+    margin: var(--space-1) 0 var(--space-1) var(--space-sm);
     padding: 0;
   }
   .footer {
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-3);
-    padding: var(--space-3) var(--space-6);
+    flex-wrap: wrap;
+    gap: var(--drawer-gutter-block);
+    padding: 0 var(--drawer-gutter-inline) var(--drawer-gutter-block);
     color: var(--fg-muted);
   }
   .btn {
@@ -460,6 +526,8 @@
     font: inherit;
     font-family: var(--font-mono);
     cursor: pointer;
+    min-height: var(--control-target);
+    border-radius: var(--radius-sm);
   }
   .btn:hover:not(:disabled) {
     background: var(--glass-strong);
@@ -469,12 +537,12 @@
     cursor: not-allowed;
   }
   .btn.primary {
-    background: var(--accent);
-    color: var(--text-on-accent);
+    background: var(--action-bg);
+    color: var(--action-ink);
     border-color: transparent;
   }
   .btn.primary:hover:not(:disabled) {
-    background: var(--accent-light);
+    background: var(--action-hover);
   }
   .btn.primary:disabled {
     background: var(--bg-elev);

@@ -50,6 +50,12 @@ export interface GeometryRenderInput {
   orbit: OrbitState;
 }
 
+export interface GeometryHitPoint {
+  screen: [number, number];
+  label: string;
+  point: number[];
+}
+
 interface Palette {
   fg: string;
   fgDim: string;
@@ -92,9 +98,9 @@ function readPalette(el: HTMLElement): Palette {
   };
 }
 
-/** Canvas font strings — Recursive Mono to match the data voice. */
-const FONT_LABEL = '10px "Recursive Mono", ui-monospace, monospace';
-const FONT_AXIS = '9px "Recursive Mono", ui-monospace, monospace';
+/** Canvas font strings match the data voice used by the surrounding UI. */
+const FONT_LABEL = '560 10px "Martian Mono", ui-monospace, monospace';
+const FONT_AXIS = '560 9px "Martian Mono", ui-monospace, monospace';
 
 const PAD = 28;
 
@@ -111,6 +117,8 @@ function prep(
   canvas.width = Math.floor(w * dpr);
   canvas.height = Math.floor(h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
   ctx.clearRect(0, 0, w, h);
   return { ctx, w, h };
 }
@@ -204,11 +212,14 @@ function label(
   y: number,
   text: string,
   color: string,
+  width: number,
 ): void {
   ctx.globalAlpha = 0.9;
   ctx.fillStyle = color;
   ctx.font = FONT_LABEL;
-  ctx.fillText(text, x + 5, y - 4);
+  const textWidth = ctx.measureText(text).width;
+  const labelX = x + 5 + textWidth <= width - 8 ? x + 5 : Math.max(8, x - 5 - textWidth);
+  ctx.fillText(text, labelX, y - 4);
   ctx.globalAlpha = 1;
 }
 
@@ -240,6 +251,7 @@ function drawRank1(
   h: number,
   input: GeometryRenderInput,
   pal: Palette,
+  hits: GeometryHitPoint[],
 ): void {
   const { geom, live, trail } = input;
   const xs: Array<[number, number]> = [];
@@ -265,18 +277,20 @@ function drawRank1(
 
   // neutral tick
   const nx = px(geom.neutral_white[0] ?? 0);
+  hits.push({ screen: [nx, y0], label: "neutral", point: geom.neutral_white });
   ctx.strokeStyle = pal.neutral;
   ctx.beginPath();
   ctx.moveTo(nx, y0 - 8);
   ctx.lineTo(nx, y0 + 8);
   ctx.stroke();
-  label(ctx, nx, y0 - 6, "neutral", pal.neutral);
+  label(ctx, nx, y0 - 6, "neutral", pal.neutral, w);
 
   // poles / nodes
   geom.node_white.forEach((nc, i) => {
     const x = px(nc[0] ?? 0);
+    hits.push({ screen: [x, y0], label: input.nodeLabels[i] ?? `node ${i + 1}`, point: nc });
     dot(ctx, x, y0, 4, pal.node);
-    label(ctx, x, y0 + 18, input.nodeLabels[i] ?? "", pal.fgDim);
+    label(ctx, x, y0 + 18, input.nodeLabels[i] ?? "", pal.fgDim, w);
   });
 
   // trail (ticks along the line) + live dot
@@ -285,6 +299,7 @@ function drawRank1(
     dot(ctx, px(t[0] ?? 0), y0, 2.5, pal.live, a);
   });
   if (live) liveDot(ctx, px(live[0] ?? 0), y0, pal);
+  if (live) hits.push({ screen: [px(live[0] ?? 0), y0], label: "live", point: live });
 }
 
 // ----------------------------------------------------------- rank 2 --
@@ -296,6 +311,7 @@ function drawRank2(
   input: GeometryRenderInput,
   pal: Palette,
   nodeLabel: (i: number) => string,
+  hits: GeometryHitPoint[],
 ): void {
   const { geom, live, trail } = input;
   // Frame the view from the STATIC geometry (nodes + neutral + overlay) only,
@@ -348,6 +364,7 @@ function drawRank2(
   // neutral
   {
     const [sx, sy] = proj(geom.neutral_white[0] ?? 0, geom.neutral_white[1] ?? 0);
+    hits.push({ screen: [sx, sy], label: "neutral", point: geom.neutral_white });
     ctx.strokeStyle = pal.neutral;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -358,8 +375,9 @@ function drawRank2(
   // nodes
   geom.node_white.forEach((nc, i) => {
     const [sx, sy] = proj(nc[0] ?? 0, nc[1] ?? 0);
+    hits.push({ screen: [sx, sy], label: nodeLabel(i), point: nc });
     dot(ctx, sx, sy, 3.5, pal.node);
-    label(ctx, sx, sy, nodeLabel(i), pal.fgDim);
+    label(ctx, sx, sy, nodeLabel(i), pal.fgDim, w);
   });
 
   // trail + live
@@ -367,6 +385,7 @@ function drawRank2(
   fadingTrail(ctx, trailScreen, pal.live);
   if (live) {
     const [sx, sy] = proj(live[0] ?? 0, live[1] ?? 0);
+    hits.push({ screen: [sx, sy], label: "live", point: live });
     liveDot(ctx, sx, sy, pal);
   }
 }
@@ -473,6 +492,7 @@ function drawRank3(
   input: GeometryRenderInput,
   pal: Palette,
   nodeLabel: (i: number) => string,
+  hits: GeometryHitPoint[],
 ): void {
   const { geom, live, trail, orbit } = input;
   const rot = geom.pca_rotation;
@@ -512,6 +532,7 @@ function drawRank3(
 
   const node3 = nodePca.map(project);
   const neutral3 = project(neutralPca);
+  hits.push({ screen: neutral3.s, label: "neutral", point: geom.neutral_white });
   const overlay3 = overlayPca.map(project);
   const trail3 = trail.map((p) => project(projectPca3(p, rot)));
   const live3 = live ? project(projectPca3(live, rot)) : null;
@@ -618,33 +639,37 @@ function drawRank3(
     .sort((a, c) => a.z - c.z);
   for (const { i } of order) {
     const p = node3[i];
+    hits.push({ screen: p.s, label: nodeLabel(i), point: geom.node_white[i] });
     const d = depth01(p.z);
     dot(ctx, p.s[0], p.s[1], 2.5 + 2.5 * d, pal.node, 0.4 + 0.6 * d);
-    if (d > 0.55) label(ctx, p.s[0], p.s[1], nodeLabel(i), pal.fgDim);
+    if (d > 0.55) label(ctx, p.s[0], p.s[1], nodeLabel(i), pal.fgDim, w);
   }
 
   // trail + live (always on top)
   const trailScreen = trail3.map((p) => p.s);
   fadingTrail(ctx, trailScreen, pal.live);
   if (live3) liveDot(ctx, live3.s[0], live3.s[1], pal);
+  if (live3 && live) hits.push({ screen: live3.s, label: "live", point: live });
 }
 
 /** Render one frame. */
 export function renderProbeGeometry(
   canvas: HTMLCanvasElement,
   input: GeometryRenderInput,
-): void {
+): GeometryHitPoint[] {
   const prepared = prep(canvas);
-  if (!prepared) return;
+  if (!prepared) return [];
+  const hits: GeometryHitPoint[] = [];
   const { ctx, w, h } = prepared;
   const pal = readPalette(canvas);
   const nodeLabel = (i: number): string => input.nodeLabels[i] ?? "";
   const rank = input.geom.rank;
   if (rank <= 1) {
-    drawRank1(ctx, w, h, input, pal);
+    drawRank1(ctx, w, h, input, pal, hits);
   } else if (rank === 2) {
-    drawRank2(ctx, w, h, input, pal, nodeLabel);
+    drawRank2(ctx, w, h, input, pal, nodeLabel, hits);
   } else {
-    drawRank3(ctx, w, h, input, pal, nodeLabel);
+    drawRank3(ctx, w, h, input, pal, nodeLabel, hits);
   }
+  return hits;
 }

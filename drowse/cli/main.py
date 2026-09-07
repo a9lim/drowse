@@ -1,0 +1,52 @@
+"""CLI entry point for drowse.
+
+Eight top-level verbs. ``manifold`` is the steering-vector / manifold *compute*
+surface (a steering vector is the K=2 case of a flat manifold); ``pack`` is the
+manifold *lifecycle* surface (install / share / inspect / remove); ``template``
+owns the standalone templated-completion artifact; ``lens`` owns the per-model
+Jacobian-lens artifact (residual→output transport + vocabulary readout):
+
+    drowse serve <model> [...]
+    drowse manifold {extract,generate,from-template,fit,bake,merge,transfer,compare,why} ...
+    drowse pack {ls,show,install,search,push,rm,clear,refresh,export} ...
+    drowse experiment {fan,transcript,naturalness} ...
+    drowse config {show,validate} ...
+    drowse template {create,ls,show,score,rm} ...
+    drowse lens {fit,fetch,ls,show,use,top,decompose,rm} ...
+    drowse sae {train,fetch,ls,show,use,rm} ...
+
+``drowse`` with no arguments prints help.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:multiprocessing.resource_tracker")
+
+from drowse.cli.parsers import _build_root_parser
+from drowse.cli.runners import _COMMAND_RUNNERS
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    if argv is None:
+        argv = sys.argv[1:]
+    parser = _build_root_parser()
+    # Zero-arg: print help+hint and exit 0 (not argparse's exit 2).
+    if not argv:
+        parser.print_help()
+        print()
+        print("try 'drowse serve <model_id>' or 'drowse --help'")
+        sys.exit(0)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
+    cmd = getattr(args, "command", None)
+    if cmd is None:
+        _build_root_parser().print_help()
+        sys.exit(0)
+    _COMMAND_RUNNERS[cmd](args)

@@ -1,0 +1,7 @@
+{
+  "$schema": "../evidence-config.schema.json",
+  "schemaVersion": 1,
+  "evidenceType": "topologyOrchestration",
+  "observer": "webui/scripts/fitting-wasm-browser.test.mjs",
+  "arguments": ["--release-evidence", "topologyOrchestration"]
+}

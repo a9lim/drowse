@@ -1,4 +1,4 @@
-"""CLI wiring tests for the ``saklas manifold`` lifecycle subverbs.
+"""CLI wiring tests for the ``drowse manifold`` lifecycle subverbs.
 
 Parser shape + runner dispatch for the parity verbs added alongside the
 fit/discover/generate/ls/show block: install / search / merge / push /
@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from saklas import cli
+from drowse import cli
 
 
 def _cross_process_alignment_worker(
@@ -34,13 +34,13 @@ def _cross_process_alignment_worker(
 
     import torch
 
-    import saklas.core.model as model_mod
-    import saklas.core.session as session_mod
-    import saklas.io.alignment as alignment_mod
-    from saklas.cli import runners
+    import drowse.core.model as model_mod
+    import drowse.core.session as session_mod
+    import drowse.io.alignment as alignment_mod
+    from drowse.cli import runners
 
     patch = pytest.MonkeyPatch()
-    patch.setenv("SAKLAS_HOME", home)
+    patch.setenv("DROWSE_HOME", home)
     source_marker = Path(home) / "source-neutral-ready"
     rows = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])}
 
@@ -108,7 +108,7 @@ def _cross_process_alignment_worker(
         lambda model_id: f"source:{model_id}",
     )
     patch.setattr(
-        session_mod.SaklasSession, "from_pretrained",
+        session_mod.DrowseSession, "from_pretrained",
         staticmethod(lambda model_id, **_kwargs: Session(model_id)),
     )
     patch.setattr(
@@ -133,10 +133,10 @@ def _cross_process_alignment_worker(
 def _materialize_bundles_for_cli_test(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    monkeypatch.setattr("saklas.io.manifolds._materialized_home", None)
-    from saklas.io import selectors
-    from saklas.io.manifolds import materialize_bundled_manifolds
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    monkeypatch.setattr("drowse.io.manifolds._materialized_home", None)
+    from drowse.io import selectors
+    from drowse.io.manifolds import materialize_bundled_manifolds
     selectors.invalidate()
     materialize_bundled_manifolds()
     selectors.invalidate()
@@ -312,7 +312,7 @@ def test_run_manifold_from_template_writes_folder(
     capsys: pytest.CaptureFixture[str],
 ):
     """End-to-end: template create -> manifold from-template derives the folder."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     ctx_file = tmp_path / "ctx.json"
     ctx_file.write_text(_json.dumps([
         {"user": "what day is it?", "assistant": "today is [DAY]"},
@@ -328,8 +328,8 @@ def test_run_manifold_from_template_writes_folder(
     out = capsys.readouterr().out
     assert "3 nodes x 2 contexts" in out
 
-    from saklas.io.manifolds import ManifoldFolder
-    from saklas.io.paths import manifold_dir
+    from drowse.io.manifolds import ManifoldFolder
+    from drowse.io.paths import manifold_dir
     mf = ManifoldFolder.load(manifold_dir("local", "weekday"))
     assert mf.fit_mode == "auto"
     assert mf.node_labels == ["monday", "tuesday", "wednesday"]
@@ -340,7 +340,7 @@ def test_run_manifold_from_template_writes_folder(
 def test_run_manifold_from_template_missing_template_exits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(SystemExit):
         cli.main(["manifold", "from-template", "nonexistent"])
 
@@ -404,9 +404,9 @@ def test_run_manifold_install_calls_backend(monkeypatch: pytest.MonkeyPatch, cap
         on_progress: Any = None,
     ) -> Path:
         calls.append((target, as_, force))
-        return Path("/home/.saklas/manifolds/local/circumplex")
+        return Path("/home/.drowse/manifolds/local/circumplex")
 
-    monkeypatch.setattr("saklas.io.hf_manifolds.install_manifold", fake_install)
+    monkeypatch.setattr("drowse.io.hf_manifolds.install_manifold", fake_install)
     cli.main(["pack", "install", "alice/circumplex", "-a", "local/mood", "-f"])
     assert calls == [("alice/circumplex", "local/mood", True)]
     out = capsys.readouterr().out
@@ -427,7 +427,7 @@ def test_run_manifold_search_calls_backend(monkeypatch: pytest.MonkeyPatch, caps
             "fit_mode": "authored", "tensor_models": ["gemma"],
         }]
 
-    monkeypatch.setattr("saklas.io.hf_manifolds.search_manifolds", fake_search)
+    monkeypatch.setattr("drowse.io.hf_manifolds.search_manifolds", fake_search)
     cli.main(["pack", "search", "mood"])
     assert seen == ["mood"]
     out = capsys.readouterr().out
@@ -443,7 +443,7 @@ def test_run_manifold_search_empty_query_passes_none(monkeypatch: pytest.MonkeyP
         seen.append(query)
         return []
 
-    monkeypatch.setattr("saklas.io.hf_manifolds.search_manifolds", fake_search)
+    monkeypatch.setattr("drowse.io.hf_manifolds.search_manifolds", fake_search)
     cli.main(["pack", "search"])
     # Empty CLI default coerces to None for the backend (list by recency).
     assert seen == [None]
@@ -457,7 +457,7 @@ def test_run_manifold_search_json(monkeypatch: pytest.MonkeyPatch, capsys: pytes
         "tags": [], "node_count": 9, "domain_label": "box(2d)",
         "fit_mode": "authored", "tensor_models": [],
     }]
-    monkeypatch.setattr("saklas.io.hf_manifolds.search_manifolds", lambda q: rows)
+    monkeypatch.setattr("drowse.io.hf_manifolds.search_manifolds", lambda q: rows)
     cli.main(["pack", "search", "mood", "-j"])
     out = capsys.readouterr().out
     data = _json.loads(out)
@@ -474,9 +474,9 @@ def test_run_manifold_merge_calls_backend(monkeypatch: pytest.MonkeyPatch, capsy
             "ns": target_ns, "name": target_name, "desc": desc,
             "sources": sources, "fit_mode": fit_mode, "force": force,
         })
-        return Path("/home/.saklas/manifolds/local/combined")
+        return Path("/home/.drowse/manifolds/local/combined")
 
-    monkeypatch.setattr("saklas.io.manifolds.merge_discover_manifolds", fake_merge)
+    monkeypatch.setattr("drowse.io.manifolds.merge_discover_manifolds", fake_merge)
     cli.main([
         "manifold", "merge", "local/combined", "a", "alice/b",
         "--method", "spectral", "-f",
@@ -495,7 +495,7 @@ def test_run_manifold_merge_calls_backend(monkeypatch: pytest.MonkeyPatch, capsy
 def test_run_manifold_merge_one_source_errors(monkeypatch: pytest.MonkeyPatch):
     # The parser allows >=1 positional source; the runner refuses <2.
     monkeypatch.setattr(
-        "saklas.io.manifolds.merge_discover_manifolds",
+        "drowse.io.manifolds.merge_discover_manifolds",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -504,8 +504,8 @@ def test_run_manifold_merge_one_source_errors(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_run_manifold_push_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.paths import manifold_dir
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.paths import manifold_dir
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
@@ -521,7 +521,7 @@ def test_run_manifold_push_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_pa
         })
         return (f"https://huggingface.co/{coord}", "abcdef123456")
 
-    monkeypatch.setattr("saklas.io.hf_manifolds.push_manifold", fake_push)
+    monkeypatch.setattr("drowse.io.hf_manifolds.push_manifold", fake_push)
     # -a override means resolve_target_coord doesn't need whoami().
     cli.main([
         "pack", "push", "local/circumplex",
@@ -542,14 +542,14 @@ def test_run_manifold_push_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 def test_run_manifold_push_dry_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.paths import manifold_dir
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.paths import manifold_dir
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
 
     monkeypatch.setattr(
-        "saklas.io.hf_manifolds.push_manifold",
+        "drowse.io.hf_manifolds.push_manifold",
         lambda f, coord, **k: (f"https://huggingface.co/{coord}", None),
     )
     cli.main([
@@ -561,9 +561,9 @@ def test_run_manifold_push_dry_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 def test_run_manifold_push_missing_folder_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "saklas.io.hf_manifolds.push_manifold",
+        "drowse.io.hf_manifolds.push_manifold",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -579,7 +579,7 @@ def test_run_manifold_rm_calls_backend(monkeypatch: pytest.MonkeyPatch, capsys: 
         return {"namespace": ns, "name": name, "source": "local",
                 "removed": True, "rematerializes_on_restart": False}
 
-    monkeypatch.setattr("saklas.io.manifolds.remove_manifold_folder", fake_rm)
+    monkeypatch.setattr("drowse.io.manifolds.remove_manifold_folder", fake_rm)
     cli.main(["pack", "rm", "local/mood", "-y"])
     assert calls == [("local", "mood")]
     out = capsys.readouterr().out
@@ -592,7 +592,7 @@ def test_run_manifold_rm_local_refuses_without_yes(
     """The irrecoverable case is guarded too — a ``local/`` manifold costs
     real extraction/fit time and never re-materializes."""
     monkeypatch.setattr(
-        "saklas.io.manifolds.remove_manifold_folder",
+        "drowse.io.manifolds.remove_manifold_folder",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -605,7 +605,7 @@ def test_run_manifold_rm_local_refuses_without_yes(
 
 def test_run_manifold_rm_bundled_refuses_without_yes(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "saklas.io.manifolds.remove_manifold_folder",
+        "drowse.io.manifolds.remove_manifold_folder",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -618,7 +618,7 @@ def test_run_manifold_rm_bundled_with_yes(monkeypatch: pytest.MonkeyPatch, capsy
         return {"namespace": ns, "name": name, "source": "bundled",
                 "removed": True, "rematerializes_on_restart": True}
 
-    monkeypatch.setattr("saklas.io.manifolds.remove_manifold_folder", fake_rm)
+    monkeypatch.setattr("drowse.io.manifolds.remove_manifold_folder", fake_rm)
     cli.main(["pack", "rm", "default/personas", "-y"])
     out = capsys.readouterr().out
     assert "Removed default/personas" in out
@@ -629,7 +629,7 @@ def test_run_manifold_rm_missing_errors(monkeypatch: pytest.MonkeyPatch):
     def fake_rm(ns: str, name: str) -> dict[str, Any]:
         raise FileNotFoundError("manifold local/nope not found")
 
-    monkeypatch.setattr("saklas.io.manifolds.remove_manifold_folder", fake_rm)
+    monkeypatch.setattr("drowse.io.manifolds.remove_manifold_folder", fake_rm)
     with pytest.raises(SystemExit) as ex:
         cli.main(["pack", "rm", "local/nope", "-y"])
     assert ex.value.code == 1
@@ -646,7 +646,7 @@ def test_run_manifold_clear_calls_backend(
         calls.append({"ns": ns, "name": name, "model_scope": model_scope, "variant": variant})
         return 3
 
-    monkeypatch.setattr("saklas.io.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.io.manifolds.clear_manifold_tensors", fake_clear)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare ``personas`` resolves cross-namespace to the bundled ``default/personas``
     # (the only installed match) — the lifecycle verbs no longer hard-default
@@ -671,7 +671,7 @@ def test_run_manifold_clear_passes_model_scope(
         calls.append({"ns": ns, "name": name, "model_scope": model_scope, "variant": variant})
         return 1
 
-    monkeypatch.setattr("saklas.io.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.io.manifolds.clear_manifold_tensors", fake_clear)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare name resolves cross-namespace to bundled ``default/personas``.
     cli.main(["pack", "clear", "personas", "-m", "foo/bar"])
@@ -688,7 +688,7 @@ def test_run_manifold_refresh_tiers(monkeypatch: pytest.MonkeyPatch, capsys: pyt
                            ("bundled", "bundled"),
                            ("hf", "re-pulled from HF")):
         monkeypatch.setattr(
-            "saklas.io.manifolds.refresh_manifold",
+            "drowse.io.manifolds.refresh_manifold",
             lambda ns, name, *, model_scope=None, t=tier: t,
         )
         cli.main(["pack", "refresh", "alice/circumplex"])
@@ -708,7 +708,7 @@ def test_run_manifold_refresh_passes_model_scope(
         calls.append({"ns": ns, "name": name, "model_scope": model_scope})
         return "scoped"
 
-    monkeypatch.setattr("saklas.io.manifolds.refresh_manifold", fake_refresh)
+    monkeypatch.setattr("drowse.io.manifolds.refresh_manifold", fake_refresh)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare name resolves cross-namespace to bundled ``default/personas``.
     cli.main(["pack", "refresh", "personas", "-m", "foo/bar"])
@@ -722,7 +722,7 @@ def test_run_manifold_refresh_missing_errors(monkeypatch: pytest.MonkeyPatch):
     def fake_refresh(ns: str, name: str, *, model_scope: Any = None) -> str:
         raise FileNotFoundError("not installed")
 
-    monkeypatch.setattr("saklas.io.manifolds.refresh_manifold", fake_refresh)
+    monkeypatch.setattr("drowse.io.manifolds.refresh_manifold", fake_refresh)
     with pytest.raises(SystemExit) as ex:
         cli.main(["pack", "refresh", "local/nope"])
     assert ex.value.code == 1
@@ -734,12 +734,12 @@ def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
     """Cold transfer neither revalidates identities nor reloads target rows."""
     import torch
 
-    import saklas.core.model as model_mod
-    import saklas.core.session as session_mod
-    import saklas.io.alignment as alignment_mod
-    from saklas.cli import runners
+    import drowse.core.model as model_mod
+    import drowse.core.session as session_mod
+    import drowse.io.alignment as alignment_mod
+    from drowse.cli import runners
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
     class _SessionContext:
         def __init__(self, model_id: str) -> None:
@@ -755,7 +755,7 @@ def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
             return None
 
     monkeypatch.setattr(
-        session_mod.SaklasSession,
+        session_mod.DrowseSession,
         "from_pretrained",
         staticmethod(lambda model_id, **_kwargs: _SessionContext(model_id)),
     )
@@ -828,10 +828,10 @@ def test_cold_narrow_alignment_releases_full_seed_rosters_before_fit(
 
     import torch
 
-    import saklas.core.model as model_mod
-    import saklas.core.session as session_mod
-    import saklas.io.alignment as alignment_mod
-    from saklas.cli import runners
+    import drowse.core.model as model_mod
+    import drowse.core.session as session_mod
+    import drowse.io.alignment as alignment_mod
+    from drowse.cli import runners
 
     class _SessionContext:
         def __init__(self, model_id: str) -> None:
@@ -847,7 +847,7 @@ def test_cold_narrow_alignment_releases_full_seed_rosters_before_fit(
             return None
 
     monkeypatch.setattr(
-        session_mod.SaklasSession,
+        session_mod.DrowseSession,
         "from_pretrained",
         staticmethod(lambda model_id, **_kwargs: _SessionContext(model_id)),
     )
@@ -935,10 +935,10 @@ def test_cached_alignment_keeps_model_free_offline_whitener_path(
     """A cached repeat loads target rows once and never loads model weights."""
     import torch
 
-    import saklas.core.model as model_mod
-    import saklas.core.session as session_mod
-    import saklas.io.alignment as alignment_mod
-    from saklas.cli import runners
+    import drowse.core.model as model_mod
+    import drowse.core.session as session_mod
+    import drowse.io.alignment as alignment_mod
+    from drowse.cli import runners
 
     def sidecar(model_id: str) -> dict[str, Any]:
         return {
@@ -992,7 +992,7 @@ def test_cached_alignment_keeps_model_free_offline_whitener_path(
         ),
     )
     monkeypatch.setattr(
-        session_mod.SaklasSession,
+        session_mod.DrowseSession,
         "from_pretrained",
         staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("exact cached repeat loaded a model")
@@ -1014,10 +1014,10 @@ def test_missing_cached_alignment_fits_offline_from_proven_neutral_rows(
     """A map miss reuses both neutral caches and never loads either model."""
     import torch
 
-    import saklas.core.model as model_mod
-    import saklas.core.session as session_mod
-    import saklas.io.alignment as alignment_mod
-    from saklas.cli import runners
+    import drowse.core.model as model_mod
+    import drowse.core.session as session_mod
+    import drowse.io.alignment as alignment_mod
+    from drowse.cli import runners
 
     src_acts = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [2.0, 1.0]])}
     tgt_acts = {0: torch.tensor([[2.0, 1.0], [1.0, 3.0], [4.0, 2.0]])}
@@ -1088,7 +1088,7 @@ def test_missing_cached_alignment_fits_offline_from_proven_neutral_rows(
 
     monkeypatch.setattr(alignment_mod, "save_alignment_map", save_offline)
     monkeypatch.setattr(
-        session_mod.SaklasSession,
+        session_mod.DrowseSession,
         "from_pretrained",
         staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("offline alignment fit loaded model weights")
@@ -1119,10 +1119,10 @@ def test_force_refits_only_requested_layer_without_loading_models(
 ) -> None:
     import torch
 
-    import saklas.core.model as model_mod
-    import saklas.core.session as session_mod
-    import saklas.io.alignment as alignment_mod
-    from saklas.cli import runners
+    import drowse.core.model as model_mod
+    import drowse.core.session as session_mod
+    import drowse.io.alignment as alignment_mod
+    from drowse.cli import runners
 
     def sidecar(model_id: str) -> dict[str, Any]:
         return {
@@ -1195,7 +1195,7 @@ def test_force_refits_only_requested_layer_without_loading_models(
         lambda *_args, **kwargs: saved.append(kwargs) or tmp_path / "alignment",
     )
     monkeypatch.setattr(
-        session_mod.SaklasSession, "from_pretrained",
+        session_mod.DrowseSession, "from_pretrained",
         staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("force refit recaptured neutral activations")
         )),
@@ -1219,10 +1219,10 @@ def test_target_neutral_generation_race_replans_cached_alignment(
 ) -> None:
     import torch
 
-    import saklas.core.model as model_mod
-    import saklas.core.session as session_mod
-    import saklas.io.alignment as alignment_mod
-    from saklas.cli import runners
+    import drowse.core.model as model_mod
+    import drowse.core.session as session_mod
+    import drowse.io.alignment as alignment_mod
+    from drowse.cli import runners
 
     target_generation = "old"
 
@@ -1274,7 +1274,7 @@ def test_target_neutral_generation_race_replans_cached_alignment(
 
     monkeypatch.setattr(alignment_mod, "load_alignment_map", load_map)
     monkeypatch.setattr(
-        session_mod.SaklasSession, "from_pretrained",
+        session_mod.DrowseSession, "from_pretrained",
         staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("identity replan loaded a model")
         )),
@@ -1296,12 +1296,12 @@ def test_concurrent_distinct_alignments_single_flight_shared_model_load(
 ) -> None:
     import torch
 
-    import saklas.core.model as model_mod
-    import saklas.core.session as session_mod
-    import saklas.io.alignment as alignment_mod
-    from saklas.cli import runners
+    import drowse.core.model as model_mod
+    import drowse.core.session as session_mod
+    import drowse.io.alignment as alignment_mod
+    from drowse.cli import runners
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     cached: dict[str, tuple[dict[int, torch.Tensor], dict[str, Any]]] = {}
     loads: dict[str, int] = {}
 
@@ -1367,7 +1367,7 @@ def test_concurrent_distinct_alignments_single_flight_shared_model_load(
         lambda model_id: f"source:{model_id}",
     )
     monkeypatch.setattr(
-        session_mod.SaklasSession, "from_pretrained",
+        session_mod.DrowseSession, "from_pretrained",
         staticmethod(lambda model_id, **_kwargs: Session(model_id)),
     )
     monkeypatch.setattr(alignment_mod, "load_alignment_map", lambda *_a, **_k: None)
@@ -1457,14 +1457,14 @@ def test_cross_process_distinct_alignments_single_flight_shared_model_load(
 
 
 def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.paths import manifold_dir, safe_model_id
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.paths import manifold_dir, safe_model_id
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
     src_model = "google/gemma-3-4b-it"
     (folder / f"{safe_model_id(src_model)}.safetensors").write_bytes(b"x")
-    from saklas.io.manifolds import TransferSourceProof
+    from drowse.io.manifolds import TransferSourceProof
 
     source_proof = TransferSourceProof(
         tensor_name="source.safetensors",
@@ -1473,12 +1473,12 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
         layers=(14, 15),
     )
     monkeypatch.setattr(
-        "saklas.io.manifolds.preflight_transfer_manifold",
+        "drowse.io.manifolds.preflight_transfer_manifold",
         lambda *_args, **_kwargs: source_proof,
     )
 
     import torch
-    from saklas.io.alignment import LayerAlignment
+    from drowse.io.alignment import LayerAlignment
 
     fake_M = {
         layer: LayerAlignment(torch.eye(4), torch.eye(4), torch.zeros(4))
@@ -1499,7 +1499,7 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
         )
 
     monkeypatch.setattr(
-        "saklas.cli.runners._load_or_fit_transfer_alignment", fake_alignment,
+        "drowse.cli.runners._load_or_fit_transfer_alignment", fake_alignment,
     )
 
     calls: list[dict[str, Any]] = []
@@ -1520,7 +1520,7 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
         })
         return folder_arg / "Qwen__Qwen3-4B_from-google__gemma-3-4b-it.safetensors"
 
-    monkeypatch.setattr("saklas.io.manifolds.transfer_manifold", fake_transfer)
+    monkeypatch.setattr("drowse.io.manifolds.transfer_manifold", fake_transfer)
     cli.main([
         "manifold", "transfer", "local/circumplex",
         "--from", src_model, "--to", "Qwen/Qwen3-4B",
@@ -1542,22 +1542,22 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
 
 
 def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.paths import manifold_dir, safe_model_id
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.paths import manifold_dir, safe_model_id
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
     src_model = "src/model"
     (folder / f"{safe_model_id(src_model)}.safetensors").write_bytes(b"x")
     monkeypatch.setattr(
-        "saklas.io.manifolds.preflight_transfer_manifold",
+        "drowse.io.manifolds.preflight_transfer_manifold",
         lambda *_args, **_kwargs: None,
     )
 
     import torch
     target_whitener = object()
     monkeypatch.setattr(
-        "saklas.cli.runners._load_or_fit_transfer_alignment",
+        "drowse.cli.runners._load_or_fit_transfer_alignment",
         lambda *args, **kwargs: (
             {10: torch.eye(2)}, {10: 0.5}, tmp_path / "alignment.safetensors",
             {"model_fingerprint": "src-fp"},
@@ -1567,7 +1567,7 @@ def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         ),
     )
     monkeypatch.setattr(
-        "saklas.io.manifolds.transfer_manifold",
+        "drowse.io.manifolds.transfer_manifold",
         lambda f, **k: f / "out.safetensors",
     )
     cli.main([
@@ -1586,8 +1586,8 @@ def test_run_manifold_transfer_retries_unproven_target(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """A post-pair manifest failure must not make the CLI demand ``-f``."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.paths import manifold_dir, safe_model_id, tensor_filename
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.paths import manifold_dir, safe_model_id, tensor_filename
 
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
@@ -1596,7 +1596,7 @@ def test_run_manifold_transfer_retries_unproven_target(
     tgt_model = "tgt/model"
     (folder / f"{safe_model_id(src_model)}.safetensors").write_bytes(b"source")
     monkeypatch.setattr(
-        "saklas.io.manifolds.preflight_transfer_manifold",
+        "drowse.io.manifolds.preflight_transfer_manifold",
         lambda *_args, **_kwargs: None,
     )
 
@@ -1604,7 +1604,7 @@ def test_run_manifold_transfer_retries_unproven_target(
 
     target_whitener = object()
     monkeypatch.setattr(
-        "saklas.cli.runners._load_or_fit_transfer_alignment",
+        "drowse.cli.runners._load_or_fit_transfer_alignment",
         lambda *args, **kwargs: (
             {0: torch.eye(2)}, {0: 0.5}, tmp_path / "alignment.safetensors",
             {"model_fingerprint": "src-fp"},
@@ -1626,7 +1626,7 @@ def test_run_manifold_transfer_retries_unproven_target(
             raise RuntimeError("injected post-pair manifest failure")
         return target
 
-    monkeypatch.setattr("saklas.io.manifolds.transfer_manifold", fail_once)
+    monkeypatch.setattr("drowse.io.manifolds.transfer_manifold", fail_once)
     argv = [
         "manifold", "transfer", "local/circumplex",
         "--from", src_model, "--to", tgt_model,
@@ -1641,20 +1641,20 @@ def test_run_manifold_transfer_retries_unproven_target(
 def test_run_manifold_transfer_trusted_target_skips_alignment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.paths import manifold_dir
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.paths import manifold_dir
 
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
     monkeypatch.setattr(
-        "saklas.io.manifolds.preflight_transfer_manifold",
+        "drowse.io.manifolds.preflight_transfer_manifold",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             FileExistsError("trusted transferred target exists")
         ),
     )
     monkeypatch.setattr(
-        "saklas.cli.runners._load_or_fit_transfer_alignment",
+        "drowse.cli.runners._load_or_fit_transfer_alignment",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("trusted target performed alignment work")
         ),
@@ -1670,8 +1670,8 @@ def test_run_manifold_transfer_trusted_target_skips_alignment(
 
 
 def test_run_manifold_transfer_missing_source_fit_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.paths import manifold_dir
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.paths import manifold_dir
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
@@ -1690,9 +1690,9 @@ def test_run_manifold_transfer_missing_source_fit_errors(monkeypatch: pytest.Mon
 
 def test_lifecycle_bare_name_not_found_exits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """A bare name with no installed match exits 1, no backend call."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "saklas.io.manifolds.clear_manifold_tensors",
+        "drowse.io.manifolds.clear_manifold_tensors",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -1702,7 +1702,7 @@ def test_lifecycle_bare_name_not_found_exits(monkeypatch: pytest.MonkeyPatch, tm
 
 def test_lifecycle_bare_name_resolves_local(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     """A bare name uniquely installed under ``local/`` resolves there."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_circumplex_lite(tmp_path)  # writes local/moodlite
 
     calls: list[tuple[str, str]] = []
@@ -1711,15 +1711,15 @@ def test_lifecycle_bare_name_resolves_local(monkeypatch: pytest.MonkeyPatch, tmp
         calls.append((ns, name))
         return 0
 
-    monkeypatch.setattr("saklas.io.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.io.manifolds.clear_manifold_tensors", fake_clear)
     cli.main(["pack", "clear", "moodlite"])
     assert calls == [("local", "moodlite")]
 
 
 def test_lifecycle_bare_name_ambiguous_exits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """A bare name installed in two namespaces raises an ambiguity error (exit 2)."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifolds import create_manifold_folder
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifolds import create_manifold_folder
     domain_spec = {"type": "box", "axes": [{"min": -1.0, "max": 1.0, "periodic": False}]}
     nodes = [
         {"label": "low", "coords": [-1.0], "statements": ["s."]},
@@ -1730,7 +1730,7 @@ def test_lifecycle_bare_name_ambiguous_exits(monkeypatch: pytest.MonkeyPatch, tm
         create_manifold_folder(ns, "dup", "d", domain_spec, nodes)
 
     monkeypatch.setattr(
-        "saklas.io.manifolds.clear_manifold_tensors",
+        "drowse.io.manifolds.clear_manifold_tensors",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -1740,14 +1740,14 @@ def test_lifecycle_bare_name_ambiguous_exits(monkeypatch: pytest.MonkeyPatch, tm
 
 def test_lifecycle_explicit_ns_pins_without_walk(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """An explicit ``ns/name`` pins verbatim — no existence pre-check, backend runs."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))  # nothing installed
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))  # nothing installed
     calls: list[tuple[str, str]] = []
 
     def fake_clear(ns: str, name: str, model_scope: Any = None, *, variant: str = "all") -> int:
         calls.append((ns, name))
         return 0
 
-    monkeypatch.setattr("saklas.io.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.io.manifolds.clear_manifold_tensors", fake_clear)
     cli.main(["pack", "clear", "alice/ghost"])
     assert calls == [("alice", "ghost")]
 
@@ -1757,13 +1757,13 @@ def test_lifecycle_explicit_ns_pins_without_walk(monkeypatch: pytest.MonkeyPatch
 # ---------------------------------------------------------------------------
 
 def _author_circumplex_lite(home: Path) -> Path:
-    """Write a minimal authored 1-D box manifold folder under SAKLAS_HOME.
+    """Write a minimal authored 1-D box manifold folder under DROWSE_HOME.
 
     Two nodes on an open axis (min_nodes(1) = 3 isn't enforced until fit,
     and ``ManifoldFolder.load`` enforces it for authored folders — so use
     enough nodes to pass load).  Just enough to drive ls / show.
     """
-    from saklas.io.manifolds import create_manifold_folder
+    from drowse.io.manifolds import create_manifold_folder
     domain_spec = {"type": "box", "axes": [{"min": -1.0, "max": 1.0, "periodic": False}]}
     nodes = [
         {"label": "low", "coords": [-1.0], "statements": ["a statement here."]},
@@ -1777,9 +1777,9 @@ def _author_circumplex_lite(home: Path) -> Path:
 
 
 def test_run_manifold_ls_verbose_shows_description(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_circumplex_lite(tmp_path)
-    from saklas.io import selectors
+    from drowse.io import selectors
     selectors.invalidate()
     cli.main(["pack", "ls", "--namespace", "local", "-v"])
     out = capsys.readouterr().out
@@ -1788,9 +1788,9 @@ def test_run_manifold_ls_verbose_shows_description(monkeypatch: pytest.MonkeyPat
 
 
 def test_run_manifold_ls_non_verbose_hides_description(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_circumplex_lite(tmp_path)
-    from saklas.io import selectors
+    from drowse.io import selectors
     selectors.invalidate()
     cli.main(["pack", "ls", "--namespace", "local"])
     out = capsys.readouterr().out
@@ -1799,9 +1799,9 @@ def test_run_manifold_ls_non_verbose_hides_description(monkeypatch: pytest.Monke
 
 
 def test_run_manifold_show_json_uses_summary_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_circumplex_lite(tmp_path)
-    from saklas.io import selectors
+    from drowse.io import selectors
     selectors.invalidate()
     cli.main(["pack", "show", "local/moodlite", "-j"])
     out = capsys.readouterr().out
@@ -1824,11 +1824,11 @@ def test_run_manifold_show_json_matches_summary_helper(monkeypatch: pytest.Monke
     ``show`` is an inspection surface, so it opts into the per-tensor
     ``fitted`` block; the light listing surfaces do not.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = _author_circumplex_lite(tmp_path)
-    from saklas.io import selectors
+    from drowse.io import selectors
     selectors.invalidate()
-    from saklas.io.manifolds import manifold_summary
+    from drowse.io.manifolds import manifold_summary
     expected = manifold_summary(folder, include_fits=True)
     assert "fitted" in expected
     cli.main(["pack", "show", "local/moodlite", "-j"])

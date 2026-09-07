@@ -10,7 +10,7 @@ Dispatches on the probe kind:
     future-cliff diagnostics that locate the model's sense of "now".
 
 Figures land in ``figures/<probe>/``. Requires a fitted manifold — run ``author.py``
-then ``saklas manifold fit <probe> -m <model>`` first.
+then ``drowse manifold fit <probe> -m <model>`` first.
 """
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from data import PROBES  # noqa: E402  # pyright: ignore[reportAttributeAccessIssue]  # sibling script module inserted above
 
-from saklas.io.manifold_folder import load_manifold_sidecar_data  # noqa: E402
-from saklas.io.manifold_tensors import load_manifold  # noqa: E402
-from saklas.io.paths import manifold_dir, tensor_filename  # noqa: E402
+from drowse.io.manifold_folder import load_manifold_sidecar_data  # noqa: E402
+from drowse.io.manifold_tensors import load_manifold  # noqa: E402
+from drowse.io.paths import manifold_dir, tensor_filename  # noqa: E402
 
 FIGROOT = Path(__file__).parent / "figures"
 
@@ -38,7 +38,7 @@ FIGROOT = Path(__file__).parent / "figures"
 def load_fit(probe: str, model_id: str) -> tuple[np.ndarray, list[str], dict[str, Any]]:
     tensor = manifold_dir("local", probe) / tensor_filename(model_id)
     if not tensor.exists():
-        sys.exit(f"no fit at {tensor}\n  run: saklas manifold fit {probe} -m {model_id}")
+        sys.exit(f"no fit at {tensor}\n  run: drowse manifold fit {probe} -m {model_id}")
     manifold = load_manifold(tensor)
     sidecar = load_manifold_sidecar_data(tensor.with_suffix(".json"))
     coords = manifold.node_coords.detach().cpu().numpy().astype(

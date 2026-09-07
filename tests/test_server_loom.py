@@ -3,7 +3,7 @@
 The session under test is a thin wrapper around a real :class:`LoomTree`
 plus a generation stub — no model, no GPU.  This exercises:
 
-- REST routes under ``/saklas/v1/sessions/{id}/tree`` (CRUD, transcript)
+- REST routes under ``/drowse/v1/sessions/{id}/tree`` (CRUD, transcript)
 - Concurrency conflict 409 mapping when ``_active_gen_reservation`` is set
 - WS ``parent_node_id`` + ``n>1`` fan-out (siblings created, started/done
   tagged with ``node_id`` and complete ``tree_mutated`` events
@@ -24,9 +24,9 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from saklas.core.events import EventBus
-from saklas.core.loom import LoomTree, Recipe
-from saklas.core.results import GenerationResult, RunSet
+from drowse.core.events import EventBus
+from drowse.core.loom import LoomTree, Recipe
+from drowse.core.results import GenerationResult, RunSet
 
 # ---------------------------------------------------------------------------
 # Test session factory
@@ -34,7 +34,7 @@ from saklas.core.results import GenerationResult, RunSet
 
 
 class _StubSession:
-    """Minimal SaklasSession-shaped object backing the routes.
+    """Minimal DrowseSession-shaped object backing the routes.
 
     Wraps a real :class:`LoomTree` so the routes operate on actual tree
     semantics (rev bumps, event emission, conflict-check on mutators).
@@ -120,8 +120,8 @@ class _StubSession:
         self.tree.reset()
 
     def restore_tree(self, data: dict[str, Any]):
-        from saklas.core.session import SaklasSession
-        return SaklasSession.restore_tree(self, data)  # type: ignore[arg-type]
+        from drowse.core.session import DrowseSession
+        return DrowseSession.restore_tree(self, data)  # type: ignore[arg-type]
 
     def rewind(self) -> None:
         self.tree.rewind()
@@ -132,9 +132,9 @@ class _StubSession:
     def stop(self) -> None:
         self._stop_event.set()
 
-    # ----- loom conflict check (mirrors SaklasSession._loom_conflict_check)
+    # ----- loom conflict check (mirrors DrowseSession._loom_conflict_check)
     def _loom_conflict_check(self, node_id: str, op: str) -> None:
-        from saklas.core.loom import MutationDuringGenerationError
+        from drowse.core.loom import MutationDuringGenerationError
         reservation = self._active_gen_reservation
         if reservation is None:
             return
@@ -165,14 +165,14 @@ class _StubSession:
                  append_same_role: bool = True):
         """Stub generate.
 
-        Routes through the tree the same way SaklasSession does for
+        Routes through the tree the same way DrowseSession does for
         phase-2's WS plumbing to see the right LoomMutated events fire.
         Each sibling emits one synthetic token, finalizes, and produces
         a :class:`GenerationResult`.
         """
         if n < 1:
             raise ValueError(f"n must be >= 1, got {n}")
-        from saklas.core.loom import derive_seed_schedule
+        from drowse.core.loom import derive_seed_schedule
         base_seed = sampling.seed if sampling is not None else None
         schedule = derive_seed_schedule(base_seed, n) if n > 1 else [base_seed]
 
@@ -223,7 +223,7 @@ class _StubSession:
                 if self._block_until_stop:
                     assert self._stop_event.wait(timeout=5.0)
                 full_text = prefix + token_text
-                from saklas.core.measurements import build_measurements
+                from drowse.core.measurements import build_measurements
 
                 result = GenerationResult(
                     text=full_text, tokens=[1000 + sibling_idx],
@@ -263,13 +263,13 @@ class _StubSession:
                           sampling: Any = None, on_token: Any = None):
         """Stub answer-prefill.
 
-        Mirrors ``SaklasSession.prefill_assistant``'s tree shape: anchor
+        Mirrors ``DrowseSession.prefill_assistant``'s tree shape: anchor
         at the user node's parent so ``add_user_turn`` dedup re-uses the
         existing user turn, then land an assistant child whose text opens
         with ``text`` (the seeded prefix) followed by a synthetic
         continuation token.
         """
-        from saklas.core.loom import InvalidNodeOperationError
+        from drowse.core.loom import InvalidNodeOperationError
         node = self.tree.get(node_id)
         if node.role != "user":
             raise InvalidNodeOperationError(
@@ -309,13 +309,13 @@ class _StubSession:
     ):
         """Stub commit-user.
 
-        Mirrors ``SaklasSession.append_user_turn``: refuses anchoring
+        Mirrors ``DrowseSession.append_user_turn``: refuses anchoring
         under a user-role parent (the same D15 rule the normal-send
         path enforces) unless ``allow_any_parent`` is set (flat /
         base-model commit), otherwise wraps ``LoomTree.add_user_turn``
         so dedup + active-node advancement match the real session.
         """
-        from saklas.core.loom import InvalidNodeOperationError
+        from drowse.core.loom import InvalidNodeOperationError
         if text == "":
             raise InvalidNodeOperationError(
                 "append_user_turn: text must be non-empty"
@@ -355,12 +355,12 @@ class _StubSession:
     def append_assistant_turn(self, user_node_id: Any, text: Any, *, role_label: Any = None, thinking: Any = None):
         """Stub commit-assistant.
 
-        Mirrors ``SaklasSession.append_assistant_turn``: refuses non-user
+        Mirrors ``DrowseSession.append_assistant_turn``: refuses non-user
         parents, lands a finalized assistant sibling under the user node
         with ``text`` as the whole turn and a synthetic ``raw_token_ids``
         derived from the (mocked) tokenizer.
         """
-        from saklas.core.loom import InvalidNodeOperationError
+        from drowse.core.loom import InvalidNodeOperationError
         if text == "":
             raise InvalidNodeOperationError(
                 "append_assistant_turn: text must be non-empty"
@@ -406,8 +406,8 @@ class _StubSession:
         self, parent_node_id: Any, text: Any, *, role: Any,
         raw: bool = False, role_label: Any = None, thinking: Any = None,
     ):
-        from saklas.core.session import SaklasSession
-        return SaklasSession.append_turn(
+        from drowse.core.session import DrowseSession
+        return DrowseSession.append_turn(
             self,  # pyright: ignore[reportArgumentType]
             parent_node_id, text, role=role, raw=raw,
             role_label=role_label, thinking=thinking,
@@ -417,8 +417,8 @@ class _StubSession:
     # ``self.tree``, so borrow them wholesale (same trick the loom
     # tests use for the commit methods).
     def set_cast_member(self, label: Any, **kwargs: Any):
-        from saklas.core.session import SaklasSession
-        return SaklasSession.set_cast_member(self, label, **kwargs)  # type: ignore[arg-type]
+        from drowse.core.session import DrowseSession
+        return DrowseSession.set_cast_member(self, label, **kwargs)  # type: ignore[arg-type]
 
     def remove_cast_member(self, label: Any) -> None:
         self.tree.remove_cast_member(label)
@@ -427,10 +427,10 @@ class _StubSession:
 @pytest.fixture
 def session_and_client():
     from typing import cast
-    from saklas.core.session import SaklasSession
-    from saklas.server import create_app
+    from drowse.core.session import DrowseSession
+    from drowse.server import create_app
     session = _StubSession()
-    app = create_app(cast(SaklasSession, session), default_steering=None)
+    app = create_app(cast(DrowseSession, session), default_steering=None)
     return session, TestClient(app)
 
 
@@ -442,10 +442,10 @@ def session_and_client():
 class TestTreeGet:
     def test_root_only(self, session_and_client: Any):
         session, client = session_and_client
-        resp = client.get("/saklas/v1/sessions/default/tree")
+        resp = client.get("/drowse/v1/sessions/default/tree")
         assert resp.status_code == 200
         data = resp.json()
-        from saklas.core.loom import TREE_FORMAT_VERSION
+        from drowse.core.loom import TREE_FORMAT_VERSION
 
         assert data["tree_format"] == TREE_FORMAT_VERSION
         assert data["root_id"] == session.tree.root_id
@@ -462,12 +462,12 @@ class TestTreeGet:
         user_id = session.tree.add_user_turn("saved branch")
         assistant_id = session.tree.begin_assistant(user_id)
         session.tree.finalize_assistant(assistant_id, text="saved reply")
-        saved = client.get("/saklas/v1/sessions/default/tree").json()
+        saved = client.get("/drowse/v1/sessions/default/tree").json()
         saved_rev = saved["rev"]
 
-        assert client.post("/saklas/v1/sessions/default/tree/reset").status_code == 204
+        assert client.post("/drowse/v1/sessions/default/tree/reset").status_code == 204
         restored = client.put(
-            "/saklas/v1/sessions/default/tree",
+            "/drowse/v1/sessions/default/tree",
             json={"tree": saved},
         )
         assert restored.status_code == 200
@@ -475,17 +475,17 @@ class TestTreeGet:
         assert body["nodes"] == 3
         assert body["active_node_id"] == assistant_id
         assert body["rev"] > saved_rev
-        tree = client.get("/saklas/v1/sessions/default/tree").json()
+        tree = client.get("/drowse/v1/sessions/default/tree").json()
         assert [node["text"] for node in tree["nodes"]] == [
             "", "saved branch", "saved reply",
         ]
 
     def test_full_tree_restore_rejects_model_mismatch(self, session_and_client: Any):
         _, client = session_and_client
-        saved = client.get("/saklas/v1/sessions/default/tree").json()
+        saved = client.get("/drowse/v1/sessions/default/tree").json()
         saved["model_id"] = "other/model"
         restored = client.put(
-            "/saklas/v1/sessions/default/tree",
+            "/drowse/v1/sessions/default/tree",
             json={"tree": saved},
         )
         assert restored.status_code == 400
@@ -493,12 +493,12 @@ class TestTreeGet:
 
     def test_full_tree_restore_emits_snapshot_barrier(self, session_and_client: Any):
         session, client = session_and_client
-        saved = client.get("/saklas/v1/sessions/default/tree").json()
+        saved = client.get("/drowse/v1/sessions/default/tree").json()
         saved["name"] = "restored elsewhere"
 
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             response = client.put(
-                "/saklas/v1/sessions/default/tree",
+                "/drowse/v1/sessions/default/tree",
                 json={"tree": saved},
             )
             assert response.status_code == 200
@@ -519,7 +519,7 @@ class TestTreeGet:
         # Tree GET ships ``include_tokens=True`` (webui rehydration
         # requirement); compare against that same shape.
         expected = session.tree.to_dict(include_tokens=True)
-        resp = client.get("/saklas/v1/sessions/default/tree")
+        resp = client.get("/drowse/v1/sessions/default/tree")
         assert resp.status_code == 200
         data = resp.json()
         # Same node count, ids and rev as the underlying to_dict
@@ -576,7 +576,7 @@ class TestTreeGet:
             a1, text="hello", aggregate_readings={"calm": 0.40},
         )
 
-        resp = client.get("/saklas/v1/sessions/default/tree")
+        resp = client.get("/drowse/v1/sessions/default/tree")
         assert resp.status_code == 200
         data = resp.json()
         assistant_node = next(n for n in data["nodes"] if n["id"] == a1)
@@ -603,7 +603,7 @@ class TestTreeGet:
         a1 = session.tree.begin_assistant(u1)
         session.tree.finalize_assistant(a1, text="hi back")
 
-        resp = client.get("/saklas/v1/sessions/default/tree/active")
+        resp = client.get("/drowse/v1/sessions/default/tree/active")
         assert resp.status_code == 200
         data = resp.json()
         assert data["active_node_id"] == a1
@@ -627,7 +627,7 @@ class TestTreeNavigate:
         # u2 should now be active; navigate back to u1
         assert session.tree.active_node_id == u2
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/navigate",
+            "/drowse/v1/sessions/default/tree/navigate",
             json={"node_id": u1},
         )
         assert resp.status_code == 200
@@ -638,7 +638,7 @@ class TestTreeNavigate:
     def test_navigate_unknown_node_404(self, session_and_client: Any):
         _, client = session_and_client
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/navigate",
+            "/drowse/v1/sessions/default/tree/navigate",
             json={"node_id": "DOES_NOT_EXIST"},
         )
         assert resp.status_code == 404
@@ -649,7 +649,7 @@ class TestTreeEdit:
         session, client = session_and_client
         u1 = session.tree.add_user_turn("typo")
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/edit",
+            "/drowse/v1/sessions/default/tree/edit",
             json={"node_id": u1, "text": "fixed"},
         )
         assert resp.status_code == 200
@@ -666,7 +666,7 @@ class TestTreeEdit:
         # Simulate an in-flight gen reserving u1's subtree.
         session._active_gen_reservation = u1
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/edit",
+            "/drowse/v1/sessions/default/tree/edit",
             json={"node_id": u1, "text": "no edit during gen"},
         )
         assert resp.status_code == 409
@@ -676,7 +676,7 @@ class TestTreeEdit:
     def test_edit_root_400(self, session_and_client: Any):
         session, client = session_and_client
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/edit",
+            "/drowse/v1/sessions/default/tree/edit",
             json={"node_id": session.tree.root_id, "text": "nope"},
         )
         assert resp.status_code == 400
@@ -684,7 +684,7 @@ class TestTreeEdit:
     def test_edit_unknown_node_404(self, session_and_client: Any):
         _, client = session_and_client
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/edit",
+            "/drowse/v1/sessions/default/tree/edit",
             json={"node_id": "GHOST", "text": "x"},
         )
         assert resp.status_code == 404
@@ -695,7 +695,7 @@ class TestTreeBranch:
         session, client = session_and_client
         u1 = session.tree.add_user_turn("hello")
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/branch",
+            "/drowse/v1/sessions/default/tree/branch",
             json={"node_id": u1, "text": "hello world"},
         )
         assert resp.status_code == 200
@@ -714,7 +714,7 @@ class TestTreeBranch:
         u1 = session.tree.add_user_turn("hi")
         session._active_gen_reservation = u1
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/branch",
+            "/drowse/v1/sessions/default/tree/branch",
             json={"node_id": u1, "text": "alternative"},
         )
         assert resp.status_code == 200
@@ -722,7 +722,7 @@ class TestTreeBranch:
     def test_branch_root_400(self, session_and_client: Any):
         session, client = session_and_client
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/branch",
+            "/drowse/v1/sessions/default/tree/branch",
             json={"node_id": session.tree.root_id, "text": "x"},
         )
         assert resp.status_code == 400
@@ -734,7 +734,7 @@ class TestTreeDelete:
         u1 = session.tree.add_user_turn("a")
         u2 = session.tree.add_user_turn("b", parent_id=session.tree.root_id)
         # Active is u2; deleting u1's subtree (disjoint) is fine.
-        resp = client.delete(f"/saklas/v1/sessions/default/tree/{u1}")
+        resp = client.delete(f"/drowse/v1/sessions/default/tree/{u1}")
         assert resp.status_code == 200
         assert resp.json()["removed"] == 1
         assert not session.tree.has(u1)
@@ -748,7 +748,7 @@ class TestTreeDelete:
         session, client = session_and_client
         u1 = session.tree.add_user_turn("a")
         # active is u1 itself — deleting it removes the active node.
-        resp = client.delete(f"/saklas/v1/sessions/default/tree/{u1}")
+        resp = client.delete(f"/drowse/v1/sessions/default/tree/{u1}")
         assert resp.status_code == 200
         assert resp.json()["removed"] == 1
         assert not session.tree.has(u1)
@@ -760,7 +760,7 @@ class TestTreeDelete:
         u2 = session.tree.add_user_turn("b", parent_id=session.tree.root_id)
         session.tree.navigate(u2)  # so deleting u1 is otherwise allowed
         session._active_gen_reservation = u1
-        resp = client.delete(f"/saklas/v1/sessions/default/tree/{u1}")
+        resp = client.delete(f"/drowse/v1/sessions/default/tree/{u1}")
         assert resp.status_code == 409
 
 
@@ -769,13 +769,13 @@ class TestTreeStarNote:
         session, client = session_and_client
         u1 = session.tree.add_user_turn("hi")
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/star",
+            "/drowse/v1/sessions/default/tree/star",
             json={"node_id": u1, "on": True},
         )
         assert resp.status_code == 200
         assert resp.json()["starred"] is True
         # Confirm via the full-tree GET
-        tree_resp = client.get("/saklas/v1/sessions/default/tree")
+        tree_resp = client.get("/drowse/v1/sessions/default/tree")
         match = [n for n in tree_resp.json()["nodes"] if n["id"] == u1]
         assert match and match[0]["starred"] is True
 
@@ -783,13 +783,13 @@ class TestTreeStarNote:
         session, client = session_and_client
         u1 = session.tree.add_user_turn("hi")
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/note",
+            "/drowse/v1/sessions/default/tree/note",
             json={"node_id": u1, "text": "this is the seed prompt"},
         )
         assert resp.status_code == 200
         assert resp.json()["notes"] == "this is the seed prompt"
         # Confirm via single-node fetch through full tree GET
-        tree_resp = client.get("/saklas/v1/sessions/default/tree")
+        tree_resp = client.get("/drowse/v1/sessions/default/tree")
         match = [n for n in tree_resp.json()["nodes"] if n["id"] == u1]
         assert match and match[0]["notes"] == "this is the seed prompt"
 
@@ -800,7 +800,7 @@ class TestTreeReset:
         old_root = session.tree.root_id
         session.tree.add_user_turn("a")
         session.tree.add_user_turn("b", parent_id=old_root)
-        resp = client.post("/saklas/v1/sessions/default/tree/reset")
+        resp = client.post("/drowse/v1/sessions/default/tree/reset")
         assert resp.status_code == 204
         # New root, no children
         assert session.tree.root_id != old_root
@@ -811,7 +811,7 @@ class TestTreeReset:
         session, client = session_and_client
         u1 = session.tree.add_user_turn("x")
         session._active_gen_reservation = u1
-        resp = client.post("/saklas/v1/sessions/default/tree/reset")
+        resp = client.post("/drowse/v1/sessions/default/tree/reset")
         assert resp.status_code == 409
 
 
@@ -823,7 +823,7 @@ class TestTranscript:
         session.tree.finalize_assistant(a1, text="hi there")
 
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/transcript",
+            "/drowse/v1/sessions/default/tree/transcript",
             json={"node_id": a1},
         )
         assert resp.status_code == 200
@@ -833,7 +833,7 @@ class TestTranscript:
         # to_yaml uses pyyaml's safe_dump; safe-scalar strings like
         # ``test/model`` and ``hello`` come back unquoted (valid YAML).  We
         # check substrings rather than exact quoting form.
-        assert "saklas_transcript: 2" in text
+        assert "drowse_transcript: 2" in text
         assert "model_id:" in text and "test/model" in text
         # Probes block exists (empty in this stub)
         assert "probes:" in text
@@ -845,7 +845,7 @@ class TestTranscript:
         # Round-trip via the YAML loader to confirm structural shape.
         import yaml
         parsed = yaml.safe_load(text)
-        assert parsed["saklas_transcript"] == 2
+        assert parsed["drowse_transcript"] == 2
         assert parsed["model_id"] == "test/model"
         assert len(parsed["turns"]) == 2
         assert parsed["turns"][0]["role"] == "user"
@@ -854,7 +854,7 @@ class TestTranscript:
     def test_transcript_unknown_node_404(self, session_and_client: Any):
         _, client = session_and_client
         resp = client.post(
-            "/saklas/v1/sessions/default/tree/transcript",
+            "/drowse/v1/sessions/default/tree/transcript",
             json={"node_id": "MISSING"},
         )
         assert resp.status_code == 404
@@ -866,6 +866,34 @@ class TestTranscript:
 
 
 class TestWebSocketLoom:
+    @pytest.mark.parametrize("preserve_source", [False, True])
+    def test_single_weave_alternative_preserves_source(self, session_and_client: Any, preserve_source: bool):
+        session, client = session_and_client
+        session.generate("Starting text")
+        source_id = session.tree.active_node_id
+        original = session.tree.get(source_id).to_dict(include_tokens=True)
+        request = {
+            "type": "generate", "input": None, "stateless": False,
+            "parent_node_id": source_id, "n": 1,
+        }
+        if preserve_source:
+            request["append_same_role"] = False
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
+            ws.send_json(request)
+            while True:
+                message = ws.receive_json()
+                if message["type"] == "error":
+                    pytest.fail(message["message"])
+                if message["type"] == "done":
+                    break
+        if preserve_source:
+            assert message["node_id"] != source_id
+            assert session.tree.get(message["node_id"]).parent_id == source_id
+            assert session.tree.get(source_id).to_dict(include_tokens=True) == original
+        else:
+            assert message["node_id"] == source_id
+            assert session.tree.get(source_id).text == original["text"] + "tok0"
+
     def test_user_stop_is_distinct_from_natural_completion(self, session_and_client: Any):
         """The native stream labels an explicit user cancellation distinctly.
 
@@ -876,7 +904,7 @@ class TestWebSocketLoom:
         session, client = session_and_client
         session._block_until_stop = True
 
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({"type": "generate", "input": "keep going"})
             # The connection's perpetual reader queues this while the
             # dispatcher starts the worker, matching a fast stop-button click.
@@ -902,7 +930,7 @@ class TestWebSocketLoom:
         session.tree.navigate(u1)
         rev_before = session.tree.rev
 
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "generate",
                 "input": "explore",
@@ -964,7 +992,7 @@ class TestWebSocketLoom:
         """
         session, client = session_and_client
         root_id = session.tree.root_id
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "generate",
                 "input": "twice",
@@ -1008,9 +1036,9 @@ class TestWebSocketLoom:
 
         The flat pre-5.x ``result.probe_readings`` block is gone (the same
         clean break the ``token`` frame already made); it survives only on
-        the OpenAI / Ollama ``x-saklas-probe-readings`` vendor extension."""
-        from saklas.core.instruments.types import ScalarReading
-        from saklas.core.results import ProbeReading
+        the OpenAI / Ollama ``x-drowse-probe-readings`` vendor extension."""
+        from drowse.core.instruments.types import ScalarReading
+        from drowse.core.results import ProbeReading
 
         session, client = session_and_client
         reading = ProbeReading(
@@ -1026,7 +1054,7 @@ class TestWebSocketLoom:
             ),
         }
 
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({"type": "generate", "input": "measure me"})
             while (msg := ws.receive_json())["type"] != "done":
                 assert msg["type"] != "error", msg
@@ -1043,7 +1071,7 @@ class TestWebSocketLoom:
         self, session_and_client: Any,
     ):
         _session, client = session_and_client
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({"type": "generate", "input": "unmeasured"})
             while (msg := ws.receive_json())["type"] != "done":
                 assert msg["type"] != "error", msg
@@ -1052,8 +1080,62 @@ class TestWebSocketLoom:
 
 
 # ---------------------------------------------------------------------------
-# WS: answer-prefill
+# WS: token forks and answer-prefill
 # ---------------------------------------------------------------------------
+
+
+class TestTokenFork:
+    @pytest.mark.parametrize("seed", [None, 123])
+    def test_authored_replacement_reaches_session_dispatch(
+        self, session_and_client: Any, seed: int | None,
+    ) -> None:
+        session, client = session_and_client
+        received: dict[str, Any] = {}
+
+        def fork_from_token(
+            node_id: str,
+            raw_index: int,
+            alt_token_id: int | None = None,
+            *,
+            replacement_text: str | None = None,
+            seed: int | None = None,
+            on_token: Any = None,
+        ) -> GenerationResult:
+            received.update(
+                node_id=node_id,
+                raw_index=raw_index,
+                alt_token_id=alt_token_id,
+                replacement_text=replacement_text,
+                seed=seed,
+            )
+            return GenerationResult(
+                text="replacement",
+                tokens=[3000],
+                token_count=1,
+                tok_per_sec=10.0,
+                elapsed=0.1,
+                finish_reason="stop",
+            )
+
+        session.fork_from_token = fork_from_token
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
+            ws.send_json({
+                "type": "generate",
+                "fork_node_id": "source-node",
+                "fork_raw_index": 2,
+                "fork_replacement_text": "any words",
+                **({"fork_seed": seed} if seed is not None else {}),
+            })
+            while (message := ws.receive_json())["type"] != "done":
+                assert message["type"] != "error", message
+
+        assert received == {
+            "node_id": "source-node",
+            "raw_index": 2,
+            "alt_token_id": None,
+            "replacement_text": "any words",
+            "seed": seed,
+        }
 
 
 class TestPrefill:
@@ -1061,7 +1143,7 @@ class TestPrefill:
         """prefill_node_id without prefill_text is rejected before dispatch."""
         session, client = session_and_client
         uid = session.tree.add_user_turn("seed me")
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({"type": "generate", "prefill_node_id": uid})
             msg = ws.receive_json()
         assert msg["type"] == "error"
@@ -1072,7 +1154,7 @@ class TestPrefill:
         """An empty prefill_text is treated as 'no text' — same 400."""
         session, client = session_and_client
         uid = session.tree.add_user_turn("seed me")
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "generate",
                 "prefill_node_id": uid,
@@ -1086,7 +1168,7 @@ class TestPrefill:
         """A message can't be both a fork and a prefill."""
         session, client = session_and_client
         uid = session.tree.add_user_turn("seed me")
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "generate",
                 "prefill_node_id": uid,
@@ -1105,7 +1187,7 @@ class TestPrefill:
         uid = session.tree.add_user_turn("what's the weather?")
         rev_before = session.tree.rev
 
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "generate",
                 "prefill_node_id": uid,
@@ -1155,7 +1237,7 @@ class TestCommit:
             ("commit_thinking", "hmm"),
         ):
             with client.websocket_connect(
-                "/saklas/v1/sessions/default/stream",
+                "/drowse/v1/sessions/default/stream",
             ) as ws:
                 ws.send_json({"type": "generate", field: value})
                 msg = ws.receive_json()
@@ -1165,7 +1247,7 @@ class TestCommit:
     def test_missing_text_400(self, session_and_client: Any):
         """``authored_role`` without text is rejected before dispatch."""
         _session, client = session_and_client
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({"type": "submit", "authored_role": "user"})
             msg = ws.receive_json()
         assert msg["type"] == "error"
@@ -1174,7 +1256,7 @@ class TestCommit:
 
     def test_invalid_role_400(self, session_and_client: Any):
         _session, client = session_and_client
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit",
                 "authored_role": "system",
@@ -1195,7 +1277,7 @@ class TestCommit:
 
         started = None
         done = None
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit",
                 "authored_role": "user",
@@ -1231,7 +1313,7 @@ class TestCommit:
 class TestSubmit:
     def test_text_requires_authored_role(self, session_and_client: Any):
         _session, client = session_and_client
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit",
                 "text": "hello",
@@ -1248,7 +1330,7 @@ class TestSubmit:
         # Role swapping is exposed only for scene-capable renderers, where an
         # assistant-authored first turn is a legal structural shape.
         session.scene_grammar = MagicMock()
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit",
                 "text": "opening as the assistant",
@@ -1268,7 +1350,7 @@ class TestSubmit:
         self, session_and_client: Any,
     ):
         session, client = session_and_client
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit",
                 "text": "hello",
@@ -1289,7 +1371,7 @@ class TestSubmit:
     ):
         session, client = session_and_client
         user_id = session.tree.add_user_turn("question")
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit",
                 "text": "authored answer",
@@ -1310,7 +1392,7 @@ class TestSubmit:
         self, session_and_client: Any,
     ):
         session, client = session_and_client
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({"type": "submit", "generated_role": "assistant"})
             while True:
                 msg = ws.receive_json()
@@ -1324,7 +1406,7 @@ class TestSubmit:
         self, session_and_client: Any,
     ):
         session, client = session_and_client
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit", "text": "one",
                 "authored_role": "user",
@@ -1347,7 +1429,7 @@ class TestSubmit:
     ):
         session, client = session_and_client
         session.scene_grammar = MagicMock()
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit", "text": "Once",
                 "authored_role": "assistant",
@@ -1369,7 +1451,7 @@ class TestCommitContinued:
         """An append-only submit shares same-role append semantics."""
         session, client = session_and_client
         uid = session.tree.add_user_turn("first")  # active = uid
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit",
                 "authored_role": "user",
@@ -1391,7 +1473,7 @@ class TestCommitContinued:
         session, client = session_and_client
         uid = session.tree.add_user_turn("first")  # active = uid, role user
         done = None
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit",
                 "authored_role": "user",
@@ -1418,7 +1500,7 @@ class TestCommitContinued:
         rev_before = session.tree.rev
 
         done = None
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "submit",
                 "authored_role": "assistant",
@@ -1454,7 +1536,7 @@ class TestWSErrorFrameShape:
     _KEYS = {"type", "message", "code", "status", "node_id", "sibling_index"}
 
     def _first_error(self, client: Any, frame: dict[str, Any]) -> dict[str, Any]:
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json(frame)
             while True:
                 msg = ws.receive_json()
@@ -1489,8 +1571,8 @@ class TestWSErrorFrameShape:
         assert msg["status"] == 400
         assert msg["code"] == "ValidationError"
         assert msg["message"] == (
-            "fork requires fork_node_id, fork_raw_index, and "
-            "fork_alt_token_id together"
+            "fork requires fork_node_id, fork_raw_index, and exactly one "
+            "of fork_alt_token_id or fork_replacement_text"
         )
         assert msg["node_id"] is None
         assert msg["sibling_index"] == 0
@@ -1514,7 +1596,7 @@ class TestWSErrorFrameShape:
     def test_steering_expression_rejection(self, session_and_client: Any) -> None:
         """A malformed expression is a frame, not a socket close."""
         _session, client = session_and_client
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "generate", "input": "hi", "steering": "0.5 *** bad",
             })
@@ -1533,7 +1615,7 @@ class TestCast:
         session, client = session_and_client
         # PUT creates.
         resp = client.put(
-            "/saklas/v1/sessions/default/tree/cast/deer",
+            "/drowse/v1/sessions/default/tree/cast/deer",
             json={"steering": "0.5 formal.casual", "notes": "skittish"},
         )
         assert resp.status_code == 200
@@ -1541,32 +1623,32 @@ class TestCast:
         assert body["label"] == "deer"
         assert body["member"]["recipe"]["steering"] == "0.5 formal.casual"
         # GET reads the roster.
-        resp = client.get("/saklas/v1/sessions/default/tree/cast")
+        resp = client.get("/drowse/v1/sessions/default/tree/cast")
         assert resp.status_code == 200
         assert "deer" in resp.json()["cast"]
         # The full-tree GET carries the roster too.
-        resp = client.get("/saklas/v1/sessions/default/tree")
+        resp = client.get("/drowse/v1/sessions/default/tree")
         assert resp.json()["cast"]["deer"]["notes"] == "skittish"
         # DELETE removes; absent delete is still 204.
         assert client.delete(
-            "/saklas/v1/sessions/default/tree/cast/deer"
+            "/drowse/v1/sessions/default/tree/cast/deer"
         ).status_code == 204
         assert "deer" not in session.tree.cast
         assert client.delete(
-            "/saklas/v1/sessions/default/tree/cast/deer"
+            "/drowse/v1/sessions/default/tree/cast/deer"
         ).status_code == 204
 
     def test_cast_put_validates(self, session_and_client: Any) -> None:
         _session, client = session_and_client
-        # Bad label (uppercase/space) -> 400 via SaklasError mapping.
+        # Bad label (uppercase/space) -> 400 via DrowseError mapping.
         resp = client.put(
-            "/saklas/v1/sessions/default/tree/cast/Not%20A%20Slug",
+            "/drowse/v1/sessions/default/tree/cast/Not%20A%20Slug",
             json={},
         )
         assert resp.status_code == 400
         # Bad steering expression -> 400 at authoring time.
         resp = client.put(
-            "/saklas/v1/sessions/default/tree/cast/deer",
+            "/drowse/v1/sessions/default/tree/cast/deer",
             json={"steering": "0.5 !!nope!!"},
         )
         assert resp.status_code == 400
@@ -1577,9 +1659,9 @@ class TestCast:
         session, client = session_and_client
         u1 = session.tree.add_user_turn("hello")
         del u1
-        with client.websocket_connect("/saklas/v1/sessions/default/stream") as ws:
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             resp = client.put(
-                "/saklas/v1/sessions/default/tree/cast/deer",
+                "/drowse/v1/sessions/default/tree/cast/deer",
                 json={"steering": "0.5 formal.casual"},
             )
             assert resp.status_code == 200

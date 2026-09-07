@@ -1,4 +1,176 @@
 /* Minimal global resets.  Per-component styles override anything here. */
+@import "./transitions.css";
+@import "./cursors.css";
+
+@view-transition { navigation: auto; }
+
+@media (prefers-reduced-motion: no-preference) {
+  html:not([data-theme-transition])::view-transition-old(root) {
+    animation: page-depart 180ms var(--ease-exit) both;
+  }
+  html:not([data-theme-transition])::view-transition-new(root) {
+    animation: page-arrive 360ms var(--ease-enter) both;
+  }
+}
+
+@keyframes page-depart {
+  to { opacity: 0; filter: blur(4px); }
+}
+
+@keyframes page-arrive {
+  from { opacity: 0; filter: blur(4px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+html[data-theme-transition="snapshot"]::view-transition {
+  pointer-events: none;
+}
+
+html[data-theme-transition="snapshot"]::view-transition-group(root) {
+  animation: none;
+}
+
+html[data-theme-transition="snapshot"]::view-transition-group(*),
+html[data-theme-transition="snapshot"]::view-transition-old(*),
+html[data-theme-transition="snapshot"]::view-transition-new(*) {
+  animation-duration: var(--selection-dur);
+  animation-timing-function: var(--selection-ease);
+}
+
+html[data-theme-transition="snapshot"]::view-transition-old(root) {
+  animation: theme-fade-out var(--dur-theme) var(--selection-ease) both;
+  mix-blend-mode: normal;
+  z-index: 2;
+}
+
+html[data-theme-transition="snapshot"]::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+  z-index: 1;
+}
+
+html[data-theme-transition="snapshot"],
+html[data-theme-transition="snapshot"] * {
+  transition: none !important;
+}
+
+@keyframes theme-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html[data-theme-transition="fallback"],
+  html[data-theme-transition="fallback"] * {
+    transition-property: color, background-color, border-color, fill, stroke, transform !important;
+    transition-duration: var(--dur-theme) !important;
+    transition-timing-function: var(--selection-ease) !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme-transition="snapshot"]::view-transition-old(root) {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+.generation-active {
+  position: relative;
+}
+
+.generation-active.generation-active::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 0%, color-mix(in oklch, var(--accent) 9%, transparent), transparent 70%);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 22%, transparent),
+    inset 0 0 24px color-mix(in oklch, var(--accent) 8%, transparent),
+    0 0 18px color-mix(in oklch, var(--accent) 10%, transparent);
+  opacity: 0.7;
+}
+
+.generation-label {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .generation-active.generation-active::before {
+    animation: generation-breathe 3.2s ease-in-out infinite;
+  }
+}
+
+@keyframes generation-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}
+
+@media (forced-colors: active) {
+  .generation-active.generation-active::before {
+    background: none;
+    box-shadow: none;
+    border: 1px dashed Highlight;
+    opacity: 1;
+    animation: none;
+  }
+}
+
+.loading-pulse {
+  position: relative;
+  isolation: isolate;
+}
+
+.loading-pulse.loading-pulse::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--loading-accent) 55%, transparent),
+    inset 0 0 18px color-mix(in oklch, var(--loading-accent) 20%, transparent);
+  opacity: 0.55;
+}
+
+.loading-placeholder {
+  padding: var(--surface-padding);
+  border-radius: var(--radius);
+  background: var(--surface-sheen), var(--bg-elev);
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.loading-pulse.loading-pulse:disabled { opacity: 1; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .loading-pulse.loading-pulse::before {
+    animation: loading-breathe 2.2s ease-in-out infinite;
+  }
+}
+
+@keyframes loading-breathe {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.85; }
+}
+
+@media (forced-colors: active) {
+  .loading-pulse.loading-pulse::before {
+    box-shadow: none;
+    border: 1px dashed CanvasText;
+    opacity: 1;
+    animation: none;
+  }
+}
 
 html,
 body {
@@ -10,16 +182,74 @@ body {
    * everything readable sits on panels above it. */
   background: var(--ambient-canvas);
   color: var(--fg);
-  font-family: var(--font-ui);
-  font-size: var(--text);
-  font-weight: var(--weight-normal);
+  font-family: var(--font-reading);
+  font-weight: var(--weight-reading);
+  line-height: 1.5;
   letter-spacing: 0;
+  text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+html {
+  /* Preserve the compact workbench geometry while letting every type role
+   * scale with the browser's configured default size. */
+  font-size: 87.5%;
+  scrollbar-gutter: stable;
+}
+
+body {
+  font-size: var(--text);
+}
+
 * {
   box-sizing: border-box;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: min(100%, var(--page-max));
+  margin-inline: auto;
+  min-height: calc(var(--page-header-height) + env(safe-area-inset-top));
+  padding: max(var(--surface-padding), env(safe-area-inset-top)) max(var(--page-gutter), env(safe-area-inset-right)) var(--surface-padding) max(var(--page-gutter), env(safe-area-inset-left));
+}
+
+.page-brand {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-target);
+  flex: 0 0 auto;
+  color: var(--fg);
+  font-family: var(--font-structure);
+  font-size: var(--text-wordmark);
+  font-weight: var(--weight-display);
+  letter-spacing: -0.075em;
+  line-height: 1;
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.page-brand:hover { color: var(--accent); }
+
+.skip-link { min-height: var(--control-target); display: inline-flex; align-items: center; }
+
+@media (max-width: 760px) {
+  :root { --page-header-height: 72px; }
+}
+
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 button,
@@ -30,21 +260,151 @@ textarea {
   color: inherit;
 }
 
-button {
-  cursor: pointer;
-  letter-spacing: 0;
+:is(button, a):is(.primary, .primary-action, .contribute-action, .safe-action),
+button.sk-btn.solid,
+button.save-btn {
+  --control-sheen: var(--action-sheen);
 }
 
-/* Data speaks mono — the family switch alone flips the MONO axis (pinned
- * per-family in fonts.css), so no font-variation-settings needed here. */
+button {
+  cursor: pointer;
+  /* Keep component background shorthands from flattening the shared finish. */
+  background-image: var(--control-sheen) !important;
+  /* Component-local `font: inherit` rules predate the semantic type roles.
+   * Buttons remain structural unless a data component explicitly opts out. */
+  font-family: var(--font-structure) !important;
+  font-weight: var(--weight-structure) !important;
+  letter-spacing: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Legacy controls use several surface tiers. Resolve those tiers locally so
+ * light-mode buttons share one white material without whitening content wells,
+ * semantic actions, data colors, or the dark palette. */
+:root[data-theme="light"] :is(button, summary, select) {
+  --glass: var(--control-neutral-bg);
+  --glass-strong: var(--control-neutral-bg);
+  --glass-bright: var(--control-neutral-bg);
+  --bg-elev: var(--control-neutral-bg);
+  --bg-deep: var(--control-neutral-bg);
+  --input-well: var(--control-neutral-bg);
+  --bg-hover: var(--control-neutral-hover);
+  --shadow-well: var(--shadow-control);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-structure);
+  font-weight: var(--weight-display);
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+b, strong {
+  font-weight: var(--weight-bold);
+}
+
+img {
+  outline: 1px solid var(--image-outline);
+  outline-offset: -1px;
+}
+
+:where(output, time, data, [role="status"], [role="progressbar"], [aria-valuenow]) {
+  font-variant-numeric: tabular-nums;
+}
+
+.drawer h2.eyebrow,
+.drawer-shell h2.title {
+  margin: 0;
+}
+
+:is(.drawer, .drawer-shell) > .body {
+  scrollbar-gutter: stable both-edges;
+}
+
+:where(
+  [class~="title"],
+  [class*="-title"],
+  [class~="heading"],
+  [class*="-heading"],
+  [class~="label"],
+  [class*="-label"]
+) {
+  font-family: var(--font-structure);
+}
+
+label,
+legend,
+select,
+summary,
+[role="tab"] {
+  font-family: var(--font-structure);
+  font-weight: var(--weight-structure);
+}
+
+@media (max-width: 760px) and (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    /* Prevent focus zoom on mobile browsers while preserving pinch zoom. */
+    font-size: var(--text-input-touch) !important;
+  }
+}
+
 code,
-pre {
-  font-family: var(--font-mono);
+pre,
+kbd,
+samp {
+  font-family: var(--font-data);
+  font-weight: var(--weight-data);
   font-variant-numeric: tabular-nums;
 }
 
 ::selection {
   background: var(--selection-bg);
+}
+
+.bootstrap-error {
+  display: grid;
+  min-height: 100dvh;
+  place-content: center;
+  gap: var(--space-4);
+  padding: var(--surface-padding);
+  text-align: center;
+}
+
+.bootstrap-error h1,
+.bootstrap-error p {
+  margin: 0;
+}
+
+.bootstrap-error p {
+  max-width: 38rem;
+  color: var(--fg-muted);
+}
+
+.bootstrap-error button {
+  min-height: 2.75rem;
+  justify-self: center;
+  padding: var(--space-3) var(--space-5);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius);
+  color: var(--bg);
+  background: var(--accent);
+  font: inherit;
+  font-weight: var(--weight-structure);
+  cursor: pointer;
 }
 
 :focus-visible {
@@ -53,16 +413,37 @@ pre {
    * focus indicator is never an acceptable component-level variation. */
   outline: 2px solid var(--focus-ring) !important;
   outline-offset: 2px;
-  border-radius: var(--radius-sm);
+}
+
+.field-focus:focus,
+.field-focus:focus-within {
+  box-shadow: var(--shadow-field-focus) !important;
+}
+
+.field-focus:focus-visible,
+.field-focus > :is(input, button):focus-visible {
+  outline: none !important;
+}
+
+.field-focus:focus-visible,
+.field-focus:has(> :is(input, button):focus-visible) {
+  box-shadow: var(--shadow-field-keyboard) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --press-scale: 1;
+  }
+  html:focus-within {
+    scroll-behavior: auto;
+  }
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -82,47 +463,66 @@ pre {
 }
 /* Delegated title surface. `lib/tooltips.ts` suppresses the native desktop
  * bubble during hover/focus and positions this one shared floating layer. */
-.saklas-tooltip {
+.drowse-tooltip {
   position: fixed;
+  inset: auto;
+  margin: 0;
   z-index: calc(var(--z-modal) + 20);
   width: max-content;
   max-width: min(320px, calc(100vw - 16px));
-  padding: 5px 8px 6px;
-  border: 1px solid var(--glass-line);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
-  box-shadow: var(--shadow-overlay);
+  padding: var(--surface-padding);
+  border: 1px solid var(--popup-border);
+  border-radius: var(--popup-radius);
+  background: var(--surface-sheen), var(--popup-bg);
+  box-shadow: var(--popup-shadow);
   color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: var(--font-reading);
+  font-weight: var(--weight-reading);
   font-size: var(--text-xs);
-  font-variation-settings: "MONO" 1, "CASL" 0;
+  font-variant-numeric: tabular-nums;
   line-height: 1.45;
   letter-spacing: 0.01em;
   overflow-wrap: anywhere;
   white-space: pre-line;
   pointer-events: none;
   opacity: 0;
-  transform: translate(-50%, calc(-100% - 2px)) scale(0.98);
+  transform: translateX(-50%) scale(0.98);
   transform-origin: 50% 100%;
   transition:
     opacity var(--dur-fast) var(--ease-out),
     transform var(--dur-fast) var(--ease-out);
 }
 
-.saklas-tooltip.visible {
+.drowse-tooltip.visible {
+  pointer-events: auto;
   opacity: 1;
-  transform: translate(-50%, -100%) scale(1);
+  transform: translateX(-50%) scale(1);
 }
 
-.saklas-tooltip.below {
-  transform: translate(-50%, 2px) scale(0.98);
+@media (forced-colors: active) {
+  :focus-visible { outline-color: Highlight !important; }
+  .field-focus:focus-visible,
+  .field-focus:has(> :is(input, button):focus-visible) {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
+  }
+  button, input, select, textarea, [role="option"] {
+    border-color: ButtonText;
+  }
+  :is([aria-pressed="true"], [aria-selected="true"], [aria-checked="true"]) {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+
+.drowse-tooltip.below {
   transform-origin: 50% 0;
 }
 
-.saklas-tooltip.below.visible {
-  transform: translate(-50%, 0) scale(1);
+.drowse-tooltip.below.visible {
+  transform: translateX(-50%) scale(1);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .saklas-tooltip { transition: none; }
+  .drowse-tooltip { transition: none; }
 }

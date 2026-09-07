@@ -7,16 +7,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from saklas.core.instruments.types import (
+from drowse.core.instruments.types import (
     GeometryLiveState,
     LensLiveState,
     SaeLiveState,
 )
 from fastapi.testclient import TestClient
 
-from saklas.core.results import GenerationResult, RunSet, TokenEvent
+from drowse.core.results import GenerationResult, RunSet, TokenEvent
 from tests._generation_stream import TestGenerationStream
-from saklas.core.session import ConcurrentGenerationError, ProfileNotRegisteredError
+from drowse.core.session import ConcurrentGenerationError, ProfileNotRegisteredError
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ from saklas.core.session import ConcurrentGenerationError, ProfileNotRegisteredE
 # ---------------------------------------------------------------------------
 
 def _mock_session():
-    """Create a mock SaklasSession with realistic attributes."""
+    """Create a mock DrowseSession with realistic attributes."""
     session = MagicMock()
     session.model_id = "test/model"
     session.model_info = {
@@ -101,8 +101,8 @@ def _single_run(**kwargs: Any) -> RunSet:
 
 @pytest.fixture
 def client():
-    from saklas.server import create_app
-    from saklas.core.steering import Steering
+    from drowse.server import create_app
+    from drowse.core.steering import Steering
     session = _mock_session()
     app = create_app(session, default_steering=Steering(alphas={"test_vec": 0.1}))
     # Keep one portal/event loop alive for the whole test.  Routes intentionally
@@ -114,7 +114,7 @@ def client():
 
 @pytest.fixture
 def session_and_client():
-    from saklas.server import create_app
+    from drowse.server import create_app
     session = _mock_session()
     app = create_app(session, default_steering=None)
     with TestClient(app) as test_client:
@@ -224,7 +224,7 @@ class TestChatCompletions:
         final = json.loads(lines[done_idx - 1].removeprefix("data: "))
         assert final["choices"][0]["finish_reason"] == "stop"
 
-    def test_streaming_saklas_error_is_sent_in_band(self, session_and_client: Any) -> None:
+    def test_streaming_drowse_error_is_sent_in_band(self, session_and_client: Any) -> None:
         session, client = session_and_client
 
         session.generate_stream.return_value = TestGenerationStream(
@@ -278,7 +278,7 @@ class TestChatCompletions:
         """The 503 busy frame is terminated like every other error frame."""
         import contextlib
 
-        import saklas.server.app as app_module
+        import drowse.server.app as app_module
 
         session, client = session_and_client
 
@@ -405,33 +405,33 @@ class TestCompletions:
 
 class TestCLIParsing:
     def test_serve_subcommand(self):
-        from saklas.cli import parse_args
+        from drowse.cli import parse_args
         args = parse_args(["serve", "google/gemma-2-2b-it", "--port", "9000"])
         assert args.command == "serve"
         assert args.model == "google/gemma-2-2b-it"
         assert args.port == 9000
 
     def test_serve_steer_flag(self):
-        from saklas.cli import parse_args
+        from drowse.cli import parse_args
         args = parse_args([
             "serve", "m", "--steer", "0.2 cheerful + 0.3 warm",
         ])
         assert args.steer == "0.2 cheerful + 0.3 warm"
 
     def test_serve_cors(self):
-        from saklas.cli import parse_args
+        from drowse.cli import parse_args
         args = parse_args(["serve", "m", "--cors", "http://localhost:3000", "--cors", "*"])
         assert args.cors == ["http://localhost:3000", "*"]
 
     def test_serve_no_web_flag_default_off(self):
-        from saklas.cli import parse_args
+        from drowse.cli import parse_args
         # Dashboard is on by default; ``args.no_web`` defaults to False
         # so create_app will receive ``web=True`` from the runner.
         args = parse_args(["serve", "m"])
         assert args.no_web is False
 
     def test_serve_no_web_flag_opt_out(self):
-        from saklas.cli import parse_args
+        from drowse.cli import parse_args
         args = parse_args(["serve", "m", "--no-web"])
         assert args.no_web is True
 
@@ -451,7 +451,7 @@ class TestOllamaApi:
         assert resp.status_code == 200
         data = resp.json()
         assert "version" in data
-        assert data["version"].startswith("saklas-")
+        assert data["version"].startswith("drowse-")
 
     def test_tags_lists_loaded_model(self, client: Any) -> None:
         resp = client.get("/api/tags")
@@ -470,7 +470,7 @@ class TestOllamaApi:
         assert first["details"]["quantization_level"] == "BF16"
 
     def test_tags_advertises_aliases_for_known_model(self):
-        from saklas.server import create_app
+        from drowse.server import create_app
         session = _mock_session()
         session.model_id = "google/gemma-2-2b-it"
         app = create_app(session)
@@ -497,7 +497,7 @@ class TestOllamaApi:
         assert data["details"]["family"] == "gemma2"
         assert data["model_info"]["general.architecture"] == "gemma2"
         assert data["model_info"]["gemma2.block_count"] == 26
-        assert data["model_info"]["saklas.loaded_model"] == "test/model"
+        assert data["model_info"]["drowse.loaded_model"] == "test/model"
 
     def test_chat_non_streaming(self, session_and_client: Any) -> None:
         session, client = session_and_client
@@ -712,7 +712,7 @@ class TestOllamaApi:
         data = resp.json()
         assert data["response"] == "42"
         assert data["done"] is True
-        # saklas intentionally omits `context` since it can't round-trip
+        # drowse intentionally omits `context` since it can't round-trip
         # Ollama's tokenized continuation state honestly.
         assert "context" not in data
         # Matching Ollama: /api/generate applies the chat template by default;
@@ -766,7 +766,7 @@ class TestOllamaApi:
         assert resp.status_code == 501
 
     def test_ollama_routes_respect_api_key(self):
-        from saklas.server import create_app
+        from drowse.server import create_app
         session = _mock_session()
         app = create_app(session, api_key="secret")
         c = TestClient(app)
@@ -784,15 +784,15 @@ class TestOllamaApi:
         """Regression: ``options.steer`` parsing used to live inside the
         NDJSON streaming generator. By the time ``parse_expr`` raised,
         ``StreamingResponse`` had already flushed 200 OK headers, so the
-        FastAPI ``SaklasError`` handler couldn't rewrite the response —
+        FastAPI ``DrowseError`` handler couldn't rewrite the response —
         the client saw a TCP cutoff mid-stream with no body.
 
         Fix: option resolution is hoisted to the route handler, so a bad
         steering expression now surfaces as the canonical Ollama-shape
         ``{"error": "..."}`` 400.
         """
-        from saklas.io.selectors import AmbiguousSelectorError
-        import saklas.core.steering_expr as _sx
+        from drowse.io.selectors import AmbiguousSelectorError
+        import drowse.core.steering_expr as _sx
 
         session, client = session_and_client
 
@@ -826,9 +826,9 @@ class TestOllamaApi:
         self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Belt-and-suspenders: non-streaming Ollama already routed
-        ``SaklasError`` through the FastAPI handler. Pin the contract."""
-        from saklas.io.selectors import AmbiguousSelectorError
-        import saklas.core.steering_expr as _sx
+        ``DrowseError`` through the FastAPI handler. Pin the contract."""
+        from drowse.io.selectors import AmbiguousSelectorError
+        import drowse.core.steering_expr as _sx
 
         session, client = session_and_client
 
@@ -946,8 +946,8 @@ class TestNativeSteeringField:
         assert kw["steering"].alphas == {"zzfakevec": -0.4}
 
     def test_steering_merges_with_server_defaults(self):
-        from saklas.server import create_app
-        from saklas.core.steering import Steering
+        from drowse.server import create_app
+        from drowse.core.steering import Steering
         session = _mock_session()
         session.generate.return_value = _single_run(
             text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
@@ -963,8 +963,8 @@ class TestNativeSteeringField:
         assert kw["steering"].alphas == {"base": 0.2, "override": 0.7}
 
     def test_steering_request_overrides_default(self):
-        from saklas.server import create_app
-        from saklas.core.steering import Steering
+        from drowse.server import create_app
+        from drowse.core.steering import Steering
         session = _mock_session()
         session.generate.return_value = _single_run(
             text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
@@ -982,8 +982,8 @@ class TestNativeSteeringField:
         assert kw["steering"].alphas == {"myvec": 0.7}
 
     def test_empty_steering_clears_server_default(self):
-        from saklas.server import create_app
-        from saklas.core.steering import Steering
+        from drowse.server import create_app
+        from drowse.core.steering import Steering
         session = _mock_session()
         session.generate.return_value = _single_run(
             text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
@@ -1039,7 +1039,7 @@ class TestSessionLockBackpressure:
         thread+loop model cannot exercise honestly).
         """
         import asyncio as _asyncio
-        from saklas.server import acquire_session_lock
+        from drowse.server import acquire_session_lock
 
         session = _mock_session()
         order: list[str] = []
@@ -1064,7 +1064,7 @@ class TestSessionLockBackpressure:
 
     def test_no_app_state_gen_lock(self):
         """``app.state.gen_lock`` is gone; all serialization is on session.lock."""
-        from saklas.server import create_app
+        from drowse.server import create_app
         app = create_app(_mock_session())
         assert not hasattr(app.state, "gen_lock")
 
@@ -1080,16 +1080,16 @@ class TestSessionInfoInstrumentFields:
 
     def test_jlens_fitted(self, session_and_client: Any) -> None:
         session, client = session_and_client
-        resp = client.get("/saklas/v1/sessions/default")
+        resp = client.get("/drowse/v1/sessions/default")
         assert resp.status_code == 200
         assert resp.json()["jlens_fitted"] is False
         session.has_compatible_jlens.return_value = True
-        got = client.get("/saklas/v1/sessions/default").json()
+        got = client.get("/drowse/v1/sessions/default").json()
         assert got["jlens_fitted"] is True
 
     @staticmethod
     def _families(client: Any) -> dict[str, Any]:
-        info = client.get("/saklas/v1/sessions/default").json()
+        info = client.get("/drowse/v1/sessions/default").json()
         return {row["family"]: row for row in info["instruments"]}
 
     def test_instruments_block_replaces_the_flat_keys(
@@ -1099,7 +1099,7 @@ class TestSessionInfoInstrumentFields:
         blocks ``GET .../instruments`` lists.  The pre-5.x flat keys are a
         clean break — their absence is the contract."""
         _session, client = session_and_client
-        info = client.get("/saklas/v1/sessions/default").json()
+        info = client.get("/drowse/v1/sessions/default").json()
         assert {row["family"] for row in info["instruments"]} == {
             "geometry", "lens", "sae",
         }
@@ -1148,7 +1148,7 @@ class TestWSTokenEventLens:
     def _event(payload: Any) -> dict[str, Any]:
         from types import SimpleNamespace
 
-        from saklas.server.ws_events import build_token_event
+        from drowse.server.ws_events import build_token_event
 
         session = SimpleNamespace(
             token_probe_payload=payload or {},
@@ -1216,7 +1216,7 @@ class TestWSTokenEventLens:
     def test_perplexity_rides_token_frame(self) -> None:
         from types import SimpleNamespace
 
-        from saklas.server.ws_events import build_token_event
+        from drowse.server.ws_events import build_token_event
 
         session = SimpleNamespace(
             token_probe_payload={},
@@ -1239,7 +1239,7 @@ class TestWSTokenEventLens:
     def test_measurements_not_reconstructed_from_tree_rows(self) -> None:
         from types import SimpleNamespace
 
-        from saklas.server.ws_events import build_token_event
+        from drowse.server.ws_events import build_token_event
 
         class ExplodingTree:
             @property
@@ -1286,7 +1286,7 @@ class TestLensProbeRoutes:
         session, client = session_and_client
         session.monitor.attached_probes.return_value = {}
         session.lens.specs.return_value = {"jlens/fake": dict(self._SPEC)}
-        resp = client.get("/saklas/v1/sessions/default/probes")
+        resp = client.get("/drowse/v1/sessions/default/probes")
         assert resp.status_code == 200
         (row,) = resp.json()["probes"]
         # An explicit family discriminator, and only fields this family can
@@ -1312,7 +1312,7 @@ class TestLensProbeRoutes:
 
         session.add_probe.side_effect = _attach
         resp = client.post(
-            "/saklas/v1/sessions/default/probes",
+            "/drowse/v1/sessions/default/probes",
             json={"selector": "jlens/fake"},
         )
         assert resp.status_code == 201
@@ -1320,28 +1320,28 @@ class TestLensProbeRoutes:
         assert resp.json()["name"] == "jlens/fake"
 
     def test_attach_lens_not_fitted_404(self, session_and_client: Any) -> None:
-        from saklas.core.jlens import LensNotFittedError
+        from drowse.core.jlens import LensNotFittedError
 
         session, client = session_and_client
         session.add_probe.side_effect = LensNotFittedError(
-            "no lens fitted — run `saklas lens fit test/model`"
+            "no lens fitted — run `drowse lens fit test/model`"
         )
         resp = client.post(
-            "/saklas/v1/sessions/default/probes",
+            "/drowse/v1/sessions/default/probes",
             json={"selector": "jlens/fake"},
         )
         assert resp.status_code == 404
         assert "lens fit" in resp.json()["detail"]
 
     def test_attach_multi_token_word_400(self, session_and_client: Any) -> None:
-        from saklas.core.jlens import MultiTokenWordError
+        from drowse.core.jlens import MultiTokenWordError
 
         session, client = session_and_client
         session.add_probe.side_effect = MultiTokenWordError(
             "'antidisestablishment' is not a single token"
         )
         resp = client.post(
-            "/saklas/v1/sessions/default/probes",
+            "/drowse/v1/sessions/default/probes",
             json={"selector": "jlens/antidisestablishment"},
         )
         assert resp.status_code == 400
@@ -1350,7 +1350,7 @@ class TestLensProbeRoutes:
         session, client = session_and_client
         session.monitor.probe_names = []
         session.lens.specs.return_value = {"jlens/fake": dict(self._SPEC)}
-        resp = client.delete("/saklas/v1/sessions/default/probes/jlens%2Ffake")
+        resp = client.delete("/drowse/v1/sessions/default/probes/jlens%2Ffake")
         assert resp.status_code == 204
         session.remove_probe.assert_called_once_with("jlens/fake")
 
@@ -1358,5 +1358,5 @@ class TestLensProbeRoutes:
         session, client = session_and_client
         session.monitor.probe_names = []
         session.lens.specs.return_value = {}
-        resp = client.delete("/saklas/v1/sessions/default/probes/jlens%2Ffake")
+        resp = client.delete("/drowse/v1/sessions/default/probes/jlens%2Ffake")
         assert resp.status_code == 404

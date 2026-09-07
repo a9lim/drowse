@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from saklas.io import paths
+from drowse.io import paths
 
 GOOGLE_2B = "_zZ29vZ2xlL2dlbW1hLTItMmItaXQ"
 GOOGLE_3_4B = "_zZ29vZ2xlL2dlbW1hLTMtNGItaXQ"
@@ -10,25 +10,25 @@ QWEN_2_5 = "_zUXdlbi9Rd2VuMi41LTdCLUluc3RydWN0"
 
 
 def test_default_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.delenv("SAKLAS_HOME", raising=False)
+    monkeypatch.delenv("DROWSE_HOME", raising=False)
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    assert paths.saklas_home() == tmp_path / ".saklas"
+    assert paths.drowse_home() == tmp_path / ".drowse"
 
 
 def test_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     custom = tmp_path / "custom_root"
-    monkeypatch.setenv("SAKLAS_HOME", str(custom))
-    assert paths.saklas_home() == custom
+    monkeypatch.setenv("DROWSE_HOME", str(custom))
+    assert paths.drowse_home() == custom
 
 
 def test_subdirs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     assert paths.models_dir() == tmp_path / "models"
     assert paths.neutral_statements_path() == tmp_path / "neutral_statements.json"
 
 
 def test_model_dir_flattens_slashes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     assert paths.model_dir("google/gemma-2-2b-it") == tmp_path / "models" / GOOGLE_2B
 
 

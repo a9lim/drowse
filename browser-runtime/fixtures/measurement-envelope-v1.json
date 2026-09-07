@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "tolerance": 0.000001,
+  "steering": "0.4 local/calm.alert",
+  "layerMap": [4, 9],
+  "modelLayerCount": 12,
+  "geometry": {
+    "name": "local/calm.alert",
+    "labels": ["calm", "alert"],
+    "labelScale": 0.5,
+    "shareWeights": [1, 1],
+    "assignBandwidth": [1, 1],
+    "assignLogVolumeBias": [0, 0],
+    "rows": [
+      {
+        "fraction": 0.25,
+        "residual": 0.125,
+        "membership": 0.8,
+        "coords": [0.2],
+        "distances": [0.2, 0.8],
+        "subspaceCoords": [0.2]
+      },
+      {
+        "fraction": 0.75,
+        "residual": 0.25,
+        "membership": 0.6,
+        "coords": [0.8],
+        "distances": [0.8, 0.2],
+        "subspaceCoords": [0.8]
+      }
+    ]
+  },
+  "lens": {
+    "name": "jlens/calm",
+    "token": "calm",
+    "tokenId": 17,
+    "source": "fixture-lens",
+    "probabilities": [0.25, 0.75]
+  },
+  "sae": {
+    "name": "sae/8",
+    "featureId": 8,
+    "featureCount": 16,
+    "source": "fixture-sae",
+    "layer": 9,
+    "value": 0.5,
+    "activation": 1.0,
+    "label": "fruit",
+    "maxAct": 2.0
+  },
+  "expected": {
+    "version": 1,
+    "scope": "token",
+    "provenance": "captured",
+    "instruments": {
+      "geometry": {
+        "readings": {
+          "local/calm.alert": {
+            "fraction": 0.5,
+            "nearest": [["calm", 1.0], ["alert", 1.0]],
+            "coords": [0.5],
+            "residual": 0.1875,
+            "fraction_per_layer": {"4": 0.25, "9": 0.75},
+            "coords_per_layer": {"4": [0.2], "9": [0.8]},
+            "residual_per_layer": {"4": 0.125, "9": 0.25},
+            "assignment": [["calm", 0.5], ["alert", 0.5]],
+            "membership": 0.7,
+            "depth_com": [0.7272727272727274],
+            "depth_spread": [0.18181818181818185],
+            "subspace_coords_per_layer": {"4": [0.2], "9": [0.8]}
+          }
+        }
+      },
+      "lens": {
+        "readings": {
+          "jlens/calm": {
+            "value": 0.5,
+            "unit": "mean_token_probability",
+            "per_layer": {"4": 0.25, "9": 0.75},
+            "depth": {
+              "center": [0.704545],
+              "spread": [0.196824],
+              "basis": "readout_probability_mass"
+            }
+          }
+        },
+        "readout": {
+          "layers": [
+            {"layer": 4, "tokens": [{"token": "calm", "id": 17, "logprob": -1.3862943611198906}]},
+            {"layer": 9, "tokens": [{"token": "calm", "id": 17, "logprob": -0.2876820724517809}]}
+          ],
+          "aggregate": [
+            {"token": "calm", "strength": 0.5, "com": 0.7045454978942871, "spread": 0.19682395458221436}
+          ]
+        },
+        "binding": {"source": "fixture-lens", "steering": "0.4 local/calm.alert"}
+      },
+      "sae": {
+        "readings": {
+          "sae/8": {
+            "value": 0.5,
+            "unit": "activation_over_max",
+            "per_layer": {"9": 0.5},
+            "depth": {"center": [0.818182], "spread": [0.0], "basis": "single_layer"}
+          }
+        },
+        "readout": {
+          "features": [{"id": 8, "activation": 1.0, "label": "fruit", "max_act": 2.0}]
+        },
+        "binding": {"source": "fixture-sae", "steering": "0.4 local/calm.alert", "layer": 9}
+      }
+    },
+    "scores": {"local/calm.alert": 0.5, "jlens/calm": 0.5, "sae/8": 0.5},
+    "per_layer_scores": {
+      "4": {"local/calm.alert": 0.2, "jlens/calm": 0.25},
+      "9": {"local/calm.alert": 0.8, "jlens/calm": 0.75, "sae/8": 0.5}
+    }
+  }
+}

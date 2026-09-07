@@ -1,4 +1,7 @@
 <script lang="ts">
+  import FluentIcon from "../../lib/ui/FluentIcon.svelte";
+  import { slidingSelection } from "../../lib/slidingSelection";
+  import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // Atom steer card — one racked single-direction term, wearing the same
   // RackCard chrome as the concept steer cards.  Both atom families share
   // this component; the family table below is the whole difference.
@@ -51,7 +54,6 @@
       class="enable"
       class:off={!entry.enabled}
       onclick={() => actions.setEnabled(name, !entry.enabled)}
-      title={entry.enabled ? "disable" : "enable"}
       aria-pressed={entry.enabled}
       aria-label="Toggle steering for {name}"
     >
@@ -62,30 +64,41 @@
       {atomId}
     </span>
 
-    <span class="spacer"></span>
-
-    <button
-      type="button"
-      class="trigger-pill"
-      onclick={cycleTrigger}
-      title="trigger: {TRIGGER_LABEL[entry.trigger]}"
-      aria-label="trigger for {name}: {entry.trigger}"
-    >
-      {TRIGGER_WORD[entry.trigger]}
-    </button>
-
     <button
       type="button"
       class="icon remove"
       onclick={() => actions.remove(name)}
       aria-label="remove {name}"
-      title="remove {name}"
     >
-      ✕
+      <FluentIcon name="dismiss" />
     </button>
   {/snippet}
 
   {#snippet body()}
+    <div class="trigger-row">
+      <span>Trigger</span>
+      <button
+        type="button"
+        class="trigger-pill"
+        onclick={cycleTrigger}
+        title={TRIGGER_LABEL[entry.trigger]}
+        aria-label="trigger for {name}: {entry.trigger}"
+      >{TRIGGER_WORD[entry.trigger]}</button>
+    </div>
+    <div class="operation" role="group" aria-label="steering operation for {name}" use:slidingSelection>
+      <button
+        type="button"
+        class:active={!entry.ablate}
+        aria-pressed={!entry.ablate}
+        onclick={() => actions.setAblate(name, false)}
+      >push</button>
+      <button
+        type="button"
+        class:active={entry.ablate}
+        aria-pressed={entry.ablate}
+        onclick={() => actions.setAblate(name, true)}
+      >ablate</button>
+    </div>
     <div class="alpha-row">
       <span class="alpha-label">α</span>
       <Slider
@@ -94,10 +107,9 @@
         max={1}
         step={0.05}
         ariaLabel="alpha for {name}"
-        title="coefficient"
         oninput={(v) => Number.isFinite(v) && actions.setAlpha(name, v)}
       />
-      <span class="alpha-val" title="coefficient">{entry.alpha.toFixed(2)}</span>
+      <span class="alpha-val"><RollingNumber value={entry.alpha} digits={2} /></span>
     </div>
   {/snippet}
 </RackCard>
@@ -109,7 +121,7 @@
     place-items: center;
     inline-size: 24px;
     block-size: 24px;
-    margin: 0 -3px;
+    margin: 0 calc(var(--space-xs) * -1);
     background: transparent;
     border: 0;
     border-radius: var(--radius-sm);
@@ -126,9 +138,8 @@
     color: var(--fg-strong);
     font-family: var(--font-mono);
     font-size: var(--text-sm);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    flex: 1;
+    overflow-wrap: anywhere;
     min-width: 0;
   }
   .name.struck {
@@ -136,9 +147,13 @@
     color: var(--fg-muted);
   }
 
-  .spacer {
-    flex: 1 1 auto;
-    min-width: 0;
+  .trigger-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
   }
 
   .trigger-pill {
@@ -182,6 +197,30 @@
   }
 
   /* ----- body: α row (the manifold card's along-row shape) ----- */
+  .operation {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-xs);
+    padding: var(--space-xs);
+    border-radius: var(--radius-group);
+    background: var(--surface-sheen), var(--glass);
+  }
+  .operation button {
+    min-height: var(--control-target);
+    border: 0;
+    border-radius: var(--radius-inset);
+    background: transparent;
+    color: var(--fg-muted);
+    font-family: var(--font-structure);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-structure);
+    cursor: pointer;
+  }
+  .operation button.active {
+    background: var(--bg-elev);
+    color: var(--fg-strong);
+    box-shadow: var(--shadow-rack-active);
+  }
   .alpha-row {
     display: grid;
     grid-template-columns: minmax(3em, auto) minmax(0, 1fr) 3em;
@@ -197,6 +236,6 @@
     color: var(--fg-muted);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
-    text-align: right;
+    text-align: end;
   }
 </style>

@@ -1,148 +1,70 @@
 <script lang="ts">
-  // Hand-rolled horizontal bar. Positive = green, negative = red.
-  //
-  // ``value`` and ``max`` are unitless; ``width`` is the rendered max
-  // width in pixels.
-  //
-  // ``bipolar`` flips the bar to a center-zero shape: fills rightward
-  // from the midline for positive values, leftward for negative, with a
-  // thin midline tick.  Matches the steering slider's axis so a bipolar
-  // probe row reads "neg ◄──█──► pos" in the same direction the user
-  // moves the steering slider.
+  import { barExtent, barTooltip } from "./chartValues";
 
   interface Props {
     value: number;
     max: number;
     width?: number;
     height?: number;
-    /** When true, emit a thin baseline rule under the bar.  Useful when
-     * the bar lives inline with text and the visual rhythm needs a
-     * floor.  Off by default. */
     showBaseline?: boolean;
-    /** Override the bar fill color.  Defaults to the appropriate accent
-     * based on sign of value. */
     color?: string;
-    /** Render as a center-zero bar (fills from midline outward).  Off
-     * by default — the existing unipolar shape is preserved for all
-     * non-probe callers. */
     bipolar?: boolean;
+    percentage?: boolean;
+    title?: string;
   }
 
   let {
-    value,
-    max,
-    width = 144,
-    height = 8,
-    showBaseline = false,
-    color,
-    bipolar = false,
+    value, max, width = 144, height = 8, showBaseline = false,
+    color, bipolar = false, percentage = false, title,
   }: Props = $props();
 
-  const filled = $derived.by(() => {
-    if (max <= 0 || !Number.isFinite(max)) return 0;
-    const ratio = Math.min(1, Math.abs(value) / max);
-    return Math.round(ratio * (bipolar ? width / 2 : width));
-  });
-
-  /** x-coordinate where the fill rectangle starts.  Unipolar bars start
-   * at 0; bipolar negative bars start at ``mid - filled`` so they grow
-   * leftward from center. */
-  const fillX = $derived.by(() => {
-    if (!bipolar) return 0;
-    const mid = width / 2;
-    return value < 0 ? mid - filled : mid;
-  });
-
-  const fill = $derived.by(() => {
-    if (color) return color;
-    if (value > 0) return "var(--accent-green)";
-    if (value < 0) return "var(--accent-red)";
-    return "var(--fg-muted)";
-  });
-
-  // Per-instance gradient id so multiple bars on one page don't collide.
-  const uid = $props.id();
+  const filled = $derived(barExtent(value, max) * (bipolar ? 50 : 100));
+  const fillX = $derived(bipolar ? (value < 0 ? 50 - filled : 50) : 0);
+  const fill = $derived(color ?? (value > 0 ? "var(--accent-green)" : value < 0 ? "var(--accent-red)" : "var(--fg-muted)"));
+  const tip = $derived(title ?? barTooltip(value, max, percentage));
 </script>
 
-<svg
+<span
   class="bar"
-  {width}
-  {height}
-  viewBox="0 0 {width} {height}"
-  preserveAspectRatio="none"
-  aria-hidden="true"
+  class:baseline={showBaseline}
+  style:--bar-width={`${width}px`}
+  style:height={`${height}px`}
+  title={tip}
+  role="img"
+  aria-label={tip}
 >
-  <defs>
-    <linearGradient id={uid} x1="0" y1="0" x2="0" y2="1">
-      <!-- style= not stop-color=: the attribute form doesn't reliably
-           resolve var()/color-mix; the CSS property does. -->
-      <stop offset="0" style="stop-color: color-mix(in srgb, {fill} 80%, white)" />
-      <stop offset="1" style="stop-color: {fill}" />
-    </linearGradient>
-  </defs>
-  <rect x="0" y="0" {width} {height} class="track" />
-  <rect x={fillX} y="0" width={filled} {height} fill="url(#{uid})" class="fill" />
-  {#if bipolar}
-    <!-- Center tick so users can read sign at a glance even when value
-         is exactly 0 (no fill rectangle to anchor the eye). -->
-    <line
-      x1={width / 2}
-      x2={width / 2}
-      y1="0"
-      y2={height}
-      stroke="var(--glass-line)"
-      stroke-width="1"
-    />
-  {/if}
-  {#if showBaseline}
-    <line
-      x1="0"
-      x2={width}
-      y1={height}
-      y2={height}
-      stroke="var(--glass-line)"
-      stroke-width="0.5"
-    />
-  {/if}
-  <!-- The high-contrast perimeter keeps the full scale visible while the
-       darker track interior stays distinct from every family fill. -->
-  <rect
-    x="0.5"
-    y="0.5"
-    width={Math.max(0, width - 1)}
-    height={Math.max(0, height - 1)}
-    class="track-outline"
-  />
-</svg>
+  <span class="fill" style:left={`${fillX}%`} style:width={`${filled}%`} style:--fill={fill}></span>
+  {#if bipolar}<span class="midline"></span>{/if}
+</span>
 
 <style>
   .bar {
+    position: relative;
     display: inline-block;
     vertical-align: middle;
-    /* Rounded ends via CSS clip on the element box — an SVG rect ``rx``
-     * would distort under preserveAspectRatio="none", this doesn't. */
-    border-radius: var(--data-mark-radius);
+    width: var(--bar-width);
+    max-width: 100%;
+    border-radius: var(--radius-pill);
+    background: var(--data-track-fill);
+    box-shadow: inset 0 0 0 1px var(--data-track);
     overflow: hidden;
   }
-  .track {
-    fill: var(--data-track-fill);
-  }
-  .track-outline {
-    fill: none;
-    stroke: var(--data-track);
-    stroke-width: 1px;
-    vector-effect: non-scaling-stroke;
-    pointer-events: none;
-  }
   .fill {
-    /* Animate both x and width together — the bipolar bar encodes
-     * negative values as (x = mid − filled, width = filled), so width-
-     * only transitions left the right edge detaching from the center
-     * tick mid-transition (visible as left/right jitter at the 0 line).
-     * Transitioning both keeps x + width = mid at every animation
-     * frame; positive bars (x ≡ 0) are unaffected. */
-    transition:
-      width var(--dur) var(--ease-out),
-      x var(--dur) var(--ease-out);
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: inherit;
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--fill) 80%, white), var(--fill));
+    transition: width var(--dur) var(--ease-out), left var(--dur) var(--ease-out);
+  }
+  .midline {
+    position: absolute;
+    inset-block: 0;
+    left: 50%;
+    width: 1px;
+    background: var(--glass-line);
+  }
+  .baseline {
+    border-bottom: 1px solid var(--glass-line);
   }
 </style>

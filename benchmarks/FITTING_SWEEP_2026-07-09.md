@@ -14,7 +14,7 @@ misrepresented as phase-local cache RSS.
 Workload: cached `google/gemma-3-4b-it`, two 24-token-truncated English corpus
 prompts, workspace-band source layers, `dim_batch=8`. The base used its default
 one-prompt graph; the candidate used `prompt_batch=2`. Both runs started with a
-fresh temporary `SAKLAS_HOME` and included durable final artifact writing.
+fresh temporary `DROWSE_HOME` and included durable final artifact writing.
 
 | tree | wall time | model forwards | process peak RSS |
 |---|---:|---:|---:|

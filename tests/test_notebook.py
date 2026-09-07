@@ -1,4 +1,4 @@
-"""saklas.notebook plot helpers + DataFrame coercion.
+"""drowse.notebook plot helpers + DataFrame coercion.
 
 CPU-only, skipped wholesale when plotly/pandas aren't installed (the
 ``[notebook]`` extra is opt-in).  Each test asserts shape + the trace /
@@ -16,7 +16,7 @@ pd = pytest.importorskip("pandas")
 
 # Import notebook surface AFTER the extras-check so pytest reports the
 # skip cleanly when the deps are missing.
-from saklas.notebook import (  # noqa: E402
+from drowse.notebook import (  # noqa: E402
     NotebookExtraNotInstalled,
     plot_alpha_sweep,
     plot_layer_norms,
@@ -24,8 +24,8 @@ from saklas.notebook import (  # noqa: E402
     plot_trait_history,
     to_dataframe,
 )
-from saklas.core.profile import Profile  # noqa: E402
-from saklas.core.results import (  # noqa: E402
+from drowse.core.profile import Profile  # noqa: E402
+from drowse.core.results import (  # noqa: E402
     GenerationResult,
     ProbeReading,
     ProbeReadings,
@@ -259,7 +259,7 @@ class TestPlotLayerNorms:
     def test_empty_profile_constructor_rejects(self) -> None:
         # Profile itself rejects empty dicts; this confirms our plot
         # function never receives one in practice.
-        from saklas.core.profile import ProfileError
+        from drowse.core.profile import ProfileError
 
         with pytest.raises(ProfileError):
             Profile({}, metadata={})
@@ -313,14 +313,14 @@ class TestPlotTraitHistory:
 class TestNotebookExtraNotInstalled:
     def test_user_message_format(self) -> None:
         e = NotebookExtraNotInstalled("plotly")
-        assert "saklas[notebook]" in str(e)
+        assert "drowse[notebook]" in str(e)
         assert "plotly" in str(e)
-        # SaklasError MRO surface for the server-side error mapper.
+        # DrowseError MRO surface for the server-side error mapper.
         code, msg = e.user_message()
         assert code == 500
         assert "plotly" in msg
 
     def test_inherits_importerror(self) -> None:
-        # ``except ImportError`` at user sites still catches the SaklasError.
+        # ``except ImportError`` at user sites still catches the DrowseError.
         e = NotebookExtraNotInstalled("plotly")
         assert isinstance(e, ImportError)

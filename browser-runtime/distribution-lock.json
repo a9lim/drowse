@@ -1,0 +1,24 @@
+{
+  "$schema": "./distribution-lock.schema.json",
+  "schemaVersion": 1,
+  "status": "verified",
+  "catalogUrl": "https://huggingface.co/logitsml/drowse-web-catalog/resolve/main/catalog.json",
+  "signatureUrl": "https://huggingface.co/logitsml/drowse-web-catalog/resolve/main/catalog.sig.json",
+  "minimumAcceptedSequence": 7,
+  "publicKeys": [
+    {
+      "keyId": "drowse-2026-09-current",
+      "ed25519PublicKeyBase64": "w34sw6a5Wb028ZRrjNtePzN75FN7+rXlKy+nVDDAtn4="
+    },
+    {
+      "keyId": "drowse-2026-09-next",
+      "ed25519PublicKeyBase64": "QVsZltz7o3ZBx6/IY8yOb0xtqt1kUr6QJsfv25Pto/w="
+    }
+  ],
+  "allowedCatalogRedirectOrigins": [
+    "https://huggingface.co"
+  ],
+  "allowedArtifactRedirectOrigins": [
+    "https://us.aws.cdn.hf.co"
+  ]
+}

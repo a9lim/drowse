@@ -2,7 +2,7 @@
 
 *Research digest, 2026-07-12. Three parallel literature sweeps (workspace/null-space;
 planning/latent reasoning; introspection/causal methods), synthesized against the
-saklas stack. Verification: most load-bearing items were fetched at the primary
+drowse stack. Verification: most load-bearing items were fetched at the primary
 source by the sweep agents; items marked [snippet] were search-verified only.*
 
 ## The taxonomy: four kinds of "unvocalized"
@@ -14,7 +14,7 @@ The "subconscious" framing decomposes into four empirically distinct objects:
    causally load-bearing.
 2. **Never-vocalized but workspace-visible.** Latent hops (Dallas→Texas→Austin),
    internal beliefs diverging from stated answers, eval-awareness, premature
-   commitment. Probe-readable; absent from the text. Saklas probes already read
+   commitment. Probe-readable; absent from the text. Drowse probes already read
    this class partially.
 3. **Sub-report-threshold (the subliminal band).** Injected/present content that
    shifts behavior while the model's self-report denies it. The report bottleneck
@@ -25,7 +25,7 @@ The "subconscious" framing decomposes into four empirically distinct objects:
    (complement swaps: 5% success alone, 0% with J-space clamped) — the complement
    is the preconscious feed, not a parallel channel to output.
 
-Saklas's current stack reads (2) well, (1) not at all, (3) only from the
+Drowse's current stack reads (2) well, (1) not at all, (3) only from the
 injection side, (4) only as the residual of `jspace_decompose`. Causal
 attribution (patching-family) is a missing *leg*, orthogonal to all four.
 
@@ -104,7 +104,7 @@ steering) explicitly unclaimed.
 - **Pre-CoT commitment probe**: linear probes on pre-CoT residuals predict the
   final answer at ~0.9 AUC and steering them flips answers >50% of the time
   (arXiv:2603.01437 [snippet]) — the model commits, then rationalizes. Shaped
-  exactly like a gateable saklas channel.
+  exactly like a gateable drowse channel.
 - Anthropic thread: Latent Planning Emerges with Scale (Hanna & Ameisen, ICLR
   2026, arXiv:2604.12493) — planning scales with size, steering can *strengthen*
   it. Where's the Plan (arXiv:2605.07984 [snippet]): future-rhyme is decodable
@@ -134,7 +134,7 @@ steering) explicitly unclaimed.
   "unverbalized eval awareness" is the exact phenomenon, name and all.
 - Deception is *multi-directional* — type-matched probes beat a universal one by
   3× margin (arXiv:2602.01425); a probe roster/manifold, not an axis. Fits the
-  saklas manifold thesis directly.
+  drowse manifold thesis directly.
 
 ### 5. CoT-faithfulness instrumentation
 
@@ -151,14 +151,14 @@ We already have the `thinking`/`response` triggers and committed thinking.
 
 ### 6. The causal leg: attribution verb
 
-All saklas reads are correlational. Cheapest-reliable causal localization, 2026:
+All drowse reads are correlational. Cheapest-reliable causal localization, 2026:
 - **RelP** (arXiv:2508.21258): attribution patching with LRP coefficients at
   identical cost (2 fwd + 1 bwd); correlation with true activation patching on
   GPT-2 IOI MLPs goes 0.006 (AtP) → 0.956.
 - **HVP reliability check** (arXiv:2606.09899): per-estimate trust score + one
   extra backward to remove leading-order error.
 - Pipeline: AtP*/RelP sweep → HVP flags → direct patching on survivors. The
-  jlens fit already owns the backward-pass machinery. Would give saklas a
+  jlens fit already owns the backward-pass machinery. Would give drowse a
   `attribute`-shaped verb and a causal validation leg for every probe/steering
   claim (including the future-readout and complement work above).
 
@@ -181,10 +181,10 @@ All saklas reads are correlational. Cheapest-reliable causal localization, 2026:
   Concept Decoders (arXiv:2512.15712), Introspection Adapters
   (arXiv:2604.16812; SOTA on AuditBench, catches encrypted-finetune attacks) —
   the "ask the residual stream questions in English" alternative to hand-built
-  lenses. Training-side; heavier than saklas's fit-an-artifact model.
+  lenses. Training-side; heavier than drowse's fit-an-artifact model.
 - **Endogenous steering resistance** (arXiv:2602.06941): Llama-3.3-70B recovers
   mid-generation from misaligned steering while it's still active — dedicated
-  consistency-checking circuits, scale-dependent. Directly relevant to saklas
+  consistency-checking circuits, scale-dependent. Directly relevant to drowse
   steering practice; worth checking whether gemma-4-12b fights our injections.
 - **Premature commitment** (arXiv:2606.22936): cross-run hidden-state
   convergence at a fixed early step predicts behavioral consistency (monitor
@@ -252,7 +252,7 @@ the aggregate cover every requested fitted layer. "yes"/"no" are
 single tokens, so `jlens/yes`-style readout probes apply directly, and gate
 scalars already ride the readout channel. Open question for the harness: vgel's
 injection is KV-cache-persistent (steer turn 1, ask unsteered in turn 2) —
-check what saklas's conversational path preserves across generate calls before
+check what drowse's conversational path preserves across generate calls before
 designing the replication.
 
 ## Speculative footnote (marked as such)

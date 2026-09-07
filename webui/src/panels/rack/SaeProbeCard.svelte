@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // SAE probe card — one feature of the resident SAE, pinned (a
   // ``sae/<id>`` readout probe — persistent, gate-able) or unpinned (a
   // live discovery row from the per-step top-k).  Both card kinds are the
@@ -18,6 +19,7 @@
   import Sparkline from "../../lib/charts/Sparkline.svelte";
   import { detachProbe, highlightState } from "../../lib/stores.svelte";
   import { pushToast } from "../../lib/stores/toasts.svelte";
+  import { userFacingError } from "../../lib/runtime/userFacingError";
   import RackCard from "./RackCard.svelte";
   import ProbePinButton from "./ProbePinButton.svelte";
   import ProbeHighlightButton from "./ProbeHighlightButton.svelte";
@@ -26,6 +28,8 @@
   interface Props {
     /** Feature index into the resident SAE's dictionary. */
     id: number;
+    probeName?: string;
+    measured?: boolean;
     /** Optional human label (e.g. from Neuronpedia metadata). */
     label?: string | null;
     /** The resident SAE's hook layer — identity context, not a per-card fit. */
@@ -56,6 +60,8 @@
 
   let {
     id,
+    probeName,
+    measured = true,
     label = null,
     layer,
     value,
@@ -68,12 +74,12 @@
     onpin,
   }: Props = $props();
 
-  const name = $derived(`sae/${id}`);
+  const name = $derived(probeName ?? `sae/${id}`);
   const isHighlight = $derived(highlightState.target === name);
   /** Normalized 0..1 strength when the unit is known; null keeps raw. */
   const strength = $derived(
-    maxAct != null && maxAct > 0
-      ? (valueIsStrength ? value : value / maxAct)
+    valueIsStrength ? value : maxAct != null && maxAct > 0
+      ? value / maxAct
       : null,
   );
   /** Raw activation view (reconstructed for a normalized pinned card). */
@@ -94,8 +100,7 @@
       await detachProbe(featureName);
       pushToast(`unpinned ${featureName}`, { kind: "info" });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      pushToast(`unpin ${featureName} failed — ${msg}`, {
+      pushToast(userFacingError(e, `Unable to unpin ${featureName}. Try again.`), {
         kind: "error",
         ttlMs: null,
       });
@@ -107,25 +112,14 @@
 
 <RackCard accent="--pillar-sae" disabled={false} active={isHighlight}>
   {#snippet statline()}
-    {#if pinned}
-      <ProbePinButton
-        shape="triangle"
-        pinned={true}
-        disabled={unpinBusy}
-        onclick={() => void onUnpin()}
-        title="unpin"
-        ariaLabel={`Unpin probe ${name}`}
-      />
-    {:else}
-      <ProbePinButton
-        shape="triangle"
-        pinned={false}
-        disabled={busy}
-        onclick={() => onpin?.(id)}
-        title="pin"
-        ariaLabel={`Pin probe ${name}`}
-      />
-    {/if}
+    <ProbePinButton
+      shape="triangle"
+      {pinned}
+      disabled={pinned ? unpinBusy : busy}
+      onclick={() => pinned ? void onUnpin() : onpin?.(id)}
+      title={pinned ? "unpin" : "pin"}
+      ariaLabel={`${pinned ? "Unpin" : "Pin"} probe ${name}`}
+    />
 
     <span class="name" title="probe {name}">
       {id}{label ? ` · ${label}` : ""}
@@ -145,7 +139,9 @@
   {/snippet}
 
   {#snippet body()}
-    {#if strength !== null}
+    {#if !measured}
+      <span class="row-label">Not measured</span>
+    {:else if strength !== null}
       <!-- Strength: activation / maxActApprox — absolute 0..1 scale, the
            same convention as the lens cards; the @when:sae/<id> gate
            channel reads this unit. -->
@@ -160,7 +156,7 @@
           <Bar value={Math.max(strength, 0)} max={1} width={160} height={8} color="var(--card-accent)" />
         {/snippet}
         {#snippet middle()}<span aria-hidden="true"></span>{/snippet}
-        {#snippet right()}<span class="value">{strength.toFixed(2)}</span>{/snippet}
+        {#snippet right()}<span class="value"><RollingNumber value={strength} digits={2} /></span>{/snippet}
       </ProbeReadingRow>
     {:else}
       <!-- No Neuronpedia metadata (offline / unlisted feature): raw
@@ -177,7 +173,7 @@
           <Bar value={Math.max(rawValue, 0)} max={Math.max(fallbackScale, 1)} width={160} height={8} color="var(--card-accent)" />
         {/snippet}
         {#snippet middle()}<span aria-hidden="true"></span>{/snippet}
-        {#snippet right()}<span class="value">{rawValue.toFixed(2)}</span>{/snippet}
+        {#snippet right()}<span class="value"><RollingNumber value={rawValue} digits={2} /></span>{/snippet}
       </ProbeReadingRow>
     {/if}
   {/snippet}
@@ -210,7 +206,7 @@
     color: var(--fg-muted);
     font-family: var(--font-mono);
     font-size: var(--text-sm);
-    text-align: right;
+    text-align: end;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -220,7 +216,7 @@
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
     min-width: 3.5em;
-    text-align: right;
+    text-align: end;
     flex: 0 0 auto;
   }
 </style>

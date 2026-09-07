@@ -15,17 +15,18 @@ is exercised without a model download.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable, cast
 
 import torch
 
-from saklas.core.hooks import (
+from drowse.core.events import EventBus
+from drowse.core.hooks import (
     HiddenCapture,
     SteeringManager,
     install_persistent_capture_hooks,
     install_persistent_offset_hooks,
 )
-from saklas.core.session import SaklasSession
+from drowse.core.session import DrowseSession
 
 _D = 8
 _LAYERS = [0, 1, 2]
@@ -259,7 +260,7 @@ def test_attach_persistent_registers_no_hooks_and_detach_clears_buffers():
 def test_session_close_removes_both_persistent_hook_families():
     """``from_pretrained`` installs permanent offset + capture hooks on the
     caller's model; ``close()`` is the only symmetric teardown, and
-    ``SaklasSession.__init__`` takes a pre-loaded model that outlives the
+    ``DrowseSession.__init__`` takes a pre-loaded model that outlives the
     session, so leaving them attached leaks ``2 x n_layers`` forward hooks and
     their device buffers.
     """
@@ -275,12 +276,22 @@ def test_session_close_removes_both_persistent_hook_families():
 
     steering = SteeringManager()
     steering.adopt_compiled_offsets(offset_buffers, offset_handles)
-    session = SaklasSession.__new__(SaklasSession)
+    session = DrowseSession.__new__(DrowseSession)
     session._steering = steering
     session._capture_buffers = capture_buffers
     session._capture_handles = capture_handles
+    session._capture = HiddenCapture()
+    session._capture._per_layer = {0: [torch.ones(2)]}
     session._profiles = {}
     session._manifolds = {}
+    session.events = EventBus()
+    session.events.subscribe(lambda _event: None)
+    cast(Any, session)._jlens_device_cache = {("lens",): torch.ones(2)}
+    session._jlens_decode_cache = {1: "one"}
+    session._sae_feature_meta = {"1": {"label": "feature"}}
+    cast(Any, session)._prefix_cache = object()
+    session._jlens = object()
+    session._sae_backend = object()
 
     session.close()
 
@@ -288,6 +299,14 @@ def test_session_close_removes_both_persistent_hook_families():
     assert steering.has_compiled_offsets() is False
     assert session._capture_handles == []
     assert session._capture_buffers == {}
+    assert session._capture._per_layer == {}
+    assert session._jlens_device_cache == {}
+    assert session._jlens_decode_cache == {}
+    assert session._sae_feature_meta == {}
+    assert session._prefix_cache is None
+    assert session._jlens is None
+    assert session._sae_backend is None
+    assert session.events._subs == []
 
     # Idempotent: a second close (or an explicit re-detach) must not raise.
     session.close()

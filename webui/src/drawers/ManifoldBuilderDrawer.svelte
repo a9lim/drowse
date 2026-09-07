@@ -27,19 +27,22 @@
   // forms read as one surface without each carrying a copy.
 
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
+  import { untrack } from "svelte";
   import ModeTabs from "../lib/builder/ModeTabs.svelte";
-  import { closeDrawer, openDrawer } from "../lib/stores.svelte";
+  import { closeDrawer, openDrawer, steerRack } from "../lib/stores.svelte";
+  import { runtimeClient } from "../lib/runtime/client";
   import AuthoredForm from "./manifold/AuthoredForm.svelte";
   import DiscoverForm from "./manifold/DiscoverForm.svelte";
   import TemplatedForm from "./manifold/TemplatedForm.svelte";
-  import type { ManifoldIdentity } from "./manifold/shared";
+  import { identitySlugs, type ManifoldIdentity } from "./manifold/shared";
   import "./manifold/form.css";
 
-  let { params: _params }: { params?: unknown } = $props();
-  $effect(() => { void _params; });
+  let { params }: { params?: unknown } = $props();
+  const returnToToken = $derived((params as { returnToToken?: unknown } | null)?.returnToToken);
 
   type AuthoringMode = "authored" | "discover" | "templated";
-  let authoringMode: AuthoringMode = $state("authored");
+  let authoringMode: AuthoringMode = $state(untrack(() => (params as { mode?: string } | null)?.mode === "discover" ? "discover" : "authored"));
+  const browserMode = runtimeClient.mode !== "http";
 
   const identity: ManifoldIdentity = $state({
     namespace: "local",
@@ -48,14 +51,25 @@
   });
 
   function cancel(): void {
+    if (returnToToken) {
+      openDrawer("token_drilldown", returnToToken);
+      return;
+    }
     closeDrawer();
     openDrawer("manifolds");
+  }
+
+  function complete(): void {
+    const { namespace, name } = identitySlugs(identity);
+    const created = steerRack.catalog.find(row => row.namespace === namespace && row.name === name);
+    const mode = created?.resolved_fit_mode ?? created?.fit_mode;
+    openDrawer(mode === "spectral" || mode === "authored" ? "manifolds" : "subspace", { returnToToken });
   }
 </script>
 
 <section class="drawer-shell" aria-label="Build manifold">
   <header class="header">
-    <span class="title">build manifold</span>
+    <h2 class="title">Create a concept or scale</h2>
     <DrawerCloseButton onclick={cancel} />
   </header>
 
@@ -63,7 +77,7 @@
     <ModeTabs
       bind:value={authoringMode}
       tabs={[
-        { value: "discover", label: "auto" },
+        { value: "discover", label: browserMode ? "linear" : "auto" },
         { value: "templated", label: "template" },
         { value: "authored", label: "custom" },
       ]}
@@ -107,11 +121,11 @@
     </label>
 
     {#if authoringMode === "authored"}
-      <AuthoredForm {identity} />
+      <AuthoredForm {identity} oncomplete={returnToToken ? complete : undefined} />
     {:else if authoringMode === "discover"}
-      <DiscoverForm {identity} />
+      <DiscoverForm {identity} oncomplete={returnToToken ? complete : undefined} />
     {:else}
-      <TemplatedForm {identity} />
+      <TemplatedForm {identity} oncomplete={returnToToken ? complete : undefined} />
     {/if}
   </div>
 </section>
@@ -130,7 +144,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     color: var(--accent);
@@ -141,7 +155,7 @@
   .body {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     display: flex;
     flex-direction: column;
     gap: var(--space-4);

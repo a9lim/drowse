@@ -1,0 +1,935 @@
+"""The SAE instrument: feature probes, gates, live discovery.
+
+Owns everything SAE-probe-shaped: the probe registry, the live-discovery
+config, the per-forward stash, the per-generation active flag, and the read
+surfaces (attach / per-step scoring / gate scalars / finalize aggregate /
+live display step / authored-prefill computation).  In-session call sites
+address that state as ``session._sae_instrument.<field>`` (or through the
+public ``session.sae``); the transitional delegating properties under
+historical private session names are gone.
+
+Backend *residency* stays session-side (``_sae_backend``/``_sae_layer``/
+``_sae_width``, ``_require_sae``, ``_encode_sae_hidden``, the Neuronpedia
+metadata cache + fetchers, train/load/unload lifecycle): residency is
+runtime state shared with steering atoms and the offline token replay,
+not probe intent — the same runtime-state / live-config split the lens
+family keeps.
+
+**An SAE probe emits exactly one channel**: ``<name>`` / ``<name>[0]``, the
+normalized strength.  There is no ``:fraction`` or ``:membership`` — a
+feature activation is not a geometry reading, and emitting constants under
+those names would be measurement-shaped noise.  A gate on a channel the
+family cannot produce is a composition-preflight error
+(:meth:`SaeInstrument.validate_gate`), never a silently-constant comparison.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import threading
+from typing import Any, Mapping, TYPE_CHECKING
+
+import torch
+
+from drowse.core.instruments.types import (
+    Axis,
+    DepthSummary,
+    GateRef,
+    InstrumentBinding,
+    InstrumentFamily,
+    InstrumentPlan,
+    InstrumentPrep,
+    ReadRequest,
+    SaeLiveState,
+    ScalarReading,
+    UNIT_ACTIVATION_OVER_MAX,
+    UNIT_RAW_ACTIVATION,
+    next_prep_token,
+    parse_gate_ref,
+    scalar_gate_keys,
+    validate_gate_channels,
+)
+
+if TYPE_CHECKING:
+    from drowse.core.session import DrowseSession
+
+
+class SaeRun:
+    """Per-generation measurement executor for the SAE family.
+
+    Owns the generation-scoped state (``protocol.py``): the immutable
+    :class:`InstrumentBinding` — probe specs frozen at bind with the
+    normalization unit (``max_act``) **resolved** into the snapshot — the
+    live-discovery snapshot, the live-active flag, the per-forward encode
+    stash, and the ``observe`` memo.  The frozen specs close the
+    metadata-backfill race: ``fetch_sae_feature_meta`` mutates attached specs
+    and the meta cache without the generation lock, so a running generation
+    must measure against its bind-time snapshot, never the live registry.  An
+    idle run (``bound=False``) reads the live registry — between generations a
+    Neuronpedia refresh still changes the unit immediately.
+    """
+
+    def __init__(
+        self,
+        instrument: "SaeInstrument",
+        binding: InstrumentBinding,
+        *,
+        active: bool = True,
+        live_state: "Mapping[str, Any] | None" = None,
+        bound: bool = False,
+    ) -> None:
+        self._instrument = instrument
+        self.binding = binding
+        self.active = active
+        #: The live-discovery config snapshotted at bind — a library caller
+        #: on another thread can toggle the instrument-level ``live``
+        #: mid-decode, and a bound run must keep reading the state its
+        #: generation started with (idle runs pass through instead).
+        self.live_state = live_state
+        self.bound = bound
+        self.step_stash: dict[str, Any] | None = None
+        self.last_step_readings: dict[str, ScalarReading] | None = None
+        self._memo_step: int | None = None
+        self._memo_readings: dict[str, ScalarReading] | None = None
+
+    # ------------------------------------------------------------ protocol
+
+    def observe(
+        self, step_id: int, hidden: dict[int, torch.Tensor],
+    ) -> dict[str, ScalarReading]:
+        """Readings for every attached probe at this step, memoized by
+        ``step_id`` while bound.  The workers' full-roster reads prime
+        this memo (``prime_observation``); the encode-level gate→display
+        reuse stays the step-keyed worker stash.  An idle run never
+        memoizes (it persists indefinitely; a repeated ``step_id`` with
+        different hidden states must not read stale)."""
+        if not self.bound:
+            return self._instrument.score_probes(hidden)
+        if (
+            step_id >= 0
+            and self._memo_step == step_id
+            and self._memo_readings is not None
+        ):
+            return self._memo_readings
+        readings = self._instrument.score_probes(hidden)
+        if step_id >= 0:
+            # Negative steps are the no-identity sentinel — never cacheable
+            # (a -1 memo would serve stale reads to every later -1 call).
+            self._memo_step = step_id
+            self._memo_readings = readings
+        return readings
+
+    def gate_scalars(
+        self,
+        step_id: int,
+        hidden: dict[int, Any] | None,
+        gate_keys: frozenset[str] | set[str] | None,
+    ) -> dict[str, float]:
+        """The gate channels' scalars for this step (the encode stash the
+        display step reuses lives on this run, keyed by ``step_id``).
+        ``gate_keys=None`` scores the full roster (the session forwarder's
+        bare-call shape)."""
+        del hidden  # worker reads the capture's latest slices
+        return self._instrument.gate_scalars(
+            set(gate_keys) if gate_keys is not None else None,
+            step_id=step_id,
+        )
+
+    def prime_observation(
+        self, step_id: int, readings: dict[str, ScalarReading],
+    ) -> None:
+        """Prime the step memo with FULL-roster readings a hot-path worker
+        already computed this forward — a later ``observe(step_id, …)``
+        returns them without recomputing.  Bound runs only; callers must
+        never prime an ``only=``-subset read (the completeness trap)."""
+        if not self.bound or step_id < 0:
+            return
+        self._memo_step = step_id
+        self._memo_readings = readings
+
+    def observe_aggregate(
+        self, pooled: dict[int, Any],
+    ) -> dict[str, ScalarReading]:
+        """End-of-generation aggregate at the pooled last-content slice."""
+        return self._instrument.score_probes(pooled)
+
+    def close(self) -> None:
+        """Release generation-scoped state (stash, memo, live snapshot)."""
+        self.step_stash = None
+        self.last_step_readings = None
+        self._memo_step = None
+        self._memo_readings = None
+        self.active = True
+        self.live_state = None
+
+
+class SaeInstrument:
+    """Session-lifetime handle for the SAE read family."""
+
+    family: InstrumentFamily = "sae"
+
+    #: Gate channels an SAE probe can produce: the one activation axis.
+    _GATE_CHANNELS: tuple[type, ...] = (Axis,)
+
+    def __init__(self, session: "DrowseSession") -> None:
+        self._session = session
+        # Pinned SAE feature probes: name -> {feature_id, layer, label,
+        # max_act}.  NOT monitor probes — they read the encoder channel.
+        self.probes: dict[str, dict[str, Any]] = {}
+        # Live feature discovery: {layer, source}, or None when off. The
+        # generation's resolved readout width is shared with logit alts and
+        # J-lens, so it is deliberately not session-lifetime instrument state.
+        self.live: dict[str, Any] | None = None
+        # THE SAE-state boundary, the lens ``state_lock``'s sibling: one
+        # reentrant leaf lock covering registry mutation (attach/detach, the
+        # session's metadata backfill and load/unload probe eviction), the
+        # live toggles, and the coherent snapshots (specs/names/probe_hash,
+        # the plan roster read, the idle ``_measurement_specs`` /
+        # ``_measurement_live`` copies).  An un-locked reader iterating the
+        # registry tears under a concurrent detach.  Never held on per-token
+        # paths — bound runs read their frozen binding and live snapshot.
+        self.state_lock = threading.RLock()
+        # The current per-generation run (idle passthrough until bind()).
+        self.current_run = SaeRun(
+            self, InstrumentBinding(family=self.family),
+        )
+
+    # ------------------------------------------------------------- run state
+
+    @property
+    def step_stash(self) -> dict[str, Any] | None:
+        return self.current_run.step_stash
+
+    @step_stash.setter
+    def step_stash(self, value: "dict[str, Any] | None") -> None:
+        self.current_run.step_stash = value
+
+    @property
+    def last_step_readings(self) -> "dict[str, ScalarReading] | None":
+        return self.current_run.last_step_readings
+
+    @last_step_readings.setter
+    def last_step_readings(
+        self, value: "dict[str, ScalarReading] | None",
+    ) -> None:
+        self.current_run.last_step_readings = value
+
+    @property
+    def active_for_generation(self) -> bool:
+        return self.current_run.active
+
+    @active_for_generation.setter
+    def active_for_generation(self, value: bool) -> None:
+        self.current_run.active = bool(value)
+
+    # ------------------------------------------------------------ run lifecycle
+
+    def prepare(self, request: ReadRequest) -> InstrumentPrep:
+        """Generation-boundary prep — no disk-backed source to refresh
+        (backend residency is explicit lifecycle, ``load_sae``/
+        ``train_sae``) and no lens-style identity coupling between the
+        registry and the source, so the prep only carries the request
+        forward for ``plan``/``bind``.  The bound-run guard keeps the
+        transaction contract uniform across families."""
+        if self.current_run.bound:
+            raise RuntimeError(
+                "SaeInstrument.prepare() on a bound run: close the prior "
+                "generation's run (_close_instrument_runs) first"
+            )
+        return InstrumentPrep(
+            family=self.family,
+            request=request,
+            token=next_prep_token(),
+        )
+
+    def bind(self, plan: InstrumentPlan, prep: InstrumentPrep) -> SaeRun:
+        """Bind an immutable per-generation run from a declared plan.
+
+        The binding freezes each attached probe's spec **with its
+        normalization unit resolved**: ``max_act`` falls back to the
+        session metadata cache at bind time, so a mid-generation
+        Neuronpedia backfill (which mutates specs and cache without the
+        generation lock) cannot change what a running generation measures.
+
+        The live-discovery config is snapshotted in the same ``state_lock``
+        hold, for the same reason the lens snapshots its live state: the
+        toggles are reachable from any thread (the HTTP routes serialize
+        behind the session lock, a library caller does not), and a flip
+        landing mid-decode must not change what the running generation reads.
+        """
+        if prep.family != self.family:
+            raise TypeError(
+                "SaeInstrument.bind takes the InstrumentPrep its own "
+                f"prepare() returned, got family={prep.family!r}"
+            )
+        if plan.family != self.family:
+            raise ValueError(
+                f"SaeInstrument.bind: plan family {plan.family!r} is not "
+                f"{self.family!r}"
+            )
+        if plan.prep_token != prep.token:
+            raise ValueError(
+                "SaeInstrument.bind: the plan was not derived from this "
+                "prep (prep_token mismatch) — derive the plan from the same "
+                "prepare() call"
+            )
+        live_active = prep.request.live
+        session = self._session
+        # Duck-typed narrow stubs may lack the metadata cache; a real
+        # session always carries it (set in ``__init__``).
+        has_meta_cache = getattr(session, "_sae_feature_meta", None) is not None
+        specs: dict[str, dict[str, Any]] = {}
+        with self.state_lock:
+            probe_items = list(self.probes.items())
+            live_state = dict(self.live) if self.live is not None else None
+        for name, spec in probe_items:
+            frozen = dict(spec)
+            max_act = frozen.get("max_act")
+            if not (isinstance(max_act, (int, float)) and float(max_act) > 0):
+                frozen["max_act"] = (
+                    session._sae_max_act(int(frozen["feature_id"]))
+                    if has_meta_cache else None
+                )
+            specs[name] = frozen
+        backend = getattr(session, "_sae_backend", None)
+        run = SaeRun(
+            self,
+            InstrumentBinding(
+                family=self.family,
+                source=getattr(backend, "release", None),
+                fingerprint=getattr(backend, "revision", None),
+                specs=specs,
+            ),
+            active=live_active,
+            live_state=live_state,
+            bound=True,
+        )
+        self.current_run = run
+        return run
+
+    def close_run(self) -> None:
+        """Close the current run and restore the idle passthrough run."""
+        self.current_run.close()
+        self.current_run = SaeRun(
+            self, InstrumentBinding(family=self.family),
+        )
+
+    def _measurement_specs(self) -> "Mapping[str, Mapping[str, Any]]":
+        """The spec source for measurement: a bound run's frozen binding
+        (race-immune), else a per-call coherent snapshot of the live
+        registry (idle passthrough).  Handing out the live dict lets an idle
+        read tear mid-iteration under a concurrent detach, and a metadata
+        backfill can rewrite a unit mid-read."""
+        run = self.current_run
+        if run.bound:
+            return run.binding.specs
+        with self.state_lock:
+            return {
+                name: dict(spec) for name, spec in self.probes.items()
+            }
+
+    def _measurement_live(self) -> "Mapping[str, Any] | None":
+        """The live-discovery state for measurement: a bound run's bind-time
+        snapshot (a toggle from another thread must not change what a running
+        generation reads), else a coherent copy of the live config."""
+        run = self.current_run
+        if run.bound:
+            return run.live_state
+        with self.state_lock:
+            return dict(self.live) if self.live is not None else None
+
+    # -------------------------------------------------------------- registry
+
+    def attach(self, selector: str, *, as_name: str | None = None) -> str:
+        """Attach a resident SAE feature as a one-channel readout probe.
+
+        Cache invalidation (prefix cache, probe-hash cache, analytics) is
+        the session's job at its ``add_probe`` boundary.
+        """
+        session = self._session
+        raw_id = selector.split("/", 1)[1]
+        validated = session.validate_sae_feature(raw_id)
+        idx = int(validated["id"])
+        name = as_name if as_name is not None else f"sae/{idx}"
+        with session._model_exclusive(
+            "add_probe called while another model operation is in flight; retry shortly"
+        ):
+            with self.state_lock:
+                self.probes[name] = {
+                    "feature_id": idx,
+                    "layer": int(validated["layer"]),
+                    "label": validated.get("label"),
+                    "max_act": validated.get("max_act"),
+                }
+        return name
+
+    def try_detach(self, name: str) -> bool:
+        """Atomic membership-check + detach under the registry lock — the
+        family's only removal surface (the session's ``remove_probe``
+        dispatch; a bare check + direct delete is two un-serialized
+        registry touches)."""
+        with self.state_lock:
+            if name not in self.probes:
+                return False
+            del self.probes[name]
+            return True
+
+    def specs(self) -> dict[str, dict[str, Any]]:
+        """Snapshot of attached probe specifications (coherent — a
+        concurrent detach or backfill cannot tear the iteration)."""
+        with self.state_lock:
+            return {name: dict(spec) for name, spec in self.probes.items()}
+
+    @property
+    def names(self) -> list[str]:
+        with self.state_lock:
+            return list(self.probes)
+
+    def validate_gate(self, ref: GateRef) -> None:
+        validate_gate_channels(ref, self._GATE_CHANNELS, family=self.family)
+
+    # ---------------------------------------------------------------- planning
+
+    def plan(self, prep: InstrumentPrep) -> InstrumentPlan:
+        """Declare the SAE family's capture demand for one generation.
+
+        The family reads one resident hook layer: live discovery captures
+        the live config's layer; pinned probes capture the resident
+        runtime layer whenever a finalize aggregate or an active gate will
+        read them (the resident layer is session-side runtime state shared
+        with steering atoms, consulted only when probes are attached).
+        The prep carries the request.  Unlike the lens there is no
+        registry↔source identity to snapshot at prepare, so demand reads the
+        live registry and live config under one ``state_lock`` hold; a detach
+        or toggle racing that read only shrinks or widens capture, because
+        ``bind`` freezes what the run actually measures.
+        """
+        if prep.family != self.family:
+            raise TypeError(
+                "SaeInstrument.plan takes the InstrumentPrep its own "
+                f"prepare() returned, got family={prep.family!r}"
+            )
+        request = prep.request
+        with self.state_lock:
+            live = (
+                dict(self.live)
+                if (request.live and self.live is not None) else None
+            )
+            probes = dict(self.probes)
+        gate_keys = frozenset(
+            key for key in request.gate_keys
+            if parse_gate_ref(key).probe in probes
+        )
+        latest: set[int] = set()
+        tail: set[int] = set()
+        if live is not None:
+            latest.add(int(live["layer"]))
+        if probes and (request.final_aggregate or gate_keys):
+            layer = self._session._sae_layer
+            if layer is not None:
+                latest.add(int(layer))
+                if request.final_aggregate:
+                    tail.add(int(layer))
+        return InstrumentPlan(
+            family=self.family,
+            latest_layers=frozenset(latest),
+            tail_layers=frozenset(tail),
+            gate_keys=gate_keys,
+            final_aggregate=bool(probes and request.final_aggregate),
+            prep_token=prep.token,
+        )
+
+    def probe_hash(self, name: str) -> str | None:
+        """Readout-channel identity digest.
+
+        v2: the channel is normalized strength (activation / maxActApprox)
+        when metadata exists, raw activation otherwise — ``max_act`` is
+        part of the channel identity (it sets the unit), so drift
+        detection catches a unit change.
+        """
+        with self.state_lock:
+            spec = self.probes.get(name)
+            if spec is None:
+                return None
+            spec = dict(spec)
+        session = self._session
+        info = session.sae_info or {}
+        return hashlib.sha256(repr((
+            "sae-readout-v2", session.model_id, info.get("fingerprint"),
+            info.get("release"), spec["layer"],
+            spec["feature_id"],
+            session._sae_max_act(int(spec["feature_id"])),
+        )).encode("utf-8")).hexdigest()
+
+    # ---------------------------------------------------------------- scoring
+
+    def score_probes(
+        self, hidden: dict[int, torch.Tensor] | None = None,
+        *, only: "set[str] | None" = None,
+    ) -> dict[str, ScalarReading]:
+        """Score attached probes from capture hidden slices.
+
+        The capture-slice entry: encodes the resident hook layer itself.
+        Callers holding this forward's encode already use
+        :meth:`score_probes_from_activations`.
+        """
+        session = self._session
+        if not self._measurement_specs():
+            return {}
+        _backend, layer, _width = session._require_sae()
+        if hidden is None or layer not in hidden:
+            return {}
+        return self.score_probes_from_activations(
+            session._encode_sae_hidden(hidden[layer]), only=only,
+        )
+
+    def score_probes_from_activations(
+        self,
+        activations: torch.Tensor,
+        *,
+        only: "set[str] | None" = None,
+        raw_by_fid: Mapping[int, float] | None = None,
+    ) -> dict[str, ScalarReading]:
+        """Score attached probes from an already-encoded activation vector.
+
+        The entry for callers that encoded this forward once and share it
+        (the gate callback, the live display step, authored prefill);
+        ``raw_by_fid`` additionally seeds values a caller already transferred.
+
+        Returns the family-native :class:`ScalarReading`: ONE channel whose
+        ``unit`` says which normalization actually applied (the Neuronpedia
+        corpus max when cached, raw activation otherwise) and whose depth
+        summary names its single-layer basis.  A feature activation is not
+        a geometry reading, so it carries none of those fields.
+        """
+        specs = self._measurement_specs()
+        if not specs:
+            return {}
+        session = self._session
+        _backend, layer, _width = session._require_sae()
+        live_fallback = not self.current_run.bound
+        depth = DepthSummary(
+            center=(layer / max(len(session._layers) - 1, 1),),
+            spread=(0.0,),
+            basis="single_layer",
+        )
+        out: dict[str, ScalarReading] = {}
+        for name, fid, _raw_value, value in self.probe_values(
+            activations, only=only, raw_by_fid=raw_by_fid,
+        ):
+            normalized = self._resolve_max_act(
+                specs.get(name) or {}, fid, live_fallback,
+            ) is not None
+            out[name] = ScalarReading(
+                value=float(value),
+                unit=(
+                    UNIT_ACTIVATION_OVER_MAX if normalized
+                    else UNIT_RAW_ACTIVATION
+                ),
+                per_layer={int(layer): float(value)},
+                depth=depth,
+            )
+        return out
+
+    def _resolve_max_act(
+        self, spec: "Mapping[str, Any]", fid: int, live_fallback: bool,
+    ) -> float | None:
+        """The feature's normalization constant, or ``None`` when there is
+        none (offline / unlisted feature -> the reading is raw activation).
+
+        A bound run's unit was resolved into the binding snapshot at bind,
+        so the un-locked Neuronpedia backfill cannot change a running
+        generation's unit; the live cache fallback applies only between
+        generations.  ONE resolver, shared by the value path and the unit
+        the reading reports, so the two cannot disagree.
+        """
+        max_act = spec.get("max_act")
+        if isinstance(max_act, (int, float)) and float(max_act) > 0:
+            return float(max_act)
+        if live_fallback:
+            return self._session._sae_max_act(int(fid))
+        return None
+
+    def probe_values(
+        self,
+        activations: torch.Tensor,
+        *,
+        only: "set[str] | None" = None,
+        raw_by_fid: Mapping[int, float] | None = None,
+    ) -> list[tuple[str, int, float, float]]:
+        """Pinned SAE probe values as ``(name, fid, raw, normalized)``.
+
+        ``raw_by_fid`` is a per-forward cache from a caller that has already
+        transferred selected feature activations (currently the live top-k
+        readout). Normalization reads the **measurement specs**: a bound
+        run's bind-time snapshot (a mid-generation Neuronpedia backfill
+        cannot change the unit under a running generation), else the live
+        registry (between generations a refresh changes the unit
+        immediately, as before).
+        """
+        session = self._session
+        specs = self._measurement_specs()
+        live_fallback = not self.current_run.bound
+        names = [
+            name for name in specs
+            if only is None or name in only
+        ]
+        if not names:
+            return []
+        fids = [int(specs[name]["feature_id"]) for name in names]
+        raw_values_by_fid: dict[int, float] = {
+            int(fid): float(value)
+            for fid, value in (raw_by_fid or {}).items()
+        }
+        missing_fids = [
+            fid for fid in fids
+            if fid not in raw_values_by_fid
+        ]
+        if missing_fids:
+            fid_tensor = session._readout_long_tensor(
+                missing_fids, activations.device,
+            )
+            # One host transfer for every not-already-read pinned SAE probe
+            # value.  Live readout top-k rows seed ``raw_by_fid`` first, so
+            # pinned cards that came from the visible top-k avoid a second
+            # selected-feature gather + CPU transfer.
+            raw_values = (
+                activations.index_select(0, fid_tensor)
+                .detach()
+                .to("cpu")
+                .tolist()
+            )
+            for fid, raw_value in zip(missing_fids, raw_values, strict=True):
+                raw_values_by_fid[int(fid)] = float(raw_value)
+        out: list[tuple[str, int, float, float]] = []
+        for name, fid in zip(names, fids, strict=True):
+            spec = specs[name]
+            raw_value = float(raw_values_by_fid[fid])
+            value = raw_value
+            # The ONE channel is normalized strength — ``activation /
+            # maxActApprox`` ∈ ~[0,1], apples-to-apples across features like
+            # the lens probes' mean fitted-layer probability. Raw activation
+            # only when no metadata exists (offline / not on Neuronpedia).
+            # A bound run's unit was resolved into the snapshot at bind; the
+            # live cache fallback applies only between generations.
+            max_act = self._resolve_max_act(spec, fid, live_fallback)
+            if max_act is not None:
+                value = value / max_act
+            out.append((name, fid, raw_value, value))
+        return out
+
+    def gate_scalars(
+        self, gate_keys: "set[str] | None" = None, *, step_id: int = -1,
+    ) -> dict[str, float]:
+        """Per-forward SAE gate scalars from the latest capture slice.
+
+        Emits ONLY the channels an SAE probe actually measures — ``<name>``
+        and ``<name>[0]`` (the normalized strength axis).  The historical
+        fake constants (``:fraction`` 0.0 / ``:membership`` 1.0) are gone:
+        a gate referencing a channel this family can never produce is a
+        composition-preflight error (:meth:`validate_gate`), never a
+        silently-constant comparison.  The encode stash is keyed by
+        ``step_id``, so the display step reuses it iff it came from the
+        same forward: staleness is structural, reuse is idempotent.
+        """
+        session = self._session
+        specs = self._measurement_specs()
+        if not specs:
+            return {}
+        _backend, layer, _width = session._require_sae()
+        only = None
+        if gate_keys is not None:
+            # ``None`` is the full-roster sentinel; an explicit empty set
+            # means "no gated probes" and scores nothing — the
+            # None-vs-empty distinction every family's gate entry keeps.
+            only = {
+                key.split("[", 1)[0]
+                for key in gate_keys
+                if key.split("[", 1)[0] in specs
+            }
+            if not only:
+                return {}
+        latest = session._capture.latest_per_layer()
+        if layer not in latest:
+            return {}
+        acts = session._encode_sae_hidden(latest[layer])
+        values = self.probe_values(acts, only=only)
+        self.step_stash = {
+            "activations": acts,
+            "step": step_id,
+            "raw_by_fid": {
+                int(fid): float(raw_value)
+                for _name, fid, raw_value, _value in values
+            },
+        }
+        return scalar_gate_keys({
+            name: value for name, _fid, _raw_value, value in values
+        })
+
+    def score_aggregate(
+        self,
+        generated_ids: list[int],
+        *,
+        pooled: dict[int, torch.Tensor] | None = None,
+    ) -> dict[str, ScalarReading]:
+        """End-of-gen aggregate pooled at the last content token.
+
+        Shares the session's ``_pooled_aggregate_slice`` with the monitor
+        roster and the lens family, so all three aggregates read the same
+        position under every retention mode.
+        """
+        session = self._session
+        # Binding-authoritative guard: a probe detached mid-generation
+        # stays in this generation's aggregate roster (mutations apply
+        # next generation).
+        if not self._measurement_specs() or not generated_ids:
+            return {}
+        if pooled is None:
+            pooled = session._pooled_aggregate_slice(generated_ids)
+        return self.current_run.observe_aggregate(pooled) if pooled else {}
+
+    # ----------------------------------------------------------- live readout
+
+    def enable_live(self) -> dict[str, Any]:
+        """Enable the one-matvec live feature readout at the resident layer."""
+        session = self._session
+        backend, layer, _width = session._require_sae()
+        release = str(backend.release)
+        source = (
+            release
+            if release.startswith(("local:", "saelens:"))
+            else f"saelens:{release}"
+        )
+        with self.state_lock:
+            self.live = {
+                "layer": layer,
+                "source": source,
+            }
+        return {"layer": layer}
+
+    def disable_live(self) -> None:
+        with self.state_lock:
+            self.live = None
+
+    @property
+    def is_live(self) -> bool:
+        with self.state_lock:
+            return self.live is not None
+
+    @property
+    def active_source(self) -> str | None:
+        """The resident SAE release normalized to ``local:``/``saelens:``.
+
+        Residency is the source here: an SAE with no weights loaded has no
+        active source, and ``sae_info`` is the one place that identity lives.
+        """
+        info = self._session.sae_info
+        if not info:
+            return None
+        release = info.get("release")
+        if not release:
+            return None
+        text = str(release)
+        return (
+            text if text.startswith(("local:", "saelens:"))
+            else f"saelens:{text}"
+        )
+
+    @property
+    def live_state(self) -> SaeLiveState:
+        with self.state_lock:
+            live = self.live
+            if live is None:
+                return SaeLiveState(enabled=False)
+            return SaeLiveState(
+                enabled=True,
+                layer=(
+                    int(live["layer"]) if live.get("layer") is not None
+                    else None
+                ),
+                source=live.get("source"),
+            )
+
+    def set_live(self, enabled: bool, **kwargs: Any) -> SaeLiveState:
+        """Toggle the live feature-discovery readout.
+
+        Takes no family extras: the readout width follows the generation's
+        resolved alternatives (``return_top_k``), and the layer is the
+        resident hook layer — neither is an instrument-local dial.
+        """
+        if kwargs:
+            raise TypeError(
+                "sae live takes no extras (readout width follows the "
+                f"generation's alternatives), got {sorted(kwargs)}"
+            )
+        if enabled:
+            self.enable_live()
+        else:
+            self.disable_live()
+        return self.live_state
+
+    # -------------------------------------------------------------- replay
+
+    def token_readout(
+        self,
+        node_id: str,
+        raw_index: int,
+        *,
+        top_k: int | None = None,
+        layers: "list[int] | str | None" = None,
+        apply_steering: bool = True,
+        raw: bool = False,
+    ) -> dict[str, Any]:
+        """The loom-anchored SAE feature replay, as the finished
+        ``scope="replay"`` measurement envelope.
+
+        ``layers`` is **rejected**, not ignored: the SAE reads its ONE
+        resident hook layer, so a layer selection is a request this family
+        cannot honor.
+        """
+        from drowse.core.measurements import build_measurements
+
+        if layers is not None:
+            raise ValueError(
+                "sae token-readout takes no layers (the readout is at the "
+                "resident hook layer)"
+            )
+        out = self._session.sae_token_readout(
+            node_id,
+            raw_index,
+            top_k=8 if top_k is None else int(top_k),
+            apply_steering=apply_steering,
+            raw=raw,
+        )
+        measurements = build_measurements(
+            scope="replay",
+            provenance="replayed",
+            sae_features=[
+                (
+                    int(f["id"]),
+                    float(f["activation"]),
+                    f.get("label"),
+                    f.get("max_act"),
+                )
+                for f in out.get("features", [])
+            ],
+            sae_source=self.active_source,
+            sae_layer=out.get("layer"),
+            steering=(out.get("steering") if apply_steering else None),
+        )
+        return {"measurements": measurements}
+
+    def live_readout_step(
+        self, *, top_k: int = 8, step_id: int = -1,
+    ) -> list[tuple[int, float, str | None, float | None]] | None:
+        """One decode step's live feature top-k from the latest capture slice.
+
+        Reuses the gate callback's encoded activations + raw values when the
+        stash came from THIS forward (``stash["step"] == step_id`` — one
+        encode shared by gates, pinned probes, and the live display on a
+        step; staleness is structural, so reuse is idempotent and
+        ``step_id < 0`` never matches).
+        """
+        session = self._session
+        state = self._measurement_live()
+        if state is None or not self.active_for_generation:
+            return None
+        layer = int(state["layer"])
+        buckets = session._capture.per_layer_buckets()
+        if not buckets.get(layer):
+            return None
+        stash = self.step_stash
+        stashed_raw_by_fid: dict[int, float] = {}
+        if (
+            stash is not None
+            and step_id >= 0
+            and stash.get("step") == step_id
+        ):
+            acts = stash["activations"]
+            stashed_raw_by_fid = {
+                int(fid): float(value)
+                for fid, value in (stash.get("raw_by_fid") or {}).items()
+            }
+        else:
+            acts = session._encode_sae_hidden(buckets[layer][-1])
+        k = min(int(top_k), int(acts.numel()))
+        values, indices = torch.topk(acts, k=k)
+        value_list = values.detach().to("cpu").tolist()
+        id_list = indices.detach().to("cpu").tolist()
+        raw_by_fid = {
+            fid: value for fid, value in zip(id_list, value_list, strict=True)
+        }
+        if stashed_raw_by_fid:
+            raw_by_fid = {**stashed_raw_by_fid, **raw_by_fid}
+        if self._measurement_specs():
+            self.last_step_readings = self.score_probes_from_activations(
+                acts, raw_by_fid=raw_by_fid,
+            )
+            # Full-roster readings — prime the run's observe memo for this
+            # forward (never an ``only=`` subset on this path).
+            self.current_run.prime_observation(
+                step_id, self.last_step_readings,
+            )
+        else:
+            self.last_step_readings = None
+        # Rows carry ``max_act`` (cached-only — the decode loop never fetches)
+        # so clients can render the normalized 0..1 strength beside the raw
+        # activation; ``None`` until the metadata backfill lands.
+        return [
+            (
+                int(idx),
+                float(value),
+                session._sae_label(int(idx)),
+                session._sae_max_act(int(idx)),
+            )
+            for value, idx in zip(value_list, id_list, strict=True)
+        ]
+
+    # ------------------------------------------------------- authored prefill
+
+    def authored_capture(
+        self,
+        hidden: dict[int, torch.Tensor],
+        *,
+        top_k: int,
+    ) -> tuple[
+        list[tuple[int, float, str | None, float | None]],
+        dict[str, ScalarReading],
+    ] | None:
+        """Live SAE payload for one retained authored producer row.
+
+        Computation only — the token-matching orchestration stays in the
+        session's authored-prefill path.
+        """
+        session = self._session
+        state = self._measurement_live()
+        if state is None or not self.active_for_generation:
+            return None
+        layer = int(state["layer"])
+        if layer not in hidden:
+            return None
+        activations = session._encode_sae_hidden(hidden[layer])
+        k = min(int(top_k), int(activations.numel()))
+        values, indices = torch.topk(activations, k=k)
+        value_list = values.detach().to("cpu").tolist()
+        id_list = indices.detach().to("cpu").tolist()
+        raw_by_fid = {
+            int(fid): float(value)
+            for fid, value in zip(id_list, value_list, strict=True)
+        }
+        readings = self.score_probes_from_activations(
+            activations, raw_by_fid=raw_by_fid,
+        ) if self._measurement_specs() else {}
+        rows = [
+            (
+                int(fid),
+                float(value),
+                session._sae_label(int(fid)),
+                session._sae_max_act(int(fid)),
+            )
+            for value, fid in zip(value_list, id_list, strict=True)
+        ]
+        return rows, readings
+
+
+__all__ = ["SaeInstrument"]

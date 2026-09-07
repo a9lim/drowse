@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "source": "drowse.core.capture.project_profile+drowse.core.manifold.synthesize_subspace+drowse.core.hooks._lower_affine_subspaces",
+  "hiddenSize": 2,
+  "whiteners": [
+    {
+      "layer": 0,
+      "mean": [0.5, -0.5],
+      "ridge": 0.25,
+      "basis": [[1.0, 0.0]],
+      "eigenvalues": [2.0]
+    },
+    {
+      "layer": 1,
+      "mean": [1.5, -1.5],
+      "ridge": 0.5,
+      "basis": [[0.0, 1.0]],
+      "eigenvalues": [3.0]
+    }
+  ],
+  "manifolds": {
+    "demo": {
+      "labels": ["calm", "alert"],
+      "layers": [
+        {
+          "layer": 0,
+          "basis": [1.0, 0.0],
+          "nodeCoordinates": [-1.0, 1.0],
+          "mahalanobisShare": 1.4142135623730951
+        },
+        {
+          "layer": 1,
+          "basis": [0.0, 1.0],
+          "nodeCoordinates": [-2.0, 2.0],
+          "mahalanobisShare": 2.8284271247461903
+        }
+      ]
+    },
+    "focus": {
+      "labels": ["soft", "sharp"],
+      "layers": [
+        {
+          "layer": 0,
+          "basis": [0.6000000238418579, 0.800000011920929],
+          "nodeCoordinates": [-1.5, 1.5],
+          "mahalanobisShare": 3.4985713086386614
+        },
+        {
+          "layer": 1,
+          "basis": [0.800000011920929, 0.6000000238418579],
+          "nodeCoordinates": [-0.5, 0.5],
+          "mahalanobisShare": 0.8315218588478542
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "two affine pushes",
+      "expression": "0.5 calm + 0.25 sharp",
+      "terms": [
+        { "coefficient": 0.5, "base": ["demo", "calm"], "projection": null },
+        { "coefficient": 0.25, "base": ["focus", "sharp"], "projection": null }
+      ],
+      "expectedLayers": [
+        {
+          "layer": 0,
+          "basis": [-0.9834892749786377, 0.18096616864204407],
+          "neutral": [0.5, -0.5],
+          "target": 0.670113205909729,
+          "along": 17.58540979499561,
+          "delta": [-11.589649200439453, 2.1325442790985107]
+        },
+        {
+          "layer": 1,
+          "basis": [0.20601047575473785, -0.9785497784614563],
+          "neutral": [1.5, -1.5],
+          "target": 0.8255664706230164,
+          "along": 14.414590205004393,
+          "delta": [2.451566219329834, -11.644939422607422]
+        }
+      ]
+    },
+    {
+      "name": "Mahalanobis aligned projection",
+      "expression": "0.5 calm~sharp",
+      "terms": [
+        { "coefficient": 0.5, "base": ["demo", "calm"], "projection": ["~", "focus", "sharp"] }
+      ],
+      "expectedLayers": [
+        {
+          "layer": 0,
+          "basis": [0.6000000238418579, 0.7999998927116394],
+          "neutral": [0.5, -0.5],
+          "target": 0.3031695783138275,
+          "along": 11.415590478789037,
+          "delta": [2.0765159130096436, 2.7686874866485596]
+        },
+        {
+          "layer": 1,
+          "basis": [0.800000011920929, 0.5999999642372131],
+          "neutral": [1.5, -1.5],
+          "target": 0.4251883625984192,
+          "along": 20.584409521210965,
+          "delta": [7.001801013946533, 5.251350402832031]
+        }
+      ]
+    },
+    {
+      "name": "Mahalanobis erasure projection",
+      "expression": "0.5 calm|sharp",
+      "terms": [
+        { "coefficient": 0.5, "base": ["demo", "calm"], "projection": ["|", "focus", "sharp"] }
+      ],
+      "expectedLayers": [
+        {
+          "layer": 0,
+          "basis": [0.9965457320213318, -0.08304551988840103],
+          "neutral": [0.5, -0.5],
+          "target": 0.7301289439201355,
+          "along": 12.35397581455201,
+          "delta": [8.988838195800781, -0.7490702271461487]
+        },
+        {
+          "layer": 1,
+          "basis": [-0.10653311759233475, 0.9943091869354248],
+          "neutral": [1.5, -1.5],
+          "target": 0.9051050543785095,
+          "along": 19.646024185447992,
+          "delta": [-1.8943417072296143, 17.680522918701172]
+        }
+      ]
+    }
+  ]
+}

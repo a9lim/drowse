@@ -3,12 +3,12 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "saklas"
+name = "drowse.ai"
 dynamic = ["version"]
 description = "Activation steering and trait monitoring for HuggingFace transformers"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
-authors = [{name = "a9lim", email = "mx@a9l.im"}]
+authors = [{name = "Drowse Contributors"}]
 requires-python = ">=3.11"
 keywords = [
     "activation-steering",
@@ -24,7 +24,6 @@ keywords = [
     "probing",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -55,10 +54,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/a9lim/saklas"
-Repository = "https://github.com/a9lim/saklas"
-Issues = "https://github.com/a9lim/saklas/issues"
-Releases = "https://github.com/a9lim/saklas/releases"
+Homepage = "https://github.com/a9lim/polythetic"
+Repository = "https://github.com/a9lim/polythetic"
+Issues = "https://github.com/a9lim/polythetic/issues"
+Releases = "https://github.com/a9lim/polythetic/releases"
 
 [project.optional-dependencies]
 flash = ["flash-attn>=2.5"]
@@ -66,6 +65,7 @@ cuda = ["bitsandbytes>=0.43", "kernels>=0.12"]
 dev = ["build>=1.2", "pytest>=8.0", "pytest-cov>=5.0", "httpx>=0.27", "ruff>=0.6.9", "pyright>=1.1.400"]
 hf = ["datasets>=2.0"]
 gguf = ["gguf>=0.10"]
+topology = ["ripser>=0.6.15,<0.7", "scipy>=1.11"]
 pandas = ["pandas>=3.0.2"]
 research = [
     "datasets>=2.0",
@@ -79,15 +79,16 @@ research = [
 notebook = ["plotly>=5.0", "pandas>=3.0.2", "kaleido>=0.2"]
 
 [project.scripts]
-saklas = "saklas.cli.main:main"
+drowse = "drowse.cli.main:main"
 
 [tool.pytest.ini_options]
 markers = [
     "gpu: requires a CUDA or MPS backend (deselect with `-m \"not gpu\"`)",
+    "gpu_gemma: requires explicit gated Gemma model and artifact access",
 ]
 filterwarnings = [
     # Python 3.14 flags SWIG-generated builtin types in transitive C deps
-    # (scipy/PIL). Not saklas code and nothing we can fix upstream.
+    # (scipy/PIL). Not drowse code and nothing we can fix upstream.
     "ignore:builtin type Swig(Py(Packed|Object)|varlink) has no __module__ attribute:DeprecationWarning",
 ]
 
@@ -103,10 +104,12 @@ ignore = ["E501", "E741", "E402", "E731"]
 # CLI runners and the cli/output.py presentation layer are the
 # canonical print-to-stdout sites; T20 (flake8-print) is meant to
 # catch debug-print leakage in the engine, IO, and server.
-"saklas/cli/*" = ["T20"]
+"drowse/cli/*" = ["T20"]
 # Maintenance/benchmark scripts are stand-alone and intentionally
 # print to stdout for diagnostic output and progress reporting.
 "scripts/*" = ["T20"]
+"browser-runtime/*.py" = ["T20"]
+"browser-runtime/forks/*.py" = ["T20"]
 # Examples are runnable demos that print results.
 "examples/*" = ["T20"]
 
@@ -125,7 +128,7 @@ ignore = ["E501", "E741", "E402", "E731"]
 # stub-gap noise (private re-exports) stays at warning.
 [tool.pyright]
 include = [
-    "saklas",
+    "drowse",
     "tests",
     "scripts",
     "examples",
@@ -150,21 +153,19 @@ reportUnnecessaryIsInstance = "warning"
 reportPrivateImportUsage = "warning"
 
 [tool.setuptools.dynamic]
-# Single literal lives in saklas/__init__.py; setuptools reads it via AST
+# Single literal lives in drowse/__init__.py; setuptools reads it via AST
 # parsing without executing the module (so the eager torch re-export at
-# saklas/__init__.py doesn't fire at build time).  The CI ``build`` job
+# drowse/__init__.py doesn't fire at build time).  The CI ``build`` job
 # in .github/workflows/ci.yml is the validation gate.
-version = {attr = "saklas.__version__"}
+version = {attr = "drowse.__version__"}
 
 [tool.setuptools.packages.find]
-include = ["saklas*"]
+include = ["drowse*"]
 
 [tool.setuptools.package-data]
-saklas = [
+drowse = [
     "data/**/*.json",
     "py.typed",
-    "web/dist/index.html",
-    "web/dist/favicon.ico",
-    "web/dist/LICENSE-Recursive.txt",
-    "web/dist/assets/*",
+    "web/dist/*",
+    "web/dist/**/*",
 ]

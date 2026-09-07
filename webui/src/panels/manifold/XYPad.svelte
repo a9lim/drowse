@@ -11,6 +11,7 @@
 
   import type { ManifoldInfo } from "../../lib/types";
   import Slider from "../../lib/Slider.svelte";
+  import { quotientDescription } from "../../lib/manifolds/surfaceGeometry";
 
   interface Props {
     manifold: ManifoldInfo;
@@ -49,6 +50,14 @@
   // state).
   const axes = $derived.by<AxisRange[]>(() => {
     const d = manifold.domain;
+    if (d.type === "klein") return [
+      { name: "u (rad)", lo: 0, hi: 2 * Math.PI, periodic: false },
+      { name: "v (rad)", lo: 0, hi: 2 * Math.PI, periodic: false },
+    ];
+    if (d.type === "projective") return [
+      { name: "Polar (rad)", lo: 0, hi: Math.PI, periodic: false },
+      { name: "Azimuth (rad)", lo: 0, hi: 2 * Math.PI, periodic: false },
+    ];
     if (d.type === "box") {
       return d.axes.map((a) => ({
         name: a.name,
@@ -101,6 +110,9 @@
 </script>
 
 <div class="xypad" class:locked>
+  {#if quotientDescription(manifold.domain)}
+    <p>{quotientDescription(manifold.domain)}</p>
+  {/if}
   <div class="sliders">
     {#each axes as axis, i (i)}
       <label class="axis-row">
@@ -154,6 +166,6 @@
     color: var(--fg-dim);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
-    text-align: right;
+    text-align: end;
   }
 </style>

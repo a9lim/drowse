@@ -9,7 +9,7 @@ from torch import nn
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
 
 def _weights() -> dict[str, torch.Tensor]:
@@ -22,9 +22,9 @@ def _weights() -> dict[str, torch.Tensor]:
 
 
 def test_local_sae_round_trip_and_backend() -> None:
-    from saklas.core.sae import load_sae_backend
-    from saklas.io.sae import list_sae_sources, load_active_sae_source
-    from saklas.io.sae_artifacts import load_local_sae_manifest, save_local_sae
+    from drowse.core.sae import load_sae_backend
+    from drowse.io.sae import list_sae_sources, load_active_sae_source
+    from drowse.io.sae_artifacts import load_local_sae_manifest, save_local_sae
 
     manifest_path = save_local_sae(
         "org/model",
@@ -77,8 +77,8 @@ def test_local_release_predicate_routes_padded_selectors() -> None:
     through to the provider registry (which would report the whole padded
     string as an unknown release).
     """
-    from saklas.core.sae import load_sae_backend
-    from saklas.io.sae_artifacts import is_local_sae_release, save_local_sae
+    from drowse.core.sae import load_sae_backend
+    from drowse.io.sae_artifacts import is_local_sae_release, save_local_sae
 
     assert is_local_sae_release("local:mine") is True
     assert is_local_sae_release("  local:mine  ") is True
@@ -134,7 +134,7 @@ class _TinyModel(nn.Module):
 
 
 def test_native_sae_trainer_runs_without_saelens() -> None:
-    from saklas.core.sae_training import train_residual_sae
+    from drowse.core.sae_training import train_residual_sae
 
     torch.manual_seed(0)
     model = _TinyModel().eval().requires_grad_(False)
@@ -161,7 +161,7 @@ def test_native_sae_trainer_runs_without_saelens() -> None:
 def test_native_sae_trainer_cancels_before_next_batch() -> None:
     import threading
 
-    from saklas.core.sae_training import SaeTrainingCancelled, train_residual_sae
+    from drowse.core.sae_training import SaeTrainingCancelled, train_residual_sae
 
     cancel = threading.Event()
     cancel.set()

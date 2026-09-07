@@ -5,12 +5,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import torch
 
-from saklas.core.capture import (
+from drowse.core.capture import (
     _capture_all_hidden_states,
     _load_json_with_override,
     _ReusablePooledCapture,
+    last_content_index,
 )
 
 
@@ -36,6 +38,41 @@ class _ToyModel(torch.nn.Module):
             h = layer(h)
         self.head_calls += 1
         return SimpleNamespace(last_hidden_state=h)
+
+
+class _SmolChatTokenizer:
+    all_special_ids = [1, 2]
+    added_tokens_encoder: dict[str, int] = {}
+
+    def decode(
+        self, token_ids: list[int], *, skip_special_tokens: bool = False,
+    ) -> str:
+        del skip_special_tokens
+        return "".join("\n" if token_id == 198 else "x" for token_id in token_ids)
+
+
+def test_last_content_index_ignores_chatml_whitespace_after_separator() -> None:
+    ids = [
+        1, 9690, 198, 1425, 5453, 30, 2, 198,
+        1, 36014, 402, 198, 28120, 2, 198,
+        1, 8184, 403, 5274, 198, 2, 198,
+    ]
+
+    assert last_content_index(ids, _SmolChatTokenizer()) == 19
+
+
+def test_last_content_index_supports_minimal_tokenizers_without_decode() -> None:
+    tokenizer = SimpleNamespace(
+        all_special_ids=[1, 2],
+        added_tokens_encoder={},
+    )
+
+    assert last_content_index([7, 8, 2], tokenizer) == 1
+
+
+@pytest.mark.parametrize("ids", [[7, 198], [7, 198, 198], [198, 198]])
+def test_last_content_index_preserves_content_whitespace(ids: list[int]) -> None:
+    assert last_content_index(ids, _SmolChatTokenizer()) == len(ids) - 1
 
 
 def test_capture_all_hidden_states_can_pool_inside_hook() -> None:

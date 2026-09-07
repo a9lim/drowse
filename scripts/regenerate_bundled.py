@@ -1,11 +1,11 @@
 """Regenerate every model-generated bundled manifold under
-``saklas/data/manifolds/`` through one A2 pipeline and spec table.
+``drowse/data/manifolds/`` through one A2 pipeline and spec table.
 
 The command covers both the multi-node discover manifolds and the 2-node
 ``pca`` concept subspaces.
 
 Generation writes node corpora only; FIT is a separate step
-(``saklas manifold fit <ns>/<name>``), deliberately decoupled so a flaky
+(``drowse manifold fit <ns>/<name>``), deliberately decoupled so a flaky
 generation leaves inspectable corpora.  The manifold folders are written
 directly into the package data tree, so a killed run resumes; ``--force`` wipes
 and regenerates.  The two discover manifolds (``personas``, ``emotions``) fit
@@ -40,16 +40,16 @@ from typing import Any
 
 import torch
 
-# SAKLAS_HOME is overridden to a tempdir before any from_pretrained call so the
-# session's bundled materialization doesn't touch ~/.saklas; the manifold
+# DROWSE_HOME is overridden to a tempdir before any from_pretrained call so the
+# session's bundled materialization doesn't touch ~/.drowse; the manifold
 # folders themselves are written to explicit package-tree paths (env-independent,
 # resumable across a kill).  io/paths.py reads os.environ at call time, so the
-# deferred saklas imports below are safe.
+# deferred drowse imports below are safe.
 
 REPO = Path(__file__).resolve().parent.parent
-MANIFOLDS_DIR = REPO / "saklas" / "data" / "manifolds"
-NEUTRAL_PATH = REPO / "saklas" / "data" / "neutral_statements.json"
-BASELINE_PROMPTS_PATH = REPO / "saklas" / "data" / "baseline_prompts.json"
+MANIFOLDS_DIR = REPO / "drowse" / "data" / "manifolds"
+NEUTRAL_PATH = REPO / "drowse" / "data" / "neutral_statements.json"
+BASELINE_PROMPTS_PATH = REPO / "drowse" / "data" / "baseline_prompts.json"
 NEUTRAL_TARGET = "neutral"   # pseudo-target: the organic neutral baseline corpus
 DEFAULT_MODEL_ID = "google/gemma-4-12b-it"
 
@@ -303,7 +303,7 @@ def _authored_node_pending(
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Regenerate bundled manifolds under saklas/data/manifolds/.",
+        description="Regenerate bundled manifolds under drowse/data/manifolds/.",
     )
     ap.add_argument(
         "targets", nargs="*",
@@ -350,8 +350,8 @@ def main() -> None:
     ]
     do_neutral = NEUTRAL_TARGET in targets
 
-    from saklas.io.atomic import write_json_atomic
-    from saklas.io.manifolds import (
+    from drowse.io.atomic import write_json_atomic
+    from drowse.io.manifolds import (
         append_discover_manifold_node,
         plan_discover_generation,
     )
@@ -359,7 +359,7 @@ def main() -> None:
     out_root = MANIFOLDS_DIR
     tmp_out: tempfile.TemporaryDirectory[str] | None = None
     if args.dry_run:
-        tmp_out = tempfile.TemporaryDirectory(prefix="saklas-bundled-dryrun-")
+        tmp_out = tempfile.TemporaryDirectory(prefix="drowse-bundled-dryrun-")
         out_root = Path(tmp_out.name)
 
     # Plan every discover target up front (no model) so a typo / spec error
@@ -437,12 +437,12 @@ def main() -> None:
     need_model = [name for name in discover_targets if plans[name].pending]
     need_authored = [name for name in authored_targets if authored_pending[name]]
     if need_model or need_authored or neutral_pending:
-        with tempfile.TemporaryDirectory(prefix="saklas-bundled-regen-") as tmp:
-            os.environ["SAKLAS_HOME"] = tmp
-            from saklas.core.session import SaklasSession
+        with tempfile.TemporaryDirectory(prefix="drowse-bundled-regen-") as tmp:
+            os.environ["DROWSE_HOME"] = tmp
+            from drowse.core.session import DrowseSession
 
             print(f"loading generator model: {args.model}")
-            session = SaklasSession.from_pretrained(
+            session = DrowseSession.from_pretrained(
                 args.model, device="auto", probes=[],
             )
             for name in need_model:
@@ -536,7 +536,7 @@ def main() -> None:
     if written:
         print(f"\n[done] wrote {len(written)} manifold(s) -> fit with:")
         for name in written:
-            print(f"  saklas manifold fit default/{name} -m <model>")
+            print(f"  drowse manifold fit default/{name} -m <model>")
     if neutral_pending:
         print(f"\n[done] wrote neutral baseline -> {NEUTRAL_PATH.relative_to(REPO)}")
         print("  per-model layer_means + Mahalanobis whitener recompute on next "

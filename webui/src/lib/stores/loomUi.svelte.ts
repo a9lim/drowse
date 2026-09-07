@@ -9,9 +9,11 @@
 // comparison node and the multi-select feeding the cross-branch diff
 // drawer.
 
-import { SvelteMap, SvelteSet } from "svelte/reactivity";
-import { apiTree, ApiError } from "../api";
+import { SvelteMap } from "svelte/reactivity";
+import { apiTree, ApiError } from "../runtime/services";
+import { userFacingError } from "../runtime/userFacingError";
 import { loomTree } from "./loom.svelte";
+import { loomTextMatches } from "../loomSearch";
 
 /** Sidebar-modal kind, also pokeable from App.svelte via the global
  *  Ctrl+R/E/B/N/D shortcuts.  ``null`` = no modal. */
@@ -26,6 +28,9 @@ export type LoomModalKind =
   | "search";
 
 export interface LoomUiState {
+  /** Synchronized Loom subview. The authoritative tree is shared; this only
+   * changes which projection of it is visible. */
+  view: "weave" | "map" | "path" | "options" | "saved";
   /** Request flag: when the App's Ctrl+R/etc handlers want to open a
    *  modal inside the sidebar, they bump this counter and the sidebar
    *  reacts.  Counter lets the same modal be re-requested back-to-back
@@ -51,6 +56,7 @@ export interface LoomUiState {
  *  the layout, so this carries no open/closed flag — only the modal
  *  request signal and the sort / filter-help knobs. */
 export const loomUiState: LoomUiState = $state({
+  view: "map",
   modalRequest: { seq: 0, kind: null, nodeId: null, text: "", n: 1 },
   siblingSort: "default",
   filterHelpOpen: false,
@@ -69,7 +75,7 @@ export const edgeLabelCache: Map<string, string> = $state(new SvelteMap());
 /** In-flight fetch dedupe — keys we've already kicked off a request
  *  for.  Cleared after the response lands so retries are possible
  *  when the rev changes. */
-const _edgeLabelInFlight: Set<string> = new SvelteSet();
+const _edgeLabelInFlight = new Map<string, object>();
 
 function _edgeKey(parentId: string, childId: string): string {
   return `${parentId}|${childId}`;
@@ -82,36 +88,42 @@ export function fetchEdgeLabel(parentId: string, childId: string): void {
   const key = _edgeKey(parentId, childId);
   if (edgeLabelCache.has(key)) return;
   if (_edgeLabelInFlight.has(key)) return;
-  _edgeLabelInFlight.add(key);
+  const request = {};
+  _edgeLabelInFlight.set(key, request);
   apiTree
     .edgeLabel(parentId, childId)
     .then((r) => {
-      edgeLabelCache.set(key, r.label);
+      if (_edgeLabelInFlight.get(key) === request) edgeLabelCache.set(key, r.label);
     })
     .catch(() => {
-      // Transient fetch failure — cache an empty
-      // string so we don't retry every render.
-      edgeLabelCache.set(key, "");
+      // Labels are optional. Leave failures uncached so the next tree or
+      // view update can retry; the fetch effect does not observe this cache.
     })
     .finally(() => {
-      _edgeLabelInFlight.delete(key);
+      if (_edgeLabelInFlight.get(key) === request) _edgeLabelInFlight.delete(key);
     });
 }
 
-/** Bust the cache when the tree mutates — the server's
- *  ``applied_steering`` strings can shift, especially after
- *  ``edit``/``regen``.  Wired into ``applyTreeDelta``. */
-export function invalidateEdgeLabels(): void {
-  edgeLabelCache.clear();
-  _edgeLabelInFlight.clear();
+/** Invalidate changed edges, or every edge when replacing the whole tree. */
+export function invalidateEdgeLabels(keys?: ReadonlySet<string>): void {
+  if (keys === undefined) {
+    edgeLabelCache.clear();
+    _edgeLabelInFlight.clear();
+    return;
+  }
+  for (const key of keys) {
+    edgeLabelCache.delete(key);
+    _edgeLabelInFlight.delete(key);
+  }
 }
 
 // ----------------------------------------------------- filter --------
 
 export interface FilterState {
+  mode: "text" | "advanced";
   /** User-entered expression string.  Empty = filter off. */
   expr: string;
-  /** Server-resolved matching ids.  When ``expr`` is empty this is
+  /** Text or advanced-filter matching ids. When ``expr`` is empty this is
    *  ``null`` — the UI then renders every node at full opacity. */
   matchingIds: Set<string> | null;
   /** Last parse / fetch error to surface in the input. */
@@ -121,11 +133,14 @@ export interface FilterState {
 }
 
 export const filterState: FilterState = $state({
+  mode: "text",
   expr: "",
   matchingIds: null,
   error: null,
   loading: false,
 });
+
+let filterRequest = 0;
 
 /** Strip ``sort:surprise`` / ``sort:confidence`` terms out of the filter
  *  expression before it reaches the server.  Sort is a client-side
@@ -151,8 +166,12 @@ function _consumeSortPrefix(expr: string): string {
   return cleaned.replace(/,,+/g, ",").replace(/^\s*,|,\s*$/g, "").trim();
 }
 
-export async function applyTreeFilter(expr: string): Promise<void> {
+export async function applyTreeFilter(expr: string, mode = filterState.mode): Promise<void> {
+  const request = ++filterRequest;
+  const rootId = loomTree.root_id;
+  const current = () => request === filterRequest && rootId === loomTree.root_id;
   filterState.expr = expr;
+  filterState.mode = mode;
   const trimmed = expr.trim();
   if (!trimmed) {
     filterState.matchingIds = null;
@@ -161,10 +180,18 @@ export async function applyTreeFilter(expr: string): Promise<void> {
     loomUiState.siblingSort = "default";
     return;
   }
+  const nodes = [...loomTree.nodes.values()];
+  if (mode === "text") {
+    loomUiState.siblingSort = "default";
+    filterState.matchingIds = new Set(nodes.filter(node => loomTextMatches(node.text ?? "", trimmed)).map(node => node.id));
+    filterState.error = null;
+    filterState.loading = false;
+    return;
+  }
   // Logit-pass: peel the client-side sort term off before sending to
   // the server.  Server filter grammar stays unchanged.
-  const serverExpr = _consumeSortPrefix(trimmed);
-  if (!serverExpr) {
+  const advancedExpr = _consumeSortPrefix(trimmed);
+  if (!advancedExpr) {
     // Only ``sort:...`` was provided — no node-set filter, just a sort
     // directive.  Clear the matching-set so every node renders; the
     // sidebar's DFS picks up ``siblingSort`` independently.
@@ -173,28 +200,38 @@ export async function applyTreeFilter(expr: string): Promise<void> {
     filterState.loading = false;
     return;
   }
+  const clauses = advancedExpr.split(",").map(clause => clause.trim()).filter(Boolean);
+  const textClauses = clauses.filter(clause => /^text:/i.test(clause)).map(clause => clause.slice(5).trim());
+  const starred = clauses.some(clause => clause.toLowerCase() === "starred");
+  const serverExpr = clauses.filter(clause => !/^text:/i.test(clause) && clause.toLowerCase() !== "starred").join(",");
+  const localIds = new Set(nodes.filter(node => (!starred || node.starred) && textClauses.every(text => loomTextMatches(node.text ?? "", text))).map(node => node.id));
   filterState.loading = true;
   filterState.error = null;
+  filterState.matchingIds = null;
   try {
-    const r = await apiTree.filter(serverExpr);
-    filterState.matchingIds = new Set(r.matching_node_ids);
+    if (textClauses.some(text => !text)) throw new Error("Enter words after text:.");
+    const ids = serverExpr ? (await apiTree.filter(serverExpr)).matching_node_ids : [...localIds];
+    if (!current()) return;
+    filterState.matchingIds = new Set(ids.filter(id => localIds.has(id)));
   } catch (e) {
+    if (!current()) return;
     if (e instanceof ApiError) {
-      filterState.error =
+      const detail =
         e.body && typeof e.body === "object" && "detail" in (e.body as object)
           ? String((e.body as { detail: unknown }).detail)
           : e.message;
+      filterState.error = userFacingError(detail, "The conversation could not be searched.");
     } else {
-      filterState.error = e instanceof Error ? e.message : String(e);
+      filterState.error = userFacingError(e, "The conversation could not be searched.");
     }
-    // Leave previous matches in place so the UI doesn't flicker; the
-    // error message surfaces the parse failure.
+    filterState.matchingIds = null;
   } finally {
-    filterState.loading = false;
+    if (current()) filterState.loading = false;
   }
 }
 
 export function clearTreeFilter(): void {
+  filterRequest += 1;
   filterState.expr = "";
   filterState.matchingIds = null;
   filterState.error = null;

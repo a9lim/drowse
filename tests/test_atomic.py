@@ -1,4 +1,4 @@
-"""Atomic-write helper + crash-recovery semantics for ~/.saklas state."""
+"""Atomic-write helper + crash-recovery semantics for ~/.drowse state."""
 from __future__ import annotations
 
 import json
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from saklas.io import atomic
-from saklas.io.atomic import _temp_path, write_bytes_atomic, write_json_atomic
+from drowse.io import atomic
+from drowse.io.atomic import _temp_path, write_bytes_atomic, write_json_atomic
 
 
 def test_write_json_atomic_creates_file(tmp_path: Path):

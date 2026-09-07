@@ -32,10 +32,10 @@ body:
       required: true
 
   - type: input
-    id: saklas-version
+    id: drowse-version
     attributes:
-      label: saklas version
-      description: Output of `pip show saklas | grep Version`
+      label: Drowse version
+      description: Output of `pip show drowse | grep Version`
       placeholder: x.y.z
     validations:
       required: true

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FluentIcon from "../lib/ui/FluentIcon.svelte";
   // Pending-queue strip — ghosted bubbles between the streaming
   // assistant turn and the composer.  Each bubble shows the item's
   // label tag + truncated text + an X button that cancels just that
@@ -43,7 +44,7 @@
           onclick={() => cancelPendingAction(item.id)}
           aria-label="Cancel pending {item.label}"
           title="cancel"
-        >×</button>
+        ><FluentIcon name="dismiss" /></button>
       </div>
     {/each}
   </div>
@@ -106,7 +107,9 @@
     font-family: var(--font-mono);
     font-size: var(--text);
     line-height: 1;
-    padding: 0 var(--space-2);
+    min-width: var(--control-target);
+    min-height: var(--control-target);
+    padding: 0;
     cursor: pointer;
     flex-shrink: 0;
     border-radius: var(--radius);

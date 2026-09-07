@@ -1,6 +1,6 @@
 """CPU tests for ablation dispatch through _SteeringContext / _rebuild_steering_hooks.
 
-Builds a ``SaklasSession`` skeleton by hand (bypassing ``__init__`` via
+Builds a ``DrowseSession`` skeleton by hand (bypassing ``__init__`` via
 ``__new__``) so no model load is required.  Safe because these tests never
 call generate() / extract() / anything that touches the model -- only the
 steering-stack manipulation and hook-manager wiring is exercised.
@@ -13,21 +13,21 @@ from typing import Any, cast
 import pytest
 import torch
 
-from saklas.io import selectors as _sel
-from saklas.core.events import EventBus
-from saklas.core.hooks import SteeringManager
-from saklas.core.session import SaklasSession, ProfileNotRegisteredError
-from saklas.core.steering import Steering
-from saklas.core.steering_composer import SteeringComposer
-from saklas.core.steering_expr import AblationTerm
-from saklas.core.triggers import Trigger
+from drowse.io import selectors as _sel
+from drowse.core.events import EventBus
+from drowse.core.hooks import SteeringManager
+from drowse.core.session import DrowseSession, ProfileNotRegisteredError
+from drowse.core.steering import Steering
+from drowse.core.steering_composer import SteeringComposer
+from drowse.core.steering_expr import AblationTerm
+from drowse.core.triggers import Trigger
 from tests._whitener import isotropic_whitener
 
 
 @pytest.fixture(autouse=True)
 def _isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Keep parser pole-resolution from scanning the user's real vectors dir."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _sel.invalidate()
     yield
     _sel.invalidate()
@@ -38,9 +38,9 @@ class _NoopModule(torch.nn.Module):
         return (x,)
 
 
-def _skeleton_session() -> SaklasSession:
+def _skeleton_session() -> DrowseSession:
     import threading
-    session = SaklasSession.__new__(SaklasSession)
+    session = DrowseSession.__new__(DrowseSession)
     session._model = None  # pyright: ignore[reportAttributeAccessIssue]  # skeleton: bypasses __init__, _model accepts None here
     session._tokenizer = None  # pyright: ignore[reportAttributeAccessIssue]  # skeleton: _tokenizer accepts None here
     session._layers = torch.nn.ModuleList(
@@ -58,7 +58,7 @@ def _skeleton_session() -> SaklasSession:
     session._gen_lock = threading.RLock()
     # Phase guard the push/pop methods read to reject callback
     # reentry — skeleton sessions are always idle.
-    from saklas.core.session import GenState
+    from drowse.core.session import GenState
     session._gen_phase = GenState.IDLE
     session._internal_steering_pop = False
     session._whitener = isotropic_whitener([1], 3)

@@ -1,12 +1,12 @@
 """The status vertical: every long construction step narrates.
 
-A first ``saklas serve <model>`` runs an HF load, a neutral-corpus forward
+A first ``drowse serve <model>`` runs an HF load, a neutral-corpus forward
 pass for the Mahalanobis whitener, and a fit for every bundled concept not yet
 fitted for the loaded weights.  All of that used to be silent — the loader's
 own status goes to ``log.info``, which nothing configures for a library, and
 neither the whitener build nor the probe bootstrap had a narration surface at
 all.  These tests pin the ``on_progress`` chain that closes it:
-``load_model`` → ``SaklasSession.__init__`` → whitener build /
+``load_model`` → ``DrowseSession.__init__`` → whitener build /
 ``_bootstrap_manifold_probes``, plus the CLI's printing sink.
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.session import SaklasSession
+from drowse.core.session import DrowseSession
 
 
 class _Sink:
@@ -41,10 +41,10 @@ def test_neutral_loader_threads_on_progress_into_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``load_or_compute_neutral_activations`` narrates the cache-miss pass."""
-    import saklas.core.capture as capture_mod
-    from saklas.io.alignment import load_or_compute_neutral_activations
+    import drowse.core.capture as capture_mod
+    from drowse.io.alignment import load_or_compute_neutral_activations
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     seen: dict[str, Any] = {}
 
     def _fake_compute(
@@ -82,7 +82,7 @@ def test_neutral_loader_threads_on_progress_into_capture(
 
 def test_compute_neutral_activations_reports_each_capture_chunk() -> None:
     """The capture loop itself emits one line per forward chunk."""
-    from saklas.core import capture as capture_mod
+    from drowse.core import capture as capture_mod
 
     lines: list[str] = []
     chunks: list[tuple[int, int]] = []
@@ -129,7 +129,7 @@ def test_whitener_build_forwards_on_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``__init__``'s eager whitener build hands the callback down."""
-    from saklas.io import alignment as alignment_mod
+    from drowse.io import alignment as alignment_mod
 
     class _Session:
         _model = object()
@@ -148,7 +148,7 @@ def test_whitener_build_forwards_on_progress(
         alignment_mod, "load_or_compute_neutral_activations", _load,
     )
     sink = _Sink()
-    whitener = SaklasSession._build_whitener_from_cache_or_compute(
+    whitener = DrowseSession._build_whitener_from_cache_or_compute(
         _Session(), sink,  # pyright: ignore[reportArgumentType]
     )
     assert whitener is not None
@@ -167,7 +167,7 @@ class _BootstrapSession:
         self.fit_calls: list[tuple[Any, Any]] = []
 
     def ensure_manifold_loaded(self, key: str) -> None:
-        from saklas.core.session import ManifoldNotRegisteredError
+        from drowse.core.session import ManifoldNotRegisteredError
 
         if key not in self._fitted:
             raise ManifoldNotRegisteredError(key)
@@ -181,7 +181,7 @@ class _BootstrapSession:
 def _patch_roster(
     monkeypatch: pytest.MonkeyPatch, roster: dict[str, list[str]],
 ) -> None:
-    import saklas.io.probes_bootstrap as probes_mod
+    import drowse.io.probes_bootstrap as probes_mod
 
     monkeypatch.setattr(probes_mod, "load_default_manifolds", lambda: roster)
 
@@ -194,7 +194,7 @@ def test_bootstrap_probes_announces_roster_then_each_fit(
     session = _BootstrapSession(fitted=set())
     sink = _Sink()
 
-    SaklasSession._bootstrap_manifold_probes(
+    DrowseSession._bootstrap_manifold_probes(
         session,  # pyright: ignore[reportArgumentType]
         ["epistemic"], on_progress=sink,
     )
@@ -215,7 +215,7 @@ def test_bootstrap_probes_counts_the_roster_once_across_categories(
     session = _BootstrapSession(fitted=set())
     lines: list[str] = []
 
-    SaklasSession._bootstrap_manifold_probes(
+    DrowseSession._bootstrap_manifold_probes(
         session,  # pyright: ignore[reportArgumentType]
         ["a", "b"], on_progress=lines.append,
     )
@@ -231,7 +231,7 @@ def test_bootstrap_probes_is_silent_without_a_callback(
     _patch_roster(monkeypatch, {"epistemic": ["confident.uncertain"]})
     session = _BootstrapSession(fitted=set())
 
-    SaklasSession._bootstrap_manifold_probes(
+    DrowseSession._bootstrap_manifold_probes(
         session,  # pyright: ignore[reportArgumentType]
         ["epistemic"],
     )
@@ -247,7 +247,7 @@ def test_bootstrap_probes_already_fitted_roster_says_nothing_per_concept(
     session = _BootstrapSession(fitted={"default/confident.uncertain"})
     lines: list[str] = []
 
-    SaklasSession._bootstrap_manifold_probes(
+    DrowseSession._bootstrap_manifold_probes(
         session,  # pyright: ignore[reportArgumentType]
         ["epistemic"], on_progress=lines.append,
     )
@@ -267,7 +267,7 @@ def test_load_model_reports_device_and_memory(
     weights / memory lines are invisible by default; the sink is how the CLI
     sees them.
     """
-    import saklas.core.model as model_mod
+    import drowse.core.model as model_mod
 
     plan = argparse.Namespace(
         model_id="test/model", device="cpu", dtype=torch.float32,
@@ -301,7 +301,7 @@ def test_load_model_reports_device_and_memory(
 # --------------------------------------------------------------- the CLI leg --
 
 def test_progress_printer_prints_indented(capsys: pytest.CaptureFixture[str]) -> None:
-    from saklas.cli.runners import _progress_printer
+    from drowse.cli.runners import _progress_printer
 
     sink = _progress_printer(argparse.Namespace())
     assert sink is not None
@@ -311,7 +311,7 @@ def test_progress_printer_prints_indented(capsys: pytest.CaptureFixture[str]) ->
 
 def test_progress_printer_suppressed_under_json_output() -> None:
     """A ``-j`` verb keeps stdout parseable."""
-    from saklas.cli.runners import _progress_printer
+    from drowse.cli.runners import _progress_printer
 
     assert _progress_printer(argparse.Namespace(json_output=True)) is None
     assert _progress_printer(argparse.Namespace(json_output=False)) is not None
@@ -321,8 +321,8 @@ def test_make_session_passes_the_printing_sink(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``_make_session`` is where every model-loading verb picks up narration."""
-    import saklas.core.session as session_mod
-    from saklas.cli.runners import _make_session
+    import drowse.core.session as session_mod
+    from drowse.cli.runners import _make_session
 
     seen: dict[str, Any] = {}
 
@@ -331,7 +331,7 @@ def test_make_session_passes_the_printing_sink(
         return object()
 
     monkeypatch.setattr(
-        session_mod.SaklasSession, "from_pretrained",
+        session_mod.DrowseSession, "from_pretrained",
         staticmethod(_from_pretrained),
     )
     args = argparse.Namespace(
@@ -349,8 +349,8 @@ def test_manifold_extract_runner_narrates(monkeypatch: pytest.MonkeyPatch) -> No
     the callback it printed the model info and then nothing until the final
     "extracted" line.
     """
-    import saklas.cli.runners as runners_pkg
-    from saklas.cli.runners.manifold import _run_manifold_extract
+    import drowse.cli.runners as runners_pkg
+    from drowse.cli.runners.manifold import _run_manifold_extract
 
     captured: dict[str, Any] = {}
 
@@ -381,7 +381,7 @@ def test_manifold_extract_runner_rejects_custom_without_system(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Same rejection ``manifold generate`` applies, before the model loads."""
-    from saklas.cli.runners.manifold import _run_manifold_extract
+    from drowse.cli.runners.manifold import _run_manifold_extract
 
     with pytest.raises(SystemExit) as exc:
         _run_manifold_extract(argparse.Namespace(
@@ -397,8 +397,8 @@ def test_pack_install_runner_narrates(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """``pack install`` prints each stage the io layer reports."""
-    import saklas.io.hf_manifolds as hfm
-    from saklas.cli.runners.pack import _run_pack_install
+    import drowse.io.hf_manifolds as hfm
+    from drowse.cli.runners.pack import _run_pack_install
 
     def _install(
         target: str, as_: Any = None, *, force: bool = False,
@@ -407,7 +407,7 @@ def test_pack_install_runner_narrates(
         assert on_progress is not None
         on_progress("Downloading alice/mood from Hugging Face...")
         on_progress("Validating staged alice/mood...")
-        return Path("/home/.saklas/manifolds/local/mood")
+        return Path("/home/.drowse/manifolds/local/mood")
 
     monkeypatch.setattr(hfm, "install_manifold", _install)
     _run_pack_install(argparse.Namespace(
@@ -424,9 +424,9 @@ def test_install_manifold_reports_every_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The io entry point narrates resolve → download for an HF coord."""
-    import saklas.io.hf_manifolds as hfm
+    import drowse.io.hf_manifolds as hfm
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
 
     def _fake_pull(
         coord: str, target_folder: Path, *, force: bool, revision: Any,

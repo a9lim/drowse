@@ -10,8 +10,8 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
-import saklas.server.sse as sse_module
-from saklas.server.sse import ProgressCallback, progress_sse_response, sse_or_json
+import drowse.server.sse as sse_module
+from drowse.server.sse import ProgressCallback, progress_sse_response, sse_or_json
 
 
 def _client_for(

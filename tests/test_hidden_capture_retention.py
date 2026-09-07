@@ -16,7 +16,7 @@ from typing import Callable
 
 import torch
 
-from saklas.core.hooks import HiddenCapture
+from drowse.core.hooks import HiddenCapture
 
 _D = 4
 _LAYERS = [0, 1, 2]

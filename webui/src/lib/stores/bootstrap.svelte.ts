@@ -5,7 +5,7 @@
 
 import { loadGenUiMode } from "./chat.svelte";
 import { refreshLoomTree } from "./loom.svelte";
-import { attachPersistence, loadPersistedPreferences } from "./persistence.svelte";
+import { loadPersistedPreferences } from "./persistence.svelte";
 import { refreshProbeList } from "./probes.svelte";
 import { refreshSession } from "./session.svelte";
 import {
@@ -28,7 +28,6 @@ export async function bootstrap(): Promise<void> {
   loadPersistedPreferences();
   // Per-model render-mode override (base vs chat) — also model-scoped.
   loadGenUiMode();
-  attachPersistence();
   await Promise.allSettled([
     refreshVectorList(),
     // Unified probe roster — every probe shape.

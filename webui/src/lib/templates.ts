@@ -2,7 +2,7 @@
 //
 // THE one validator for every template-authoring surface (TemplateLabDrawer's
 // build tab, ManifoldBuilderDrawer's templated tab).  It reproduces
-// ``saklas/io/templates.py::_validate_body`` / ``_validate_context``
+// ``drowse/io/templates.py::_validate_body`` / ``_validate_context``
 // one-for-one so a draft that passes here is a draft the server accepts —
 // the point is that the form goes red where it is wrong instead of filling
 // out cleanly and 400-ing on submit.

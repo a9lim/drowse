@@ -1,0 +1,69 @@
+.sliding-selection {
+  position: relative;
+  isolation: isolate;
+  --selection-x: 0px;
+  --selection-y: 0px;
+  --selection-width: 0px;
+  --selection-height: 0px;
+}
+
+.sliding-selection > .selection-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -1;
+  pointer-events: none;
+  width: var(--selection-width);
+  height: var(--selection-height);
+  border-radius: var(--radius);
+  transform: translate(var(--selection-x), var(--selection-y));
+  background: var(--control-sheen), var(--control-selected-bg);
+  box-shadow: var(--shadow-control);
+  visibility: hidden;
+}
+
+.sliding-selection:is(.theme-toggle, .sk-mode-tabs) > .selection-indicator { border-radius: var(--radius-inset); }
+.sliding-selection[data-selection-visible] > .selection-indicator { visibility: visible; }
+.sliding-selection[data-selection-ready] > .selection-indicator {
+  transition:
+    transform var(--selection-dur) var(--selection-ease),
+    width var(--selection-dur) var(--selection-ease),
+    height var(--selection-dur) var(--selection-ease),
+    background-color var(--selection-dur) var(--selection-ease);
+}
+
+.sliding-selection.sliding-selection.sliding-selection button {
+  color: var(--fg-dim);
+  background: transparent;
+  background-image: none !important;
+  transition:
+    color var(--selection-dur) var(--selection-ease),
+    background-color var(--selection-dur) var(--selection-ease),
+    transform var(--selection-dur) var(--selection-ease);
+}
+.sliding-selection.sliding-selection.sliding-selection button:is([aria-pressed="true"], [aria-selected="true"], [aria-current="page"]) {
+  color: var(--fg);
+  background: transparent;
+  box-shadow: none;
+  border-color: transparent;
+}
+.sliding-selection.sliding-selection.sliding-selection button:active:not(:disabled) {
+  transform: scale(var(--press-scale));
+}
+.sliding-selection.sliding-selection.sliding-selection button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.sliding-selection.sliding-selection .workspace-group.current { background: transparent; }
+
+.sliding-selection.theme-toggle:not([data-selection-ready]) button {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sliding-selection > .selection-indicator,
+  .sliding-selection.sliding-selection button { transition: none !important; }
+}
+@media (forced-colors: active) {
+  .sliding-selection > .selection-indicator { border: 1px solid Highlight; box-sizing: border-box; }
+}

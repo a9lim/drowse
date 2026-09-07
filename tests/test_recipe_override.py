@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from saklas import Recipe, SamplingConfig
-from saklas.core.steering_expr import ManifoldTerm, parse_expr
+from drowse import Recipe, SamplingConfig
+from drowse.core.steering_expr import ManifoldTerm, parse_expr
 
 
 # ---------------------------------------------------------------------------
@@ -136,11 +136,43 @@ def test_compose_unknown_raises():
         Recipe().compose_modifier("foo")
 
 
+def test_compose_custom_string_recipe():
+    mod = Recipe().compose_modifier("seed=42, temperature=1.5, thinking=false")
+    assert mod.seed == 42
+    assert mod.thinking is False
+    assert mod.sampling is not None
+    assert mod.sampling.temperature == pytest.approx(1.5)
+
+
+def test_compose_custom_string_preserves_steering_commas():
+    mod = Recipe().compose_modifier(
+        "steering=0.6,0.3 circumplex%0.2,0.8, temperature=0.4"
+    )
+    assert mod.steering == "0.6,0.3 circumplex%0.2,0.8"
+    assert mod.sampling is not None
+    assert mod.sampling.temperature == pytest.approx(0.4)
+
+
+@pytest.mark.parametrize(
+    "modifier",
+    [
+        "temperature=fast",
+        "temperature=3",
+        "thinking=yes",
+        "seed=1, seed=2",
+        "unknown=1",
+    ],
+)
+def test_compose_custom_string_rejects_invalid_fields(modifier: str):
+    with pytest.raises(ValueError):
+        Recipe().compose_modifier(modifier)
+
+
 def test_compose_custom_recipe_passthrough():
     """``compose_modifier`` with a Recipe arg returns it unchanged.
 
-    The custom-mode path: callers parse the partial-recipe expression themselves
-    and hand the Recipe in; ``compose_modifier`` shouldn't interpret it as a string.
+    Programmatic callers may hand a Recipe in directly; ``compose_modifier``
+    should not reinterpret it.
     """
     partial = Recipe(steering="0.5 calm", sampling=SamplingConfig(temperature=0.4))
     out = Recipe(steering="0.3 honest", seed=42).compose_modifier(partial)
@@ -167,8 +199,8 @@ def test_compose_modifier_routes_through_overlay_in_regen_with_modifier():
     onto the parent recipe.  No model load — uses _resolve_recipe_override
     which is the pure-Python overlay path.
     """
-    from saklas.core.session import SaklasSession
-    from saklas import LoomTree
+    from drowse.core.session import DrowseSession
+    from drowse import LoomTree
 
     class _StubSession:
         def __init__(self):
@@ -181,10 +213,10 @@ def test_compose_modifier_routes_through_overlay_in_regen_with_modifier():
 
     stub = _StubSession()
     stub_any: Any = stub
-    stub_any._resolve_anchor_recipe = SaklasSession._resolve_anchor_recipe.__get__(
+    stub_any._resolve_anchor_recipe = DrowseSession._resolve_anchor_recipe.__get__(
         stub, _StubSession
     )
-    resolve = SaklasSession._resolve_recipe_override.__get__(stub, _StubSession)
+    resolve = DrowseSession._resolve_recipe_override.__get__(stub, _StubSession)
     custom = Recipe(sampling=SamplingConfig(temperature=0.4))
     new_steering, new_sampling, new_thinking = resolve(
         custom,
@@ -205,8 +237,8 @@ def test_compose_modifier_routes_through_overlay_in_regen_with_modifier():
 
 def test_resolve_override_with_string_mode():
     """The session helper applies overlay onto the parent recipe + returns the kwargs."""
-    from saklas.core.session import SaklasSession
-    from saklas import LoomTree
+    from drowse.core.session import DrowseSession
+    from drowse import LoomTree
 
     class _StubSession:
         def __init__(self):
@@ -219,10 +251,10 @@ def test_resolve_override_with_string_mode():
 
     stub = _StubSession()
     stub_any: Any = stub
-    stub_any._resolve_anchor_recipe = SaklasSession._resolve_anchor_recipe.__get__(
+    stub_any._resolve_anchor_recipe = DrowseSession._resolve_anchor_recipe.__get__(
         stub, _StubSession
     )
-    resolve = SaklasSession._resolve_recipe_override.__get__(stub, _StubSession)
+    resolve = DrowseSession._resolve_recipe_override.__get__(stub, _StubSession)
     new_steering, new_sampling, new_thinking = resolve(
         "unsteered",
         parent_node_id=stub.aid,
@@ -235,15 +267,15 @@ def test_resolve_override_with_string_mode():
 
 
 def test_resolve_override_passthrough_when_none():
-    from saklas.core.session import SaklasSession
-    from saklas import LoomTree
+    from drowse.core.session import DrowseSession
+    from drowse import LoomTree
 
     class _StubSession:
         def __init__(self):
             self.tree = LoomTree()
 
     stub = _StubSession()
-    resolve = SaklasSession._resolve_recipe_override.__get__(stub, _StubSession)
+    resolve = DrowseSession._resolve_recipe_override.__get__(stub, _StubSession)
     out = resolve(
         None, parent_node_id=None,
         steering="0.5 warm", sampling=None, thinking=None,
@@ -252,8 +284,8 @@ def test_resolve_override_passthrough_when_none():
 
 
 def test_resolve_override_with_custom_recipe():
-    from saklas.core.session import SaklasSession
-    from saklas import LoomTree
+    from drowse.core.session import DrowseSession
+    from drowse import LoomTree
 
     class _StubSession:
         def __init__(self):
@@ -261,10 +293,10 @@ def test_resolve_override_with_custom_recipe():
 
     stub = _StubSession()
     stub_any: Any = stub
-    stub_any._resolve_anchor_recipe = SaklasSession._resolve_anchor_recipe.__get__(
+    stub_any._resolve_anchor_recipe = DrowseSession._resolve_anchor_recipe.__get__(
         stub, _StubSession
     )
-    resolve = SaklasSession._resolve_recipe_override.__get__(stub, _StubSession)
+    resolve = DrowseSession._resolve_recipe_override.__get__(stub, _StubSession)
     partial = Recipe(sampling=SamplingConfig(temperature=0.9), seed=7)
     new_steering, new_sampling, new_thinking = resolve(
         partial, parent_node_id=None,

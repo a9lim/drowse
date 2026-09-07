@@ -19,37 +19,28 @@
   // followed by a labelled custom row. Successful preparation makes the source
   // resident and turns live readout on.
 
-  import Bar from "../lib/charts/Bar.svelte";
-  import Select from "../lib/Select.svelte";
-  import Button from "../lib/ui/Button.svelte";
-  import { onMount } from "svelte";
+  import RuntimeSaeSourceSection from "@runtime-sae-source";
   import SaeProbeCard from "./rack/SaeProbeCard.svelte";
   import { mergeInstrumentProbeRows } from "./rack/probeRows";
   import type { InstrumentProbeRow } from "./rack/probeRows";
   import AtomSteerCard from "./rack/AtomSteerCard.svelte";
-  import InstrumentSourceSection from "./rack/InstrumentSourceSection.svelte";
   import RackSectionHeader from "./rack/RackSectionHeader.svelte";
-  import { apiInstruments } from "../lib/api";
+  import { userFacingError } from "../lib/runtime/userFacingError";
+  import { apiInstruments } from "../lib/runtime/services";
   import {
     activeProbeNames,
     addSaeToRack,
     attachProbe,
-    loadSae,
-    saeLoad,
-    saeTrain,
     probeRack,
     probeEntryForDisplay,
     saeState,
-    saeSourceState,
     saeRawFallbackScale,
     saeReadoutForDisplay,
-    seedProbeDisplay,
     sessionState,
     setLiveSae,
     setSaeSortMode,
     steerRack,
     tokenHoverState,
-    refreshSaeSources,
     instrumentFamily,
     saeLoaded,
   } from "../lib/stores.svelte";
@@ -66,140 +57,10 @@
   /** The resident SAE, read off the family block + the prepared-sources
    *  listing (the flat ``sae_info`` key is gone — the read plane has one
    *  representation now). */
-  const residentSource = $derived(instrumentFamily("sae")?.source ?? null);
   const residentLayer = $derived.by((): number | null => {
-    const active = saeSourceState.sources.find((row) => row.active);
-    if (active?.layer != null) return active.layer;
     const live = instrumentFamily("sae")?.live;
     return live && "layer" in live ? live.layer : null;
   });
-  let selectedSource = $state("");
-  let selectedLayer = $state("");
-  let layerSource = $state("");
-  let localName = $state("my-sae");
-  let trainTokens = $state(1_000_000);
-  let trainLayer = $state("");
-  let trainConfirm = $state(false);
-  let releases = $state<{
-    release: string;
-    layers: number[];
-    source?: "local" | "saelens";
-  }[]>([]);
-  let discoverError = $state<string | null>(null);
-  const providerOptions = $derived(releases.map((row) => ({
-    value: `saelens:${row.release}`,
-    label: row.release,
-  })));
-  const sourceBusy = $derived(
-    saeSourceState.loading || saeLoad.state.running || saeTrain.state.running,
-  );
-  const selectedPreparedSource = $derived(
-    saeSourceState.sources.find((source) => source.source === selectedSource),
-  );
-  const selectedRelease = $derived(
-    selectedSource.startsWith("saelens:")
-      ? selectedSource.slice("saelens:".length)
-      : selectedSource,
-  );
-  const availableLayers = $derived.by(() => {
-    const registry = releases.find((row) => row.release === selectedRelease);
-    const layers = registry?.layers ?? (
-      selectedPreparedSource?.layer == null ? [] : [selectedPreparedSource.layer]
-    );
-    return [...new Set(layers)].sort((a, b) => a - b);
-  });
-  const layerOptions = $derived(availableLayers.map((layer) => ({
-    value: String(layer),
-    label: `layer ${layer}`,
-  })));
-  const sourceMatchesLoaded = $derived(
-    loaded && residentSource !== null && selectedSource === residentSource,
-  );
-  const selectedLayerNumber = $derived(
-    selectedLayer === "" ? null : Number(selectedLayer),
-  );
-  const sourceSelectionCurrent = $derived(
-    sourceMatchesLoaded && selectedLayerNumber === residentLayer,
-  );
-
-  onMount(() => {
-    void refreshSaeSources();
-    void saeTrain.check();
-    void saeLoad.check();
-  });
-
-  $effect(() => {
-    const source = selectedSource;
-    const layers = availableLayers;
-    if (source !== layerSource) {
-      layerSource = source;
-      const resident = sourceMatchesLoaded ? residentLayer : null;
-      const cached = selectedPreparedSource?.layer ?? null;
-      const preferred = resident != null && layers.includes(resident)
-        ? resident
-        : cached != null && layers.includes(cached)
-        ? cached
-        : preferredLayer(layers);
-      selectedLayer = preferred == null ? "" : String(preferred);
-    } else if (
-      layers.length > 0 &&
-      (selectedLayer === "" || !layers.includes(Number(selectedLayer)))
-    ) {
-      const preferred = preferredLayer(layers);
-      selectedLayer = preferred == null ? "" : String(preferred);
-    }
-  });
-
-  $effect(() => {
-    if (selectedSource !== "local") trainConfirm = false;
-  });
-
-  $effect(() => {
-    if (releases.length > 0) return;
-    void apiInstruments.sources("sae").then((result) => {
-      releases = (result.releases ?? []).filter((row) => row.source !== "local");
-      if (!selectedSource && releases.length > 0) {
-        selectedSource = `saelens:${releases[0].release}`;
-      }
-    }).catch((error) => {
-      discoverError = error instanceof Error ? error.message : String(error);
-    });
-  });
-
-  function requestTrain(): void {
-    if (!localName.trim() || saeTrain.state.running) return;
-    if (!trainConfirm) {
-      trainConfirm = true;
-      return;
-    }
-    trainConfirm = false;
-    const parsedLayer = trainLayer.trim() === "" ? null : Number(trainLayer);
-    void saeTrain.start({
-      name: localName.trim(),
-      tokens: trainTokens,
-      layer: parsedLayer != null && Number.isInteger(parsedLayer)
-        ? parsedLayer
-        : null,
-    });
-  }
-
-  function preferredLayer(layers: number[]): number | null {
-    if (layers.length === 0) return null;
-    const depth = Math.max(...layers, 1);
-    const band = layers.filter((layer) => {
-      const fraction = layer / depth;
-      return fraction >= 0.4 && fraction <= 0.9;
-    });
-    const pool = band.length > 0 ? band : layers;
-    const target = 0.65 * depth;
-    return [...pool].sort((a, b) =>
-      Math.abs(a - target) - Math.abs(b - target) || a - b
-    )[0] ?? null;
-  }
-
-  function loadSelectedSae(source: string): void {
-    loadSae(source, selectedLayerNumber);
-  }
 
   // ---------- STEER: sae-mode rack entries (by feature id) ----------
   const steerCards = $derived.by(() => {
@@ -212,16 +73,16 @@
 
   // ---------- PROBE: pinned probe cards + unpinned discovery cards ----------
   const pinnedBase = $derived.by(() => activeProbeNames()
-    .filter((name) => name.startsWith("sae/"))
     .map((name) => ({ name, entry: probeEntryForDisplay(name) }))
-    .filter((row) => row.entry !== undefined));
+    .filter((row) => row.entry?.info.family === "sae"));
 
   const discoveryBase = $derived.by(() => displayReadout
-    .filter((row) => !probeRack.active.includes(`sae/${row.id}`))
+    .filter((row) => !pinnedBase.some(({ entry }) =>
+      entry?.info.family === "sae" && entry.info.feature_id === row.id))
     .map((row) => {
       // Metadata merges from the row's server-cached values and the
       // between-generation backfill (saeState.meta).
-      const meta = saeState.meta.get(row.id);
+      const meta = tokenHoverState.active ? undefined : saeState.meta.get(row.id);
       return {
         ...row,
         label: row.label ?? meta?.label ?? null,
@@ -271,7 +132,7 @@
         sortName: info.label || String(info.feature_id),
         // Pinned values with max_act are already normalized server-side —
         // the reading's own ``unit`` says which one applied.
-        strength: info.max_act != null ? value : value / fallbackScale,
+        strength: latest?.unit === "activation_over_max" ? value : value / fallbackScale,
       };
     }));
 
@@ -302,7 +163,7 @@
   async function validateInput(raw: string): Promise<number | null> {
     const id = Number(raw.trim().replace(/^sae\//, ""));
     if (!Number.isInteger(id) || id < 0) {
-      pushToast("feature id must be a non-negative integer", { kind: "error" });
+      pushToast("Enter a feature number of 0 or greater.", { kind: "error" });
       return null;
     }
     const validated = await apiInstruments.validateSaeFeature(id);
@@ -320,7 +181,7 @@
         steerInput = "";
       }
     } catch (error) {
-      pushToast(error instanceof Error ? error.message : String(error), { kind: "error" });
+      pushToast(userFacingError(error, "Unable to add that feature control. Try again."), { kind: "error" });
     } finally {
       featureBusy = false;
     }
@@ -331,30 +192,9 @@
     featureBusy = true;
     try {
       await apiInstruments.validateSaeFeature(id);
-      const live = discoveryBase.find((row) => row.id === id);
-      const meta = saeState.meta.get(id);
-      const preAttachMaxAct = live?.max_act ?? meta?.max_act ?? null;
-      const attached = await attachProbe(`sae/${id}`);
-      if (live) {
-        // Attachment may discover Neuronpedia metadata that the live row
-        // did not have yet. Seed in the unit the attached probe declares,
-        // not the stale pre-attach unit.
-        const maxAct =
-          (attached.family === "sae" ? attached.max_act : null) ??
-          preAttachMaxAct;
-        const value = maxAct != null && maxAct > 0
-          ? live.activation / maxAct
-          : live.activation;
-        const series = saeState.history.get(id) ?? [];
-        seedProbeDisplay(`sae/${id}`, {
-          current: value,
-          sparkline: maxAct != null && maxAct > 0
-            ? series.map((v) => v / maxAct)
-            : series,
-        });
-      }
+      await attachProbe(`sae/${id}`);
     } catch (error) {
-      pushToast(error instanceof Error ? error.message : String(error), { kind: "error" });
+      pushToast(userFacingError(error, "Unable to pin that feature. Try again."), { kind: "error" });
     } finally {
       featureBusy = false;
     }
@@ -371,127 +211,28 @@
         probeInput = "";
       }
     } catch (error) {
-      pushToast(error instanceof Error ? error.message : String(error), { kind: "error" });
+      pushToast(userFacingError(error, "Unable to add that feature reading. Try again."), { kind: "error" });
     } finally {
       featureBusy = false;
     }
   }
+
+  function openConversation(): void {
+    window.dispatchEvent(new CustomEvent("drowse:workspace", {
+      detail: "conversation",
+    }));
+  }
 </script>
 
-<div class="sae" aria-label="Sparse-autoencoder inspector">
-  <InstrumentSourceSection
-    ready={loaded}
-    sources={saeSourceState.sources}
-    bind:value={selectedSource}
-    busy={sourceBusy}
-    accent="var(--pillar-sae)"
-    sourceError={saeSourceState.error}
-    working={saeTrain.state.running}
-    selectionCurrent={sourceSelectionCurrent}
-    onuse={loadSelectedSae}
-    providerOptions={providerOptions}
-    providerPlaceholder="SAELens release"
-    onfetch={loadSelectedSae}
-    localActionLabel={trainConfirm ? "confirm train" : "train"}
-    localActionDisabled={!localName.trim() || sourceBusy}
-    onlocal={requestTrain}
-  >
-    {#snippet sourceControls()}
-      <Select
-        bind:value={selectedLayer}
-        options={layerOptions}
-        placeholder="layer"
-        disabled={sourceBusy || layerOptions.length === 0}
-        ariaLabel="SAE measurement layer"
-      />
-    {/snippet}
-    {#snippet localControls()}
-      <label class="setup-field setup-field-wide">
-        <span class="setup-field-label">name</span>
-        <input
-          class="add-input"
-          bind:value={localName}
-          placeholder="name"
-          aria-label="Local SAE name"
-        />
-      </label>
-      <label class="setup-field setup-field-medium">
-        <span class="setup-field-label">tokens</span>
-        <input
-          class="add-input"
-          type="number"
-          min="1"
-          step="10000"
-          bind:value={trainTokens}
-          aria-label="SAE training tokens"
-          title="tokens"
-        />
-      </label>
-      <label class="setup-field setup-field-narrow">
-        <span class="setup-field-label">layer</span>
-        <input
-          class="add-input"
-          inputmode="numeric"
-          bind:value={trainLayer}
-          placeholder="auto"
-          aria-label="Residual layer (blank for automatic)"
-        />
-      </label>
-    {/snippet}
-    {#snippet progress()}
-      <div class="train-progress" role="status" aria-live="polite">
-        <div class="train-line">
-          <span class="work-status">{saeTrain.state.message ?? "training…"}</span>
-          <span class="train-count">
-            {saeTrain.state.current.toLocaleString()}/{saeTrain.state.total.toLocaleString()}
-          </span>
-        </div>
-        <Bar
-          value={saeTrain.state.current}
-          max={Math.max(saeTrain.state.total, 1)}
-          width={160}
-          height={8}
-          color="var(--pillar-sae)"
-        />
-        <Button
-          size="sm"
-          variant="danger"
-          disabled={saeTrain.state.cancelling}
-          onclick={() => void saeTrain.cancel()}
-        >
-          {saeTrain.state.cancelling ? "cancelling…" : "cancel"}
-        </Button>
-      </div>
-    {/snippet}
-    {#snippet warning()}
-      {#if trainConfirm}
-        <p class="hint train-warning" role="alert">
-          Blocks generation; uses FineWeb-Edu. Confirm again.
-        </p>
-      {/if}
-    {/snippet}
-    {#snippet messages()}
-      {#if saeLoad.state.running && saeLoad.state.message}
-        <p class="hint" role="status" aria-live="polite">{saeLoad.state.message}</p>
-      {/if}
-      {#if saeLoad.state.error}
-        <p class="hint load-error" role="alert">{saeLoad.state.error}</p>
-      {/if}
-      {#if saeTrain.state.error}
-        <p class="hint load-error" role="alert">local train: {saeTrain.state.error}</p>
-      {/if}
-      {#if discoverError}
-        <p class="hint" role="alert">registry: {discoverError}</p>
-      {/if}
-    {/snippet}
-  </InstrumentSourceSection>
+<div class="sae" aria-label="Model feature controls">
+  <RuntimeSaeSourceSection />
 
   {#if loaded}
 
     <!-- STEER — decoder-row atom cards in the shared steering expression. -->
     <section class="section steer">
       <RackSectionHeader
-        title="STEER"
+        title="SAE steering"
         count={`${steerCards.length} term${steerCards.length === 1 ? "" : "s"}`}
       />
 
@@ -503,22 +244,30 @@
             </div>
           {/each}
         </div>
+      {:else}
+        <p class="hint empty-copy">
+          No feature direction added. Enter a feature number below, then choose Add feature.
+        </p>
       {/if}
 
       <form class="add-form" onsubmit={addSteer}>
-        <input
-          class="add-input"
-          type="text"
-          placeholder="feature id"
-          bind:value={steerInput}
-          aria-label="Add an SAE steering feature"
-        />
+        <label class="add-field">
+          <span class="add-label">Feature number</span>
+          <input
+            class="add-input"
+            type="text"
+            inputmode="numeric"
+            placeholder="e.g. 42"
+            bind:value={steerInput}
+            aria-label="Add a model feature direction"
+          />
+        </label>
         <button
           type="submit"
           class="add-btn"
           disabled={featureBusy || !steerInput.trim()}
         >
-          + steer
+          Add feature
         </button>
       </form>
     </section>
@@ -528,17 +277,19 @@
          other pillars' fixed-chrome / scrollable-middle shape). -->
     <section class="section probe">
       <RackSectionHeader
-        title="PROBE"
+        title="SAE readout"
         count={`${pinnedBase.length} pinned`}
         live={saeState.live}
         liveBusy={saeState.busy}
         liveTitle={saeState.live
           ? "turn live readout off"
           : "turn live readout on"}
+        liveLabel="live model-feature readings"
+        liveHelp="Update feature activity while the model writes. Pinned features stay visible when it finishes."
         onLiveToggle={() => void setLiveSae(!saeState.live)}
         sortValue={saeState.sortMode}
         sortOptions={SORT_OPTIONS}
-        sortAriaLabel="Sort SAE probe features by"
+        sortAriaLabel="Sort model features by"
         onSortChange={setSaeSortMode}
       />
 
@@ -554,11 +305,13 @@
                        already normalized server-side when max_act is set. -->
                   <SaeProbeCard
                     id={probe.feature_id}
+                    probeName={row.name}
                     label={probe.label}
                     layer={residentLayer}
                     value={reading?.value ?? row.entry.current ?? 0}
-                    maxAct={probe.max_act}
-                    valueIsStrength={probe.max_act != null}
+                    measured={reading !== null || row.entry.sparkline.length > 0}
+                    maxAct={reading?.unit === "raw_activation" ? null : probe.max_act}
+                    valueIsStrength={reading?.unit === "activation_over_max"}
                     {fallbackScale}
                     series={row.entry.sparkline}
                     pinned={true}
@@ -571,7 +324,7 @@
                     value={row.feature.activation}
                     maxAct={row.feature.max_act}
                     {fallbackScale}
-                    series={saeState.history.get(row.feature.id) ?? []}
+                    series={tokenHoverState.active ? [row.feature.activation] : saeState.history.get(row.feature.id) ?? []}
                     pinned={false}
                     busy={featureBusy}
                     onpin={(id) => void pin(id)}
@@ -585,32 +338,43 @@
         {#if tokenHoverState.active}
           {#if tokenHoverState.saeLoading}
             <p class="hint">reading hovered token…</p>
+          {:else if tokenHoverState.saeError}
+            <p class="hint read-error" role="alert">{tokenHoverState.saeError}</p>
           {:else if probeCards.length === 0}
             <p class="hint">no SAE score for this token</p>
           {/if}
         {:else if saeState.live}
           {#if discoveryBase.length === 0}
-            <p class="hint">run to discover</p>
+            <div class="empty-state">
+              <p class="hint">Pin a feature, then send a message to track its activity.</p>
+              <button type="button" class="empty-action" onclick={openConversation}>
+                Go to conversation
+              </button>
+            </div>
           {/if}
         {:else}
-          <p class="hint">pinned only · end of run</p>
+          <p class="hint">Live is off. Turn it on to see active features while the model writes, or pin one below.</p>
         {/if}
       </div>
 
       <form class="add-form anchored" onsubmit={addProbe}>
-        <input
-          class="add-input"
-          type="text"
-          placeholder="feature id"
-          bind:value={probeInput}
-          aria-label="Pin an SAE feature probe"
-        />
+        <label class="add-field">
+          <span class="add-label">Feature number</span>
+          <input
+            class="add-input"
+            type="text"
+            inputmode="numeric"
+            placeholder="e.g. 42"
+            bind:value={probeInput}
+            aria-label="Watch a model feature"
+          />
+        </label>
         <button
           type="submit"
           class="add-btn"
           disabled={featureBusy || !probeInput.trim()}
         >
-          + pin
+          Watch feature
         </button>
       </form>
     </section>
@@ -636,45 +400,8 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: var(--space-5);
+    padding: var(--surface-padding);
     min-height: 0;
-  }
-  .train-line {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-width: 0;
-  }
-  .train-progress {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-2);
-  }
-  .train-line {
-    width: 100%;
-    justify-content: space-between;
-  }
-  .work-status {
-    margin: 0;
-    color: var(--fg-dim);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-  }
-  .work-status {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .train-count {
-    color: var(--fg-muted);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    font-variant-numeric: tabular-nums;
-    flex: 0 0 auto;
-  }
-  .train-warning {
-    color: var(--accent-yellow);
   }
   .section.steer {
     flex: 0 1 auto;
@@ -699,7 +426,7 @@
     flex: 1 1 0;
     min-height: 2.4rem;
     overflow-y: auto;
-    padding-right: var(--space-1);
+    padding-inline-end: var(--space-1);
   }
   /* Anchored footer — borderless, same padding treatment as the racks'
      actions row. */
@@ -713,10 +440,33 @@
     color: var(--fg-muted);
     font-size: var(--text-sm);
   }
-  .load-error {
-    color: var(--accent-red);
+  .read-error { color: var(--accent-red); }
+  .empty-copy {
+    padding: var(--surface-padding);
+    border-radius: var(--radius);
+    background: var(--surface-sheen), var(--glass);
   }
-
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding: var(--surface-padding);
+    border-radius: var(--radius);
+    background: var(--surface-sheen), var(--glass);
+  }
+  .empty-action {
+    min-height: var(--control-target);
+    padding: 0 var(--space-4);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--radius);
+    background: var(--glass-strong);
+    color: var(--fg-strong);
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-structure);
+  }
+  .empty-action:hover { color: var(--pillar-sae); }
   /* Card stack — same rhythm as the other racks' strips. */
   .cards {
     display: flex;
@@ -727,10 +477,25 @@
   /* ----- add / load forms ----- */
   .add-form {
     display: flex;
+    align-items: flex-end;
     gap: var(--space-2);
   }
-  .add-input {
+  .add-field {
+    display: flex;
     flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+  .add-label {
+    color: var(--fg-dim);
+    font-family: var(--font-structure);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-structure);
+  }
+  .add-input {
+    width: 100%;
+    min-height: var(--control-target);
     min-width: 0;
     /* Borderless input: recessed well fill; ring on focus only. */
     background: var(--input-well);
@@ -739,7 +504,7 @@
     border-radius: var(--radius);
     font-family: var(--font-mono);
     font-size: var(--text-sm);
-    padding: 2px var(--space-3);
+    padding: var(--space-xs) var(--space-3);
     transition: border-color var(--dur-fast) var(--ease-out);
   }
   .add-input:focus-visible {
@@ -755,7 +520,7 @@
     border: 1px solid transparent;
     border-radius: var(--radius);
     font-size: var(--text-sm);
-    padding: 1px var(--space-3);
+    padding: var(--space-xs) var(--space-3);
     cursor: pointer;
     flex: 0 0 auto;
     transition: background var(--dur) var(--ease-out);
@@ -766,6 +531,30 @@
   .add-btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  .add-btn:active,
+  .empty-action:active { transform: scale(var(--press-scale)); }
+
+  @media (max-width: 920px), (max-height: 700px) {
+    .sae {
+      display: block;
+      overflow-y: auto;
+    }
+    .section.steer,
+    .section.probe {
+      max-height: none;
+      overflow: visible;
+    }
+    .scroll,
+    .steer-cards {
+      flex: 0 0 auto;
+      overflow: visible;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .add-btn,
+    .empty-action { transition: none; }
   }
 
 </style>

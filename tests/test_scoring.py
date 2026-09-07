@@ -1,4 +1,4 @@
-"""CPU tests for ``saklas.core.scoring`` — the restricted-choice logit read.
+"""CPU tests for ``drowse.core.scoring`` — the restricted-choice logit read.
 
 The headline question this module answers is *"did steering shift the
 distribution, not just the argmax?"*  These tests pin the math that backs that
@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.scoring import (
+from drowse.core.scoring import (
     ChoiceScore,
     ChoiceScores,
     score_choices,
@@ -425,7 +425,7 @@ def test_steering_actually_shifts_distribution():
 
 def _toy_template() -> Any:
     """A 2-value, 2-context template via the real TemplateFolder.from_payload."""
-    from saklas.io.templates import TemplateFolder
+    from drowse.io.templates import TemplateFolder
 
     return TemplateFolder.from_payload({
         "format_version": 2,
@@ -511,9 +511,14 @@ def test_real_forward_score_choices_distribution():
     Not run in CI (no GPU / no model download) — documents that ``score_choices``
     produces a coherent restricted-choice distribution on a real causal LM.
     """
-    from saklas import SaklasSession
+    from drowse import DrowseSession
+    from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
 
-    with SaklasSession.from_pretrained("google/gemma-3-4b-it", device="auto") as session:
+    model_id = gpu_model_id()
+    created = load_or_skip_inaccessible(
+        lambda: DrowseSession.from_pretrained(model_id, device="auto"), model_id,
+    )
+    with created as session:
         scores = session.score_choices(
             [{"role": "user", "content": "The day after Monday is"}],
             ["Tuesday", "Saturday", "December"],

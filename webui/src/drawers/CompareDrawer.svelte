@@ -5,11 +5,14 @@
   // profiles and active probes; the body renders an L_A × L_B heatmap akin to
   // the correlation matrix, but indexed by layer rather than by name.
   //
-  // Data: GET /saklas/v1/sessions/{id}/profiles/pairwise?a=&b= — the server
+  // Data: GET /drowse/v1/sessions/{id}/profiles/pairwise?a=&b= — the server
   // falls back to monitor profiles when a name isn't a registered steering
   // profile, so probe names resolve cleanly without a new endpoint.
 
-  import { apiProfiles, ApiError } from "../lib/api";
+  import { apiProfiles, ApiError } from "../lib/runtime/services";
+  import { getRuntimeClient } from "../lib/runtime/registry";
+  import { userFacingError } from "../lib/runtime/userFacingError";
+  import { comparisonProfileNames } from "../lib/profileAnalytics";
   import {
     closeDrawer,
     probeRack,
@@ -25,17 +28,17 @@
   let _drawerProps: { params?: unknown } = $props();
   $effect(() => { void _drawerProps.params; });
 
-  // Picker source — union of registered vectors and active probes,
-  // sorted case-insensitively.  Mirrors LayerNormsDrawer so both
-  // analysis tools share the same name space.
-  const names = $derived.by<string[]>(() => {
-    const set = new Set<string>();
-    for (const v of vectorsState.names) set.add(v);
-    for (const p of probeRack.active) set.add(p);
-    return [...set].sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: "base" }),
-    );
-  });
+  const inferHttpProbeProfiles = getRuntimeClient().mode === "http";
+
+  // Hosted profile lists already include the exact attached aliases that can
+  // be folded to one direction.  Do not advertise lens, SAE, curved, or
+  // multidimensional probes: pairwise analytics cannot compare them.
+  const names = $derived(comparisonProfileNames(
+    vectorsState.names,
+    probeRack.active,
+    probeRack.entries,
+    inferHttpProbeProfiles,
+  ));
 
   let conceptA = $state<string>("");
   let conceptB = $state<string>("");
@@ -90,9 +93,9 @@
           e.body && typeof e.body === "object" && "detail" in (e.body as object)
             ? String((e.body as { detail: unknown }).detail)
             : e.message;
-        error = `${e.status}: ${detail}`;
+        error = userFacingError(e, `Unable to compare these directions. ${detail}`);
       } else {
-        error = e instanceof Error ? e.message : String(e);
+        error = userFacingError(e, "Unable to compare these directions. Try again.");
       }
       data = null;
     } finally {
@@ -107,7 +110,7 @@
   });
 
   function cellTitle(la: number, lb: number, v: number | null): string {
-    return `${conceptA} L${la} × ${conceptB} L${lb}: ${v == null ? "—" : v.toFixed(3)}`;
+    return `${conceptA} L${la} × ${conceptB} L${lb}: ${v == null ? "-" : v.toFixed(3)}`;
   }
 
   function onClose(): void {
@@ -136,15 +139,15 @@
 <aside class="drawer" aria-label="Pairwise compare">
   <header class="drawer-header">
     <div class="title">
-      <span class="eyebrow">pairwise compare</span>
+      <h2 class="eyebrow">Compare controls by layer</h2>
       <div class="name-row">
         {#if data}
           <code class="name">{conceptA} × {conceptB}</code>
-          <span class="meta">{layersA.length} × {layersB.length} layers · model {data.model ?? "—"}</span>
+          <span class="meta">{layersA.length} × {layersB.length} layers · model {data.model ?? "-"}</span>
         {:else if names.length < 2}
-          <span class="meta">≥2 names required</span>
+          <span class="meta">Choose at least two controls</span>
         {:else}
-          <span class="meta">select A / B</span>
+          <span class="meta">Choose two controls</span>
         {/if}
       </div>
     </div>
@@ -172,13 +175,13 @@
     </label>
   </div>
 
-  <div class="body">
+  <div class="body" aria-busy={loading}>
     {#if error}
-      <div class="empty err">error: {error}</div>
+      <div class="empty err" role="alert">Comparison failed: {error}</div>
     {:else if loading && !matrix}
-      <div class="empty">loading…</div>
+      <div class="empty loading-pulse loading-placeholder" role="status">Loading layer comparison…</div>
     {:else if !matrix || layersA.length === 0 || layersB.length === 0}
-      <div class="empty">no layer data</div>
+      <div class="empty">Choose two available profiles or probes to compare their layers.</div>
     {:else}
       <div class="grid-scroll">
         <table class="grid" style="--cell: {CELL_SIZE}px;">
@@ -218,14 +221,6 @@
     {/if}
   </div>
 
-  <footer class="drawer-footer">
-    <span class="hint">
-      Per-layer cosine similarity, ``a``'s layers down rows, ``b``'s
-      layers across columns.  Diagonal lights up when the two profiles
-      track the same direction at the matching layer; off-diagonal
-      structure shows how the concept "rotates" across depth.
-    </span>
-  </footer>
 </aside>
 
 <style>
@@ -247,7 +242,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-5);
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     display: flex;
@@ -288,7 +283,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-5);
-    padding: var(--space-4) var(--space-6);
+    padding: var(--space-6) var(--drawer-gutter-inline);
   }
   .picker {
     display: flex;
@@ -308,7 +303,7 @@
     flex: 1 1 auto;
     overflow: auto;
     min-height: 0;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .empty {
     color: var(--fg-muted);
@@ -348,9 +343,9 @@
   }
   .grid .row-label {
     position: sticky;
-    left: 0;
+    inset-inline-start: 0;
     z-index: 1;
-    text-align: right;
+    text-align: end;
     padding: 0 var(--space-3) 0 var(--space-2);
     color: var(--fg-dim);
     font-size: var(--text-xs);
@@ -360,11 +355,11 @@
   .grid .corner {
     position: sticky;
     top: 0;
-    left: 0;
+    inset-inline-start: 0;
     z-index: 3;
     color: var(--fg-muted);
     font-size: var(--text-xs);
-    text-align: left;
+    text-align: start;
     padding: var(--space-1) var(--space-3);
     box-shadow: var(--shadow-sticky), var(--shadow-sticky-inline);
     white-space: nowrap;
@@ -396,12 +391,4 @@
     line-height: 0;
   }
 
-  .drawer-footer {
-    padding: var(--space-3) var(--space-6);
-    color: var(--fg-muted);
-    font-size: var(--text-xs);
-  }
-  .hint {
-    line-height: 1.5;
-  }
 </style>

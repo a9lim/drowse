@@ -1,4 +1,4 @@
-// Shared types for the saklas webui.  Every panel/drawer/store imports
+// Shared types for the drowse webui.  Every panel/drawer/store imports
 // from here so renames stay one-shot — this module is THE import surface,
 // including for the generated half.
 //
@@ -120,7 +120,7 @@ export interface SaeTokenReadoutJSON {
 // replay endpoint (wrapped in ``{measurements}``).  It replaces the former
 // ``captured`` record and the six top-level per-token aliases (``scores`` /
 // ``per_layer_scores`` / ``probe_readings`` / ``lens_readout`` /
-// ``lens_aggregate`` / ``sae_readout``); see saklas.core.measurements.
+// ``lens_aggregate`` / ``sae_readout``); see drowse.core.measurements.
 
 export type TokenReadoutProvenance = "captured" | "replayed";
 
@@ -161,6 +161,8 @@ export interface AxisSpec {
 export type ManifoldDomain =
   | { type: "box"; axes: AxisSpec[] }
   | { type: "sphere"; dim: number }
+  | { type: "klein" }
+  | { type: "projective"; dim: 2 }
   | { type: "custom"; [key: string]: unknown };
 
 /** One node of a manifold — a label, its authoring coordinates (one
@@ -182,7 +184,7 @@ export interface ManifoldNodeSpec {
 }
 
 /** PCA discover-fit diagnostics block surfaced in the inspector.
- *  Wire-shape mirror of ``saklas.core.manifold.PcaDiagnostics``.  Tensor
+ *  Wire-shape mirror of ``drowse.core.manifold.PcaDiagnostics``.  Tensor
  *  fields are flattened to plain number[]'s server-side; everything
  *  else is a primitive. */
 export interface ManifoldPcaDiagnostics {
@@ -193,7 +195,7 @@ export interface ManifoldPcaDiagnostics {
 }
 
 /** Spectral (Laplacian-eigenmaps) discover-fit diagnostics block.
- *  Wire-shape mirror of ``saklas.core.manifold.SpectralDiagnostics``. */
+ *  Wire-shape mirror of ``drowse.core.manifold.SpectralDiagnostics``. */
 export interface ManifoldSpectralDiagnostics {
   eigenvalues: number[];
   picked_k: number;
@@ -204,7 +206,7 @@ export interface ManifoldSpectralDiagnostics {
   component_count: number;
 }
 
-/** Body for POST /saklas/v1/manifolds/install. */
+/** Body for POST /drowse/v1/manifolds/install. */
 export interface InstallManifoldRequest {
   /** HF coord (``owner/repo[@revision]``) or local folder path. */
   target: string;
@@ -221,7 +223,7 @@ export interface MergeManifoldSource {
   name: string;
 }
 
-/** Body for POST /saklas/v1/manifolds/merge.
+/** Body for POST /drowse/v1/manifolds/merge.
  *
  *  Restricted to discover-mode (autofitted) sources by design — the
  *  server unions their node corpora into one heap and writes a fresh
@@ -238,12 +240,12 @@ export interface MergeManifoldRequest {
   sources: MergeManifoldSource[];
   /** Override the merged folder's fit_mode.  Required when sources
    *  disagree; defaults to the shared mode otherwise. */
-  fit_mode?: "pca" | "spectral";
+  fit_mode?: "pca" | "spectral" | "auto";
   hyperparams?: Record<string, unknown>;
   force?: boolean;
 }
 
-/** Body for POST /saklas/v1/manifolds. */
+/** Body for POST /drowse/v1/manifolds. */
 export interface CreateManifoldRequest {
   namespace?: string;
   name: string;
@@ -263,7 +265,7 @@ export interface DiscoverManifoldNodeSpec {
   role?: string | null;
 }
 
-/** Body for POST /saklas/v1/manifolds/discover.
+/** Body for POST /drowse/v1/manifolds/discover.
  *
  *  The user supplies labeled statement corpora; the matching ``fit``
  *  call derives node coordinates per-model via PCA, spectral embedding,
@@ -277,7 +279,7 @@ export interface CreateDiscoverManifoldRequest {
   hyperparams?: Record<string, number | string>;
 }
 
-/** Body for POST /saklas/v1/manifolds/from-template. */
+/** Body for POST /drowse/v1/manifolds/from-template. */
 export interface CreateManifoldFromTemplateRequest {
   namespace?: string;
   name: string;
@@ -288,7 +290,7 @@ export interface CreateManifoldFromTemplateRequest {
   force?: boolean;
 }
 
-// ---- standalone templated-completion artifact (/saklas/v1/templates) ----
+// ---- standalone templated-completion artifact (/drowse/v1/templates) ----
 
 /** One turn in a template context's multi-turn history. */
 export interface TemplateTurn {
@@ -303,7 +305,7 @@ export interface TemplateContextSpec {
   assistant: string;
 }
 
-/** Body for POST /saklas/v1/templates — author a standalone template. */
+/** Body for POST /drowse/v1/templates — author a standalone template. */
 export interface CreateTemplateRequest {
   namespace?: string;
   name: string;
@@ -315,10 +317,10 @@ export interface CreateTemplateRequest {
   force?: boolean;
 }
 
-/** Body for POST /saklas/v1/manifolds/generate.
+/** Body for POST /drowse/v1/manifolds/generate.
  *
  *  LLM-author a discover-mode manifold from a flat concept list: the
- *  server runs ``SaklasSession.generate_responses`` (A2 conversational
+ *  server runs ``DrowseSession.generate_responses`` (A2 conversational
  *  extraction — each concept answers the shared baseline prompts in
  *  character, one corpus per node) and writes a fresh discover folder
  *  ready for ``POST .../fit``. */
@@ -346,7 +348,7 @@ export interface GenerateManifoldRequest {
   role_per_node?: boolean;
 }
 
-/** Body for POST /saklas/v1/manifolds/{ns}/{name}/fit.
+/** Body for POST /drowse/v1/manifolds/{ns}/{name}/fit.
  *
  *  Authored folders consume ``sae`` plus layer/force controls; discover
  *  folders additionally accept ``fit_mode`` / ``hyperparams`` overrides
@@ -386,7 +388,7 @@ export interface ExtractRequest {
   role?: string | null;
   /** Destination namespace for the extracted 1/2-node manifold folder.
    *  ``null`` / unset lands under
-   *  ``~/.saklas/manifolds/local/<canonical>/``; another value selects
+   *  ``~/.drowse/manifolds/local/<canonical>/``; another value selects
    *  ``manifolds/<namespace>/<canonical>/``. */
   namespace?: string | null;
   /** Regenerate/re-author the manifold corpus and refit even when a valid
@@ -401,7 +403,7 @@ export interface ExtractRequest {
  *  manifold probes collapsed onto one route). */
 export type ProbeInfo = GeometryProbeInfo | LensProbeInfo | SaeProbeInfo;
 
-/** Body for ``POST /saklas/v1/sessions/{id}/probes`` — attach any probe
+/** Body for ``POST /drowse/v1/sessions/{id}/probes`` — attach any probe
  *  shape by selector (the same ``[ns/]name[:variant]`` the ``%`` steering
  *  term consumes). */
 export interface ProbeRequest {
@@ -455,20 +457,25 @@ export interface WSSampling {
 /** One message of an explicit conversation replay on the ``generate``
  *  frame's ``input`` list. */
 export interface WSInputMessage {
-  role: ChatRole;
+  role: ChatRole | "system";
   content: string;
   label?: string | null;
 }
 
 export interface WSGenerateRequest {
   type: "generate";
+  /** False preserves the selected turn and creates a new child, even for n=1. */
+  append_same_role?: boolean;
   /** ``null`` is a continue — no committed turn, the model speaks next
-   *  from ``parent_node_id`` (or the active leaf).  A messages list is the
-   *  explicit-conversation replay the unsteered shadow uses. */
-  input?: WSInputMessage[] | null;
+   *  from ``parent_node_id`` (or the active leaf). A string is the
+   *  compatibility prompt form, and a messages list is the explicit-
+   *  conversation replay the unsteered shadow uses. */
+  input?: string | WSInputMessage[] | null;
   steering?: string | null;
   sampling?: WSSampling | null;
   thinking?: boolean | null;
+  /** Mirrors the native generate frame: omitted means stateless. Stateful
+   *  loom continuations and authored string prompts pass ``false``. */
   stateless?: boolean;
   raw?: boolean;
   /** Loom: attach result as a child of this node.  ``null``/absent =
@@ -481,13 +488,14 @@ export interface WSGenerateRequest {
    *  auto-regen.  Accepted as a mode string (``"unsteered"`` etc) or a
    *  partial-recipe expression string.  Engine resolves the overlay. */
   recipe_override?: string | Record<string, unknown> | null;
-  /** Logit fork: regenerate an existing assistant node as a sibling with
-   *  one token swapped.  When ``fork_node_id`` is set the server ignores
-   *  ``input`` / ``steering`` / ``sampling`` / ``n`` and reuses the
-   *  node's stamped recipe; the three fields must travel together. */
+  /** Token fork: regenerate an existing generated node as a sibling from
+   *  one exact raw-token boundary. The replacement is either a captured
+   *  alternative id or locally tokenized authored text. */
   fork_node_id?: string | null;
   fork_raw_index?: number | null;
   fork_alt_token_id?: number | null;
+  fork_replacement_text?: string | null;
+  fork_seed?: number | null;
   /** Cast model: which seat the generated turn occupies.  ``"user"``
    *  renders the generation prompt as a user-seat header (labeled by
    *  ``sampling.user_role``) and lands the node with ``role="user"`` +
@@ -528,8 +536,15 @@ export interface WSStartedEvent {
   sibling_count: number;
 }
 
+export interface WSGenerationProgressEvent {
+  type: "generation_progress";
+  node_id: string;
+  completed: number;
+  total: number;
+}
+
 /** Logit-pass (v2.3): one alternative the model considered at this
- *  position.  Wire-shape mirror of ``saklas.core.results.TokenAlt``.
+ *  position.  Wire-shape mirror of ``drowse.core.results.TokenAlt``.
  *  ``logprob`` is the post-sampler natural-log probability under the
  *  post-temperature / post-top-p / post-top-k distribution sampling
  *  actually drew from. */
@@ -549,6 +564,8 @@ export interface WSTokenEvent {
    *  consumer or an explicit ``logprobs``/``return_top_k`` request).
    *  Absent on current uncaptured events. */
   logprob?: number | null;
+  /** Shannon entropy in nats of the exact post-filter sampler distribution. */
+  sampler_entropy?: number | null;
   /** Per-token perplexity under the sampled distribution.  The native WS
    *  explicitly opts into this channel so the workbench status and exported
    *  turn provenance are backed by the engine rather than reconstructed. */
@@ -577,6 +594,7 @@ export interface WSDoneResult {
   text: string;
   tokens: number;
   finish_reason: string;
+  terminal_reason?: "eos" | "stop_sequence" | "external_stop" | "length";
   usage: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -615,7 +633,7 @@ export interface WSErrorEvent {
 
 // ----------------------------------------------------- loom (v2.3) --
 
-/** Wire-shape mirror of saklas.core.loom.LoomNode.  Optional fields are
+/** Wire-shape mirror of drowse.core.loom.LoomNode.  Optional fields are
  * absent on the wire when null/empty server-side to keep payloads slim. */
 /** One token-row inside a node's ``tokens`` / ``thinking_tokens`` array.
  *  Server-side token rows have required identity/score fields plus
@@ -627,9 +645,10 @@ export interface WSErrorEvent {
  *  monitor has probes loaded; ``raw_index`` is stamped at finalize and
  *  absent for transcript-imported nodes). */
 export interface LoomTokenRowJSON {
-  token_id: number;
+  token_id?: number | null;
   text: string;
   logprob: number | null;
+  sampler_entropy?: number | null;
   perplexity: number | null;
   top_alts?: { id: number; text: string; logprob: number }[];
   raw_index?: number | null;
@@ -668,7 +687,9 @@ export interface WSTreeMutatedEvent {
     | "regenerate"
     | "begin_assistant"
     | "add_user"
-    | "finalize"
+    | "finalize_assistant"
+    | "capture_authored"
+    | "restore"
     | "cast"
     | string;
   added?: LoomNodeJSON[];
@@ -676,8 +697,8 @@ export interface WSTreeMutatedEvent {
   updated?: LoomNodeJSON[];
   active_node_id?: string | null;
   rev: number;
-  /** ``op="cast"`` only: the full roster inlined (label → member) so
-   *  clients reconcile without a refetch. */
+  /** Full effective roster inlined on every mutation so observed role labels
+   * and configured cast members reconcile without a refetch. */
   cast?: Record<string, CastMemberJSON>;
 }
 
@@ -685,6 +706,7 @@ export interface WSTreeMutatedEvent {
  * can allocate render slots before token events arrive. */
 export type WSServerMessage =
   | WSStartedEvent
+  | WSGenerationProgressEvent
   | WSTokenEvent
   | WSDoneEvent
   | WSErrorEvent
@@ -718,6 +740,10 @@ export interface TokenScore {
    *  turns and when no consumer requested log-softmax capture. Drives the inline ``surprise`` highlight
    *  mode and the token drilldown's logits tab. */
   logprob?: number | null;
+  /** Shannon entropy in nats of the post-filter sampling distribution. */
+  samplerEntropy?: number | null;
+  /** Per-token perplexity emitted by the runtime. */
+  perplexity?: number | null;
   /** Logit-pass: top-K alternatives captured at this position (descending
    *  by logprob).  Absent when ``return_top_k == 0`` or replayed. */
   topAlts?: TokenAltJSON[] | null;
@@ -784,11 +810,9 @@ export interface ChatTurn {
 //
 // ``mode`` is set at add time (``RackDrawer`` picks the adder off the
 // catalog's ``fit_mode``: pca/baked → subspace, spectral/authored →
-// manifold) and at parse time (a curved ``%`` or an ``onto`` coeff → manifold;
-// else subspace).  The pre-4.1 ``~``/``|`` projection and ``!`` ablation are
-// no longer authorable in the rack (a ``%`` term can't carry them); a pasted
-// expression using them parses with a one-time warning and the operator
-// dropped.  ``:variant`` survives — it rides the atom (``name:sae%pos``).
+// manifold). Rank-one subspaces expose push/ablate directly; higher-rank
+// projection remains an advanced expression operation. ``:variant`` survives
+// — it rides the atom (``name:sae%pos``).
 
 /** Subspace (flat affine) steering term — a position on a flat fit.  The
  *  magnitude is the rack-level ``subspaceAlong`` master (shared across every
@@ -797,6 +821,8 @@ export interface ChatTurn {
  *  expressed by how far each position sits from neutral. */
 export interface SubspaceSteerEntry {
   mode: "subspace";
+  /** Mean-ablate a rank-one concept instead of steering toward a position. */
+  ablate: boolean;
   /** Authoring coordinates, one per intrinsic dimension.  Rank-1 (a 2-node
    *  concept) is a single signed coord on the bipolar axis. */
   coords: number[];
@@ -842,6 +868,8 @@ export interface ManifoldSteerEntry {
  *  repetition — so each token needs its own dial. */
 export interface JLensSteerEntry {
   mode: "jlens";
+  /** Mean-ablate the token direction instead of pushing along it. */
+  ablate: boolean;
   /** Push coefficient (the plain-atom α slot). */
   alpha: number;
   trigger: Trigger;
@@ -851,6 +879,8 @@ export interface JLensSteerEntry {
 /** Resident SAE decoder-row steering term (``α sae/<id>``). */
 export interface SaeSteerEntry {
   mode: "sae";
+  /** Mean-ablate the decoder-row direction instead of pushing along it. */
+  ablate: boolean;
   alpha: number;
   trigger: Trigger;
   enabled: boolean;
@@ -878,6 +908,10 @@ export type SteerEntry =
 export type ProbeSortMode = "name" | "value" | "change";
 
 export interface ProbeRackEntry {
+  /** Exact attach request that produced this registered row.  ``ProbeInfo``
+   * is display metadata and may canonicalize a geometry selector, so it
+   * cannot by itself preserve an alias or tensor variant across save/load. */
+  request: ProbeRequest;
   /** Server-side row — metadata, domain, node layout, and the ``is_affine``
    *  flat-vs-curved flag that selects the subspace vs manifold card. */
   info: ProbeInfo;
@@ -901,6 +935,8 @@ export interface ProbeRackEntry {
    * keeps this portable summary but not the full per-layer reading; cards use
    * it instead of presenting a false zero after reload/navigation. */
   savedAggregate: number | null;
+  savedCoordinates?: number[];
+  savedFraction?: number | null;
   /** Most-recent per-token nearest list (ascending distance).  Drives the
    *  inline nearest readout + mini-map hover; empty until the first token. */
   nearest: [string, number][];
@@ -934,10 +970,13 @@ export interface PerplexityAccumulator {
 
 export interface GenStatus {
   active: boolean;
+  replay?: { completed: number; total: number } | null;
   tokensSoFar: number;
   maxTokens: number;
   /** Wall-clock start (``performance.now()`` ms). */
   startedAt: number | null;
+  /** Wall-clock completion, retained so the final elapsed time stays frozen. */
+  finishedAt: number | null;
   tokPerSec: number;
   ppl: PerplexityAccumulator;
   finishReason: string | null;
@@ -1007,14 +1046,16 @@ export type DrawerName =
   /** Manifold authoring form — domain step + node editor.  Reached
    *  from the "+ build manifold" button inside ``manifolds``. */
   | "manifold_builder"
+  | "surface_geometry"
   /** Discover-mode node-union merge.  Unions the node corpora of two or
    *  more discover-mode manifolds into a fresh discover folder; restricted
    *  to discover sources by design. Reached from the command palette. */
   | "manifold_merge"
   /** Local manifold catalog plus HF search/install for
-   *  ``saklas-manifold``-tagged repositories. */
+   *  ``drowse-manifold``-tagged repositories. */
   | "manifold_pack"
   | "save_conversation"
+  | "download_chat"
   | "load_conversation"
   | "compare"
   | "system_prompt"
@@ -1027,7 +1068,9 @@ export type DrawerName =
   | "probe_inspector"
   | "advanced_sampling"
   | "health"
+  | "appearance"
   | "session_admin"
+  | "local_runtime"
   | "help"
   /** Cross-branch diff drawer — phase 5.  ``params`` carries the
    * selected node ids (1 user node → compare its children, 2+

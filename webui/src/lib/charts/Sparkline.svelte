@@ -5,13 +5,14 @@
   // past N, so the component is fed a fresh array each tick and the
   // SVG re-renders cheaply.
   //
-  // No interactivity, no axes — pure decoration to give a sense of
-  // probe trend without a full chart.
+  // Hover exposes the untruncated readings behind the compact trace.
 
   import { onMount } from "svelte";
+  import { sparklinePaths } from "./sparklinePath";
+  import { chartValue } from "./chartValues";
 
   interface Props {
-    points: number[];
+    points: (number | null)[];
     width?: number;
     height?: number;
     /** When set, points are clamped to ``[-cap, +cap]`` before scaling
@@ -20,6 +21,7 @@
     cap?: number;
     /** Stroke color override; defaults to fg-dim. */
     color?: string;
+    percentage?: boolean;
   }
 
   let {
@@ -28,53 +30,16 @@
     height = 16,
     cap = 1,
     color,
+    percentage = false,
   }: Props = $props();
 
   const stroke = $derived(color ?? "var(--fg-dim)");
 
-  const path = $derived.by(() => {
-    if (!points || points.length === 0) return "";
-    if (points.length === 1) {
-      // Single-point: render a tick at the midline.
-      const y = height / 2;
-      return `M 0 ${y.toFixed(2)} L ${width} ${y.toFixed(2)}`;
-    }
-    const clamped = points.map((v) =>
-      Math.max(-cap, Math.min(cap, Number.isFinite(v) ? v : 0)),
-    );
-    // Map [-cap, +cap] -> [height, 0] so positive points trend upward.
-    const yFor = (v: number) =>
-      ((cap - v) / (2 * cap)) * height;
-    const step = points.length === 1 ? 0 : width / (points.length - 1);
-    const segs: string[] = [];
-    for (let i = 0; i < clamped.length; i++) {
-      const x = i * step;
-      const y = yFor(clamped[i]);
-      segs.push(`${i === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`);
-    }
-    return segs.join(" ");
-  });
-
-  // Area fill under the line — the same trace closed down to the baseline
-  // and back, rendered behind the stroke at low opacity.  Skipped for the
-  // degenerate 0/1-point case (no meaningful area to shade).
-  const area = $derived.by(() => {
-    if (!points || points.length < 2) return "";
-    const clamped = points.map((v) =>
-      Math.max(-cap, Math.min(cap, Number.isFinite(v) ? v : 0)),
-    );
-    const yFor = (v: number) => ((cap - v) / (2 * cap)) * height;
-    const step = width / (points.length - 1);
-    const segs: string[] = [];
-    for (let i = 0; i < clamped.length; i++) {
-      const x = i * step;
-      const y = yFor(clamped[i]);
-      segs.push(`${i === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`);
-    }
-    segs.push(`L ${width.toFixed(2)} ${height.toFixed(2)}`);
-    segs.push(`L 0 ${height.toFixed(2)}`);
-    segs.push("Z");
-    return segs.join(" ");
+  const paths = $derived(sparklinePaths(points, width, height, cap));
+  const tip = $derived.by(() => {
+    const values = points.filter((v): v is number => v !== null && Number.isFinite(v));
+    if (!values.length) return "No readings yet";
+    return `Latest ${chartValue(values[values.length - 1], percentage)} · range ${chartValue(Math.min(...values), percentage)} to ${chartValue(Math.max(...values), percentage)} · ${values.length} readings`;
   });
 
   // Draw-in runs once, gated on mount — this component re-renders every
@@ -93,19 +58,23 @@
   {height}
   viewBox="0 0 {width} {height}"
   preserveAspectRatio="none"
-  aria-hidden="true"
+  role="img"
+  aria-label={tip}
 >
-  {#if area}
-    <path d={area} fill={stroke} fill-opacity="0.14" stroke="none" />
+  <title>{tip}</title>
+  {#if paths.area}
+    <path d={paths.area} fill={stroke} fill-opacity="0.14" stroke="none" />
   {/if}
-  {#if path}
+  {#if paths.line}
     <path
       class="sparkline-line"
       class:draw={mounted}
-      d={path}
+      d={paths.line}
       fill="none"
       stroke={stroke}
       stroke-width="1"
+      stroke-linecap="round"
+      stroke-linejoin="round"
     />
   {/if}
 </svg>

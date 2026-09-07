@@ -1,6 +1,6 @@
 // Serialization of the unified steering-expression rack.
 //
-// Mirrors saklas/core/steering_expr.py (serialize direction only):
+// Mirrors drowse/core/steering_expr.py (serialize direction only):
 //
 //   expr     := term (("+" | "-") term)*
 //   term     := [coeff "*"?] ["!"] selector ["@" trigger]
@@ -104,6 +104,10 @@ export function formatSubspaceTerm(
   entry: SubspaceSteerEntry,
   subspaceAlong: number,
 ): string {
+  if (entry.ablate) {
+    const selector = `!${nameWithVariant(name, entry.variant)}`;
+    return `${formatCoeff(subspaceAlong)} ${selector}${formatTriggerSuffix(entry.trigger)}`;
+  }
   const position = entry.label ?? entry.coords.map((c) => formatCoeff(c)).join(",");
   const selector = `${nameWithVariant(name, entry.variant)}%${position}`;
   return `${formatCoeff(subspaceAlong)} ${selector}${formatTriggerSuffix(entry.trigger)}`;
@@ -130,11 +134,11 @@ function formatTriggerSuffix(trigger: Trigger): string {
  *  engine resolves it through ``register_jlens_direction``); per-chip
  *  ``alpha`` because lens atoms run hotter than concept vectors. */
 export function formatJLensTerm(name: string, entry: JLensSteerEntry): string {
-  return `${formatCoeff(entry.alpha)} ${name}${formatTriggerSuffix(entry.trigger)}`;
+  return `${formatCoeff(entry.alpha)} ${entry.ablate ? "!" : ""}${name}${formatTriggerSuffix(entry.trigger)}`;
 }
 
 export function formatSaeTerm(name: string, entry: SaeSteerEntry): string {
-  return `${formatCoeff(entry.alpha)} ${name}${formatTriggerSuffix(entry.trigger)}`;
+  return `${formatCoeff(entry.alpha)} ${entry.ablate ? "!" : ""}${name}${formatTriggerSuffix(entry.trigger)}`;
 }
 
 /** Render one manifold (curved) rack entry — ``<along[,onto]>

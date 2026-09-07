@@ -40,6 +40,7 @@ export * from "./stores/pending.svelte";
 export * from "./stores/persistence.svelte";
 export * from "./stores/probes.svelte";
 export * from "./stores/sampling.svelte";
+export * from "./stores/savedConversations.svelte";
 export * from "./stores/session.svelte";
 export * from "./stores/steering.svelte";
 export * from "./stores/ws.svelte";

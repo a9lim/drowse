@@ -1,8 +1,8 @@
 """Per-architecture structural + hot-path coverage.
 
-`saklas.core.model._LAYER_ACCESSORS` maps each ``model_type`` to the
+`drowse.core.model._LAYER_ACCESSORS` maps each ``model_type`` to the
 attribute path of its transformer-block list.  Those mappings are the
-load-bearing assumption behind *everything* saklas does — capture,
+load-bearing assumption behind *everything* drowse does — capture,
 steering, monitoring — yet most entries have never been exercised
 against the architecture's *actual* module tree.  When ``transformers``
 refactors a model's internals (renames ``model.layers``, wraps the text
@@ -21,7 +21,7 @@ broken accessor or a changed block-output shape fails here first.
 The three guarantees, per architecture:
 
 * ``get_layers`` resolves to the full block list (accessor is correct).
-* saklas's own :class:`HiddenCapture` reads a residual-stream vector of
+* drowse's own :class:`HiddenCapture` reads a residual-stream vector of
   shape ``(hidden_size,)`` from every layer (the block returns the
   residual at ``output`` / ``output[0]`` as the hooks assume).
 * a :class:`SteeringManager` vector at a middle layer actually changes
@@ -40,20 +40,20 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 import pytest
 
-from saklas.core.model import (
+from drowse.core.model import (
     _ARCH_PROFILES,
     _LAYER_ACCESSORS,
     _SUPPORTED_TYPES,
     _TESTED_ARCHS,
     get_layers,
 )
-from saklas.core.hooks import HiddenCapture, SteeringManager
-from saklas.core.manifold import synthesize_subspace
+from drowse.core.hooks import HiddenCapture, SteeringManager
+from drowse.core.manifold import synthesize_subspace
 from tests._whitener import isotropic_whitener
-from saklas.core.triggers import Trigger
+from drowse.core.triggers import Trigger
 
 
-# Families saklas guarantees end-to-end on CPU.  Covers every architecture
+# Families drowse guarantees end-to-end on CPU.  Covers every architecture
 # group named in the README's "Tested architectures" set plus the
 # optimistically-wired entries users have asked about (granite, olmo).
 # Each must build from the tiny config below; the dry-run in the test
@@ -194,7 +194,7 @@ def test_get_layers_resolves_full_block_list(model_type: str):
 
 @pytest.mark.parametrize("model_type", GUARANTEED_ARCHS)
 def test_hidden_capture_reads_residual_per_layer(model_type: str):
-    """saklas's :class:`HiddenCapture` recovers a ``(hidden_size,)`` vector
+    """drowse's :class:`HiddenCapture` recovers a ``(hidden_size,)`` vector
     from every layer.
 
     This is the read-side contract every probe / monitor depends on: the

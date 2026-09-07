@@ -19,16 +19,16 @@ from typing import Any, Generator
 
 import pytest
 
-from saklas import cli
-from saklas.cli.runners import _COMMAND_RUNNERS
+from drowse import cli
+from drowse.cli.runners import _COMMAND_RUNNERS
 
 
 @pytest.fixture(autouse=True)
 def _isolated_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> Generator[None, None, None]:
-    from saklas.io import selectors as _sel
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    from drowse.io import selectors as _sel
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _sel.invalidate()
     yield
     _sel.invalidate()
@@ -119,7 +119,7 @@ def test_bare_template_prints_help_exit_0(
         cli.main(["template"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "saklas template <verb>" in out
+    assert "drowse template <verb>" in out
 
 
 def test_root_help_lists_manifold_and_pack(
@@ -236,7 +236,7 @@ def test_bare_manifold_prints_help_exit_0(
         cli.main(["manifold"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "saklas manifold <verb>" in out
+    assert "drowse manifold <verb>" in out
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +270,7 @@ def test_bare_pack_prints_help_exit_0(
         cli.main(["pack"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "saklas pack <verb>" in out
+    assert "drowse pack <verb>" in out
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +344,7 @@ def test_bare_lens_prints_help_exit_0(
         cli.main(["lens"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "saklas lens <verb>" in out
+    assert "drowse lens <verb>" in out
 
 
 # ---------------------------------------------------------------------------
@@ -363,8 +363,8 @@ def test_bare_verb_group_menu_carries_help_hint(
         cli.main(argv)
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert out.startswith(f"usage: saklas {group} <verb> [...]\n")
-    assert f"Run `saklas {group} <verb> -h` for verb-specific options." in out
+    assert out.startswith(f"usage: drowse {group} <verb> [...]\n")
+    assert f"Run `drowse {group} <verb> -h` for verb-specific options." in out
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +388,7 @@ def _patch_sae_fetch_backend(
     seen: dict[str, Any] | None = None,
 ) -> None:
     """Stub the provider backend + config read behind ``sae fetch``."""
-    import saklas.cli.runners.sae as sae_runner
+    import drowse.cli.runners.sae as sae_runner
 
     class _Backend:
         release = "rel"
@@ -411,11 +411,11 @@ def _patch_sae_fetch_backend(
             seen.update({"release": release, **kwargs})
         return _Backend()
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     monkeypatch.setattr(
         sae_runner, "_model_shape_from_config", lambda _m: (26, 2304),
     )
-    monkeypatch.setattr("saklas.core.sae.load_sae_backend", _load)
+    monkeypatch.setattr("drowse.core.sae.load_sae_backend", _load)
 
 
 def test_sae_fetch_announces_before_the_provider_download(
@@ -423,7 +423,7 @@ def test_sae_fetch_announces_before_the_provider_download(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Mirrors ``lens fetch``: a saklas-authored status line before the
+    """Mirrors ``lens fetch``: a drowse-authored status line before the
     network call, suppressed under ``-j`` so JSON stays parseable."""
     _patch_sae_fetch_backend(monkeypatch, tmp_path)
 
@@ -444,12 +444,12 @@ def test_sae_fetch_writes_the_binding_without_loading_the_model(
 ) -> None:
     """The pointer file lands from provider metadata alone.
 
-    The runner used to open a full ``SaklasSession.from_pretrained`` — tens
+    The runner used to open a full ``DrowseSession.from_pretrained`` — tens
     of GB of weights — to write a few hundred bytes.  ``from_pretrained`` is
     stubbed to fail here, so reaching it is the test failure.
     """
-    import saklas.core.session as session_mod
-    from saklas.io.sae import load_active_sae, load_sae_metadata
+    import drowse.core.session as session_mod
+    from drowse.io.sae import load_active_sae, load_sae_metadata
 
     seen: dict[str, Any] = {}
     _patch_sae_fetch_backend(monkeypatch, tmp_path, seen=seen)
@@ -458,7 +458,7 @@ def test_sae_fetch_writes_the_binding_without_loading_the_model(
         raise AssertionError("sae fetch must not load the base model")
 
     monkeypatch.setattr(
-        session_mod.SaklasSession, "from_pretrained", staticmethod(_explode),
+        session_mod.DrowseSession, "from_pretrained", staticmethod(_explode),
     )
 
     cli.main([

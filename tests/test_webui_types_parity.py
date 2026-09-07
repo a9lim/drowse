@@ -1,6 +1,6 @@
 """The dashboard's REST types are a build artifact of the server's schema.
 
-Three structural checks over the native ``/saklas/v1/*`` tree:
+Three structural checks over the native ``/drowse/v1/*`` tree:
 
 1. ``webui/src/lib/types.gen.ts`` is byte-identical to what
    ``scripts/generate_webui_types.py`` renders from the live OpenAPI schema.
@@ -60,7 +60,7 @@ def test_generated_file_is_marked_do_not_edit(generator: Any) -> None:
 
 def _native_operations(schema: dict[str, Any]):
     for path, ops in schema["paths"].items():
-        if not path.startswith("/saklas/v1/"):
+        if not path.startswith("/drowse/v1/"):
             continue
         for method, op in ops.items():
             if isinstance(op, dict):
@@ -89,7 +89,7 @@ def test_every_native_json_route_declares_a_response_schema(
     assert not undescribed, (
         "native routes with an undescribed response body: "
         f"{undescribed} — annotate the return type with a TypedDict from "
-        "saklas/server/response_models.py"
+        "drowse/server/response_models.py"
     )
 
 
@@ -98,7 +98,7 @@ def test_native_paths_are_kebab_case(schema: dict[str, Any]) -> None:
     offenders = [
         path
         for path in schema["paths"]
-        if path.startswith("/saklas/v1/")
+        if path.startswith("/drowse/v1/")
         and any(
             "_" in segment
             for segment in path.split("/")
@@ -111,10 +111,10 @@ def test_native_paths_are_kebab_case(schema: dict[str, Any]) -> None:
 def test_renamed_tree_routes_are_kebab_only(schema: dict[str, Any]) -> None:
     """The two renames landed as a clean break — no aliases."""
     paths = set(schema["paths"])
-    assert "/saklas/v1/sessions/{session_id}/tree/edge-label" in paths
-    assert "/saklas/v1/sessions/{session_id}/tree/joint-logprobs" in paths
-    assert "/saklas/v1/sessions/{session_id}/tree/edge_label" not in paths
-    assert "/saklas/v1/sessions/{session_id}/tree/joint_logprobs" not in paths
+    assert "/drowse/v1/sessions/{session_id}/tree/edge-label" in paths
+    assert "/drowse/v1/sessions/{session_id}/tree/joint-logprobs" in paths
+    assert "/drowse/v1/sessions/{session_id}/tree/edge_label" not in paths
+    assert "/drowse/v1/sessions/{session_id}/tree/joint_logprobs" not in paths
 
 
 def test_measurements_envelope_is_named_not_opaque(schema: dict[str, Any]) -> None:

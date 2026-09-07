@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-import saklas.io.templates as templates_mod
-from saklas.io.paths import templates_dir
-from saklas.io.templates import (
+import drowse.io.templates as templates_mod
+from drowse.io.paths import templates_dir
+from drowse.io.templates import (
     TemplateFolder,
     bundled_template_names,
     materialize_bundled_templates,
@@ -45,7 +45,7 @@ class _FakeResources:
         self._root = root
 
     def files(self, pkg: str) -> Path:
-        assert pkg == "saklas.data.templates"
+        assert pkg == "drowse.data.templates"
         return self._root
 
 
@@ -59,7 +59,7 @@ def _write_template(
 
 def _wire(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pkg_root: Path) -> None:
     pkg_root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(templates_mod, "_resources", _FakeResources(pkg_root))
     monkeypatch.setattr(templates_mod, "_templates_materialized_home", None)
 
@@ -130,7 +130,7 @@ def test_process_scope_guard_is_per_home(
     materialize_bundled_templates()
     assert (templates_dir() / "default" / "demo" / "template.json").exists()
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "second-home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "second-home"))
     materialize_bundled_templates()
     assert (templates_dir() / "default" / "demo" / "template.json").exists()
 
@@ -170,8 +170,8 @@ def test_bootstrap_entry_point_runs_templates_before_manifolds(
     each re-derive this from a copied comment, so a sixth would silently
     violate it.
     """
-    from saklas.io import bootstrap, manifolds as manifolds_mod
-    from saklas.io import templates as templates_mod
+    from drowse.io import bootstrap, manifolds as manifolds_mod
+    from drowse.io import templates as templates_mod
 
     order: list[str] = []
     monkeypatch.setattr(
@@ -190,7 +190,7 @@ def test_every_bootstrap_site_uses_the_entry_point() -> None:
     """No site may call the two materializers directly and re-derive the order."""
     import pathlib
 
-    root = pathlib.Path(__file__).resolve().parent.parent / "saklas"
+    root = pathlib.Path(__file__).resolve().parent.parent / "drowse"
     owners = {
         root / "io" / "bootstrap.py",
         root / "io" / "manifolds.py",

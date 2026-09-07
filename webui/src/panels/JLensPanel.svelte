@@ -14,8 +14,8 @@
   //           gate-able — both card kinds are the same shape: strength
   //           bar + per-layer strength strip; the pinned card's ■ unpins,
   //           the unpinned card's □ pins).  Pinned ``jlens/<word>`` token
-  //           probes first, then the live open-vocab aggregate cards for
-  //           the top-k tokens not already pinned.  The card list owns
+  //           probes first, then the exact whole-vocabulary aggregate cards
+  //           not already pinned.  The card list owns
   //           the scroll (header + add form stay anchored, like the CAA
   //           racks).  The header's live toggle is the lens live switch:
   //           off ⇒ no per-step lens computation — pinned probes settle
@@ -26,36 +26,27 @@
   // artifact, followed by the same labelled custom row as SAE. Successful
   // preparation activates the source and live readout.
 
-  import Bar from "../lib/charts/Bar.svelte";
-  import Button from "../lib/ui/Button.svelte";
-  import { onMount } from "svelte";
-  import InstrumentSourceSection from "./rack/InstrumentSourceSection.svelte";
+  import RuntimeJLensSourceSection from "@runtime-jlens-source";
   import RackSectionHeader from "./rack/RackSectionHeader.svelte";
   import JLensProbeCard from "./rack/JLensProbeCard.svelte";
   import { mergeInstrumentProbeRows } from "./rack/probeRows";
   import type { InstrumentProbeRow } from "./rack/probeRows";
   import AtomSteerCard from "./rack/AtomSteerCard.svelte";
-  import { apiInstruments, describeError } from "../lib/api";
+  import { apiInstruments, describeError } from "../lib/runtime/services";
   import {
     addJLensToRack,
     activeProbeNames,
     attachProbe,
-    lensFetch,
-    lensFit,
-    lensSourceState,
     lensState,
     lensAggregateForDisplay,
     lensReadoutForDisplay,
     probeRack,
     probeEntryForDisplay,
-    refreshLensSources,
-    seedProbeDisplay,
     sessionState,
     setLensWorkspaceSortMode,
     setLiveLens,
     steerRack,
     tokenHoverState,
-    useLensSource,
   } from "../lib/stores.svelte";
   import { pushToast } from "../lib/stores/toasts.svelte";
   import type {
@@ -72,52 +63,6 @@
   const displayLayers = $derived.by(() => {
     if (!tokenHoverState.active) return lensState.layers ?? [];
     return Object.keys(displayReadout ?? {}).map(Number).sort((a, b) => a - b);
-  });
-  const sourceBusy = $derived(
-    lensSourceState.loading || lensSourceState.busy ||
-      lensFetch.state.running || lensFit.state.running,
-  );
-  const LENS_PROVIDER_OPTIONS = [
-    { value: "workspace-r", label: "workspace-r (RelP)" },
-    { value: "neuronpedia", label: "neuronpedia" },
-    { value: "workspace-j", label: "workspace-j" },
-  ];
-  let fitPrompts = $state(100);
-  let fitLayers = $state("all");
-  let fitRelp = $state(true);
-  let fitConfirm = $state(false);
-  let selectedSource = $state("");
-  const fitReady = $derived(
-    Number.isInteger(fitPrompts) && fitPrompts >= 1 && fitPrompts <= 5000 &&
-      fitLayers.trim().length > 0,
-  );
-  const fitIsPreparing = $derived(
-    (lensFit.state.message ?? "").startsWith("streaming "),
-  );
-
-  function requestFit(): void {
-    if (!fitConfirm) {
-      fitConfirm = true;
-      return;
-    }
-    fitConfirm = false;
-    void lensFit.start({
-      prompts: fitPrompts,
-      layers: fitLayers.trim(),
-      relp: fitRelp,
-    });
-  }
-
-  // Resume-visibility: a page reload mid-fit should pick the progress
-  // polling back up (the fit runs server-side regardless of the client).
-  onMount(() => {
-    void lensFit.check();
-    void lensFetch.check();
-    void refreshLensSources();
-  });
-
-  $effect(() => {
-    if (selectedSource !== "local") fitConfirm = false;
   });
 
   // ---------- STEER: jlens-mode rack entries (alphabetical) ----------
@@ -147,7 +92,7 @@
       addJLensToRack(validated.word);
       if (steerInput === submitted) steerInput = "";
     } catch (e) {
-      pushToast(`steer jlens/${word} failed — ${describeError(e)}`, {
+      pushToast(`Couldn't steer toward jlens/${word}: ${describeError(e)}`, {
         kind: "error",
       });
     } finally {
@@ -168,7 +113,8 @@
     strength: number;
     com: number | null;
     spread: number | null;
-    series: number[];
+    measured: boolean;
+    series: (number | null)[];
     cells: { layer: number; p: number | null }[];
     pinned: boolean;
   }
@@ -196,13 +142,10 @@
   /** Per-layer cells for a discovery token — its softmax probability in
    *  each streamed readout row; ``null`` = below that layer's top-k. */
   function readoutCells(token: string): { layer: number; p: number | null }[] {
-    const trimmed = token.trim() || JSON.stringify(token);
     return displayLayers.map((layer) => {
       const pairs = displayReadout?.[String(layer)];
       if (!pairs || pairs.length === 0) return { layer, p: null };
-      const hit =
-        pairs.find(([text]) => text === token) ??
-        pairs.find(([text]) => text.trim() === trimmed);
+      const hit = pairs.find(([text]) => text === token);
       return { layer, p: hit ? hit[1] : null };
     });
   }
@@ -210,20 +153,20 @@
   const pinnedCards = $derived.by((): WorkspaceCard[] => {
     const rows: WorkspaceCard[] = [];
     for (const name of activeProbeNames()) {
-      if (!name.startsWith("jlens/")) continue;
       const entry = probeEntryForDisplay(name);
-      if (!entry) continue;
+      if (entry?.info.family !== "lens") continue;
       // A pinned lens probe reads the family's NATIVE one-channel
       // reading — value + depth summary, no coordinate vector to unwrap.
       const latest = (entry.aggregate ?? entry.reading) as
         | ScalarReadingJSON
         | null;
-      const word = name.slice("jlens/".length);
+      const word = entry.info.word;
       rows.push({
         key: name,
         sortName: word,
         token: word,
         strength: latest?.value ?? entry.current ?? 0,
+        measured: latest !== null || entry.sparkline.length > 0,
         com: latest?.depth?.center?.[0] ?? null,
         spread: latest?.depth?.spread?.[0] ?? null,
         series: entry.sparkline ?? [],
@@ -241,17 +184,18 @@
     // Pinned tokens already have a persistent card — the aggregate group
     // carries only the unpinned remainder of the top-k.
     return rows
-      .filter(([token]) => !probeRack.active.includes(`jlens/${token.trim()}`))
+      .filter(([token]) => !pinnedCards.some((card) => card.token === token))
       .map(([token, strength, com, spread]) => ({
         key: `aggregate:${token}`,
         sortName: token.trim(),
         token,
         strength,
+        measured: true,
         com,
         spread,
         series: tokenHoverState.active
           ? [strength]
-          : hist.map((frame) => frame.find(([t]) => t === token)?.[1] ?? 0),
+          : hist.map((frame) => frame.find(([t]) => t === token)?.[1] ?? null),
         cells: readoutCells(token),
         pinned: false,
       }));
@@ -279,48 +223,11 @@
     try {
       const validated = await apiInstruments.validateLensToken(bare);
       const validatedSelector = `jlens/${validated.word}`;
-      const live = lensState.aggregate?.find(
-        ([token]) => token.trim() === validated.word,
-      );
       await attachProbe(validatedSelector);
-      if (live) {
-        const [token, strength, com, spread] = live;
-        const perLayer: Record<string, number> = {};
-        const coordsPerLayer: Record<string, number[]> = {};
-        for (const layer of lensState.layers ?? []) {
-          const pairs = lensState.readout?.[String(layer)] ?? [];
-          const hit = pairs.find(([text]) => text === token) ??
-            pairs.find(([text]) => text.trim() === validated.word);
-          const value = hit?.[1] ?? 0;
-          perLayer[String(layer)] = value;
-          coordsPerLayer[String(layer)] = [value];
-        }
-        const reading = {
-          fraction: 0,
-          nearest: [] as [string, number][],
-          coords: [strength],
-          residual: 0,
-          fraction_per_layer: {},
-          coords_per_layer: coordsPerLayer,
-          residual_per_layer: {},
-          depth_com: [com],
-          depth_spread: [spread],
-        };
-        const series = lensState.aggHistory.map(
-          (frame) => frame.find(([text]) => text === token)?.[1] ?? 0,
-        );
-        seedProbeDisplay(validatedSelector, {
-          current: strength,
-          sparkline: series,
-          perLayer,
-          reading,
-          aggregate: reading,
-        });
-      }
       pushToast(`pinned ${validatedSelector}`, { kind: "info" });
       return true;
     } catch (e) {
-      pushToast(`pin ${selector} failed — ${describeError(e)}`, {
+      pushToast(`Couldn't pin ${selector}: ${describeError(e)}`, {
         kind: "error",
       });
       return false;
@@ -340,140 +247,23 @@
   function onToggleLive(): void {
     void setLiveLens(!liveOn);
   }
+
+  function openConversation(): void {
+    window.dispatchEvent(new CustomEvent("drowse:workspace", {
+      detail: "conversation",
+    }));
+  }
 </script>
 
-<div class="jlens" aria-label="Jacobian-lens inspector">
-  <InstrumentSourceSection
-    ready={fitted}
-    sources={lensSourceState.sources}
-    bind:value={selectedSource}
-    busy={sourceBusy}
-    accent="var(--pillar-lens)"
-    sourceError={lensSourceState.error}
-    working={lensFetch.state.running || lensFit.state.running}
-    onuse={(source) => void useLensSource(source)}
-    providerOptions={LENS_PROVIDER_OPTIONS}
-    providerPlaceholder="lens provider"
-    onfetch={(source) => void lensFetch.start({ source })}
-    localActionLabel={fitConfirm ? "confirm fit" : "fit"}
-    localActionDisabled={sourceBusy || !fitReady}
-    onlocal={requestFit}
-  >
-    {#snippet localControls()}
-      <label class="setup-field setup-field-medium">
-        <span class="setup-field-label">prompts</span>
-        <input
-          class="add-input"
-          type="number"
-          min="1"
-          max="5000"
-          step="25"
-          bind:value={fitPrompts}
-          placeholder="100"
-          aria-label="J-lens corpus prompts"
-          title="1–5000"
-        />
-      </label>
-      <label class="setup-field setup-field-wide">
-        <span class="setup-field-label">layers</span>
-        <input
-          class="add-input"
-          bind:value={fitLayers}
-          placeholder="workspace | all | 13,14,…"
-          aria-label="J-lens source layers"
-          title="workspace | all | layer ids"
-        />
-      </label>
-      <label class="setup-field setup-field-medium">
-        <span class="setup-field-label">estimator</span>
-        <button
-          type="button"
-          class="add-input relp-toggle"
-          class:relp-on={fitRelp}
-          onclick={() => (fitRelp = !fitRelp)}
-          aria-pressed={fitRelp}
-          title="RelP (default) · saves as local:relp"
-        >{fitRelp ? "relp (R-lens)" : "standard"}</button>
-      </label>
-    {/snippet}
-    {#snippet progress()}
-      {#if lensFetch.state.running}
-        <p class="work-status" role="status" aria-live="polite">
-          {lensFetch.state.message ?? "fetching official lens…"}
-        </p>
-      {:else}
-        <div
-          class="fit-progress"
-          role="status"
-          aria-live="polite"
-          aria-label="Lens fit progress"
-        >
-          <div class="fit-line">
-            <span class="fit-msg">{lensFit.state.message ?? "fitting…"}</span>
-            {#if lensFit.state.total > 0}
-              <span class="fit-count">
-                {lensFit.state.current}/{lensFit.state.total}
-              </span>
-            {/if}
-          </div>
-          <div
-            class="fit-bar"
-            role="progressbar"
-            aria-label="J-lens prompts fitted"
-            aria-valuemin="0"
-            aria-valuemax={Math.max(lensFit.state.total, 1)}
-            aria-valuenow={lensFit.state.current}
-          >
-            <Bar
-              value={lensFit.state.current}
-              max={Math.max(lensFit.state.total, 1)}
-              width={160}
-              height={8}
-              color="var(--pillar-lens)"
-            />
-          </div>
-          <p class="hint">
-            {#if lensFit.state.cancelling}
-              stopping background work…
-            {:else if fitIsPreparing}
-              generation available during corpus setup
-            {:else}
-              generation paused during model fitting
-            {/if}
-          </p>
-          <Button
-            size="sm"
-            variant="danger"
-            disabled={lensFit.state.cancelling}
-            onclick={() => void lensFit.cancel()}
-          >
-            {lensFit.state.cancelling ? "cancelling…" : "cancel"}
-          </Button>
-        </div>
-      {/if}
-    {/snippet}
-    {#snippet warning()}
-      {#if fitConfirm && !lensFit.state.running}
-        <p class="hint fit-warning" role="alert">
-          Blocks generation; may take hours. Confirm again.
-        </p>
-      {/if}
-    {/snippet}
-    {#snippet messages()}
-      {#if lensFit.state.error}
-        <p class="hint fit-error" role="alert">local fit: {lensFit.state.error}</p>
-      {/if}
-      {#if lensFetch.state.error}
-        <p class="hint fit-error" role="alert">official fetch: {lensFetch.state.error}</p>
-      {/if}
-    {/snippet}
-  </InstrumentSourceSection>
+<div class="jlens" aria-label="Layer prediction controls">
+  <RuntimeJLensSourceSection />
 
   {#if fitted}
     <!-- STEER — token-atom cards in the shared steering expression. -->
     <section class="section steer">
       <RackSectionHeader
-        title="STEER"
+        title="J-lens steering"
+        help="This steers the model toward predicting one tokenizer word. Lower strengths are usually easier to control."
         count={`${steerCards.length} term${steerCards.length === 1 ? "" : "s"}`}
       />
 
@@ -485,22 +275,29 @@
             </div>
           {/each}
         </div>
+      {:else}
+        <p class="hint empty-copy">
+          No word direction added. Enter a word below, then choose Add word.
+        </p>
       {/if}
 
       <form class="add-form" onsubmit={onAddSteer}>
-        <input
-          class="add-input"
-          type="text"
-          placeholder="word (single token)"
-          bind:value={steerInput}
-          aria-label="Add a J-lens steering token"
-        />
+        <label class="add-field">
+          <span class="add-label">Word</span>
+          <input
+            class="add-input"
+            type="text"
+            placeholder="e.g. calm"
+            bind:value={steerInput}
+            aria-label="Add a word prediction direction"
+          />
+        </label>
         <button
           type="submit"
           class="add-btn"
           disabled={steerBusy || !steerInput.trim()}
         >
-          + steer
+          Add word
         </button>
       </form>
     </section>
@@ -511,17 +308,19 @@
          (the CAA racks' fixed-chrome / scrollable-middle shape). -->
     <section class="section probe">
       <RackSectionHeader
-        title="PROBE"
+        title="J-lens readout"
         count={`${pinnedCards.length} pinned`}
         live={liveOn}
         liveBusy={lensState.busy}
         liveTitle={liveOn
           ? "turn live readout off"
           : "turn live readout on"}
+        liveLabel="live predicted-word readings"
+        liveHelp="Update predicted words while the model writes. Pinned words stay visible when it finishes."
         onLiveToggle={onToggleLive}
         sortValue={lensState.workspaceSortMode}
         sortOptions={SORT_OPTIONS}
-        sortAriaLabel="Sort J-lens probe tokens by"
+        sortAriaLabel="Sort prediction words by"
         onSortChange={setLensWorkspaceSortMode}
       />
 
@@ -532,7 +331,8 @@
               <div role="listitem">
                 <JLensProbeCard
                   token={card.token}
-                  strength={card.strength}
+                  probeName={card.pinned ? card.key : undefined}
+                  strength={card.measured ? card.strength : null}
                   com={card.com}
                   spread={card.spread}
                   series={card.series}
@@ -549,34 +349,44 @@
         {#if tokenHoverState.active}
           {#if tokenHoverState.lensLoading}
             <p class="hint">reading hovered token…</p>
+          {:else if tokenHoverState.lensError}
+            <p class="hint read-error" role="alert">{tokenHoverState.lensError}</p>
           {:else if aggRows.length === 0}
             <p class="hint">no J-lens score for this token</p>
           {/if}
         {:else if liveOn}
           {#if aggRows.length > 0}
-            <p class="hint drill-hint">click a token for layers</p>
+            <p class="hint drill-hint">select a token for layers</p>
           {:else}
-            <p class="hint">run to discover</p>
+            <div class="empty-state">
+              <p class="hint">Pin a word, then send a message to track its prediction strength.</p>
+              <button type="button" class="empty-action" onclick={openConversation}>
+                Go to conversation
+              </button>
+            </div>
           {/if}
         {:else}
-          <p class="hint">pinned only · end of run</p>
+          <p class="hint">Live is off. Turn it on to see predicted words while the model writes, or pin a word below.</p>
         {/if}
       </div>
 
       <form class="add-form anchored" onsubmit={onAddProbe}>
-        <input
-          class="add-input"
-          type="text"
-          placeholder="word (single token)"
-          bind:value={probeInput}
-          aria-label="Pin a J-lens token probe"
-        />
+        <label class="add-field">
+          <span class="add-label">Word</span>
+          <input
+            class="add-input"
+            type="text"
+            placeholder="e.g. answer"
+            bind:value={probeInput}
+            aria-label="Watch a prediction word"
+          />
+        </label>
         <button
           type="submit"
           class="add-btn"
           disabled={probeBusy || !probeInput.trim()}
         >
-          + pin
+          Watch word
         </button>
       </form>
     </section>
@@ -602,13 +412,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: var(--space-5);
-  }
-  .work-status {
-    margin: 0;
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
+    padding: var(--surface-padding);
   }
   .section.steer {
     flex: 0 1 auto;
@@ -635,7 +439,7 @@
     flex: 1 1 0;
     min-height: 2.4rem;
     overflow-y: auto;
-    padding-right: var(--space-1);
+    padding-inline-end: var(--space-1);
   }
   /* Anchored footer — borderless, same padding treatment as the CAA
      racks' actions row. */
@@ -649,48 +453,38 @@
     color: var(--fg-muted);
     font-size: var(--text-sm);
   }
+  .read-error { color: var(--accent-red); }
+  .empty-copy {
+    padding: var(--surface-padding);
+    border-radius: var(--radius);
+    background: var(--surface-sheen), var(--glass);
+  }
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding: var(--surface-padding);
+    border-radius: var(--radius);
+    background: var(--surface-sheen), var(--glass);
+  }
+  .empty-action {
+    min-height: var(--control-target);
+    padding: 0 var(--space-4);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--radius);
+    background: var(--glass-strong);
+    color: var(--fg-strong);
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-structure);
+  }
+  .empty-action:hover { color: var(--pillar-lens); }
   .drill-hint {
     font-size: var(--text-xs);
     color: var(--fg-dim);
   }
 
-  .fit-error {
-    color: var(--accent-red);
-  }
-  .fit-warning {
-    color: var(--accent-yellow);
-  }
-  .fit-progress {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-  .fit-line {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--space-3);
-  }
-  .fit-msg {
-    color: var(--fg);
-    font-size: var(--text-sm);
-    font-family: var(--font-mono);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-  }
-  .fit-count {
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    font-variant-numeric: tabular-nums;
-    flex: 0 0 auto;
-  }
-  .fit-bar :global(.bar) {
-    width: 100%;
-    height: var(--data-bar-height);
-    display: block;
-  }
 
   /* Card stack — same rhythm as the probe rack's strips. */
   .cards {
@@ -702,10 +496,25 @@
   /* ----- add forms ----- */
   .add-form {
     display: flex;
+    align-items: flex-end;
     gap: var(--space-2);
   }
-  .add-input {
+  .add-field {
+    display: flex;
     flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+  .add-label {
+    color: var(--fg-dim);
+    font-family: var(--font-structure);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-structure);
+  }
+  .add-input {
+    width: 100%;
+    min-height: var(--control-target);
     min-width: 0;
     /* Borderless input: recessed well fill; ring on focus only. */
     background: var(--input-well);
@@ -714,7 +523,7 @@
     border-radius: var(--radius);
     font-family: var(--font-mono);
     font-size: var(--text-sm);
-    padding: 2px var(--space-3);
+    padding: var(--space-xs) var(--space-3);
     transition: border-color var(--dur-fast) var(--ease-out);
   }
   .add-input:focus-visible {
@@ -729,7 +538,7 @@
     border: 1px solid transparent;
     border-radius: var(--radius);
     font-size: var(--text-sm);
-    padding: 1px var(--space-3);
+    padding: var(--space-xs) var(--space-3);
     cursor: pointer;
     flex: 0 0 auto;
   }
@@ -740,14 +549,28 @@
     opacity: 0.5;
     cursor: default;
   }
+  .add-btn:active,
+  .empty-action:active { transform: scale(var(--press-scale)); }
 
-  .relp-toggle {
-    cursor: pointer;
-    text-align: left;
+  @media (max-width: 920px), (max-height: 700px) {
+    .jlens {
+      display: block;
+      overflow-y: auto;
+    }
+    .section.steer,
+    .section.probe {
+      max-height: none;
+      overflow: visible;
+    }
+    .scroll,
+    .steer-cards {
+      flex: 0 0 auto;
+      overflow: visible;
+    }
   }
 
-  .relp-on {
-    color: var(--pillar-lens);
-    border-color: var(--pillar-lens);
+  @media (prefers-reduced-motion: reduce) {
+    .add-btn,
+    .empty-action { transition: none; }
   }
 </style>

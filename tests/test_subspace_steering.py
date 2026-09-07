@@ -19,19 +19,19 @@ import pytest
 import torch
 from torch import nn
 
-from saklas.core.hooks import (
+from drowse.core.hooks import (
     _SUBSPACE_GAIN,
     SteeringManager,
     _affine_push_offset,
     _lower_affine_subspaces,
 )
-from saklas.core.mahalanobis import LayerWhitener
-from saklas.core.manifold import (
+from drowse.core.mahalanobis import LayerWhitener
+from drowse.core.manifold import (
     CustomDomain,
     SynthesizedSubspace,
     synthesize_subspace as _synthesize_subspace,
 )
-from saklas.core.triggers import Trigger
+from drowse.core.triggers import Trigger
 from tests._whitener import isotropic_whitener
 
 

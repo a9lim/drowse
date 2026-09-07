@@ -21,46 +21,51 @@
     sources,
     value = $bindable(),
     busy = false,
-    accent,
     sourceError = null,
     working = false,
+    allowLocal = true,
     selectionCurrent = true,
     onuse,
     providerOptions,
     providerPlaceholder = "provider source",
     onfetch,
     localControls,
-    localActionLabel,
+    localSectionLabel = null,
+    localActionLabel = "",
     localActionDisabled = false,
-    onlocal,
+    onlocal = () => undefined,
     sourceControls,
     progress,
     warning,
     messages,
+    unavailableMessage = null,
   }: {
     ready: boolean;
     sources: InstrumentSourceJSON[];
     value: string;
     busy?: boolean;
-    accent: string;
     sourceError?: string | null;
     working?: boolean;
+    allowLocal?: boolean;
     /** Whether secondary source settings match the resident runtime. */
     selectionCurrent?: boolean;
     onuse: (source: string) => void;
     providerOptions: ProviderOption[];
     providerPlaceholder?: string;
     onfetch: (source: string) => void;
-    localControls: Snippet;
-    localActionLabel: string;
+    localControls?: Snippet;
+    localSectionLabel?: string | null;
+    localActionLabel?: string;
     localActionDisabled?: boolean;
-    onlocal: () => void;
+    onlocal?: () => void;
     /** Optional controls that sit directly below the source picker. */
     sourceControls?: Snippet;
     progress?: Snippet;
     warning?: Snippet;
     messages?: Snippet;
+    unavailableMessage?: string | null;
   } = $props();
+  let selectionTouched = $state(false);
 
   const options = $derived.by(() => {
     const prepared = new Map(sources.map((source) => [source.source, source]));
@@ -76,9 +81,17 @@
     // provider tier in the order supplied by the server.
     for (const source of sources) {
       if (providers.has(source.source)) continue;
+      if (
+        !allowLocal &&
+        (source.kind === "local" ||
+          source.source === "local" ||
+          source.source.startsWith("local:"))
+      ) continue;
       result.push({ value: source.source, label: source.source });
     }
-    if (!prepared.has("local")) result.push({ value: "local", label: "local" });
+    if (allowLocal && !prepared.has("local")) {
+      result.push({ value: "local", label: "local" });
+    }
     return result;
   });
   // The picker owns the *validity* of the bound selection; the panels own
@@ -87,11 +100,19 @@
   // then the first provider option — which is also what makes a fresh
   // mount land on the active source without the panel arranging it.
   $effect(() => {
-    if (value && options.some((option) => option.value === value)) return;
+    const offered = new Set(options.map((option) => option.value));
+    const active = sources.find(
+      (source) => source.active && offered.has(source.source),
+    )?.source;
+    if (!selectionTouched && active) {
+      value = active;
+      return;
+    }
+    if (value && offered.has(value)) return;
     value =
-      sources.find((source) => source.active)?.source ??
-      sources[0]?.source ??
-      providerOptions[0]?.value ??
+      active ??
+      sources.find((source) => offered.has(source.source))?.source ??
+      options[0]?.value ??
       "";
   });
 
@@ -120,10 +141,18 @@
 </script>
 
 <section class="source-section">
-  <RackSectionHeader title="SOURCE" count={ready ? "ready" : "required"} />
+  <RackSectionHeader
+    title="Compatible data"
+    help="Features and layer predictions use a pack built for this model. Packs stay on this device."
+    count={ready ? "installed" : "needed"}
+  />
 
   {#if sourceError}
     <p class="source-error" role="alert">{sourceError}</p>
+  {/if}
+
+  {#if options.length === 0 && !allowLocal && unavailableMessage}
+    <p class="source-unavailable">{unavailableMessage}</p>
   {/if}
 
   {#if working && progress}
@@ -138,14 +167,15 @@
               {options}
               placeholder={providerPlaceholder}
               disabled={busy || options.length === 0}
-              ariaLabel="Artifact source"
+              ariaLabel="Compatible data pack"
+              onchange={() => (selectionTouched = true)}
             />
           </div>
           <div class="setup-action">
             <Button
               size="sm"
               variant="solid"
-              {accent}
+              {busy}
               disabled={busy || !value ||
                 (localSelected
                   ? localActionDisabled
@@ -156,20 +186,20 @@
               onclick={applySource}
             >
               {busy
-                ? "working…"
+                ? "Preparing…"
                 : localSelected
                   ? localActionLabel
                   : selectedSource?.active
                   ? ready && selectionCurrent
-                    ? "active"
+                    ? "In use"
                     : ready
-                    ? "use"
+                    ? "Use pack"
                     : selectedProviderOption
-                    ? "repair"
-                      : "unavailable"
+                    ? "Download again"
+                      : "Unavailable"
                   : selectedSource
-                    ? "use"
-                    : "fetch"}
+                    ? "Use pack"
+                    : "Download"}
             </Button>
           </div>
         </div>
@@ -181,10 +211,14 @@
       </div>
       {#if localSelected}
         <div class="setup-group local-group">
-          <span class="setup-label">local</span>
-          <div class="setup-row local-row">
-          <div class="setup-controls">{@render localControls()}</div>
-          </div>
+          {#if localSectionLabel}
+            <span class="setup-label">{localSectionLabel}</span>
+          {/if}
+          {#if localControls}
+            <div class="setup-row local-row">
+              <div class="setup-controls">{@render localControls()}</div>
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -206,7 +240,7 @@
     flex-direction: column;
     gap: var(--space-3);
     min-width: 0;
-    padding: var(--space-5) var(--space-5) var(--space-3);
+    padding: var(--surface-padding);
   }
   .setup-stack,
   .setup-group,
@@ -217,6 +251,13 @@
     flex-direction: column;
     gap: var(--space-2);
     min-width: 0;
+  }
+  .source-unavailable {
+    margin: 0;
+    color: var(--fg-muted);
+    font-family: var(--font-reading);
+    font-size: var(--text-sm);
+    line-height: 1.45;
   }
   .setup-group {
     gap: var(--space-1);

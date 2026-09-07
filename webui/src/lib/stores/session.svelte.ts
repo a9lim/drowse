@@ -7,7 +7,8 @@
 // derived mirrors — sampling defaults and instrument live/source state —
 // back to the slices that own them.
 
-import { apiSessions } from "../api";
+import { apiSessions } from "../runtime/services";
+import { userFacingError } from "../runtime/userFacingError";
 import type {
   InstrumentFamily,
   InstrumentFamilyBlock,
@@ -56,6 +57,6 @@ export async function refreshSession(): Promise<void> {
     hydrateSamplingFromInfo();
     rehydrateInstrumentsFromSession();
   } catch (e) {
-    sessionState.error = e instanceof Error ? e.message : String(e);
+    sessionState.error = userFacingError(e, "The model details could not be refreshed.");
   }
 }

@@ -39,9 +39,12 @@
   $effect(() => {
     void index;
     void slice;
-    box
-      ?.querySelector(".current")
-      ?.scrollIntoView({ inline: "center", block: "nearest" });
+    const current = box?.querySelector<HTMLButtonElement>(".current");
+    if (box && current) {
+      const tokenBounds = current.getBoundingClientRect();
+      const ribbonBounds = box.getBoundingClientRect();
+      box.scrollLeft += tokenBounds.left + tokenBounds.width / 2 - ribbonBounds.left - box.clientWidth / 2;
+    }
   });
 </script>
 
@@ -50,7 +53,8 @@
     <span>sequence context</span>
     <span class="position">token {index + 1} / {tokens.length}</span>
   </header>
-  <div class="ribbon" bind:this={box} role="group" aria-label="Token context sequence">
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scrollable token sequence is a single keyboard navigation stop.) -->
+  <div class="ribbon" bind:this={box} role="group" aria-label="Token context sequence" tabindex="0">
     {#if start > 0}
       <span class="more" aria-hidden="true">…{start}</span>
     {/if}
@@ -107,6 +111,7 @@
     scrollbar-width: thin;
   }
   .rtok {
+    min-height: var(--control-target);
     background: transparent;
     border: none;
     border-radius: var(--radius-sm);

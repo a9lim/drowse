@@ -32,7 +32,7 @@
     block-size: 18px;
     flex: 0 0 18px;
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: var(--text-marker);
     font-variant-numeric: tabular-nums;
     font-weight: var(--weight-medium);
     line-height: 1;
@@ -41,13 +41,13 @@
   /* Optical, not layout, compensation: all four shapes keep the same
      18px hit/alignment box while their visible ink reads equally large. */
   .diamond {
-    font-size: 14.5px;
+    font-size: var(--text-marker-diamond);
   }
   .square {
-    font-size: 13.5px;
+    font-size: var(--text-marker-square);
   }
   .triangle {
-    font-size: 15px;
+    font-size: var(--text-marker-triangle);
     transform: translateY(-0.25px);
   }
 </style>

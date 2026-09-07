@@ -1,2 +1,2 @@
 # Vite's generated runtime includes significant whitespace in a template literal.
-saklas/web/dist/assets/*.js whitespace=-trailing-space
+drowse/web/dist/assets/*.js whitespace=-trailing-space

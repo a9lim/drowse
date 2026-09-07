@@ -1,5 +1,6 @@
 <script lang="ts">
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
+  import ResetSettings from "../lib/ui/ResetSettings.svelte";
   import {
     closeDrawer,
     genStatus,
@@ -17,11 +18,12 @@
     vectorsState,
   } from "../lib/stores.svelte";
   import Button from "../lib/ui/Button.svelte";
+  import { userFacingError } from "../lib/runtime/userFacingError";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => {
-    void _drawerProps.params;
-  });
+  let { params = null }: { params?: unknown } = $props();
+  const embedded = $derived(
+    (params as { embedded?: boolean } | null)?.embedded === true,
+  );
 
   let busy = $state(false);
   let lastAudit: string | null = $state(null);
@@ -52,51 +54,60 @@
       ]);
       lastAudit = new Date().toLocaleTimeString();
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : String(e);
+      errorMsg = userFacingError(e, "Unable to refresh every diagnostic. Reopen the model and try again.");
     } finally {
       busy = false;
     }
   }
 </script>
 
-<section class="drawer-shell" aria-label="Health drawer">
-  <header class="drawer-header">
-    <div class="title">
-      <span class="eyebrow">model health</span>
-    </div>
-    <DrawerCloseButton onclick={closeDrawer} />
-  </header>
+<section
+  class="drawer-shell"
+  class:embedded
+  role={embedded ? "region" : undefined}
+  aria-label={embedded ? "Model controls" : "Health drawer"}
+>
+  {#if !embedded}
+    <header class="drawer-header">
+      <div class="title">
+        <h2 class="eyebrow">Model health</h2>
+      </div>
+      <DrawerCloseButton onclick={closeDrawer} />
+    </header>
+  {/if}
 
-  <div class="body">
+  <div class="body" aria-busy={busy}>
     <section class="hero">
       <div>
         <h2>{sessionState.info?.model_id ?? "no model"}</h2>
         <p>{sessionState.info ? `${sessionState.info.device}/${sessionState.info.dtype}` : "session offline"}</p>
       </div>
-      <Button variant="solid" disabled={busy} onclick={audit}>
+      <Button variant="solid" {busy} disabled={busy} onclick={audit}>
         {busy ? "checking…" : "refresh"}
       </Button>
     </section>
 
     {#if errorMsg}
-      <div class="error">{errorMsg}</div>
+      <div class="error" role="alert">Health check failed: {errorMsg}</div>
     {/if}
+
+    <section class="panel"><ResetSettings full /></section>
 
     <section class="grid">
       <div class="tile">
         <span>generation</span>
         <strong>{genStatus.active ? "active" : genStatus.finishReason ?? "idle"}</strong>
-        <p>{genStatus.tokensSoFar}/{genStatus.maxTokens || "—"} tokens · {genStatus.tokPerSec.toFixed(1)} tok/s</p>
+        <p>{genStatus.tokensSoFar}/{genStatus.maxTokens || "-"} tokens · {genStatus.tokPerSec.toFixed(1)} tok/s</p>
       </div>
       <div class="tile">
-        <span>ppl</span>
-        <strong>{ppl === null ? "—" : ppl.toFixed(2)}</strong>
+        <span>Perplexity</span>
+        <strong>{ppl === null ? "-" : ppl.toFixed(2)}</strong>
         <p>{genStatus.ppl.count} steps</p>
       </div>
       <div class="tile">
         <span>loom tree</span>
-        <strong>{loomTree.nodes.size || "—"}</strong>
-        <p>rev {loomTree.loaded ? loomTree.rev : "—"} · depth {loomTree.activePath.length || "—"}</p>
+        <strong>{loomTree.nodes.size || "-"}</strong>
+        <p>rev {loomTree.loaded ? loomTree.rev : "-"} · depth {loomTree.activePath.length || "-"}</p>
       </div>
       <div class="tile">
         <span>artifacts</span>
@@ -113,11 +124,11 @@
     <section class="panel">
       <h3>checks</h3>
       <div class="checks">
-        <div class:ok={!!sessionState.info}>session metadata</div>
-        <div class:ok={loomTree.loaded && !loomTree.error}>loom API</div>
-        <div class:ok={steerRack.catalog.length > 0}>manifold catalog</div>
-        <div class:ok={probeRack.active.length > 0}>probe monitor</div>
-        <div class:ok={steerRack.correlation !== null}>correlation cache</div>
+        <div class:ok={!!sessionState.info}>Session details: {sessionState.info ? "loaded" : "unavailable"}</div>
+        <div class:ok={loomTree.loaded && !loomTree.error}>Loom: {loomTree.loaded && !loomTree.error ? "loaded" : "unavailable"}</div>
+        <div class:ok={steerRack.catalog.length > 0}>Response controls: {steerRack.catalog.length > 0 ? "available" : "none installed"}</div>
+        <div class:ok={probeRack.active.length > 0}>Probes: {probeRack.active.length > 0 ? "active" : "none active"}</div>
+        <div class:ok={steerRack.correlation !== null}>Correlation: {steerRack.correlation !== null ? "available" : "not measured"}</div>
       </div>
     </section>
 
@@ -152,12 +163,13 @@
     font-family: var(--font-ui);
     font-size: var(--text);
   }
+  .drawer-shell.embedded { height: 100%; }
   .drawer-header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-5);
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     display: flex;
@@ -179,23 +191,25 @@
   }
   .body {
     display: grid;
-    gap: var(--space-5);
-    padding: var(--space-5) var(--space-6);
+    gap: var(--drawer-section-gap);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     overflow: auto;
   }
   /* Data wells — recessed stat/summary containers. */
   .hero, .tile, .panel {
-    border-radius: var(--radius);
-    background: var(--bg);
-    padding: var(--space-6);
+    border-radius: var(--radius-lg);
+    background: var(--surface-sheen), var(--bg);
+    padding: var(--panel-padding);
   }
   .hero {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-6);
   }
   h2, h3 { margin: 0; color: var(--fg); }
+  .hero > div { min-width: 0; overflow-wrap: anywhere; }
   h2 {
     font-family: var(--font-mono);
     font-size: var(--text-md);
@@ -237,10 +251,12 @@
   .checks div {
     border: 1px solid transparent;
     border-radius: var(--radius);
-    padding: var(--space-4);
+    padding: var(--surface-padding);
     color: var(--fg-muted);
-    background: var(--bg-elev);
+    background: var(--surface-sheen), var(--bg-elev);
     font-size: var(--text-sm);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
     transition:
       color var(--dur-fast) var(--ease-out),
       border-color var(--dur-fast) var(--ease-out),
@@ -253,7 +269,7 @@
   }
   ul {
     margin: 0;
-    padding-left: var(--space-6);
+    padding-inline-start: var(--space-6);
     color: var(--accent-yellow);
     line-height: 1.5;
   }
@@ -263,7 +279,10 @@
     color: var(--accent-red);
     background: color-mix(in srgb, var(--accent-red) 8%, transparent);
     border-radius: var(--radius);
-    padding: var(--space-5);
+    padding: var(--surface-padding);
     line-height: 1.5;
+  }
+  @media (max-width: 600px) {
+    .grid, .checks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>

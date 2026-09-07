@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from saklas import (
+from drowse import (
     EventBus,
     InvalidNodeOperationError,
     LoomMutated,
@@ -24,7 +24,7 @@ from saklas import (
     UnknownNodeError,
     derive_seed_schedule,
 )
-from saklas.core.loom import (
+from drowse.core.loom import (
     TOKEN_SIDECAR_FORMAT_VERSION,
     TREE_FORMAT_VERSION,
     LoomTreeError,
@@ -521,13 +521,13 @@ def test_add_user_turn_no_dedup_when_text_differs():
 def _bind_check_user_send_target(tree: LoomTree):
     """Return a callable bound to a stub session exposing only ``tree``.
 
-    ``SaklasSession._check_user_send_target`` only reaches into
+    ``DrowseSession._check_user_send_target`` only reaches into
     ``self.tree``; binding the unbound method onto a minimal stub
     sidesteps the model-load cost so we can unit-test D15.
     """
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
     stub = type("S", (), {"tree": tree})()
-    return SaklasSession._check_user_send_target.__get__(stub, type(stub))
+    return DrowseSession._check_user_send_target.__get__(stub, type(stub))
 
 
 def test_d15_engine_check_rejects_leaf_user_send():
@@ -616,7 +616,7 @@ def test_d15_engine_check_passes_for_explicit_grandparent():
 
 
 def _bind_commit_methods(tree: LoomTree, tokenizer: Any):
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
     stub = type(
         "S", (),
         {
@@ -626,15 +626,15 @@ def _bind_commit_methods(tree: LoomTree, tokenizer: Any):
             # for the D15 guard; bind the unbound method onto the same
             # stub so the lookup chain resolves.
             "_check_user_send_target":
-                SaklasSession._check_user_send_target,
+                DrowseSession._check_user_send_target,
             # Real sessions always expose ``scene_grammar``; None keeps
             # the legacy commit-seating guards active for these tests.
             "scene_grammar": None,
         },
     )()
     return (
-        SaklasSession.append_user_turn.__get__(stub, type(stub)),
-        SaklasSession.append_assistant_turn.__get__(stub, type(stub)),
+        DrowseSession.append_user_turn.__get__(stub, type(stub)),
+        DrowseSession.append_assistant_turn.__get__(stub, type(stub)),
     )
 
 
@@ -822,10 +822,10 @@ def test_to_dict_round_trip(tmp_path: Path):
     t.save(path)
     raw = json.loads(path.read_text())
     assert raw["tree_format"] == TREE_FORMAT_VERSION
-    # D22 / plan ":600" — header carries saklas_version so future
+    # D22 / plan ":600" — header carries drowse_version so future
     # migrations can branch on the originating build.
-    import saklas as _saklas
-    assert raw["saklas_version"] == _saklas.__version__
+    import drowse as _drowse
+    assert raw["drowse_version"] == _drowse.__version__
     t2 = LoomTree.load(path)
     # Same structure.
     assert t2.root_id == t.root_id
@@ -962,7 +962,7 @@ def test_recipe_survives_node_and_cast_round_trips():
     u = t.add_user_turn("hi")
     a = t.begin_assistant(u, recipe=recipe)
     t.finalize_assistant(a, text="yo")
-    from saklas.core.loom import CastMember
+    from drowse.core.loom import CastMember
     t.set_cast_member("deer", CastMember(recipe=Recipe(steering="0.2 skittish")))
 
     t2 = LoomTree.from_dict(t.to_dict())
@@ -1214,7 +1214,7 @@ def test_messages_for_with_labels():
 
 
 def test_cast_member_round_trip():
-    from saklas import CastMember
+    from drowse import CastMember
 
     full = CastMember(
         recipe=Recipe(steering="0.5 personas%pirate", thinking=False),
@@ -1230,7 +1230,7 @@ def test_cast_member_round_trip():
 
 
 def test_cast_roster_crud_and_events():
-    from saklas import CastMember, EventBus
+    from drowse import CastMember, EventBus
 
     bus = EventBus()
     seen: list[LoomMutated] = []
@@ -1275,8 +1275,8 @@ def test_cast_roster_derives_structural_and_observed_roles():
 
 
 def test_cast_label_validated():
-    from saklas import CastMember
-    from saklas.core.role_templates import InvalidRoleError
+    from drowse import CastMember
+    from drowse.core.role_templates import InvalidRoleError
 
     t = LoomTree()
     with pytest.raises(InvalidRoleError):
@@ -1286,7 +1286,7 @@ def test_cast_label_validated():
 
 
 def test_cast_rides_save_load(tmp_path: Path):
-    from saklas import CastMember
+    from drowse import CastMember
 
     t = _seed_tree()
     # The current schema always carries the cast roster, including empty.

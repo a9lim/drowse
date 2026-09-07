@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FluentIcon from "../lib/ui/FluentIcon.svelte";
   // The steering bar — the composed steering expression made permanently
   // visible.  Every racked term renders as a pillar-colored chip regardless
   // of which instrument tab is open: subspace white, manifold violet,
@@ -99,29 +100,28 @@
     if (!expression) return;
     try {
       await navigator.clipboard.writeText(expression);
-      pushToast("expression copied", { kind: "info" });
+      pushToast("Response recipe copied", { kind: "info" });
     } catch {
-      pushToast("clipboard unavailable", { kind: "error" });
+      pushToast("Could not copy the recipe. Select its text and copy it manually.", { kind: "error" });
     }
   }
 </script>
 
-<div class="recipe" title={expression || "no active steering"}>
-  <span class="lbl">steering</span>
+{#if custom ? expression.trim() : chips.length > 0}
+<div class="recipe">
+  <span class="lbl">Steering</span>
   {#if custom}
     <span class="custom-expression">
       <span class="custom-badge">custom</span>
-      <code>{expression || "unsteered"}</code>
+      <code>{expression}</code>
     </span>
-  {:else if chips.length === 0}
-    <span class="empty">none</span>
   {:else}
     <div class="chips">
       {#each chips as chip (chip.name)}
         <Chip
           color={chip.color}
           muted={!chip.enabled}
-          title={chip.enabled ? chip.text : `${chip.text} (disabled)`}
+          title={chip.enabled ? undefined : "Disabled"}
           onclick={() => setInspectorTab(chip.tab)}
           onremove={chip.remove}
           removeLabel={`Remove ${chip.name} from steering recipe`}
@@ -135,24 +135,29 @@
     <button
       type="button"
       class="copy"
-      title="copy expression"
-      aria-label="Copy steering expression"
+      data-cursor="copy"
+      title="Copy the technical response recipe"
+      aria-label="Copy response recipe"
       onclick={copyExpression}
-    >⧉</button>
+    ><FluentIcon name="copy" /></button>
   {/if}
 </div>
+{/if}
 
 <style>
   /* A quiet glass well; the chips carry the meaning. */
   .recipe {
+    position: relative;
+    z-index: 1;
     display: flex;
-    align-items: flex-start;
+    flex: none;
+    align-items: center;
     gap: var(--space-3);
-    padding: var(--space-3) var(--space-4);
-    margin: var(--space-4) var(--space-4) 0;
-    border-radius: var(--radius);
+    padding: var(--surface-padding);
+    margin: var(--surface-gutter) var(--surface-gutter) 0;
+    border-radius: var(--radius-lg);
     border: 1px solid transparent;
-    background: var(--glass);
+    background: var(--surface-sheen), var(--bg-alt);
   }
   .lbl {
     font-family: var(--font-mono);
@@ -160,14 +165,7 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--fg-muted);
-    padding-top: 3px;
     flex: none;
-  }
-  .empty {
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
-    padding-top: 1px;
   }
   .custom-expression {
     display: flex;
@@ -175,7 +173,7 @@
     gap: var(--space-2);
     flex: 1 1 auto;
     min-width: 0;
-    text-align: left;
+    text-align: start;
   }
   .custom-expression code {
     color: var(--fg-strong);
@@ -190,7 +188,7 @@
     color: var(--accent-amber);
     background: color-mix(in srgb, var(--accent-amber) 12%, transparent);
     border-radius: var(--radius-sm);
-    padding: 1px var(--space-2);
+    padding: var(--space-xs) var(--space-2);
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
   }
@@ -202,22 +200,29 @@
     min-width: 0;
     /* Two chip rows before the bar scrolls — the expression stays
      * glanceable without eating the instrument column. */
-    max-height: 60px;
+    max-height: calc((var(--control-target) + var(--space-xs) * 2) * 2 + var(--space-xs));
     overflow-y: auto;
+    scrollbar-gutter: stable both-edges;
   }
   .copy {
     flex: none;
+    min-width: var(--control-target);
+    min-height: var(--control-target);
     background: transparent;
     border: 0;
     color: var(--fg-muted);
     font-size: var(--text-sm);
     line-height: 1;
-    padding: 3px var(--space-2);
-    border-radius: var(--radius-sm);
+    padding: var(--space-xs) var(--space-2);
+    border-radius: var(--radius);
     transition: color var(--dur-fast) var(--ease-out);
   }
   .copy:hover {
     color: var(--fg);
     background: var(--bg-hover);
+  }
+  @media (max-width: 620px) {
+    .recipe { flex-wrap: wrap; }
+    .chips { flex-basis: 100%; }
   }
 </style>

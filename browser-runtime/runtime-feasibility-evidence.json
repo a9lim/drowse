@@ -1,0 +1,16 @@
+{
+  "$schema": "./runtime-feasibility-evidence.schema.json",
+  "schemaVersion": 3,
+  "status": "feasibility-required",
+  "polytheticRevision": null,
+  "gates": {
+    "gemmaTinyFp32Parity": null,
+    "llamaTinyFp32Parity": null,
+    "qwenTinyFp32Parity": null,
+    "gemmaProductionQ4Parity": null,
+    "smolProductionQ4Parity": null,
+    "qwenProductionQ4Parity": null,
+    "gemmaLongPrefill": null,
+    "runtimeLifecycle": null
+  }
+}

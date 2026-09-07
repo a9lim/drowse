@@ -1,4 +1,4 @@
-# Saklas architecture
+# Drowse architecture
 
 This document explains the current system as a whole: how artifacts are fitted,
 how a steering expression reaches a model forward, how hidden states become
@@ -10,10 +10,10 @@ modules.
 
 ## 1. System in one page
 
-Saklas is one model-owning session with three front doors:
+Drowse is one model-owning session with three front doors:
 
-- `SaklasSession`, the Python API;
-- `saklas serve`, which exposes OpenAI, Ollama, and native Saklas protocols;
+- `DrowseSession`, the Python API;
+- `drowse serve`, which exposes OpenAI, Ollama, and native Drowse protocols;
 - the Svelte WebUI mounted by that server.
 
 All three converge on the same generation, steering, capture, and measurement
@@ -21,7 +21,7 @@ paths.
 
 ```mermaid
 flowchart LR
-    Clients["Python / OpenAI / Ollama / WebUI"] --> Session["SaklasSession"]
+    Clients["Python / OpenAI / Ollama / WebUI"] --> Session["DrowseSession"]
     Session --> Loom["Loom tree + recipes"]
     Session --> Composer["SteeringComposer"]
     Composer --> Hooks["SteeringManager + layer hooks"]
@@ -67,8 +67,8 @@ steered forward.
 | Conversation state | `core/loom.py` | Branching authored/generated nodes, recipes, raw tokens, measurements, cast, and persistence. |
 | Artifact I/O | `io/` | Exact schemas, selectors, integrity, atomic publication, Hugging Face distribution, and lifecycle. |
 | HTTP/WebSocket protocols | `server/` | Thin validation/serialization layers over one session. |
-| Dashboard | `webui/`, `saklas/web/` | Svelte source plus the committed production bundle served last as an SPA. |
-| Notebook figures | `saklas/notebook/` | Plotly/pandas helpers over the public result types; optional `[notebook]` extra. |
+| Dashboard | `webui/`, `drowse/web/` | Svelte source plus the committed production bundle served last as an SPA. |
+| Notebook figures | `drowse/notebook/` | Plotly/pandas helpers over the public result types; optional `[notebook]` extra. |
 
 The main dependency direction is `server/cli/web -> session -> core + io`. Pure
 geometry in `core/manifold.py` does not import the session or persistence layer;
@@ -136,14 +136,14 @@ does not require a manifold fit.
 The Jacobian lens and SAE are model-scoped sources, not concept manifolds.
 
 - A J-lens contains one fp32 transport matrix `J_l` per fitted source layer.
-  Saklas-owned fits use immutable shards behind a manifest, one named local
+  Drowse-owned fits use immutable shards behind a manifest, one named local
   lens per estimator (`local/default` for the standard Jacobian fit,
   `local/relp` for the R-lens — the same estimator run through the
   LRP-modified backward graph in `core/relp.py`, forward passes
   bit-identical); external payloads (Neuronpedia, workspace-lenses J/R
   pairs) remain in the Hugging Face cache behind pinned local bindings.
-- A Saklas-trained SAE stores local encoder/decoder weights. A SAELens source
-  remains provider-owned; Saklas stores only its selected release/layer binding
+- A Drowse-trained SAE stores local encoder/decoder weights. A SAELens source
+  remains provider-owned; Drowse stores only its selected release/layer binding
   and optional feature metadata.
 
 Both source families have an `active.json` selector. A source switch is visible
@@ -164,11 +164,11 @@ stateless calls produce results without mutating the tree.
 
 ## 4. Local state and artifact identity
 
-All Saklas-owned state resolves through `io.paths.saklas_home()` and honors
-`$SAKLAS_HOME`.
+All Drowse-owned state resolves through `io.paths.drowse_home()` and honors
+`$DROWSE_HOME`.
 
 ```text
-~/.saklas/
+~/.drowse/
   config.yaml                              optional default CLI/server config
   baseline_prompts.json                    optional override for bundled prompts
   neutral_statements.json                  optional override for bundled neutral responses
@@ -201,8 +201,8 @@ All Saklas-owned state resolves through `io.paths.saklas_home()` and honors
 ```
 
 Conversation exports are browser-downloaded JSON files or explicit
-`LoomTree.save()` targets; Saklas does not invent a conversation directory or
-autosave a session under `$SAKLAS_HOME`.
+`LoomTree.save()` targets; Drowse does not invent a conversation directory or
+autosave a session under `$DROWSE_HOME`.
 
 Identity is stricter than a friendly model name. Fitted sidecars carry the
 loaded-model/source fingerprint, selected layers, artifact hashes, and the
@@ -426,7 +426,7 @@ Lens and SAE readings are `ScalarReading`s — one value with an explicit unit,
 a per-layer trace, and a depth summary that names its mass basis — and the
 measurement envelope carries that native shape. The `ProbeReading` bridge
 exists only at the vendor-extension boundary (`TokenEvent.probe_readings` and
-the OpenAI/Ollama `x-saklas-probe-readings` header), never on the native
+the OpenAI/Ollama `x-drowse-probe-readings` header), never on the native
 per-token wire.
 
 All three families implement one instrument contract
@@ -435,6 +435,10 @@ returning a per-family frozen `LiveState`, `active_source`, gate validation,
 probe hashing, and `token_readout` returning the finished replay envelope. The
 `session.instruments` registry is the family enumeration the server dispatch,
 the composer's gate preflight, and the token-payload slots all derive from.
+Browser token replay rebuilds the authoritative prefix but requests expensive
+discovery readouts only at the selected token. Page-session keyed replay entries
+deduplicate hover and drilldown requests, keep queued results across token
+navigation, and stream progress without allowing concurrent GPU access.
 
 The J-lens readout computes `softmax(W_U * norm(J_l h_l))` at each fitted layer.
 Its aggregate strength is the mean per-layer probability for a token; depth
@@ -544,6 +548,16 @@ The WebUI token-detail drawer is a shell over four views:
 - SAE features;
 - J-lens aggregate and layer-by-vocabulary readout.
 
+Hosted token forks seed the new node with the unchanged prefix and its captured
+token rows before replay starts. Replay rebuilds model context in the background;
+only the replacement and new tail produce visible token events. Throttled
+`generation_progress` events distinguish context preparation from new output.
+Unchanged-prefix discovery readouts are skipped, while steering gates still read
+their required measurements and phase controls advance at every raw token.
+The current backend still performs sequential forced replay; it does not claim
+to restore a KV checkpoint. Continuing after a token requests a fresh seed;
+replacing it keeps the recorded seed for a reproducible counterfactual.
+
 One cursor walks token, thinking/response segment, and turn boundaries across
 the current conversation. The selected tab is sticky. Captured data is used when
 present; replay fills in historical or newly attached instrumentation.
@@ -622,17 +636,17 @@ semantics.
 
 ## 9. Server architecture
 
-`server/app.py::create_app` owns one `SaklasSession` and registers protocol
+`server/app.py::create_app` owns one `DrowseSession` and registers protocol
 routes before the SPA catch-all.
 
 | Surface | Purpose |
 |---|---|
 | `/v1/models`, `/v1/chat/completions`, `/v1/completions` | OpenAI-compatible discovery and generation. |
 | `/api/*` | Ollama-compatible model metadata, chat, and generation. Unsupported model-management operations return explicit errors. |
-| `/saklas/v1/*` | Sessions, tree/recipes, profiles/probes, manifolds, templates, instruments, SSE, and the native generation WebSocket. |
+| `/drowse/v1/*` | Sessions, tree/recipes, profiles/probes, manifolds, templates, instruments, SSE, and the native generation WebSocket. |
 | `/` and static assets | The bundled WebUI when `web=True` / CLI `serve` without `--no-web`. |
 
-Pydantic models validate request bodies. `SaklasError.user_message()` provides a
+Pydantic models validate request bodies. `DrowseError.user_message()` provides a
 single error boundary adapted to OpenAI and Ollama response shapes.
 
 The server adds an async session lock around generation-facing routes so
@@ -668,17 +682,67 @@ chat, and instruments; focused UI state lives in `lib/stores/`. The canonical
 server `measurements` envelope is consumed directly rather than reintroducing
 per-family top-level token aliases.
 
-The app is built by Vite into `saklas/web/dist/`. That directory is committed
+The app is built by Vite into `drowse/web/dist/`. That directory is committed
 package data and is the bundle shipped in the wheel. Source and bundle must
-change together. `saklas/web/routes.py` mounts APIs first, static assets second,
+change together. `drowse/web/routes.py` mounts APIs first, static assets second,
 and an allowlisted SPA fallback last; retired top-level product routes return
 404 rather than being accidentally revived by the fallback.
+
+### 10.1 Hosted browser build
+
+The hosted Svelte entry is isolated from the Python dashboard: it has its own
+Vite configuration and public assets and writes only to `webui/dist-hosted`.
+`HostedController` owns compatibility, catalog, download, storage, and model
+lifecycle; the workbench talks through the same `RuntimeClient` contract used by
+the HTTP implementation. Browser orchestration is assigned to a dedicated
+worker, and the fitting boundary targets a separate Rust/WASM worker so large
+tensors do not cross the UI thread.
+
+Hosted authoring covers manifold and template math only. SAE training and
+J-lens fitting remain Python/developer-release workflows and are neither
+imported by the PWA nor exposed through its worker protocol. The browser can
+download, validate, activate, read, probe, gate, and steer with compatible
+precomputed SAE and J-lens packs entirely on the GPU.
+
+This is currently a fail-closed release foundation, not a production browser
+runtime. The runtime and distribution locks remain `feasibility-required`, the
+catalog trust root is not provisioned, and the deterministic fixture backend is
+limited to tests and local UI development. A release build must reject that
+state. No hosted path may substitute cloud inference or CPU-only inference when
+WebGPU, the pinned Drowse MLC backend, verified artifacts, or a compatible device
+is unavailable.
+
+The feasibility runtime now accepts a caller-owned, read-only artifact cache.
+Drowse validates the MLC configuration, tokenizer, `tensor-cache.json`, exact
+weight-shard closure, model library, and signed sizes before creating the
+engine. WebLLM reads those verified OPFS `File` objects directly and cannot
+populate a second persistent cache or request an unknown URL. Chromium consumes
+an adapter after its first device request, so the compatibility worker destroys
+the calibration device and acquires a fresh adapter immediately before load. It
+rejects that adapter unless its hardware status, identity, features, and
+bucketed limits match the checked adapter, then lets WebLLM create the production
+device from it. Release builds still require the exact pinned fork package and
+immutable production artifacts.
+
+The browser owns a transport-neutral parser for the complete Python steering
+syntax, including projections, ablations, manifold positions, phase windows,
+probe gates, SAE selectors, and J-lens selectors. Python and TypeScript consume
+the same accept/reject fixture. Parsing does not imply execution support: each
+expression is reduced to an explicit hook-feature requirement set before GPU
+program compilation. The current `standard-v3` feasibility library implements
+structured affine and curved programs, exact geometry reads, precomputed SAE
+steering/readout, and exact full-vocabulary J-lens steering/readout. The worker
+still validates the library feature manifest, runtime identity, model profile,
+and required instrument packs before every program is installed; unsupported
+or incompatible combinations fail before generation. Production downloads
+remain disabled until the runtime lock, immutable model closure, signed catalog,
+and distribution origins are complete.
 
 ## 11. J-lens and SAE lifecycle
 
 ### 11.1 J-lens fit
 
-`fit_jacobian_lens` is the only backward-pass path in Saklas. It estimates the
+`fit_jacobian_lens` is the only backward-pass path in Drowse. It estimates the
 mean residual-to-final transport `J_l` over a pretraining-like corpus. Prompt
 microbatches share a forward graph; batched vector-Jacobian products recover
 output row blocks where supported, with an exact fallback where they are not.
@@ -705,9 +769,24 @@ explicit. Live discovery, pinned probes, and gates share one encode per step.
 ## 12. Distribution and transfer
 
 `pack` owns manifold lifecycle: list/show, install/search/push, remove, clear,
-refresh, and GGUF export. A pack is a current-format manifold folder in a
-Hugging Face model repository; install stages and validates before replacing
-the destination.
+refresh, and GGUF or `.drowse` export. A pack is a current-format manifold
+folder in a Hugging Face model repository; install stages and validates before
+replacing the destination.
+
+`.drowse` v1 is a narrow ZIP transport envelope, not the runtime `Pack`
+abstraction. It carries exactly one unchanged manifold folder closure and its
+one referenced template when present. It excludes model weights, J-lenses,
+SAEs, caches, and active selections. Entry paths, sizes, hashes, ZIP structure,
+and safetensor headers are validated before a staged install. Those checks prove
+integrity, not publisher identity; third-party archives remain unverified
+sources.
+
+The hosted client discovers only `drowse-manifold` Hugging Face repositories
+with one root `.drowse` and one root `manifold.json` summary. Search results
+are bound to the repository's immutable commit; installation re-resolves that
+commit and rejects an archive whose internal source provenance differs. This
+strict browser envelope does not remove Python support for legacy folder-based
+repositories.
 
 Cross-model transfer fits a compact per-layer affine alignment from shared
 neutral activations. Basis directions use the linear map, points use the affine
@@ -722,7 +801,7 @@ format and are rejected.
 
 ## 13. Concurrency and consistency invariants
 
-Saklas has several deliberately scoped synchronization boundaries:
+Drowse has several deliberately scoped synchronization boundaries:
 
 - The session generation lock protects model execution and loom mutations that
   would conflict with an in-flight run.
@@ -770,7 +849,7 @@ well as through unit tests.
 
 ## 15. Change map
 
-When extending Saklas, change the narrow owner first:
+When extending Drowse, change the narrow owner first:
 
 - New steering syntax: parser/formatter tests in `steering_expr.py`, then
   composer lowering, then docs and wire inputs.
@@ -787,7 +866,7 @@ When extending Saklas, change the narrow owner first:
   fails on an unregenerated diff. Request bodies and WS frames stay
   hand-written in `webui/src/lib/types.ts`.
 - WebUI changes: edit `webui/src`, run the Svelte/theme checks, rebuild the
-  committed `saklas/web/dist` bundle, and verify the production artifact.
+  committed `drowse/web/dist` bundle, and verify the production artifact.
 
 The test suite is part of the architecture. Exact-schema, round-trip,
 concurrency, failure-injection, and cache-identity tests are often the only
@@ -806,5 +885,5 @@ executable statement of why a boundary is strict.
 - Discover coordinates are model-specific. Cross-model transfer maps fitted
   activation geometry, not a supposedly universal discover layout.
 - CPU works but is not the intended interactive path for large models.
-- `saklas serve` is a trusted-local/lab server, not a hardened multi-tenant
+- `drowse serve` is a trusted-local/lab server, not a hardened multi-tenant
   inference platform.

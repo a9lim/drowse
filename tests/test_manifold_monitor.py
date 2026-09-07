@@ -14,21 +14,24 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.manifold import (
+from drowse.core.manifold import (
     BoxAxis,
     BoxDomain,
     CustomDomain,
     LayerSubspace,
     Manifold,
+    SphereDomain,
     fit_layer_subspace as _fit_layer_subspace_with_ev,
 )
-from saklas.core.monitor import (
+from drowse.core.monitor import (
     DEFAULT_NEAREST_TOP_N,
     NEUTRAL_LABEL,
     AttachedManifoldProbe,
     Monitor,
+    _mean_coordinate_space,
+    _mean_domain_coordinates,
 )
-from saklas.core.results import ProbeReading
+from drowse.core.results import ProbeReading
 
 
 def fit_layer_subspace(*args: Any, **kwargs: Any) -> Any:
@@ -146,6 +149,45 @@ def _toy_manifold(
 
 
 # ============================================ attach / cache + accessors ===
+
+def test_spherical_mean_uses_points_not_independent_angles():
+    domain = SphereDomain(2)
+    coords = torch.tensor([[0.1, 0.0], [0.1, torch.pi]])
+    embedded = torch.stack([_mean_coordinate_space(domain, coord) for coord in coords])
+    mean = _mean_domain_coordinates(domain, embedded.mean(0), coords[0])
+    torch.testing.assert_close(domain.embed(mean), torch.tensor([1.0, 0.0, 0.0]), atol=1e-6, rtol=0)
+
+
+def test_opposing_periodic_readings_keep_a_real_layer_not_an_invented_midpoint():
+    domain = BoxDomain([BoxAxis("phase", periodic=True, period=1.0)])
+    coords = torch.tensor([[0.0], [0.5]])
+    mean = _mean_domain_coordinates(domain, domain.embed(coords).mean(0), coords[0])
+    torch.testing.assert_close(mean, coords[0])
+
+@pytest.mark.parametrize("offset", [0.0, 0.2, 0.6])
+def test_periodic_aggregate_and_gate_follow_the_short_arc(offset: float):
+    domain = BoxDomain([BoxAxis("phase", periodic=True, period=1.0)])
+    coords = torch.arange(8, dtype=torch.float32).reshape(-1, 1) / 8
+    points = domain.embed(coords)
+    sub = fit_layer_subspace(points, points)
+    sub.sigma_rbf_weights = torch.zeros(8, 1)
+    sub.sigma_poly_coeffs = torch.zeros(3, 1)
+    manifold = Manifold(
+        name="circle", domain=domain, node_labels=[f"n{i}" for i in range(8)],
+        node_coords=coords, layers={0: sub, 1: sub},
+        mahalanobis_share={0: 1.0, 1: 1.0}, origin={0: torch.zeros(1), 1: torch.zeros(1)},
+    )
+    monitor = _iso_monitor(manifold)
+    monitor.add_probe("circle", manifold)
+    hidden = {layer: sub.eval_at(domain.embed(torch.tensor([[(position + offset) % 1]])))[0]
+              for layer, position in enumerate([0.99, 0.01])}
+    full = monitor.score_single_token(hidden)["circle"]
+    lean = monitor.score_single_token(hidden, coords_only=True)["circle"]
+    gate = _gate_scalars(monitor, hidden, {"circle"})["circle"]
+    for value in [full.coords[0], lean.coords[0], gate]:
+        assert abs((value - offset + 0.5) % 1 - 0.5) < 1e-3
+    assert abs((full.coords_per_layer[0][0] - (0.99 + offset) + 0.5) % 1 - 0.5) < 1e-3
+
 
 def test_add_probe_registers_and_precaches():
     m = _toy_manifold()
@@ -426,7 +468,7 @@ def test_flat_scalars_emits_assignment_and_membership():
 
 def _attach_const_sigma(m: "Manifold", value: float) -> None:
     """Attach a constant-σ field to every curved layer of ``m`` (test helper)."""
-    from saklas.core.manifold import fit_rbf_smoothed
+    from drowse.core.manifold import fit_rbf_smoothed
     for sub in m.layers.values():
         np_, _, _ = sub.rbf_params()
         K = np_.shape[0]
@@ -438,7 +480,7 @@ def _attach_const_sigma(m: "Manifold", value: float) -> None:
 
 def _attach_per_node_sigma(m: "Manifold", sigmas: list[float]) -> None:
     """Attach a σ-field interpolating the given per-node thicknesses (test helper)."""
-    from saklas.core.manifold import fit_rbf_smoothed
+    from drowse.core.manifold import fit_rbf_smoothed
     for sub in m.layers.values():
         np_, _, _ = sub.rbf_params()
         K = np_.shape[0]
@@ -565,7 +607,7 @@ def test_gate_scalar_fraction_label_assignment_skip_curved_foot(
     def _fail_foot(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("gate scalar path should not solve a curved foot")
 
-    monkeypatch.setattr("saklas.core.monitor.invert_parameterization", _fail_foot)
+    monkeypatch.setattr("drowse.core.monitor.invert_parameterization", _fail_foot)
     keys = {"curve:fraction", "curve@c", "curve~c"}
     scalars = _gate_scalars(mon, hidden, keys)
     assert scalars["curve:fraction"] == pytest.approx(full["curve:fraction"])
@@ -1102,7 +1144,7 @@ def test_prompt_capture_retains_only_selected_prefill_positions():
     """Selective prompt rows survive alongside the ordinary latest slice."""
     import torch.nn as nn
 
-    from saklas.core.hooks import HiddenCapture
+    from drowse.core.hooks import HiddenCapture
 
     class _Pass(nn.Module):
         def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -1144,7 +1186,7 @@ def test_aggregate_tail_pools_last_content_token():
     """
     import torch.nn as nn
 
-    from saklas.core.hooks import HiddenCapture
+    from drowse.core.hooks import HiddenCapture
 
     m = _toy_manifold(dim=8)  # curved, layers {0, 1}
     mon = _iso_monitor(m)
@@ -1203,7 +1245,7 @@ def test_aggregate_tail_clamps_when_walkback_exceeds_depth():
     """A walk-back deeper than the ring clamps to the oldest retained slice."""
     import torch.nn as nn
 
-    from saklas.core.hooks import HiddenCapture
+    from drowse.core.hooks import HiddenCapture
 
     m = _toy_manifold(dim=8)
     D = next(iter(m.layers.values())).mean.shape[0]
@@ -1229,7 +1271,7 @@ def test_aggregate_tail_clamps_when_walkback_exceeds_depth():
 def test_tail_with_sink_can_keep_deep_tail_on_selected_layers_only():
     import torch.nn as nn
 
-    from saklas.core.hooks import HiddenCapture
+    from drowse.core.hooks import HiddenCapture
 
     class _Pass(nn.Module):
         def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -1376,7 +1418,7 @@ def test_coords_only_mixed_flat_and_curved_roster():
 
 
 def test_depth_stats_math():
-    from saklas.core.monitor import _depth_stats
+    from drowse.core.monitor import _depth_stats
 
     coords = {0: (1.0,), 8: (3.0,)}
     weights = {0: 0.5, 8: 0.5}
@@ -1391,7 +1433,7 @@ def test_depth_stats_math():
 
 
 def test_depth_stats_empty_and_zero_mass():
-    from saklas.core.monitor import _depth_stats
+    from drowse.core.monitor import _depth_stats
 
     assert _depth_stats({}, {}, 8.0) == ((), ())
     # denominator unset (monitor constructed without n_layers)
@@ -1403,7 +1445,7 @@ def test_depth_stats_empty_and_zero_mass():
 
 
 def test_depth_stats_per_axis_independent():
-    from saklas.core.monitor import _depth_stats
+    from drowse.core.monitor import _depth_stats
 
     # axis 0 reads only at L0, axis 1 only at L4 → coms split to the ends
     coords = {0: (2.0, 0.0), 4: (0.0, 2.0)}

@@ -1,16 +1,25 @@
-# Recursive_VF.woff2 — provenance
+# Font provenance
 
-- Source: arrowtype/recursive release **v1.085**, zip path
-  `Recursive_Web/woff2_variable/Recursive_VF_1.085.woff2` (the complete
-  variable font, not a subset).
-- sha256: `145e9fc086d13403528384bdace7f2a4d5ecef72a2b10a749e99382dbecfce79`
-- Size: 718,680 bytes.
-- Axes (from fvar): MONO 0–1 (def 0), CASL 0–1 (def 0), wght 300–1000
-  (def 300), slnt −15–0 (def 0), CRSV 0–1 (def 0.5).
-- License: SIL OFL 1.1 — `LICENSE-Recursive.txt` here, and a copy in
-  `webui/public/` so it ships in `dist/` alongside the font (OFL requires
-  the license to accompany distribution; the wheel bundles dist).
-- Consumed by `src/lib/style/fonts.css`, which exposes the one file as two
-  families ("Recursive Sans" MONO 0 CASL .35 / "Recursive Mono" MONO 1
-  CASL 0, CRSV pinned 0 in both). To update: replace the woff2, update the
-  sha here, rebuild.
+## Wix Madefor Display and Wix Madefor Text
+
+- Source project: `wix-incubator/wixmadefor`, distributed under SIL OFL 1.1.
+- Browser files: official Google Fonts WOFF2 variable subsets fetched on
+  2026-08-27 from `fonts.gstatic.com`; Display URL version `v12`, Text URL
+  version `v17`.
+- Axes: Display and Text expose `wght` 400–800. Text includes normal and
+  italic files. Subsets cover Latin, extended Latin, Vietnamese, Cyrillic,
+  and extended Cyrillic.
+- License: `LICENSE-Wix-Madefor.txt` here and in both public directories.
+
+## Martian Mono
+
+- Source project: `evilmartians/mono`, distributed under SIL OFL 1.1.
+- Browser files: official Google Fonts WOFF2 variable subsets fetched on
+  2026-08-27 from `fonts.gstatic.com`, URL version `v6`.
+- Axes: `wght` 100–800 and `wdth` 75%–112.5%. Subsets cover Latin, extended
+  Latin, Cyrillic, and extended Cyrillic.
+- License: `LICENSE-Martian-Mono.txt` here and in both public directories.
+
+Every local font file is pinned by `SHA256SUMS`. The app consumes the Wix
+families and Martian Mono through `src/lib/style/fonts.css` with no runtime
+font request to a third-party origin.

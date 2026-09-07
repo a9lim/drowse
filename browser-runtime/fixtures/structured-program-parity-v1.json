@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "hookAbi": "post-block-residual-v4",
+  "multiCurve": {
+    "hiddenSize": 4,
+    "residual": [
+      0.1,
+      0.2,
+      0.9510565162951535,
+      -0.3090169943749476
+    ],
+    "curves": [
+      {
+        "active": true,
+        "domainKind": "box",
+        "basis": [[1, 0, 0, 0], [0, 1, 0, 0]],
+        "neutral": [0, 0, 0, 0],
+        "nodeParameters": [[0, 0], [1, 1]],
+        "rbfWeights": [[0, 0], [0, 0]],
+        "polynomial": [[0, 0], [1, 0], [0, 1]],
+        "coordinateOffset": [0, 0],
+        "coordinateScale": [1, 1],
+        "origin": [0, 0],
+        "target": [0.5, 0.25],
+        "axes": [
+          { "periodic": false, "period": 1, "lowerBound": -2, "upperBound": 2 },
+          { "periodic": false, "period": 1, "lowerBound": -2, "upperBound": 2 }
+        ],
+        "along": 1,
+        "onto": 0
+      },
+      {
+        "active": true,
+        "domainKind": "box",
+        "basis": [[0, 0, 1, 0], [0, 0, 0, 1]],
+        "neutral": [0, 0, 0, 0],
+        "nodeParameters": [[1, 0], [-1, 0]],
+        "rbfWeights": [[0, 0], [0, 0]],
+        "polynomial": [[0, 0], [1, 0], [0, 1]],
+        "coordinateOffset": [0, 0],
+        "coordinateScale": [1, 1],
+        "origin": [0.9],
+        "target": [0.1],
+        "axes": [
+          { "periodic": true, "period": 1, "lowerBound": 0, "upperBound": 1 }
+        ],
+        "along": 1,
+        "onto": 0
+      }
+    ],
+    "expected": {
+      "residual": [
+        0.6000000238418579,
+        0.44999998807907104,
+        0.5877848267555237,
+        0.8090173602104187
+      ],
+      "preSlideFeet": [[0.10000000149011612, 0.20000000298023224], [0.949999988079071]]
+    }
+  },
+  "sphereCurve": {
+    "hiddenSize": 3,
+    "residual": [0, 1, 0],
+    "curve": {
+      "active": true,
+      "domainKind": "sphere",
+      "basis": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+      "neutral": [0, 0, 0],
+      "nodeParameters": [[0, 1, 0], [0, 0, 1]],
+      "rbfWeights": [[0, 0, 0], [0, 0, 0]],
+      "polynomial": [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]],
+      "coordinateOffset": [0, 0, 0],
+      "coordinateScale": [1, 1, 1],
+      "origin": [1.5707963267948966, 0],
+      "target": [1.5707963267948966, 1.5707963267948966],
+      "axes": [
+        {
+          "periodic": false,
+          "period": 6.283185307179586,
+          "lowerBound": 0,
+          "upperBound": 3.141592653589793
+        },
+        {
+          "periodic": true,
+          "period": 6.283185307179586,
+          "lowerBound": 0,
+          "upperBound": 6.283185307179586
+        }
+      ],
+      "along": 1,
+      "onto": 0
+    },
+    "expected": {
+      "residual": [0, -4.371138828673793e-8, 1],
+      "preSlideFoot": [1.5707963705062866, 0]
+    }
+  },
+  "sae": {
+    "encoderDirection": [1, 2],
+    "encoderBias": 0.5,
+    "decoderBias": [0.25, 0.5],
+    "decoderDirection": [0.2, 0.4],
+    "maxAct": 2,
+    "residual": [1, 2],
+    "expectedNormalizedActivation": 2.125,
+    "expectedDecoderDirection": [0.2, 0.4]
+  },
+  "jlens": {
+    "unembeddingRow": [2, 3],
+    "jacobian": [[1, 2], [4, 5]],
+    "expectedDirection": [14, 19]
+  },
+  "gates": [
+    {
+      "expression": "x@after&when:signal>=0.5",
+      "contexts": [
+        { "prefill": true, "thinking": false, "generatedTokens": 0, "scores": { "signal": 1 }, "active": false },
+        { "prefill": false, "thinking": true, "generatedTokens": 0, "scores": { "signal": 1 }, "active": false },
+        { "prefill": false, "thinking": false, "generatedTokens": 0, "scores": {}, "active": false },
+        { "prefill": false, "thinking": false, "generatedTokens": 0, "scores": { "signal": 0.49 }, "active": false },
+        { "prefill": false, "thinking": false, "generatedTokens": 0, "scores": { "signal": 0.5 }, "active": true }
+      ]
+    },
+    {
+      "expression": "x@first:2",
+      "contexts": [
+        { "prefill": true, "thinking": false, "generatedTokens": 0, "scores": {}, "active": false },
+        { "prefill": false, "thinking": true, "generatedTokens": 0, "scores": {}, "active": true },
+        { "prefill": false, "thinking": false, "generatedTokens": 1, "scores": {}, "active": true },
+        { "prefill": false, "thinking": false, "generatedTokens": 2, "scores": {}, "active": false }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,414 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:drowse:schema:browser-release-evidence-record-v4",
+  "title": "Drowse browser release evidence record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "evidenceType",
+    "producerId",
+    "producerConfigPath",
+    "producerConfigSha256",
+    "runtimeAbi",
+    "hookAbi",
+    "runtimeLockIdentitySha256",
+    "drowseRevision",
+    "producedAt",
+    "toolVersion",
+    "passed",
+    "results"
+  ],
+  "properties": {
+    "$schema": { "const": "../release-evidence-record.schema.json" },
+    "schemaVersion": { "const": 4 },
+    "evidenceType": {
+      "enum": [
+        "gemmaTinyFp32Parity",
+        "llamaTinyFp32Parity",
+        "qwenTinyFp32Parity",
+        "gemmaProductionQ4Parity",
+        "smolProductionQ4Parity",
+        "qwenProductionQ4Parity",
+        "gemmaLongPrefill",
+        "runtimeLifecycle",
+        "activationCapture",
+        "fittingKernelParity",
+        "topologyOrchestration",
+        "manifoldSerialization",
+        "instrumentIntegration",
+        "sharedGoldenResults",
+        "physicalBrowserFitting"
+      ]
+    },
+    "producerId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*-v[0-9]+$" },
+    "producerConfigPath": {
+      "type": "string",
+      "pattern": "^browser-runtime/evidence-configs/[a-z0-9][a-z0-9._-]*\\.json$"
+    },
+    "producerConfigSha256": { "$ref": "#/$defs/sha256" },
+    "runtimeAbi": { "type": "string", "pattern": "^drowse-web-runtime-v[0-9]+$" },
+    "hookAbi": { "const": "post-block-residual-v4" },
+    "runtimeLockIdentitySha256": {
+      "$ref": "#/$defs/sha256",
+      "description": "Canonical SHA-256 of runtime-lock.json with only status omitted"
+    },
+    "drowseRevision": {
+      "$ref": "#/$defs/commit",
+      "description": "Git commit whose executable source produced this evidence"
+    },
+    "producedAt": { "type": "string", "format": "date-time" },
+    "toolVersion": { "type": "string", "minLength": 1 },
+    "passed": { "const": true },
+    "results": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "evidenceType": { "enum": ["gemmaTinyFp32Parity", "llamaTinyFp32Parity", "qwenTinyFp32Parity"] } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/tinyParity" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "enum": ["gemmaProductionQ4Parity", "smolProductionQ4Parity", "qwenProductionQ4Parity"] } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/q4Parity" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "const": "gemmaLongPrefill" } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/longPrefill" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "const": "runtimeLifecycle" } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/runtimeLifecycle" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "const": "activationCapture" } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/activationCapture" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "const": "fittingKernelParity" } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/fittingKernelParity" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "const": "topologyOrchestration" } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/topologyOrchestration" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "const": "manifoldSerialization" } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/manifoldSerialization" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "const": "instrumentIntegration" } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/instrumentIntegration" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "const": "sharedGoldenResults" } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/sharedGoldenResults" } } }
+    },
+    {
+      "if": { "properties": { "evidenceType": { "const": "physicalBrowserFitting" } } },
+      "then": { "properties": { "results": { "$ref": "#/$defs/physicalBrowserFitting" } } }
+    }
+  ],
+  "$defs": {
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "fixtureProperties": {
+      "type": "object",
+      "required": ["fixturePath", "fixtureSha256"],
+      "properties": {
+        "fixturePath": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+        "fixtureSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "authoringProperties": {
+      "type": "object",
+      "required": ["fixturePath", "fixtureSha256", "command"],
+      "properties": {
+        "fixturePath": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+        "fixtureSha256": { "$ref": "#/$defs/sha256" },
+        "command": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tinyParity": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/fixtureProperties" },
+        {
+          "type": "object",
+          "required": [
+            "architecture", "maxAbsoluteLogitError", "maxRelativeLogitError",
+            "maxAbsoluteCaptureError", "maxRelativeCaptureError", "probePassed",
+            "steeringPassed"
+          ],
+          "properties": {
+            "architecture": { "enum": ["gemma3_text", "llama", "qwen3"] },
+            "maxAbsoluteLogitError": { "type": "number", "minimum": 0, "maximum": 0.0001 },
+            "maxRelativeLogitError": { "type": "number", "minimum": 0, "maximum": 0.001 },
+            "maxAbsoluteCaptureError": { "type": "number", "minimum": 0, "maximum": 0.0001 },
+            "maxRelativeCaptureError": { "type": "number", "minimum": 0, "maximum": 0.001 },
+            "probePassed": { "const": true },
+            "steeringPassed": { "const": true }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "q4Parity": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/fixtureProperties" },
+        {
+          "type": "object",
+          "required": [
+            "modelId", "runtimeIdentitySha256", "hookDisabledGreedyMatchesBaseline", "maxProbeRelativeError",
+            "maxCaptureRelativeError", "steeringDirectionCosine"
+          ],
+          "properties": {
+            "modelId": { "enum": ["gemma3-270m-instruct", "smollm2-360m-instruct", "qwen3-1.7b"] },
+            "runtimeIdentitySha256": { "$ref": "#/$defs/sha256" },
+            "hookDisabledGreedyMatchesBaseline": { "const": true },
+            "maxProbeRelativeError": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.01,
+              "description": "Maximum per-layer scalar-projection error normalized by residual norm times probe-direction norm."
+            },
+            "maxCaptureRelativeError": { "type": "number", "minimum": 0, "maximum": 0.01 },
+            "steeringDirectionCosine": { "type": "number", "minimum": 0.99, "maximum": 1 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "longPrefill": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/fixtureProperties" },
+        {
+          "type": "object",
+          "required": [
+            "modelId", "webLlmBaselineVersion", "prompt2048Passed",
+            "prompt4096Passed", "shapeCacheHangObserved"
+          ],
+          "properties": {
+            "modelId": { "const": "gemma3-270m-instruct" },
+            "webLlmBaselineVersion": { "const": "0.2.84" },
+            "prompt2048Passed": { "const": true },
+            "prompt4096Passed": { "const": true },
+            "shapeCacheHangObserved": { "const": false }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "runtimeLifecycle": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/fixtureProperties" },
+        {
+          "type": "object",
+          "required": [
+            "stopPassed", "unloadPassed", "repeatedLoadPassed", "adapterLossPassed",
+            "workerRestartPassed"
+          ],
+          "properties": {
+            "stopPassed": { "const": true },
+            "unloadPassed": { "const": true },
+            "repeatedLoadPassed": { "const": true },
+            "adapterLossPassed": { "const": true },
+            "workerRestartPassed": { "const": true }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "activationCapture": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/authoringProperties" },
+        {
+          "type": "object",
+          "required": [
+            "postBlockBoundaryPassed", "selectedPromptPositionsPassed",
+            "finalDecodePositionPassed", "workerIsolationPassed", "maxCaptureRelativeError"
+          ],
+          "properties": {
+            "postBlockBoundaryPassed": { "const": true },
+            "selectedPromptPositionsPassed": { "const": true },
+            "finalDecodePositionPassed": { "const": true },
+            "workerIsolationPassed": { "const": true },
+            "maxCaptureRelativeError": { "type": "number", "minimum": 0, "maximum": 0.01 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "fittingKernelParity": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/authoringProperties" },
+        {
+          "type": "object",
+          "required": [
+            "neutralCenteringMaxAbsoluteError", "whiteningMaxAbsoluteError",
+            "pcaProjectionMaxError", "spectralProjectionMaxError", "rbfMaxAbsoluteError",
+            "geometryMaxAbsoluteError", "finiteOutputsPassed"
+          ],
+          "properties": {
+            "neutralCenteringMaxAbsoluteError": { "type": "number", "minimum": 0, "maximum": 0.0001 },
+            "whiteningMaxAbsoluteError": { "type": "number", "minimum": 0, "maximum": 0.0001 },
+            "pcaProjectionMaxError": { "type": "number", "minimum": 0, "maximum": 0.001 },
+            "spectralProjectionMaxError": { "type": "number", "minimum": 0, "maximum": 0.001 },
+            "rbfMaxAbsoluteError": { "type": "number", "minimum": 0, "maximum": 0.0001 },
+            "geometryMaxAbsoluteError": { "type": "number", "minimum": 0, "maximum": 0.0001 },
+            "finiteOutputsPassed": { "const": true }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "topologyOrchestration": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/authoringProperties" },
+        {
+          "type": "object",
+          "required": [
+            "flatSelectionPassed", "curvedSelectionPassed", "periodicSelectionPassed",
+            "automaticSelectionPassed", "maxEvaluatedOutputError"
+          ],
+          "properties": {
+            "flatSelectionPassed": { "const": true },
+            "curvedSelectionPassed": { "const": true },
+            "periodicSelectionPassed": { "const": true },
+            "automaticSelectionPassed": { "const": true },
+            "maxEvaluatedOutputError": { "type": "number", "minimum": 0, "maximum": 0.001 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "manifoldSerialization": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/authoringProperties" },
+        {
+          "type": "object",
+          "required": [
+            "manifoldV10RoundTripPassed", "safetensorsRoundTripPassed",
+            "drowseArchiveRoundTripPassed", "pythonBrowserCompatibilityPassed",
+            "incompatibleFingerprintRejected"
+          ],
+          "properties": {
+            "manifoldV10RoundTripPassed": { "const": true },
+            "safetensorsRoundTripPassed": { "const": true },
+            "drowseArchiveRoundTripPassed": { "const": true },
+            "pythonBrowserCompatibilityPassed": { "const": true },
+            "incompatibleFingerprintRejected": { "const": true }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "instrumentIntegration": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/authoringProperties" },
+        {
+          "type": "object",
+          "required": [
+            "coreGeometryPassed", "jlensV6Passed", "saeV1Passed",
+            "exactBindingValidationPassed", "incompatibleBindingRejected",
+            "fp32TensorValidationPassed", "runtimeIdentitySha256", "webLlmSha256",
+            "modelArtifactManifestSha256", "convertedManifestSha256",
+            "modelLibrarySha256", "coreArtifactManifestSha256",
+            "jlensArtifactManifestSha256", "saeArtifactManifestSha256"
+          ],
+          "properties": {
+            "coreGeometryPassed": { "const": true },
+            "jlensV6Passed": { "const": true },
+            "saeV1Passed": { "const": true },
+            "exactBindingValidationPassed": { "const": true },
+            "incompatibleBindingRejected": { "const": true },
+            "fp32TensorValidationPassed": { "const": true },
+            "runtimeIdentitySha256": { "$ref": "#/$defs/sha256" },
+            "webLlmSha256": { "$ref": "#/$defs/sha256" },
+            "modelArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+            "convertedManifestSha256": { "$ref": "#/$defs/sha256" },
+            "modelLibrarySha256": { "$ref": "#/$defs/sha256" },
+            "coreArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+            "jlensArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+            "saeArtifactManifestSha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "sharedGoldenResults": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/authoringProperties" },
+        {
+          "type": "object",
+          "required": [
+            "expressionParsingPassed", "treeMutationsPassed", "measurementsPassed",
+            "structuredProgramsPassed", "samplingPassed",
+            "manifoldGeometryPassed", "fittingPassed", "reciprocalArtifactsPassed",
+            "artifactCompatibilityRejectionPassed", "maxNumericError"
+          ],
+          "properties": {
+            "expressionParsingPassed": { "const": true },
+            "treeMutationsPassed": { "const": true },
+            "measurementsPassed": { "const": true },
+            "structuredProgramsPassed": { "const": true },
+            "samplingPassed": { "const": true },
+            "manifoldGeometryPassed": { "const": true },
+            "fittingPassed": { "const": true },
+            "reciprocalArtifactsPassed": { "const": true },
+            "artifactCompatibilityRejectionPassed": { "const": true },
+            "maxNumericError": { "type": "number", "minimum": 0, "maximum": 0.001 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "physicalBrowserFitting": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/authoringProperties" },
+        {
+          "type": "object",
+          "required": [
+            "desktopChromePassed", "androidChromePassed",
+            "nonFallbackHardwareAdapterConfirmed", "opfsSpoolingPassed",
+            "uiResponsivePassed", "fitCompleted", "maxMainThreadTaskMs",
+            "desktopMeasuredAt", "androidMeasuredAt", "runtimeIdentitySha256",
+            "webLlmSha256", "modelArtifactManifestSha256", "convertedManifestSha256",
+            "modelLibrarySha256", "coreArtifactManifestSha256",
+            "jlensArtifactManifestSha256", "saeArtifactManifestSha256"
+          ],
+          "properties": {
+            "desktopChromePassed": { "const": true },
+            "androidChromePassed": { "const": true },
+            "nonFallbackHardwareAdapterConfirmed": { "const": true },
+            "opfsSpoolingPassed": { "const": true },
+            "uiResponsivePassed": { "const": true },
+            "fitCompleted": { "const": true },
+            "maxMainThreadTaskMs": { "type": "number", "minimum": 0, "maximum": 50 },
+            "desktopMeasuredAt": { "type": "string", "format": "date-time" },
+            "androidMeasuredAt": { "type": "string", "format": "date-time" },
+            "runtimeIdentitySha256": { "$ref": "#/$defs/sha256" },
+            "webLlmSha256": { "$ref": "#/$defs/sha256" },
+            "modelArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+            "convertedManifestSha256": { "$ref": "#/$defs/sha256" },
+            "modelLibrarySha256": { "$ref": "#/$defs/sha256" },
+            "coreArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+            "jlensArtifactManifestSha256": { "$ref": "#/$defs/sha256" },
+            "saeArtifactManifestSha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

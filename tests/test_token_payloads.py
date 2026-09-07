@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.results import ProbeReading
-from saklas.core.token_payloads import build_token_probe_payload
+from drowse.core.results import ProbeReading
+from drowse.core.token_payloads import build_token_probe_payload
 
 
 def test_build_token_probe_payload_scores_once_and_shapes_channels() -> None:
@@ -133,7 +133,7 @@ def test_token_payload_builds_measurement_envelope() -> None:
 
 
 def test_merge_readings_routes_to_named_family_slot() -> None:
-    from saklas.core.token_payloads import TokenProbePayload
+    from drowse.core.token_payloads import TokenProbePayload
 
     geo = ProbeReading(0.0, [], coords=(0.1,))
     lens = ProbeReading(0.0, [], coords=(0.2,))

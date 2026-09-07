@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "namespace": "local",
+  "name": "interchange",
+  "description": "shared Python and browser transport fixture",
+  "fitMode": "pca",
+  "hyperparams": {"max_dim": 1},
+  "nodes": [
+    {"label": "calm", "role": null, "kind": "abstract", "corpus": ["calm response"]},
+    {"label": "alert", "role": null, "kind": "abstract", "corpus": ["alert response"]}
+  ],
+  "source": {"uri": "local", "repository": null, "revision": null},
+  "producerVersion": "browser-interchange-fixture",
+  "expected": {
+    "primary": "manifolds/local/interchange",
+    "template": null,
+    "name": "interchange",
+    "fit_mode": "pca",
+    "node_labels": ["calm", "alert"],
+    "node_groups": {
+      "calm": ["calm response"],
+      "alert": ["alert response"]
+    },
+    "hyperparams": {"max_dim": 1},
+    "source": "local",
+    "tags": [],
+    "template_ref": null
+  }
+}
