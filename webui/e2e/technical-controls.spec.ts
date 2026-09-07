@@ -73,7 +73,7 @@ test("technical controls preserve full names, slider behavior, and translucent s
   await page.screenshot({ path: testInfo.outputPath("translucent-drawer.png") });
   await page.emulateMedia({ forcedColors: "active" });
   await expect(page.getByRole("dialog", { name: "Add manifold", exact: true })).toHaveCSS("backdrop-filter", "none");
-  expect(await page.locator(".drawer").evaluate(el => getComputedStyle(el).backgroundColor)).not.toContain("0.9");
+  expect(await page.getByRole("dialog", { name: "Add manifold", exact: true }).evaluate(el => getComputedStyle(el).backgroundColor)).not.toContain("0.9");
   const sliderSource = await readFile(resolve("src/lib/Slider.svelte"), "utf8");
   expect(sliderSource).toMatch(/::-webkit-slider-thumb\s*\{[^}]*margin-top:\s*-8px;/);
 });

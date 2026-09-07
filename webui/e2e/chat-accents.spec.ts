@@ -34,9 +34,9 @@ test("chat accents are independent, persistent, accessible, and follow the activ
   await expect(card).toHaveAttribute("data-chat-accent", "purple");
   const timestamp = await card.locator("time").getAttribute("datetime");
   const order = await page.locator("[data-saved-conversation]").evaluateAll(els => els.map(el => el.getAttribute("data-saved-conversation")));
-  await card.getByRole("button", { name: /^Color ·/ }).click();
   for (const theme of ["light", "dark"] as const) {
     await setAppearance(page, theme === "light" ? "Light" : "Dark");
+    await card.getByRole("button", { name: /^Color ·/ }).click();
     for (const accent of CHAT_ACCENTS) {
       await card.locator(".color-option").filter({ hasText: accent.name }).click();
       await expect(card).toHaveAttribute("data-chat-accent", accent.id);

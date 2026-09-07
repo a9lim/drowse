@@ -195,7 +195,11 @@ test("keyboard-short visual viewports keep the composer actions reachable", asyn
   ]) {
     await page.setViewportSize(viewport);
     const chat = page.locator(".chat");
-    await chat.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(() => chat.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      const actions = element.querySelector(".input-actions")!.getBoundingClientRect();
+      return actions.bottom <= element.getBoundingClientRect().bottom;
+    })).toBe(true);
     await expectInsideVisualViewport(page.getByRole("textbox", { name: /^Compose as / }));
     await expectInsideVisualViewport(
       page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }),

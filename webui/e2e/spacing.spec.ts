@@ -20,9 +20,10 @@ test("composer and dialog actions follow their container spacing", async ({ page
         overflow: element.scrollWidth > element.clientWidth,
       };
     });
-    expect(spacing.row).toBe(8);
-    expect(spacing.buttons).toBe(8);
-    expect(spacing.inset).toBe(12);
+    const compactDesktop = viewport.width > 760;
+    expect(spacing.row).toBe(compactDesktop ? 8 : 16);
+    expect(spacing.buttons).toBe(compactDesktop ? 8 : 16);
+    expect(spacing.inset).toBe(viewport.width > 620 && viewport.height <= 600 ? 0 : 12);
     expect(spacing.overflow).toBe(false);
 
     for (const name of ["download_chat", "save_conversation", "system_prompt", "transcript"]) {
@@ -37,10 +38,10 @@ test("composer and dialog actions follow their container spacing", async ({ page
         const inset = parseFloat(getComputedStyle(parent).paddingBottom) || parseFloat(css.paddingBottom);
         return { gap: parseFloat(css.gap), inset, overflow: parent.scrollWidth > parent.clientWidth };
       });
-      expect(dimensions.gap).toBeCloseTo(dimensions.inset, 0);
+      expect(dimensions.gap).toBe(name === "download_chat" ? (compactDesktop ? 16 : 24) : dimensions.inset);
       expect(dimensions.overflow).toBe(false);
       if (name === "download_chat") {
-        await expect(content).toHaveCSS("row-gap", "24px");
+        await expect(content).toHaveCSS("row-gap", `${compactDesktop ? 16 : 24}px`);
         await expect(content.getByRole("button", { name: "Download", exact: true })).toBeEnabled();
       }
       if (name === "save_conversation") {

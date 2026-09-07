@@ -19,7 +19,7 @@ test("sampling popup stays compact and inside the viewport across themes and siz
     ]) {
       await page.setViewportSize(viewport);
       await expect(dialog).toBeVisible();
-      expect(await dialog.evaluate(element => {
+      await expect.poll(() => dialog.evaluate(element => {
         const rect = element.getBoundingClientRect();
         const close = element.querySelector(".drawer-close")!;
         const closeRect = close.getBoundingClientRect();

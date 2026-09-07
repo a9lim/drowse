@@ -125,7 +125,7 @@ test("renaming in the saved-chat drawer preserves position and activity time", a
   const target = records.at(-1);
   const card = page.locator(`[data-saved-conversation="${target.id}"]`);
   const timestamp = await card.locator("time").getAttribute("datetime");
-  await card.getByRole("button", { name: /^Rename / }).click();
+  await card.getByRole("button", { name: "Rename", exact: true }).click();
   const input = card.getByRole("textbox", { name: "Conversation name", exact: true });
   await input.fill("Alpha renamed");
   await input.press("Enter");

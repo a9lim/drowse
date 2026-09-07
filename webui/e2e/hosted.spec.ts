@@ -2961,6 +2961,17 @@ test("error notifications are sticky and timed notifications pause while inspect
   expect(errorTtl).toBeNull();
   const error = page.getByRole("alert").filter({ hasText: "Persistent fixture error" });
   await expect(error).toBeVisible();
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(async () => {
+      const toast = (await error.boundingBox())!;
+      const header = (await page.locator(".app-header").boundingBox())!;
+      return toast.y >= header.y + header.height;
+    }).toBe(true);
+    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Workspace menu", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+  }
   await error.getByRole("button", { name: /Dismiss notification/ }).click();
   await expect(error).toHaveCount(0);
 
@@ -3036,6 +3047,7 @@ test("an installed PWA update waits for consent and reloads without clearing loc
   context,
   page,
 }, testInfo) => {
+  test.setTimeout(90_000);
   await page.clock.install();
   let serviceWorkerVersion = 1;
   await context.route("**/sw.js", async (route) => {

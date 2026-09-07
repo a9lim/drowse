@@ -127,7 +127,7 @@
   .toaster {
     position: fixed;
     inset-inline-end: var(--space-6);
-    top: var(--space-8);
+    top: calc(64px + env(safe-area-inset-top));
     display: flex;
     flex-direction: column;
     gap: var(--space-3);

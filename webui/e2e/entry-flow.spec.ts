@@ -25,7 +25,7 @@ test("first use chooses a model and later visits open the chat home", async ({ p
 
   await page.getByRole("link", { name: "Models", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "Chats", exact: true }).click();
+  await page.locator('.page-route[data-route="models"]').getByRole("link", { name: "Chats", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
 });
 

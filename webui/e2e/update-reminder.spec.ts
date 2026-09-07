@@ -125,10 +125,12 @@ test("snoozes survive navigation and reload and escalate through 1h, 6h, and dai
   test.setTimeout(90_000);
   await page.clock.install();
   await installUpdate(page);
+  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 60_000));
   const notice = updateNotice(page);
   for (const [index, hours] of [1, 6, 24, 24].entries()) {
     const before = await page.evaluate(() => Date.now());
     await notice.getByRole("button", { name: "Update later" }).click();
+    await page.clock.runFor(250);
     await expect(notice).toHaveCount(0);
     const confirmation = page.locator(".pwa-confirmation");
     await expect(confirmation).toHaveText(`Okay! We'll remind you in ${hours === 24 ? "1 day" : `${hours} ${hours === 1 ? "hour" : "hours"}`}.`);
@@ -157,7 +159,6 @@ test("snoozes survive navigation and reload and escalate through 1h, 6h, and dai
     await page.clock.runFor(2_001);
     await expect(notice).toBeVisible();
     await expect(notice).not.toHaveClass(/first-update/);
-    await page.clock.resume();
   }
 });
 

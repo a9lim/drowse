@@ -239,6 +239,7 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: [
+      "@drowse/web-llm",
       "@noble/hashes/blake2.js",
       "@noble/hashes/sha2.js",
       "@noble/hashes/utils.js",

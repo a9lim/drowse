@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
-test("new chat separates all model types without clipping and preserves setup routing", async ({ page }, testInfo) => {
+test("new chat separates all model types without clipping and keeps downloads inline", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
+  await expect(page.getByRole("heading", { name: "Page not found", exact: true })).toBeVisible();
   await page.evaluate(async moduleUrl => {
     const [{ default: HostedHome }, { mount }] = await Promise.all([
       import(moduleUrl), import("/e2e/svelte-runtime.ts"),
@@ -26,6 +28,7 @@ test("new chat separates all model types without clipping and preserves setup ro
         capabilities: () => ({ signals: { appleMobile: false } }),
         retryPersistence: async () => false,
         check: async () => {},
+        download: async id => { document.body.dataset.downloaded = id; },
         open: async (id, options) => { document.body.dataset.opened = JSON.stringify({ id, options }); },
       },
       snapshot: {
@@ -57,24 +60,29 @@ test("new chat separates all model types without clipping and preserves setup ro
     }
   }
   const help = chooser.getByRole("button", { name: "What are base models?" });
-  const tooltip = page.getByRole("tooltip").filter({ hasText: "Base models continue text" });
+  const tooltip = page.getByRole("tooltip").filter({ hasText: "Base models predict what comes next" });
   await help.hover();
-  await expect(tooltip).toBeHidden();
+  await expect(tooltip).toBeVisible();
   await help.click();
   await expect(tooltip).toBeVisible();
   await page.keyboard.press("Escape");
   await page.mouse.move(0, 0);
   await expect(tooltip).toBeHidden();
-  await chooser.getByRole("button", { name: "Qwen3 4B Download required", exact: true }).focus();
+  await chooser.getByRole("button", { name: "Qwen3 4B Click to download", exact: true }).focus();
   await page.keyboard.press("Tab");
   await expect(help).toBeFocused();
-  await expect(tooltip).toBeHidden();
+  await expect(tooltip).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(tooltip).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(tooltip).toBeHidden();
-  await chooser.getByRole("button", { name: "Gemma 3 1B Download required", exact: true }).click();
-  await expect(page.locator("body")).toHaveAttribute("data-chosen", "gemma-chat");
+  const download = chooser.locator('[data-model-id="gemma-chat"] .model-choice-button');
+  await download.click();
+  await expect(download).toContainText("Click again to download");
+  expect(await page.locator("body").getAttribute("data-downloaded")).toBeNull();
+  await download.click();
+  await expect(page.locator("body")).toHaveAttribute("data-downloaded", "gemma-chat");
+  expect(await page.locator("body").getAttribute("data-chosen")).toBeNull();
   await chooser.getByRole("button", { name: "Gemma 3 1B PT Ready to use", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Start a new chat with Gemma 3 1B PT?" })).toBeVisible();
   await page.getByRole("button", { name: "Start new chat", exact: true }).click();

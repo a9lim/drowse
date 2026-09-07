@@ -1283,6 +1283,6 @@
   }
 
   @media (min-width: 621px) and (max-height: 600px) {
-    .chat-zone { padding: 0; }
+    .chat-zone:not(:has(:global(.chat-header))) { padding: 0; }
   }
 </style>

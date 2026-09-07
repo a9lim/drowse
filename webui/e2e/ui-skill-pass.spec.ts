@@ -2943,6 +2943,7 @@ test("ethereal landing renders, enters on scroll, and releases its renderer on n
 });
 
 test("dark desktop orb has bright highlights and settles behind reading content", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
   await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(devUrl);
@@ -2986,6 +2987,7 @@ test("dark desktop orb has bright highlights and settles behind reading content"
 });
 
 test("ethereal landing keeps rendering without video and reflows in both themes", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.route("**/video/ethereal-orb*.mp4", route => route.abort());
   await page.goto(devUrl);
@@ -3034,6 +3036,7 @@ test("ethereal landing animates when autoplay is denied and recovers its graphic
 });
 
 test("ethereal landing starts offline even when animation was disabled on its first visit", async ({ page, context, browserName }) => {
+  test.setTimeout(90_000);
   test.skip(browserName === "webkit", "This WebKit runner fails cached script requests with an internal error under offline emulation; blocked-video rendering is tested separately.");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");

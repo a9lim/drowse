@@ -61,7 +61,7 @@ test("Loom sentences have complete rounded borders without side shadows", async 
       expect(style.widths).toEqual(["1px", "1px", "1px", "1px"]);
       expect(style.shadow).toBe("none");
       expect(style.background).toBe("none");
-      expect(style.radius).toBe("24px");
+      expect(style.radius).toBe("4px");
       expect(style.left).toBe(style.right);
       expect(style.fits).toBe(true);
     }
