@@ -263,7 +263,7 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
   await expect.poll(async () => (await records()).conversations.length).toBe(1);
   const original = (await records()).conversations[0];
-  expect(original.name).toBe("Chat 1");
+  expect(original.name).toMatch(/^New Chat - [A-Z][a-z]{2} \d{1,2} - \d{1,2}:\d{2} \S+$/);
   expect(original.avatarSeed).toBeTruthy();
   for (const width of [320, 390, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });

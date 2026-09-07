@@ -50,7 +50,7 @@
       const snapshot = captureConversationSnapshot();
       modelName = displayModelName(snapshot.model_id);
       turnCount = snapshot.tree.nodes.filter((node) => node.parent_id !== null).length;
-      name = defaultConversationName(snapshot);
+      name = defaultConversationName();
       const activeId = savedConversationState.activeId;
       if (activeId) {
         try {
@@ -133,7 +133,7 @@
       const record: SavedConversationRecord = {
         schemaVersion: SAVED_CONVERSATION_SCHEMA_VERSION,
         id: current?.id ?? crypto.randomUUID(),
-        name: name.trim() || defaultConversationName(snapshot),
+        name: name.trim() || defaultConversationName(now),
         avatarSeed,
         accent,
         modelId: snapshot.model_id,

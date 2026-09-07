@@ -169,21 +169,43 @@ try {
     /120 characters or fewer/,
   );
 
-  const named = snapshot("fixture/model", "  A question about   systems and policy  ");
-  assert.equal(defaultConversationName(named), "A question about systems and policy");
+  const originalTimeZone = process.env.TZ;
+  try {
+    for (const [zone, time, expected] of [
+      ["America/New_York", "2026-09-07T07:05:00Z", "New Chat - Sep 7 - 3:05 EDT"],
+      ["America/New_York", "2026-09-07T19:05:00Z", "New Chat - Sep 7 - 15:05 EDT"],
+      ["America/New_York", "2026-01-07T08:05:00Z", "New Chat - Jan 7 - 3:05 EST"],
+      ["America/New_York", "2026-03-08T06:59:00Z", "New Chat - Mar 8 - 1:59 EST"],
+      ["America/New_York", "2026-03-08T07:00:00Z", "New Chat - Mar 8 - 3:00 EDT"],
+      ["America/Los_Angeles", "2026-09-07T06:05:00Z", "New Chat - Sep 6 - 23:05 PDT"],
+      ["Asia/Kolkata", "2026-09-07T07:05:00Z", "New Chat - Sep 7 - 12:35 GMT+5:30"],
+      ["UTC", "2027-01-01T00:05:00Z", "New Chat - Jan 1 - 0:05 UTC"],
+    ]) {
+      process.env.TZ = zone;
+      assert.equal(defaultConversationName(Date.parse(time)), expected);
+    }
+  } finally {
+    if (originalTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimeZone;
+  }
   assert.equal(displayModelName("Qwen/Qwen3-1.7B"), "Qwen3 1.7B");
   assert.equal(displayModelName("google/gemma-3-4b-it"), "Gemma 3 4B it");
 
   let nextAutoId = 0;
+  let autoTime = Date.parse("2026-09-07T07:05:00Z");
   const autoLibrary = new ConversationLibrary({ samplingKeys: Object.keys(samplingState), store: memoryStore(),
-    randomId: () => `auto-${++nextAutoId}`, runExclusive: serialRunner() });
+    now: () => autoTime, randomId: () => `auto-${++nextAutoId}`, runExclusive: serialRunner() });
   const initial = snapshot("fixture/auto", "First automatic chat");
   const [autoFirst, autoConcurrent] = await Promise.all([
     autoLibrary.autosave(initial, null), autoLibrary.autosave(initial, null),
   ]);
   assert.equal(autoFirst.id, autoConcurrent.id, "concurrent first saves must not duplicate chats");
-  assert.equal(autoFirst.name, "Chat 1");
+  assert.equal(autoFirst.name, defaultConversationName(autoTime));
+  assert.equal(autoFirst.createdAt, autoTime);
   assert.ok(autoFirst.avatarSeed);
+  autoTime += 86_400_000;
+  const later = await autoLibrary.autosave(snapshot("fixture/auto", "Another message", 2), autoFirst.id);
+  assert.equal(later.name, autoFirst.name, "later messages and dates never rename a chat");
   await autoLibrary.update(autoFirst.id, { name: "My name", avatarSeed: "chosen-face" });
   const autoUpdated = await autoLibrary.autosave(snapshot("fixture/auto", "Second message", 2), autoFirst.id);
   assert.equal(autoUpdated.name, "My name");
@@ -204,13 +226,14 @@ try {
     autoLibrary.autosave(snapshot("fixture/one", "One"), null),
     autoLibrary.autosave(snapshot("fixture/two", "Two"), null),
   ]);
-  assert.deepEqual([numberedFirst.name, numberedSecond.name], ["Chat 1", "Chat 2"]);
+  assert.deepEqual([numberedFirst.name, numberedSecond.name], [defaultConversationName(autoTime), defaultConversationName(autoTime)]);
+  assert.notEqual(numberedFirst.id, numberedSecond.id, "chats created in the same minute keep distinct identities");
   await autoLibrary.update(numberedFirst.id, { name: "Research notes" });
   const third = await autoLibrary.autosave(snapshot("fixture/three", "Three"), null);
-  assert.equal(third.name, "Chat 3");
+  assert.equal(third.name, defaultConversationName(autoTime));
   await autoLibrary.update(numberedSecond.id, { name: "Chat 4" });
   const fourth = await autoLibrary.autosave(snapshot("fixture/four", "Four"), null);
-  assert.equal(fourth.name, "Chat 5", "automatic names skip existing user-chosen names");
+  assert.equal(fourth.name, defaultConversationName(autoTime));
 
   let copyId = 0;
   const copyStore = memoryStore();

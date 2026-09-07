@@ -40,6 +40,48 @@ async function mountHome(page: Page) {
 }
 const order = (page: Page) => page.locator("[data-saved-conversation]").evaluateAll(cards => cards.map(card => card.getAttribute("data-saved-conversation")));
 
+for (const [zone, instant, expected] of [
+  ["America/New_York", "2026-09-07T07:05:00Z", "New Chat - Sep 7 - 3:05 EDT"],
+  ["America/New_York", "2026-01-07T20:05:00Z", "New Chat - Jan 7 - 15:05 EST"],
+  ["America/Los_Angeles", "2026-09-07T06:05:00Z", "New Chat - Sep 6 - 23:05 PDT"],
+  ["Asia/Kolkata", "2026-09-07T07:05:00Z", "New Chat - Sep 7 - 12:35 GMT+5:30"],
+]) {
+  test.describe(`${zone} at ${instant}`, () => {
+    test.use({ timezoneId: zone });
+    test("default chat names use the browser clock and survive messages and reload", async ({ page }) => {
+      await page.clock.setFixedTime(new Date(instant));
+      await page.goto("http://127.0.0.1:4176/app?layoutFixture=base");
+      await page.getByRole("textbox", { name: "Editable completion buffer" }).fill("My first message is not the title");
+      await page.getByRole("button", { name: "Continue text", exact: true }).click();
+      await expect.poll(() => page.evaluate(async url =>
+        (await import(url)).currentLoomTreeSnapshot()?.nodes.some((node: { tokens?: unknown[] }) => node.tokens?.length), modules.stores)).toBe(true);
+      await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+      const original = await page.evaluate(async modules => {
+        const { conversationLibrary, flushConversationAutosave } = await import(modules.saved);
+        await flushConversationAutosave();
+        return (await conversationLibrary.list()).conversations[0];
+      }, modules);
+      expect(original.name).toBe(expected);
+      expect(original.createdAt).toBe(Date.parse(instant));
+      await page.clock.setFixedTime(new Date(Date.parse(instant) + 86_400_000));
+      const updated = await page.evaluate(async ({ modules, id }) => {
+        const { conversationLibrary } = await import(modules.saved);
+        const snapshot = (await conversationLibrary.get(id)).snapshot;
+        snapshot.tree.nodes.find((node: { parent_id: string | null }) => node.parent_id !== null).text = "This message must not become the chat name";
+        snapshot.tree.rev += 1;
+        return conversationLibrary.autosave(snapshot, id);
+      }, { modules, id: original.id });
+      expect(updated.name).toBe(expected);
+      await mountHome(page);
+      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name`)).toHaveText(expected);
+      await page.reload();
+      await expect(page.getByRole("textbox", { name: "Editable completion buffer" })).toBeVisible();
+      await mountHome(page);
+      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name`)).toHaveText(expected);
+    });
+  });
+}
+
 test("chat names stay transparent and neutral, and renaming preserves order through reload", async ({ page }, testInfo) => {
   const records = await seed(page);
   await mountHome(page);

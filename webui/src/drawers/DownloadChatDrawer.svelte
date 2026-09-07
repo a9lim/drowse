@@ -38,7 +38,7 @@
       const record = {
         schemaVersion: SAVED_CONVERSATION_SCHEMA_VERSION,
         id: saved?.id ?? crypto.randomUUID(),
-        name: saved?.name ?? defaultConversationName(snapshot),
+        name: saved?.name ?? defaultConversationName(now),
         avatarSeed: saved?.avatarSeed ?? randomAvatarSeed(),
         accent: saved?.accent ?? savedConversationState.accent,
         modelId: snapshot.model_id,

@@ -309,8 +309,6 @@ export class ConversationLibrary {
     await this.initialize();
     return this.runExclusive(async () => {
       let current: SavedConversationRecord | undefined;
-      const existingNames = new Set<string>();
-      let existingCount = 0;
       if (activeId) {
         const value = await this.store.read(activeId);
         if (value === undefined) throw new ConversationLibraryError("NOT_FOUND", "This chat was deleted. Save as new to keep your current work.");
@@ -321,8 +319,6 @@ export class ConversationLibrary {
         const match = (row: SavedConversationStoreRow): SavedConversationRecord | null => {
           try {
             validateSavedConversationRecord(row.value, this.samplingKeys);
-            existingNames.add(row.value.name);
-            existingCount += 1;
             return row.value.modelId === snapshot.model_id && row.value.snapshot.tree.root_id === snapshot.tree.root_id
               ? row.value : null;
           } catch { return null; }
@@ -341,12 +337,10 @@ export class ConversationLibrary {
       const timestamp = this.now();
       const id = current?.id ?? this.randomId();
       if (!current && await this.store.read(id) !== undefined) throw invalid("Unable to allocate a unique saved conversation id");
-      let chatNumber = existingCount + 1;
-      while (existingNames.has(`Chat ${chatNumber}`)) chatNumber += 1;
       const record: SavedConversationRecord = {
         schemaVersion: SAVED_CONVERSATION_SCHEMA_VERSION,
         id,
-        name: current?.name ?? `Chat ${chatNumber}`,
+        name: current?.name ?? defaultConversationName(timestamp),
         avatarSeed: current?.avatarSeed ?? normalizeAvatarSeed(this.randomId()),
         ...(current?.accent === undefined ? {} : { accent: current.accent }),
         modelId: snapshot.model_id,
@@ -590,15 +584,16 @@ export function validateSavedConversationRecord(
   }
 }
 
-export function defaultConversationName(snapshot: ConversationSnapshotV7): string {
-  const firstUserTurn = snapshot.tree.nodes.find(
-    (node) => node.parent_id !== null && node.role === "user" && node.text.trim().length > 0,
-  );
-  if (!firstUserTurn) return "Untitled conversation";
-  const text = firstUserTurn.text.replace(/\s+/gu, " ").trim();
-  if (text.length <= 54) return text;
-  const clipped = text.slice(0, 54).replace(/\s+\S*$/u, "").trim();
-  return `${clipped || text.slice(0, 54).trim()}…`;
+export function defaultConversationName(timestamp = Date.now()): string {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZoneName: "short",
+  }).formatToParts(timestamp).map(({ type, value }) => [type, value]));
+  return `New Chat - ${parts.month} ${parts.day} - ${Number(parts.hour)}:${parts.minute} ${parts.timeZoneName}`;
 }
 
 export function displayModelName(modelId: string): string {

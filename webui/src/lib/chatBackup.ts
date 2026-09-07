@@ -64,7 +64,7 @@ export async function importChatBackup(
   const snapshot = migrateLegacyRecord(parsed);
   validateConversationSnapshot(snapshot, CONVERSATION_SAMPLING_KEYS);
   validateHostedLoomTree(snapshot.tree);
-  return library.create({ name: defaultConversationName(snapshot), snapshot });
+  return library.create({ name: defaultConversationName(), snapshot });
 }
 
 export async function downloadChatBackup(library: ConversationLibrary, id: string): Promise<void> {

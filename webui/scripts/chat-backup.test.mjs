@@ -42,6 +42,7 @@ try {
   assert.equal(rows.size, 3, "duplicate imports never overwrite an existing chat");
   assert.deepEqual(await library.get(original.id), original);
   const legacy = await importChatBackup(file(JSON.stringify(original.snapshot)), library);
+  assert.match(legacy.name, /^New Chat - [A-Z][a-z]{2} \d{1,2} - \d{1,2}:\d{2} \S+$/);
   assert.deepEqual(legacy.snapshot, original.snapshot, "legacy version 7 exports remain importable");
   assert.equal(legacy.accent, undefined, "legacy chats use the default purple accent");
   assert.equal(legacy.modelType, undefined, "legacy imports must not guess a model's type");
