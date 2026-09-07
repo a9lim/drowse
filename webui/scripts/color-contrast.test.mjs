@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { runInNewContext } from "node:vm";
 import { highlightHue, SURPRISE_TARGET, PROBABILITY_TARGET, ENTROPY_TARGET } from "../src/lib/tokens.ts";
 import { icon } from "./tab-icon-artwork.mjs";
 import { CHAT_ACCENTS } from "../src/lib/chatAccent.ts";
@@ -33,6 +34,28 @@ function colors(body) {
 
 const dark = colors(ruleBody(":root {"));
 const light = { ...dark, ...colors(ruleBody(':root[data-theme="light"]')) };
+
+for (const bootstrap of [localBootstrap, hostedBootstrap]) {
+  const handlers = new Map();
+  runInNewContext(bootstrap, {
+    window: {
+      addEventListener: (name, handler) => handlers.set(name, handler),
+      localStorage: { getItem: () => "dark" },
+    },
+    document: { documentElement: { dataset: {}, style: {} }, querySelector: () => null },
+  });
+  for (const name of ["pageswap", "pagereveal"]) {
+    const handler = handlers.get(name);
+    assert.equal(typeof handler, "function");
+    assert.doesNotThrow(() => handler({ viewTransition: null }));
+    let handled = false;
+    handler({ viewTransition: { ready: { catch: (callback) => {
+      callback(new Error("Transition was skipped"));
+      handled = true;
+    } } } });
+    assert.ok(handled, `${name} must handle skipped transitions before the app mounts`);
+  }
+}
 
 for (const [name, source] of Object.entries({ themeRuntime, localBootstrap, hostedBootstrap })) {
   assert.ok(source.includes(light["--bg"]), `${name} must use the light canvas as its theme color`);
