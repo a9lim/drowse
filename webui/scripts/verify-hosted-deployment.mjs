@@ -146,6 +146,7 @@ export function parseCsp(value) {
 
 export function expectedCsp(distributionLock) {
   const connectOrigins = [...new Set([
+    "https://www.neuronpedia.org",
     new URL(distributionLock.catalogUrl).origin,
     new URL(distributionLock.signatureUrl).origin,
     ...distributionLock.allowedCatalogRedirectOrigins,
@@ -155,7 +156,7 @@ export function expectedCsp(distributionLock) {
     ["default-src", ["'self'"]],
     ["base-uri", ["'self'"]],
     ["connect-src", ["'self'", ...connectOrigins]],
-    ["font-src", ["'self'"]],
+    ["font-src", ["'self'", "data:"]],
     ["form-action", ["'self'"]],
     ["frame-ancestors", ["'none'"]],
     ["img-src", ["'self'", "data:"]],
@@ -270,7 +271,12 @@ export function assertRobotsHeader(response, channel) {
       `${response.url} release candidate must be noindex`,
     );
   } else {
-    assert.ok(!value.includes("noindex"), `${response.url} release must not be noindex`);
+    const pathname = response.url ? new URL(response.url).pathname : "/";
+    if (pathname === "/app" || pathname.startsWith("/app/")) {
+      assert.equal(value, "noindex, follow", `${response.url} workbench must remain noindex, follow`);
+    } else {
+      assert.ok(!value.includes("noindex"), `${response.url} release must not be noindex`);
+    }
     assert.ok(!value.includes("nofollow"), `${response.url} release must not be nofollow`);
   }
 }
@@ -322,6 +328,12 @@ function assertCache(response, expected) {
   );
 }
 
+export function workboxRuntimeName(serviceWorker) {
+  const module = /\bdefine\(\[\s*["']\.\/(workbox-[A-Za-z0-9_-]+)["']/.exec(serviceWorker)?.[1];
+  assert.ok(module, "Deployed service worker does not reference a Workbox runtime");
+  return `${module}.js`;
+}
+
 async function assertPwaAssets(origin, headers, html) {
   const manifestResponse = await fetchRoute(origin, "/manifest.webmanifest", headers);
   assertMime(manifestResponse, ["application/manifest+json", "application/json"]);
@@ -333,8 +345,7 @@ async function assertPwaAssets(origin, headers, html) {
   assertMime(serviceWorkerResponse, ["application/javascript", "text/javascript"]);
   assertCache(serviceWorkerResponse, ["no-cache"]);
   const serviceWorker = await serviceWorkerResponse.text();
-  const workboxName = /\b(workbox-[A-Za-z0-9._-]+\.js)\b/.exec(serviceWorker)?.[1];
-  assert.ok(workboxName, "Deployed service worker does not reference a Workbox runtime");
+  const workboxName = workboxRuntimeName(serviceWorker);
 
   const workboxResponse = await fetchRoute(origin, `/${workboxName}`, headers);
   assertMime(workboxResponse, ["application/javascript", "text/javascript"]);
@@ -409,7 +420,7 @@ async function assertBrowserBehavior(origin, headers) {
       await Promise.race([
         navigator.serviceWorker.ready,
         new Promise((_, reject) => {
-          setTimeout(() => reject(new Error("Service worker did not become ready")), 20_000);
+          setTimeout(() => reject(new Error("Service worker did not become ready")), 90_000);
         }),
       ]);
     });

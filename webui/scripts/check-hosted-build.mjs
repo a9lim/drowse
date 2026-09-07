@@ -121,6 +121,7 @@ for (const required of [
 }
 
 const connectOrigins = [...new Set([
+  "https://www.neuronpedia.org",
   new URL(distributionLock.catalogUrl).origin,
   new URL(distributionLock.signatureUrl).origin,
   ...distributionLock.allowedCatalogRedirectOrigins,

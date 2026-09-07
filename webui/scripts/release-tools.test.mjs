@@ -11,9 +11,12 @@ import {
   deploymentOrigin,
   expectedCsp,
   parseArguments,
+  workboxRuntimeName,
 } from "./verify-hosted-deployment.mjs";
 
 const revision = "a".repeat(40);
+assert.equal(workboxRuntimeName('define(["./workbox-651d168f"], function () { precache([{url:"assets/workbox-window.prod.es5-Bd17z0YL.js"}]); });'), "workbox-651d168f.js");
+assert.throws(() => workboxRuntimeName('precache([{url:"assets/workbox-window.prod.es5-Bd17z0YL.js"}]);'));
 const distributionLock = {
   catalogUrl: "https://huggingface.co/a9lim/catalog/catalog.json",
   signatureUrl: "https://huggingface.co/a9lim/catalog/catalog.sig.json",
@@ -162,6 +165,15 @@ expectFailure(
   () => assertRobotsHeader(candidateHeaders, "release"),
   /release must not be noindex/,
 );
+for (const path of ["/app", "/app/saved-chat"]) {
+  const response = new Response("", { headers: { "X-Robots-Tag": "noindex, follow" } });
+  Object.defineProperty(response, "url", { value: `https://drowse.ai${path}` });
+  assert.doesNotThrow(() => assertRobotsHeader(response, "release"));
+  response.headers.set("X-Robots-Tag", "noindex, nofollow");
+  assert.throws(() => assertRobotsHeader(response, "release"));
+  response.headers.delete("X-Robots-Tag");
+  assert.throws(() => assertRobotsHeader(response, "release"));
+}
 
 const manifest = {
   start_url: "/app",

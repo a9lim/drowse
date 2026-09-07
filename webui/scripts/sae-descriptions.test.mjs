@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { verifiedSaeDescriptionSource, parseSaeDescription, loadSaeDescription } from "../src/lib/saeDescriptions.ts";
+
+const headers = await readFile(new URL("../public-hosted/_headers", import.meta.url), "utf8");
+assert.match(headers, /connect-src[^;]*https:\/\/www\.neuronpedia\.org(?:\s|;)/);
 
 const manifest = {
   model_id: "google/gemma-3-1b-it", layer: 13, d_sae: 16384, activation: "jump_relu",
