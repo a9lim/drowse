@@ -15,6 +15,16 @@ private prompts, or credentials in the report.
 Only the latest release on PyPI receives security fixes. Upgrade before reporting
 an issue that may already be fixed.
 
+## Known dependency advisory
+
+As of September 7, 2026, NLTK 3.10.3 has no published fix for
+[CVE-2026-81726](https://github.com/advisories/GHSA-8mgp-746c-j5xp).
+SAE Lens requires NLTK, so it remains in the Python dependency set. Drowse does
+not call the affected NLTK model import/export APIs or use NLTK's `pathsec` as a
+sandbox. This limits Drowse's exposure but does not fix the dependency itself.
+Do not pass untrusted model-file paths to NLTK APIs in applications embedding
+Drowse. Upgrade when a patched NLTK release becomes available.
+
 ## Threat model for `drowse serve`
 
 The HTTP server (`drowse serve`) is designed for a single trusted user on a local

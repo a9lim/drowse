@@ -715,7 +715,9 @@ test("shared page headers and footers align across public pages and workbench", 
         await page.screenshot({ path: testInfo.outputPath(`${name}-${width}.png`) });
         return;
       }
-      if (!compact) for (const key of ["x", "y"] as const) expect(box[key], `${name} ${key}`).toBeCloseTo(anchor[key], 0);
+      if (!compact) for (const key of ["x", "y"] as const) {
+        await expect.poll(async () => (await page.locator(".page-brand").boundingBox())![key], { message: `${name} ${key}` }).toBeCloseTo(anchor[key], 0);
+      }
       else expect(box.x).toBeGreaterThanOrEqual(0);
       await expect(page.locator(".page-header .theme-toggle")).toHaveCount(1);
       await expect(page.locator(".page-header nav a")).toHaveText(["Chats", "Models", "Credits", "Contribute"]);
