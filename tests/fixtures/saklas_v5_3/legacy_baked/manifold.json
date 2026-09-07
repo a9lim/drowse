@@ -1,0 +1,25 @@
+{
+  "format_version": 10,
+  "name": "legacy_baked",
+  "description": "x",
+  "fit_mode": "baked",
+  "files": {
+    "_zc3R1Yi9tb2RlbA.safetensors": "c4018edf638107d24f10386af47178cc3ee16bbc941c39e482668f0e1e2e634e",
+    "_zc3R1Yi9tb2RlbA.json": "90ce549359a39ae352bf2053f9875fd5ac9f910654f62159160f722b3ecb81a1"
+  },
+  "source": "local",
+  "tags": [],
+  "template_ref": null,
+  "domain": {
+    "type": "custom",
+    "embed_dim": 1,
+    "bounds": null
+  },
+  "nodes": [
+    {
+      "label": "test",
+      "role": null,
+      "kind": null
+    }
+  ]
+}

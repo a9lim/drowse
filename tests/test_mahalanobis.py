@@ -14,13 +14,13 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.mahalanobis import (
+from drowse.core.mahalanobis import (
     DEFAULT_RIDGE_SCALE,
     LayerWhitener,
     WhitenerError,
 )
-from saklas.core.profile import Profile
-from saklas.core.capture import project_profile
+from drowse.core.profile import Profile
+from drowse.core.capture import project_profile
 
 
 # ---------------------------------------------------------------- helpers ---

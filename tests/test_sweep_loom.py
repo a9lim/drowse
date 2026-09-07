@@ -10,19 +10,19 @@ from __future__ import annotations
 import types
 from typing import Any
 
-from saklas import (
+from drowse import (
     LoomTree,
     Recipe,
     SamplingConfig,
     derive_seed_schedule,
 )
-from saklas.core.results import GenerationResult, RunSet
+from drowse.core.results import GenerationResult, RunSet
 
 
 class _SweepStub:
     """Real LoomTree + stubbed ``_generate_core`` to skip the model load.
 
-    We reuse :meth:`SaklasSession.generate_sweep` directly off the class
+    We reuse :meth:`DrowseSession.generate_sweep` directly off the class
     by binding to this stub so the loom + sibling-bookkeeping logic
     runs verbatim.
     """
@@ -77,10 +77,10 @@ class _SweepStub:
 
 
 def test_sweep_lands_siblings_under_user_turn():
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
     stub = _SweepStub()
-    sweep = SaklasSession.generate_sweep.__get__(stub, _SweepStub)
+    sweep = DrowseSession.generate_sweep.__get__(stub, _SweepStub)
     results = sweep(
         "say hi", sweep={"honest.deceptive": [0.0, 0.3, 0.6]},
         stateless=False,
@@ -103,10 +103,10 @@ def test_sweep_lands_siblings_under_user_turn():
 
 
 def test_sweep_runset_carries_parallel_node_ids():
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
     stub = _SweepStub()
-    sweep = SaklasSession.generate_sweep.__get__(stub, _SweepStub)
+    sweep = DrowseSession.generate_sweep.__get__(stub, _SweepStub)
     out = sweep(
         "go", sweep={"honest.deceptive": [0.1, 0.2]},
         stateless=False,
@@ -119,10 +119,10 @@ def test_sweep_runset_carries_parallel_node_ids():
 
 
 def test_sweep_seed_schedule_is_deterministic():
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
     stub = _SweepStub()
-    sweep = SaklasSession.generate_sweep.__get__(stub, _SweepStub)
+    sweep = DrowseSession.generate_sweep.__get__(stub, _SweepStub)
     sweep(
         "x", sweep={"honest.deceptive": [0.1, 0.2, 0.3]},
         sampling=SamplingConfig(seed=42),
@@ -136,10 +136,10 @@ def test_sweep_seed_schedule_is_deterministic():
 
 
 def test_sweep_default_return_shape_is_runset():
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
     stub = _SweepStub()
-    sweep = SaklasSession.generate_sweep.__get__(stub, _SweepStub)
+    sweep = DrowseSession.generate_sweep.__get__(stub, _SweepStub)
     results = sweep(
         "x", sweep={"honest.deceptive": [0.0]},
         stateless=False,

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "accepted": [
+    {
+      "expression": "0.3 angry.calm",
+      "selectors": [[null, "angry.calm", "raw"]]
+    },
+    {
+      "expression": "+concept@both - 0.2 other@response",
+      "selectors": [[null, "concept", "raw"], [null, "other", "raw"]]
+    },
+    {
+      "expression": "0.7 emotions%0.3,-0.8,+1@before",
+      "selectors": []
+    },
+    {
+      "expression": "!ns/deer.wolf:sae-release@first:5",
+      "selectors": [["ns", "deer.wolf", "sae-release"]]
+    },
+    {
+      "expression": "0.2 sae/123@after:7",
+      "selectors": [["sae", "123", "raw"]]
+    },
+    {
+      "expression": "-0.6,0.3 default/emotions:role%pirate@after&when:personas[3]>=-0.4",
+      "selectors": []
+    },
+    {
+      "expression": "x@when:default/emotions:fraction>0.2",
+      "selectors": [[null, "x", "raw"]]
+    },
+    {
+      "expression": "x@when:emotions:membership<=.5",
+      "selectors": [[null, "x", "raw"]]
+    },
+    {
+      "expression": "x@when:emotions@happy>-2",
+      "selectors": [[null, "x", "raw"]]
+    },
+    {
+      "expression": "x@when:emotions~happy>=+0.25",
+      "selectors": [[null, "x", "raw"]]
+    },
+    {
+      "expression": "x@when:sae/42<1",
+      "selectors": [[null, "x", "raw"]]
+    },
+    {
+      "expression": "x@thinking&when:angry.calm[0]>0",
+      "selectors": [[null, "x", "raw"]]
+    },
+    {
+      "expression": "0.4 alice/happy.sad:sae-release~jlens/fake + !sae/12@first:5 + mood%calm",
+      "selectors": [["alice", "happy.sad", "sae-release"], ["jlens", "fake", "raw"], ["sae", "12", "raw"]]
+    }
+  ],
+  "rejected": [
+    "",
+    "'quoted concept'",
+    "artificial intelligence",
+    "0.1,0.2 foo",
+    "0.1,0.2,0.3 foo%bar",
+    "!foo~bar",
+    "!foo%label",
+    "foo~bar|baz",
+    "foo%0.2~bar",
+    "foo@first",
+    "foo@first:-1",
+    "foo@when:bar==1",
+    "foo@when:bar:unknown>0",
+    "foo@when:bar:fraction[0]>0",
+    "sae/1.5"
+  ]
+}

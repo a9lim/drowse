@@ -7,7 +7,7 @@ plus the first_n / after_n window modifiers.
 
 from __future__ import annotations
 
-from saklas.core.triggers import Trigger, TriggerContext
+from drowse.core.triggers import Trigger, TriggerContext
 
 
 def _ctx(*, prefill: bool = False, thinking: bool = False, gen_step: int = 0) -> TriggerContext:

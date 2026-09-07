@@ -12,10 +12,10 @@ import argparse
 import json
 from typing import TYPE_CHECKING
 
-from saklas import SaklasSession, SamplingConfig
+from drowse import DrowseSession, SamplingConfig
 
 if TYPE_CHECKING:
-    from saklas import GenerationResult
+    from drowse import GenerationResult
 
 
 def main() -> None:
@@ -26,7 +26,7 @@ def main() -> None:
     ap.add_argument("--prompt", default="Describe your morning.")
     args = ap.parse_args()
 
-    with SaklasSession.from_pretrained(args.model, device="auto") as session:
+    with DrowseSession.from_pretrained(args.model, device="auto") as session:
         # The fitted manifold is the artifact; steering expressions resolve
         # ``name`` straight off it, so no separate registration step is needed.
         name, _profile = session.extract(args.concept)

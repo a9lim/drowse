@@ -1,7 +1,7 @@
-"""Tests for ``saklas.core.role_templates``.
+"""Tests for ``drowse.core.role_templates``.
 
 Strategy: use a small ``FakeTokenizer`` shim with hand-written Jinja
-templates that mirror the per-family chat-template shapes saklas
+templates that mirror the per-family chat-template shapes drowse
 supports.  This is faster and more deterministic than tokenizer-only
 HF downloads, and it lets us drive template-drift scenarios without
 patching anything global.
@@ -21,8 +21,8 @@ from typing import Any
 import jinja2
 import pytest
 
-from saklas.core.errors import SaklasError
-from saklas.core.role_templates import (
+from drowse.core.errors import DrowseError
+from drowse.core.role_templates import (
     InvalidRoleError,
     ROLE_HEADERS,
     USER_ROLE_HEADERS,
@@ -45,6 +45,22 @@ QWEN_TEMPLATE = (
     "<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n"
     "{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+)
+
+
+# Exact chat-template bytes from the pinned
+# HuggingFaceTB/SmolLM2-360M-Instruct@a10cc151 tokenizer config.  SmolLM2 is
+# model_type ``llama`` but deliberately uses ChatML turn headers.
+SMOLLM2_TEMPLATE = (
+    "{% for message in messages %}"
+    "{% if loop.first and messages[0]['role'] != 'system' %}"
+    "{{ '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, "
+    "trained by Hugging Face<|im_end|>\n' }}"
+    "{% endif %}"
+    "{{'<|im_start|>' + message['role'] + '\n' + message['content'] + "
+    "'<|im_end|>' + '\n'}}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 )
 
 
@@ -144,6 +160,7 @@ class FakeTokenizer:
     """
 
     def __init__(self, template: str):
+        self.chat_template = template
         self._template = jinja2.Environment().from_string(template)
 
     def apply_chat_template(
@@ -399,6 +416,44 @@ def test_apply_with_role_llama3():
     assert "<|start_header_id|>user<|end_header_id|>" in out
 
 
+def test_apply_with_role_llama_architecture_chatml_template():
+    """SmolLM2 is model_type llama but its pinned template uses ChatML."""
+    tok = FakeTokenizer(SMOLLM2_TEMPLATE)
+    out = apply_with_role(
+        tok,
+        _sample_messages(),
+        role="distant_voice",
+        user_role="captain",
+        model_type="llama",
+        tokenize=False,
+    )
+    assert "<|im_start|>distant voice\n" in out
+    assert "<|im_start|>captain\n" in out
+    assert "<|im_start|>assistant\n" not in out
+    assert "<|im_start|>user\n" not in out
+
+
+def test_llama_header_fallback_cannot_be_selected_by_message_content():
+    """Header selection is tied to template bytes, never rendered content."""
+    drift_template = (
+        "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+        "{% if add_generation_prompt %}ROLE=assistant{% endif %}"
+    )
+    tok = FakeTokenizer(drift_template)
+    messages = [{
+        "role": "user",
+        "content": "look: <|im_start|>assistant\n",
+    }]
+    with pytest.raises(RoleTemplateDriftError):
+        apply_with_role(
+            tok,
+            messages,
+            role="pirate",
+            model_type="llama",
+            tokenize=False,
+        )
+
+
 def test_apply_with_role_glm():
     """GLM-4: <|pirate|> appears, <|assistant|> does not."""
     tok = _glm_tok()
@@ -633,14 +688,14 @@ def test_apply_with_role_tokenize_true_with_pt_tensors():
 # ---------------------------------------------------------------------------
 
 
-def test_errors_subclass_saklas_error():
-    """All three error types catch under except SaklasError, matching project convention."""
+def test_errors_subclass_drowse_error():
+    """All three error types catch under except DrowseError, matching project convention."""
     for cls in (
         RoleSubstitutionUnsupportedError,
         RoleTemplateDriftError,
         InvalidRoleError,
     ):
-        assert issubclass(cls, SaklasError), cls
+        assert issubclass(cls, DrowseError), cls
     # And the stdlib parents are preserved per the errors.py contract.
     assert issubclass(RoleSubstitutionUnsupportedError, ValueError)
     assert issubclass(InvalidRoleError, ValueError)
@@ -676,7 +731,7 @@ def test_registry_covers_tested_archs():
     ``qwen3_5_text``/``qwen3_5_moe`` read as covered while the code raised on
     them — so the test must mirror the lookup, not paper over it.
     """
-    from saklas.core.model import _TESTED_ARCHS
+    from drowse.core.model import _TESTED_ARCHS
 
     missing = [arch for arch in _TESTED_ARCHS if arch not in ROLE_HEADERS]
     assert not missing, (
@@ -692,7 +747,7 @@ def test_seat_views_derive_from_one_registry():
     in two places with nothing enforcing agreement.  They are derived now, so
     key sets and per-family support cannot drift.
     """
-    from saklas.core.role_templates import SEAT_HEADERS
+    from drowse.core.role_templates import SEAT_HEADERS
 
     assert set(ROLE_HEADERS) == set(SEAT_HEADERS) == set(USER_ROLE_HEADERS)
     for model_type, seats in SEAT_HEADERS.items():
@@ -709,7 +764,7 @@ def test_seat_headers_share_delimiters_except_gpt_oss():
     gpt-oss is the sole documented divergence (Harmony renders user turns
     with ``<|message|>``); every other family's seats differ only in label.
     """
-    from saklas.core.role_templates import SEAT_HEADERS
+    from drowse.core.role_templates import SEAT_HEADERS
 
     for model_type, seats in SEAT_HEADERS.items():
         if seats.assistant is None or seats.user is None:
@@ -738,7 +793,7 @@ def test_build_chat_input_with_gen_role():
     """``build_chat_input(gen_role=...)`` routes through the per-turn render
     so the generation prompt opens with the substituted assistant label.
     """
-    from saklas.core.generation import build_chat_input
+    from drowse.core.generation import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE
@@ -762,7 +817,7 @@ def test_build_chat_input_with_gen_role():
 
 def test_build_chat_input_with_per_turn_labels():
     """Per-message ``label`` keys drive a faithful per-turn render."""
-    from saklas.core.generation import build_chat_input
+    from drowse.core.generation import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE
@@ -785,9 +840,26 @@ def test_build_chat_input_with_per_turn_labels():
     assert ids.shape[1] > 0
 
 
+def test_per_turn_roles_follow_llama_architecture_chatml_template():
+    tok = FakeTokenizer(SMOLLM2_TEMPLATE)
+    rendered = apply_with_per_turn_roles(
+        tok,
+        [
+            {"role": "user", "content": "hi", "label": "captain"},
+            {"role": "assistant", "content": "hello", "label": "guide"},
+        ],
+        gen_role="distant_voice",
+        model_type="llama",
+        tokenize=False,
+    )
+    assert "<|im_start|>captain\n" in rendered
+    assert "<|im_start|>guide\n" in rendered
+    assert "<|im_start|>distant voice\n" in rendered
+
+
 def test_build_chat_input_no_labels_unchanged():
     """No labels + ``gen_role=None`` is byte-identical to the plain path."""
-    from saklas.core.generation import build_chat_input
+    from drowse.core.generation import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE
@@ -805,7 +877,7 @@ def test_build_chat_input_gen_role_requires_model_type():
     """``gen_role=`` without ``model_type=`` raises — the family lookup is
     required to find the right role-header bytes to splice.
     """
-    from saklas.core.generation import build_chat_input
+    from drowse.core.generation import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE
@@ -956,7 +1028,7 @@ def test_user_role_registry_covers_tested_archs():
     """Every ``_TESTED_ARCHS`` member has an *exact* USER_ROLE_HEADERS entry
     (RoleHeader or explicit None), mirroring the assistant registry — and the
     runtime lookup, which is exact (no suffix fallback)."""
-    from saklas.core.model import _TESTED_ARCHS
+    from drowse.core.model import _TESTED_ARCHS
 
     missing = [arch for arch in _TESTED_ARCHS if arch not in USER_ROLE_HEADERS]
     assert not missing, (
@@ -977,7 +1049,7 @@ def test_build_chat_input_user_label_distinct_from_plain():
     (cache key keeps them separate)."""
     import torch
 
-    from saklas.core.generation import build_chat_input
+    from drowse.core.generation import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE

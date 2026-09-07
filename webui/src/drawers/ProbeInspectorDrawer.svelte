@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FluentIcon from "../lib/ui/FluentIcon.svelte";
+  import { animatedDetails } from "../lib/animatedDetails";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Per-probe inspector — subsumes the layer-norms view for probes and adds a
   // rank-aware geometry plot in the whitened (Mahalanobis) frame:
@@ -21,14 +23,23 @@
   // row, the share bars, and the plot's node centroids via ``--geom-node``.
 
   import { closeDrawer, drawerState, probeRack } from "../lib/stores.svelte";
-  import { apiProbes, ApiError } from "../lib/api";
+  import { apiProbes } from "../lib/runtime/services";
+  import { runtimeOperationAvailability } from "../lib/runtime/ui-capabilities";
+  import { userFacingError } from "../lib/runtime/userFacingError";
   import Bar from "../lib/charts/Bar.svelte";
+  import { chartValue } from "../lib/charts/chartValues";
   import {
     renderProbeGeometry,
     orbitDrag,
     DEFAULT_ORBIT_QUAT,
     type OrbitState,
+    type GeometryHitPoint,
   } from "../lib/charts/probeGeometry";
+  import {
+    pinchMetrics,
+    scaleFromPinch,
+    type GesturePoint,
+  } from "../lib/pointerGesture";
   import type { ProbeGeometryResponse, ProbeLayerGeometry } from "../lib/types";
 
   let _drawerProps: { params?: unknown } = $props();
@@ -40,6 +51,9 @@
   const probeName = $derived(params?.name ?? "");
   const displayName = $derived(probeName.split("/").pop() ?? probeName);
   const entry = $derived(probeRack.entries.get(probeName) ?? null);
+  const liveTrailAvailability = runtimeOperationAvailability(
+    "probe_subspace_trails",
+  );
 
   let geom = $state<ProbeGeometryResponse | null>(null);
   let loading = $state(false);
@@ -49,6 +63,9 @@
 
   let canvasEl = $state<HTMLCanvasElement | null>(null);
   let rafId = 0;
+  let hitPoints: GeometryHitPoint[] = [];
+  let plotTitle = $state("Hover a node to see its whitened coordinates");
+  let loadEpoch = 0;
 
   /** Family hue — the rack's flat/curved split (hue = which space). */
   const familyHue = $derived(
@@ -58,9 +75,13 @@
   );
 
   // --- load geometry on probe change ---
-  async function load(name: string): Promise<void> {
+  async function load(name: string, epoch: number): Promise<void> {
     if (!name) {
-      geom = null;
+      if (epoch === loadEpoch) {
+        geom = null;
+        loading = false;
+        error = null;
+      }
       return;
     }
     loading = true;
@@ -68,6 +89,7 @@
     geom = null;
     try {
       const g = await apiProbes.geometry(name);
+      if (epoch !== loadEpoch) return;
       geom = g;
       // default to the highest-share layer (the one carrying the most
       // steering budget — also the most concept-bearing to read from)
@@ -82,19 +104,22 @@
       }
       selectedLayer = best;
     } catch (e) {
-      error =
-        e instanceof ApiError
-          ? `${e.status}`
-          : e instanceof Error
-            ? e.message
-            : String(e);
+      if (epoch !== loadEpoch) return;
+      error = userFacingError(
+        e,
+        "Unable to load this direction map. Reattach the direction and try again.",
+      );
     } finally {
-      loading = false;
+      if (epoch === loadEpoch) loading = false;
     }
   }
 
   $effect(() => {
-    void load(probeName);
+    const epoch = ++loadEpoch;
+    void load(probeName, epoch);
+    return () => {
+      if (loadEpoch === epoch) loadEpoch += 1;
+    };
   });
 
   // sorted layer list (ascending) for the share strip
@@ -137,36 +162,126 @@
     const q = orbit.q;
     const zoom = orbit.zoom;
     const labels = geom?.node_labels ?? [];
-    if (!canvas || !g) return;
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(() => {
-      rafId = 0;
-      renderProbeGeometry(canvas, {
-        geom: g,
-        nodeLabels: labels,
-        live,
-        trail,
-        orbit: { q, zoom },
+    if (!canvas || !g) {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      return;
+    }
+    const redraw = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        hitPoints = renderProbeGeometry(canvas, {
+          geom: g,
+          nodeLabels: labels,
+          live,
+          trail,
+          orbit: { q, zoom },
+        });
       });
-    });
+    };
+    const observer = new ResizeObserver(redraw);
+    observer.observe(canvas);
+    redraw();
+    return () => {
+      observer.disconnect();
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = 0;
+    };
   });
 
   // --- orbit interaction (rank >= 3 only) ---
-  let dragging = false;
+  let dragPointerId: number | null = null;
   let lastX = 0;
   let lastY = 0;
+  const touchPointers = new Map<number, GesturePoint>();
+  let pinchGesture: { distance: number; zoom: number } | null = null;
   const canOrbit = $derived((activeGeom?.rank ?? 0) >= 3);
+
+  function capturePlotPointer(target: HTMLElement, pointerId: number): void {
+    try {
+      target.setPointerCapture(pointerId);
+    } catch {
+      // The pointer may already have ended between events.
+    }
+  }
+
+  function releasePlotPointer(target: HTMLElement, pointerId: number): void {
+    if (!target.hasPointerCapture(pointerId)) return;
+    try {
+      target.releasePointerCapture(pointerId);
+    } catch {
+      // A cancelled pointer releases capture automatically.
+    }
+  }
+
+  function touchPair(): [GesturePoint, GesturePoint] | null {
+    const points = [...touchPointers.values()];
+    return points.length >= 2 ? [points[0], points[1]] : null;
+  }
+
+  function beginPlotPinch(target: HTMLElement): void {
+    const pair = touchPair();
+    if (!pair) return;
+    const { distance } = pinchMetrics(pair[0], pair[1]);
+    if (distance <= 0) return;
+    dragPointerId = null;
+    pinchGesture = { distance, zoom: orbit.zoom };
+    for (const pointerId of touchPointers.keys()) {
+      capturePlotPointer(target, pointerId);
+    }
+  }
 
   function onPointerDown(ev: PointerEvent): void {
     if (!canOrbit) return;
-    dragging = true;
+    if (ev.pointerType === "touch") {
+      touchPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (touchPointers.size >= 2) {
+        beginPlotPinch(ev.currentTarget as HTMLElement);
+        ev.preventDefault();
+        return;
+      }
+    }
+    dragPointerId = ev.pointerId;
     lastX = ev.clientX;
     lastY = ev.clientY;
-    (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+    capturePlotPointer(ev.currentTarget as HTMLElement, ev.pointerId);
     ev.preventDefault();
   }
   function onPointerMove(ev: PointerEvent): void {
-    if (!dragging || !canOrbit) return;
+    if (canvasEl && ev.buttons === 0) {
+      const rect = canvasEl.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      let closest: GeometryHitPoint | undefined;
+      let distance = 16;
+      for (const hit of hitPoints) {
+        const d = Math.hypot(x - hit.screen[0], y - hit.screen[1]);
+        if (d <= distance) { closest = hit; distance = d; }
+      }
+      plotTitle = closest
+        ? `${closest.label} · whitened coordinates [${closest.point.map((v) => chartValue(v)).join(", ")}]`
+        : "Hover a node to see its whitened coordinates";
+    }
+    if (!canOrbit) return;
+    if (ev.pointerType === "touch" && touchPointers.has(ev.pointerId)) {
+      touchPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      const pair = touchPair();
+      if (pair && pinchGesture) {
+        orbit.zoom = scaleFromPinch(
+          pinchGesture.zoom,
+          pinchGesture.distance,
+          pinchMetrics(pair[0], pair[1]).distance,
+          0.3,
+          6,
+        );
+        ev.preventDefault();
+        return;
+      }
+    }
+    if (dragPointerId !== ev.pointerId) return;
     const dx = ev.clientX - lastX;
     const dy = ev.clientY - lastY;
     lastX = ev.clientX;
@@ -176,12 +291,17 @@
     orbit.q = orbitDrag(orbit.q, dx, dy);
   }
   function onPointerUp(ev: PointerEvent): void {
-    dragging = false;
-    try {
-      (ev.currentTarget as HTMLElement).releasePointerCapture(ev.pointerId);
-    } catch {
-      /* ignore */
+    const target = ev.currentTarget as HTMLElement;
+    releasePlotPointer(target, ev.pointerId);
+    if (ev.pointerType === "touch") {
+      const wasPinching = pinchGesture !== null;
+      touchPointers.delete(ev.pointerId);
+      if (wasPinching) {
+        if (touchPointers.size >= 2) beginPlotPinch(target);
+        else pinchGesture = null;
+      }
     }
+    if (dragPointerId === ev.pointerId) dragPointerId = null;
   }
   // Scroll wheel = intentional zoom (the rotation-driven zoom artifact is
   // gone; this is the only zoom path now).  Multiplicative so each notch is a
@@ -191,6 +311,25 @@
     ev.preventDefault();
     const factor = Math.exp(-ev.deltaY * 0.0015);
     orbit.zoom = Math.max(0.3, Math.min(6, orbit.zoom * factor));
+  }
+
+  function rotateBy(dx: number, dy: number): void {
+    if (!canOrbit) return;
+    orbit.q = orbitDrag(orbit.q, dx, dy);
+  }
+
+  function zoomBy(factor: number): void {
+    orbit.zoom = Math.max(0.3, Math.min(6, orbit.zoom * factor));
+  }
+
+  function resetView(): void {
+    orbit.q = DEFAULT_ORBIT_QUAT;
+    orbit.zoom = 1.6;
+  }
+
+  function formatPoint(point: number[] | null): string {
+    if (!point || point.length === 0) return "not available";
+    return point.slice(0, 3).map((value) => value.toFixed(3)).join(", ");
   }
 
   function onClose(): void {
@@ -219,7 +358,7 @@
 <aside class="drawer" style:--family={familyHue} aria-label="Probe inspector">
   <header class="drawer-header">
     <div class="title">
-      <span class="eyebrow">probe geometry</span>
+      <h2 class="eyebrow">Reading details</h2>
       <div class="name-row">
         {#if probeName}
           <span class="family-dot" aria-hidden="true"></span>
@@ -233,7 +372,7 @@
             {/if}
           {/if}
         {:else}
-          <span class="meta">no probe</span>
+          <span class="meta">No reading selected</span>
         {/if}
       </div>
     </div>
@@ -241,13 +380,13 @@
   </header>
 
   {#if !probeName}
-    <div class="body"><div class="empty">select a probe</div></div>
+    <div class="body"><div class="empty">Select a saved reading to see how it is measured.</div></div>
   {:else if loading}
-    <div class="body"><div class="empty">loading…</div></div>
+    <div class="body" aria-busy="true"><div class="empty loading-pulse loading-placeholder" role="status">Loading probe geometry…</div></div>
   {:else if error}
-    <div class="body"><div class="empty err">error: {error}</div></div>
-  {:else if !geom || layerList.length === 0}
-    <div class="body"><div class="empty">no geometry</div></div>
+    <div class="body"><div class="empty err" role="alert">Probe geometry failed: {error}</div></div>
+  {:else if !geom || !activeGeom || layerList.length === 0}
+    <div class="body"><div class="empty">This probe has no fitted geometry.</div></div>
   {:else}
     <div class="body">
       <div class="bars-col">
@@ -258,6 +397,8 @@
               type="button"
               class="row"
               class:active={l.layer === selectedLayer}
+              aria-pressed={l.layer === selectedLayer}
+              title={`L${l.layer} · share ${chartValue(l.mahalanobis_share)} · ${chartValue(maxShare > 0 ? Math.abs(l.mahalanobis_share) / maxShare : 0, true)} of largest layer`}
               onclick={() => (selectedLayer = l.layer)}
             >
               <span class="lyr">L{l.layer}</span>
@@ -267,6 +408,7 @@
                 width={200}
                 height={8}
                 color="var(--family)"
+                title={`Share ${chartValue(l.mahalanobis_share)} · ${chartValue(maxShare > 0 ? Math.abs(l.mahalanobis_share) / maxShare : 0, true)} of largest layer`}
               />
               <span class="val">{l.mahalanobis_share.toFixed(3)}</span>
             </button>
@@ -279,38 +421,72 @@
           <canvas
             bind:this={canvasEl}
             class="plot"
+            title={plotTitle}
+            aria-label={`Whitened geometry for ${displayName}, layer ${selectedLayer}`}
+            aria-describedby="probe-geometry-summary"
+            data-orbit-zoom={orbit.zoom.toFixed(2)}
             onpointerdown={onPointerDown}
             onpointermove={onPointerMove}
             onpointerup={onPointerUp}
+            onpointercancel={onPointerUp}
+            onlostpointercapture={onPointerUp}
             onwheel={onWheel}
-          ></canvas>
+          >Whitened geometry for {displayName}, layer {selectedLayer}.</canvas>
           <span class="layer-chip">L{selectedLayer}</span>
           {#if canOrbit}
-            <span class="orbit-hint">drag · scroll</span>
+            <span class="orbit-hint">drag · scroll or pinch</span>
+            <div class="plot-controls" aria-label="Geometry view controls">
+              <button type="button" aria-label="Rotate geometry left" onclick={() => rotateBy(-18, 0)}>left</button>
+              <button type="button" aria-label="Rotate geometry right" onclick={() => rotateBy(18, 0)}>right</button>
+              <button type="button" aria-label="Rotate geometry up" onclick={() => rotateBy(0, -18)}>up</button>
+              <button type="button" aria-label="Rotate geometry down" onclick={() => rotateBy(0, 18)}>down</button>
+              <button type="button" aria-label="Zoom geometry out" onclick={() => zoomBy(0.8)}><FluentIcon name="subtract" /></button>
+              <button type="button" aria-label="Zoom geometry in" onclick={() => zoomBy(1.25)}><FluentIcon name="add" /></button>
+              <button type="button" onclick={resetView}>reset</button>
+            </div>
           {/if}
           {#if trailPoints.length > 0}
             <span class="trail-hint">{trailPoints.length} trail pts</span>
+          {:else if !liveTrailAvailability.available}
+            <span class="live-hint" title={liveTrailAvailability.reason ?? undefined}>
+              live trail unavailable here
+            </span>
           {:else}
             <span class="live-hint">run for live trail</span>
           {/if}
         </div>
+        <p class="coordinate-summary" id="probe-geometry-summary">
+          Neutral [{formatPoint(activeGeom.neutral_white)}]; live point [{formatPoint(livePoint)}];
+          {activeGeom.node_white.length} node {activeGeom.node_white.length === 1 ? "centroid" : "centroids"}.
+        </p>
+        <details use:animatedDetails class="geometry-summary">
+          <summary>Geometry coordinates</summary>
+          <p>
+            Layer {selectedLayer}; rank {activeGeom.rank}; neutral [{formatPoint(activeGeom.neutral_white)}];
+            live point [{formatPoint(livePoint)}]. Coordinates show the first three whitened dimensions.
+          </p>
+          <ul>
+            {#each activeGeom.node_white as point, index (index)}
+              <li>{geom.node_labels[index] ?? `node ${index + 1}`}: [{formatPoint(point)}]</li>
+            {/each}
+          </ul>
+        </details>
+        {#if !liveTrailAvailability.available}
+          <p class="capability-note" role="note">
+            {liveTrailAvailability.reason}. The fitted geometry remains available.
+          </p>
+        {/if}
       </div>
     </div>
   {/if}
 
-  <footer class="drawer-footer">
-    <span class="hint">
-      Whitened-frame geometry — node centroids, neutral anchor, and the manifold
-      overlay in the same Mahalanobis metric the reads use.  The live dot is
-      the current hidden state; the fading trail is the last tokens.
-    </span>
-  </footer>
 </aside>
 
 <style>
   /* v2 sheet interior — the host paints the sheet surface, so the root
    * stays transparent and chrome speaks sans (data stays mono). */
   .drawer {
+    container: probe-inspector / inline-size;
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -325,7 +501,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-5);
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     display: flex;
@@ -345,6 +521,7 @@
     align-items: baseline;
     gap: var(--space-3);
     min-width: 0;
+    flex-wrap: wrap;
   }
   .family-dot {
     align-self: center;
@@ -377,16 +554,16 @@
     flex: 1 1 auto;
     overflow: hidden;
     min-height: 0;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     display: flex;
     flex-direction: row;
     gap: var(--space-6);
   }
   .bars-col {
-    flex: 0 0 auto;
+    flex: 0 0 15rem;
     min-height: 0;
     overflow-y: auto;
-    padding-right: var(--space-2);
+    scrollbar-gutter: stable;
   }
   .plot-col {
     flex: 1 1 auto;
@@ -394,6 +571,42 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+    overflow-y: auto;
+  }
+  .geometry-summary {
+    margin-top: var(--space-3);
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+  }
+  .capability-note {
+    margin: var(--space-3) 0 0;
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+  }
+  .coordinate-summary {
+    margin: var(--space-3) 0 0;
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+  }
+  .geometry-summary summary {
+    cursor: pointer;
+    color: var(--fg);
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  .geometry-summary p,
+  .geometry-summary ul {
+    margin: var(--space-2) 0 0;
+  }
+  .geometry-summary ul {
+    max-height: 9rem;
+    overflow: auto;
+    padding-inline-start: var(--space-5);
+    font-family: var(--font-mono);
   }
   .empty {
     color: var(--fg-muted);
@@ -406,8 +619,9 @@
   /* The plot well stays quiet so its geometry carries the information. */
   .plot-wrap {
     position: relative;
-    flex: 1 1 auto;
-    min-height: 0;
+    flex: 0 0 auto;
+    width: 100%;
+    aspect-ratio: 1;
     border-radius: var(--radius-lg);
     background: var(--bg-deep);
     box-shadow: var(--shadow-rack);
@@ -441,7 +655,7 @@
     background: var(--glass);
     border: 1px solid transparent;
     border-radius: var(--radius-pill);
-    padding: 1px var(--space-4);
+    padding: var(--space-xs) var(--space-4);
     pointer-events: none;
   }
   .orbit-hint,
@@ -454,7 +668,7 @@
   }
   .orbit-hint {
     top: var(--space-3);
-    right: var(--space-4);
+    inset-inline-end: var(--space-4);
   }
   .live-hint {
     bottom: var(--space-3);
@@ -470,6 +684,30 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+  .plot-controls {
+    position: absolute;
+    inset-inline-end: var(--space-3);
+    bottom: var(--space-3);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--space-1);
+    max-width: 20rem;
+  }
+  .plot-controls button {
+    min-width: var(--control-target);
+    min-height: var(--control-target);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--radius);
+    background: var(--glass-strong);
+    color: var(--fg);
+    cursor: pointer;
+    font: inherit;
+    padding: var(--space-1) var(--space-3);
+  }
+  .plot-controls button:active {
+    transform: scale(var(--press-scale));
+  }
 
   .section-label {
     color: var(--fg-muted);
@@ -478,29 +716,36 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     margin-bottom: var(--space-3);
+    padding-inline: var(--space-3);
   }
   .bars {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: var(--data-mark-gap);
     font-family: var(--font-mono);
     font-size: var(--text-xs);
   }
   .row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 3ch minmax(0, 1fr) 6ch;
     align-items: center;
-    gap: var(--space-4);
+    gap: var(--space-3);
     background: transparent;
     border: 1px solid transparent;
     border-radius: var(--radius);
-    padding: var(--space-1) var(--space-3);
+    padding: var(--space-2) var(--space-3);
     cursor: pointer;
-    text-align: left;
+    text-align: start;
     color: inherit;
     font: inherit;
     transition:
       background var(--dur-fast) var(--ease-out),
       border-color var(--dur-fast) var(--ease-out);
+  }
+  .row :global(.bar) {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
   }
   .row:hover {
     background: var(--bg-hover);
@@ -514,25 +759,47 @@
   }
   .lyr {
     color: var(--fg-muted);
-    width: 3em;
-    text-align: right;
+    text-align: end;
     font-variant-numeric: tabular-nums;
     flex: 0 0 auto;
   }
   .val {
     color: var(--fg-dim);
-    width: 5em;
-    text-align: right;
+    text-align: end;
     font-variant-numeric: tabular-nums;
     flex: 0 0 auto;
   }
 
-  .drawer-footer {
-    padding: var(--space-3) var(--space-6);
-    color: var(--fg-muted);
-    font-size: var(--text-xs);
+  @container probe-inspector (max-width: 44rem) {
+    .drawer-header {
+      gap: var(--space-3);
+    }
+    .name-row {
+      flex-wrap: wrap;
+      gap: var(--space-2) var(--space-3);
+    }
+    .body {
+      flex-direction: column;
+      gap: var(--space-4);
+      overflow-y: auto;
+    }
+    .bars-col {
+      flex: 0 0 auto;
+      max-height: 11rem;
+      padding-inline-end: 0;
+    }
+    .row {
+      min-height: var(--control-target);
+      gap: var(--space-2);
+    }
+    .plot-col {
+      flex: 0 0 auto;
+      overflow: visible;
+    }
+    .plot-controls {
+      inset-inline-start: var(--space-3);
+      max-width: none;
+    }
   }
-  .hint {
-    line-height: 1.5;
-  }
+
 </style>

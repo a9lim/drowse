@@ -1,0 +1,3358 @@
+{
+  "registrar": "Porkbun",
+  "endpoint": "https://porkbun.com/api/domains/getChecks",
+  "pending": 0,
+  "results": [
+    {
+      "id": "1821252899",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "lunomi.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252900",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "sorumi.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252901",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "norumi.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252902",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "nimela.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252903",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "nolemi.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252904",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "somori.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252905",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "tameli.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252906",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "lumella.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252907",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "enoli.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252908",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "norali.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252909",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "ikumi.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252910",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "siluna.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252911",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "domaso.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252912",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "ostuni.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252913",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "roseto.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252914",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "bormio.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252915",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "locarno.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252916",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "ponza.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252917",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "tropea.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252918",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "varallo.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252919",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "sulmona.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252920",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "posada.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252921",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "quiettide.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252922",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "softmoss.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252923",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "stillcove.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252924",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "innervale.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252925",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "bluehollow.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252926",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "lightgrove.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252927",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "mooncove.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252928",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "mosslane.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252929",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "mistlake.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252930",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "kindmuse.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252931",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "mellowtide.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252932",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "bloomcove.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252933",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "fablecove.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252934",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "papertide.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252935",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "goldfern.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252936",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "silvermoss.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252937",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "fablefern.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252938",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "merrybloom.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252939",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "brightmuse.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252940",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "moonmoss.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252941",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "ambermuse.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252942",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "clearmeadow.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252943",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "openfern.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252944",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "silverglow.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252945",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "softcurrent.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252946",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "lightmoss.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252947",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "gentletide.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    },
+    {
+      "id": "1821252948",
+      "check_id": "7f44e4a00c7f5dc04a02593b469d5ba752f549cba1301dd954ec55d4f7dfceef",
+      "domain": "fablemoon.ai",
+      "tld": "ai",
+      "result": "AVAILABLE",
+      "type": "registration",
+      "ts": "2026-09-05 22:03:26",
+      "weight": "0",
+      "extended": {
+        "bulkSearch": 1,
+        "resultType": null,
+        "discount": 0,
+        "premium": 0,
+        "price": "8270",
+        "pricing": {
+          "registryFees": {
+            "currency": "USD",
+            "amount": 8000,
+            "default-amount": 8000,
+            "exchangeRate": 1,
+            "USD": "8000"
+          },
+          "registrarMarkup": {
+            "type": "flat",
+            "amount": "0",
+            "fixed": 0,
+            "markup": "0"
+          },
+          "otherFees": [],
+          "totalOtherFees": "0",
+          "cost": 8000,
+          "customerPrice": 8000,
+          "grossMargin": 0,
+          "forceRetailPrice": null
+        },
+        "typePricing": {
+          "registration": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "renewal": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "8000",
+            "premium": 0,
+            "price": "8270"
+          },
+          "transfer": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          },
+          "update": {
+            "ignoreLowerRenew": null,
+            "currentWholesale": "16000",
+            "premium": 0,
+            "price": "16509"
+          }
+        }
+      },
+      "environment": "prod",
+      "reason": null,
+      "inCart": "0"
+    }
+  ],
+  "fetched_at_utc": "2026-09-05T22:04:16.175Z"
+}

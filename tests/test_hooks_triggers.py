@@ -13,14 +13,14 @@ import pytest
 import torch
 import torch.nn as nn
 
-from saklas.core.hooks import SteeringHook, SteeringManager
-from saklas.core.manifold import (
+from drowse.core.hooks import SteeringHook, SteeringManager
+from drowse.core.manifold import (
     CustomDomain,
     LayerSubspace,
     subspace_inject,
     synthesize_subspace,
 )
-from saklas.core.triggers import Trigger, TriggerContext
+from drowse.core.triggers import Trigger, TriggerContext
 from tests._whitener import isotropic_whitener
 
 

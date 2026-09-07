@@ -1,7 +1,9 @@
 <script lang="ts">
-  // SamplingStrip: T / top-p / top-k / max / pres / freq / seed + a
-  // thinking toggle + an alts (top-K capture) count + advanced /
-  // system-prompt drawer buttons.
+  import RollingNumber from "../lib/ui/RollingNumber.svelte";
+  import ResetSettings from "../lib/ui/ResetSettings.svelte";
+  import { settingsResetState } from "../lib/stores/settingsReset.svelte";
+  // SamplingStrip keeps the four everyday controls visible. Secondary
+  // generation and inspection controls live in AdvancedSamplingDrawer.
   //
   // Every edit applies immediately.  temperature / top-p / top-k /
   // max-tokens / thinking PATCH the session defaults as the user moves
@@ -23,6 +25,9 @@
   import Slider from "../lib/Slider.svelte";
   import NumberInput from "../lib/NumberInput.svelte";
   import Checkbox from "../lib/Checkbox.svelte";
+  import InfoTip from "../lib/ui/InfoTip.svelte";
+  import { getRuntimeCapabilities } from "../lib/runtime/registry";
+  import { outputTokenLimitForSignals } from "../lib/runtime/outputTokenPolicy";
 
   // ------------------------------------------------------------------- consts
 
@@ -40,18 +45,43 @@
   const TOP_P_MIN = 0;
   const TOP_P_MAX = 1;
   const TOP_P_STEP = 0.01;
-  const TOP_K_MIN = 1;
-  const TOP_K_MAX = 4096;
   const MAX_TOK_MIN = 1;
-  const MAX_TOK_MAX = 8192;
-  const PENALTY_MIN = -2;
-  const PENALTY_MAX = 2;
-  const ALTS_MAX = 256;
+
+  const HELP = {
+    temperature: "Temperature controls randomness. Higher values vary the token choices. Lower values make them more predictable.",
+    topP: "Top P limits sampling to the smallest set of tokens whose probabilities add up to this value. Lower values narrow the choices.",
+    maxTokens: "Max tokens is the maximum number of tokens the model may generate. A token is usually a word or part of a word.",
+    thinking: "When supported, Thinking lets the model use a separate reasoning phase before it writes the visible reply.",
+  } as const;
+
+  function describedBy(node: HTMLElement, id: string) {
+    let descriptionId = id;
+    let input: HTMLInputElement | null = null;
+    const connect = () => {
+      input = node.querySelector("input");
+      input?.setAttribute("aria-describedby", descriptionId);
+    };
+    queueMicrotask(connect);
+    return {
+      update(next: string) {
+        if (input?.getAttribute("aria-describedby") === descriptionId) {
+          input.removeAttribute("aria-describedby");
+        }
+        descriptionId = next;
+        connect();
+      },
+      destroy() {
+        if (input?.getAttribute("aria-describedby") === descriptionId) {
+          input.removeAttribute("aria-describedby");
+        }
+      },
+    };
+  }
 
   // ------------------------------------------------------------------- ready
 
   /** True once session info has loaded — gates control enable state. */
-  const ready = $derived(sessionState.info !== null);
+  const ready = $derived(sessionState.info !== null && !settingsResetState.busy);
 
   /** True iff thinking is supported for this model.  ``supports_thinking``
    * comes off the session info and may flip once the model loads. */
@@ -85,13 +115,12 @@
 
   const tempView = $derived(samplingState.temperature ?? PLACEHOLDER.temperature);
   const topPView = $derived(samplingState.top_p ?? PLACEHOLDER.top_p);
-  const topKView = $derived<number | null>(samplingState.top_k);
-  const maxView = $derived(samplingState.max_tokens || PLACEHOLDER.max_tokens);
-  const presenceView = $derived(samplingState.presence_penalty);
-  const frequencyView = $derived(samplingState.frequency_penalty);
-  /** Bindable raw seed value for the NumberInput.  null = no per-call
-   *  seed pin (the placeholder dash shows). */
-  const seedView = $derived<number | null>(samplingState.seed);
+  const maxTokenLimit = $derived(
+    outputTokenLimitForSignals(getRuntimeCapabilities()?.signals),
+  );
+  const maxView = $derived(
+    Math.min(samplingState.max_tokens || PLACEHOLDER.max_tokens, maxTokenLimit),
+  );
   const thinkingView = $derived(samplingState.thinking ?? false);
 
   // ------------------------------------------------------------------- writes
@@ -125,62 +154,16 @@
     void persistDefault({ top_p: v });
   }
 
-  function onTopK(raw: number | null): void {
-    if (raw === null) {
-      setSampling("top_k", null);
-      void persistDefault({ top_k: null });
-      return;
-    }
-    const v = Math.max(TOP_K_MIN, Math.min(TOP_K_MAX, Math.floor(raw)));
-    setSampling("top_k", v);
-    void persistDefault({ top_k: v });
-  }
-
   function onMax(raw: number | null): void {
     if (raw === null) return;
-    const v = Math.max(MAX_TOK_MIN, Math.min(MAX_TOK_MAX, Math.floor(raw)));
+    const v = Math.max(MAX_TOK_MIN, Math.min(maxTokenLimit, Math.floor(raw)));
     setSampling("max_tokens", v);
     void persistDefault({ max_tokens: v });
-  }
-
-  function onPenalty(
-    key: "presence_penalty" | "frequency_penalty",
-    raw: number | null,
-  ): void {
-    if (raw === null) return;
-    const v = Math.max(PENALTY_MIN, Math.min(PENALTY_MAX, raw));
-    setSampling(key, v);
-    // No session-PATCH path: the penalties ride on the per-call sampling
-    // payload only, same as the (now-removed) advanced-drawer control.
-  }
-
-  function onSeed(raw: number | null): void {
-    if (raw === null) {
-      setSampling("seed", null);
-      return;
-    }
-    setSampling("seed", Math.floor(raw));
-    // There's no PATCH-able ``seed`` on the session — seed always rides
-    // per-call (``buildSamplingPayload``).  A set seed pins every
-    // generation to that number; empty the field to unpin.
   }
 
   function onThinking(v: boolean): void {
     setSampling("thinking", v);
     void persistDefault({ thinking: v });
-  }
-
-  /** Logit-pass: number of top-K alternative tokens to capture per
-   *  position.  ``0`` disables capture; ``> 0`` lights up the token
-   *  drilldown's logits tab + the inline ``surprise`` highlight.  No
-   *  PATCH — the server's session-PATCH endpoint doesn't accept
-   *  ``return_top_k``; it rides the WS sampling payload directly (see
-   *  ``stores.svelte.ts::sendGenerate``).  Effective on the next
-   *  generation; running gens keep their captured shape. */
-  function onAlts(raw: number | null): void {
-    if (raw === null) return;
-    const v = Math.max(0, Math.min(ALTS_MAX, Math.floor(raw)));
-    setSampling("return_top_k", v);
   }
 
   function openSystemPrompt(): void {
@@ -195,8 +178,11 @@
 <section class="sampling-strip" aria-label="sampling controls">
   <!-- Row 1: temperature + top-p sliders -->
   <div class="row sliders">
-    <label class="control" title="temperature">
-      <span class="label">T</span>
+    <div class="control" use:describedBy={"sampling-temperature-help"}>
+      <span class="control-label">
+        <span class="label">Temperature</span>
+        <InfoTip text={HELP.temperature} label="About Temperature" />
+      </span>
       <span class="slider-cell">
         <Slider
           value={tempView}
@@ -205,14 +191,18 @@
           step={TEMP_STEP}
           disabled={!ready}
           oninput={onTemp}
-          ariaLabel="temperature"
+          ariaLabel="Temperature"
         />
       </span>
-      <span class="value">{tempView.toFixed(2)}</span>
-    </label>
+      <span class="value"><RollingNumber value={tempView} digits={2} /></span>
+      <span id="sampling-temperature-help" class="sr-only">{HELP.temperature}</span>
+    </div>
 
-    <label class="control" title="top-p">
-      <span class="label">P</span>
+    <div class="control" use:describedBy={"sampling-top-p-help"}>
+      <span class="control-label">
+        <span class="label">Top P</span>
+        <InfoTip text={HELP.topP} label="About Top P" />
+      </span>
       <span class="slider-cell">
         <Slider
           value={topPView}
@@ -221,210 +211,122 @@
           step={TOP_P_STEP}
           disabled={!ready}
           oninput={onTopP}
-          ariaLabel="top-p"
+          ariaLabel="Top P"
         />
       </span>
-      <span class="value">{topPView.toFixed(2)}</span>
-    </label>
+      <span class="value"><RollingNumber value={topPView} digits={2} /></span>
+      <span id="sampling-top-p-help" class="sr-only">{HELP.topP}</span>
+    </div>
   </div>
-
-  <!-- Row 2: top-k, repetition (frequency) penalty, presence penalty -->
-  <div class="row">
-    <label class="control" title="top-k · blank disables">
-      <span class="label">K</span>
-      <span class="num-cell">
-        <NumberInput
-          value={topKView}
-          min={TOP_K_MIN}
-          max={TOP_K_MAX}
-          step={1}
-          placeholder="—"
-          allowEmpty
-          disabled={!ready}
-          onchange={onTopK}
-          ariaLabel="top-k"
-        />
+  <div class="row details">
+    <div class="control" use:describedBy={"sampling-max-tokens-help"}>
+      <span class="control-label">
+        <span class="label">Max tokens</span>
+        <InfoTip text={HELP.maxTokens} label="About Max tokens" />
       </span>
-    </label>
-
-    <label
-      class="control"
-      title="frequency penalty"
-    >
-      <span class="label">rep</span>
-      <span class="num-cell">
-        <NumberInput
-          value={frequencyView}
-          min={PENALTY_MIN}
-          max={PENALTY_MAX}
-          step={0.05}
-          disabled={!ready}
-          onchange={(v) => onPenalty("frequency_penalty", v)}
-          ariaLabel="repetition (frequency) penalty"
-        />
-      </span>
-    </label>
-
-    <label
-      class="control"
-      title="presence penalty"
-    >
-      <span class="label">pres</span>
-      <span class="num-cell">
-        <NumberInput
-          value={presenceView}
-          min={PENALTY_MIN}
-          max={PENALTY_MAX}
-          step={0.05}
-          disabled={!ready}
-          onchange={(v) => onPenalty("presence_penalty", v)}
-          ariaLabel="presence penalty"
-        />
-      </span>
-    </label>
-  </div>
-
-  <!-- (Per-message role labels moved to the composer's cast row.) -->
-
-  <!-- Row 4: max tokens, alts (top-K capture), seed -->
-  <div class="row">
-    <label class="control" title="max tokens">
-      <span class="label">max</span>
       <span class="num-cell">
         <NumberInput
           value={maxView}
           min={MAX_TOK_MIN}
-          max={MAX_TOK_MAX}
+          max={maxTokenLimit}
           step={1}
           disabled={!ready}
           onchange={onMax}
-          ariaLabel="max tokens"
+          ariaLabel="Max tokens"
         />
       </span>
-    </label>
-
-    <!-- Top-K alternatives count (logit-pass).  0 disables capture; >0
-         populates the drilldown logits tab + the inline surprise highlight
-         mode.  Default 8 per Decision 1. -->
-    <label
-      class="control"
-      title="captured alternatives"
+      <span id="sampling-max-tokens-help" class="sr-only">{HELP.maxTokens}</span>
+    </div>
+    {#if thinkingSupported}
+    <div
+      class="control toggle"
+      class:forced={thinkingForced}
+      use:describedBy={"sampling-thinking-help"}
     >
-      <span class="label">alts</span>
-      <span class="num-cell">
-        <NumberInput
-          value={samplingState.return_top_k}
-          min={0}
-          max={ALTS_MAX}
-          step={1}
-          disabled={!ready}
-          onchange={onAlts}
-          ariaLabel="top-K alternatives to capture"
+      <span class="control-label">
+        <span class="label think-label">Thinking{thinkingForced ? " (always on)" : ""}</span>
+        <InfoTip
+          text={!thinkingOptional
+            ? "This model always uses its reasoning phase, so this setting cannot be changed."
+            : HELP.thinking}
+          label="About Thinking"
         />
       </span>
-    </label>
-
-    <label class="control" title="seed">
-      <span class="label">seed</span>
-      <span class="num-cell">
-        <NumberInput
-          value={seedView}
-          min={0}
-          step={1}
-          placeholder="—"
-          allowEmpty
-          disabled={!ready}
-          onchange={onSeed}
-          ariaLabel="seed"
-        />
+      <Checkbox
+        checked={thinkingForced ? true : thinkingView}
+        disabled={!ready || thinkingForced}
+        onchange={onThinking}
+        ariaLabel="Thinking"
+      />
+      <span id="sampling-thinking-help" class="sr-only">
+        {!thinkingOptional
+          ? "This model always uses its reasoning phase, so this setting cannot be changed."
+          : HELP.thinking}
       </span>
-    </label>
+    </div>
+    {/if}
   </div>
 
-  <!-- Row 5: advanced / system-prompt drawers + thinking toggle -->
   <div class="row actions">
     <button
       type="button"
       class="sys-btn"
       disabled={!ready}
       onclick={openAdvanced}
-      title="more sampling"
-    >
-      advanced
-    </button>
+    >Sampling settings</button>
 
-    <button
+    {#if !sessionState.info?.is_base_model}<button
       type="button"
       class="sys-btn"
       disabled={!ready}
       onclick={openSystemPrompt}
-      title="system prompt"
-    >
-      <span aria-hidden="true">⚙</span> system
-    </button>
-
-    <label
-      class="control toggle"
-      class:forced={thinkingForced}
-      title={!thinkingSupported
-        ? "unsupported"
-        : !thinkingOptional
-          ? "always on"
-          : "thinking"}
-    >
-      <span class="label think-label">think{thinkingForced ? " (forced)" : ""}</span>
-      <Checkbox
-        checked={thinkingForced ? true : thinkingView}
-        disabled={!ready || !thinkingSupported || thinkingForced}
-        onchange={onThinking}
-        ariaLabel="thinking mode"
-      />
-    </label>
+    >System prompt</button>{/if}
   </div>
+  <ResetSettings />
 </section>
 
 <style>
   .sampling-strip {
+    container-type: inline-size;
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-3) var(--space-5);
-    font-family: var(--font-mono);
+    gap: var(--space-6);
+    padding: 0 var(--panel-padding) var(--panel-padding);
+    font-family: var(--font-reading);
     font-size: var(--text-sm);
     color: var(--fg-strong);
   }
 
-  /* One logical group of controls per row, laid out as equal grid
-   * columns.  Because both 3-up rows (K/rep/pres and max/alts/seed) get
-   * the same three 1fr tracks — and both 2-up rows (sliders, roles) the
-   * same two — every control lines up vertically across rows and each
-   * row's right edge is flush.  minmax(0, 1fr) keeps the tracks equal
-   * even when a cell's content (the seed's 🎲 / ✕) would otherwise widen
-   * it; the field inside shrinks instead. */
+  /* Each row uses equal tracks so labels and controls stay aligned. */
   .row {
     display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(0, 1fr);
+    grid-auto-flow: row;
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
-    gap: var(--space-5);
+    gap: var(--space-6);
     width: 100%;
   }
   .row > .control {
     min-width: 0;
   }
-  /* The action row sizes its buttons / toggle to content and spreads
-   * them, so the toggle's right edge still lands flush. */
+  /* Keep the two secondary actions balanced across the panel. */
   .row.actions {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+    padding-top: var(--space-3);
   }
   .row.actions > * {
-    flex: 0 0 auto;
+    min-width: 0;
   }
+  .row.actions > :only-child { grid-column: 1 / -1; }
   .control {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-3);
+    min-height: 2.6rem;
+    padding: 0;
+    background: transparent;
     white-space: nowrap;
     min-width: 0;
   }
@@ -438,24 +340,31 @@
     min-width: 0;
   }
 
-  .label {
+  .control-label {
+    display: inline-flex;
+    align-items: center;
     flex: 0 0 auto;
-    color: var(--fg-dim);
-    font-size: var(--text-xs);
-    text-transform: uppercase;
-    letter-spacing: 0;
-    /* Fixed floor so the short labels reserve a consistent gutter and the
-     * boxes start at the same offset within each control. */
-    min-width: 3em;
-    text-align: right;
+    gap: var(--space-1);
+    min-width: 10.25rem;
+  }
+
+  .label {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--fg-strong);
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-structure);
+    text-align: start;
   }
 
   .value {
     flex: 0 0 auto;
     color: var(--fg-strong);
+    font-family: var(--font-data);
     font-variant-numeric: tabular-nums;
     min-width: 2.5em;
-    text-align: left;
+    text-align: end;
   }
 
   /* Forced-thinking toggle: locked-on visual.  The checkbox is disabled
@@ -469,7 +378,19 @@
    * gutter — it sits in the action row, not a field column. */
   .think-label {
     min-width: 0;
-    text-align: left;
+    text-align: start;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .sys-btn {
@@ -478,9 +399,10 @@
     border: 1px solid transparent;
     border-radius: var(--radius);
     padding: var(--space-1) var(--space-4);
-    font-family: var(--font-mono);
+    font-family: var(--font-structure);
     font-size: var(--text-sm);
     line-height: 1.3;
+    min-height: var(--control-field);
   }
   .sys-btn:hover:not(:disabled) {
     background: var(--glass-strong);
@@ -489,6 +411,28 @@
   .sys-btn:disabled {
     color: var(--fg-muted);
     cursor: not-allowed;
+  }
+
+  @container (max-width: 26rem) {
+    .control {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-2) var(--space-3);
+      white-space: normal;
+    }
+
+    .control-label {
+      grid-column: 1 / -1;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .slider-cell,
+    .num-cell { grid-column: 1; }
+
+    .num-cell { grid-column: 1 / -1; }
+    .value { grid-column: 2; }
+
   }
   /* (Role-input styles moved to Chat.svelte's cast row.) */
 </style>

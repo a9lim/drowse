@@ -1,8 +1,7 @@
 <script lang="ts">
-  // Builder-drawer validation block — the "not ready to <verb>" header
-  // plus a bulleted reasons list.  One consistent shape across extract
-  // and manifold drawers; reasons come from each drawer's $derived
-  // validation function.
+  // Builder-drawer validation summary.  Callers reveal it after a submit
+  // attempt so editing a field does not repeatedly interrupt screen-reader
+  // users with a changing global alert.
   //
   // Renders nothing when ``messages`` is empty so callers can drop it in
   // unconditionally.
@@ -16,24 +15,26 @@
   }
 
   let { verb, messages }: Props = $props();
+  const uid = $props.id();
 </script>
 
 {#if messages.length > 0}
-  <div class="sk-validation" role="alert">
-    <p class="sk-validation-head">{verb} blocked</p>
+  <section class="sk-validation" aria-labelledby={`${uid}-heading`}>
+    <p id={`${uid}-heading`} class="sk-validation-head">
+      Check these details before you {verb}
+    </p>
     <ul>
       {#each messages as m (m)}
         <li>{m}</li>
       {/each}
     </ul>
-  </div>
+  </section>
 {/if}
 
 <style>
   .sk-validation {
-    border-left: 2px solid var(--accent-yellow);
-    background: var(--warn-bg);
-    padding: var(--space-3) var(--space-4);
+    background: var(--surface-sheen), var(--warn-bg);
+    padding: var(--surface-padding);
     border-radius: var(--radius);
     color: var(--fg-strong);
     font-size: var(--text-sm);
@@ -45,7 +46,7 @@
   }
   .sk-validation ul {
     margin: 0;
-    padding-left: var(--space-6);
+    padding-inline-start: var(--space-6);
     color: var(--fg-dim);
   }
   .sk-validation li {

@@ -19,6 +19,7 @@
     steerRack,
     setSubspaceAlong,
     openDrawer,
+    sessionState,
   } from "../lib/stores.svelte";
 
   let { family }: { family: "subspace" | "manifold" } = $props();
@@ -33,6 +34,7 @@
     return arr;
   });
   const count = $derived(terms.length);
+  const outputNoun = $derived(sessionState.info?.is_base_model ? "completion" : "reply");
 
   function onAlongInput(v: number): void {
     if (Number.isFinite(v)) setSubspaceAlong(v);
@@ -41,7 +43,7 @@
 
 <section class="rack" aria-label="Steering rack">
   <RackSectionHeader
-    title="STEER"
+    title="Steering"
     count={`${count} term${count === 1 ? "" : "s"}`}
   />
 
@@ -53,16 +55,15 @@
              once).  Per-term relative weight lives in each card's position. -->
         <div
           class="along-master"
-          title="shared magnitude"
         >
-          <span class="along-label">all</span>
+          <span class="along-label">Subspace α</span>
           <Slider
             value={steerRack.subspaceAlong}
             min={0}
             max={2}
             step={0.05}
             oninput={onAlongInput}
-            ariaLabel="shared subspace along"
+            ariaLabel="Subspace steering strength"
           />
           <span class="along-val">{steerRack.subspaceAlong.toFixed(2)}</span>
         </div>
@@ -71,6 +72,10 @@
         <SteerCard {name} {entry} />
       {/each}
     </div>
+  {:else}
+    <p class="empty-copy">
+      Add a direction to steer the next {outputNoun}.
+    </p>
   {/if}
 
   <!-- The family's launcher stays reachable in both empty + populated
@@ -81,18 +86,16 @@
         type="button"
         class="add-subspace"
         onclick={() => openDrawer("subspace")}
-        title="add subspace"
       >
-        + steer
+        Add subspace
       </button>
     {:else}
       <button
         type="button"
         class="add-manifold"
         onclick={() => openDrawer("manifolds")}
-        title="add manifold"
       >
-        + steer
+        Add manifold
       </button>
     {/if}
   </div>
@@ -107,12 +110,12 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: var(--space-5);
+    padding: var(--surface-padding);
     background: transparent;
     height: 100%;
     min-height: 0;
     max-height: 100%;
-    overflow: hidden;
+    overflow-y: auto;
   }
 
   /* Strips own the scroll — overflow at the rack level would push the
@@ -127,29 +130,32 @@
     min-height: 2.4rem;
     max-height: 100%;
     overflow-y: auto;
-    padding-right: var(--space-1);
+    scrollbar-gutter: stable both-edges;
   }
   /* Shared subspace-along master — sits between the section header and its
    * cards, reading as a group-level control rather than a per-card one. */
   .along-master {
     display: grid;
-    grid-template-columns: minmax(3em, auto) minmax(0, 1fr) 3em;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
     padding: var(--space-1) var(--space-2) var(--space-2);
-    border-left: 2px solid var(--accent);
   }
   .along-label {
     color: var(--fg-muted);
-    font-size: var(--text-xs);
-    text-transform: lowercase;
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-structure);
   }
+  .along-master :global(.sk-slider) { grid-column: 1 / -1; grid-row: 2; }
   .along-val {
+    grid-column: 2;
+    grid-row: 1;
     color: var(--fg-muted);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
-    text-align: right;
+    text-align: end;
   }
 
   /* Anchored at the bottom of the rack.  Borderless — the padding-top
@@ -167,6 +173,13 @@
   .actions.empty {
     padding-top: 0;
   }
+  .empty-copy {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    text-wrap: pretty;
+  }
   /* The two family launchers — white subspace vs purple manifold so they
    * read as the two card families. */
   .add-subspace,
@@ -174,7 +187,7 @@
     min-height: var(--control-target);
     flex: 1 1 0;
     border: 1px solid transparent;
-    padding: 2px var(--space-5);
+    padding: var(--space-xs) var(--space-5);
     border-radius: var(--radius);
     font: inherit;
     font-family: var(--font-mono);

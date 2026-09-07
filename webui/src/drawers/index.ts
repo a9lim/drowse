@@ -6,7 +6,7 @@
 // whether it takes the narrow panel, and how it is reached.
 //
 // "How it is reached" is the load-bearing part.  A non-null ``launcher``
-// means the drawer appears in the ⌘K palette, and ``RAIL_CATEGORIES``
+// means the drawer appears in All tools, and ``RAIL_CATEGORIES``
 // below is *derived* from those rows rather than maintained beside them —
 // the previous hand-written list was the one place a drawer could be
 // declared, exported, and rendered while still being unreachable.  A
@@ -27,22 +27,28 @@
 import type { Component } from "svelte";
 
 import type { DrawerName } from "../lib/types";
+import { runtimeClient } from "../lib/runtime/client";
+import { drawerAvailability } from "../lib/runtime/ui-capabilities";
 
 import AdvancedSamplingDrawer from "./AdvancedSamplingDrawer.svelte";
+import AppearanceDrawer from "./AppearanceDrawer.svelte";
 import CastDrawer from "./CastDrawer.svelte";
 import CompareDrawer from "./CompareDrawer.svelte";
 import CorrelationDrawer from "./CorrelationDrawer.svelte";
 import HealthDrawer from "./HealthDrawer.svelte";
 import HelpDrawer from "./HelpDrawer.svelte";
 import LoadConversationDrawer from "./LoadConversationDrawer.svelte";
+import LocalRuntimeDrawer from "@runtime-local-drawer";
 import ManifoldBuilderDrawer from "./ManifoldBuilderDrawer.svelte";
+import SurfaceGeometryDrawer from "./SurfaceGeometryDrawer.svelte";
 import ManifoldMergeDrawer from "./ManifoldMergeDrawer.svelte";
 import ManifoldPacksDrawer from "./ManifoldPacksDrawer.svelte";
 import NodeCompareDrawer from "./NodeCompareDrawer.svelte";
 import ProbeInspectorDrawer from "./ProbeInspectorDrawer.svelte";
 import RackDrawer from "./RackDrawer.svelte";
 import SaveConversationDrawer from "./SaveConversationDrawer.svelte";
-import SessionAdminDrawer from "./SessionAdminDrawer.svelte";
+import DownloadChatDrawer from "./DownloadChatDrawer.svelte";
+import SessionAdminDrawer from "@runtime-session-drawer";
 import SystemPromptDrawer from "./SystemPromptDrawer.svelte";
 import TemplateLabDrawer from "./TemplateLabDrawer.svelte";
 import TokenDrilldownDrawer from "./TokenDrilldownDrawer.svelte";
@@ -88,20 +94,30 @@ export const DRAWER_GROUPS: readonly { key: DrawerGroupKey; label: string }[] = 
   // separate "subspaces" group; flat authoring folds into the manifold
   // builder's pca path.  The catalog is the shared RackDrawer
   // (family-split), reached from the rack "+" buttons.
-  { key: "manifolds", label: "Steering" },
-  { key: "analysis", label: "Analysis" },
-  { key: "session", label: "Session" },
+  { key: "manifolds", label: "Shape responses" },
+  { key: "analysis", label: "Understand responses" },
+  { key: "session", label: "Settings and help" },
 ];
 
 /** Declaration order is the palette order within a group. */
 export const DRAWERS: Record<DrawerName, DrawerEntry> = {
+  appearance: {
+    component: AppearanceDrawer,
+    narrow: true,
+    launcher: { group: "session", label: "Appearance…", keywords: "theme background wallpaper image pixel dither" },
+  },
+  surface_geometry: {
+    component: SurfaceGeometryDrawer,
+    narrow: true,
+    launcher: { group: "analysis", label: "Inspect surface geometry…", keywords: "topology manifold Klein bottle projective plane sphere torus" },
+  },
   // ----------------------------------------------- palette-launched ----
   manifold_builder: {
     component: ManifoldBuilderDrawer,
     narrow: true,
     launcher: {
       group: "manifolds",
-      label: "build…",
+      label: "Create a concept or scale…",
       keywords: "extract author create concept vector fit",
     },
   },
@@ -109,7 +125,7 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     component: ManifoldMergeDrawer,
     launcher: {
       group: "manifolds",
-      label: "merge…",
+      label: "Combine response controls…",
       keywords: "union corpora",
     },
   },
@@ -117,15 +133,15 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     component: ManifoldPacksDrawer,
     launcher: {
       group: "manifolds",
-      label: "packs…",
-      keywords: "install search huggingface hub catalog",
+      label: "Manage downloaded controls…",
+      keywords: "pack packs install search huggingface hub catalog",
     },
   },
   template_lab: {
     component: TemplateLabDrawer,
     launcher: {
       group: "manifolds",
-      label: "templates…",
+      label: "Test prompt templates…",
       keywords: "score completion slot restricted choice",
     },
   },
@@ -133,15 +149,15 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     component: CastDrawer,
     launcher: {
       group: "manifolds",
-      label: "cast…",
-      keywords: "roster member speaker label recipe seat role",
+      label: "Role settings…",
+      keywords: "role behavior guidance speaker",
     },
   },
   correlation: {
     component: CorrelationDrawer,
     launcher: {
       group: "analysis",
-      label: "correlation…",
+      label: "Compare saved readings…",
       keywords: "cosine similarity vectors",
     },
   },
@@ -149,23 +165,31 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     component: CompareDrawer,
     launcher: {
       group: "analysis",
-      label: "compare…",
+      label: "Compare controls by layer…",
       keywords: "cross-layer cosine",
     },
   },
   health: {
     component: HealthDrawer,
-    launcher: { group: "session", label: "health…", keywords: "device dtype" },
+    launcher: { group: "session", label: "Model health…", keywords: "device dtype" },
   },
   session_admin: {
     component: SessionAdminDrawer,
-    launcher: { group: "session", label: "auth…", keywords: "api key bearer" },
+    launcher: { group: "session", label: "API access…", keywords: "auth api key bearer" },
+  },
+  local_runtime: {
+    component: LocalRuntimeDrawer,
+    launcher: {
+      group: "session",
+      label: "Model settings…",
+      keywords: "local device model storage gpu webgpu offline delete unload switch diagnostics",
+    },
   },
   help: {
     component: HelpDrawer,
     launcher: {
       group: "session",
-      label: "help…",
+      label: "Help and shortcuts…",
       keywords: "keyboard grammar cheatsheet",
     },
   },
@@ -188,14 +212,26 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
   save_conversation: {
     component: SaveConversationDrawer,
     narrow: true,
+    launcher: {
+      group: "session",
+      label: "Save current chat…",
+      keywords: "conversation name local storage backup",
+    },
+  },
+  download_chat: {
+    component: DownloadChatDrawer,
+    narrow: true,
     launcher: null,
-    via: "the threads column's save action",
+    via: "the workbench header download button",
   },
   load_conversation: {
     component: LoadConversationDrawer,
     narrow: true,
-    launcher: null,
-    via: "the threads column's load action",
+    launcher: {
+      group: "session",
+      label: "Saved chats…",
+      keywords: "conversation library open rename avatar delete import backup",
+    },
   },
   system_prompt: {
     component: SystemPromptDrawer,
@@ -211,7 +247,7 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
   token_drilldown: {
     component: TokenDrilldownDrawer,
     launcher: null,
-    via: "a transcript or raw-buffer token click",
+    via: "selecting a transcript or raw-buffer token",
   },
   probe_inspector: {
     component: ProbeInspectorDrawer,
@@ -225,8 +261,11 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
   },
   transcript: {
     component: TranscriptDrawer,
-    launcher: null,
-    via: "the chat header's transcript button",
+    launcher: {
+      group: "analysis",
+      label: "Conversation transcript…",
+      keywords: "transcript export import yaml conversation",
+    },
   },
 };
 
@@ -251,7 +290,7 @@ export interface RailCategory {
   tools: RailTool[];
 }
 
-/** The ⌘K launcher list, DERIVED from the registry — a tool cannot go
+/** The All tools launcher list, DERIVED from the registry — a tool cannot go
  *  missing here without its row also losing its ``launcher``. */
 export const RAIL_CATEGORIES: RailCategory[] = DRAWER_GROUPS.map((group) => {
   const tools: RailTool[] = [];
@@ -260,6 +299,10 @@ export const RAIL_CATEGORIES: RailCategory[] = DRAWER_GROUPS.map((group) => {
     DrawerEntry,
   ][]) {
     if (entry.launcher === null || entry.launcher.group !== group.key) continue;
+    if (runtimeClient.mode === "http" && drawer === "local_runtime") continue;
+    if (runtimeClient.mode !== "http" && drawer === "health") continue;
+    if (runtimeClient.mode !== "http" && drawer === "session_admin") continue;
+    if (!drawerAvailability(drawer).available) continue;
     tools.push({
       label: entry.launcher.label,
       drawer,

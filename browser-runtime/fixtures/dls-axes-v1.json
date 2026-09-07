@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "layers": [
+    {
+      "layer": 0,
+      "nodeCount": 3,
+      "components": 2,
+      "nodeCoordinates": [-1.0, 2.0, 1.0, 3.0, 2.0, 4.0]
+    },
+    {
+      "layer": 1,
+      "nodeCount": 3,
+      "components": 2,
+      "nodeCoordinates": [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
+    }
+  ],
+  "intrinsicDimensions": 2,
+  "expected": {
+    "0": [0]
+  },
+  "allFailExpected": {
+    "0": [0, 1],
+    "1": [0, 1]
+  }
+}

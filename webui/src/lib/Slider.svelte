@@ -37,6 +37,42 @@
     value = v;
     oninput?.(v);
   }
+
+  let drag: { id: number; offset: number } | null = null;
+
+  function move(event: PointerEvent): void {
+    if (!drag || event.pointerId !== drag.id || disabled) return;
+    const input = event.currentTarget as HTMLInputElement;
+    const rect = input.getBoundingClientRect();
+    const width = Math.max(1, rect.width - 20);
+    const rtl = getComputedStyle(input).direction === "rtl";
+    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left - 10 - drag.offset) / width));
+    const raw = min + (rtl ? 1 - fraction : fraction) * (max - min);
+    input.value = String(Math.max(min, Math.min(max, min + Math.round((raw - min) / step) * step)));
+    value = input.valueAsNumber;
+    oninput?.(value);
+  }
+
+  function start(event: PointerEvent): void {
+    if (disabled || event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    const input = event.currentTarget as HTMLInputElement;
+    const rect = input.getBoundingClientRect();
+    const fraction = max === min ? 0 : (value - min) / (max - min);
+    const center = rect.left + 10 + (getComputedStyle(input).direction === "rtl" ? 1 - fraction : fraction) * (rect.width - 20);
+    const offset = event.clientX - center;
+    drag = { id: event.pointerId, offset: Math.abs(offset) <= 12 ? offset : 0 };
+    input.focus({ preventScroll: true });
+    input.setPointerCapture(event.pointerId);
+    move(event);
+  }
+
+  function end(event: PointerEvent): void {
+    if (drag?.id !== event.pointerId) return;
+    drag = null;
+    const input = event.currentTarget as HTMLInputElement;
+    if (input.hasPointerCapture(event.pointerId)) input.releasePointerCapture(event.pointerId);
+  }
 </script>
 
 <input
@@ -50,6 +86,11 @@
   {title}
   aria-label={ariaLabel}
   oninput={handle}
+  onpointerdown={start}
+  onpointermove={move}
+  onpointerup={end}
+  onpointercancel={end}
+  onlostpointercapture={end}
 />
 
 <style>
@@ -58,23 +99,26 @@
     appearance: none;
     width: 100%;
     height: var(--control-target);
+    min-height: 44px;
+    touch-action: none;
+    user-select: none;
     margin: 0;
     /* Borderless: the track is a recessed groove — fill only.  The thumb
      * keeps its --bg-deep cutout ring (a glyph stroke, not chrome). */
     background: transparent;
     border: 0;
     border-radius: var(--radius-pill);
-    cursor: pointer;
+    cursor: ew-resize;
   }
   .sk-slider::-webkit-slider-runnable-track {
     height: 4px;
-    background: var(--input-well);
+    background: var(--data-track);
     border: 0;
     border-radius: var(--radius-pill);
   }
   .sk-slider::-moz-range-track {
     height: 4px;
-    background: var(--input-well);
+    background: var(--data-track);
     border: 0;
     border-radius: var(--radius-pill);
   }
@@ -86,33 +130,36 @@
   .sk-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 12px;
-    height: 12px;
-    margin-top: -4px;
+    width: 20px;
+    height: 20px;
+    box-sizing: border-box;
+    margin-top: -8px;
     border-radius: 50%;
     background: var(--accent);
     border: 1px solid var(--bg-deep);
-    cursor: pointer;
-    transition: transform var(--dur-fast) var(--ease-out),
-      box-shadow var(--dur-fast) var(--ease-out);
+    cursor: inherit;
+    transition: transform var(--selection-dur) var(--selection-ease),
+      box-shadow var(--selection-dur) var(--selection-ease);
   }
   .sk-slider::-moz-range-thumb {
-    width: 12px;
-    height: 12px;
+    width: 20px;
+    height: 20px;
+    box-sizing: border-box;
     border-radius: 50%;
     background: var(--accent);
     border: 1px solid var(--bg-deep);
-    cursor: pointer;
-    transition: transform var(--dur-fast) var(--ease-out),
-      box-shadow var(--dur-fast) var(--ease-out);
+    cursor: inherit;
+    transition: transform var(--selection-dur) var(--selection-ease),
+      box-shadow var(--selection-dur) var(--selection-ease);
   }
   .sk-slider:hover:not(:disabled)::-webkit-slider-thumb,
   .sk-slider:active:not(:disabled)::-webkit-slider-thumb {
-    transform: scale(1.15);
+    transform: scale(1.05);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
   }
   .sk-slider:hover:not(:disabled)::-moz-range-thumb,
   .sk-slider:active:not(:disabled)::-moz-range-thumb {
+    transform: scale(1.05);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
   }
   .sk-slider:disabled::-webkit-slider-thumb {

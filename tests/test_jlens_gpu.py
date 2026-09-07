@@ -2,7 +2,7 @@
 
 Micro-fit only (a handful of prompts at a large dim_batch) — enough to
 exercise the real backward path, the motor-regime sanity check, and a
-jlens steering atom end-to-end. Real lens quality needs `saklas lens fit`
+jlens steering atom end-to-end. Real lens quality needs `drowse lens fit`
 with ≥100 prompts; nothing here asserts readout *quality* beyond the
 late-layer identity.
 """
@@ -14,7 +14,8 @@ from typing import Any
 import pytest
 import torch
 
-from saklas import SamplingConfig
+from drowse import SamplingConfig
+from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
 
 pytestmark = [
     pytest.mark.gpu,
@@ -24,7 +25,7 @@ pytestmark = [
     ),
 ]
 
-MODEL_ID = "google/gemma-3-4b-it"
+MODEL_ID = gpu_model_id()
 
 _FIT_PROMPTS = [
     "The history of the printing press begins in fifteenth-century Mainz, "
@@ -40,9 +41,13 @@ _FIT_PROMPTS = [
 
 @pytest.fixture(scope="module")
 def session() -> Any:
-    from saklas import SaklasSession
+    from drowse import DrowseSession
 
-    with SaklasSession.from_pretrained(MODEL_ID, device="auto", probes=[]) as s:
+    created = load_or_skip_inaccessible(
+        lambda: DrowseSession.from_pretrained(MODEL_ID, device="auto", probes=[]),
+        MODEL_ID,
+    )
+    with created as s:
         yield s
 
 
@@ -50,9 +55,9 @@ def session() -> Any:
 def micro_lens(session: Any, tmp_path_factory: pytest.TempPathFactory) -> Any:
     import os
 
-    home = tmp_path_factory.mktemp("saklas-home")
-    old = os.environ.get("SAKLAS_HOME")
-    os.environ["SAKLAS_HOME"] = str(home)
+    home = tmp_path_factory.mktemp("drowse-home")
+    old = os.environ.get("DROWSE_HOME")
+    os.environ["DROWSE_HOME"] = str(home)
     try:
         lens = session.fit_jlens(
             _FIT_PROMPTS, corpus_spec="gpu-micro-test", dim_batch=64, seq_len=64,
@@ -61,9 +66,9 @@ def micro_lens(session: Any, tmp_path_factory: pytest.TempPathFactory) -> Any:
     finally:
         session._jlens = None
         if old is None:
-            os.environ.pop("SAKLAS_HOME", None)
+            os.environ.pop("DROWSE_HOME", None)
         else:
-            os.environ["SAKLAS_HOME"] = old
+            os.environ["DROWSE_HOME"] = old
 
 
 def test_micro_fit_shape(session: Any, micro_lens: Any) -> None:

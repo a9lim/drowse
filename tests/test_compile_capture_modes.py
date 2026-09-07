@@ -36,13 +36,13 @@ def test_compiled_explicit_no_probes_skips_persistent_capture_hooks(
     monkeypatch: Any, tmp_path: Any,
 ) -> None:
     """``probes=[]`` should take the no-capture compiled accelerator mode."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
-    from saklas.core import static_cache
-    from saklas.core import model as model_mod
-    from saklas.core import session as session_mod
-    from saklas.core.session import SaklasSession
-    from saklas.core.steering_composer import SteeringComposer
+    from drowse.core import static_cache
+    from drowse.core import model as model_mod
+    from drowse.core import session as session_mod
+    from drowse.core.session import DrowseSession
+    from drowse.core.steering_composer import SteeringComposer
 
     calls: dict[str, int] = {"offset": 0, "capture": 0}
     base_model = _FakeModel(device)
@@ -84,15 +84,15 @@ def test_compiled_explicit_no_probes_skips_persistent_capture_hooks(
         lambda model, device: (True, None),
     )
     monkeypatch.setattr(
-        "saklas.core.hooks.install_persistent_offset_hooks",
+        "drowse.core.hooks.install_persistent_offset_hooks",
         _offset,
     )
     monkeypatch.setattr(
-        "saklas.core.hooks.install_persistent_capture_hooks",
+        "drowse.core.hooks.install_persistent_capture_hooks",
         _capture,
     )
 
-    session = SaklasSession.from_pretrained(
+    session = DrowseSession.from_pretrained(
         "fake/model", device=device, compile=True, probes=[],
     )
 
@@ -102,9 +102,9 @@ def test_compiled_explicit_no_probes_skips_persistent_capture_hooks(
 
 
 def test_cuda_graph_compile_owner_is_thread_local() -> None:
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
-    session = SaklasSession.__new__(SaklasSession)
+    session = DrowseSession.__new__(DrowseSession)
     session._cuda_graphs_active = True
     session._compile_owner_thread = threading.get_ident()
     assert session._compiled_graph_thread_safe() is True

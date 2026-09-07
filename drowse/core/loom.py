@@ -1,0 +1,1887 @@
+"""LoomTree — engine-side tree of conversation nodes.
+
+Replaces the v2.2 flat ``session._history: list[dict]`` with a tree where
+nodes are conversation turns and children are alternative continuations.
+The active path is what the model sees as context for the next gen; the
+rest of the tree is preserved as dead branches for navigation.
+
+Architectural note: this module owns the data model only.  Generation
+integration, gen-lock concurrency, persistence to ``~/.drowse/sessions/``,
+and HTTP/WS event delivery live in ``drowse/core/session.py`` and the
+server layer.  Tree mutators raise :class:`MutationDuringGenerationError`
+when a conflict is detected — the session is responsible for calling
+:meth:`LoomTree._assert_no_conflict` *via the session's own conflict
+checker* before invoking them, because the gen-lock state lives on the
+session, not the tree.
+
+The five primitives (edit, branch, navigate, delete_subtree, plus
+``regenerate`` exposed via ``session.generate(parent_node_id=..., n=...)``)
+are all that exist at the engine level.  Surface-level verbs (slash
+commands, keyboard shortcuts, context menus) compose from these.
+
+Per-node token blobs (``tokens`` and ``thinking_tokens``) are held in
+memory during streaming.  ``LoomTree.to_dict`` omits them by default so
+routine wire payloads stay small; ``LoomTree.save`` writes them to a
+compressed sidecar next to the main tree JSON so explicit save/load keeps
+the analysis surface intact.  The tree is otherwise in-memory only —
+there is no automatic cross-session persistence.
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import os
+import re
+import secrets
+import tempfile
+from contextlib import suppress
+import threading
+import time
+from dataclasses import dataclass, field, fields
+from typing import Any, Callable, Iterator, Literal, cast
+
+from drowse.core.errors import DrowseError
+# ``LoomMutated`` is defined in ``events`` (one module owns the bus's payload
+# types) and re-exported here — the historical import path.
+from drowse.core.events import EventBus, LoomMutated
+from drowse.core.sampling import SamplingConfig
+
+# ---------------------------------------------------------------------------
+# ulid — tiny inline implementation
+# ---------------------------------------------------------------------------
+# Crockford base32; sortable by timestamp prefix.  No external dep — ~30
+# lines is cheaper than pulling python-ulid for the only thing we need
+# from it.  Format: 10 chars (48-bit ms timestamp) + 16 chars (80-bit
+# randomness) = 26 chars total.  Lexicographic order matches chronological
+# order on the timestamp prefix; ties broken by the random tail.
+
+_ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _ulid() -> str:
+    """Return a fresh 26-char ULID."""
+    ts_ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    rand = secrets.randbits(80)
+    n = (ts_ms << 80) | rand
+    out = []
+    for _ in range(26):
+        out.append(_ULID_ALPHABET[n & 0x1F])
+        n >>= 5
+    return "".join(reversed(out))
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class LoomTreeError(DrowseError):
+    """Base class for tree-mutation errors."""
+
+    def user_message(self) -> tuple[int, str]:
+        return (400, str(self) or self.__class__.__name__)
+
+
+class UnknownNodeError(KeyError, LoomTreeError):
+    """Raised when a node id is not in the tree."""
+
+    def user_message(self) -> tuple[int, str]:
+        msg = self.args[0] if self.args else self.__class__.__name__
+        return (404, str(msg))
+
+
+class InvalidNodeOperationError(ValueError, LoomTreeError):
+    """Raised when an op is semantically invalid (e.g. deleting an ancestor of active)."""
+
+    def user_message(self) -> tuple[int, str]:
+        return (400, str(self) or self.__class__.__name__)
+
+
+class MutationDuringGenerationError(RuntimeError, LoomTreeError):
+    """Raised when a tree mutation conflicts with an in-flight generation.
+
+    The ``_gen_lock`` holder owns the subtree rooted at the user-parent of
+    its target.  Decoration ops and branches are always free; edits and
+    deletes on that reservation refuse with this error (HTTP layer maps
+    to 409).
+    """
+
+    def user_message(self) -> tuple[int, str]:
+        return (409, str(self) or self.__class__.__name__)
+
+
+def _require_fields(
+    data: dict[str, Any],
+    required: frozenset[str],
+    label: str,
+    *,
+    optional: frozenset[str] = frozenset(),
+) -> None:
+    missing = sorted(required - data.keys())
+    if missing:
+        raise LoomTreeError(f"{label} is missing required fields: {', '.join(missing)}")
+    unknown = sorted(data.keys() - required - optional)
+    if unknown:
+        raise LoomTreeError(f"{label} has unknown fields: {', '.join(unknown)}")
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+_CAST_MEMBER_FIELDS = frozenset({"recipe", "notes"})
+_RECIPE_FIELDS = frozenset({
+    "steering", "sampling", "thinking", "seed", "probes", "probe_hashes",
+})
+# Derived from the dataclass so a new sampling knob can't drift the reader
+# away from what ``Recipe.to_dict`` writes.
+_SAMPLING_FIELDS = frozenset(f.name for f in fields(SamplingConfig))
+_NODE_FIELDS = frozenset({
+    "id", "parent_id", "role", "text", "role_label", "thinking_text",
+    "recipe", "aggregate_readings", "applied_steering", "finish_reason",
+    "starred", "notes", "created_at", "edited_at", "edit_count",
+    "mean_logprob", "mean_surprise",
+})
+_TOKEN_FIELDS = frozenset({"tokens", "thinking_tokens", "raw_token_ids"})
+_NODE_FIELDS_WITH_TOKENS = _NODE_FIELDS | _TOKEN_FIELDS
+_TREE_FIELDS = frozenset({
+    "tree_format", "drowse_version", "model_id", "session_id", "name", "rev",
+    "root_id", "active_node_id", "nodes", "children_of", "cast",
+})
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+
+# Token-score dict shape mirrors what ``generate`` emits via the on_token
+# callback today.  Kept as ``dict[str, Any]`` rather than a typed alias
+# because the surfaces also tack on per-probe scores and other extras.
+TokenScoreDict = dict
+
+
+@dataclass
+class Recipe:
+    """Reproducibility receipt for an assistant node.
+
+    Captures everything needed to replay the same generation: steering
+    expression, sampling parameters, thinking mode, RNG seed, and the
+    probe set live at gen time (with per-probe content hashes so transcript
+    replay can detect probe drift).
+    """
+
+    steering: str | None = None
+    sampling: SamplingConfig | None = None
+    thinking: bool | None = None
+    seed: int | None = None
+    # Names of probes active during the gen, plus their content hashes
+    # (sha256 of baked tensor bytes).  ``probe_hashes`` is empty when
+    # the session has no probes, or when the surfaces couldn't compute
+    # hashes (e.g. for synthetic test probes).
+    probes: list[str] = field(default_factory=list)
+    probe_hashes: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        sampling = None
+        if self.sampling is not None:
+            sampling = {}
+            for f in fields(SamplingConfig):
+                k = f.name
+                v = getattr(self.sampling, k)
+                if k == "stop" and v is not None:
+                    v = list(v)
+                elif k == "logit_bias" and v is not None:
+                    v = {str(int(tid)): float(bias) for tid, bias in v.items()}
+                sampling[k] = v
+        return {
+            "steering": self.steering,
+            "sampling": sampling,
+            "thinking": self.thinking,
+            "seed": self.seed,
+            "probes": list(self.probes),
+            "probe_hashes": dict(self.probe_hashes),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Recipe":
+        """Read the complete current writer shape — strict, like its siblings.
+
+        A recipe is nested inside both node and cast payloads, so a lenient
+        read here would let a corrupt or future-format recipe slip through the
+        strict outer gate and land as a partially-defaulted object.  Every
+        field ``to_dict`` writes is required; unknown keys are rejected; the
+        nested sampling block is checked against ``SamplingConfig``'s own
+        fields so a bad key raises :class:`LoomTreeError` rather than a bare
+        ``TypeError`` out of the constructor.
+        """
+        _require_fields(data, _RECIPE_FIELDS, "recipe")
+        sampling = None
+        s = data["sampling"]
+        if s is not None:
+            s = dict(s)
+            _require_fields(s, _SAMPLING_FIELDS, "recipe sampling")
+            if s.get("logit_bias") is not None:
+                s["logit_bias"] = {
+                    int(tid): float(bias)
+                    for tid, bias in dict(s["logit_bias"]).items()
+                }
+            try:
+                sampling = SamplingConfig(
+                    **{k: v for k, v in s.items() if v is not None}
+                )
+            except TypeError as e:
+                raise LoomTreeError(f"recipe sampling is not constructible: {e}") from e
+        return cls(
+            steering=data["steering"],
+            sampling=sampling,
+            thinking=data["thinking"],
+            seed=data["seed"],
+            probes=list(data["probes"]),
+            probe_hashes=dict(data["probe_hashes"]),
+        )
+
+    # ------------------------------------------------------------------
+    # Overlay / modifier helpers
+    # ------------------------------------------------------------------
+
+    def overlay(self, override: "Recipe | None") -> "Recipe":
+        """Return a new Recipe with ``override``'s non-None fields applied.
+
+        ``None`` fields on ``override`` fall through to ``self``.  The
+        recipe-override mechanism for auto-regen and manual modified
+        regen is a thin overlay over this: built-in modes
+        (``unsteered``/``inverted``/``reseed``/``cool``/``hot``) produce
+        a partial Recipe; ``Recipe.overlay`` composes it onto whatever
+        the parent's recipe was.
+
+        ``probes`` / ``probe_hashes`` are non-overrideable here — they
+        track the registered probe set at gen time, not a user choice.
+        The session re-stamps them on the regen.
+        """
+        if override is None:
+            return self
+        return Recipe(
+            steering=(
+                override.steering if override.steering is not None else self.steering
+            ),
+            sampling=(
+                override.sampling if override.sampling is not None else self.sampling
+            ),
+            thinking=(
+                override.thinking if override.thinking is not None else self.thinking
+            ),
+            seed=override.seed if override.seed is not None else self.seed,
+            probes=list(self.probes),
+            probe_hashes=dict(self.probe_hashes),
+        )
+
+    def invert_steering(self) -> "Recipe":
+        """Return a Recipe with every steering term's α sign flipped.
+
+        Used by the ``inverted`` auto-regen mode.  The grammar carries
+        triggers / projections / ablations through; only the numeric
+        coefficient changes.  When this recipe has no steering, returns
+        an empty-steering recipe so the caller can compose it onto the
+        parent (``Recipe.overlay``) and see the no-op.
+        """
+        from drowse.core.steering_expr import (
+            AblationTerm, ManifoldTerm, ProjectedTerm, parse_expr, format_expr,
+        )
+        from drowse.core.steering import Steering
+
+        if not self.steering:
+            return Recipe(steering="")
+        parsed = parse_expr(self.steering)
+        flipped: dict[str, Any] = {}
+        for name, val in parsed.alphas.items():
+            if isinstance(val, ProjectedTerm):
+                flipped[name] = ProjectedTerm(
+                    coeff=-val.coeff,
+                    trigger=val.trigger,
+                    operator=val.operator,
+                    base=val.base,
+                    onto=val.onto,
+                )
+                continue
+            if isinstance(val, AblationTerm):
+                flipped[name] = AblationTerm(
+                    coeff=-val.coeff,
+                    trigger=val.trigger,
+                    target=val.target,
+                )
+                continue
+            if isinstance(val, ManifoldTerm):
+                # Flip the directional ``along`` (the representative coeff);
+                # ``onto`` is a collapse fraction in [0, 1], not a signed
+                # push, so it carries through unchanged.
+                flipped[name] = ManifoldTerm(
+                    along=-val.along,
+                    onto=val.onto,
+                    trigger=val.trigger,
+                    manifold=val.manifold,
+                    position=val.position,
+                )
+                continue
+            if isinstance(val, tuple):
+                flipped[name] = (-float(val[0]), val[1])
+                continue
+            flipped[name] = -float(val)
+        new = Steering(
+            alphas=flipped,
+            thinking=parsed.thinking,
+            trigger=parsed.trigger,
+        )
+        return Recipe(steering=format_expr(new))
+
+    def compose_modifier(self, mode: "str | Recipe") -> "Recipe":
+        """Return a partial Recipe for the named auto-regen mode.
+
+        Recognized string modes:
+
+        - ``"unsteered"``: steering wiped (empty expression).
+        - ``"inverted"``: flips every term's α sign — see
+          :meth:`invert_steering`.
+        - ``"reseed"``: fresh entropy seed; everything else inherits.
+        - ``"cool"``: temperature 0.3; everything else inherits.
+        - ``"hot"``: temperature 1.2; everything else inherits.
+
+        A :class:`Recipe` instance passes through unchanged. String modifiers
+        outside the built-ins use the dashboard's comma-separated partial
+        recipe grammar, for example ``"seed=42, temperature=1.5"`` or
+        ``"steering=0.5 calm"``. Unknown fields and malformed values raise
+        ``ValueError``.
+        """
+        if isinstance(mode, Recipe):
+            return mode
+        if mode == "unsteered":
+            return Recipe(steering="")
+        if mode == "inverted":
+            return self.invert_steering()
+        if mode == "reseed":
+            return Recipe(seed=secrets.randbits(31))
+        if mode == "cool":
+            return Recipe(sampling=SamplingConfig(temperature=0.3))
+        if mode == "hot":
+            return Recipe(sampling=SamplingConfig(temperature=1.2))
+        return _parse_recipe_modifier(mode)
+
+    def _fill_probe_hashes(self, session: Any) -> "Recipe":
+        """Return a copy of this Recipe with ``probe_hashes`` populated.
+
+        Looks up each registered probe's sha256 via
+        ``session._probe_hash(name)`` (cached on the session).  Drops
+        names the session doesn't carry — transcripts always reflect
+        the session's view at recipe stamp time.  Phase 5 wires this
+        into the gen path so :attr:`probe_hashes` rides every assistant
+        node's recipe automatically.
+        """
+        out: dict[str, str] = {}
+        for name in self.probes:
+            digest = session._probe_hash(name)
+            if digest is not None:
+                out[name] = digest
+        return Recipe(
+            steering=self.steering,
+            sampling=self.sampling,
+            thinking=self.thinking,
+            seed=self.seed,
+            probes=list(self.probes),
+            probe_hashes=out,
+        )
+
+
+_RECIPE_MODIFIER_FIELD = re.compile(
+    r"(?:^|,)\s*([A-Za-z_][A-Za-z0-9_]*)\s*="
+)
+_RECIPE_MODIFIER_FIELDS = {
+    "steering",
+    "thinking",
+    "seed",
+    "temperature",
+    "top_p",
+    "top_k",
+    "max_tokens",
+    "presence_penalty",
+    "frequency_penalty",
+}
+
+
+def _parse_recipe_modifier(value: str) -> Recipe:
+    text = value.strip()
+    matches = list(_RECIPE_MODIFIER_FIELD.finditer(text))
+    if not matches or matches[0].start() != 0:
+        raise ValueError(
+            f"unknown recipe-override mode {value!r}; valid: unsteered, "
+            "inverted, reseed, cool, hot, or a partial recipe such as "
+            "'seed=42, temperature=1.5'"
+        )
+
+    parsed: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        key = match.group(1)
+        if key not in _RECIPE_MODIFIER_FIELDS:
+            raise ValueError(f"unknown custom recipe field {key!r}")
+        if key in parsed:
+            raise ValueError(f"duplicate custom recipe field {key!r}")
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        raw = text[match.end():end].strip()
+        if key != "steering" and not raw:
+            raise ValueError(f"custom recipe field {key!r} requires a value")
+        parsed[key] = raw
+
+    steering = parsed.get("steering")
+    if steering:
+        from drowse.core.steering_expr import parse_expr
+
+        parse_expr(steering)
+
+    thinking: bool | None = None
+    if "thinking" in parsed:
+        raw_thinking = parsed["thinking"]
+        if raw_thinking not in {"true", "false"}:
+            raise ValueError("custom recipe field 'thinking' must be true or false")
+        thinking = raw_thinking == "true"
+
+    seed = _recipe_modifier_int(parsed, "seed")
+    sampling_values: dict[str, Any] = {}
+    for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+        number = _recipe_modifier_float(parsed, key)
+        if number is not None:
+            sampling_values[key] = number
+    for key in ("top_k", "max_tokens"):
+        number = _recipe_modifier_int(parsed, key)
+        if number is not None:
+            sampling_values[key] = number
+
+    _recipe_modifier_range(sampling_values, "temperature", 0.0, 2.0)
+    _recipe_modifier_range(sampling_values, "top_p", 0.0, 1.0)
+    _recipe_modifier_range(sampling_values, "top_k", 0, None)
+    _recipe_modifier_range(sampling_values, "max_tokens", 1, None)
+    _recipe_modifier_range(sampling_values, "presence_penalty", -2.0, 2.0)
+    _recipe_modifier_range(sampling_values, "frequency_penalty", -2.0, 2.0)
+
+    return Recipe(
+        steering=steering,
+        sampling=SamplingConfig(**sampling_values) if sampling_values else None,
+        thinking=thinking,
+        seed=seed,
+    )
+
+
+def _recipe_modifier_float(values: dict[str, str], key: str) -> float | None:
+    if key not in values:
+        return None
+    try:
+        result = float(values[key])
+    except ValueError as error:
+        raise ValueError(f"custom recipe field {key!r} must be a number") from error
+    if not (-float("inf") < result < float("inf")):
+        raise ValueError(f"custom recipe field {key!r} must be finite")
+    return result
+
+
+def _recipe_modifier_int(values: dict[str, str], key: str) -> int | None:
+    if key not in values:
+        return None
+    try:
+        result = int(values[key])
+    except ValueError as error:
+        raise ValueError(f"custom recipe field {key!r} must be an integer") from error
+    return result
+
+
+def _recipe_modifier_range(
+    values: dict[str, Any],
+    key: str,
+    minimum: float,
+    maximum: float | None,
+) -> None:
+    if key not in values:
+        return
+    value = values[key]
+    if value < minimum or (maximum is not None and value > maximum):
+        requirement = (
+            f"between {minimum:g} and {maximum:g}"
+            if maximum is not None
+            else f"{minimum:g} or greater"
+        )
+        raise ValueError(f"custom recipe field {key!r} must be {requirement}")
+
+
+@dataclass(frozen=True)
+class CastMember:
+    """One member of the tree's cast roster (phase 3 of the cast model).
+
+    The roster maps a cast *label* (the header label a turn is rendered
+    with — ``"deer"``, ``"captain"``) to the member's standing steering
+    :class:`Recipe`.  At generation time the session composes the
+    member's recipe as the *weakest* tier: explicit per-call kwargs and
+    regen overrides both win over it, field-for-field, with
+    :meth:`Recipe.overlay` semantics.  The cast manager is a steering
+    surface, not a chat feature — a member without a recipe is just a
+    named label.
+    """
+
+    recipe: Recipe | None = None
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "recipe": self.recipe.to_dict() if self.recipe is not None else None,
+            "notes": self.notes,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CastMember":
+        # Native effective-roster responses annotate whether the member was
+        # structural, observed, or explicitly configured.  Origin is derived
+        # and is not persisted as configuration.
+        _require_fields(
+            data, _CAST_MEMBER_FIELDS, "cast member",
+            optional=frozenset({"origin"}),
+        )
+        recipe = None
+        if data["recipe"] is not None:
+            if not isinstance(data["recipe"], dict):
+                raise LoomTreeError("cast member field 'recipe' must be an object or null")
+            recipe = Recipe.from_dict(data["recipe"])
+        if not isinstance(data["notes"], str):
+            raise LoomTreeError("cast member field 'notes' must be a string")
+        return cls(recipe=recipe, notes=data["notes"])
+
+
+Role = Literal["user", "assistant", "system"]
+
+
+@dataclass
+class LoomNode:
+    """A single node in the loom tree.
+
+    Token lists (``tokens``, ``thinking_tokens``) are owned here for live
+    streaming but are persisted in side files by the session store; the
+    tree's ``to_dict()`` omits them so the main tree file stays small.
+
+    ``edit_count`` and ``edited_at`` flag assistant nodes whose text has
+    been mutated in place since the model emitted it — downstream
+    consumers (transcript replay, comparison views) use this to know
+    that the text isn't pristine from the model.
+    """
+
+    id: str
+    parent_id: str | None
+    role: Role
+    text: str = ""
+    # Per-turn role-substitution label (roleplay scaffold).  The custom
+    # label this turn was *sent* with — ``"captain"`` on a user node,
+    # ``"pirate"`` on an assistant node — or ``None`` for the family's
+    # standard label.  Stamped at send time (immutable afterward) so the
+    # chat-render walks each turn with its own role and the transcript /
+    # glyph display matches.  Distinct from the steering-driven
+    # ``_active_role`` (transient, never persisted here).
+    role_label: str | None = None
+    # Verbatim thinking text for the turn — a committed thinking block
+    # the author typed (any role), or the decoded thinking channel of a
+    # generated node (stamped at finalize).  Rendered through the family
+    # think delimiters by the scene stitcher, which applies the family's
+    # history policy (strip families render it only while the turn is
+    # last).  Plain text-scale string, so it lives in the main tree
+    # JSON, not the token sidecar.
+    thinking_text: str | None = None
+    tokens: list[TokenScoreDict] | None = None
+    thinking_tokens: list[TokenScoreDict] | None = None
+    recipe: Recipe | None = None
+    aggregate_readings: dict[str, float] = field(default_factory=dict)
+    applied_steering: str | None = None
+    finish_reason: str | None = None
+    starred: bool = False
+    notes: str = ""
+    created_at: float = field(default_factory=time.time)
+    edited_at: float | None = None
+    edit_count: int = 0
+    # Mean chosen-token logprob over the non-thinking response span,
+    # computed in :meth:`DrowseSession._generate_core` and stamped at
+    # :meth:`LoomTree.finalize_assistant` time. ``None`` for legacy
+    # nodes replayed from pre-logit-pass transcripts. ``mean_surprise``
+    # caches ``-mean_logprob`` so the sidebar's "sort by surprise" mode
+    # is a keyboard sort, not a recompute. Both fields surface through
+    # ``to_dict`` / ``from_dict`` for tree persistence + WS bridge.
+    mean_logprob: float | None = None
+    mean_surprise: float | None = None
+    # Raw decode-step token ids for an assistant node — the exact
+    # sequence the engine sampled, *including* the structural delimiters
+    # (`<think>` / `</think>` / channel markers) that ``tokens`` /
+    # ``thinking_tokens`` suppress, and with partial-UTF-8 bytes
+    # unmerged.  Stamped at :meth:`LoomTree.finalize_assistant` from the
+    # engine's ``generated_ids``.  This is the forceable prefix a logit
+    # fork replays; ``None`` for transcript-loaded nodes, where
+    # the fork affordance falls back to disabled.  Persisted in the token
+    # sidecar alongside ``tokens`` (bulky, per-decode-step granularity).
+    # ``None`` remains a legitimate current value for transcript-imported
+    # turns, and is persisted explicitly rather than inferred from absence.
+    raw_token_ids: list[int] | None = None
+
+    def to_dict(self, *, include_tokens: bool = False) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "id": self.id,
+            "parent_id": self.parent_id,
+            "role": self.role,
+            "text": self.text,
+            "role_label": self.role_label,
+            "thinking_text": self.thinking_text,
+            "aggregate_readings": dict(self.aggregate_readings),
+            "applied_steering": self.applied_steering,
+            "finish_reason": self.finish_reason,
+            "starred": self.starred,
+            "notes": self.notes,
+            "created_at": self.created_at,
+            "edited_at": self.edited_at,
+            "edit_count": self.edit_count,
+            "mean_logprob": self.mean_logprob,
+            "mean_surprise": self.mean_surprise,
+            "recipe": self.recipe.to_dict() if self.recipe is not None else None,
+        }
+        if include_tokens:
+            out["tokens"] = self.tokens
+            out["thinking_tokens"] = self.thinking_tokens
+            out["raw_token_ids"] = self.raw_token_ids
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "LoomNode":
+        required = _NODE_FIELDS_WITH_TOKENS if "tokens" in data else _NODE_FIELDS
+        _require_fields(data, required, "loom node")
+        recipe = None
+        if data["recipe"] is not None:
+            if not isinstance(data["recipe"], dict):
+                raise LoomTreeError("loom node field 'recipe' must be an object or null")
+            recipe = Recipe.from_dict(data["recipe"])
+        if data["role"] not in ("user", "assistant", "system"):
+            raise LoomTreeError(f"invalid loom node role {data['role']!r}")
+        if not isinstance(data["id"], str) or not data["id"]:
+            raise LoomTreeError("loom node field 'id' must be a non-empty string")
+        if data["parent_id"] is not None and not isinstance(data["parent_id"], str):
+            raise LoomTreeError("loom node field 'parent_id' must be a string or null")
+        for field_name in ("text", "notes"):
+            if not isinstance(data[field_name], str):
+                raise LoomTreeError(f"loom node field {field_name!r} must be a string")
+        for field_name in ("role_label", "thinking_text", "applied_steering", "finish_reason"):
+            value = data[field_name]
+            if value is not None and not isinstance(value, str):
+                raise LoomTreeError(
+                    f"loom node field {field_name!r} must be a string or null"
+                )
+        if not isinstance(data["aggregate_readings"], dict) or any(
+            not isinstance(name, str) or not _is_number(value)
+            for name, value in data["aggregate_readings"].items()
+        ):
+            raise LoomTreeError(
+                "loom node field 'aggregate_readings' must map strings to numbers"
+            )
+        if not isinstance(data["starred"], bool):
+            raise LoomTreeError("loom node field 'starred' must be a boolean")
+        if not _is_number(data["created_at"]):
+            raise LoomTreeError("loom node field 'created_at' must be a number")
+        if data["edited_at"] is not None and not _is_number(data["edited_at"]):
+            raise LoomTreeError("loom node field 'edited_at' must be a number or null")
+        if (not isinstance(data["edit_count"], int) or isinstance(data["edit_count"], bool)
+                or data["edit_count"] < 0):
+            raise LoomTreeError("loom node field 'edit_count' must be a non-negative integer")
+        for field_name in ("mean_logprob", "mean_surprise"):
+            value = data[field_name]
+            if value is not None and not _is_number(value):
+                raise LoomTreeError(
+                    f"loom node field {field_name!r} must be a number or null"
+                )
+        for field_name in _TOKEN_FIELDS & data.keys():
+            value = data[field_name]
+            if value is not None and not isinstance(value, list):
+                raise LoomTreeError(
+                    f"loom node field {field_name!r} must be a list or null"
+                )
+        raw_token_ids = data.get("raw_token_ids")
+        if raw_token_ids is not None and any(
+            not isinstance(token_id, int) or isinstance(token_id, bool)
+            for token_id in raw_token_ids
+        ):
+            raise LoomTreeError("loom node raw_token_ids must contain integers")
+        return cls(
+            id=data["id"],
+            parent_id=data["parent_id"],
+            role=data["role"],
+            text=data["text"],
+            role_label=data["role_label"],
+            thinking_text=data["thinking_text"],
+            tokens=data.get("tokens"),
+            thinking_tokens=data.get("thinking_tokens"),
+            recipe=recipe,
+            aggregate_readings=dict(data["aggregate_readings"]),
+            applied_steering=data["applied_steering"],
+            finish_reason=data["finish_reason"],
+            starred=data["starred"],
+            notes=data["notes"],
+            created_at=float(data["created_at"]),
+            edited_at=data["edited_at"],
+            edit_count=data["edit_count"],
+            mean_logprob=data["mean_logprob"],
+            mean_surprise=data["mean_surprise"],
+            raw_token_ids=data.get("raw_token_ids"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Seed schedule
+# ---------------------------------------------------------------------------
+
+
+def _mix_seed(base: int, i: int) -> int:
+    """Deterministically derive a 31-bit seed from ``(base, i)``.
+
+    Uses blake2b with an 8-byte digest as the avalanche function;
+    cross-machine deterministic and well-mixed for small ``i`` (which
+    a naive FNV-1a over little-endian bytes is not — the high bytes
+    of small integers are zero, so consecutive ``i`` values differ in
+    only one input byte and the FNV-1a output is nearly linear).
+    """
+    import hashlib
+    import struct
+
+    payload = struct.pack("<qq", int(base) & 0x7FFFFFFFFFFFFFFF, int(i))
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    val = struct.unpack("<Q", digest)[0]
+    return val & 0x7FFFFFFF
+
+
+def derive_seed_schedule(base_seed: int | None, n: int) -> list[int]:
+    """Return ``n`` deterministic seeds derived from ``base_seed``.
+
+    When ``base_seed`` is None, resolves an entropy-derived base (and the
+    caller persists the resolved base in the first sibling's Recipe so
+    the run remains reproducible after the fact).  ``n=1`` returns the
+    base seed verbatim so single regen with no schedule looks unchanged.
+    """
+    if n < 1:
+        raise ValueError("n must be >= 1")
+    if base_seed is None:
+        # ``secrets.randbits`` gives us a 31-bit seed in a torch-friendly range.
+        base_seed = secrets.randbits(31)
+    if n == 1:
+        return [int(base_seed) & 0x7FFFFFFF]
+    return [_mix_seed(int(base_seed), i) for i in range(n)]
+
+
+# ---------------------------------------------------------------------------
+# LoomTree
+# ---------------------------------------------------------------------------
+
+
+# Exact format versions for ``tree.json`` and its optional token sidecar.
+# Current-only loaders require these versions and every field written by the
+# corresponding schema; there is no implicit v1 or additive-field migration.
+TREE_FORMAT_VERSION = 2
+TOKEN_SIDECAR_FORMAT_VERSION = 2
+
+
+# Hook signature used by the session to enforce gen-lock conflicts.  The
+# tree calls this before any mutator; the session implementation maps
+# the (node_id, op) pair to either a no-op (free op) or a raise
+# (MutationDuringGenerationError).  Default is a no-op for unit-test
+# usage of the tree without a session.
+ConflictChecker = Callable[[str, str], None]
+
+
+def _noop_conflict_check(node_id: str, op: str) -> None:
+    del node_id, op  # signature is the protocol; no work to do here
+    return
+
+
+class LoomTree:
+    """Mutation-safe tree of conversation nodes.
+
+    Owned by :class:`drowse.core.session.DrowseSession`; callers go through
+    session methods so locking + event emission happen in one place.  The
+    tree's own methods are thread-safe under an internal ``RLock`` so the
+    session can call them from arbitrary threads (generation workers and server
+    handlers).
+
+    Operations that mutate bump :attr:`rev` and emit a :class:`LoomMutated`
+    event through the session's :class:`EventBus`.  Surfaces track the
+    last-seen ``rev`` and full-refetch the tree if they detect a gap.
+    """
+
+    def __init__(
+        self,
+        *,
+        events: EventBus | None = None,
+        model_id: str | None = None,
+        session_id: str | None = None,
+        name: str | None = None,
+        conflict_check: ConflictChecker | None = None,
+    ) -> None:
+        self._lock = threading.RLock()
+        self._events: EventBus | None = events  # emits LoomMutated when set
+        self.model_id: str | None = model_id
+        self.session_id: str | None = session_id
+        self.name: str | None = name
+        self._conflict_check: ConflictChecker = conflict_check or _noop_conflict_check
+
+        self.nodes: dict[str, LoomNode] = {}
+        self.children_of: dict[str, list[str]] = {}
+        self.rev: int = 0
+        # Cast roster (phase 3): label → CastMember.  Tree-scoped, rides
+        # ``to_dict``/``save`` so a saved conversation carries its cast.
+        self.cast: dict[str, CastMember] = {}
+
+        # Synthetic root: role="system", text empty, no parent.  First user
+        # turn is its child.  This keeps the tree structure uniform (every
+        # real node has a parent) without burning a special-case branch
+        # in the active-path walker.
+        root = LoomNode(id=_ulid(), parent_id=None, role="system")
+        self.nodes[root.id] = root
+        self.children_of[root.id] = []
+        self.root_id: str = root.id
+        self.active_node_id: str = root.id
+
+    # ------------------------------------------------------------------
+    # Conflict-check wiring
+    # ------------------------------------------------------------------
+
+    def set_conflict_check(self, fn: ConflictChecker | None) -> None:
+        """Install a conflict-check hook.
+
+        The session sets this in its ``__init__`` so all mutator paths
+        consult ``session._loom_conflict_check`` before proceeding.
+        """
+        self._conflict_check = fn or _noop_conflict_check
+
+    def attach_events(self, events: EventBus | None) -> None:
+        """Wire (or unwire) the EventBus that mutations emit on."""
+        self._events = events
+
+    # ------------------------------------------------------------------
+    # Read
+    # ------------------------------------------------------------------
+
+    def get(self, node_id: str) -> LoomNode:
+        try:
+            return self.nodes[node_id]
+        except KeyError:
+            raise UnknownNodeError(node_id) from None
+
+    def has(self, node_id: str) -> bool:
+        return node_id in self.nodes
+
+    def children(self, node_id: str) -> list[LoomNode]:
+        with self._lock:
+            return [self.nodes[c] for c in self.children_of.get(node_id, [])]
+
+    def descendants(self, node_id: str) -> Iterator[LoomNode]:
+        """Depth-first iteration over the descendants of ``node_id``."""
+        with self._lock:
+            stack = list(self.children_of.get(node_id, []))
+        # We snapshot the child list under lock, then walk it lock-free.
+        # Concurrent mutations of the subtree mid-iteration aren't supported
+        # — callers wanting that need to snapshot first.
+        while stack:
+            cur = stack.pop()
+            node = self.nodes.get(cur)
+            if node is None:
+                continue
+            yield node
+            stack.extend(self.children_of.get(cur, []))
+
+    def path_to(self, node_id: str) -> list[LoomNode]:
+        """Return the path from the root to ``node_id``, inclusive."""
+        with self._lock:
+            if node_id not in self.nodes:
+                raise UnknownNodeError(node_id)
+            chain: list[LoomNode] = []
+            cur: str | None = node_id
+            while cur is not None:
+                chain.append(self.nodes[cur])
+                cur = self.nodes[cur].parent_id
+            chain.reverse()
+            return chain
+
+    def active_path(self) -> list[LoomNode]:
+        """Path from the root to :attr:`active_node_id`."""
+        return self.path_to(self.active_node_id)
+
+    def cast_roster(self) -> dict[str, CastMember]:
+        """Return the configured cast plus every role observed in the tree.
+
+        ``user`` and ``assistant`` are structural defaults and therefore always
+        exist.  Per-turn labels join the roster automatically across the whole
+        loom (not merely the active path), so navigation cannot make speakers
+        flicker in and out.  Explicit members win because they may carry a
+        standing recipe or notes.
+        """
+        with self._lock:
+            roster: dict[str, CastMember] = {
+                "user": CastMember(),
+                "assistant": CastMember(),
+            }
+            for node in self.nodes.values():
+                if node.role == "system":
+                    continue
+                label = node.role_label or node.role
+                if label:
+                    roster.setdefault(label, CastMember())
+            roster.update(self.cast)
+            return roster
+
+    def messages_for(
+        self,
+        leaf_id: str | None = None,
+        *,
+        include_system: bool = False,
+        with_labels: bool = False,
+    ) -> list[dict[str, str]]:
+        """Return the active-path (or path to ``leaf_id``) as chat messages.
+
+        Returns the v2 ``[{"role": ..., "content": ...}, ...]`` shape that
+        the rest of the engine + servers consume.  Skips the synthetic
+        root by default (its empty text isn't a real system prompt) —
+        callers wanting an explicit system prompt prepend it themselves.
+
+        ``with_labels`` adds each node's per-turn ``role_label`` under a
+        ``"label"`` key (the roleplay scaffold) so the chat-render path can
+        splice each turn with its own role, plus — when present — the
+        node's ``thinking_text`` under ``"thinking"`` (the scene stitcher
+        renders it through the family think delimiters, applying the
+        family's history policy).  Off by default to keep the canonical
+        ``{role, content}`` shape transcript / server / OpenAI consumers
+        expect.
+        """
+        target = leaf_id if leaf_id is not None else self.active_node_id
+        path = self.path_to(target)
+        out: list[dict[str, str]] = []
+        for node in path:
+            if node.id == self.root_id and not include_system:
+                continue
+            msg: dict[str, str] = {"role": node.role, "content": node.text}
+            if with_labels:
+                msg["label"] = node.role_label  # pyright: ignore[reportArgumentType]  # role_label is str | None; with_labels callers expect nullable label
+                if node.thinking_text is not None:
+                    msg["thinking"] = node.thinking_text
+            out.append(msg)
+        return out
+
+    def flat_text(self, leaf_id: str | None = None) -> str:
+        """Return the active-path (or path-to-``leaf_id``) text, concatenated.
+
+        The base-model / flat-completion analogue of :meth:`messages_for`:
+        no roles, no separators, no chat template — every node's text
+        joined in root-to-leaf order, with the synthetic system root
+        skipped.  The raw-mode generation path feeds this verbatim to the
+        tokenizer so a completion model sees one continuous buffer rather
+        than a chat-templated transcript.  Returns ``""`` when the tree is
+        empty (target resolves to ``None`` or the bare root).
+        """
+        target = leaf_id if leaf_id is not None else self.active_node_id
+        if target is None:
+            return ""
+        parts: list[str] = []
+        for node in self.path_to(target):
+            if node.id == self.root_id:
+                continue
+            parts.append(node.text)
+        return "".join(parts)
+
+    def ancestors_of(self, node_id: str) -> Iterator[str]:
+        """Yield ``node_id``'s ancestor ids (parent first, root last)."""
+        cur = self.nodes[node_id].parent_id
+        while cur is not None:
+            yield cur
+            cur = self.nodes[cur].parent_id
+
+    def is_ancestor_of(self, ancestor_id: str, descendant_id: str) -> bool:
+        return ancestor_id in set(self.ancestors_of(descendant_id))
+
+    # ------------------------------------------------------------------
+    # Internal mutator scaffolding
+    # ------------------------------------------------------------------
+
+    def _emit(self, event: LoomMutated) -> None:
+        if self._events is not None:
+            self._events.emit(event)
+
+    def _add_child(self, parent_id: str, node: LoomNode) -> None:
+        self.nodes[node.id] = node
+        self.children_of.setdefault(node.id, [])
+        self.children_of.setdefault(parent_id, []).append(node.id)
+
+    # ------------------------------------------------------------------
+    # Streaming/generation entry points
+    # ------------------------------------------------------------------
+
+    def add_user_turn(
+        self,
+        text: str,
+        parent_id: str | None = None,
+        *,
+        dedup_existing: bool = True,
+        role_label: str | None = None,
+        thinking_text: str | None = None,
+    ) -> str:
+        """Add a user turn under ``parent_id`` (default: the active node).
+
+        If ``dedup_existing`` is set and ``parent_id`` already has a user-turn
+        child with the exact same text, returns that existing child's id
+        without growing the tree.  This spares users a redundant tree level
+        for the regen workflow where the user re-sends the same prompt.
+
+        ``role_label`` stamps the per-turn role-substitution label (the
+        roleplay scaffold) onto a freshly-created node; a dedup hit keeps
+        the existing node's label unchanged.  ``thinking_text`` is an
+        optional committed thinking block (rendered through the family
+        think delimiters by the scene stitcher).
+        """
+        with self._lock:
+            parent = parent_id if parent_id is not None else self.active_node_id
+            if parent not in self.nodes:
+                raise UnknownNodeError(parent)
+            self._conflict_check(parent, "add_user_turn")
+            if dedup_existing:
+                for cid in self.children_of.get(parent, []):
+                    sib = self.nodes[cid]
+                    if sib.role == "user" and sib.text == text:
+                        self.active_node_id = sib.id
+                        self.rev += 1
+                        self._emit(LoomMutated(
+                            op="navigate", rev=self.rev,
+                            active_node_id=self.active_node_id,
+                        ))
+                        return sib.id
+            node = LoomNode(
+                id=_ulid(), parent_id=parent, role="user", text=text,
+                role_label=role_label, thinking_text=thinking_text,
+            )
+            self._add_child(parent, node)
+            self.active_node_id = node.id
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="add_user", rev=self.rev,
+                added=(node.id,), active_node_id=node.id,
+            ))
+            return node.id
+
+    def begin_assistant(
+        self,
+        parent_id: str,
+        recipe: Recipe | None = None,
+        *,
+        role_label: str | None = None,
+        seat: str = "assistant",
+    ) -> str:
+        """Create an empty generated node under ``parent_id``.
+
+        Returns the new node id.  The session calls this in the gen
+        preamble; subsequent ``append_token`` / ``finalize_assistant``
+        calls populate the node as the generation streams.
+
+        ``role_label`` stamps the per-turn role-substitution label the
+        model is generating under (the roleplay scaffold).  ``seat`` is
+        the structural role the node occupies (the cast model: the model
+        can generate into the user seat too — "generated" is provenance,
+        carried by the recipe, not a role).
+        """
+        if seat not in ("user", "assistant"):
+            raise InvalidNodeOperationError(
+                f"begin_assistant: seat must be 'user' or 'assistant', "
+                f"got {seat!r}"
+            )
+        with self._lock:
+            if parent_id not in self.nodes:
+                raise UnknownNodeError(parent_id)
+            self._conflict_check(parent_id, "begin_assistant")
+            node = LoomNode(
+                id=_ulid(),
+                parent_id=parent_id,
+                role=cast(Role, seat),
+                recipe=recipe,
+                role_label=role_label,
+                tokens=[],
+                thinking_tokens=[],
+            )
+            self._add_child(parent_id, node)
+            self.active_node_id = node.id
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="begin_assistant", rev=self.rev,
+                added=(node.id,), active_node_id=node.id,
+            ))
+            return node.id
+
+    def begin_continuation(
+        self,
+        node_id: str,
+        recipe: Recipe,
+    ) -> str:
+        """Reuse ``node_id`` as the target of a same-role continuation.
+
+        The caller has already saved the node's current text as a forced
+        decode prefix.  Clear the visible/result payload in place so the
+        ordinary token stream and finalizer can rebuild the complete message
+        (prefix plus newly sampled tail) without adding a redundant same-role
+        child to the tree.
+        """
+        with self._lock:
+            node = self.nodes.get(node_id)
+            if node is None:
+                raise UnknownNodeError(node_id)
+            if node_id == self.root_id:
+                raise InvalidNodeOperationError(
+                    "cannot continue the synthetic root node"
+                )
+            self._conflict_check(node_id, "begin_assistant")
+            node.text = ""
+            node.thinking_text = None
+            node.tokens = []
+            node.thinking_tokens = []
+            node.recipe = recipe
+            node.aggregate_readings = {}
+            node.applied_steering = None
+            node.finish_reason = None
+            node.mean_logprob = None
+            node.mean_surprise = None
+            node.raw_token_ids = None
+            self.active_node_id = node_id
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="begin_assistant", rev=self.rev,
+                updated=(node_id,), active_node_id=node_id,
+            ))
+            return node_id
+
+    def append_token(
+        self,
+        node_id: str,
+        score: TokenScoreDict,
+        *,
+        thinking: bool = False,
+    ) -> None:
+        """Append a streaming token-score blob to ``node_id``.
+
+        Doesn't bump ``rev`` or emit events — token streaming runs in the
+        hot loop and we don't want to flood the WS with per-token tree-
+        mutated events.  Token deltas ride the existing ``token`` stream with
+        a ``node_id`` tag.
+        """
+        with self._lock:
+            node = self.nodes.get(node_id)
+            if node is None:
+                raise UnknownNodeError(node_id)
+            if thinking:
+                if node.thinking_tokens is None:
+                    node.thinking_tokens = []
+                node.thinking_tokens.append(score)
+            else:
+                if node.tokens is None:
+                    node.tokens = []
+                node.tokens.append(score)
+
+    def set_authored_token_scores(
+        self,
+        node_id: str,
+        scores: list[TokenScoreDict],
+        *,
+        thinking: bool = False,
+    ) -> None:
+        """Attach captured prompt-token measurements to an authored node.
+
+        Unlike :meth:`append_token`, this is a one-shot tree mutation: prompt
+        rows arrive together after prefill, so the revision advances once and
+        clients receive the updated node through the ordinary loom delta.
+        Existing rows are never merged here; the session calls this only for a
+        previously uncaptured authored channel so its original capture remains
+        immutable across later generations.
+        """
+        with self._lock:
+            node = self.nodes.get(node_id)
+            if node is None:
+                raise UnknownNodeError(node_id)
+            if node.recipe is not None:
+                raise InvalidNodeOperationError(
+                    "set_authored_token_scores requires an authored node"
+                )
+            if thinking:
+                node.thinking_tokens = list(scores)
+            else:
+                node.tokens = list(scores)
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="capture_authored",
+                rev=self.rev,
+                updated=(node_id,),
+                active_node_id=self.active_node_id,
+            ))
+
+    def finalize_assistant(
+        self,
+        node_id: str,
+        *,
+        text: str,
+        aggregate_readings: dict[str, float] | None = None,
+        applied_steering: str | None = None,
+        finish_reason: str | None = None,
+        mean_logprob: float | None = None,
+        mean_surprise: float | None = None,
+        raw_token_ids: list[int] | None = None,
+        thinking_text: str | None = None,
+    ) -> None:
+        """Mark an in-flight assistant node as complete.
+
+        ``thinking_text`` is the decoded thinking-channel text of a
+        generated node (or the authored block on a committed one);
+        ``None`` leaves the node's prior value untouched.
+
+        ``mean_logprob`` / ``mean_surprise`` are the per-turn rollups
+        computed in :meth:`DrowseSession._generate_core` from the engine's
+        chosen-token logprob stream (response span only — thinking tokens
+        are excluded by construction).  ``None`` when logprob capture
+        wasn't live (no on_token consumer + no logprobs request), which
+        also covers replay-from-legacy-transcripts.
+
+        ``raw_token_ids`` is the engine's exact ``generated_ids`` decode
+        sequence (delimiters included) — the forceable prefix a logit
+        fork replays.  ``None`` leaves the node's prior value untouched.
+        """
+        with self._lock:
+            node = self.nodes.get(node_id)
+            if node is None:
+                raise UnknownNodeError(node_id)
+            node.text = text
+            if aggregate_readings is not None:
+                node.aggregate_readings = dict(aggregate_readings)
+            node.applied_steering = applied_steering
+            node.finish_reason = finish_reason
+            node.mean_logprob = mean_logprob
+            node.mean_surprise = mean_surprise
+            if raw_token_ids is not None:
+                node.raw_token_ids = list(raw_token_ids)
+            if thinking_text is not None:
+                node.thinking_text = thinking_text
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="finalize_assistant", rev=self.rev,
+                updated=(node.id,),
+            ))
+
+    # ------------------------------------------------------------------
+    # Core primitives — edit, branch, navigate, delete_subtree
+    # ------------------------------------------------------------------
+
+    def edit(self, node_id: str, text: str) -> None:
+        """In-place text replacement.
+
+        No new node, no tree-shape change.  Bumps ``edit_count`` and
+        sets ``edited_at`` so downstream consumers can flag the node
+        as no-longer-pristine.  Refused when ``node_id`` is in the
+        reservation of an in-flight generation.
+        """
+        with self._lock:
+            node = self.nodes.get(node_id)
+            if node is None:
+                raise UnknownNodeError(node_id)
+            if node_id == self.root_id:
+                raise InvalidNodeOperationError("cannot edit the root node")
+            self._conflict_check(node_id, "edit")
+            node.text = text
+            node.edit_count += 1
+            node.edited_at = time.time()
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="edit", rev=self.rev, updated=(node_id,),
+            ))
+
+    def append_authored(
+        self,
+        node_id: str,
+        text: str,
+        *,
+        thinking_text: str | None = None,
+        raw_token_ids: list[int] | None = None,
+    ) -> str:
+        """Append authored text to an existing same-role message.
+
+        A node-level generation receipt cannot faithfully describe a message
+        after an authored tail is added, so generated payloads are
+        cleared and the node becomes an authored message.  The tree shape is
+        unchanged and the existing node stays active.
+        """
+        with self._lock:
+            node = self.nodes.get(node_id)
+            if node is None:
+                raise UnknownNodeError(node_id)
+            if node_id == self.root_id:
+                raise InvalidNodeOperationError(
+                    "cannot append to the synthetic root node"
+                )
+            self._conflict_check(node_id, "edit")
+            node.text += text
+            if thinking_text is not None:
+                node.thinking_text = (node.thinking_text or "") + thinking_text
+            node.tokens = None
+            node.thinking_tokens = None
+            node.recipe = None
+            node.aggregate_readings = {}
+            node.applied_steering = None
+            node.finish_reason = "stop"
+            node.mean_logprob = None
+            node.mean_surprise = None
+            node.raw_token_ids = (
+                list(raw_token_ids) if raw_token_ids is not None else None
+            )
+            node.edit_count += 1
+            node.edited_at = time.time()
+            self.active_node_id = node_id
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="edit", rev=self.rev, updated=(node_id,),
+                active_node_id=node_id,
+            ))
+            return node_id
+
+    def branch(
+        self,
+        node_id: str,
+        text: str,
+        *,
+        role: Role | None = None,
+        make_active: bool = True,
+    ) -> str:
+        """Create a new sibling of ``node_id`` with the given text.
+
+        Always-sibling: the original is preserved.  Empty text is the
+        "branch from blank" UI flavor; pre-fill text is "fork-and-edit".
+        Defaults to the same role as the sibling; pass ``role=`` to
+        override.  Returns the new node id.  Allowed during in-flight
+        generation (creating a sibling doesn't disturb the streaming
+        target).
+        """
+        with self._lock:
+            sibling = self.nodes.get(node_id)
+            if sibling is None:
+                raise UnknownNodeError(node_id)
+            if sibling.parent_id is None:
+                raise InvalidNodeOperationError(
+                    "cannot branch from the root — branch off its children instead"
+                )
+            new = LoomNode(
+                id=_ulid(),
+                parent_id=sibling.parent_id,
+                role=role if role is not None else sibling.role,
+                text=text,
+                role_label=sibling.role_label,
+                thinking_text=(
+                    sibling.thinking_text if text == sibling.text else None
+                ),
+            )
+            self._add_child(sibling.parent_id, new)
+            if make_active:
+                self.active_node_id = new.id
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="branch", rev=self.rev,
+                added=(new.id,),
+                active_node_id=self.active_node_id if make_active else None,
+            ))
+            return new.id
+
+    def navigate(self, node_id: str) -> None:
+        """Re-point :attr:`active_node_id` to ``node_id``.
+
+        Always free relative to in-flight generation; the gen continues
+        attached to its original target invisibly.  Emits a ``navigate``
+        mutation event so surfaces re-render.
+        """
+        with self._lock:
+            if node_id not in self.nodes:
+                raise UnknownNodeError(node_id)
+            if node_id == self.active_node_id:
+                return
+            self.active_node_id = node_id
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="navigate", rev=self.rev,
+                active_node_id=node_id,
+            ))
+
+    def delete_subtree(self, node_id: str) -> int:
+        """Drop the subtree rooted at ``node_id``.
+
+        When the active node sits inside the deleted subtree (including
+        the case ``node_id == active_node_id``), the active pointer is
+        re-seated on the surviving parent — the nearest ancestor that
+        isn't being removed.  If that parent is the root, the user
+        lands on the empty root, which is the natural "fresh start"
+        state.  Refuses the root delete outright; refuses (via the
+        conflict checker) when the subtree intersects an in-flight
+        generation's reservation.  Returns the count of nodes removed.
+        """
+        with self._lock:
+            if node_id == self.root_id:
+                raise InvalidNodeOperationError("cannot delete the root")
+            if node_id not in self.nodes:
+                raise UnknownNodeError(node_id)
+            self._conflict_check(node_id, "delete_subtree")
+
+            # Collect every node in the subtree (DFS) plus the root.
+            to_remove: list[str] = [node_id]
+            stack = list(self.children_of.get(node_id, []))
+            while stack:
+                cur = stack.pop()
+                to_remove.append(cur)
+                stack.extend(self.children_of.get(cur, []))
+
+            parent_id = self.nodes[node_id].parent_id
+            # The subtree root is non-root, so it has a parent — that
+            # parent is the survivor the active pointer falls back to
+            # when active is inside the doomed set.
+            removed_set = set(to_remove)
+            active_moved_to: str | None = None
+            if self.active_node_id in removed_set:
+                # parent_id is non-None because node_id != root_id.
+                self.active_node_id = parent_id  # pyright: ignore[reportAttributeAccessIssue]  # non-None: node_id != root_id guard above ensures it
+                active_moved_to = parent_id
+
+            if parent_id is not None:
+                self.children_of[parent_id] = [
+                    c for c in self.children_of.get(parent_id, []) if c != node_id
+                ]
+            for nid in to_remove:
+                self.nodes.pop(nid, None)
+                self.children_of.pop(nid, None)
+
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="delete", rev=self.rev,
+                removed=tuple(to_remove),
+                active_node_id=active_moved_to,
+            ))
+            return len(to_remove)
+
+    # ------------------------------------------------------------------
+    # Decoration ops — always free
+    # ------------------------------------------------------------------
+
+    def star(self, node_id: str, on: bool = True) -> None:
+        with self._lock:
+            node = self.nodes.get(node_id)
+            if node is None:
+                raise UnknownNodeError(node_id)
+            if node.starred == on:
+                return
+            node.starred = on
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="star", rev=self.rev, updated=(node_id,),
+            ))
+
+    def annotate(self, node_id: str, notes: str) -> None:
+        with self._lock:
+            node = self.nodes.get(node_id)
+            if node is None:
+                raise UnknownNodeError(node_id)
+            node.notes = notes
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="note", rev=self.rev, updated=(node_id,),
+            ))
+
+    # ------------------------------------------------------------------
+    # Cast roster (phase 3)
+    # ------------------------------------------------------------------
+
+    def set_cast_member(self, label: str, member: CastMember) -> None:
+        """Create or replace the cast member under ``label``.
+
+        Roster ops are decoration-tier — always free under in-flight
+        generation (they touch no node).  The label must be a legal
+        role slug (it is rendered into turn headers); validation mirrors
+        the per-turn ``role_label`` rules.
+        """
+        from drowse.core.role_templates import validate_role
+
+        validate_role(label)
+        with self._lock:
+            if self.cast.get(label) == member:
+                return
+            self.cast[label] = member
+            self.rev += 1
+            self._emit(LoomMutated(op="cast", rev=self.rev))
+
+    def remove_cast_member(self, label: str) -> None:
+        """Drop the cast member under ``label`` (no-op when absent)."""
+        with self._lock:
+            if label not in self.cast:
+                return
+            del self.cast[label]
+            self.rev += 1
+            self._emit(LoomMutated(op="cast", rev=self.rev))
+
+    # ------------------------------------------------------------------
+    # Engine-level workflows: clear (reset), rewind
+    # ------------------------------------------------------------------
+
+    def reset(self) -> None:
+        """Drop the entire tree.  Refused under in-flight generation."""
+        with self._lock:
+            self._conflict_check(self.root_id, "reset")
+            # Every current id is removed — including the *old* root, which the
+            # fresh ``_ulid()`` root below replaces.  Reporting the old root in
+            # ``removed`` keeps the delta self-consistent for id-tracking
+            # surfaces (the WS dashboard's ``applyTreeDelta``), which otherwise
+            # retain a stale orphan root.
+            removed = tuple(self.nodes)
+            # Wipe everything; rebuild a fresh root.
+            self.nodes.clear()
+            self.children_of.clear()
+            root = LoomNode(id=_ulid(), parent_id=None, role="system")
+            self.nodes[root.id] = root
+            self.children_of[root.id] = []
+            self.root_id = root.id
+            self.active_node_id = root.id
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="reset", rev=self.rev,
+                removed=removed,
+                added=(root.id,),
+                active_node_id=root.id,
+            ))
+
+    def rewind(self) -> None:
+        """Navigate the active node one user→assistant pair up the path.
+
+        Non-destructive: the rewound pair stays in the tree as a dead
+        branch, navigable back to.  No-op when the active node is the
+        root or its direct child.
+        """
+        with self._lock:
+            path = self.active_path()
+            if len(path) < 2:
+                return  # nothing meaningful to rewind from
+            # Walk back one whole submission when the active node carries a
+            # generation receipt, otherwise one committed turn. Structural
+            # role is independent of provenance: swapped assistant→user
+            # submissions rewind exactly like user→assistant ones.
+            anchor = path[-1]
+            steps = 2 if anchor.recipe is not None else 1
+            target_idx = max(0, len(path) - 1 - steps)
+            target = path[target_idx]
+            if target.id == self.active_node_id:
+                return
+            self.active_node_id = target.id
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="navigate", rev=self.rev,
+                active_node_id=target.id,
+            ))
+
+    # ------------------------------------------------------------------
+    # Predicate ops (engine surface for phase 5's UI)
+    # ------------------------------------------------------------------
+
+    def filter(self, pred: Callable[[LoomNode], bool]) -> set[str]:
+        """Return the set of node ids whose nodes satisfy ``pred``."""
+        with self._lock:
+            return {nid for nid, node in self.nodes.items() if pred(node)}
+
+    def filter_by_expr(self, text: str) -> set[str]:
+        """Apply a filter-grammar expression to every node.
+
+        Thin wrapper over :func:`drowse.core.tree_filter.filter_tree` —
+        the grammar (``agg:``/``any:``/``last:``) is documented in
+        :mod:`drowse.core.tree_filter`.  ``agg:`` reads a node's
+        ``aggregate_readings``; ``any:`` / ``last:`` read its own
+        ``thinking_tokens``/``tokens`` rows, so no side table is needed and
+        all three ops work from any caller.
+        """
+        from drowse.core.tree_filter import filter_tree
+        return filter_tree(self, text)
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def to_dict(self, *, include_tokens: bool = False) -> dict[str, Any]:
+        with self._lock:
+            # ``drowse_version`` rides alongside ``tree_format`` so future
+            # migrations can branch on the originating build even when the
+            # schema number hasn't moved — same pattern packs use.  Imported
+            # lazily so a circular at module-load time stays impossible.
+            from drowse import __version__ as _drowse_version
+            out: dict[str, Any] = {
+                "tree_format": TREE_FORMAT_VERSION,
+                "drowse_version": _drowse_version,
+                "model_id": self.model_id,
+                "session_id": self.session_id,
+                "name": self.name,
+                "rev": self.rev,
+                "root_id": self.root_id,
+                "active_node_id": self.active_node_id,
+                "nodes": [
+                    self.nodes[nid].to_dict(include_tokens=include_tokens)
+                    for nid in self.nodes
+                ],
+                "children_of": {k: list(v) for k, v in self.children_of.items()},
+            }
+            out["cast"] = {
+                label: member.to_dict() for label, member in self.cast.items()
+            }
+            return out
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        events: EventBus | None = None,
+        conflict_check: ConflictChecker | None = None,
+    ) -> "LoomTree":
+        from drowse.io.brand_migration import migrate_legacy_record
+
+        data = migrate_legacy_record(data)
+        _require_fields(
+            data, _TREE_FIELDS, "loom tree", optional=frozenset({"token_sidecar"})
+        )
+        version = data["tree_format"]
+        if version != TREE_FORMAT_VERSION:
+            raise LoomTreeError(
+                f"unsupported tree_format {version!r} "
+                f"(this build supports {TREE_FORMAT_VERSION})"
+            )
+        tree = cls.__new__(cls)
+        tree._lock = threading.RLock()
+        tree._events = events
+        tree._conflict_check = conflict_check or _noop_conflict_check
+        if not isinstance(data["drowse_version"], str):
+            raise LoomTreeError("loom tree field 'drowse_version' must be a string")
+        for field_name in ("model_id", "session_id", "name"):
+            value = data[field_name]
+            if value is not None and not isinstance(value, str):
+                raise LoomTreeError(
+                    f"loom tree field {field_name!r} must be a string or null"
+                )
+        tree.model_id = data["model_id"]
+        tree.session_id = data["session_id"]
+        tree.name = data["name"]
+        if (not isinstance(data["rev"], int) or isinstance(data["rev"], bool)
+                or data["rev"] < 0):
+            raise LoomTreeError("loom tree field 'rev' must be non-negative")
+        tree.rev = data["rev"]
+        raw_nodes = data["nodes"]
+        raw_children = data["children_of"]
+        raw_cast = data["cast"]
+        if not isinstance(raw_nodes, list):
+            raise LoomTreeError("loom tree field 'nodes' must be a list")
+        if not isinstance(raw_children, dict):
+            raise LoomTreeError("loom tree field 'children_of' must be an object")
+        if not isinstance(raw_cast, dict):
+            raise LoomTreeError("loom tree field 'cast' must be an object")
+        tree.nodes = {}
+        for raw in raw_nodes:
+            if not isinstance(raw, dict):
+                raise LoomTreeError("loom tree nodes must be objects")
+            node = LoomNode.from_dict(raw)
+            if node.id in tree.nodes:
+                raise LoomTreeError(f"duplicate loom node id {node.id!r}")
+            tree.nodes[node.id] = node
+        if any(
+            not isinstance(k, str)
+            or not isinstance(v, list)
+            or any(not isinstance(child, str) for child in v)
+            for k, v in raw_children.items()
+        ):
+            raise LoomTreeError("children_of must map node ids to lists")
+        tree.children_of = {k: list(v) for k, v in raw_children.items()}
+        if not isinstance(data["root_id"], str) or not isinstance(data["active_node_id"], str):
+            raise LoomTreeError("root_id and active_node_id must be strings")
+        tree.root_id = data["root_id"]
+        tree.active_node_id = data["active_node_id"]
+        tree.cast = {}
+        from drowse.core.role_templates import validate_role
+        for label, raw in raw_cast.items():
+            if not isinstance(label, str) or not isinstance(raw, dict):
+                raise LoomTreeError("cast must map string labels to member objects")
+            origin = raw.get("origin")
+            if origin is not None and origin not in (
+                "structural", "observed", "configured",
+            ):
+                raise LoomTreeError(f"invalid cast member origin {origin!r}")
+            if origin in ("structural", "observed"):
+                continue
+            validate_role(label)
+            tree.cast[label] = CastMember.from_dict(raw)
+        tree._validate_structure()
+        return tree
+
+    def _validate_structure(self) -> None:
+        node_ids = set(self.nodes)
+        if set(self.children_of) != node_ids:
+            raise LoomTreeError("children_of keys must exactly match loom node ids")
+        if self.root_id not in node_ids:
+            raise LoomTreeError("root_id does not identify a loom node")
+        if self.active_node_id not in node_ids:
+            raise LoomTreeError("active_node_id does not identify a loom node")
+        root = self.nodes[self.root_id]
+        if root.parent_id is not None or root.role != "system":
+            raise LoomTreeError("loom root must be a parentless system node")
+
+        seen_children: set[str] = set()
+        for parent_id, children in self.children_of.items():
+            if len(children) != len(set(children)):
+                raise LoomTreeError(f"children_of[{parent_id!r}] contains duplicates")
+            for child_id in children:
+                if child_id not in node_ids:
+                    raise LoomTreeError(f"children_of references unknown node {child_id!r}")
+                if child_id in seen_children:
+                    raise LoomTreeError(f"loom node {child_id!r} has multiple parents")
+                if self.nodes[child_id].parent_id != parent_id:
+                    raise LoomTreeError(f"loom node {child_id!r} disagrees with children_of")
+                seen_children.add(child_id)
+        if seen_children != node_ids - {self.root_id}:
+            raise LoomTreeError("every non-root loom node must appear under its parent")
+        reachable: set[str] = set()
+        stack = [self.root_id]
+        while stack:
+            node_id = stack.pop()
+            if node_id in reachable:
+                raise LoomTreeError("loom tree contains a cycle")
+            reachable.add(node_id)
+            stack.extend(self.children_of[node_id])
+        if reachable != node_ids:
+            raise LoomTreeError("all loom nodes must be reachable from root_id")
+
+    def save(self, path: Any) -> None:
+        """Atomic write of the tree to ``path`` as JSON.
+
+        The main tree file omits token blobs; response/thinking token rows
+        are written to a gzip sidecar named ``<stem>.tokens.json.gz``.  This
+        keeps routine tree payloads small while explicit save/load preserves
+        logprob/top-alt/probe drilldown data.
+        """
+        from pathlib import Path
+        from drowse.io.atomic import write_json_atomic
+
+        out_path = Path(path)
+        sidecar = out_path.with_name(f"{out_path.stem}.tokens.json.gz")
+        with self._lock:
+            data = self.to_dict(include_tokens=False)
+            token_nodes: dict[str, dict[str, Any]] = {}
+            for node in self.nodes.values():
+                if node.tokens or node.thinking_tokens or node.raw_token_ids is not None:
+                    token_nodes[node.id] = {
+                        "tokens": node.tokens,
+                        "thinking_tokens": node.thinking_tokens,
+                        "raw_token_ids": node.raw_token_ids,
+                    }
+            token_payload = None
+            if token_nodes:
+                data["token_sidecar"] = sidecar.name
+                token_payload = {
+                    "token_sidecar_format": TOKEN_SIDECAR_FORMAT_VERSION,
+                    "nodes": token_nodes,
+                }
+
+        if token_payload is None:
+            write_json_atomic(out_path, data)
+            with suppress(FileNotFoundError):
+                sidecar.unlink()
+            return
+
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{sidecar.name}.",
+            suffix=".tmp",
+            dir=str(sidecar.parent),
+        )
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
+            with gzip.open(tmp, "wt", encoding="utf-8") as f:
+                json.dump(token_payload, f, ensure_ascii=False, separators=(",", ":"))
+            os.replace(tmp, sidecar)
+        finally:
+            with suppress(FileNotFoundError):
+                tmp.unlink()
+        write_json_atomic(out_path, data)
+
+    @classmethod
+    def load(cls, path: Any, *, events: EventBus | None = None) -> "LoomTree":
+        from pathlib import Path
+        from drowse.io.brand_migration import migrate_legacy_record
+
+        in_path = Path(path)
+        with open(in_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise LoomTreeError("loom tree file must contain an object")
+        data = migrate_legacy_record(data)
+        _require_fields(
+            data, _TREE_FIELDS, "loom tree", optional=frozenset({"token_sidecar"})
+        )
+        if data["tree_format"] != TREE_FORMAT_VERSION:
+            raise LoomTreeError(
+                f"unsupported tree_format {data['tree_format']!r} "
+                f"(this build supports {TREE_FORMAT_VERSION})"
+            )
+        sidecar_name = data.get("token_sidecar")
+        if sidecar_name is not None:
+            expected_sidecar_name = f"{in_path.stem}.tokens.json.gz"
+            if sidecar_name != expected_sidecar_name:
+                raise LoomTreeError(
+                    f"token_sidecar must be {expected_sidecar_name!r}, "
+                    f"got {sidecar_name!r}"
+                )
+            sidecar = in_path.parent / sidecar_name
+            try:
+                with gzip.open(sidecar, "rt", encoding="utf-8") as f:
+                    token_payload = json.load(f)
+            except FileNotFoundError as e:
+                raise LoomTreeError(
+                    f"token sidecar declared but missing: {sidecar}"
+                ) from e
+            if not isinstance(token_payload, dict):
+                raise LoomTreeError("token sidecar must contain an object")
+            _require_fields(token_payload, frozenset({"token_sidecar_format", "nodes"}), "token sidecar")
+            if token_payload["token_sidecar_format"] != TOKEN_SIDECAR_FORMAT_VERSION:
+                raise LoomTreeError(
+                    f"unsupported token_sidecar_format "
+                    f"{token_payload['token_sidecar_format']!r}"
+                )
+            by_id = token_payload["nodes"]
+            if not isinstance(by_id, dict):
+                raise LoomTreeError("token sidecar field 'nodes' must be an object")
+            main_by_id = {raw["id"]: raw for raw in data["nodes"]}
+            for node_id, node_tokens in by_id.items():
+                if node_id not in main_by_id:
+                    raise LoomTreeError(f"token sidecar references unknown node {node_id!r}")
+                if not isinstance(node_tokens, dict):
+                    raise LoomTreeError(f"token sidecar node {node_id!r} must be an object")
+                _require_fields(node_tokens, _TOKEN_FIELDS, f"token sidecar node {node_id!r}")
+                for field_name in ("tokens", "thinking_tokens", "raw_token_ids"):
+                    value = node_tokens[field_name]
+                    if value is not None and not isinstance(value, list):
+                        raise LoomTreeError(
+                            f"token sidecar node {node_id!r} field {field_name!r} "
+                            "must be a list or null"
+                        )
+                    main_by_id[node_id][field_name] = value
+        return cls.from_dict(data, events=events)
+
+
+__all__ = [
+    "LoomNode",
+    "LoomTree",
+    "Recipe",
+    "LoomMutated",
+    "LoomTreeError",
+    "UnknownNodeError",
+    "InvalidNodeOperationError",
+    "MutationDuringGenerationError",
+    "TREE_FORMAT_VERSION",
+    "derive_seed_schedule",
+]

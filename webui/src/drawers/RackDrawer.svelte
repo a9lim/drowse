@@ -1,5 +1,10 @@
 <script lang="ts">
+  import FluentIcon from "../lib/ui/FluentIcon.svelte";
+  import { animatedDetails } from "../lib/animatedDetails";
+  import { slide } from "svelte/transition";
+  import { collapseIn, collapseOut } from "../lib/motion";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
+  import Button from "../lib/ui/Button.svelte";
   // Shared rack drawer — one component, two reskins split by geometry
   // family.  Subsumes the former VectorsDrawer + ManifoldDrawer: same
   // layout, same actions, same chrome, differing only by accent colour,
@@ -27,17 +32,20 @@
 
   import { onMount } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
-  import { apiManifolds, apiManifoldFitStream, describeError } from "../lib/api";
+  import { apiManifolds, apiManifoldFitStream, describeError } from "../lib/runtime/services";
+  import { isFittingCancellation } from "../lib/runtime/fittingCancellation";
   import {
     addManifoldToRack,
     addSubspaceToRack,
     attachProbe,
     closeDrawer,
+    drawerState,
     probeRack,
     steerRack,
     openDrawer,
     refreshManifoldList,
     refreshProbeList,
+    refreshVectorList,
     setManifoldLabel,
     setSubspaceLabel,
   } from "../lib/stores.svelte";
@@ -55,6 +63,19 @@
     type Category,
   } from "../lib/concepts";
   import DiagnosticsPanel from "../lib/manifolds/DiagnosticsPanel.svelte";
+  import { drawerAvailability, runtimeOperationAvailability } from "../lib/runtime/ui-capabilities";
+  import { runtimeClient } from "../lib/runtime/client";
+  import Select from "../lib/Select.svelte";
+  import {
+    manifoldSelectorOptions,
+    manifoldUsage,
+    manifoldUsageMessage,
+    probeReferencesManifold,
+    selectedManifoldOption,
+    selectorReferencesManifold,
+    type ManifoldSelectorOption,
+  } from "../lib/manifolds/selectors";
+  import { sessionState } from "../lib/stores/session.svelte";
 
   // ``params`` carries ``{ family, seed_a? }``; typed ``unknown`` so it
   // round-trips through ``drawerState.params`` (loosely typed so each
@@ -62,6 +83,12 @@
   // drawer is one steer+probe browser — every fitted row carries both
   // +steer and +probe, so there is no steer-vs-probe mode split.
   let { params }: { params?: unknown } = $props();
+  const returnToToken = $derived((params as { returnToToken?: unknown } | null)?.returnToToken);
+
+  function finishProbeSetup(): void {
+    if (returnToToken) openDrawer("token_drilldown", returnToToken);
+    else closeDrawer();
+  }
 
   const family = $derived.by<"subspace" | "manifold">(() => {
     if (
@@ -80,14 +107,18 @@
   const familyAccent = $derived(
     family === "manifold" ? "var(--pillar-manifold)" : "var(--accent)",
   );
-  const title = $derived(family === "manifold" ? "manifold" : "subspace");
+  const title = $derived(returnToToken ? "Add a probe" : family === "manifold" ? "manifold" : "subspace");
   // Authoring always routes to the manifold builder — a flat (2-node /
   // personas) fit is just a pca manifold, so there is no separate vector
   // extraction form.  Both families' launcher opens the same builder.
-  const launcherLabel = "build manifold";
-  const launcherHint = "author a domain and node corpus";
+  const launcherLabel = $derived(returnToToken ? "Create a concept" : "build manifold");
+  const launcherHint = $derived(returnToToken ? "Train a concept for this model" : "author a domain and node corpus");
+  const authoringAvailable = drawerAvailability("manifold_builder").available;
+  const fittingAvailability = runtimeOperationAvailability("fitting");
+  const browserMode = runtimeClient.mode !== "http";
 
   let errorMsg: string | null = $state(null);
+  let mounted = false;
 
   const busyKeys = new SvelteSet<string>();
   const confirmKeys = new SvelteSet<string>();
@@ -100,6 +131,7 @@
   const detailCache = new SvelteMap<string, ManifoldInfo>();
   const detailLoading = new SvelteSet<string>();
   const detailErrors = new SvelteMap<string, string>();
+  const detailRevisions = new Map<string, number>();
 
   // Free-text filter over manifolds *and* their node labels.
   // ``searching`` auto-expands every node list + category so matches are
@@ -112,6 +144,7 @@
   // controls and bury the next manifold several screens away.  Search still
   // auto-expands matching node lists so discovery remains one-step.
   const expandedNodes = new SvelteSet<string>();
+  const selectedSelectors = new SvelteMap<string, string>();
 
   // Section-prefixed category expansion ("ft:register" / "un:register")
   // so the Fitted / Unfitted sections track open state independently.
@@ -120,6 +153,7 @@
   );
 
   onMount(() => {
+    mounted = true;
     void refreshManifoldList();
     // Pull the attached-probe list too — the +probe button disables
     // itself when a fitted manifold is already attached, so the drawer
@@ -127,6 +161,7 @@
     void refreshProbeList();
     queueMicrotask(() => searchInputRef?.focus({ preventScroll: true }));
     return () => {
+      mounted = false;
       for (const t of confirmTimers.values()) window.clearTimeout(t);
       confirmTimers.clear();
     };
@@ -134,6 +169,25 @@
 
   function rowKey(m: ManifoldInfo): string {
     return `${m.namespace}/${m.name}`;
+  }
+
+  function selectorOptions(m: ManifoldInfo): ManifoldSelectorOption[] {
+    return manifoldSelectorOptions(m, sessionState.info?.model_id ?? null, browserMode);
+  }
+
+  function selectorChoice(m: ManifoldInfo): ManifoldSelectorOption | null {
+    return selectedManifoldOption(selectorOptions(m), selectedSelectors.get(rowKey(m)));
+  }
+
+  function chooseSelector(m: ManifoldInfo, selector: string): void {
+    selectedSelectors.set(rowKey(m), selector);
+  }
+
+  function unavailableSelectorMessage(m: ManifoldInfo): string | null {
+    const choice = selectorChoice(m);
+    return choice && !choice.available
+      ? choice.unavailableReason ?? `The selected fit for ${rowKey(m)} is unavailable.`
+      : null;
   }
 
   const searching = $derived(query.trim().length > 0);
@@ -267,13 +321,26 @@
   // ----- per-row membership -------------------------------------------
 
   function isRacked(m: ManifoldInfo): boolean {
-    return steerRack.entries.has(rowKey(m)) ||
-      steerRack.entries.has(m.name);
+    return [...steerRack.entries.keys()].some((selector) =>
+      selectorReferencesManifold(selector, m)
+    );
   }
 
   function isProbed(m: ManifoldInfo): boolean {
-    return probeRack.entries.has(rowKey(m)) ||
-      probeRack.entries.has(m.name);
+    const choice = selectorChoice(m);
+    if (!choice) return false;
+    return [...probeRack.entries.values()].some((entry) =>
+      probeReferencesManifold(entry.info, m, entry.request.selector) &&
+      (entry.info.family !== "geometry" ||
+        entry.info.manifold === choice.selector || entry.request.selector === choice.selector)
+    );
+  }
+
+  function deletionGuard(m: ManifoldInfo): string | null {
+    return manifoldUsageMessage(
+      m,
+      manifoldUsage(m, steerRack.entries, probeRack.entries),
+    );
   }
 
   // ----- steer / node-steer / probe -----------------------------------
@@ -285,12 +352,20 @@
    *  a subspace term at the shared along; manifold (curved) a curved term. */
   function onSteerNode(m: ManifoldInfo, label: string): void {
     if (!m.fitted_for_session) return;
+    const choice = selectorChoice(m);
+    if (!choice || !choice.available) {
+      pushToast(choice?.unavailableReason ?? `No compatible fit is available for ${rowKey(m)}.`, {
+        kind: "error",
+        ttlMs: null,
+      });
+      return;
+    }
     const key = rowKey(m);
     if (family === "subspace") {
-      addSubspaceToRack(key);
+      addSubspaceToRack(key, choice.variant);
       setSubspaceLabel(key, label);
     } else {
-      addManifoldToRack(key);
+      addManifoldToRack(key, choice.variant);
       setManifoldLabel(key, label);
     }
     closeDrawer();
@@ -302,19 +377,36 @@
    *  filtered the rows, so it is the discriminator. */
   function onSteer(m: ManifoldInfo): void {
     if (isRacked(m)) return;
-    if (family === "subspace") addSubspaceToRack(rowKey(m));
-    else addManifoldToRack(rowKey(m));
+    const choice = selectorChoice(m);
+    if (!choice || !choice.available) {
+      pushToast(choice?.unavailableReason ?? `No compatible fit is available for ${rowKey(m)}.`, {
+        kind: "error",
+        ttlMs: null,
+      });
+      return;
+    }
+    if (family === "subspace") addSubspaceToRack(rowKey(m), choice.variant);
+    else addManifoldToRack(rowKey(m), choice.variant);
     closeDrawer();
   }
 
   async function onProbe(m: ManifoldInfo): Promise<void> {
-    if (isProbed(m)) return;
+    if (isProbed(m) || busyKeys.has(rowKey(m))) return;
+    const origin = drawerState.params;
+    const choice = selectorChoice(m);
+    if (!choice || !choice.available) {
+      pushToast(choice?.unavailableReason ?? `No compatible fit is available for ${rowKey(m)}.`, {
+        kind: "error",
+        ttlMs: null,
+      });
+      return;
+    }
     const key = rowKey(m);
     busyKeys.add(key);
     try {
-      const info = await attachProbe(key);
+      const info = await attachProbe(choice.selector);
       pushToast(`probe ${info.name}`, { kind: "info" });
-      closeDrawer();
+      if (mounted && drawerState.params === origin) finishProbeSetup();
     } catch (e) {
       pushToast(`attach: ${describeError(e)}`, {
         kind: "error",
@@ -334,10 +426,31 @@
 
   async function onCustomAttachSubmit(ev: SubmitEvent): Promise<void> {
     ev.preventDefault();
+    if (customAttaching) return;
+    const origin = drawerState.params;
     const sel = customSelector.trim();
     if (!sel) {
       pushToast("selector required", { kind: "error" });
       return;
+    }
+    if (browserMode) {
+      const manifold = steerRack.catalog.find((row) =>
+        selectorReferencesManifold(sel, row)
+      );
+      if (manifold) {
+        const options = selectorOptions(manifold);
+        const option = options.find((candidate) => candidate.selector === sel);
+        const mixedRoleBlock = options.find((candidate) =>
+          !candidate.available && candidate.unavailableReason !== null
+        );
+        if (option && !option.available || !option && mixedRoleBlock) {
+          pushToast(option?.unavailableReason ?? mixedRoleBlock!.unavailableReason!, {
+            kind: "error",
+            ttlMs: null,
+          });
+          return;
+        }
+      }
     }
     customAttaching = true;
     try {
@@ -348,6 +461,7 @@
       pushToast(`probe ${info.name}`, { kind: "info" });
       customSelector = "";
       customAlias = "";
+      if (returnToToken && mounted && drawerState.params === origin) finishProbeSetup();
     } catch (e) {
       pushToast(`attach: ${describeError(e)}`, {
         kind: "error",
@@ -361,7 +475,15 @@
   // ----- fit / delete -------------------------------------------------
 
   function onFit(m: ManifoldInfo): void {
+    if (!fittingAvailability.available) {
+      pushToast(fittingAvailability.reason ?? "Manifold fitting is unavailable.", {
+        kind: "error",
+        ttlMs: null,
+      });
+      return;
+    }
     const key = rowKey(m);
+    if (busyKeys.has(key)) return;
     busyKeys.add(key);
     errorMsg = null;
     const toastId = pushToast(`fitting '${key}'…`, {
@@ -379,12 +501,24 @@
             if (msg) updateToast(toastId, { detail: msg });
           }
         });
-        await refreshManifoldList();
+        detailCache.delete(key);
+        detailErrors.delete(key);
+        detailRevisions.set(key, (detailRevisions.get(key) ?? 0) + 1);
+        detailLoading.delete(key);
+        await Promise.all([refreshManifoldList(), refreshProbeList(), refreshVectorList()]);
+        if (mounted && inspectKeys.has(key)) {
+          inspectKeys.delete(key);
+          await toggleInspect(m);
+        }
         dismissToast(toastId);
         pushToast(`fitted ${key}`, { kind: "info" });
       } catch (e) {
         dismissToast(toastId);
-        pushToast(`fit '${key}' failed — ${describeError(e)}`, {
+        if (isFittingCancellation(e)) {
+          pushToast(`Fitting ${key} cancelled.`, { kind: "info" });
+          return;
+        }
+        pushToast(`Couldn't fit '${key}': ${describeError(e)}`, {
           kind: "error",
           ttlMs: null,
         });
@@ -396,6 +530,11 @@
 
   function onDeleteClick(m: ManifoldInfo): void {
     const key = rowKey(m);
+    const guard = deletionGuard(m);
+    if (guard) {
+      pushToast(guard, { kind: "error", ttlMs: null });
+      return;
+    }
     if (confirmKeys.has(key)) {
       const t = confirmTimers.get(key);
       if (t !== undefined) {
@@ -424,7 +563,7 @@
       // Bundled artifacts (the ``default/`` namespace) respawn on the
       // next session init, so flag that in the toast.
       const msg = m.namespace === "default"
-        ? `deleted ${key} — bundled, respawns on restart`
+        ? `Deleted ${key}. This bundled item will return on restart.`
         : `deleted ${key}`;
       pushToast(msg, { kind: "info" });
     } catch (e) {
@@ -437,7 +576,7 @@
   // ----- launchers + badges -------------------------------------------
 
   function gotoLauncher(): void {
-    openDrawer("manifold_builder");
+    openDrawer("manifold_builder", returnToToken ? { returnToToken, mode: "discover" } : null);
   }
 
   function fitModeBadge(m: ManifoldInfo): string | null {
@@ -465,13 +604,17 @@
     if (detailCache.has(key)) return;
     detailLoading.add(key);
     detailErrors.delete(key);
+    const revision = (detailRevisions.get(key) ?? 0) + 1;
+    detailRevisions.set(key, revision);
     try {
       const detail = await apiManifolds.get(m.namespace, m.name);
+      if (!mounted || detailRevisions.get(key) !== revision) return;
       detailCache.set(key, detail);
     } catch (e) {
+      if (!mounted || detailRevisions.get(key) !== revision) return;
       detailErrors.set(key, describeError(e));
     } finally {
-      detailLoading.delete(key);
+      if (detailRevisions.get(key) === revision) detailLoading.delete(key);
     }
   }
 </script>
@@ -483,7 +626,8 @@
   aria-label={family === "manifold" ? "Manifolds" : "Subspaces"}
 >
   <header class="header">
-    <span class="title">{title}</span>
+    <h2 class="title">{title}</h2>
+    {#if returnToToken}<Button onclick={finishProbeSetup}>Back to token</Button>{/if}
     <DrawerCloseButton onclick={closeDrawer} />
   </header>
 
@@ -507,7 +651,7 @@
               >{nodes.length}{#if nodes.length !== total}/{total}{/if}</span>
           </button>
           {#if nodesOpen(key)}
-            <ul class="node-chips" role="list">
+            <ul class="node-chips" role="list" in:slide={collapseIn()} out:slide={collapseOut()}>
               {#each nodes as label (label)}
                 {@const role = nodeRoleFor(m, label)}
                 <li>
@@ -537,6 +681,10 @@
       {@const confirming = confirmKeys.has(key)}
       {@const inspecting = inspectKeys.has(key)}
       {@const badge = fitModeBadge(m)}
+      {@const options = selectorOptions(m)}
+      {@const choice = selectorChoice(m)}
+      {@const unavailable = unavailableSelectorMessage(m)}
+      {@const deleteGuard = deletionGuard(m)}
       <li class="row" title={m.description || key}>
         <div class="row-line">
           <div class="meta">
@@ -553,33 +701,36 @@
               type="button"
               class="act inspect"
               aria-expanded={inspecting}
+              aria-label={`${inspecting ? "Hide" : "Show"} details for ${key}`}
               onclick={() => void toggleInspect(m)}
               title={inspecting ? "hide" : "inspect"}
-            >{inspecting ? "▾" : "ⓘ"}</button>
+            ><FluentIcon name={inspecting ? "down" : "info"} /></button>
             <button
               type="button"
               class="act steer"
-              disabled={busy || isRacked(m)}
+              disabled={busy || isRacked(m) || choice === null || !choice.available}
               onclick={() => onSteer(m)}
-              title={isRacked(m)
+              title={unavailable ?? (isRacked(m)
                 ? `${key} already racked`
-                : `steer with ${key}`}
+                : `steer with ${choice?.selector ?? key}`)}
             >+steer</button>
             <button
                 type="button"
                 class="act probe"
-                disabled={busy || isProbed(m)}
+                disabled={busy || isProbed(m) || choice === null || !choice.available}
                 onclick={() => void onProbe(m)}
-                title={isProbed(m)
+                title={unavailable ?? (isProbed(m)
                   ? `${key} already attached`
-                  : `probe with ${key}`}
+                  : `probe with ${choice?.selector ?? key}`)}
             >+probe</button>
             <button
               type="button"
               class="act fit"
-              disabled={busy}
+              disabled={busy || !fittingAvailability.available}
               onclick={() => onFit(m)}
-              title={`re-fit ${key}`}
+              title={fittingAvailability.available
+                ? `re-fit ${key}`
+                : fittingAvailability.reason ?? "Fitting unavailable"}
             >{busy ? "…" : "re-fit"}</button>
             <button
               type="button"
@@ -587,14 +738,32 @@
               class:confirm={confirming}
               disabled={busy}
               onclick={() => onDeleteClick(m)}
-              title={confirming ? "click again to confirm" : `delete ${key}`}
+              title={deleteGuard ?? (confirming ? "click again to confirm" : `delete ${key}`)}
             >{confirming ? "confirm?" : "delete"}</button>
           </div>
         </div>
+        {#if options.length > 0 && choice}
+          <div class="selector-row">
+            <span>fit</span>
+            <Select
+              value={choice.selector}
+              options={options.map((option) => ({
+                value: option.selector,
+                label: option.label,
+                disabled: !option.available,
+              }))}
+              ariaLabel={`Fit for ${key}`}
+              title={choice.unavailableReason ?? `Use ${choice.selector}`}
+              onchange={(selector) => chooseSelector(m, selector)}
+            />
+            <code>{choice.selector}</code>
+          </div>
+          {#if unavailable}<p class="selector-unavailable" role="status">{unavailable}</p>{/if}
+        {/if}
         {#if inspecting}
-          <div class="inspect-body">
+          <div class="inspect-body" in:slide={collapseIn()} out:slide={collapseOut()}>
             {#if detailLoading.has(key)}
-              <p class="muted">loading…</p>
+              <p class="muted loading-pulse loading-placeholder" role="status">Loading details…</p>
             {:else if detailErrors.has(key)}
               <p class="error">{detailErrors.get(key)}</p>
             {:else if detailCache.has(key)}
@@ -607,7 +776,7 @@
             {/if}
           </div>
         {/if}
-        {@render nodeSection(m, true)}
+        {@render nodeSection(m, choice?.available === true)}
       </li>
     {/snippet}
 
@@ -616,6 +785,7 @@
       {@const busy = busyKeys.has(key)}
       {@const confirming = confirmKeys.has(key)}
       {@const badge = fitModeBadge(m)}
+      {@const deleteGuard = deletionGuard(m)}
       <li class="row" title={m.description || key}>
         <div class="row-line">
           <div class="meta">
@@ -629,9 +799,11 @@
             <button
               type="button"
               class="act fit"
-              disabled={busy}
+              disabled={busy || !fittingAvailability.available}
               onclick={() => onFit(m)}
-              title={`fit ${key}`}
+              title={fittingAvailability.available
+                ? `fit ${key}`
+                : fittingAvailability.reason ?? "Fitting unavailable"}
             >{busy ? "…" : "fit"}</button>
             <button
               type="button"
@@ -639,7 +811,7 @@
               class:confirm={confirming}
               disabled={busy}
               onclick={() => onDeleteClick(m)}
-              title={confirming ? "click again to confirm" : `delete ${key}`}
+              title={deleteGuard ?? (confirming ? "click again to confirm" : `delete ${key}`)}
             >{confirming ? "confirm?" : "delete"}</button>
           </div>
         </div>
@@ -651,7 +823,7 @@
       <p class="error" role="alert">{errorMsg}</p>
     {/if}
 
-    <details class="custom-attach">
+    <details use:animatedDetails class="custom-attach">
       <summary>attach selector</summary>
       <form class="attach-form" onsubmit={onCustomAttachSubmit}>
         <label class="row-label">
@@ -697,11 +869,14 @@
       </form>
     </details>
 
+    {#if !returnToToken || authoringAvailable}
     <button type="button" class="build-btn" onclick={gotoLauncher}>
-      <span class="plus" aria-hidden="true">+</span>
+      <span class="plus" aria-hidden="true"><FluentIcon name="add" /></span>
       <span class="build-label">{launcherLabel}</span>
       <span class="build-hint">{launcherHint}</span>
     </button>
+    {/if}
+    <button type="button" class="build-btn" onclick={() => openDrawer("surface_geometry")}>Inspect surface geometry</button>
 
     {#if familyTotal > 0}
       <div class="search-row">
@@ -713,6 +888,9 @@
           placeholder={family === "manifold"
             ? "search manifolds & nodes…"
             : "search subspaces & nodes…"}
+          aria-label={family === "manifold"
+            ? "Search manifolds and nodes"
+            : "Search subspaces and nodes"}
           autocomplete="off"
           spellcheck="false"
         />
@@ -723,7 +901,7 @@
           disabled={steerRack.loading}
           title="refresh"
           aria-label="Refresh"
-        >{steerRack.loading ? "…" : "↻"}</button>
+        ><FluentIcon name="refresh" spin={steerRack.loading} /></button>
       </div>
     {/if}
 
@@ -732,9 +910,9 @@
     {/if}
 
     {#if steerRack.loading && familyTotal === 0}
-      <p class="muted">loading…</p>
+      <p class="muted loading-pulse loading-placeholder" role="status">Loading controls…</p>
     {:else if familyTotal === 0}
-      <p class="muted">none</p>
+      <p class="muted">{returnToToken ? "No saved concepts in this category yet." : "none"}</p>
     {:else}
       {#if ftSections.length > 0}
         <h2 class="section-title">Fitted</h2>
@@ -756,7 +934,7 @@
                 <span class="cat-count">{items.length}</span>
               </button>
               {#if open}
-                <ul class="rows" role="list" aria-label={CATEGORY_LABELS[cat]}>
+                <ul class="rows" role="list" aria-label={CATEGORY_LABELS[cat]} in:slide={collapseIn()} out:slide={collapseOut()}>
                   {#each items as m (rowKey(m))}
                     {@render fittedRow(m)}
                   {/each}
@@ -770,7 +948,6 @@
       {#if unSections.length > 0}
         <h2 class="section-title">
           Unfitted
-          <span class="section-hint">unfitted</span>
         </h2>
         <div class="catalog">
           {#each unSections as { cat, items } (cat)}
@@ -790,7 +967,7 @@
                 <span class="cat-count">{items.length}</span>
               </button>
               {#if open}
-                <ul class="rows" role="list" aria-label={CATEGORY_LABELS[cat]}>
+                <ul class="rows" role="list" aria-label={CATEGORY_LABELS[cat]} in:slide={collapseIn()} out:slide={collapseOut()}>
                   {#each items as m (rowKey(m))}
                     {@render unfittedRow(m)}
                   {/each}
@@ -822,7 +999,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   /* Family accent drives the header title colour (and every accented rule
    * below via ``--family-accent``) — white subspace vs purple manifold. */
@@ -835,7 +1012,7 @@
   .body {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -856,11 +1033,12 @@
 
   /* ---- authoring launcher ---- */
   .build-btn {
+    min-height: var(--control-target);
     display: flex;
     align-items: baseline;
     gap: var(--space-3);
     width: 100%;
-    text-align: left;
+    text-align: start;
     background: var(--bg-alt);
     color: var(--fg-strong);
     border: 1px dashed var(--glass-line);
@@ -872,13 +1050,15 @@
     transition:
       background var(--dur) var(--ease-out),
       border-color var(--dur) var(--ease-out),
-      color var(--dur) var(--ease-out);
+      color var(--dur) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
   }
   .build-btn:hover {
     background: var(--bg-elev);
     border-color: var(--family-accent);
     color: var(--family-accent);
   }
+  .build-btn:active:not(:disabled) { scale: var(--press-scale); }
   .plus {
     color: var(--family-accent);
     font-weight: var(--weight-medium);
@@ -893,7 +1073,7 @@
     flex: 1 1 auto;
     color: var(--fg-muted);
     font-size: var(--text-xs);
-    text-align: right;
+    text-align: end;
   }
 
   /* ---- section headings ---- */
@@ -908,14 +1088,6 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
-  .section-hint {
-    color: var(--fg-muted);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    text-transform: none;
-    letter-spacing: 0;
-  }
-
   /* ---- category grouping ---- */
   .catalog {
     display: flex;
@@ -931,7 +1103,7 @@
     align-items: center;
     gap: var(--space-3);
     width: 100%;
-    text-align: left;
+    text-align: start;
     background: transparent;
     border: 0;
     padding: var(--space-3) var(--space-1) var(--space-2);
@@ -974,14 +1146,14 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    background: var(--bg-deep);
+    background: var(--surface-sheen), var(--bg-deep);
     border: 1px solid transparent;
-    border-radius: var(--radius);
-    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-lg);
+    padding: var(--surface-padding);
     transition: background var(--dur) var(--ease-out);
   }
   .row:hover {
-    background: color-mix(in srgb, var(--family-accent) 8%, var(--bg-deep));
+    background: var(--surface-sheen), color-mix(in srgb, var(--family-accent) 8%, var(--bg-deep));
   }
   .row-line {
     display: grid;
@@ -991,7 +1163,7 @@
   }
   .fit-badge {
     display: inline-block;
-    margin-left: var(--space-2);
+    margin-inline-start: var(--space-2);
     padding: 0 var(--space-2);
     border-radius: var(--radius);
     text-transform: uppercase;
@@ -1035,9 +1207,35 @@
     color: var(--fg-muted);
     font-size: var(--text-xs);
   }
+  .selector-row {
+    display: grid;
+    grid-template-columns: auto minmax(8rem, 0.7fr) minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-3);
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+  }
+  .selector-row > span {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .selector-row code {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .selector-unavailable {
+    margin: 0;
+    color: var(--accent-yellow);
+    font-size: var(--text-xs);
+    line-height: 1.4;
+  }
   .stale {
     color: var(--accent-yellow);
-    margin-left: var(--space-2);
+    margin-inline-start: var(--space-2);
   }
   .actions {
     display: inline-flex;
@@ -1045,6 +1243,7 @@
     gap: var(--space-2);
   }
   .act {
+    min-height: var(--control-target);
     background: var(--glass);
     color: var(--fg-dim);
     border: 1px solid transparent;
@@ -1097,12 +1296,16 @@
   /* Custom-attach disclosure — collapsed by default so it doesn't compete
    * with the catalog rows. */
   .custom-attach {
-    border-radius: var(--radius);
-    background: var(--bg-deep);
+    border-radius: var(--radius-lg);
+    background: var(--surface-sheen), var(--bg-deep);
   }
   .custom-attach > summary {
+    min-height: var(--control-target);
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
     cursor: pointer;
-    padding: var(--space-3) var(--space-4);
+    padding: var(--surface-padding);
     color: var(--fg-dim);
     font-size: var(--text-sm);
     list-style: none;
@@ -1117,7 +1320,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    padding: var(--space-3) var(--space-4) var(--space-4);
+    padding: 0 var(--surface-padding) var(--surface-padding);
   }
   .attach-form .row-label {
     display: flex;
@@ -1130,6 +1333,7 @@
     flex: 0 0 5.5em;
   }
   .text-input {
+    min-height: var(--control-field);
     flex: 1 1 0;
     min-width: 0;
     background: var(--input-well);
@@ -1206,6 +1410,7 @@
     padding-top: var(--space-2);
   }
   .nodes-toggle {
+    min-height: var(--control-target);
     display: inline-flex;
     align-items: baseline;
     gap: var(--space-2);
@@ -1242,6 +1447,7 @@
     gap: var(--space-2);
   }
   .node-chip {
+    min-height: var(--control-target);
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);

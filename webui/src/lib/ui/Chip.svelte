@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FluentIcon from "./FluentIcon.svelte";
   // v2 chip — the recipe-bar term, the depth badge, the role tag. A small
   // mono capsule washed in its hue.
   //
@@ -57,7 +58,7 @@
       onclick={(ev) => {
         ev.stopPropagation();
         onremove(ev);
-      }}>×</button
+      }}><FluentIcon name="dismiss" /></button
     >
   {/if}
 </span>
@@ -73,21 +74,21 @@
     font-family: var(--font-mono);
     font-size: var(--text-sm);
     line-height: 1;
-    padding: 1px 3px 1px 9px;
-    border-radius: var(--radius-sm);
+    padding: var(--space-xs);
+    border-radius: var(--radius-group);
     color: var(--chip-c);
     /* Borderless: the hue wash IS the chip — a touch deeper than the old
      * outlined version so the shape holds without its hairline. */
-    background: color-mix(in srgb, var(--chip-c) 14%, transparent);
-    border: 1px solid transparent;
+    background: var(--surface-sheen), color-mix(in srgb, var(--chip-c) 14%, transparent);
+    border: 0;
     white-space: nowrap;
     transition:
       background var(--dur-fast) var(--ease-out),
       border-color var(--dur-fast) var(--ease-out);
   }
   .sk-chip.muted {
-    background: color-mix(in srgb, var(--chip-c) 5%, transparent);
-    border-color: color-mix(in srgb, var(--chip-c) 32%, transparent);
+    background: var(--surface-sheen), color-mix(in srgb, var(--chip-c) 5%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chip-c) 32%, transparent);
   }
   .sk-chip.muted .body {
     text-decoration: line-through;
@@ -98,7 +99,7 @@
     cursor: pointer;
   }
   .sk-chip.clickable:hover {
-    background: color-mix(in srgb, var(--chip-c) 20%, transparent);
+    background: var(--surface-sheen), color-mix(in srgb, var(--chip-c) 20%, transparent);
   }
   .body {
     display: inline-flex;
@@ -110,14 +111,20 @@
     min-height: var(--control-target);
   }
   .body-button {
+    min-width: var(--control-target);
     background: none;
+    background-image: none !important;
     border: 0;
+    border-radius: var(--radius-inset);
     padding: 0;
     margin: 0;
     color: inherit;
     font: inherit;
-    text-align: left;
+    font-family: inherit !important;
+    font-weight: inherit !important;
+    text-align: start;
     cursor: pointer;
+    transition: scale var(--dur-fast) var(--ease-out);
   }
   .body-button:focus-visible,
   .x:focus-visible {
@@ -130,12 +137,21 @@
     min-width: var(--control-target);
     min-height: var(--control-target);
     background: none;
+    background-image: none !important;
     border: none;
-    padding: 0 0 0 2px;
+    border-radius: var(--radius-inset);
+    padding: 0;
     margin: 0;
     font-size: var(--text-sm);
     line-height: 1;
     color: color-mix(in srgb, var(--chip-c) 65%, transparent);
+    transition:
+      color var(--dur-fast) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
+  }
+  .body-button:active,
+  .x:active {
+    scale: var(--press-scale);
   }
   .x:hover {
     color: var(--chip-c);

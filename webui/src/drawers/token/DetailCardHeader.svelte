@@ -119,7 +119,7 @@
     color: var(--fg);
     background: color-mix(in srgb, var(--card-accent) 12%, transparent);
     border-radius: var(--radius-sm);
-    padding: 1px var(--space-2);
+    padding: var(--space-xs) var(--space-2);
   }
   .tail {
     font-family: var(--font-mono);

@@ -6,11 +6,14 @@
   // hiding stats until they have something real to report.
 
   import Bar from "../lib/charts/Bar.svelte";
+  import InfoTip from "../lib/ui/InfoTip.svelte";
   import {
     genStatus,
     geometricMeanPpl,
     pendingActions,
   } from "../lib/stores.svelte";
+
+  let { savedEdit = false }: { savedEdit?: boolean } = $props();
 
   // Pending-queue badge — counts the items waiting in the FIFO queue.
   // Under the v2.x queue semantics, drain is automatic on every WS
@@ -37,16 +40,15 @@
 
   const elapsedSec = $derived.by(() => {
     if (!genStatus.startedAt) return 0;
-    const end = genStatus.active ? nowMs : nowMs;
+    const end = genStatus.active
+      ? nowMs
+      : genStatus.finishedAt ?? genStatus.startedAt;
     return Math.max(0, (end - genStatus.startedAt) / 1000);
   });
 
-  const tokPerSec = $derived.by(() => {
-    if (genStatus.active && elapsedSec > 0) {
-      return genStatus.tokensSoFar / elapsedSec;
-    }
-    return genStatus.tokPerSec;
-  });
+  const tokPerSec = $derived(genStatus.tokPerSec);
+  const preparingContinuation = $derived(genStatus.active && genStatus.replay != null &&
+    genStatus.replay.completed < genStatus.replay.total);
 
   const ppl = $derived(geometricMeanPpl(genStatus));
 
@@ -56,55 +58,63 @@
   const hasRun = $derived(genStatus.startedAt !== null);
   const finishLabel = $derived.by(() => {
     if (!genStatus.finishReason || genStatus.finishReason === "stop") return null;
-    if (genStatus.finishReason === "length") return "token limit";
-    if (genStatus.finishReason === "cancelled") return "stopped";
+    if (genStatus.finishReason === "length") return "Token limit";
+    if (genStatus.finishReason === "cancelled") return "Stopped";
     return genStatus.finishReason;
   });
 </script>
 
 <footer class="status-footer" aria-label="Generation status">
-  {#if !hasRun && !genStatus.active}
-    <span class="dot idle" aria-hidden="true">○</span>
-    <span class="text">idle</span>
-  {:else}
-    <span class="dot {genStatus.active ? 'live' : 'done'}" aria-hidden="true">●</span>
-    {#if genStatus.active}
-      <span class="text">gen {genStatus.tokensSoFar}/{genStatus.maxTokens || "?"}</span>
-      <span class="sep" aria-hidden="true">·</span>
-      <span class="bar-wrap" aria-label="progress">
-        <Bar
-          value={genStatus.tokensSoFar}
-          max={genStatus.maxTokens || Math.max(genStatus.tokensSoFar, 1)}
-          width={120}
-          height={6}
-          color="var(--accent-green)"
-        />
-      </span>
+  <div class="status-details">
+    {#if savedEdit}
+      <span class="text done-label">Edit saved</span>
+    {:else if !hasRun && !genStatus.active}
+      <span class="dot idle" aria-hidden="true">○</span>
+      <span class="text">Ready</span>
     {:else}
-      <span class="text done-label">{genStatus.tokensSoFar} tokens</span>
+      {#if preparingContinuation}
+        <span class="text" role="status">Preparing continuation…</span>
+        <span class="bar-wrap" aria-label="Preparing saved context">
+          <Bar value={genStatus.replay!.completed} max={genStatus.replay!.total}
+            width={120} height={6} color="var(--accent)" />
+        </span>
+      {:else if genStatus.active}
+        <span class="text">{genStatus.replay ? "Continuing" : "Writing"} {genStatus.tokensSoFar}/{genStatus.maxTokens || "?"} tokens</span>
+        <span class="bar-wrap" aria-label="progress">
+          <Bar
+            value={genStatus.tokensSoFar}
+            max={genStatus.maxTokens || Math.max(genStatus.tokensSoFar, 1)}
+            width={120}
+            height={6}
+            color="var(--accent-green)"
+          />
+        </span>
+      {:else}
+        <span class="text done-label">{finishLabel ?? (genStatus.finishReason === "stop" ? "Complete" : "Ended")} · {genStatus.tokensSoFar} tokens</span>
+      {/if}
+      {#if !preparingContinuation}
+        <span class="text speed">{tokPerSec.toFixed(1)} tokens/s</span>
+      {/if}
+      <span class="text elapsed">{elapsedSec.toFixed(1)}s</span>
+      {#if ppl !== null && Number.isFinite(ppl)}
+        <span
+          class="text uncertainty"
+          title="entropy perplexity"
+        >uncertainty {ppl.toFixed(2)}</span>
+      {/if}
     {/if}
-    <span class="sep" aria-hidden="true">·</span>
-    <span class="text">{tokPerSec.toFixed(1)} t/s</span>
-    <span class="sep" aria-hidden="true">·</span>
-    <span class="text">{elapsedSec.toFixed(1)}s</span>
-    {#if ppl !== null && Number.isFinite(ppl)}
-      <span class="sep" aria-hidden="true">·</span>
-      <span
-        class="text"
-        title="entropy perplexity"
-      >ppl {ppl.toFixed(2)}</span>
-    {/if}
-    {#if !genStatus.active && finishLabel}
-      <span class="sep" aria-hidden="true">·</span>
-      <span class="text muted">{finishLabel}</span>
-    {/if}
-  {/if}
 
-  {#if pendingCount > 0}
-    <span class="pending-badge" title={pendingTitle}>
-      {pendingCount} queued
-    </span>
-  {/if}
+    {#if pendingCount > 0}
+      <span class="pending-badge" title={pendingTitle}>
+        {pendingCount} queued
+      </span>
+    {/if}
+  </div>
+
+  <InfoTip
+    label="About generation status"
+    text="Tokens are pieces of text, and speed is shown in tokens per second. Lower uncertainty means the model was more sure of its wording."
+  />
 </footer>
 
 <style>
@@ -114,35 +124,28 @@
    * the log. */
   .status-footer {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
-    gap: var(--space-3);
-    padding: var(--space-2) 0;
+    gap: var(--space-2);
+    padding: var(--workspace-status-padding, var(--space-2)) 0;
     color: var(--fg-dim);
     font-size: var(--text-sm);
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
-    min-height: 22px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    min-height: var(--workspace-status-height, calc(var(--control-target) + var(--space-2) * 2));
   }
-  .dot.live {
-    color: var(--live);
-    border-radius: 50%;
-    animation: none;
-  }
-  .dot.done {
-    color: var(--fg-muted);
+  .status-details {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    min-width: 0;
+    align-items: center;
+    gap: var(--space-2) var(--space-4);
   }
   .dot.idle {
     color: var(--fg-muted);
   }
-  .sep {
-    color: var(--fg-muted);
-  }
-  .text.muted {
-    color: var(--fg-muted);
-  }
+  .text { white-space: nowrap; }
   .done-label {
     color: var(--fg-strong);
   }
@@ -155,7 +158,7 @@
    * Display-only; per-item cancel lives on the PendingBubbles strip
    * above the composer. */
   .pending-badge {
-    margin-left: auto;
+    margin-inline-start: auto;
     background: var(--glass-strong);
     color: var(--fg-dim);
     border: 1px solid transparent;
@@ -163,5 +166,20 @@
     border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-family: var(--font-ui);
+  }
+
+  .status-footer :global(.info-tip) {
+    flex: 0 0 auto;
+  }
+
+  @media (max-width: 480px) {
+    .status-details {
+      gap: var(--space-2);
+    }
+    .bar-wrap,
+    .elapsed,
+    .uncertainty {
+      display: none;
+    }
   }
 </style>

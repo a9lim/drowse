@@ -120,6 +120,7 @@ export const genStatus: GenStatus = $state({
   tokensSoFar: 0,
   maxTokens: 0,
   startedAt: null,
+  finishedAt: null,
   tokPerSec: 0,
   ppl: { logSum: 0, count: 0, mean: null },
   finishReason: null,
@@ -139,10 +140,8 @@ export function geometricMeanPpl(state: GenStatus): number | null {
 // Base (non-chat) models have no chat template — the engine handles
 // them as flat completion.  ``genUiMode`` decides whether the chat panel
 // renders bubbles + roles (chat) or a single flat completion buffer
-// (raw).  It is a plain two-state toggle: the default is seeded from the
-// model's ``is_base_model`` flag (base → raw, chat → chat) the first
-// time a model is seen, then the user's explicit choice is persisted
-// per ``model_id`` and survives reloads.
+// (raw). Base models always use raw text. Chat models retain the user's
+// explicit choice per model across reloads.
 
 export interface GenUiModeState {
   /** Which surface the chat panel renders — ``"chat"`` (bubbles +
@@ -154,35 +153,33 @@ export const genUiMode: GenUiModeState = $state({ mode: "chat" });
 
 /** Resolve the effective rendering mode — true means flat raw buffer. */
 export function effectiveRawMode(): boolean {
-  return genUiMode.mode === "raw";
+  return sessionState.info?.is_base_model === true || genUiMode.mode === "raw";
 }
 
-const GENUI_KEY_PREFIX = "saklas.genui.v1.";
+const GENUI_KEY_PREFIX = "drowse.genui.v1.";
 
 function genUiKey(): string | null {
   const id = sessionState.info?.model_id;
   return id ? GENUI_KEY_PREFIX + id : null;
 }
 
-/** Load the per-model render mode.  Called from ``bootstrap`` once the
- *  model id is known.  A stored preference wins; with none, the mode is
- *  seeded from the model's nature — a base model defaults to ``raw``, a
- *  chat model to ``chat``. */
+/** Load the per-model render mode without enabling chat templates for base models. */
 export function loadGenUiMode(): void {
   const key = genUiKey();
   const stored = key ? safeLocalStorageGet(key) : null;
-  if (stored === "chat" || stored === "raw") {
+  if (sessionState.info?.is_base_model === true) {
+    genUiMode.mode = "raw";
+  } else if (stored === "chat" || stored === "raw") {
     genUiMode.mode = stored;
   } else {
-    genUiMode.mode =
-      sessionState.info?.is_base_model === true ? "raw" : "chat";
+    genUiMode.mode = "chat";
   }
 }
 
 /** Set (and persist) the render mode.  Toggling mode never mutates the
  *  loom tree — only generation does. */
 export function setGenUiMode(mode: "chat" | "raw"): void {
-  genUiMode.mode = mode;
+  genUiMode.mode = sessionState.info?.is_base_model === true ? "raw" : mode;
   const key = genUiKey();
-  if (key) safeLocalStorageSet(key, mode);
+  if (key) safeLocalStorageSet(key, genUiMode.mode);
 }

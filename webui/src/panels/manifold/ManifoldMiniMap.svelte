@@ -19,6 +19,7 @@
   // ``_isMiniMapCandidate`` in stores).
 
   import type { AxisSpec, GeometryProbeInfo } from "../../lib/types";
+  import { chartValue } from "../../lib/charts/chartValues";
 
   interface Props {
     info: GeometryProbeInfo;
@@ -63,7 +64,7 @@
 
   /** Pixel positions for the node markers + labels. */
   const nodes = $derived.by(() => {
-    const out: { label: string; cx: number; cy: number }[] = [];
+    const out: { label: string; cx: number; cy: number; tip: string }[] = [];
     const coords = info.node_coords ?? [];
     for (let i = 0; i < info.node_labels.length && i < coords.length; i++) {
       const row = coords[i];
@@ -71,6 +72,7 @@
       if (!Number.isFinite(row[0]) || !Number.isFinite(row[1])) continue;
       out.push({
         label: info.node_labels[i],
+        tip: `${info.node_labels[i]} · ${axes[0].name} ${chartValue(row[0])} · ${axes[1].name} ${chartValue(row[1])}`,
         cx: nx(row[0]) * size,
         cy: ny(row[1]) * size,
       });
@@ -151,6 +153,7 @@
     <!-- Node markers + labels. -->
     {#each nodes as n (n.label)}
       <g class="node">
+        <title>{n.tip}</title>
         <circle cx={n.cx} cy={n.cy} r="3" />
         <text x={n.cx + 5} y={n.cy - 4}>{n.label}</text>
       </g>
@@ -163,7 +166,7 @@
         cx={cursorPx.cx}
         cy={cursorPx.cy}
         r="3"
-      />
+      ><title>Live coordinates [{trajectory[trajectory.length - 1].map((v) => chartValue(v)).join(", ")}]</title></circle>
     {/if}
 
     <!-- Settled aggregate dot — bold, lands at the coords from the final
@@ -174,7 +177,7 @@
         cx={settledPx.cx}
         cy={settledPx.cy}
         r="5"
-      />
+      ><title>Final coordinates [{settled?.map((v) => chartValue(v)).join(", ")}]</title></circle>
     {/if}
   </svg>
 

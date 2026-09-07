@@ -12,7 +12,9 @@
   //     against the first id as anchor.
 
   import { onMount } from "svelte";
-  import { apiTree, ApiError } from "../lib/api";
+  import { apiTree, ApiError } from "../lib/runtime/services";
+  import type { RuntimeTreeReplayCapabilities } from "../lib/runtime/contracts";
+  import { userFacingError } from "../lib/runtime/userFacingError";
   import {
     clearNodeSelection,
     closeDrawer,
@@ -61,6 +63,7 @@
   type JointOrError =
     | { kind: "loading" }
     | { kind: "ok"; data: JointLogprobsJSON }
+    | { kind: "unavailable"; message: string }
     | { kind: "err"; message: string };
 
   let diffs: DiffOrError[] = $state([]);
@@ -81,6 +84,15 @@
       return;
     }
     loading = true;
+    const replayCapabilities = apiTree.replayCapabilities().catch((error) => ({
+      jointLogprobs: {
+        available: false,
+        reason: userFacingError(
+          error,
+          "Token likelihood replay is unavailable in this runtime.",
+        ),
+      },
+    } satisfies RuntimeTreeReplayCapabilities));
     const out: DiffOrError[] = [];
     try {
       for (let i = 1; i < list.length; i++) {
@@ -93,11 +105,17 @@
               e.body && typeof e.body === "object" && "detail" in (e.body as object)
                 ? String((e.body as { detail: unknown }).detail)
                 : e.message;
-            out.push({ kind: "err", message: `${e.status}: ${detail}` });
+            out.push({
+              kind: "err",
+              message: userFacingError(
+                e,
+                `Unable to compare this branch. ${detail}`,
+              ),
+            });
           } else {
             out.push({
               kind: "err",
-              message: e instanceof Error ? e.message : String(e),
+              message: userFacingError(e, "Unable to compare this branch. Try again."),
             });
           }
         }
@@ -110,16 +128,24 @@
     // parallel after the text diff is in place.  Loading state per
     // pair so the drawer can show "(crunching cross logprobs…)"
     // independently of the diff rendering.
-    await fetchJoints();
+    await fetchJoints((await replayCapabilities).jointLogprobs);
   }
 
   /** Lazy fetch of joint logprobs for each (anchor, other) pair.
    *  Hits the session-lifetime cache on the server side; second open
    *  of the same pair is a memory lookup. */
-  async function fetchJoints(): Promise<void> {
+  async function fetchJoints(
+    availability: RuntimeTreeReplayCapabilities["jointLogprobs"],
+  ): Promise<void> {
     const list = ids;
     if (list.length < 2 || !anchorId) {
       joints = [];
+      return;
+    }
+    if (!availability.available) {
+      const message = availability.reason ??
+        "This model runtime cannot replay exact token likelihoods for branch comparison.";
+      joints = list.slice(1).map(() => ({ kind: "unavailable", message }));
       return;
     }
     joints = list.slice(1).map(() => ({ kind: "loading" }) as JointOrError);
@@ -134,11 +160,20 @@
             e.body && typeof e.body === "object" && "detail" in (e.body as object)
               ? String((e.body as { detail: unknown }).detail)
               : e.message;
-          out.push({ kind: "err", message: `${e.status}: ${detail}` });
+          out.push({
+            kind: "err",
+            message: userFacingError(
+              e,
+              `Unable to compare token likelihoods. ${detail}`,
+            ),
+          });
         } else {
           out.push({
             kind: "err",
-            message: e instanceof Error ? e.message : String(e),
+            message: userFacingError(
+              e,
+              "Token likelihood comparison is unavailable for these branches.",
+            ),
           });
         }
       }
@@ -256,7 +291,7 @@
 
   /** Format a logprob.  Null / non-finite render as ``—``. */
   function fmtLp(v: number | null | undefined): string {
-    if (v == null || !Number.isFinite(v)) return "—";
+    if (v == null || !Number.isFinite(v)) return "-";
     return v.toFixed(2);
   }
 
@@ -264,7 +299,7 @@
    *  "did B give this token less / more weight than A did?". */
   function fmtDeltaLp(a: number | null, b: number | null): string {
     if (a == null || b == null || !Number.isFinite(a) || !Number.isFinite(b)) {
-      return "—";
+      return "-";
     }
     const d = a - b;
     const sign = d >= 0 ? "+" : "";
@@ -274,7 +309,7 @@
   /** Format the approx-KL value — small numbers get more precision so
    *  the leading digits remain readable. */
   function fmtKl(v: number | null): string {
-    if (v == null || !Number.isFinite(v)) return "—";
+    if (v == null || !Number.isFinite(v)) return "-";
     if (Math.abs(v) < 0.01) return v.toExponential(1);
     return v.toFixed(2);
   }
@@ -364,7 +399,7 @@
               baseRow.klMean = n > 0 ? sum / n : null;
             }
             baseRow.jointReady = true;
-          } else if (j.kind === "err") {
+          } else if (j.kind === "err" || j.kind === "unavailable") {
             baseRow.jointReady = true;
           }
         }
@@ -375,12 +410,12 @@
   });
 
   function fmtPct(v: number | null): string {
-    if (v == null || !Number.isFinite(v)) return "—";
+    if (v == null || !Number.isFinite(v)) return "-";
     return `${(v * 100).toFixed(0)}%`;
   }
 
   function fmtKlMean(v: number | null): string {
-    if (v == null || !Number.isFinite(v)) return "—";
+    if (v == null || !Number.isFinite(v)) return "-";
     if (Math.abs(v) < 0.01) return v.toExponential(1);
     return v.toFixed(3);
   }
@@ -389,13 +424,13 @@
 <section class="drawer-shell" aria-label="Cross-branch diff drawer">
   <header class="header">
     <div class="title">
-      <span class="eyebrow">compare branches</span>
+      <h2 class="eyebrow">Compare conversation branches</h2>
       <div class="name-row">
         <span class="meta">
           {#if ids.length >= 2}
-            {ids.length} node{ids.length > 2 ? "s" : ""} selected
+            {ids.length} branch{ids.length === 1 ? "" : "es"} selected
           {:else}
-            select nodes
+            Select branches
           {/if}
         </span>
       </div>
@@ -432,7 +467,7 @@
     {#if ids.length < 2}
       <p class="empty">select ≥2 generated nodes in Threads</p>
     {:else if loading && diffs.length === 0}
-      <p class="empty">computing diff…</p>
+      <p class="empty loading-pulse loading-placeholder" role="status">Comparing replies…</p>
     {:else}
       <!-- Column headers: anchor + each diff target. -->
       <div class="columns" class:unified={layout === "unified"}>
@@ -489,14 +524,14 @@
                   <td class="ss-num">{fmtLp(row.meanLogprob)}</td>
                   <td class="ss-num">
                     {row.isAnchor
-                      ? "—"
+                      ? "-"
                       : row.jointReady
                         ? fmtPct(row.rank1Unchanged)
                         : "…"}
                   </td>
                   <td class="ss-num">
                     {row.isAnchor
-                      ? "—"
+                      ? "-"
                       : row.jointReady
                         ? fmtKlMean(row.klMean)
                         : "…"}
@@ -604,10 +639,14 @@
                  the start of a parent block). -->
             {#if joint}
               {#if joint.kind === "loading"}
-                <p class="dim small">computing logprobs…</p>
+                <p class="dim small loading-pulse loading-placeholder" role="status">Computing token probabilities…</p>
               {:else if joint.kind === "err"}
                 <p class="error small" role="alert">
                   logprobs: {joint.message}
+                </p>
+              {:else if joint.kind === "unavailable"}
+                <p class="dim small replay-unavailable">
+                  {joint.message} Branch text and saved measurements remain available.
                 </p>
               {:else}
                 {@const aligned = alignedRows(joint.data.rows)}
@@ -720,7 +759,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-5);
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     display: flex;
@@ -753,7 +792,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-5);
-    padding: var(--space-3) var(--space-6);
+    padding: var(--space-5) var(--drawer-gutter-inline);
   }
   .header-ctl {
     display: inline-flex;
@@ -767,10 +806,25 @@
     min-width: 9em;
   }
 
+  @media (max-width: 760px) {
+    .toolbar {
+      flex-direction: column;
+      align-items: stretch;
+      gap: var(--space-3);
+    }
+    .header-ctl {
+      display: grid;
+      grid-template-columns: 5em minmax(0, 1fr);
+    }
+    .header-ctl :global(.sk-select) {
+      min-width: 0;
+    }
+  }
+
   .body {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -795,9 +849,9 @@
     gap: var(--space-4);
   }
   .col {
-    background: var(--bg);
+    background: var(--surface-sheen), var(--bg);
     border-radius: var(--radius);
-    padding: var(--space-3) var(--space-4);
+    padding: var(--surface-padding);
   }
   .col-header {
     display: flex;
@@ -829,10 +883,10 @@
   /* Nested section card — aggregates the text diff + cross-eval table +
    * readings table for one A-vs-B pair. */
   .diff-block {
-    background: var(--glass);
+    background: var(--surface-sheen), var(--glass);
     box-shadow: var(--shadow-well);
     border-radius: var(--radius-lg);
-    padding: var(--space-4);
+    padding: var(--surface-padding);
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -871,9 +925,9 @@
   }
   /* Data well — the per-branch text pane. */
   .text-pane {
-    background: var(--bg);
+    background: var(--surface-sheen), var(--bg);
     border-radius: var(--radius);
-    padding: var(--space-2) var(--space-3);
+    padding: var(--surface-padding);
     min-height: 5em;
     max-height: 30em;
     overflow-y: auto;
@@ -915,19 +969,19 @@
 
   /* Data well — the unified diff pane. */
   .unified-body {
-    background: var(--bg);
+    background: var(--surface-sheen), var(--bg);
     border-radius: var(--radius);
-    padding: var(--space-3) var(--space-4);
+    padding: var(--surface-padding);
     line-height: 1.5;
     font-size: var(--text-sm);
     word-break: break-word;
     white-space: normal;
   }
   .tok-span {
-    padding: 0 0.05em;
+    padding: 0;
   }
   .span-sign {
-    margin-right: var(--space-1);
+    margin-inline-end: var(--space-1);
     font-weight: var(--weight-medium);
   }
   .span-insert .span-sign {
@@ -948,7 +1002,7 @@
     background: var(--glass);
     box-shadow: var(--shadow-well);
     border-radius: var(--radius-lg);
-    padding: var(--space-3) var(--space-4);
+    padding: var(--surface-padding);
     margin: 0;
   }
   .ss-header {
@@ -979,7 +1033,7 @@
   .ss-table th,
   .ss-table td {
     padding: var(--space-2) var(--space-3);
-    text-align: left;
+    text-align: start;
   }
   .ss-table thead th {
     color: var(--fg-muted);
@@ -990,7 +1044,7 @@
   }
   .ss-table td.ss-num,
   .ss-table th.ss-num {
-    text-align: right;
+    text-align: end;
     white-space: nowrap;
     width: 6em;
   }
@@ -1061,7 +1115,7 @@
   .lp-table th,
   .lp-table td {
     padding: var(--space-1) var(--space-3);
-    text-align: left;
+    text-align: start;
   }
   .lp-table thead th {
     color: var(--fg-muted);
@@ -1073,12 +1127,12 @@
   }
   .lp-table td.lp-num,
   .lp-table th.lp-num {
-    text-align: right;
+    text-align: end;
     width: 4.5em;
   }
   .lp-table td.lp-pos,
   .lp-table th.lp-pos {
-    text-align: right;
+    text-align: end;
     width: 2.5em;
     color: var(--fg-dim);
   }
@@ -1158,7 +1212,7 @@
     height: 100%;
   }
   .r-delta {
-    text-align: right;
+    text-align: end;
     font-variant-numeric: tabular-nums;
   }
   .dim {
@@ -1171,7 +1225,7 @@
   .footer {
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-3);
-    padding: var(--space-3) var(--space-6);
+    gap: var(--drawer-gutter-block);
+    padding: 0 var(--drawer-gutter-inline) var(--drawer-gutter-block);
   }
 </style>

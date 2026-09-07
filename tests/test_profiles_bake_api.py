@@ -1,4 +1,4 @@
-"""Tests for POST /saklas/v1/sessions/{id}/profiles/bake."""
+"""Tests for POST /drowse/v1/sessions/{id}/profiles/bake."""
 
 # pyright: reportUnusedVariable=false
 
@@ -13,8 +13,8 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from saklas.core.model import loaded_model_fingerprint
-from saklas.core.session import SaklasSession
+from drowse.core.model import loaded_model_fingerprint
+from drowse.core.session import DrowseSession
 from tests._fakes import make_mock_session
 
 
@@ -35,17 +35,17 @@ def _mock_session():
     session._layers = []
     session.events = MagicMock()
     session.events.subscribe = lambda cb: (lambda: None)
-    # ``POST /profiles/bake`` is a thin wrapper over ``SaklasSession.bake`` —
+    # ``POST /profiles/bake`` is a thin wrapper over ``DrowseSession.bake`` —
     # bind the real method so the route's contract (including the
     # loaded-weight fingerprint it forwards into the merge) is under test
     # rather than a mock's return value.
-    session.bake = MethodType(SaklasSession.bake, session)
+    session.bake = MethodType(DrowseSession.bake, session)
     return session
 
 
 @pytest.fixture
 def session_and_client():
-    from saklas.server import create_app
+    from drowse.server import create_app
     session = _mock_session()
     app = create_app(session, default_steering=None)
     return session, TestClient(app)
@@ -57,19 +57,19 @@ def session_and_client():
 
 
 class TestMergeVector:
-    def test_happy_path(self, session_and_client: tuple[SaklasSession, TestClient], tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_happy_path(self, session_and_client: tuple[DrowseSession, TestClient], tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         session, client = session_and_client
         # The merge now lands a corpus-less ``fit_mode="baked"`` manifold; the
         # route loads + folds it back to a steering Profile.  Build a real one
         # on disk so the route's ``load_manifold`` + fold has a valid target
         # via the mocked ``merge_into_manifold`` output.
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        from saklas.core.capture import (
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        from drowse.core.capture import (
             fold_directions_to_subspace, folded_directions,
         )
-        from saklas.io.manifold_tensors import load_manifold
-        from saklas.io.manifolds import create_baked_manifold_folder
-        from saklas.io.paths import tensor_filename
+        from drowse.io.manifold_tensors import load_manifold
+        from drowse.io.manifolds import create_baked_manifold_folder
+        from drowse.io.paths import tensor_filename
 
         dirs = {0: torch.tensor([1.0, 0.0, 0.0, 0.0]), 5: torch.tensor([0.0, 2.0, 0.0, 0.0])}
         from tests._whitener import isotropic_whitener
@@ -78,7 +78,7 @@ class TestMergeVector:
             "noble", dirs, means,
             whitener=isotropic_whitener(dirs, 4), label="merged",
         )
-        from saklas.io.integrity import hash_file
+        from drowse.io.integrity import hash_file
 
         honest_source = tmp_path / "honest-source.safetensors"
         warm_source = tmp_path / "warm-source.safetensors"
@@ -106,11 +106,11 @@ class TestMergeVector:
         expected = folded_directions(load_manifold(tensor_path))
 
         with patch(
-            "saklas.io.bake.merge_into_manifold",
+            "drowse.io.bake.merge_into_manifold",
             return_value=merged_folder,
         ) as m:
             resp = client.post(
-                "/saklas/v1/sessions/default/profiles/bake",
+                "/drowse/v1/sessions/default/profiles/bake",
                 json={
                     "name": "noble",
                     "expression": "0.3 default/honest + 0.4 default/warm",
@@ -140,29 +140,29 @@ class TestMergeVector:
         assert torch.allclose(call_profile[0].float(), expected[0].float(), atol=1e-5)
         assert torch.allclose(call_profile[5].float(), expected[5].float(), atol=1e-5)
 
-    def test_invalid_expression_400(self, session_and_client: tuple[SaklasSession, TestClient]):
-        from saklas.io.bake import MergeError
+    def test_invalid_expression_400(self, session_and_client: tuple[DrowseSession, TestClient]):
+        from drowse.io.bake import MergeError
         _, client = session_and_client
         with patch(
-            "saklas.io.bake.merge_into_manifold",
+            "drowse.io.bake.merge_into_manifold",
             side_effect=MergeError("merge requires at least one component"),
         ):
             resp = client.post(
-                "/saklas/v1/sessions/default/profiles/bake",
+                "/drowse/v1/sessions/default/profiles/bake",
                 json={"name": "x", "expression": ""},
             )
-        # MergeError is a SaklasError → 400 via the global handler.
+        # MergeError is a DrowseError → 400 via the global handler.
         assert resp.status_code == 400
 
-    def test_missing_component_400(self, session_and_client: tuple[SaklasSession, TestClient]):
-        from saklas.io.bake import MergeError
+    def test_missing_component_400(self, session_and_client: tuple[DrowseSession, TestClient]):
+        from drowse.io.bake import MergeError
         _, client = session_and_client
         with patch(
-            "saklas.io.bake.merge_into_manifold",
+            "drowse.io.bake.merge_into_manifold",
             side_effect=MergeError("component default/missing not installed"),
         ):
             resp = client.post(
-                "/saklas/v1/sessions/default/profiles/bake",
+                "/drowse/v1/sessions/default/profiles/bake",
                 json={
                     "name": "x",
                     "expression": "0.3 default/missing",
@@ -170,22 +170,22 @@ class TestMergeVector:
             )
         assert resp.status_code == 400
 
-    def test_session_not_found_404(self, session_and_client: tuple[SaklasSession, TestClient]):
+    def test_session_not_found_404(self, session_and_client: tuple[DrowseSession, TestClient]):
         _, client = session_and_client
         resp = client.post(
-            "/saklas/v1/sessions/other/profiles/bake",
+            "/drowse/v1/sessions/other/profiles/bake",
             json={"name": "x", "expression": "0.3 default/a"},
         )
         assert resp.status_code == 404
 
-    def test_fingerprint_mismatch_400(self, session_and_client: tuple[SaklasSession, TestClient]):
+    def test_fingerprint_mismatch_400(self, session_and_client: tuple[DrowseSession, TestClient]):
         """Components fitted against other weights are refused.
 
         The route forwards the session's live fingerprint into the merge, so
-        the guard that ``SaklasSession.bake`` exists to enforce fires over
+        the guard that ``DrowseSession.bake`` exists to enforce fires over
         HTTP too rather than baking a tensor the loaded model never produced.
         """
-        from saklas.io.bake import MergeError
+        from drowse.io.bake import MergeError
         session, client = session_and_client
         live = loaded_model_fingerprint(session._model, session.model_id)
         seen: dict[str, Any] = {}
@@ -201,32 +201,32 @@ class TestMergeVector:
                 )
             raise AssertionError("guard did not fire")
 
-        with patch("saklas.io.bake.merge_into_manifold", side_effect=_merge):
+        with patch("drowse.io.bake.merge_into_manifold", side_effect=_merge):
             resp = client.post(
-                "/saklas/v1/sessions/default/profiles/bake",
+                "/drowse/v1/sessions/default/profiles/bake",
                 json={"name": "x", "expression": "0.3 default/a"},
             )
         assert seen["expected_model_fingerprint"] == live
         assert resp.status_code == 400
         assert "different loaded weights" in resp.json()["detail"]
 
-    def test_no_tensor_for_model_400(self, session_and_client: tuple[SaklasSession, TestClient], tmp_path: Path):
+    def test_no_tensor_for_model_400(self, session_and_client: tuple[DrowseSession, TestClient], tmp_path: Path):
         """If merge_into_manifold returns a folder with no tensor for our model.
 
         Defensive — merge_into_manifold should always produce one when given a
         model arg, but if it doesn't (e.g. silent skip), the session raises
-        ``MergeError`` and the global SaklasError handler reports 400.
+        ``MergeError`` and the global DrowseError handler reports 400.
         """
         session, client = session_and_client
         empty_folder = tmp_path / "local" / "x"
         empty_folder.mkdir(parents=True)
 
         with patch(
-            "saklas.io.bake.merge_into_manifold",
+            "drowse.io.bake.merge_into_manifold",
             return_value=empty_folder,
         ):
             resp = client.post(
-                "/saklas/v1/sessions/default/profiles/bake",
+                "/drowse/v1/sessions/default/profiles/bake",
                 json={"name": "x", "expression": "0.3 default/a"},
             )
         assert resp.status_code == 400

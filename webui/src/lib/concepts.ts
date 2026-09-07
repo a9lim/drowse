@@ -3,11 +3,11 @@
 // Two facts about every bundled concept are already on the wire and the
 // pickers present them: which *category* it belongs to (a category-valued
 // tag) and, for bipolar axes, its two *poles* (the canonical name split on
-// ``BIPOLAR_SEP`` — a dot). See saklas/core/session.py
+// ``BIPOLAR_SEP`` — a dot). See drowse/core/session.py
 // ``canonical_concept_name`` for the naming contract.
 
 /** The four fixed bundled categories, in display order.  Matches the
- * category-valued tags in saklas/data/manifolds/<concept>/manifold.json
+ * category-valued tags in drowse/data/manifolds/<concept>/manifold.json
  * and the grouping in AGENTS.md §"Bundled concepts" (affect folded into the
  * `emotions` manifold; social_stance / identity were cut in the 4.0 regen). */
 export const CATEGORY_ORDER = [
@@ -60,12 +60,4 @@ export function polesOf(name: string): Poles {
   const dot = name.indexOf(".");
   if (dot < 0) return { positive: name, negative: null };
   return { positive: name.slice(0, dot), negative: name.slice(dot + 1) };
-}
-
-/** Resting α for a concept — a loose ``recommended_alpha`` passthrough on
- * any catalog row that carries one, defaulting to 0.5 when absent. */
-export function recommendedAlpha(row: { recommended_alpha?: unknown }): number {
-  const raw = row.recommended_alpha;
-  const n = typeof raw === "number" ? raw : Number(raw);
-  return Number.isFinite(n) && n !== 0 ? n : 0.5;
 }

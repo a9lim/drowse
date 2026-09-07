@@ -1,12 +1,10 @@
-# saklas
+# Drowse
 
-[![CI](https://github.com/a9lim/saklas/actions/workflows/ci.yml/badge.svg)](https://github.com/a9lim/saklas/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/saklas)](https://pypi.org/project/saklas/)
-[![Downloads](https://img.shields.io/pypi/dm/saklas)](https://pypi.org/project/saklas/)
+[![CI](https://github.com/a9lim/polythetic/actions/workflows/ci.yml/badge.svg)](https://github.com/a9lim/polythetic/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://pypi.org/project/saklas/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-Saklas is a local workbench for mechanistic interpretability on large language
+Drowse is a local workbench for mechanistic interpretability on large language
 models.
 
 It comes with a local dashboard, along with a Python API, and a server compatible
@@ -14,22 +12,44 @@ with both OpenAI and Ollama.
 
 ## Quick start
 
+The PyPI distribution name is `drowse.ai`; the Python import and CLI remain
+`drowse`. Until the renamed package is published, install from this source
+checkout in a virtual environment; the upstream repository URL is unchanged.
+
 ```bash
-pip install saklas
-saklas serve google/gemma-3-4b-it
+uv pip install -e .
+drowse serve google/gemma-3-4b-it
 ```
 
 Open [http://localhost:8000](http://localhost:8000).
 
 The first launch downloads the model and fits the 17 bundled concept probes. This
-can take a while; they get stored in `~/.saklas/` for future launches.
+can take a while; they get stored in `~/.drowse/` for future launches.
 
 For NVIDIA CUDA:
 
 ```bash
-pip install "saklas[cuda,flash]"
-saklas serve google/gemma-3-4b-it --device cuda
+uv pip install -e ".[cuda,flash]"
+drowse serve google/gemma-3-4b-it --device cuda
 ```
+
+## Hosted browser edition status
+
+The repository includes an isolated Svelte PWA for the on-device WebGPU
+edition. This Drowse checkout is a preview: its renamed runtime and distribution
+locks remain `feasibility-required`, so one-click model installation is not enabled.
+The [published model files](https://huggingface.co/logitsml/drowse-web-catalog)
+are available separately; their upload does not establish compatibility with
+this preview. Base-model file links appear on the home page without a beta badge.
+Gemma PT still has a matched-weight numerical discrepancy; Qwen 3.5 still needs
+matched-quantization validation. Matching core packs and a signed installation
+catalog also remain required. J-lens and SAE are optional for base-model setup.
+The development fixture is deterministic test data, not real inference.
+
+The hosted edition keeps prompts, conversations, activations, and
+fitted artifacts on the device. WebGPU is mandatory for inference; it does not
+fall back to cloud inference or CPU-only inference. The existing Python server
+and bundled dashboard remain supported alongside the hosted edition.
 
 ## WebUI
 
@@ -85,7 +105,7 @@ The right side of the workbench has four tabs.
 
 ### Analysis tools
 
-Press `Cmd+K` or `Ctrl+K` elsewhere to open a menu with further options:
+Choose **Menu → All tools** in the workbench for further options:
 
 - build, fit, merge, install, and inspect manifolds;
 - author and score restricted-choice templates;
@@ -96,7 +116,7 @@ Press `Cmd+K` or `Ctrl+K` elsewhere to open a menu with further options:
 
 ## Concepts, subspaces, and manifolds
 
-In Saklas, you extract concepts as **manifolds** or **subspaces**.
+In Drowse, you extract concepts as **manifolds** or **subspaces**.
 
 - A 1D flat subspace is just a steering vector.
 - A higher-rank flat subspace is a group of orthogonal steering vectors.
@@ -104,7 +124,7 @@ In Saklas, you extract concepts as **manifolds** or **subspaces**.
 
 ### Bundled concepts
 
-Saklas comes with 17 concept pairs that are attached as probes by default:
+Drowse comes with 17 concept pairs that are attached as probes by default:
 
 | Category | Concepts |
 |---|---|
@@ -152,11 +172,11 @@ Manifold coefficients use two coordinates: `along` and `onto`. `along` controls
 movement within the manifold toward the target; `onto` reduces the off-surface
 component inside the manifold's fitted tube.
 
-## How Saklas works
+## How Drowse works
 
 ### Extraction
 
-Saklas first has the model answer a shared set of baseline prompts as each concept,
+Drowse first has the model answer a shared set of baseline prompts as each concept,
 then it takes the resulting hidden states and fits them to either a curved manifold
 or a flat subspace.
 
@@ -177,20 +197,20 @@ an off-surface residual and tube membership.
 
 The Jacobian lens implementation follows Gurnee et al.'s
 [work](https://transformer-circuits.pub/2026/workspace/index.html).
-Saklas lets you use one of the published J-lens artifacts, or fit your own.
+Drowse lets you use one of the published J-lens artifacts, or fit your own.
 
 ### Sparse autoencoders
 
-Saklas can either use a published SAELens release or train a local SAE.
+Drowse can either use a published SAELens release or train a local SAE.
 
 ## Installation
 
-Saklas requires Python 3.11 or newer and PyTorch 2.2 or newer. CUDA or Apple
+Drowse requires Python 3.11 or newer and PyTorch 2.2 or newer. CUDA or Apple
 Silicon MPS is strongly recommended for interactive use; CPU is supported for
 smaller models and non-GPU workflows.
 
 ```bash
-pip install saklas
+uv pip install -e .
 ```
 
 The base package includes the HTTP server, the prebuilt Svelte WebUI, and SAELens.
@@ -210,9 +230,9 @@ Optional extras add specialized workflows:
 Extras can be combined:
 
 ```bash
-pip install "saklas[cuda,flash]"       # full tested NVIDIA path
-pip install "saklas[hf,research]"      # dataset-backed research workflows
-pip install "saklas[notebook]"         # interactive figures
+uv pip install -e ".[cuda,flash]"       # full tested NVIDIA path
+uv pip install -e ".[hf,research]"      # dataset-backed research workflows
+uv pip install -e ".[notebook]"         # interactive figures
 ```
 
 `cuda` and `flash` are Linux/NVIDIA CUDA extras. FlashAttention is selected
@@ -221,15 +241,13 @@ automatically when installed; there is no runtime flag to enable it.
 From source:
 
 ```bash
-git clone https://github.com/a9lim/saklas
-cd saklas
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 ```
 
 ## Running the server
 
 ```bash
-saklas serve MODEL [options]
+drowse serve MODEL [options]
 ```
 
 Common options:
@@ -243,13 +261,13 @@ Common options:
 | `-P`, `--port` | `8000` | Bind port |
 | `-S`, `--steer` | none | Default steering expression |
 | `--top-k-alts` | `0` | Alternative tokens captured at each decode step |
-| `--compile` | off | Opt into `torch.compile` after Saklas probes the path |
+| `--compile` | off | Opt into `torch.compile` after Drowse probes the path |
 | `--cuda-graphs` | off | Pair static cache and CUDA graph capture with `--compile` |
-| `-k`, `--api-key` | none | Require bearer authentication; also reads `$SAKLAS_API_KEY` |
+| `-k`, `--api-key` | none | Require bearer authentication; also reads `$DROWSE_API_KEY` |
 | `--no-web` | off | Run the APIs without mounting the dashboard |
 
 `serve` and every subcommand that accepts `-c/--config` read
-`~/.saklas/config.yaml` first and then compose any explicit `-c PATH` files on top.
+`~/.drowse/config.yaml` first and then compose any explicit `-c PATH` files on top.
 For example:
 
 ```yaml
@@ -261,8 +279,8 @@ max_tokens: 512
 return_top_k: 8
 ```
 
-Inspect the resolved configuration with `saklas config show` and validate a file
-with `saklas config validate path.yaml`.
+Inspect the resolved configuration with `drowse config show` and validate a file
+with `drowse config validate path.yaml`.
 
 ## Command-line artifact workflows
 
@@ -285,37 +303,41 @@ Representative commands:
 
 ```bash
 # Extract and fit a two-pole concept for one model
-saklas manifold extract patient impatient -m google/gemma-3-4b-it
+drowse manifold extract patient impatient -m google/gemma-3-4b-it
 
 # Fit a bundled many-node manifold
-saklas manifold fit personas -m google/gemma-3-4b-it
+drowse manifold fit personas -m google/gemma-3-4b-it
 
 # Install or publish manifold packs through Hugging Face
-saklas pack search creativity
-saklas pack install OWNER/REPO
-saklas pack push local/patient.impatient -a OWNER/REPO -m google/gemma-3-4b-it
+drowse pack search creativity
+drowse pack install OWNER/REPO
+drowse pack push local/patient.impatient -a OWNER/REPO -m google/gemma-3-4b-it
+
+# Move one manifold closure, plus its referenced template, as an archive
+drowse pack export archive local/patient.impatient -o patient.drowse
+drowse pack install patient.drowse
 
 # Fetch a provider J-LENS or fit a local R-lens (RelP is the fit default)
-saklas lens fetch google/gemma-3-4b-it
-saklas lens fit org/model --prompts 100
+drowse lens fetch google/gemma-3-4b-it
+drowse lens fit org/model --prompts 100
 # Use --standard when you specifically want local:default instead
 
 # Fetch an SAE or train a local source
-saklas sae fetch google/gemma-3-4b-it saelens:gemma-scope-2-4b-it-res
-saklas sae train org/model my-sae --layer 20 --tokens 1000000
+drowse sae fetch google/gemma-3-4b-it saelens:gemma-scope-2-4b-it-res
+drowse sae train org/model my-sae --layer 20 --tokens 1000000
 ```
 
-Run `saklas <verb> -h` and `saklas <verb> <subcommand> -h` for the complete flag
+Run `drowse <verb> -h` and `drowse <verb> <subcommand> -h` for the complete flag
 surface.
 
 ## HTTP APIs
 
-The same `saklas serve` process exposes four surfaces on one port:
+The same `drowse serve` process exposes four surfaces on one port:
 
-- `/` — the Saklas WebUI;
+- `/` — the Drowse WebUI;
 - `/v1/*` — OpenAI-compatible models and chat completions;
 - `/api/*` — Ollama-compatible generation and chat;
-- `/saklas/v1/*` — native sessions, loom trees, probes, manifolds, templates,
+- `/drowse/v1/*` — native sessions, loom trees, probes, manifolds, templates,
   SAE/J-LENS lifecycle and replay, SSE, and token-plus-measurement WebSockets.
 
 Interactive OpenAPI documentation is available at
@@ -345,17 +367,17 @@ curl -N http://localhost:8000/api/chat -d '{
 }'
 ```
 
-Saklas targets a trusted local machine or lab network. It is not a hardened
+Drowse targets a trusted local machine or lab network. It is not a hardened
 multi-tenant inference service. If you bind it beyond a trusted host, read
 [SECURITY.md](SECURITY.md), set an API key, and add TLS, rate limits, request
-limits, and isolation outside Saklas.
+limits, and isolation outside Drowse.
 
 ## Python API
 
 ```python
-from saklas import SaklasSession, SamplingConfig
+from drowse import DrowseSession, SamplingConfig
 
-with SaklasSession.from_pretrained(
+with DrowseSession.from_pretrained(
     "google/gemma-3-4b-it",
     device="auto",
     return_top_k=8,
@@ -411,13 +433,13 @@ scores = session.score_choices(
 )
 ```
 
-Notebook helpers are available from `saklas.notebook` after installing
-`saklas[notebook]`: `plot_alpha_sweep`, `plot_probe_correlation`,
+Notebook helpers are available from `drowse.notebook` after installing
+`drowse[notebook]`: `plot_alpha_sweep`, `plot_probe_correlation`,
 `plot_layer_norms`, `plot_trait_history`, and `to_dataframe`.
 
 ## Model support
 
-Saklas has end-to-end tested paths for:
+Drowse has end-to-end tested paths for:
 
 - Qwen 2, Qwen 3, and Qwen 3.5, including supported text and MoE variants;
 - Gemma 2, Gemma 3, and Gemma 4, including text-only extraction from supported
@@ -427,7 +449,7 @@ Saklas has end-to-end tested paths for:
 
 Additional architectures are wired through the generic residual-layer interface,
 including Mixtral, Phi, Cohere, DeepSeek, OLMo, Granite, Nemotron, GPT-2-family,
-Falcon, MPT, DBRX, OPT, and others. Saklas emits a warning when an architecture is
+Falcon, MPT, DBRX, OPT, and others. Drowse emits a warning when an architecture is
 wired but has not been exercised end to end.
 
 CUDA and Apple Silicon MPS both have real-model smoke coverage. Model-specific
@@ -437,20 +459,31 @@ FlashAttention depends on the model's Transformers attention implementation.
 
 ## State and distribution
 
-Saklas keeps local state under `~/.saklas/`; set `$SAKLAS_HOME` to move it. The
+Drowse keeps local state under `~/.drowse/`; set `$DROWSE_HOME` to move it. The
 store contains authored manifolds, per-model fits and neutral statistics, local
 SAE/J-LENS artifacts, source bindings, and templates. Conversation saves are
 explicit browser-downloaded JSON files (or caller-selected `LoomTree.save()`
-paths); they are not autosaved under `~/.saklas/`.
+paths); they are not autosaved under `~/.drowse/`.
 
 Manifold packs are folders with metadata, node corpora, integrity hashes, and
 optional fitted tensors. They can be installed from a local path or distributed as
-Hugging Face model repositories. A fitted two-node PCA manifold can also be
-exported as a llama.cpp control-vector GGUF with `saklas pack export gguf`.
+Hugging Face model repositories. A `.drowse` is the narrow ZIP transport for
+exactly one manifold closure and its referenced template, when present; export it
+with `drowse pack export archive` and install it with `drowse pack install`.
+It never contains model weights, J-lenses, or SAEs. A fitted two-node PCA manifold
+can instead be exported as a llama.cpp control-vector GGUF with
+`drowse pack export gguf`.
+
+Hosted-browser discovery accepts only Hugging Face repositories tagged
+`drowse-manifold` that publish exactly one `.drowse` at the repository root
+and a root `manifold.json` summary. The browser resolves the repository to an
+immutable 40-character commit, streams the archive into browser-local storage,
+and verifies that its declared repository and revision match before installing
+it. Python installations continue to support the legacy folder layout.
 
 Treat model repositories and downloaded artifacts as executable or otherwise
-untrusted input. Saklas verifies declared artifact hashes, but integrity is not
-authorship.
+untrusted input. Drowse validates archive paths, declared structure, tensor
+headers, and hashes, but integrity is not publisher identity.
 
 ## Development
 
@@ -464,21 +497,23 @@ pytest -q tests/
 python -m build
 ```
 
-GPU smoke tests may download model weights:
+GPU integration tests download the public SmolLM2-360M-Instruct weights by
+default. Set `DROWSE_TEST_MODEL` to exercise another compatible model:
 
 ```bash
 pytest -q tests/test_smoke.py
+DROWSE_TEST_MODEL=google/gemma-3-4b-it pytest -q tests/test_smoke.py
 ```
 
 The WebUI is a Svelte 5 + Vite application in `webui/`. Its compiled bundle under
-`saklas/web/dist/` is committed package data and ships in the wheel.
+`drowse/web/dist/` is committed package data and ships in the wheel.
 
 ```bash
 cd webui
 npm ci
 npm run check
 npm run build
-git diff --exit-code ../saklas/web/dist
+git diff --exit-code ../drowse/web/dist
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development conventions and adding a
@@ -486,10 +521,10 @@ model architecture.
 
 ## Research lineage and credits
 
-Saklas builds on Representation Engineering
+Drowse builds on Representation Engineering
 ([Zou et al., 2023](https://arxiv.org/abs/2310.01405)).
 [repeng](https://github.com/vgel/repeng) by Theia Vogel is the best-known compact
-implementation of that approach; Saklas takes the workbench route, adding live
+implementation of that approach; Drowse takes the workbench route, adding live
 monitoring, manifold geometry, branching experiments, and server protocols.
 
 Two-pole extraction uses difference-of-means following
@@ -500,17 +535,17 @@ source is derived from the framing in Anthropic's
 the verbalizable-workspace method of
 [Gurnee et al., 2026](https://transformer-circuits.pub/2026/workspace/index.html).
 
-If you use Saklas in published research, please cite the relevant upstream methods
-alongside the Saklas version and exact model checkpoint you used.
+If you use Drowse in published research, please cite the relevant upstream methods
+alongside the Drowse version and exact model checkpoint you used.
 
 ## Issues and security
 
-Please update to the latest Saklas release before filing a bug. Include the model
-ID, device, dtype or quantization mode, Saklas version, and a minimal reproduction
-in [GitHub Issues](https://github.com/a9lim/saklas/issues).
+Please update to the latest Drowse release before filing a bug. Include the model
+ID, device, dtype or quantization mode, Drowse version, and a minimal reproduction
+in [GitHub Issues](https://github.com/a9lim/polythetic/issues).
 
 Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 
 ## License
 
-Saklas is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).
+Drowse is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).

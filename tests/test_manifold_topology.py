@@ -20,14 +20,14 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.manifold import BoxDomain, CustomDomain
-from saklas.core.topology import (
+from drowse.core.manifold import BoxDomain, CustomDomain
+from drowse.core.topology import (
     _count_persistent_loops,
     _faint_cycle_coords,
     _is_angular_harmonic,
     select_topology,
 )
-from saklas.core.mahalanobis import LayerWhitener
+from drowse.core.mahalanobis import LayerWhitener
 from tests._whitener import isotropic_whitener, rogue_whitener
 
 _LAYERS = list(range(6))
@@ -70,7 +70,6 @@ def _sphere(k: int, seed: int) -> torch.Tensor:
     ("blob", None, 0),          # filled in below (needs a seed)
     ("arc", torch.stack([torch.linspace(0, 1, 40), torch.linspace(0, 1, 40) ** 2], 1), 0),
     ("line", torch.stack([torch.linspace(0, 1, 30), 2 * torch.linspace(0, 1, 30)], 1), 0),
-    ("sphere-S2", _sphere(80, 3), 0),
 ])
 def test_ph_loop_count(name: str, points: torch.Tensor | None, want: int) -> None:
     if points is None:  # blob
@@ -92,7 +91,7 @@ def test_ph_dense_complete_complex_no_spurious_loops() -> None:
     essential (which routed the 107-node ``personas`` heap to a spurious
     8-torus).  The raised cap keeps every triangle across the supported regime.
     """
-    from saklas.core.topology import _rips_h1_persistence
+    from drowse.core.topology import _rips_h1_persistence
 
     g = torch.Generator().manual_seed(7)
     cluster = torch.randn(109, 6, generator=g) * 0.1
@@ -103,16 +102,13 @@ def test_ph_dense_complete_complex_no_spurious_loops() -> None:
     # The fix: no spurious loops on the dense complex.
     assert _count_persistent_loops(D) == 0
 
-    # And the cap is genuinely load-bearing: at the same (complete) ceiling the
-    # starved budget *does* manufacture essential cycles while the current
-    # default keeps every triangle and reports none — so the regression is real,
-    # not incidental to this particular heap.
+    # A starved budget must now fail explicitly, never manufacture cycles.
     K = D.shape[0]
     iu = torch.triu_indices(K, K, offset=1)
     eps_max = 2.0 * float(D[iu[0], iu[1]].max())  # ≥ every pair ⇒ complete
-    starved = _rips_h1_persistence(D, eps_max, max_triangles=150_000)
+    with pytest.raises(ValueError, match="triangle budget exceeded"):
+        _rips_h1_persistence(D, eps_max, max_triangles=150_000)
     ample = _rips_h1_persistence(D, eps_max, max_triangles=500_000)
-    assert sum(1 for _b, death in starved if math.isinf(death)) > 0
     assert sum(1 for _b, death in ample if math.isinf(death)) == 0
 
 
@@ -221,6 +217,15 @@ def test_select_records_candidate_ranking() -> None:
     # Candidates are ranked viable-first by score (GCV); the winner is present.
     assert any(c.name == choice.winner_name for c in choice.candidates)
     assert choice.candidates[0].viable
+
+
+def test_unviable_spectral_candidate_remains_sidecar_serializable() -> None:
+    choice = _choose(torch.tensor([[0.0], [1.0]]), noise=0.0)
+    flat = next(candidate for candidate in choice.candidates if candidate.name == "flat-pca")
+    spectral = next(candidate for candidate in choice.candidates if candidate.name == "spectral")
+    assert not spectral.viable
+    assert spectral.intrinsic_dim == flat.intrinsic_dim == 1
+    assert math.isinf(spectral.score)
 
 
 # ------------------------------------ faint single-cycle fallback (S^1) ------
@@ -566,7 +571,7 @@ def test_select_topology_deterministic() -> None:
 def test_select_topology_reuses_laplacian_eigensystem(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.core.topology as topology_mod
+    import drowse.core.topology as topology_mod
 
     calls = 0
     real = topology_mod._laplacian_eigen

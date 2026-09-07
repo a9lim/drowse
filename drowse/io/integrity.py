@@ -1,0 +1,102 @@
+"""Shared artifact primitives: name validation, integrity, and profile versioning.
+
+The cross-cutting infrastructure every artifact family in :mod:`drowse.io`
+shares:
+
+- ``NAME_REGEX`` — the artifact-name grammar.  Manifolds, selectors, templates,
+  and the local lens/SAE source names all validate against this one pattern;
+- ``hash_file`` / ``verify_integrity`` — the sha256
+  integrity helpers (the neutral/alignment caches, the lens shard sidecars, and
+  the manifold format's own integrity manifest build on these);
+- ``PROFILE_FORMAT_VERSION`` — the current profile sidecar version written by
+  :func:`drowse.core.profile.save_profile`.
+"""
+from __future__ import annotations
+
+import hashlib
+import re
+from pathlib import Path
+
+from drowse.io.paths import ensure_within
+
+
+NAME_REGEX = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+
+# Current profile sidecar format version.  v6 is the honest stamp for the
+# five-key schema (``format_version`` / ``drowse_version`` / ``method`` /
+# ``tensor_sha256`` / ``provenance``): the field set was cut from fourteen keys
+# without a bump, so a v5 file already fails the exact-set validator and the
+# invalidation was paid in practice before it was declared.  No cache rides this
+# version — the neutral-activation and alignment caches carry their own sidecar
+# schemas and format versions in :mod:`drowse.io.alignment` — so the only reader
+# affected is a user-saved ``Profile``, which gets a clear regenerate error.
+PROFILE_FORMAT_VERSION = 6
+
+
+def hash_file(path: Path) -> str:
+    """Return hex sha256 of a file's contents.
+
+    Shared by artifact integrity manifests
+    (:func:`drowse.io.manifolds.hash_manifold_files` imports this).
+    """
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# In-process fingerprint cache keyed by absolute file path.
+# Entry: stable file identity + expected sha256 -> last verification matched.
+# Short-circuits full hashing on warm loads. First load, or any stat change,
+# still runs the full sha256 before the entry is (re-)populated.
+_FINGERPRINT_CACHE_MAX = 4096
+_FINGERPRINT_CACHE: dict[str, tuple[int, int, int, int, int, str]] = {}
+
+
+def verify_integrity(folder: Path, files: dict[str, str]) -> tuple[bool, list[str]]:
+    """Compare every file in `files` (path -> expected sha256) against disk.
+
+    Returns (all_ok, list_of_bad_paths). A missing file counts as bad.
+
+    Uses an in-process stat-identity fingerprint cache to avoid re-hashing
+    on warm loads. On first load and after any stat change, the full sha256
+    still runs — the cache is purely an optimization and does not weaken the
+    integrity contract.
+    """
+    bad: list[str] = []
+    for rel, expected in files.items():
+        # A manifest entry that resolves outside ``folder`` (a ``..`` or
+        # absolute ``rel`` in a downloaded manifest) is treated as a failed
+        # file rather than read off-tree. ``ensure_within`` is the path-
+        # traversal barrier.
+        try:
+            fp = ensure_within(folder, rel)
+        except ValueError:
+            bad.append(rel)
+            continue
+        if not fp.exists():
+            bad.append(rel)
+            continue
+        key = str(fp.resolve())
+        try:
+            st = fp.stat()
+        except OSError:
+            bad.append(rel)
+            continue
+        fp_key = (
+            st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_dev, st.st_ino,
+            expected,
+        )
+        cached = _FINGERPRINT_CACHE.pop(key, None)
+        if cached is not None and cached == fp_key:
+            _FINGERPRINT_CACHE[key] = cached
+            continue
+        if hash_file(fp) != expected:
+            _FINGERPRINT_CACHE.pop(key, None)
+            bad.append(rel)
+            continue
+        while len(_FINGERPRINT_CACHE) >= _FINGERPRINT_CACHE_MAX:
+            _FINGERPRINT_CACHE.pop(next(iter(_FINGERPRINT_CACHE)))
+        _FINGERPRINT_CACHE[key] = fp_key
+    return (not bad, bad)

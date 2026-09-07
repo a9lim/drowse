@@ -1,0 +1,29 @@
+{
+  "format_version": 10,
+  "name": "welcoming.detached",
+  "description": "Starter tone control: welcoming replies at one end and detached replies at the other.",
+  "fit_mode": "pca",
+  "hyperparams": {
+    "max_dim": 1,
+    "var_threshold": 0.7
+  },
+  "nodes": [
+    {
+      "label": "welcoming",
+      "kind": "abstract",
+      "role": null
+    },
+    {
+      "label": "detached",
+      "kind": "abstract",
+      "role": null
+    }
+  ],
+  "files": {},
+  "tags": [
+    "starter",
+    "tone"
+  ],
+  "source": "local",
+  "template_ref": null
+}

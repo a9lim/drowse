@@ -1,0 +1,2262 @@
+{
+  "project": "Polythetic",
+  "round": 2,
+  "checked_date": "2026-09-05",
+  "screened_unique_new_domains": 799,
+  "final_count": 20,
+  "method": "Live Porkbun exact-domain registration checks, final pending=0; RDAP used independently as preliminary corroboration; public PyPI/npm and limited web collision searches.",
+  "pricing_source": "https://porkbun.com/tld/ai",
+  "shortlist": [
+    {
+      "rank": 1,
+      "name": "puckish",
+      "domain": "puckish.ai",
+      "pronunciation": "PUCK-ish",
+      "rationale": "Mischievous and playful; a strong match for experimenting with model personalities.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:21.412907+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=puckish.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/puckish",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 2,
+      "name": "underlit",
+      "domain": "underlit.ai",
+      "pronunciation": "UN-der-lit",
+      "rationale": "Light beneath the surface; an evocative metaphor for inspecting model internals.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:21.580275+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=underlit.ai",
+      "dictionary_url": "https://www.collinsdictionary.com/us/dictionary/english/underlit",
+      "collision_note": "Exact title of a small 2024 game-jam game. This is an existing software use.",
+      "collision_sources": "https://mathix94.itch.io/underlit"
+    },
+    {
+      "rank": 3,
+      "name": "unmuffle",
+      "domain": "unmuffle.ai",
+      "pronunciation": "un-MUFF-ul",
+      "rationale": "Free hidden signals from what obscures them; the clearest interpretability metaphor.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:21.402976+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=unmuffle.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/unmuffle",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 4,
+      "name": "retint",
+      "domain": "retint.ai",
+      "pronunciation": "ree-TINT",
+      "rationale": "Change the shade of something; a compact metaphor for steering model behavior.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:21.776075+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=retint.ai",
+      "dictionary_url": "https://www.collinsdictionary.com/us/english-language-learning/retint",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 5,
+      "name": "uncoiled",
+      "domain": "uncoiled.ai",
+      "pronunciation": "un-KOYLD",
+      "rationale": "Complex structure opened out so it can be explored.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:22.130940+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=uncoiled.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/uncoil",
+      "collision_note": "Also used as a music release title and in mathematical terminology; no exact software brand surfaced in the limited search.",
+      "collision_sources": "https://arxiv.org/abs/2302.12782"
+    },
+    {
+      "rank": 6,
+      "name": "intoned",
+      "domain": "intoned.ai",
+      "pronunciation": "in-TOHND",
+      "rationale": "Voice, tone, and expression; a natural association with language.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:21.951294+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=intoned.ai",
+      "dictionary_url": "https://dictionary.cambridge.org/us/dictionary/english/intoned",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 7,
+      "name": "unlaced",
+      "domain": "unlaced.ai",
+      "pronunciation": "un-LAYST",
+      "rationale": "Opened and loosened; tactile, memorable, and easy to spell.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:21.979209+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=unlaced.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/unlace",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 8,
+      "name": "fancied",
+      "domain": "fancied.ai",
+      "pronunciation": "FAN-seed",
+      "rationale": "Imagined possibilities; creative and slightly whimsical.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:22.502473+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=fancied.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/fancied",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 9,
+      "name": "honeyed",
+      "domain": "honeyed.ai",
+      "pronunciation": "HUN-eed",
+      "rationale": "A warm, pleasant voice; particularly apt for tone and persona steering.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:21.800927+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=honeyed.ai",
+      "dictionary_url": "https://dictionary.cambridge.org/us/dictionary/english/honeyed",
+      "collision_note": "Existing creative studio name and adjective in the app title Honeyed Legends Myths. Its literal meaning can also imply insincere sweetness.",
+      "collision_sources": "https://thehoneyedcollective.com/honeyed-studios/ https://apps.apple.com/hk/app/honeyed-legends-myths/id6761210848"
+    },
+    {
+      "rank": 10,
+      "name": "brambly",
+      "domain": "brambly.ai",
+      "pronunciation": "BRAM-blee",
+      "rationale": "Tangled, branching growth; a visual identity for exploring branching conversations.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:24.186052+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=brambly.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/brambly",
+      "collision_note": "Strong association with Brambly Hedge, a children's book series. No exact standalone software brand surfaced in the limited search.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 11,
+      "name": "fernery",
+      "domain": "fernery.ai",
+      "pronunciation": "FUR-nuh-ree",
+      "rationale": "A place where ferns grow; a quiet, organic name with strong visual possibilities.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:24.374968+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=fernery.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/fernery",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 12,
+      "name": "hazily",
+      "domain": "hazily.ai",
+      "pronunciation": "HAY-zih-lee",
+      "rationale": "Half-visible patterns and uncertain impressions; soft and atmospheric.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:24.308602+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=hazily.ai",
+      "dictionary_url": "https://www.oxfordlearnersdictionaries.com/us/definition/english/hazily",
+      "collision_note": "Has a deliberate ambiguity/uncertainty connotation. No exact software brand surfaced in the limited search.",
+      "collision_sources": "https://www.oxfordlearnersdictionaries.com/us/definition/english/hazily"
+    },
+    {
+      "rank": 13,
+      "name": "dozing",
+      "domain": "dozing.ai",
+      "pronunciation": "DOH-zing",
+      "rationale": "Dormant potential and dreamlike states; gentle and easy to remember.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:23.041226+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=dozing.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/doze",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 14,
+      "name": "riverlet",
+      "domain": "riverlet.ai",
+      "pronunciation": "RIV-er-let",
+      "rationale": "A little river; a natural metaphor for branching streams of generation.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:24.562185+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=riverlet.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/riverlet",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 15,
+      "name": "dimpled",
+      "domain": "dimpled.ai",
+      "pronunciation": "DIM-puld",
+      "rationale": "Small contours in a surface; friendly, tactile, and suggestive of geometry.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:23.402872+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=dimpled.ai",
+      "dictionary_url": "https://www.oxfordlearnersdictionaries.com/definition/english/dimpled",
+      "collision_note": "Existing technical phrase Dimpled Manifold Model in ML research; this is not an exact standalone product-name match.",
+      "collision_sources": "https://arxiv.org/abs/2106.10151"
+    },
+    {
+      "rank": 16,
+      "name": "wafting",
+      "domain": "wafting.ai",
+      "pronunciation": "WAF-ting",
+      "rationale": "Gentle movement in a direction; a soft metaphor for activation steering.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:24.482564+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=wafting.ai",
+      "dictionary_url": "https://www.merriam-webster.com/dictionary/waft",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 17,
+      "name": "satiny",
+      "domain": "satiny.ai",
+      "pronunciation": "SAT-in-ee",
+      "rationale": "Smooth and tactile; a polished, approachable brand.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:22.870864+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=satiny.ai",
+      "dictionary_url": "https://www.oxfordlearnersdictionaries.com/us/definition/english/satiny",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 18,
+      "name": "wittily",
+      "domain": "wittily.ai",
+      "pronunciation": "WIT-ih-lee",
+      "rationale": "Clever expression; an upbeat name for a language-focused tool.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:23.233657+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=wittily.ai",
+      "dictionary_url": "https://www.oxfordlearnersdictionaries.com/us/definition/english/wittily",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 19,
+      "name": "giddily",
+      "domain": "giddily.ai",
+      "pronunciation": "GID-ih-lee",
+      "rationale": "Excitement and discovery; playful and buoyant.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:23.032894+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=giddily.ai",
+      "dictionary_url": "https://www.oxfordlearnersdictionaries.com/us/definition/english/giddily",
+      "collision_note": "No exact standalone software brand surfaced in the limited web search; not a comprehensive clearance.",
+      "collision_sources": ""
+    },
+    {
+      "rank": 20,
+      "name": "blithely",
+      "domain": "blithely.ai",
+      "pronunciation": "BLYTHE-lee",
+      "rationale": "Carefree and cheerful; a light, literary personality.",
+      "registrar_status": "AVAILABLE",
+      "premium": 0,
+      "registration_annual_usd": "82.70",
+      "renewal_annual_usd": "82.70",
+      "minimum_term_years": 2,
+      "two_year_arithmetic_estimate_usd": "165.40",
+      "price_note": "About USD 165 upfront before tax. Annualized prices; actual checkout rounding/fees can differ.",
+      "registrar_checked_at_utc": "2026-09-05 15:45:52",
+      "registry_http_status": 404,
+      "registry_checked_at_utc": "2026-09-05T15:42:22.138639+00:00",
+      "pypi_http_status": 404,
+      "npm_http_status": 404,
+      "registrar_url": "https://porkbun.com/checkout/search?q=blithely.ai",
+      "dictionary_url": "https://www.oxfordlearnersdictionaries.com/us/definition/english/blithely",
+      "collision_note": "Can mean cheerfully or carelessly; pronunciation has a voiced th. No exact software brand surfaced in the limited search.",
+      "collision_sources": "https://www.oxfordlearnersdictionaries.com/us/definition/english/blithely"
+    }
+  ],
+  "registrar": {
+    "fetched_at_utc": "2026-09-05T15:46:56.143Z",
+    "pending": 0,
+    "results": [
+      {
+        "id": "1819946217",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "puckish.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946218",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "underlit.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946219",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "unmuffle.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946220",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "retint.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946221",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "uncoiled.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946222",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "intoned.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946223",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "unlaced.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946224",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "fancied.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946225",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "honeyed.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946226",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "brambly.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946227",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "fernery.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946228",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "hazily.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946229",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "dozing.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946230",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "riverlet.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946231",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "dimpled.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946232",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "wafting.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946233",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "satiny.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946234",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "wittily.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946235",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "giddily.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      },
+      {
+        "id": "1819946236",
+        "check_id": "7b78721024776c5806c19529a7b6a173cd631b650b887d50e55fc2493dcc0400",
+        "domain": "blithely.ai",
+        "tld": "ai",
+        "result": "AVAILABLE",
+        "type": "registration",
+        "ts": "2026-09-05 15:45:52",
+        "weight": "0",
+        "extended": {
+          "bulkSearch": 1,
+          "resultType": null,
+          "discount": 0,
+          "premium": 0,
+          "price": "8270",
+          "pricing": {
+            "registryFees": {
+              "currency": "USD",
+              "amount": 8000,
+              "default-amount": 8000,
+              "exchangeRate": 1,
+              "USD": "8000"
+            },
+            "registrarMarkup": {
+              "type": "flat",
+              "amount": "0",
+              "fixed": 0,
+              "markup": "0"
+            },
+            "otherFees": [],
+            "totalOtherFees": "0",
+            "cost": 8000,
+            "customerPrice": 8000,
+            "grossMargin": 0,
+            "forceRetailPrice": null
+          },
+          "typePricing": {
+            "registration": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "renewal": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "8000",
+              "premium": 0,
+              "price": "8270"
+            },
+            "transfer": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            },
+            "update": {
+              "ignoreLowerRenew": null,
+              "currentWholesale": "16000",
+              "premium": 0,
+              "price": "16509"
+            }
+          }
+        },
+        "environment": "prod",
+        "reason": null,
+        "inCart": "0"
+      }
+    ]
+  },
+  "registry_checks": [
+    {
+      "domain": "puckish.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/puckish.ai",
+      "checked_at": "2026-09-05T15:42:21.412907+00:00"
+    },
+    {
+      "domain": "unmuffle.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/unmuffle.ai",
+      "checked_at": "2026-09-05T15:42:21.402976+00:00"
+    },
+    {
+      "domain": "underlit.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/underlit.ai",
+      "checked_at": "2026-09-05T15:42:21.580275+00:00"
+    },
+    {
+      "domain": "retint.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/retint.ai",
+      "checked_at": "2026-09-05T15:42:21.776075+00:00"
+    },
+    {
+      "domain": "honeyed.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/honeyed.ai",
+      "checked_at": "2026-09-05T15:42:21.800927+00:00"
+    },
+    {
+      "domain": "intoned.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/intoned.ai",
+      "checked_at": "2026-09-05T15:42:21.951294+00:00"
+    },
+    {
+      "domain": "unlaced.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/unlaced.ai",
+      "checked_at": "2026-09-05T15:42:21.979209+00:00"
+    },
+    {
+      "domain": "uncoiled.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/uncoiled.ai",
+      "checked_at": "2026-09-05T15:42:22.130940+00:00"
+    },
+    {
+      "domain": "blithely.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/blithely.ai",
+      "checked_at": "2026-09-05T15:42:22.138639+00:00"
+    },
+    {
+      "domain": "fancied.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/fancied.ai",
+      "checked_at": "2026-09-05T15:42:22.502473+00:00"
+    },
+    {
+      "domain": "satiny.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/satiny.ai",
+      "checked_at": "2026-09-05T15:42:22.870864+00:00"
+    },
+    {
+      "domain": "giddily.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/giddily.ai",
+      "checked_at": "2026-09-05T15:42:23.032894+00:00"
+    },
+    {
+      "domain": "dozing.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/dozing.ai",
+      "checked_at": "2026-09-05T15:42:23.041226+00:00"
+    },
+    {
+      "domain": "wittily.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/wittily.ai",
+      "checked_at": "2026-09-05T15:42:23.233657+00:00"
+    },
+    {
+      "domain": "dimpled.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/dimpled.ai",
+      "checked_at": "2026-09-05T15:42:23.402872+00:00"
+    },
+    {
+      "domain": "brambly.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/brambly.ai",
+      "checked_at": "2026-09-05T15:42:24.186052+00:00"
+    },
+    {
+      "domain": "hazily.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/hazily.ai",
+      "checked_at": "2026-09-05T15:42:24.308602+00:00"
+    },
+    {
+      "domain": "fernery.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/fernery.ai",
+      "checked_at": "2026-09-05T15:42:24.374968+00:00"
+    },
+    {
+      "domain": "wafting.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/wafting.ai",
+      "checked_at": "2026-09-05T15:42:24.482564+00:00"
+    },
+    {
+      "domain": "riverlet.ai",
+      "status_code": 404,
+      "url": "https://rdap.identitydigital.services/rdap/domain/riverlet.ai",
+      "checked_at": "2026-09-05T15:42:24.562185+00:00"
+    }
+  ],
+  "package_checks": [
+    {
+      "name": "puckish",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/puckish/json",
+      "checked_at": "2026-09-05T15:42:02.920318+00:00"
+    },
+    {
+      "name": "puckish",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/puckish",
+      "checked_at": "2026-09-05T15:42:02.972686+00:00"
+    },
+    {
+      "name": "unmuffle",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/unmuffle/json",
+      "checked_at": "2026-09-05T15:42:02.906954+00:00"
+    },
+    {
+      "name": "unmuffle",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/unmuffle",
+      "checked_at": "2026-09-05T15:42:03.152707+00:00"
+    },
+    {
+      "name": "underlit",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/underlit/json",
+      "checked_at": "2026-09-05T15:42:03.128953+00:00"
+    },
+    {
+      "name": "underlit",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/underlit",
+      "checked_at": "2026-09-05T15:42:03.192937+00:00"
+    },
+    {
+      "name": "retint",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/retint/json",
+      "checked_at": "2026-09-05T15:42:03.353068+00:00"
+    },
+    {
+      "name": "retint",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/retint",
+      "checked_at": "2026-09-05T15:42:03.551209+00:00"
+    },
+    {
+      "name": "honeyed",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/honeyed/json",
+      "checked_at": "2026-09-05T15:42:03.562864+00:00"
+    },
+    {
+      "name": "honeyed",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/honeyed",
+      "checked_at": "2026-09-05T15:42:03.659840+00:00"
+    },
+    {
+      "name": "intoned",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/intoned/json",
+      "checked_at": "2026-09-05T15:42:03.752683+00:00"
+    },
+    {
+      "name": "intoned",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/intoned",
+      "checked_at": "2026-09-05T15:42:03.827707+00:00"
+    },
+    {
+      "name": "unlaced",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/unlaced/json",
+      "checked_at": "2026-09-05T15:42:03.820972+00:00"
+    },
+    {
+      "name": "unlaced",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/unlaced",
+      "checked_at": "2026-09-05T15:42:04.006906+00:00"
+    },
+    {
+      "name": "uncoiled",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/uncoiled/json",
+      "checked_at": "2026-09-05T15:42:04.005607+00:00"
+    },
+    {
+      "name": "uncoiled",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/uncoiled",
+      "checked_at": "2026-09-05T15:42:04.088088+00:00"
+    },
+    {
+      "name": "blithely",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/blithely/json",
+      "checked_at": "2026-09-05T15:42:04.205825+00:00"
+    },
+    {
+      "name": "blithely",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/blithely",
+      "checked_at": "2026-09-05T15:42:04.236938+00:00"
+    },
+    {
+      "name": "fancied",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/fancied/json",
+      "checked_at": "2026-09-05T15:42:04.695449+00:00"
+    },
+    {
+      "name": "fancied",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/fancied",
+      "checked_at": "2026-09-05T15:42:04.920587+00:00"
+    },
+    {
+      "name": "satiny",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/satiny/json",
+      "checked_at": "2026-09-05T15:42:05.335176+00:00"
+    },
+    {
+      "name": "satiny",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/satiny",
+      "checked_at": "2026-09-05T15:42:05.443389+00:00"
+    },
+    {
+      "name": "giddily",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/giddily/json",
+      "checked_at": "2026-09-05T15:42:05.495877+00:00"
+    },
+    {
+      "name": "giddily",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/giddily",
+      "checked_at": "2026-09-05T15:42:05.568508+00:00"
+    },
+    {
+      "name": "dozing",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/dozing/json",
+      "checked_at": "2026-09-05T15:42:05.639405+00:00"
+    },
+    {
+      "name": "dozing",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/dozing",
+      "checked_at": "2026-09-05T15:42:05.742658+00:00"
+    },
+    {
+      "name": "wittily",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/wittily/json",
+      "checked_at": "2026-09-05T15:42:05.933220+00:00"
+    },
+    {
+      "name": "wittily",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/wittily",
+      "checked_at": "2026-09-05T15:42:06.008464+00:00"
+    },
+    {
+      "name": "dimpled",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/dimpled/json",
+      "checked_at": "2026-09-05T15:42:06.076615+00:00"
+    },
+    {
+      "name": "dimpled",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/dimpled",
+      "checked_at": "2026-09-05T15:42:06.205594+00:00"
+    },
+    {
+      "name": "brambly",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/brambly/json",
+      "checked_at": "2026-09-05T15:42:07.318064+00:00"
+    },
+    {
+      "name": "brambly",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/brambly",
+      "checked_at": "2026-09-05T15:42:07.437433+00:00"
+    },
+    {
+      "name": "hazily",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/hazily/json",
+      "checked_at": "2026-09-05T15:42:07.499164+00:00"
+    },
+    {
+      "name": "hazily",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/hazily",
+      "checked_at": "2026-09-05T15:42:07.549409+00:00"
+    },
+    {
+      "name": "fernery",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/fernery/json",
+      "checked_at": "2026-09-05T15:42:07.635495+00:00"
+    },
+    {
+      "name": "fernery",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/fernery",
+      "checked_at": "2026-09-05T15:42:07.721123+00:00"
+    },
+    {
+      "name": "wafting",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/wafting/json",
+      "checked_at": "2026-09-05T15:42:07.703879+00:00"
+    },
+    {
+      "name": "wafting",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/wafting",
+      "checked_at": "2026-09-05T15:42:07.869120+00:00"
+    },
+    {
+      "name": "riverlet",
+      "registry": "pypi",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://pypi.org/pypi/riverlet/json",
+      "checked_at": "2026-09-05T15:42:07.869327+00:00"
+    },
+    {
+      "name": "riverlet",
+      "registry": "npm",
+      "http_status": 404,
+      "summary": null,
+      "url": "https://registry.npmjs.org/riverlet",
+      "checked_at": "2026-09-05T15:42:07.973324+00:00"
+    }
+  ]
+}
+

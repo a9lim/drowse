@@ -1,0 +1,7 @@
+{
+  "$schema": "../evidence-config.schema.json",
+  "schemaVersion": 1,
+  "evidenceType": "sharedGoldenResults",
+  "observer": "webui/scripts/hosted-release-local-observer.mjs",
+  "arguments": ["--evidence-type", "sharedGoldenResults"]
+}

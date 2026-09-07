@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from saklas.io.alignment import (
+from drowse.io.alignment import (
     AlignmentError,
     LayerAlignment,
     alignment_cache_path,
@@ -192,9 +192,9 @@ class TestAlignmentCache:
     _TGT_ID = {"model_fingerprint": "tgt", "capture_sha256": "b" * 64}
 
     def test_cache_path_layout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from saklas.io.paths import safe_model_id
+        from drowse.io.paths import safe_model_id
 
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         ts, sc = alignment_cache_path("google/gemma-3-4b-it", "Qwen/Qwen2.5-7B-Instruct")
         # Layout: under the *target* model's dir.
         assert safe_model_id("Qwen/Qwen2.5-7B-Instruct") in str(ts)
@@ -204,7 +204,7 @@ class TestAlignmentCache:
         assert sc.suffix == ".json"
 
     def test_save_load_round_trip(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         D = 4
         M = _alignments({0: torch.eye(D), 5: torch.eye(D)})
         quality = {0: 0.85, 5: 0.72}
@@ -232,7 +232,7 @@ class TestAlignmentCache:
         assert sidecar["quality_per_layer"]["0"] == pytest.approx(0.85)
 
     def test_load_missing_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         assert load_alignment_map(
             "nope/src", "nope/tgt", source_identity=self._SRC_ID,
             target_identity=self._TGT_ID,
@@ -241,7 +241,7 @@ class TestAlignmentCache:
     def test_identity_drift_invalidates_alignment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         save_alignment_map(
             _alignments({0: torch.eye(3)}), "a/b", "c/d",
             source_identity=self._SRC_ID, target_identity=self._TGT_ID,
@@ -255,12 +255,12 @@ class TestAlignmentCache:
     def test_identity_drift_never_materializes_payload(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         save_alignment_map(
             _alignments({0: torch.eye(3)}), "a/b", "c/d",
             source_identity=self._SRC_ID, target_identity=self._TGT_ID,
         )
-        import saklas.io.alignment as alignment_mod
+        import drowse.io.alignment as alignment_mod
 
         monkeypatch.setattr(
             alignment_mod, "load_safetensors",
@@ -275,7 +275,7 @@ class TestAlignmentCache:
         ) is None
 
     def test_cache_round_trips_factorized_offset(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         alignment = LayerAlignment(
             left=torch.randn(6, 2), right=torch.randn(2, 4),
             offset=torch.arange(6, dtype=torch.float32),
@@ -298,8 +298,8 @@ class TestAlignmentCache:
     def test_sharded_save_avoids_payload_rehash_and_cleans_legacy_monolith(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        import saklas.io.alignment as alignment_mod
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        import drowse.io.alignment as alignment_mod
 
         anchor, _ = alignment_mod._alignment_anchor_paths("a/b", "c/d")
         anchor.parent.mkdir(parents=True, exist_ok=True)
@@ -323,7 +323,7 @@ class TestAlignmentCache:
     def test_selective_load_reads_only_requested_factor_shard(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         save_alignment_map(
             _alignments({0: torch.eye(4), 5: 2 * torch.eye(4)}), "a/b", "c/d",
             source_identity=self._SRC_ID, target_identity=self._TGT_ID,
@@ -350,8 +350,8 @@ class TestAlignmentCache:
     def test_failed_pointer_publication_preserves_prior_generation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        import saklas.io.alignment as alignment_mod
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        import drowse.io.alignment as alignment_mod
 
         save_alignment_map(
             _alignments({0: torch.eye(4)}), "a/b", "c/d",
@@ -388,8 +388,8 @@ class TestAlignmentCache:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """After pointer replace, a durability error must not delete its shards."""
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        import saklas.io.alignment as alignment_mod
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        import drowse.io.alignment as alignment_mod
 
         calls = 0
 
@@ -420,8 +420,8 @@ class TestAlignmentCache:
     def test_payload_directory_barrier_precedes_alignment_pointer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        import saklas.io.alignment as alignment_mod
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        import drowse.io.alignment as alignment_mod
 
         events: list[str] = []
         real_write = alignment_mod.write_json_atomic
@@ -444,8 +444,8 @@ class TestAlignmentCache:
     def test_exception_after_pointer_replace_preserves_new_generation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        import saklas.io.alignment as alignment_mod
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        import drowse.io.alignment as alignment_mod
 
         real_write = alignment_mod.write_json_atomic
 
@@ -470,13 +470,13 @@ class TestAlignmentCache:
     def test_alignment_top_up_reuses_unrequested_generation_without_reading_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         save_alignment_map(
             _alignments({0: torch.eye(4)}), "a/b", "c/d",
             source_identity=self._SRC_ID, target_identity=self._TGT_ID,
             quality_per_layer={0: 0.8},
         )
-        import saklas.io.alignment as alignment_mod
+        import drowse.io.alignment as alignment_mod
 
         anchor, pointer = alignment_mod._alignment_anchor_paths("a/b", "c/d")
         prior = json.loads(pointer.read_text())
@@ -502,8 +502,8 @@ class TestAlignmentCache:
     def test_corrupt_requested_factor_repair_preserves_unrequested_generation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        import saklas.io.alignment as alignment_mod
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        import drowse.io.alignment as alignment_mod
 
         save_alignment_map(
             _alignments({0: torch.eye(4), 5: torch.eye(4)}), "a/b", "c/d",

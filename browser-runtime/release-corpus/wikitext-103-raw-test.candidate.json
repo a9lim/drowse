@@ -1,0 +1,73 @@
+{
+  "$schema": "./release-corpus-source.schema.json",
+  "schemaVersion": 1,
+  "status": "blocked",
+  "blockers": [
+    "The pinned dataset card conflicts on license declarations: its YAML metadata lists cc-by-sa-3.0 and gfdl, while its Licensing Information prose names CC BY-SA 4.0.",
+    "The only locally cached shard is the held-out test split, which is not approved as production fitting data.",
+    "No reviewed attribution and redistribution notice bundle has been staged for the eventual instrument release."
+  ],
+  "source": {
+    "repository": "Salesforce/wikitext",
+    "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+    "configuration": "wikitext-103-raw-v1",
+    "split": "test",
+    "path": "wikitext-103-raw-v1/test-00000-of-00001.parquet",
+    "url": "https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-raw-v1/test-00000-of-00001.parquet",
+    "format": "parquet",
+    "textField": "text",
+    "sha256": "5f1bea067869d04849c0f975a2b29c4ff47d867f484f5010ea5e861eab246d91",
+    "bytes": 732610,
+    "rows": 4358
+  },
+  "license": {
+    "declaredIdentifiers": [
+      "cc-by-sa-3.0",
+      "gfdl",
+      "CC-BY-SA-4.0 (dataset-card prose)"
+    ],
+    "evidence": {
+      "url": "https://huggingface.co/datasets/Salesforce/wikitext/raw/b08601e04326c79dfdd32d625aee71d232d685c3/README.md",
+      "sha256": "d5aabf145d341366745ac703b5844c442c143943b6c77929481395c822b1c28c",
+      "bytes": 10464
+    },
+    "attribution": "WikiText by Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher; source text from Wikipedia contributors.",
+    "redistributionNotice": "Not approved: preserve the pinned dataset card and resolve its contradictory license declarations before distributing corpus-derived release artifacts.",
+    "reviewStatus": "blocked",
+    "reviewedBy": null,
+    "reviewedAt": null
+  },
+  "wordSeeds": {
+    "path": "browser-runtime/release-corpus/jlens-word-seeds.txt",
+    "sha256": "ab3f9b6a7c3882576be81ac425ba58d312cf4f8e200784b52bcdd8d3a06b3d0e",
+    "bytes": 738,
+    "license": "AGPL-3.0-only"
+  },
+  "tokenizers": [
+    {
+      "id": "qwen3-1.7b",
+      "sourceRepository": "Qwen/Qwen3-1.7B",
+      "sourceRevision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+      "tokenizerSha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+      "tokenizerConfigSha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+    },
+    {
+      "id": "qwen3-4b",
+      "sourceRepository": "Qwen/Qwen3-4B",
+      "sourceRevision": "1cfa9a7208912126459214e8b04321603b3df60c",
+      "tokenizerSha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+      "tokenizerConfigSha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+    }
+  ],
+  "selection": {
+    "algorithm": "drowse-release-corpus-v1",
+    "minimumFragmentCharacters": 24,
+    "minimumDocumentCharacters": 768,
+    "maximumDocumentCharacters": 4096,
+    "maximumSourceBytes": 8388608,
+    "maximumSourceRows": 10000,
+    "saeDocuments": 320,
+    "jlensDocuments": 128,
+    "minimumSharedWords": 80
+  }
+}

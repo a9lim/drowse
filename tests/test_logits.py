@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from saklas import TokenAlt
-from saklas.core.results import GenerationResult, TokenEvent
-from saklas.core.sampling import SamplingConfig
-from saklas.core.loom import LoomNode, LoomTree
+from drowse import TokenAlt
+from drowse.core.results import GenerationResult, TokenEvent
+from drowse.core.sampling import SamplingConfig
+from drowse.core.loom import LoomNode, LoomTree
 
 
 # ---------------------------------------------------------------------------
@@ -86,11 +86,11 @@ class TestTokenAlt:
         assert hash(a) == hash(b)
 
     def test_reexported_from_top_level(self):
-        """``TokenAlt`` is re-exported from ``saklas`` for the same
+        """``TokenAlt`` is re-exported from ``drowse`` for the same
         reason ``TokenEvent`` / ``SamplingConfig`` are — library users
         shouldn't have to reach into private submodule paths."""
-        import saklas
-        assert saklas.TokenAlt is TokenAlt
+        import drowse
+        assert drowse.TokenAlt is TokenAlt
 
 
 # ---------------------------------------------------------------------------
@@ -245,41 +245,41 @@ class TestFinalizeAssistantStampsLogprobs:
 
 class TestConfigFileReturnTopK:
     def test_default_none(self):
-        from saklas.cli.config_file import ConfigFile
+        from drowse.cli.config_file import ConfigFile
         cfg = ConfigFile()
         assert cfg.return_top_k is None
 
     def test_load_valid(self, tmp_path: Path):
         """YAML round-trip — ``return_top_k:`` lands on the dataclass."""
-        from saklas.cli.config_file import ConfigFile
+        from drowse.cli.config_file import ConfigFile
         p = tmp_path / "cfg.yaml"
         p.write_text("return_top_k: 8\n")
         cfg = ConfigFile.load(p)
         assert cfg.return_top_k == 8
 
     def test_load_zero(self, tmp_path: Path):
-        from saklas.cli.config_file import ConfigFile
+        from drowse.cli.config_file import ConfigFile
         p = tmp_path / "cfg.yaml"
         p.write_text("return_top_k: 0\n")
         cfg = ConfigFile.load(p)
         assert cfg.return_top_k == 0
 
     def test_load_rejects_negative(self, tmp_path: Path):
-        from saklas.cli.config_file import ConfigFile, ConfigFileError
+        from drowse.cli.config_file import ConfigFile, ConfigFileError
         p = tmp_path / "cfg.yaml"
         p.write_text("return_top_k: -1\n")
         with pytest.raises(ConfigFileError):
             ConfigFile.load(p)
 
     def test_load_rejects_above_256(self, tmp_path: Path):
-        from saklas.cli.config_file import ConfigFile, ConfigFileError
+        from drowse.cli.config_file import ConfigFile, ConfigFileError
         p = tmp_path / "cfg.yaml"
         p.write_text("return_top_k: 300\n")
         with pytest.raises(ConfigFileError):
             ConfigFile.load(p)
 
     def test_load_rejects_non_int(self, tmp_path: Path):
-        from saklas.cli.config_file import ConfigFile, ConfigFileError
+        from drowse.cli.config_file import ConfigFile, ConfigFileError
         p = tmp_path / "cfg.yaml"
         p.write_text('return_top_k: "eight"\n')
         with pytest.raises(ConfigFileError):
@@ -289,21 +289,21 @@ class TestConfigFileReturnTopK:
         """YAML ``true`` would silently coerce to ``1`` without an
         explicit bool guard — reject it so users don't end up with
         K=1 from a typo'd boolean."""
-        from saklas.cli.config_file import ConfigFile, ConfigFileError
+        from drowse.cli.config_file import ConfigFile, ConfigFileError
         p = tmp_path / "cfg.yaml"
         p.write_text("return_top_k: true\n")
         with pytest.raises(ConfigFileError):
             ConfigFile.load(p)
 
     def test_compose_later_wins(self):
-        from saklas.cli.config_file import ConfigFile, compose
+        from drowse.cli.config_file import ConfigFile, compose
         a = ConfigFile(return_top_k=4)
         b = ConfigFile(return_top_k=12)
         merged = compose([a, b])
         assert merged.return_top_k == 12
 
     def test_compose_none_passes_through(self):
-        from saklas.cli.config_file import ConfigFile, compose
+        from drowse.cli.config_file import ConfigFile, compose
         a = ConfigFile(return_top_k=4)
         b = ConfigFile()  # None on every field
         merged = compose([a, b])

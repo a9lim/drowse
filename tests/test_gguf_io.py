@@ -1,4 +1,4 @@
-"""Roundtrip and edge-case tests for saklas.gguf_io."""
+"""Roundtrip and edge-case tests for drowse.gguf_io."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,7 +8,7 @@ import torch
 
 gguf = pytest.importorskip("gguf")
 
-from saklas.io.gguf_io import read_gguf_profile, write_gguf_profile
+from drowse.io.gguf_io import read_gguf_profile, write_gguf_profile
 
 
 def test_roundtrip_preserves_tensors(tmp_path: Path):
@@ -27,7 +27,7 @@ def test_roundtrip_preserves_tensors(tmp_path: Path):
         assert torch.allclose(profile[k].float(), loaded[k].float(), atol=1e-6)
     assert meta["method"] == "gguf_import"
     assert meta["model_hint"] == "llama"
-    assert "saklas_version" in meta
+    assert "drowse_version" in meta
 
 
 def test_roundtrip_preserves_layer_indices_out_of_order(tmp_path: Path):
@@ -86,8 +86,8 @@ def test_read_rejects_empty(tmp_path: Path):
 
 
 def test_load_profile_dispatches_on_extension(tmp_path: Path):
-    """saklas.core.profile.load_profile should route .gguf to the GGUF loader."""
-    from saklas.core.profile import load_profile
+    """drowse.core.profile.load_profile should route .gguf to the GGUF loader."""
+    from drowse.core.profile import load_profile
     profile = {0: torch.randn(8), 5: torch.randn(8)}
     path = tmp_path / "dispatch.gguf"
     write_gguf_profile(profile, path, model_hint="llama")

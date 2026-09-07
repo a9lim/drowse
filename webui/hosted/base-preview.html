@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Base completion layout preview</title>
+  <style>
+    body { margin: 0; padding: 16px; background: #20212b; color: white; font: 16px system-ui; }
+    nav { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+    button { font: inherit; min-height: 44px; padding: 8px 16px; }
+    iframe { display: block; width: 320px; height: 820px; border: 0; background: white; }
+  </style>
+  <nav aria-label="Preview width">
+    <strong>Development fixture · not model inference</strong>
+    <button data-width="320">320 px</button>
+    <button data-width="768">768 px</button>
+    <button data-width="1280">1280 px</button>
+  </nav>
+  <iframe title="Base completion preview" src="/app?layoutFixture=base"></iframe>
+  <script type="module">
+    if (!import.meta.env.DEV) throw new Error("Development preview only");
+    for (const button of document.querySelectorAll("button")) {
+      button.addEventListener("click", () => {
+        document.querySelector("iframe").style.width = `${button.dataset.width}px`;
+      });
+    }
+  </script>
+</html>

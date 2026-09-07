@@ -2,9 +2,9 @@
 
 ## What this is
 
-`saklas` is a Python library + dual-protocol HTTP server for activation steering
+`drowse` is a Python library + dual-protocol HTTP server for activation steering
 and trait monitoring on HuggingFace causal LMs. It runs OpenAI `/v1/*` and
-Ollama `/api/*` on one port, plus a native `/saklas/v1/*` API and a Svelte
+Ollama `/api/*` on one port, plus a native `/drowse/v1/*` API and a Svelte
 dashboard at `/`. Steering signal comes from representation engineering, unified
 under a single artifact family — the **manifold**: labeled nodes placed on a
 domain, fit to a per-layer subspace. A difference-of-means steering vector is
@@ -13,11 +13,11 @@ affect manifold over PAD. Every steering term — vectors, poles, `~`/`|`
 projections, `!` ablations, and `%` manifold positions — lowers at generation
 time to one unified per-layer injection (the along/onto subspace kernel,
 `core/manifold.py::subspace_inject`). Per-call coefficients, no model mutation.
-Two frontends over one engine: `SaklasSession` (programmatic) and `saklas serve`
+Two frontends over one engine: `DrowseSession` (programmatic) and `drowse serve`
 (HTTP APIs plus the web dashboard).
 
-Version lives in `saklas/__init__.py` as `__version__`. `pyproject.toml` reads
-it via `version = {attr = "saklas.__version__"}`, so there is one place to bump.
+Version lives in `drowse/__init__.py` as `__version__`. `pyproject.toml` reads
+it via `version = {attr = "drowse.__version__"}`, so there is one place to bump.
 Do not bump it as part of feature work — version bumps are user-owned.
 
 Releases: merge a version bump to `main` → `.github/workflows/release.yml` tags
@@ -33,13 +33,13 @@ touching the engine.
 Deep internals live in subtree `AGENTS.md` files — Claude Code auto-loads each
 when you work in that directory. Consult them only when editing that layer.
 
-- `saklas/core/AGENTS.md` — model loading, the manifold/subspace fit +
+- `drowse/core/AGENTS.md` — model loading, the manifold/subspace fit +
   injection, monitor + instruments, session, generation loop, loom tree
-- `saklas/io/AGENTS.md` — manifold format, HF distribution, GGUF, merge,
+- `drowse/io/AGENTS.md` — manifold format, HF distribution, GGUF, merge,
   alignment, paths/selectors, source registries
-- `saklas/cli/AGENTS.md` — eight-verb dispatch, config loading, flags
-- `saklas/server/AGENTS.md` — OpenAI / Ollama / native routes, WS protocol
-- `saklas/web/AGENTS.md` — dashboard mount, wire protocol, Svelte source layout
+- `drowse/cli/AGENTS.md` — eight-verb dispatch, config loading, flags
+- `drowse/server/AGENTS.md` — OpenAI / Ollama / native routes, WS protocol
+- `drowse/web/AGENTS.md` — dashboard mount, wire protocol, Svelte source layout
 
 ## Commands
 
@@ -47,39 +47,40 @@ when you work in that directory. Consult them only when editing that layer.
 pip install -e ".[dev]"                         # editable + pytest + SAELens
 pip install -e ".[gguf]"                        # llama.cpp GGUF I/O
 pip install -e ".[cuda,flash]"                  # bitsandbytes + kernels + tested FlashAttention (Linux/CUDA)
-saklas serve <model_id> [--no-web] [--steer/-S EXPR]
-saklas manifold extract <concept>|<pos> <neg> [-m MODEL] [--sae RELEASE] [--role SLUG] [--kind abstract|concrete|custom] [--system TEMPLATE] [--namespace NS] [--no-dls] [-f]
-saklas manifold generate <name> --concepts C... [--kind abstract|concrete|custom] [--system TEMPLATE] [--samples-per-prompt K] [--seed S]
-saklas manifold from-template <template> [--name MANIFOLD] [--fit-mode auto|pca|spectral] [--max-dim N] [--var-threshold T] [--description TEXT] [-f]
-saklas manifold fit <name>|<folder> [-m MODEL] [--sae REL] [--layers L1,L2|workspace|all] [--method pca|spectral|auto] [--max-dim N] [--min-dim N] [--var-threshold T] [--k-nn K] [--bandwidth SIGMA] [--max-subspace-dim R] [--smoothing auto|0|LAMBDA] [--persistence-frac F] [--no-dls]
-saklas manifold bake <name> <expression> [-m]    # additive subset: "0.3 ns/a + 0.5 ns/b"
-saklas manifold merge <name> <src...> [-f]           # union discover-mode node corpora
-saklas manifold transfer <name> --from SRC --to TGT [-f]   # cross-model Procrustes
-saklas manifold compare <concepts...> -m MODEL [--ridge-scale R]
-saklas manifold why <concept> -m MODEL [-j]       # per-layer ||baked|| as a 16-bucket histogram
-saklas pack ls [-v|-j] | show <name> [-j]            # list / inspect manifolds
-saklas pack install <target> [-a NS/N] [-f]          # HF coord or current local manifold folder
-saklas pack search <query> [-j|-v]                   # search HF hub for saklas-manifold repos
-saklas pack push <name> [-a OWNER/N] [-m MODEL] [--variant raw|sae|all] [--private] [--dry-run]
-saklas pack rm <name> -y                             # remove folder (bundled respawns); -y required
-saklas pack clear <name> [-m MODEL] [--variant raw|sae|all]   # delete per-model fitted tensors
-saklas pack refresh <name> [-m MODEL]                # re-pull (hf) / re-fit (-m scoped)
-saklas pack export gguf <name> [-m MODEL] [-o PATH] [--model-hint HINT]   # fold a 2-node pca manifold to a control-vector GGUF
-saklas experiment fan <model> "<prompt>" -g concept=0,0.5,1 [-S EXPR] [--max-tokens N]   # alpha grid as loom siblings
-saklas experiment transcript run <path.yaml> [model] [--max-tokens N]     # replay a saved transcript
-saklas experiment naturalness <model> "<prompt>" --manifold F -S EXPR [--max-tokens N]   # behavior-manifold eval
-saklas template create <name> --slot TOKEN --values V... --contexts FILE [--description TEXT] [-f]
-saklas template ls [-j] | show <name> [-j] | rm <name> [-y]
-saklas template score <name> -m MODEL [-S EXPR] [--by sum|mean] [-j]   # restricted-choice value distribution
-saklas lens fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K] [--prompt-batch B] [--standard] [-f]   # per-model R-lens by default (backward passes; resumes; --standard fits local:default instead)
-saklas lens fetch <model> [neuronpedia|workspace-r|workspace-j] | ls <model> | show <model> [source] | use <model> <source> | rm <model> [source] [-y]
-saklas lens top <model> "<prompt>" [-k K] [--layers L1,L2] [--position P] [-j]   # workspace readout on a raw prompt
-saklas lens decompose <selector> -m MODEL [-k K] [--layers L1,L2] [-j]   # J-space share + tokens of a direction
-saklas sae train <model> <name> [--corpus FILE] [--layer L] [--tokens N] [-f]
-saklas sae fetch <model> saelens:<release> [--layer L] [--revision REV]  # pure IO: validates via config, writes the binding, loads no weights
-saklas sae ls <model> | show <model> [source] | use <model> <source> | rm <model> [source] [-y]
-saklas config show [-c PATH ...] [--no-default] [-m MODEL]
-saklas config validate <file>
+drowse serve <model_id> [--no-web] [--steer/-S EXPR]
+drowse manifold extract <concept>|<pos> <neg> [-m MODEL] [--sae RELEASE] [--role SLUG] [--kind abstract|concrete|custom] [--system TEMPLATE] [--namespace NS] [--no-dls] [-f]
+drowse manifold generate <name> --concepts C... [--kind abstract|concrete|custom] [--system TEMPLATE] [--samples-per-prompt K] [--seed S]
+drowse manifold from-template <template> [--name MANIFOLD] [--fit-mode auto|pca|spectral] [--max-dim N] [--var-threshold T] [--description TEXT] [-f]
+drowse manifold fit <name>|<folder> [-m MODEL] [--sae REL] [--layers L1,L2|workspace|all] [--method pca|spectral|auto] [--max-dim N] [--min-dim N] [--var-threshold T] [--k-nn K] [--bandwidth SIGMA] [--max-subspace-dim R] [--smoothing auto|0|LAMBDA] [--persistence-frac F] [--no-dls]
+drowse manifold bake <name> <expression> [-m]    # additive subset: "0.3 ns/a + 0.5 ns/b"
+drowse manifold merge <name> <src...> [-f]           # union discover-mode node corpora
+drowse manifold transfer <name> --from SRC --to TGT [-f]   # cross-model Procrustes
+drowse manifold compare <concepts...> -m MODEL [--ridge-scale R]
+drowse manifold why <concept> -m MODEL [-j]       # per-layer ||baked|| as a 16-bucket histogram
+drowse pack ls [-v|-j] | show <name> [-j]            # list / inspect manifolds
+drowse pack install <target> [-a NS/N] [-f]          # HF coord, local manifold folder, or .drowse
+drowse pack search <query> [-j|-v]                   # search HF hub for drowse-manifold repos
+drowse pack push <name> [-a OWNER/N] [-m MODEL] [--variant raw|sae|all] [--private] [--dry-run]
+drowse pack rm <name> -y                             # remove folder (bundled respawns); -y required
+drowse pack clear <name> [-m MODEL] [--variant raw|sae|all]   # delete per-model fitted tensors
+drowse pack refresh <name> [-m MODEL]                # re-pull (hf) / re-fit (-m scoped)
+drowse pack export gguf <name> [-m MODEL] [-o PATH] [--model-hint HINT]   # fold a 2-node pca manifold to a control-vector GGUF
+drowse pack export archive <name> [-o FILE]       # portable manifold/template closure
+drowse experiment fan <model> "<prompt>" -g concept=0,0.5,1 [-S EXPR] [--max-tokens N]   # alpha grid as loom siblings
+drowse experiment transcript run <path.yaml> [model] [--max-tokens N]     # replay a saved transcript
+drowse experiment naturalness <model> "<prompt>" --manifold F -S EXPR [--max-tokens N]   # behavior-manifold eval
+drowse template create <name> --slot TOKEN --values V... --contexts FILE [--description TEXT] [-f]
+drowse template ls [-j] | show <name> [-j] | rm <name> [-y]
+drowse template score <name> -m MODEL [-S EXPR] [--by sum|mean] [-j]   # restricted-choice value distribution
+drowse lens fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K] [--prompt-batch B] [--standard] [-f]   # per-model R-lens by default (backward passes; resumes; --standard fits local:default instead)
+drowse lens fetch <model> [neuronpedia|workspace-r|workspace-j] | ls <model> | show <model> [source] | use <model> <source> | rm <model> [source] [-y]
+drowse lens top <model> "<prompt>" [-k K] [--layers L1,L2] [--position P] [-j]   # workspace readout on a raw prompt
+drowse lens decompose <selector> -m MODEL [-k K] [--layers L1,L2] [-j]   # J-space share + tokens of a direction
+drowse sae train <model> <name> [--corpus FILE] [--layer L] [--tokens N] [-f]
+drowse sae fetch <model> saelens:<release> [--layer L] [--revision REV]  # pure IO: validates via config, writes the binding, loads no weights
+drowse sae ls <model> | show <model> [source] | use <model> <source> | rm <model> [source] [-y]
+drowse config show [-c PATH ...] [--no-default] [-m MODEL]
+drowse config validate <file>
 pytest tests/                                   # all; GPU tests gated on CUDA/MPS
 ```
 
@@ -87,7 +88,7 @@ The root parser has exactly eight verbs: `serve`, `manifold`, `pack`,
 `experiment`, `config`, `template`, `lens`, `sae`. `manifold` is the unified
 compute surface (extract/generate/from-template/fit/bake/merge/transfer/
 compare/why); `pack` owns lifecycle and distribution (ls/show/install/search/
-push/rm/clear/refresh/export gguf); `template` owns the standalone
+push/rm/clear/refresh/export gguf/export archive); `template` owns the standalone
 templated-completion artifact (create/ls/show/score/rm — a slot + candidate
 values + multi-turn contexts, read by both the completion scorer and a
 `manifold from-template` fit); `lens` owns local fitting plus source-aware
@@ -95,14 +96,14 @@ lifecycle/readout (fit/fetch/ls/show/use/top/decompose/rm); `sae` owns the
 parallel local/external lifecycle (train/fetch/ls/show/use/rm). `lens fetch`
 and `sae fetch` are both pure IO — neither loads model weights; both keep
 provider-owned payloads in provider caches and store only pinned bindings
-locally. No `argv[0]` peeking or bare-model fallback — `saklas
-google/gemma-2-2b-it` is an argparse error. Bare `saklas` or any bare verb
+locally. No `argv[0]` peeking or bare-model fallback — `drowse
+google/gemma-2-2b-it` is an argparse error. Bare `drowse` or any bare verb
 group prints its dispatch menu and exits 0.
 
-Every subcommand that takes `-c/--config` auto-loads `~/.saklas/config.yaml`
+Every subcommand that takes `-c/--config` auto-loads `~/.drowse/config.yaml`
 first, then composes explicit `-c` files on top (later overrides earlier). The
 `vectors:` YAML key is a single steering expression parsed by
-`saklas.core.steering_expr.parse_expr`. Flag precedence is CLI > YAML > runner
+`drowse.core.steering_expr.parse_expr`. Flag precedence is CLI > YAML > runner
 default throughout (including `--max-tokens`). `cli/AGENTS.md` has the full
 per-verb flag set and the reserved short-flag table.
 
@@ -141,7 +142,7 @@ revision separator), and `.` is used over `~` because HF repo names reject `~`.
 ## Steering expression grammar
 
 Every live steering surface — Python, YAML, HTTP, and CLI — speaks the grammar
-in `saklas.core.steering_expr`. `manifold bake` parses the same syntax but
+in `drowse.core.steering_expr`. `manifold bake` parses the same syntax but
 accepts only namespace-qualified additive/subtractive scalar terms: dynamic
 `!`/`%`, triggers, multi-coefficients, and Mahalanobis `~`/`|` projections
 require a live model and are rejected offline. `parse_expr(text)` → `Steering`;
@@ -252,12 +253,12 @@ persona-framed extraction doesn't apply. A **template** is the artifact for
 these: a `slot` token, a set of candidate `values`, and one or more multi-turn
 `contexts` whose final assistant turn carries the slot
 (`io/templates.py::TemplateFolder`, on disk at
-`~/.saklas/templates/<ns>/<name>/template.json`). Invariant: the slot appears
+`~/.drowse/templates/<ns>/<name>/template.json`). Invariant: the slot appears
 **exactly once** in each context's final `assistant` string and **never** in a
 history turn (history is shared common-mode across the values; the slot lives
 only where the value is read). A single-turn template is the degenerate
 `turns:[{user}]` case. Templates can ship **bundled** —
-`saklas/data/templates/<name>/template.json` materializes to `default/<name>`
+`drowse/data/templates/<name>/template.json` materializes to `default/<name>`
 on session start (the io bootstrap runs the template materializer before the
 manifold one, so a template-derived bundled manifold can `template_ref` it).
 None ship at present; the machinery is dormant by design.
@@ -295,7 +296,7 @@ al., "Verbalizable Representations Form a Global Workspace in Language Models",
 Transformer Circuits 2026). The lens is one matrix per source layer, `J_l =
 E[∂h_final/∂h_l]` — the average first-order effect of a layer's residual on the
 final-layer residual over positions and a web-text corpus — stored as immutable
-per-layer fp32 shards. Saklas-fitted lenses live at
+per-layer fp32 shards. Drowse-fitted lenses live at
 `models/<safe_model_id>/jlens/local/<name>/manifest.json`
 (`LENS_FORMAT_VERSION = 6`, required exactly; `default` is the standard fit,
 `relp` the R-lens). External lenses stay in the Hugging Face cache behind
@@ -324,11 +325,11 @@ surface is estimator-agnostic — probes, atoms, gates, decompose, and the
 live wire consume whichever lens is active. The sidecar records the immutable corpus spec + token-id sha256, exact
 source/live model identities, and one payload sha256 per layer. `lens fit` runs
 the estimator (`core/jlens_fit.py::fit_jacobian_lens` — the **only** backward
-passes in saklas; resumable, checkpointed, OOM-adaptive — see
+passes in drowse; resumable, checkpointed, OOM-adaptive — see
 `core/AGENTS.md`). The fit is compute-bound; `--layers` restriction is the one
 real wall-time lever. ~100 prompts is usable, 1000 is paper-parity; the default
 corpus is a commit-pinned FineWeb-Edu stream via the optional `datasets`
-dependency (`pip install 'saklas[hf]'`).
+dependency (`pip install 'drowse.ai[hf]'`).
 
 Three read surfaces over either source, plus local fit and external fetch:
 
@@ -347,7 +348,7 @@ Three read surfaces over either source, plus local fit and external fetch:
   (`TokenEvent.measurements` → `instruments.lens.readout`); the reader consumes
   the capture's latest slices post-forward at the token tap — no new forward
   hooks, so steering fast-path/compile eligibility is untouched. The default
-  live layer set is every fitted layer, and `saklas serve` auto-enables the
+  live layer set is every fitted layer, and `drowse serve` auto-enables the
   live lens at startup when the artifact exists (serve-side policy; the library
   stays opt-in). The dashboard's J-LENS tab is the server frontend: SOURCE
   (local/neuronpedia switch, fetch, background fit), STEER (`α jlens/<word>`
@@ -407,7 +408,7 @@ prompts *in character* — the concept rides a system prompt (by `kind`: abstrac
 template) and a swapped assistant-role elicitation label — and extraction pools
 the swapped-back `[user: prompt, assistant: response]` pairs in
 **standard-assistant space**. The corpus is a `list[str]` of responses aligned
-`response[i] ↔ baseline_prompt[i % k]` (`saklas/data/baseline_prompts.json`, 48
+`response[i] ↔ baseline_prompt[i % k]` (`drowse/data/baseline_prompts.json`, 48
 prompts; length must be a multiple of `k`). A shared one-paragraph length
 directive (`_LENGTH_DIRECTIVE`) leads every system prompt — the persona at node
 generation, the sole system for the neutral baseline, and the sole system at
@@ -548,7 +549,7 @@ for discover coords and synthesized affine subspaces). The per-layer
 interpolant is one `r³` polyharmonic RBF; at n=1 over an open axis it
 reproduces the natural cubic spline.
 
-A manifold lives under `~/.saklas/manifolds/<ns>/<name>/` as `manifold.json`
+A manifold lives under `~/.drowse/manifolds/<ns>/<name>/` as `manifold.json`
 (domain spec + per-node `{label, coords}` for authored; `fit_mode` +
 hyperparams + `{label}` for discover) + `nodes/NN_<label>.json` corpora — by
 hand or via the webui builder (`io.manifold_authoring`). `manifold fit`, the
@@ -659,8 +660,8 @@ per-step Bhattacharyya distance of a steered trajectory to it (low = natural;
 
 ### Bundled manifolds + coefficient regime
 
-Complete bundled artifacts ship under `saklas/data/manifolds/`, materializing
-into `~/.saklas/manifolds/default/` on session start via the io bootstrap
+Complete bundled artifacts ship under `drowse/data/manifolds/`, materializing
+into `~/.drowse/manifolds/default/` on session start via the io bootstrap
 (`io/bootstrap.py`; process-scope no-op after the first call). The materializer
 only advertises folders whose `manifold.json` and declared `nodes/*.json`
 corpus files are all present, so a partial folder in the package tree is never
@@ -712,7 +713,7 @@ qualitative, MPS is not bitwise deterministic so compare qualitatively):
 - The steering trajectory can pass through persona-adjacent attractor basins at
   low displacement (e.g. `personas%hacker` surfacing a cyber-security training
   cluster before locking into the clean persona). Low-α persona-drift is
-  meaningful signal about the *model's* internal structure, not a saklas bug.
+  meaningful signal about the *model's* internal structure, not a drowse bug.
 
 > **Open frontiers** (see `ARCHITECTURE.md` §10): the fitted `personas`
 > subspace is a near-1-D "persona-ness" fan, so distinct personas can express
@@ -726,9 +727,9 @@ qualitative, MPS is not bitwise deterministic so compare qualitatively):
 ## Python API
 
 ```python
-from saklas import SaklasSession, SamplingConfig, Steering, Profile
+from drowse import DrowseSession, SamplingConfig, Steering, Profile
 
-with SaklasSession.from_pretrained("google/gemma-3-4b-it", device="auto") as session:
+with DrowseSession.from_pretrained("google/gemma-3-4b-it", device="auto") as session:
     name, profile = session.extract("confident.uncertain")   # returns (canonical_name, Profile)
     result = session.generate(
         "What makes a good day?",
@@ -809,11 +810,11 @@ Key contracts:
 - `Steering` is frozen; it carries no per-call metric override (`~`/`|`
   projection is Mahalanobis-only). There is no
   `injection_mode`/`theta_max`/`projection_metric`.
-- `SaklasSession.__init__` takes a pre-loaded `PreTrainedModel`; use
-  `from_pretrained` for HF loads. There is no `cache_dir=` — set `$SAKLAS_HOME`
+- `DrowseSession.__init__` takes a pre-loaded `PreTrainedModel`; use
+  `from_pretrained` for HF loads. There is no `cache_dir=` — set `$DROWSE_HOME`
   to relocate paths.
-- Every saklas exception subclasses `SaklasError` while preserving its stdlib
-  MRO, so `except SaklasError` catches the family and `except
+- Every drowse exception subclasses `DrowseError` while preserving its stdlib
+  MRO, so `except DrowseError` catches the family and `except
   ValueError`/`RuntimeError` at existing sites still works (an invariant test
   walks every public module and enforces it). `user_message()` maps each to
   `(http_status, text)`; composition-time steering errors
@@ -821,7 +822,7 @@ Key contracts:
   `SteeringCompositionError` at 422, parse errors `SteeringExprError` at 400.
 - `GenerationResult.applied_steering` carries the canonical expression string
   (round-trips through `parse_expr`).
-- `saklas/__init__.py` pins the public surface (`SaklasSession`, `Profile`,
+- `drowse/__init__.py` pins the public surface (`DrowseSession`, `Profile`,
   `Steering`, `SamplingConfig`, `Trigger`, `LayerWhitener`, the
   `RunSet`/`TokenEvent`/`ResultCollector` result types, the `EventBus` + event
   dataclasses, the `LoomTree`/`Recipe`/`Transcript` suites, their error types,
@@ -829,15 +830,15 @@ Key contracts:
   `parse_expr`/`format_expr`, `ChoiceScores`/`ChoiceScore`, the selector errors,
   the Jacobian-lens suite, and the instrument facades
   `GeometryInstrument`/`LensInstrument`/`SaeInstrument` with
-  `UnsupportedProbeChannelError`). `from saklas import X` is stable; private
+  `UnsupportedProbeChannelError`). `from drowse import X` is stable; private
   submodule paths are not.
 
 ## Cache layout
 
-All state under `~/.saklas/` (override via `$SAKLAS_HOME`):
+All state under `~/.drowse/` (override via `$DROWSE_HOME`):
 
 ```
-~/.saklas/
+~/.drowse/
   neutral_statements.json              # user-editable; organic responses to the
                                        # baseline prompts (read-through from package)
   baseline_prompts.json                # user override for the shared prompts
@@ -866,11 +867,11 @@ All state under `~/.saklas/` (override via `$SAKLAS_HOME`):
     sae/
       active.json                      # selected local/SAELens source
       bindings/<release>.json          # provider binding + optional feature metadata
-      local/<name>/                    # Saklas-trained weights + manifest
+      local/<name>/                    # Drowse-trained weights + manifest
 ```
 
 Conversation exports are browser-downloaded JSON files or explicit
-`LoomTree.save(path)` targets; there is no `$SAKLAS_HOME/conversations`
+`LoomTree.save(path)` targets; there is no `$DROWSE_HOME/conversations`
 autosave tree.
 
 `manifold.json.files` is a sha256 map verified on load. A manifold folder can
@@ -968,7 +969,7 @@ derived per-seat views). Supported: `qwen2`/`qwen3`/`qwen3_5` (ChatML),
 
 ## Bundled concepts
 
-17 curated concepts under `saklas/data/manifolds/<concept>/` — all bipolar
+17 curated concepts under `drowse/data/manifolds/<concept>/` — all bipolar
 (2-node `pca`), each pole's corpus conversational responses to the shared
 baseline prompts. Monopolar `extract` (`baseline=None`) is a genuine 1-node
 fold against the neutral mean ν — a user `extract("agentic")` authors a 1-node
@@ -991,29 +992,32 @@ Known model-level axis entanglements (cross-model robust, weighted cosine via
 - `masculine.feminine ↔ traditional.progressive` (+0.5–0.6) — Hofstede MAS read
   as traditionalism
 
-`saklas/data/neutral_statements.json` holds the neutral baseline as organic,
+`drowse/data/neutral_statements.json` holds the neutral baseline as organic,
 no-persona/no-role responses to the same shared baseline prompts (a multiple of
 the 48-prompt set; the shared one-paragraph length directive is its *only*
 system prompt, so the framing it shares with the node corpora cancels at
 extraction), regenerated via `session.generate_neutral_responses`; it backs the
-probe-centering means + Mahalanobis whitener. `saklas/data/baseline_prompts.json`
+probe-centering means + Mahalanobis whitener. `drowse/data/baseline_prompts.json`
 (48 affect-neutral, topically-diverse prompts) is the shared elicitation set
 every node and the neutral corpus answer.
 
 ## Package layout
 
-`saklas/{core,io,cli,server,web,notebook}/` plus `saklas/data/` (bundled
-artifacts) and `saklas/__main__.py`. `core` is the engine, `io` is persistence
+`drowse/{core,io,cli,server,web,notebook}/` plus `drowse/data/` (bundled
+artifacts) and `drowse/__main__.py`. `core` is the engine, `io` is persistence
 + distribution, `cli`/`server`/`web` are the interface layers, and `notebook`
 holds the plotly/pandas figure helpers over the public result types (optional
 `[notebook]` extra). The Svelte dashboard source lives at the repo's `webui/`
-directory (peer of `saklas/`); its build artifact is committed under
-`saklas/web/dist/` and must be rebuilt whenever `webui/src` changes.
+directory (peer of `drowse/`); its build artifact is committed under
+`drowse/web/dist/` and must be rebuilt whenever `webui/src` changes.
 
 ## Testing
 
 **GPU-required** (CUDA or MPS): `test_smoke.py`, `test_session.py`,
-`test_jlens_gpu.py` — download `google/gemma-3-4b-it` (~8GB) on first run.
+`test_jlens_gpu.py` — download the public
+`HuggingFaceTB/SmolLM2-360M-Instruct` model by default. Set
+`DROWSE_TEST_MODEL` for another compatible model. Gemma/SAE-specific coverage
+is marked `gpu_gemma` and requires explicit gated model and artifact access.
 `device="auto"` picks cuda > mps > cpu; MPS runs ~3–5× slower so extraction
 budgets are backend-specific. `test_smoke` owns the throughput regression.
 

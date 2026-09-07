@@ -3,8 +3,8 @@ and the ScalarReading -> ProbeReading phase-1 wire bridge."""
 
 import pytest
 
-from saklas.core.errors import SaklasError, UnsupportedProbeChannelError
-from saklas.core.instruments import (
+from drowse.core.errors import DrowseError, UnsupportedProbeChannelError
+from drowse.core.instruments import (
     Assignment,
     Axis,
     DepthSummary,
@@ -16,7 +16,7 @@ from saklas.core.instruments import (
     parse_gate_ref,
     validate_gate_channels,
 )
-from saklas.core.results import ProbeReading
+from drowse.core.results import ProbeReading
 
 
 # --------------------------------------------------------------------------
@@ -102,9 +102,9 @@ def test_validate_rejects_unsupported_channel():
             GateRef("sae/123", Membership()), (Axis,), family="sae",
         )
     err = exc_info.value
-    # SaklasError family + stdlib MRO + 400 user_message, per errors.py
+    # DrowseError family + stdlib MRO + 400 user_message, per errors.py
     # conventions.
-    assert isinstance(err, SaklasError)
+    assert isinstance(err, DrowseError)
     assert isinstance(err, ValueError)
     status, text = err.user_message()
     assert status == 400
@@ -196,10 +196,10 @@ def test_bridge_defaults_without_depth():
 def test_session_facades_are_the_instruments() -> None:
     """``session.lens`` / ``session.sae`` are the instrument objects
     themselves — the typed public faces of ``session.instruments``."""
-    from saklas import GeometryInstrument, LensInstrument, SaeInstrument
-    from saklas.core.session import SaklasSession
+    from drowse import GeometryInstrument, LensInstrument, SaeInstrument
+    from drowse.core.session import DrowseSession
 
-    session = SaklasSession.__new__(SaklasSession)  # lazy instruments self-heal
+    session = DrowseSession.__new__(DrowseSession)  # lazy instruments self-heal
     inst = session.instruments
     assert set(inst) == {"geometry", "lens", "sae"}
     assert isinstance(inst["geometry"], GeometryInstrument)
@@ -222,9 +222,9 @@ _RUN_SURFACE = ("observe", "prime_observation", "observe_aggregate", "close")
 def test_every_family_carries_the_uniform_instrument_surface() -> None:
     """Each family exposes the same instrument/run methods and starts on an
     idle passthrough run; ``close_run`` restores one."""
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
-    session = SaklasSession.__new__(SaklasSession)
+    session = DrowseSession.__new__(DrowseSession)
     for family, instrument in session.instruments.items():
         assert instrument.family == family
         for name in _INSTRUMENT_SURFACE:
@@ -248,9 +248,9 @@ def test_gate_validation_is_only_where_a_channel_can_be_refused() -> None:
     strength axis, so a geometry-channel gate is a composition-preflight
     error there; geometry produces every channel, so its implementation
     accepts unconditionally."""
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
-    session = SaklasSession.__new__(SaklasSession)
+    session = DrowseSession.__new__(DrowseSession)
     ref = parse_gate_ref("probe:membership")
     for family in ("lens", "sae"):
         with pytest.raises(UnsupportedProbeChannelError):

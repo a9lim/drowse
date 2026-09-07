@@ -1,4 +1,4 @@
-// The ⌘K command palette's index.
+// The searchable tool directory's index.
 //
 // The launcher categories are NOT declared here — they are derived from
 // the drawer registry (``drawers/index.ts``), which is the one place a
@@ -15,7 +15,8 @@ export { RAIL_CATEGORIES } from "../drawers";
 
 export type PaletteAction =
   | { kind: "drawer"; drawer: DrawerName }
-  | { kind: "tab"; tab: InspectorTab };
+  | { kind: "tab"; tab: InspectorTab }
+  | { kind: "controls"; section: "model" };
 
 export interface PaletteCommand {
   label: string;
@@ -29,26 +30,26 @@ export interface PaletteCommand {
 export function paletteCommands(): PaletteCommand[] {
   const cmds: PaletteCommand[] = [
     {
-      label: "subspace",
-      group: "instruments",
+      label: "Concepts",
+      group: "Controls",
       action: { kind: "tab", tab: "subspace" },
       keywords: "pillar flat affine concept vector caa steer probe",
     },
     {
-      label: "manifold",
-      group: "instruments",
+      label: "Moods and scales",
+      group: "Controls",
       action: { kind: "tab", tab: "manifold" },
       keywords: "pillar curved emotions months steer probe",
     },
     {
-      label: "sae",
-      group: "instruments",
+      label: "Model features",
+      group: "Controls",
       action: { kind: "tab", tab: "sae" },
       keywords: "pillar features sparse autoencoder",
     },
     {
-      label: "lens",
-      group: "instruments",
+      label: "Layer predictions",
+      group: "Controls",
       action: { kind: "tab", tab: "lens" },
       keywords: "pillar jacobian jlens workspace readout token",
     },
@@ -58,7 +59,9 @@ export function paletteCommands(): PaletteCommand[] {
       cmds.push({
         label: tool.label.replace(/…$/, ""),
         group: cat.label.toLowerCase(),
-        action: { kind: "drawer", drawer: tool.drawer },
+        action: tool.drawer === "local_runtime" || tool.drawer === "health"
+          ? { kind: "controls", section: "model" }
+          : { kind: "drawer", drawer: tool.drawer },
         keywords: tool.keywords,
       });
     }

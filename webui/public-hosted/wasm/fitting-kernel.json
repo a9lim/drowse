@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "crate": "drowse-fitting-wasm",
+  "crateVersion": "0.1.0",
+  "wasmBindgenVersion": "0.2.127",
+  "cargoLockSha256": "773734c4ba9a20e2eba57bb111d4bea4b29f46545aa56f73bce04f53ca6aa653",
+  "files": [
+    {
+      "name": "drowse_fitting_wasm.js",
+      "bytes": 110239,
+      "sha256": "61e5ab58781847659d133228d30fd86f02bea47d51ab02f53bf4bc1c914d02d6"
+    },
+    {
+      "name": "drowse_fitting_wasm_bg.wasm",
+      "bytes": 311079,
+      "sha256": "6ceca5855e9bb43e3b1740121133af916244d03a904a4412327c505d38956155"
+    }
+  ]
+}

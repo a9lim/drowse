@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polythetic.ai/schemas/release-corpus-source-v1.json",
+  "title": "Polythetic hosted release corpus source",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "status",
+    "blockers",
+    "source",
+    "license",
+    "wordSeeds",
+    "tokenizers",
+    "selection"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "minLength": 1 },
+    "schemaVersion": { "const": 1 },
+    "status": { "enum": ["approved", "blocked"] },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "source": { "$ref": "#/$defs/source" },
+    "license": { "$ref": "#/$defs/license" },
+    "wordSeeds": { "$ref": "#/$defs/wordSeeds" },
+    "tokenizers": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/tokenizer" }
+    },
+    "selection": { "$ref": "#/$defs/selection" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "approved" } } },
+      "then": {
+        "properties": {
+          "blockers": { "maxItems": 0 },
+          "license": {
+            "properties": {
+              "reviewStatus": { "const": "approved" },
+              "reviewedBy": { "type": "string", "minLength": 1 },
+              "reviewedAt": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "blockers": { "minItems": 1 },
+          "license": {
+            "properties": {
+              "reviewStatus": { "const": "blocked" },
+              "reviewedBy": { "type": "null" },
+              "reviewedAt": { "type": "null" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "revision",
+        "configuration",
+        "split",
+        "path",
+        "url",
+        "format",
+        "textField",
+        "sha256",
+        "bytes",
+        "rows"
+      ],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "revision": { "$ref": "#/$defs/revision" },
+        "configuration": { "type": "string", "minLength": 1 },
+        "split": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "format": { "enum": ["json", "jsonl", "parquet"] },
+        "textField": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "$ref": "#/$defs/positiveInteger" },
+        "rows": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "declaredIdentifiers",
+        "evidence",
+        "attribution",
+        "redistributionNotice",
+        "reviewStatus",
+        "reviewedBy",
+        "reviewedAt"
+      ],
+      "properties": {
+        "declaredIdentifiers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["url", "sha256", "bytes"],
+          "properties": {
+            "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "bytes": { "$ref": "#/$defs/positiveInteger" }
+          }
+        },
+        "attribution": { "type": "string", "minLength": 1 },
+        "redistributionNotice": { "type": "string", "minLength": 1 },
+        "reviewStatus": { "enum": ["approved", "blocked"] },
+        "reviewedBy": { "type": ["string", "null"] },
+        "reviewedAt": { "type": ["string", "null"] }
+      }
+    },
+    "wordSeeds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes", "license"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "$ref": "#/$defs/positiveInteger" },
+        "license": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tokenizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sourceRepository",
+        "sourceRevision",
+        "tokenizerSha256",
+        "tokenizerConfigSha256"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "sourceRepository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "sourceRevision": { "$ref": "#/$defs/revision" },
+        "tokenizerSha256": { "$ref": "#/$defs/sha256" },
+        "tokenizerConfigSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "minimumFragmentCharacters",
+        "minimumDocumentCharacters",
+        "maximumDocumentCharacters",
+        "maximumSourceBytes",
+        "maximumSourceRows",
+        "saeDocuments",
+        "jlensDocuments",
+        "minimumSharedWords"
+      ],
+      "properties": {
+        "algorithm": { "const": "polythetic-release-corpus-v1" },
+        "minimumFragmentCharacters": { "$ref": "#/$defs/positiveInteger" },
+        "minimumDocumentCharacters": { "$ref": "#/$defs/positiveInteger" },
+        "maximumDocumentCharacters": { "$ref": "#/$defs/positiveInteger" },
+        "maximumSourceBytes": { "$ref": "#/$defs/positiveInteger" },
+        "maximumSourceRows": { "$ref": "#/$defs/positiveInteger" },
+        "saeDocuments": { "$ref": "#/$defs/positiveInteger" },
+        "jlensDocuments": { "$ref": "#/$defs/positiveInteger" },
+        "minimumSharedWords": { "$ref": "#/$defs/positiveInteger" }
+      }
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "$schema": "./release-corpus-source.schema.json",
+  "schemaVersion": 1,
+  "status": "blocked",
+  "blockers": [
+    "A named reviewer must approve the ODC-By 1.0 attribution, Common Crawl Terms of Use, and redistribution notice before this corpus may be used for release instruments."
+  ],
+  "source": {
+    "repository": "HuggingFaceFW/fineweb",
+    "revision": "9bb295ddab0e05d785b879661af7260fed5140fc",
+    "configuration": "sample-10BT",
+    "split": "train",
+    "path": "sample/10BT/014_00000.parquet",
+    "url": "https://huggingface.co/datasets/HuggingFaceFW/fineweb/resolve/9bb295ddab0e05d785b879661af7260fed5140fc/sample/10BT/014_00000.parquet",
+    "format": "parquet",
+    "textField": "text",
+    "sha256": "7168f92a680b3e28155a6b654ebf235b19bf4d2ab35f91dbab3fb47cbd629a8e",
+    "bytes": 574962194,
+    "rows": 281664
+  },
+  "license": {
+    "declaredIdentifiers": [
+      "ODC-By-1.0",
+      "Common Crawl Terms of Use"
+    ],
+    "evidence": {
+      "url": "https://huggingface.co/datasets/HuggingFaceFW/fineweb/raw/9bb295ddab0e05d785b879661af7260fed5140fc/README.md",
+      "sha256": "2fb3e49e8aa62a7429b07b557cc49d578292174843fb6aa561b5fbe6afbff01c",
+      "bytes": 44256
+    },
+    "attribution": "FineWeb by Guilherme Penedo, Hynek Kydlicek, Loubna Ben allal, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro Von Werra, and Thomas Wolf; derived from Common Crawl web data.",
+    "redistributionNotice": "Not approved: retain the pinned FineWeb dataset card, ODC-By 1.0 attribution, source URL, and applicable Common Crawl Terms of Use with any release evidence and derived instrument pack.",
+    "reviewStatus": "blocked",
+    "reviewedBy": null,
+    "reviewedAt": null
+  },
+  "wordSeeds": {
+    "path": "browser-runtime/release-corpus/jlens-word-seeds.txt",
+    "sha256": "ab3f9b6a7c3882576be81ac425ba58d312cf4f8e200784b52bcdd8d3a06b3d0e",
+    "bytes": 738,
+    "license": "AGPL-3.0-only"
+  },
+  "tokenizers": [
+    {
+      "id": "qwen3-1.7b",
+      "sourceRepository": "Qwen/Qwen3-1.7B",
+      "sourceRevision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+      "tokenizerSha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+      "tokenizerConfigSha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+    },
+    {
+      "id": "qwen3-4b",
+      "sourceRepository": "Qwen/Qwen3-4B",
+      "sourceRevision": "1cfa9a7208912126459214e8b04321603b3df60c",
+      "tokenizerSha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+      "tokenizerConfigSha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+    }
+  ],
+  "selection": {
+    "algorithm": "drowse-release-corpus-v1",
+    "minimumFragmentCharacters": 24,
+    "minimumDocumentCharacters": 768,
+    "maximumDocumentCharacters": 4096,
+    "maximumSourceBytes": 600000000,
+    "maximumSourceRows": 300000,
+    "saeDocuments": 320,
+    "jlensDocuments": 128,
+    "minimumSharedWords": 80
+  }
+}

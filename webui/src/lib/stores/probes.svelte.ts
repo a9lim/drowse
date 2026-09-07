@@ -10,17 +10,23 @@
 // ``trajectory`` for the mini-map.
 
 import { SvelteMap } from "svelte/reactivity";
-import { apiProbes } from "../api";
+import { apiProbes } from "../runtime/services";
+import { invalidateTokenReadoutCache } from "../runtime/tokenReadoutCache";
+import { userFacingError } from "../runtime/userFacingError";
 import type {
   AnyReadingJSON,
   GeometryProbeInfo,
+  InstrumentFamily,
   ProbeInfo,
+  ProbeRequest,
   ProbeRackEntry,
   ProbeSortMode,
   SaeProbeInfo,
 } from "../types";
 import { isScalarReading } from "../types";
 import {
+  ENTROPY_TARGET,
+  PROBABILITY_TARGET,
   SURPRISE_TARGET,
   HIGHLIGHT_SAT,
   nodeCoordExtent,
@@ -33,6 +39,8 @@ import {
   tokenHoverState,
 } from "./instruments.svelte";
 import { loomTree } from "./loom.svelte";
+import { invalidateCorrelation } from "./steering.svelte";
+import { savedProbeSummary } from "../probeHistory";
 
 /** Sparkline depth (tokens).  Exported because the lens aggregate history
  *  and the SAE activation history are capped to the same window — the
@@ -106,6 +114,7 @@ export function probeEntryForDisplay(name: string): ProbeRackEntry | undefined {
     tokenHoverState.probeReadings?.[name] ?? null;
   if (!reading) {
     let scalar = tokenHoverState.probes?.[name];
+    let scalarUnit: string | null = null;
     const tokenCoords = tokenHoverState.coordsByProbe?.[name];
     if (scalar === undefined && tokenCoords?.[0] !== undefined) {
       scalar = tokenCoords[0];
@@ -116,15 +125,15 @@ export function probeEntryForDisplay(name: string): ProbeRackEntry | undefined {
       if (typeof value === "number" && Number.isFinite(value)) perLayer[layer] = value;
     }
 
-    if (scalar === undefined && name.startsWith("jlens/")) {
-      const word = name.slice("jlens/".length);
+    if (scalar === undefined && base.info.family === "lens") {
+      const word = base.info.word;
       const aggregate = tokenHoverState.lensAggregate?.find(
-        ([token]) => token === word || token.trim() === word,
+        ([token]) => token === word,
       );
       if (aggregate) {
         scalar = aggregate[1];
         for (const [layer, tokens] of Object.entries(tokenHoverState.lensReadout ?? {})) {
-          const hit = tokens.find(([token]) => token === word || token.trim() === word);
+          const hit = tokens.find(([token]) => token === word);
           if (hit) perLayer[layer] = hit[1];
         }
       }
@@ -134,36 +143,40 @@ export function probeEntryForDisplay(name: string): ProbeRackEntry | undefined {
         (row) => row.id === (base.info as SaeProbeInfo).feature_id,
       );
       if (feature) {
-        const maxAct = (base.info as SaeProbeInfo).max_act;
+        const maxAct = feature.max_act;
         scalar = maxAct != null && maxAct > 0
           ? feature.activation / maxAct
           : feature.activation;
+        scalarUnit = maxAct != null && maxAct > 0 ? "activation_over_max" : "raw_activation";
         const layer = base.info.layers[0];
         if (layer !== undefined) perLayer[String(layer)] = scalar;
       }
     }
 
-    if (scalar !== undefined || Object.keys(perLayer).length > 0) {
-      const value = scalar ?? 0;
+    if (scalar !== undefined) {
+      const value = scalar;
       if (base.info.family !== "geometry") {
         // The single-axis families synthesize their NATIVE reading, so the
         // hover overlay and the live stream carry the same shape.
         return {
           ...base,
           current: value,
+          sparkline: [value],
           perLayer,
           reading: {
             value,
-            unit: base.info.family === "lens"
+            unit: scalarUnit ?? (base.info.family === "lens"
               ? "mean_token_probability"
               : ((base.info as SaeProbeInfo).max_act != null
                 ? "activation_over_max"
-                : "raw_activation"),
+                : "raw_activation")),
             per_layer: perLayer,
             depth: null,
           },
           aggregate: null,
           savedAggregate: null,
+          savedCoordinates: [],
+          savedFraction: null,
         };
       }
       const usesCoords = base.info.is_affine;
@@ -195,6 +208,8 @@ export function probeEntryForDisplay(name: string): ProbeRackEntry | undefined {
       reading: null,
       aggregate: null,
       savedAggregate: null,
+      savedCoordinates: [],
+      savedFraction: null,
       nearest: [],
       trajectory: [],
     };
@@ -211,6 +226,8 @@ export function probeEntryForDisplay(name: string): ProbeRackEntry | undefined {
     // describe the hovered token, so the ephemeral view fills both slots.
     aggregate: reading,
     savedAggregate: null,
+    savedCoordinates: [],
+    savedFraction: null,
     nearest: _readingNearest(reading),
     trajectory: [],
   };
@@ -245,8 +262,22 @@ function _lookupNodeCoords(
   return [...row];
 }
 
-function _emptyProbeEntry(info: ProbeInfo): ProbeRackEntry {
+export function probeRequestFromInfo(info: ProbeInfo): ProbeRequest {
+  if (info.family === "geometry") {
+    return { selector: info.manifold, name: info.name, top_n: info.top_n };
+  }
+  if (info.family === "lens") {
+    return { selector: `jlens/${info.word}`, name: info.name };
+  }
+  return { selector: `sae/${info.feature_id}`, name: info.name };
+}
+
+function _emptyProbeEntry(
+  info: ProbeInfo,
+  request: ProbeRequest = probeRequestFromInfo(info),
+): ProbeRackEntry {
   return {
+    request,
     info,
     sparkline: [],
     current: 0,
@@ -255,6 +286,8 @@ function _emptyProbeEntry(info: ProbeInfo): ProbeRackEntry {
     reading: null,
     aggregate: null,
     savedAggregate: null,
+    savedCoordinates: [],
+    savedFraction: null,
     nearest: [],
     trajectory: [],
     subspaceTrail: [],
@@ -280,13 +313,14 @@ export function probeAxisScale(name: string, axis = 0): number {
 export function saeRawFallbackScale(): number {
   let max = 0;
   for (const name of probeRack.active) {
-    const entry = probeRack.entries.get(name);
+    const entry = probeEntryForDisplay(name);
     if (!entry || entry.info.family !== "sae") continue;
-    if (entry.info.max_act != null) continue;
+    const reading = entry.aggregate ?? entry.reading;
+    if (reading && isScalarReading(reading) && reading.unit === "activation_over_max") continue;
     max = Math.max(max, entry.current ?? 0);
   }
   for (const feature of saeReadoutForDisplay()) {
-    const meta = saeState.meta.get(feature.id);
+    const meta = tokenHoverState.active ? undefined : saeState.meta.get(feature.id);
     if ((feature.max_act ?? meta?.max_act) != null) continue;
     max = Math.max(max, feature.activation);
   }
@@ -299,15 +333,21 @@ export function saeRawFallbackScale(): number {
  *  (``personas[3]``) scales by that PC's own coordinate extent, so a tight
  *  axis isn't pinned saturated by a wider sibling axis. */
 export function highlightScale(target: string | null): number {
-  if (!target || target === SURPRISE_TARGET) return HIGHLIGHT_SAT;
-  if (target.startsWith("jlens/")) return 1;
-  if (target.startsWith("sae/")) {
-    const info = probeRack.entries.get(target)?.info;
-    return info?.family === "sae" && info.max_act != null
+  if (
+    !target ||
+    target === SURPRISE_TARGET ||
+    target === PROBABILITY_TARGET ||
+    target === ENTROPY_TARGET
+  ) return HIGHLIGHT_SAT;
+  const { base, axis } = parseProbeTarget(target);
+  const entry = probeEntryForDisplay(base);
+  if (entry?.info.family === "lens" || target.startsWith("jlens/")) return 1;
+  if (entry?.info.family === "sae") {
+    const reading = entry.aggregate ?? entry.reading;
+    return reading && isScalarReading(reading) && reading.unit === "activation_over_max"
       ? 1
       : saeRawFallbackScale();
   }
-  const { base, axis } = parseProbeTarget(target);
   return probeAxisScale(base, axis);
 }
 
@@ -335,15 +375,26 @@ export function activeProbeNames(): string[] {
   return arr;
 }
 
+let probeListRequest = 0;
+let probeRevision = 0;
+
 /** Fetch the attached-probe catalog. */
 export async function refreshProbeList(): Promise<void> {
+  const request = ++probeListRequest;
+  const revision = probeRevision;
   probeRack.loading = true;
   try {
     const r = await apiProbes.list();
+    if (request !== probeListRequest || revision !== probeRevision) return;
     const seen = new Set<string>();
+    const changed = new Set<InstrumentFamily>();
     for (const info of r.probes) {
       seen.add(info.name);
       const prev = probeRack.entries.get(info.name);
+      if (JSON.stringify(prev?.info) !== JSON.stringify(info)) {
+        changed.add(info.family);
+        if (prev) changed.add(prev.info.family);
+      }
       if (prev) {
         // Refresh metadata in place; preserve live sparkline / aggregate.
         probeRack.entries.set(info.name, { ...prev, info });
@@ -353,17 +404,23 @@ export async function refreshProbeList(): Promise<void> {
     }
     // Drop entries the server no longer reports (detached out-of-band).
     for (const name of [...probeRack.entries.keys()]) {
-      if (!seen.has(name)) probeRack.entries.delete(name);
+      if (!seen.has(name)) {
+        changed.add(probeRack.entries.get(name)!.info.family);
+        probeRack.entries.delete(name);
+      }
     }
     probeRack.active = r.probes.map((p) => p.name);
-    hydrateProbeRackFromActiveNode();
+    for (const family of changed) invalidateTokenReadoutCache(family);
+    if (changed.size > 0) {
+      invalidateCorrelation();
+      hydrateProbeRackFromActiveNode();
+    }
     probeRack.error = null;
   } catch (e) {
-    probeRack.entries.clear();
-    probeRack.active = [];
-    probeRack.error = e instanceof Error ? e.message : String(e);
+    if (request !== probeListRequest || revision !== probeRevision) return;
+    probeRack.error = userFacingError(e, "Live readings could not be refreshed.");
   } finally {
-    probeRack.loading = false;
+    if (request === probeListRequest) probeRack.loading = false;
   }
 }
 
@@ -373,20 +430,33 @@ export async function attachProbe(
   selector: string,
   opts: { name?: string; top_n?: number } = {},
 ): Promise<ProbeInfo> {
-  const info = await apiProbes.attach({
+  const requested: ProbeRequest = {
     selector,
     name: opts.name,
     top_n: opts.top_n,
-  });
+  };
+  const info = await apiProbes.attach(requested);
+  probeRevision += 1;
+  probeRack.error = null;
+  const request: ProbeRequest = {
+    selector,
+    name: info.name,
+    ...(info.family === "geometry"
+      ? { top_n: opts.top_n ?? info.top_n }
+      : {}),
+  };
   const prev = probeRack.entries.get(info.name);
   if (prev) {
-    probeRack.entries.set(info.name, { ...prev, info });
+    probeRack.entries.set(info.name, { ...prev, request, info });
   } else {
-    probeRack.entries.set(info.name, _emptyProbeEntry(info));
+    probeRack.entries.set(info.name, _emptyProbeEntry(info, request));
   }
   if (!probeRack.active.includes(info.name)) {
     probeRack.active = [...probeRack.active, info.name];
   }
+  invalidateTokenReadoutCache(info.family);
+  if (prev && prev.info.family !== info.family) invalidateTokenReadoutCache(prev.info.family);
+  invalidateCorrelation();
   // Seed the highlight target when a probe is attached through the rack.
   if (highlightState.target === null) {
     highlightState.target = info.name;
@@ -394,41 +464,18 @@ export async function attachProbe(
   return info;
 }
 
-/** Preserve a discovery card's visible reading when it becomes a pinned
- * probe. Attaching is server-authoritative but the first real probe event
- * arrives on the next generation; without this bridge, pinning a live card
- * made it flash to 0 and lose its sparkline/layer context. */
-export function seedProbeDisplay(
-  name: string,
-  seed: {
-    current: number;
-    sparkline?: number[];
-    perLayer?: Record<string, number>;
-    reading?: AnyReadingJSON | null;
-    aggregate?: AnyReadingJSON | null;
-  },
-): void {
-  const prev = probeRack.entries.get(name);
-  if (!prev) return;
-  probeRack.entries.set(name, {
-    ...prev,
-    current: seed.current,
-    previous: seed.current,
-    sparkline: seed.sparkline ? [...seed.sparkline] : prev.sparkline,
-    perLayer: seed.perLayer ? { ...seed.perLayer } : prev.perLayer,
-    reading: seed.reading === undefined ? prev.reading : seed.reading,
-    aggregate: seed.aggregate === undefined ? prev.aggregate : seed.aggregate,
-    savedAggregate: null,
-  });
-}
-
 /** Detach a probe by registered name. */
 export async function detachProbe(name: string): Promise<void> {
+  const family = probeRack.entries.get(name)?.info.family;
   await apiProbes.detach(name);
+  probeRevision += 1;
+  probeRack.error = null;
   probeRack.entries.delete(name);
   probeRack.active = probeRack.active.filter((n) => n !== name);
+  invalidateCorrelation();
   if (highlightState.target === name) highlightState.target = null;
   if (highlightState.compareTarget === name) highlightState.compareTarget = null;
+  if (family) invalidateTokenReadoutCache(family);
 }
 
 export function setProbeSortMode(mode: ProbeSortMode): void {
@@ -445,6 +492,8 @@ export function resetProbeStreams(): void {
       nearest: [],
       aggregate: null,
       savedAggregate: null,
+      savedCoordinates: [],
+      savedFraction: null,
       trajectory: [],
       subspaceTrail: [],
     });
@@ -506,6 +555,8 @@ export function updateProbesFromReadings(
       perLayer: _primaryPerLayer(prev.info, reading),
       reading,
       savedAggregate: null,
+      savedCoordinates: [],
+      savedFraction: null,
       nearest,
       trajectory,
       subspaceTrail,
@@ -526,6 +577,8 @@ export function setProbeAggregates(
       ...prev,
       aggregate: agg,
       savedAggregate: null,
+      savedCoordinates: [],
+      savedFraction: null,
       current: _primaryScalar(prev.info, agg),
       perLayer: _primaryPerLayer(prev.info, agg),
       nearest: _readingNearest(agg),
@@ -558,8 +611,7 @@ export function hydrateProbeRackFromActiveNode(): void {
     : undefined;
   const readings = node?.aggregate_readings ?? {};
   for (const [name, prev] of probeRack.entries) {
-    const raw = readings[name];
-    const value = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+    const { value, coordinates, fraction } = savedProbeSummary(prev.info, readings);
     probeRack.entries.set(name, {
       ...prev,
       current: value ?? 0,
@@ -568,6 +620,8 @@ export function hydrateProbeRackFromActiveNode(): void {
       reading: null,
       aggregate: null,
       savedAggregate: value,
+      savedCoordinates: coordinates,
+      savedFraction: fraction,
       nearest: [],
       trajectory: [],
       subspaceTrail: [],
@@ -615,4 +669,8 @@ export function setCompareTarget(name: string | null): void {
 
 export function toggleCompareTwo(): void {
   highlightState.compareTwo = !highlightState.compareTwo;
+}
+
+export function setCompareTwo(enabled: boolean): void {
+  highlightState.compareTwo = enabled;
 }

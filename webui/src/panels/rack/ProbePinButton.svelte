@@ -32,26 +32,51 @@
   aria-label={ariaLabel}
   aria-pressed={pinned}
 >
-  <RackMarker {shape} filled={pinned} />
+  <span class="pin-icon" class:visible={!pinned} aria-hidden="true"><RackMarker {shape} /></span>
+  <span class="pin-icon" class:visible={pinned} aria-hidden="true"><RackMarker {shape} filled /></span>
 </button>
 
 <style>
   .pin {
     display: inline-grid;
     place-items: center;
-    inline-size: 24px;
-    block-size: 24px;
-    margin: 0 -3px;
+    inline-size: var(--control-target);
+    block-size: var(--control-target);
     padding: 0;
     color: var(--fg-muted);
     background: transparent;
     border: 0;
     border-radius: var(--radius-sm);
-    flex: 0 0 24px;
+    flex: 0 0 var(--control-target);
     cursor: pointer;
     transition:
       color var(--dur-fast) var(--ease-out),
-      background var(--dur-fast) var(--ease-out);
+      background var(--dur-fast) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
+  }
+  .pin:active:not(:disabled) {
+    scale: var(--press-scale);
+  }
+  .pin:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+  .pin-icon {
+    grid-area: 1 / 1;
+    display: inline-grid;
+    pointer-events: none;
+    opacity: 0;
+    scale: 0.25;
+    filter: blur(4px);
+    transition:
+      opacity var(--dur-slow) cubic-bezier(0.2, 0, 0, 1),
+      scale var(--dur-slow) cubic-bezier(0.2, 0, 0, 1),
+      filter var(--dur-slow) cubic-bezier(0.2, 0, 0, 1);
+  }
+  .pin-icon.visible {
+    opacity: 1;
+    scale: 1;
+    filter: blur(0);
   }
   .pin.pinned {
     color: var(--card-accent);

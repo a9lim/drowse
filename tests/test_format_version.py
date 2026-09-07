@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from saklas.io.integrity import PROFILE_FORMAT_VERSION
-from saklas.core.profile import Profile, ProfileError
-from saklas.core.profile import load_profile, save_profile
+from drowse.io.integrity import PROFILE_FORMAT_VERSION
+from drowse.core.profile import Profile, ProfileError
+from drowse.core.profile import load_profile, save_profile
 
 
 def test_save_profile_writes_format_version_in_sidecar(tmp_path: Path):

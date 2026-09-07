@@ -1,0 +1,921 @@
+"""Hugging Face Hub consumption wrappers for drowse manifold distribution.
+
+The read-side counterpart to :mod:`drowse.io.hf`.  Manifold-folder
+artifacts (``manifold.json`` + ``nodes/*.json`` + per-model fitted
+``<safe_model>.safetensors``) ride an HF *model*-repo convention — safetensors is
+model-hub-native and ``base_model``
+frontmatter gives reverse-link discoverability.  The tagging convention
+uses the ``drowse-manifold`` tag so the search query is unambiguous.
+
+This module owns the pure-IO HF surface (pull + search + fetch_info).
+The folder format itself lives in :mod:`drowse.io.manifolds`; the
+server route layer composes them with ``manifolds_dir`` /
+``ManifoldFolder.load`` for the install path.
+"""
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from drowse.core.errors import DrowseError
+from drowse.io.atomic import write_bytes_atomic
+from drowse.io.hf import (
+    HFError,
+    _hf_api,
+    _hf_hub_download,
+    _hf_snapshot_download,
+    split_revision,
+)
+from drowse.io.manifolds import (
+    MANIFOLD_FORMAT_VERSION,
+    ManifoldFolder,
+    ManifoldFormatError,
+)
+from drowse.io.integrity import NAME_REGEX
+from drowse.io.staging import stage_verify_swap
+
+#: Row ceiling for a Hub search.  The picker renders one card per row, so a
+#: wider result set costs a slower search for a list nobody scrolls.
+_HF_SEARCH_CAP = 20
+
+#: Optional per-stage narration sink for an install.  An HF pull is a
+#: multi-hundred-megabyte network operation with a stage-verify-swap tail, so
+#: every caller (CLI, SSE route) wants the same five stages: ``resolve`` →
+#: ``download`` → ``validate`` → ``stage`` → ``swap``.
+ProgressCallback = Callable[[str], None]
+
+
+def _report(on_progress: ProgressCallback | None, message: str) -> None:
+    """Emit one install stage line when the caller asked for narration."""
+    if on_progress is not None:
+        on_progress(message)
+
+
+def _rewrite_staged_manifold_name(
+    staged: ManifoldFolder, destination_name: str,
+) -> dict[str, str]:
+    """Rename a staged folder and every fitted sidecar as one identity.
+
+    A fitted manifold repeats its name in each per-model sidecar.  Rewriting
+    only ``manifold.json`` makes selector discovery address the destination
+    while runtime loads still expose the source name.  Update the sidecars in
+    staging and return the corresponding trusted hash map for the caller's
+    single manifest rewrite.
+    """
+    from drowse.io.atomic import write_json_atomic
+    from drowse.io.integrity import hash_file
+
+    files = dict(staged.files)
+    for stem in staged.tensor_models():
+        tensor_path = staged.tensor_path(stem)
+        sidecar_path = tensor_path.with_suffix(".json")
+        if tensor_path.name not in files or sidecar_path.name not in files:
+            raise ManifoldFormatError(
+                f"cannot rename untrusted fitted pair {tensor_path.name}: "
+                "both tensor and sidecar must have manifest proofs"
+            )
+        with open(sidecar_path) as handle:
+            sidecar = json.load(handle)
+        sidecar["name"] = destination_name
+        write_json_atomic(sidecar_path, sidecar)
+        files[sidecar_path.name] = hash_file(sidecar_path)
+    staged.name = destination_name
+    return files
+
+
+# ---------------------------------------------------------------------- pull --
+
+
+def _download(
+    coord: str,
+    *,
+    revision: Optional[str] = None,
+) -> str:
+    """Snapshot-download ``<owner>/<repo>`` from the HF model hub.
+
+    Wraps the shared :func:`drowse.io.hf._hf_snapshot_download` seam so
+    every failure surfaces as :class:`~drowse.io.hf.HFError` with the
+    ``coord@revision`` label.  No allow-patterns filter: a manifold folder is
+    small (a manifest + a ``nodes/`` corpus of short JSON files + at most a
+    few safetensors), so the full snapshot is the simplest correct read.
+    """
+    kwargs: dict[str, Any] = {"repo_id": coord}
+    if revision is not None:
+        kwargs["revision"] = revision
+    try:
+        return _hf_snapshot_download(**kwargs)
+    except Exception as e:
+        label = f"{coord}@{revision}" if revision else coord
+        raise HFError(f"{label}: not found ({e})") from e
+
+
+def pull_manifold(
+    coord: str,
+    target_folder: Path,
+    *,
+    force: bool,
+    revision: Optional[str] = None,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """Download and atomically install while holding the target folder lock.
+
+    ``on_progress`` receives one line per stage (see :data:`ProgressCallback`).
+    """
+    from drowse.io.manifold_folder import _locked_manifest
+    from drowse.io.selectors import invalidate as invalidate_selector_index
+
+    with _locked_manifest(Path(target_folder)):
+        installed = _pull_manifold_locked(
+            coord, target_folder, force=force, revision=revision,
+            on_progress=on_progress,
+        )
+    # The installed roster changed; drop the resolver's memoized walks so a
+    # freshly pulled manifold's node labels resolve in this process.
+    invalidate_selector_index()
+    return installed
+
+
+def _pull_manifold_locked(
+    coord: str,
+    target_folder: Path,
+    *,
+    force: bool,
+    revision: Optional[str] = None,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """Download ``coord`` from HF and install into ``target_folder``.
+
+    Stage-verify-swap discipline (:mod:`drowse.io.staging`):
+    the manifold folder is built under ``<target_folder>.staging/``,
+    then validated by ``ManifoldFolder.load`` (which already checks
+    format version + ``NAME_REGEX`` + the ``files`` integrity manifest
+    when populated).  Only after a clean load does the staging dir
+    atomically swap into place via ``target → .bak``, ``staging →
+    target``, ``rmtree .bak``.  A crash mid-swap is recoverable from
+    ``.bak``.
+
+    The downloaded repository must carry the current ``manifold.json`` shape.
+    """
+    # Recover a crash-left stage swap before conflict policy or pair-lock
+    # discovery.  The public caller already owns the stable manifest lock.  A
+    # force replacement will now see the recovered folder and quiesce all its
+    # fitted pair readers; a non-force install must preserve it as an existing
+    # destination rather than silently overwrite it.
+    backup = target_folder.with_name(target_folder.name + ".bak")
+    if not target_folder.exists() and backup.exists():
+        try:
+            backup.rename(target_folder)
+        except OSError as exc:
+            raise HFError(
+                f"{coord}: could not recover interrupted install ({exc})"
+            ) from exc
+    if target_folder.exists() and not force:
+        raise HFError(f"{target_folder} exists; pass force=True to overwrite")
+
+    label = f"{coord}@{revision}" if revision else coord
+    _report(on_progress, f"Downloading {label} from Hugging Face...")
+    tmp_dir = Path(_download(coord, revision=revision))
+
+    if not (tmp_dir / "manifold.json").is_file():
+        raise HFError(
+            f"{coord}: HF repo has no manifold.json at root — drowse "
+            f"manifolds must be published with the manifest in place "
+            f"(see `drowse pack push`)."
+        )
+
+    source = f"hf://{coord}@{revision}" if revision else f"hf://{coord}"
+
+    def _build(staging: Path) -> None:
+        _report(on_progress, f"Staging {label}...")
+        _install_manifold(tmp_dir, staging, coord)
+        # Validate the staged folder against the same loader the
+        # session will see — catches format-version mismatches and a
+        # populated-but-broken ``files`` manifest before we touch the
+        # target.
+        _report(on_progress, f"Validating staged {label}...")
+        try:
+            staged = ManifoldFolder.load(staging)
+        except ManifoldFormatError as e:
+            raise HFError(f"{coord}: staged manifold failed validation ({e})") from e
+        # Record the HF coord as the manifold's source so ``refresh_manifold``
+        # can re-pull from the same place. ``write_metadata`` rebuilds the
+        # manifest from the just-loaded folder and re-hashes ``files`` —
+        # so the staged manifest stays self-consistent for the re-validate
+        # below.
+        #
+        # The installed folder basename is its addressable identity.  An
+        # explicit ``--as ns/name`` must therefore rewrite the source repo's
+        # manifest name while the copy is still staged; otherwise selector
+        # discovery indexes the source name under a destination path that does
+        # not exist.
+        try:
+            files = _rewrite_staged_manifold_name(staged, target_folder.name)
+        except ManifoldFormatError as e:
+            raise HFError(
+                f"{coord}: staged manifold failed identity rewrite ({e})"
+            ) from e
+        staged.source = source
+        staged.write_metadata(files=files)
+        try:
+            ManifoldFolder.load(staging)
+        except ManifoldFormatError as e:
+            raise HFError(
+                f"{coord}: staged manifold failed re-validation after "
+                f"source stamp ({e})"
+            ) from e
+        # ``stage_verify_swap`` promotes the staging dir as soon as ``build``
+        # returns, so this is the last narration point before the swap.
+        _report(on_progress, f"Installing {label} into {target_folder.name}...")
+
+    def _swap() -> Path:
+        return stage_verify_swap(
+            target_folder,
+            force=force,
+            label=coord,
+            build=_build,
+            make_error=HFError,
+        )
+
+    if force and target_folder.exists():
+        from drowse.io.manifold_folder import (
+            destructive_manifold_folder_transaction,
+        )
+
+        with destructive_manifold_folder_transaction(target_folder):
+            return _swap()
+    return _swap()
+
+
+def _install_manifold(tmp_dir: Path, target_folder: Path, _coord: str) -> None:
+    """Copy a manifold folder's tree from the snapshot dir to ``target_folder``.
+
+    Preserves the directory layout the format expects:
+      * ``manifold.json`` at the root
+      * ``nodes/NN_<label>.json`` corpus files under ``nodes/``
+      * Optional per-model fitted ``<safe_model>.safetensors`` + ``.json``
+        sidecars at the root
+
+    Anything else at the snapshot root (README, .gitattributes, etc.) is
+    skipped — those are HF-side artifacts, not part of the manifold
+    format.
+    """
+    _ALLOWED_ROOT = {"manifold.json"}
+    _ALLOWED_SUFFIXES = (".safetensors", ".json")
+
+    for entry in sorted(tmp_dir.iterdir()):
+        if entry.is_file():
+            if (
+                entry.name in _ALLOWED_ROOT
+                or entry.suffix in _ALLOWED_SUFFIXES
+            ):
+                write_bytes_atomic(
+                    target_folder / entry.name, entry.read_bytes(),
+                )
+        elif entry.is_dir() and entry.name == "nodes":
+            (target_folder / "nodes").mkdir(parents=True, exist_ok=True)
+            for child in sorted(entry.iterdir()):
+                if child.is_file() and child.suffix == ".json":
+                    write_bytes_atomic(
+                        target_folder / "nodes" / child.name,
+                        child.read_bytes(),
+                    )
+
+
+# ---------------------------------------------------------------------- push --
+#
+# HF upload: stage a filtered copy of the folder (so README +
+# .gitattributes can be added without mutating the source), then one
+# ``upload_folder``.  The repo carries the ``drowse-manifold`` tag and a
+# manifold-shaped model card, and the corpus (``manifold.json`` +
+# ``nodes/*``) is *always* included — a manifold without its node corpus
+# can't be re-fit, so a tensors-only manifold push would be useless.
+
+
+def _manifold_sidecar_stem_to_hf_coord(stem: str) -> Optional[str]:
+    """Convert a fitted-tensor stem back to its base-model HF coord.
+
+    Strips any variant suffix (``_sae-<release>`` / ``_from-<safe_src>``) so
+    the ``base_model:`` frontmatter lists the clean base model, then decodes
+    the safe stem back to its Hub id through
+    :func:`~drowse.io.paths.unsafe_model_id` (the reversible base64url ``_z``
+    codec).  Returns ``None`` for stems that don't parse.
+    """
+    from drowse.io.paths import parse_tensor_filename, unsafe_model_id
+
+    parsed = parse_tensor_filename(f"{stem}.safetensors")
+    if parsed is None:
+        return None
+    safe_model, _variant = parsed
+    return unsafe_model_id(safe_model)
+
+
+def _render_manifold_card(
+    mf: ManifoldFolder, tensor_stems: list[str], coord: str,
+) -> str:
+    """Build a HF model card (YAML frontmatter + markdown body) for a manifold.
+
+    The frontmatter carries ``library_name: drowse``, the discovery tags, and
+    a ``base_model:`` list deduped over the fitted tensor stems; the body
+    table lists the manifold's domain / node count / fit_mode.
+    """
+    base_models = sorted({
+        c for stem in tensor_stems
+        if (c := _manifold_sidecar_stem_to_hf_coord(stem)) is not None
+    })
+    tags = ["drowse-manifold", "activation-steering", "steering-manifold"]
+
+    fm = ["---", "library_name: drowse", "tags:"]
+    fm += [f"  - {t}" for t in tags]
+    if base_models:
+        fm.append("base_model:")
+        fm += [f"  - {bm}" for bm in base_models]
+        fm.append("base_model_relation: adapter")
+    fm.append("---")
+
+    from drowse.io.manifolds import domain_label
+
+    dom_lbl = domain_label(mf.domain) if mf.fit_mode == "authored" and mf.domain else f"discover-{mf.fit_mode}"
+
+    body: list[str] = [
+        f"# {mf.name}",
+        "",
+        mf.description,
+        "",
+        f"**Domain:** `{dom_lbl}`  |  **fit_mode:** `{mf.fit_mode}`  |  "
+        f"**nodes:** {len(mf.node_labels)}",
+        "",
+        "## Install",
+        "",
+        "```bash",
+        f"drowse pack install {coord}",
+        "```",
+        "",
+        "## Nodes",
+        "",
+        ", ".join(f"`{label}`" for label in mf.node_labels),
+        "",
+    ]
+    if tensor_stems:
+        body += [
+            "## Fitted tensors",
+            "",
+            "| base model | variant |",
+            "| --- | --- |",
+        ]
+        from drowse.io.paths import parse_tensor_filename
+        for stem in sorted(tensor_stems):
+            base = _manifold_sidecar_stem_to_hf_coord(stem) or stem
+            parsed = parse_tensor_filename(f"{stem}.safetensors")
+            variant = "raw" if (parsed is None or parsed[1] is None) else parsed[1]
+            body.append(f"| `{base}` | `{variant}` |")
+        body.append("")
+
+    body += ["---", "", "Generated by `drowse pack push`.", ""]
+    return "\n".join(fm) + "\n\n" + "\n".join(body)
+
+
+def _manifold_variant_matches(key: str, variant: str) -> bool:
+    """Variant filter for a manifold tensor.
+
+    ``key`` is the parsed variant slug (``"raw"`` / ``"sae-<release>"`` /
+    ``"from-<safe_src>"``); ``variant`` is one of ``"raw"`` / ``"sae"`` /
+    ``"from"`` / ``"all"``.
+    """
+    if variant == "all":
+        return True
+    if variant == "raw":
+        return key == "raw"
+    if variant == "sae":
+        return key.startswith("sae-")
+    if variant == "from":
+        return key.startswith("from-")
+    return False
+
+
+def push_manifold(
+    folder: Path,
+    coord: str,
+    *,
+    private: bool = False,
+    model_scope: Optional[str] = None,
+    variant: str = "raw",
+    dry_run: bool = False,
+) -> tuple[str, Optional[str]]:
+    """Push a manifold folder to HF as a model repo.
+
+    Stages a filtered copy (adding README.md + .gitattributes without
+    mutating the source), then makes one atomic ``upload_folder``.  Returns
+    ``(repo_url, commit_sha)``; ``sha`` is ``None`` on dry-run.
+
+    The corpus is *always* uploaded — ``manifold.json`` plus every
+    ``nodes/*.json`` — because a manifold can't be re-fit without it.
+    Per-model fitted ``<safe>.safetensors`` + ``.json`` sidecars are
+    filtered two ways:
+
+    - ``model_scope`` restricts to one base model (``safe_model_id``).
+    - ``variant`` filters tensor flavor: ``"raw"`` (default) only
+      unsuffixed, ``"sae"`` only ``_sae-*``, ``"from"`` only ``_from-*``,
+      ``"all"`` every variant.  Sidecars follow their partner tensor.
+
+    A staged manifest with no tensors is still a valid push: the corpus
+    alone re-fits on the consumer side.
+    """
+    from contextlib import ExitStack
+    import tempfile
+
+    from drowse.io.manifolds import (
+        ManifoldFolder, ManifoldFormatError, hash_manifold_files,
+    )
+    from drowse.io.paths import parse_tensor_filename, safe_model_id as _safe_id
+    from drowse.io.manifold_folder import (
+        _locked_manifest,
+        manifold_folder_tensor_paths,
+        manifold_pair_lock,
+    )
+
+    scope_safe: Optional[str] = None
+    if model_scope is not None:
+        scope_safe = _safe_id(model_scope)
+
+    staging = Path(tempfile.mkdtemp(prefix="drowse-manifold-push-"))
+    try:
+        kept_stems: list[str] = []
+        folder = Path(folder)
+        # Snapshot publication uses the same global mutation order as folder
+        # lifecycle operations: manifest first, then every logical fitted pair
+        # in deterministic order.  Keep both source validation and every source
+        # byte read inside this one transaction, so authoring edits and pair
+        # replacement cannot produce a mixed-generation upload.  The locks end
+        # before any Hub request below.
+        with _locked_manifest(folder):
+            with ExitStack() as pair_locks:
+                tensor_paths = manifold_folder_tensor_paths(folder)
+                for tensor_path in tensor_paths:
+                    pair_locks.enter_context(manifold_pair_lock(tensor_path))
+
+                mf = ManifoldFolder.load(folder)  # runs integrity check
+
+                # Always stage the corpus: manifold.json + the full nodes/ tree.
+                write_bytes_atomic(
+                    staging / "manifold.json",
+                    (folder / "manifold.json").read_bytes(),
+                )
+                nodes_src = folder / "nodes"
+                if nodes_src.is_dir():
+                    for child in sorted(nodes_src.iterdir()):
+                        if child.is_file() and child.suffix == ".json":
+                            write_bytes_atomic(
+                                staging / "nodes" / child.name,
+                                child.read_bytes(),
+                            )
+                # Stage the fitted tensors that survive the model/variant
+                # filter, each with its sidecar.
+                from drowse.io.manifold_tensors import load_manifold
+
+                # Iterate the candidate set whose logical locks we acquired.
+                # A lower-level writer that bypasses the documented
+                # manifest-before-pair order can create a new unmanifested pair
+                # while this snapshot owns the manifest lock; a second glob
+                # would see that unlocked generation and spuriously fail the
+                # push.  The frozen list keeps the staged snapshot exact.
+                for ts in tensor_paths:
+                    if not ts.is_file():
+                        continue
+                    parsed = parse_tensor_filename(ts.name)
+                    if parsed is None:
+                        continue
+                    file_model, var_slug = parsed
+                    if scope_safe is not None and file_model != scope_safe:
+                        continue
+                    vkey = "raw" if var_slug is None else var_slug
+                    if not _manifold_variant_matches(vkey, variant):
+                        continue
+                    sc = ts.with_suffix(".json")
+                    if not sc.exists():
+                        raise ManifoldFormatError(
+                            f"cannot push unpaired fitted tensor {ts.name}"
+                        )
+                    # Targeted runtime validation covers the trusted manifest
+                    # pair, fit policy, and current corpus/domain/template
+                    # identity. Without it a metadata edit could publish a
+                    # current corpus beside a stale fitted tensor whose old
+                    # bytes still pass the folder hash map.
+                    load_manifold(ts)
+                    write_bytes_atomic(staging / ts.name, ts.read_bytes())
+                    kept_stems.append(ts.stem)
+                    write_bytes_atomic(staging / sc.name, sc.read_bytes())
+
+        # Re-hash the staged copy so the uploaded manifest matches the
+        # bytes we upload (a model/variant filter changes the file set).
+        # Patch the staged ``manifold.json``'s ``files`` map directly
+        # rather than re-loading first: the verbatim-copied manifest
+        # still references the *unfiltered* tensor set, so a
+        # ``ManifoldFolder.load`` of the staging dir would fail its
+        # integrity check against files the filter excluded.
+        from drowse.io.atomic import write_json_atomic as _write_json_atomic
+        staged_manifest = staging / "manifold.json"
+        with open(staged_manifest) as f:
+            staged_data = json.load(f)
+        # Transaction identity is local to one installed folder generation;
+        # publishing it would make every pull share the same rm/recreate epoch.
+        staged_data.pop("artifact_id", None)
+        staged_data.pop("fit_epochs", None)
+        staged_data["files"] = hash_manifold_files(staging)
+        _write_json_atomic(staged_manifest, staged_data)
+
+        write_bytes_atomic(
+            staging / ".gitattributes",
+            b"*.safetensors filter=lfs diff=lfs merge=lfs -text\n",
+        )
+        write_bytes_atomic(
+            staging / "README.md",
+            _render_manifold_card(mf, kept_stems, coord).encode("utf-8"),
+        )
+
+        repo_url = f"https://huggingface.co/{coord}"
+        if dry_run:
+            return (repo_url, None)
+
+        from huggingface_hub import HfApi
+        api = HfApi()
+        api.create_repo(
+            repo_id=coord, repo_type="model", private=private, exist_ok=True,
+        )
+        info = api.upload_folder(
+            repo_id=coord,
+            repo_type="model",
+            folder_path=str(staging),
+            commit_message=f"drowse pack push: {mf.name}",
+        )
+        sha = getattr(info, "oid", None) or getattr(info, "commit_sha", None)
+        return (repo_url, sha)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+# -------------------------------------------------------------------- search --
+
+
+def search_manifolds(query: Optional[str]) -> list[dict[str, Any]]:
+    """Search HF for current and legacy manifold-tagged model repos.
+
+    Returns row dicts ready for display by the CLI and the webui picker.
+    At most ``_HF_SEARCH_CAP`` rows.  ``query`` is a free-text substring; an
+    empty / ``None`` query lists tagged repos by recency.
+    """
+    from drowse.io.brand_migration import LEGACY_NAMES
+
+    api = _hf_api()
+    results: list[Any] = []
+    seen: set[str] = set()
+    for brand in ("drowse", *LEGACY_NAMES):
+        required_tags = [f"{brand}-manifold"]
+        kwargs: dict[str, Any] = {"filter": required_tags, "limit": _HF_SEARCH_CAP}
+        if query:
+            kwargs["search"] = query
+        try:
+            matches = list(api.list_models(**kwargs))
+        except TypeError:
+            # Older huggingface_hub uses ``tags`` instead of ``filter``.
+            kwargs.pop("filter", None)
+            kwargs["tags"] = required_tags
+            matches = list(api.list_models(**kwargs))
+        for match in matches:
+            if match.id not in seen:
+                seen.add(match.id)
+                results.append(match)
+            if len(results) == _HF_SEARCH_CAP:
+                break
+        if len(results) == _HF_SEARCH_CAP:
+            break
+
+    rows: list[dict[str, Any]] = []
+    for r in results[:_HF_SEARCH_CAP]:
+        coord = r.id
+        if "/" in coord:
+            ns, nm = coord.split("/", 1)
+        else:
+            ns, nm = "", coord
+
+        raw_tags = getattr(r, "tags", None) or []
+        tags = (
+            [str(t) for t in raw_tags]
+            if isinstance(raw_tags, (list, tuple))
+            else []
+        )
+        raw_desc = getattr(r, "description", "") or ""
+        description = raw_desc if isinstance(raw_desc, str) else ""
+
+        # Fetch the manifest for fields list_models doesn't surface:
+        # the domain label, node count, fit_mode, and any fitted-model
+        # tensor stems.  Best-effort — missing info just yields empty
+        # fields so the search list still renders.
+        info: dict[str, Any] = {}
+        if not description or not tags:
+            try:
+                info = fetch_manifold_info(coord)
+            except Exception:
+                info = {}
+
+        row: dict[str, Any] = {
+            "name": info.get("name", nm),
+            "namespace": info.get("namespace", ns),
+            "description": info.get("description", description),
+            "tags": info.get("tags", tags),
+            "node_count": info.get("node_count", 0),
+            "domain_label": info.get("domain_label", "?"),
+            "fit_mode": info.get("fit_mode", "authored"),
+            "tensor_models": info.get("tensor_models", []),
+        }
+        rows.append(row)
+
+    return rows
+
+
+def fetch_manifold_info(
+    coord: str, revision: Optional[str] = None,
+) -> dict[str, Any]:
+    """Fetch minimal info about an HF drowse-manifold repo without a full pull.
+
+    Pulls only ``manifold.json`` plus the repo's file listing — same
+    cheap single-file probe.  Returns a dict the
+    search row renderer can consume; raises :class:`HFError` on
+    transport / format failure.
+    """
+    label = f"{coord}@{revision}" if revision else coord
+    try:
+        dl_kwargs: dict[str, Any] = {}
+        if revision is not None:
+            dl_kwargs["revision"] = revision
+        mj_path = _hf_hub_download(coord, "manifold.json", **dl_kwargs)
+        with open(mj_path) as f:
+            data = json.load(f)
+        api = _hf_api()
+        list_kwargs: dict[str, Any] = {"repo_id": coord, "repo_type": "model"}
+        if revision is not None:
+            list_kwargs["revision"] = revision
+        files = api.list_repo_files(**list_kwargs)
+    except Exception as e:
+        raise HFError(f"{label}: fetch_manifold_info failed ({e})") from e
+
+    fmt_version = data.get("format_version")
+    if (
+        not isinstance(fmt_version, int)
+        or isinstance(fmt_version, bool)
+        or fmt_version != MANIFOLD_FORMAT_VERSION
+    ):
+        raise HFError(
+            f"{label}: manifold format_version must be exactly "
+            f"{MANIFOLD_FORMAT_VERSION}, got {fmt_version!r}."
+        )
+    manifest_name = data.get("name")
+    if not isinstance(manifest_name, str) or not NAME_REGEX.match(manifest_name):
+        raise HFError(f"{label}: manifold has invalid or missing name")
+    fit_mode = data.get("fit_mode")
+    if fit_mode not in {"authored", "pca", "spectral", "auto", "baked"}:
+        raise HFError(f"{label}: manifold has invalid or missing fit_mode")
+
+    tensor_models = sorted(
+        Path(f).stem for f in files
+        if f.endswith(".safetensors")
+    )
+
+    ns, _, nm = coord.partition("/")
+    domain = data.get("domain") or {}
+    nodes = data.get("nodes") or []
+    node_count = len(nodes) if isinstance(nodes, list) else 0
+
+    if domain:
+        kind = domain.get("type", "?")
+        if kind == "box":
+            n = len(domain.get("axes") or [])
+        elif kind == "sphere":
+            n = int(domain.get("dim", 0) or 0)
+        elif kind == "custom":
+            n = int(domain.get("embed_dim", 0) or 0)
+        else:
+            n = 0
+        domain_label = f"{kind}({n}d)"
+    elif fit_mode in {"pca", "spectral", "auto"}:
+        domain_label = f"discover-{fit_mode}"
+    else:
+        domain_label = "?"
+
+    raw_tags = data.get("tags") or []
+    tags = [str(t) for t in raw_tags] if isinstance(raw_tags, (list, tuple)) else []
+
+    return {
+        "name": str(data.get("name") or nm),
+        "namespace": ns,
+        "description": str(data.get("description") or ""),
+        "tags": tags,
+        "node_count": node_count,
+        "domain_label": domain_label,
+        "fit_mode": fit_mode,
+        "tensor_models": tensor_models,
+    }
+
+
+# ------------------------------------------------------------------ install --
+
+
+class ManifoldInstallConflict(RuntimeError, DrowseError):
+    """A folder already exists at the install target and ``force=False``."""
+
+    def user_message(self) -> tuple[int, str]:
+        return (409, str(self) or self.__class__.__name__)
+
+
+def install_manifold(
+    target: str,
+    as_: Optional[str] = None,
+    *,
+    force: bool = False,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """Install a manifold from an HF coord, local folder, or ``.drowse``.
+
+    Top-level orchestration over the HF pull and folder-copy primitives.
+    ``target`` is one of:
+      * ``<ns>/<name>[@revision]`` — HF pull via :func:`pull_manifold`
+      * a local path to a folder — copy install
+      * a local ``.drowse`` path — verified transactional install
+
+    ``as_`` overrides the destination ``<dst_ns>/<dst_name>`` (must be
+    fully qualified — manifold folders are always namespace-rooted).
+    ``force`` overwrites an existing destination.  ``on_progress`` narrates
+    the stages (resolve → download → validate → stage → swap) so a CLI or an
+    SSE client can show more than a spinner while a multi-hundred-megabyte
+    repo lands.
+    """
+    from drowse.io.paths import manifold_dir
+
+    from drowse.io.selectors import invalidate as invalidate_selector_index
+
+    _report(on_progress, f"Resolving {target}...")
+    p = Path(target)
+    if p.suffix.lower() in {".drowse", ".polythetic", ".saklaspack"}:
+        if not p.is_file():
+            raise FileNotFoundError(f"Drowse archive not found: {p}")
+        from drowse.io.drowse_archive import install_drowse_archive
+
+        return install_drowse_archive(
+            p, as_, force=force, on_progress=on_progress,
+        )
+    if p.exists() and p.is_dir():
+        installed = _install_local_manifold(
+            p, as_=as_, force=force, on_progress=on_progress,
+        )
+        # The installed roster changed; drop the resolver's memoized walks.
+        # (The HF branch below invalidates inside ``pull_manifold``.)
+        invalidate_selector_index()
+        return installed
+
+    coord, revision = split_revision(target)
+    if "/" not in coord:
+        raise ValueError(
+            f"install target must be '<ns>/<name>[@revision]' or a folder path: "
+            f"{target!r}"
+        )
+
+    _ns, name = coord.split("/", 1)
+    if as_:
+        if "/" not in as_:
+            raise ValueError(f"as_ must be '<ns>/<name>', got {as_!r}")
+        dst_ns, dst_name = as_.split("/", 1)
+    else:
+        dst_ns, dst_name = "local", name
+
+    if not NAME_REGEX.match(dst_name):
+        raise ValueError(
+            f"install target name {dst_name!r} doesn't match NAME_REGEX "
+            f"{NAME_REGEX.pattern}"
+        )
+    dst = manifold_dir(dst_ns, dst_name)
+    if dst.exists() and not force:
+        raise ManifoldInstallConflict(
+            f"{dst} already exists; pass force=True or as_=<ns>/<name> to relocate"
+        )
+    pull_manifold(
+        coord, target_folder=dst, force=force, revision=revision,
+        on_progress=on_progress,
+    )
+    return dst
+
+
+def _install_local_manifold(
+    src: Path, *, as_: Optional[str] = None, force: bool = False,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """Validate and copy a local manifold folder into the cache."""
+    from drowse.io.paths import manifold_dir
+
+    _report(on_progress, f"Validating {src.name}...")
+    try:
+        ManifoldFolder.load(src)
+    except ManifoldFormatError as e:
+        raise ValueError(f"{src}: source folder is not a manifold ({e})") from e
+
+    if as_:
+        if "/" not in as_:
+            raise ValueError(f"as_ must be '<ns>/<name>', got {as_!r}")
+        dst_ns, dst_name = as_.split("/", 1)
+    else:
+        dst_ns, dst_name = "local", src.name
+
+    if not NAME_REGEX.match(dst_name):
+        raise ValueError(
+            f"install target name {dst_name!r} doesn't match NAME_REGEX"
+        )
+
+    dst = manifold_dir(dst_ns, dst_name)
+    same_path = (
+        src.expanduser().resolve() == dst.expanduser().resolve(strict=False)
+    )
+    from drowse.io.manifold_folder import _locked_manifest
+    from drowse.io.staging import stage_verify_swap
+
+    def _install_from(source_path: Path) -> Path:
+        with _locked_manifest(dst):
+            backup = dst.with_name(dst.name + ".bak")
+            if not dst.exists() and backup.exists():
+                try:
+                    backup.rename(dst)
+                except OSError as exc:
+                    raise ManifoldInstallConflict(
+                        f"{dst}: could not recover interrupted local install ({exc})"
+                    ) from exc
+            if same_path:
+                if not force:
+                    raise ManifoldInstallConflict(
+                        f"{dst} already exists; pass force=True or as_=<ns>/<name>"
+                    )
+                # Reinstalling an already-installed folder onto itself is an exact
+                # no-op. Never reset the destination: it is the only source copy.
+                ManifoldFolder.load(src)
+                return dst
+            if dst.exists() and not force:
+                raise ManifoldInstallConflict(
+                    f"{dst} already exists; pass force=True or as_=<ns>/<name>"
+                )
+
+            def _build(staging: Path) -> None:
+                _report(on_progress, f"Staging {src.name}...")
+                shutil.copytree(source_path, staging, dirs_exist_ok=True)
+                try:
+                    staged = ManifoldFolder.load(staging)
+                except ManifoldFormatError as exc:
+                    raise ManifoldInstallConflict(
+                        f"{src}: staged local manifold failed validation ({exc})"
+                    ) from exc
+                try:
+                    files = _rewrite_staged_manifold_name(staged, dst_name)
+                except ManifoldFormatError as exc:
+                    raise ManifoldInstallConflict(
+                        f"{src}: staged local manifold failed identity "
+                        f"rewrite ({exc})"
+                    ) from exc
+                staged.write_metadata(files=files)
+                try:
+                    ManifoldFolder.load(staging)
+                except ManifoldFormatError as exc:
+                    raise ManifoldInstallConflict(
+                        f"{src}: staged local manifold failed re-validation "
+                        f"after destination rename ({exc})"
+                    ) from exc
+                # The swap follows immediately once ``build`` returns.
+                _report(on_progress, f"Installing {src.name} into {dst.name}...")
+
+            def _swap() -> Path:
+                return stage_verify_swap(
+                    dst, force=force, label=str(src), build=_build,
+                    make_error=ManifoldInstallConflict,
+                )
+
+            if force and dst.exists():
+                from drowse.io.manifold_folder import (
+                    destructive_manifold_folder_transaction,
+                )
+
+                with destructive_manifold_folder_transaction(dst):
+                    return _swap()
+            return _swap()
+
+    source_resolved = src.expanduser().resolve()
+    reserved = {
+        dst.with_name(dst.name + ".staging").resolve(strict=False),
+        dst.with_name(dst.name + ".bak").resolve(strict=False),
+    }
+    if source_resolved in reserved:
+        import tempfile
+
+        # Snapshot reserved-sibling sources before recovery/staging cleanup can
+        # rename or delete their only copy. This path is rare and correctness is
+        # worth the extra copy; normal installs still stream source→staging once.
+        with tempfile.TemporaryDirectory(prefix="drowse-local-install-") as tmp:
+            snapshot = Path(tmp) / src.name
+            shutil.copytree(src, snapshot)
+            return _install_from(snapshot)
+    return _install_from(src)

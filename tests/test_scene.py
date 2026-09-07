@@ -1,4 +1,4 @@
-"""Tests for ``saklas.core.scene`` — the cast-model turn stitcher.
+"""Tests for ``drowse.core.scene`` — the cast-model turn stitcher.
 
 Strategy mirrors ``test_role_templates.py``: FakeTokenizer + hand-written
 Jinja templates faithful to each family's byte shapes.  Two additional fakes
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from saklas.core.errors import SaklasError
-from saklas.core.scene import (
+from drowse.core.errors import DrowseError
+from drowse.core.scene import (
     SceneGrammarError,
     SceneRenderError,
     SceneThinkingUnsupportedError,
@@ -121,10 +121,10 @@ def test_unknown_family_is_unsupported():
         extract_turn_grammar(tok, "wumpus")
 
 
-def test_scene_errors_are_saklas_errors():
-    assert issubclass(SceneGrammarError, SaklasError)
-    assert issubclass(SceneRenderError, SaklasError)
-    assert issubclass(SceneThinkingUnsupportedError, SaklasError)
+def test_scene_errors_are_drowse_errors():
+    assert issubclass(SceneGrammarError, DrowseError)
+    assert issubclass(SceneRenderError, DrowseError)
+    assert issubclass(SceneThinkingUnsupportedError, DrowseError)
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +245,7 @@ def test_label_collision_with_standard_label_is_safe():
 
 def test_label_slug_validation():
     _, grammar = _grammar(QWEN_TEMPLATE, "qwen3")
-    with pytest.raises(SaklasError):
+    with pytest.raises(DrowseError):
         render_scene(
             grammar, [SceneTurn(seat="user", text="x", label="Bad Label")]
         )

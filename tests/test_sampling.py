@@ -2,7 +2,7 @@
 
 import pytest
 
-from saklas.core.sampling import SamplingConfig
+from drowse.core.sampling import SamplingConfig
 
 
 def test_defaults():

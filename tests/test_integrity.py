@@ -7,7 +7,9 @@ path-traversal barrier on manifest-supplied relative paths.
 """
 from pathlib import Path
 
-from saklas.io import integrity
+from pytest import MonkeyPatch
+
+from drowse.io import integrity
 
 
 def test_hash_file_sha256(tmp_path: Path):
@@ -66,9 +68,27 @@ def test_verify_integrity_rejects_path_traversal(tmp_path: Path):
     assert bad == ["../escape"]
 
 
+def test_verify_integrity_fingerprint_cache_is_bounded(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    integrity._FINGERPRINT_CACHE.clear()
+    monkeypatch.setattr(integrity, "_FINGERPRINT_CACHE_MAX", 2)
+    for index in range(3):
+        target = tmp_path / f"{index}.bin"
+        target.write_bytes(str(index).encode())
+        expected = integrity.hash_file(target)
+        assert integrity.verify_integrity(tmp_path, {target.name: expected}) == (
+            True,
+            [],
+        )
+    assert len(integrity._FINGERPRINT_CACHE) == 2
+    assert str((tmp_path / "0.bin").resolve()) not in integrity._FINGERPRINT_CACHE
+    integrity._FINGERPRINT_CACHE.clear()
+
+
 def test_save_load_profile_roundtrip_slim_sidecar(tmp_path: Path):
     import torch
-    from saklas.core.profile import load_profile, save_profile
+    from drowse.core.profile import load_profile, save_profile
     profile = {
         0: torch.randn(8),
         14: torch.randn(8),
@@ -82,7 +102,7 @@ def test_save_load_profile_roundtrip_slim_sidecar(tmp_path: Path):
     assert sorted(loaded.keys()) == [0, 14]
     assert meta["method"] == "profile"
     assert meta["statements_sha256"] == "a" * 64
-    assert "saklas_version" in meta
+    assert "drowse_version" in meta
     # Scores no longer live on disk — shares are baked into tensor magnitudes.
     assert "scores" not in meta
     # No legacy keys:

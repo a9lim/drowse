@@ -1,4 +1,4 @@
-"""Tests for `saklas.core.model.load_model` attention-implementation selection.
+"""Tests for `drowse.core.model.load_model` attention-implementation selection.
 
 These tests do not load real models — they intercept the AutoConfig and
 AutoModelForCausalLM calls and inspect the load_kwargs `load_model` passes.
@@ -14,7 +14,43 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from saklas.core import model as model_mod
+from drowse.core import model as model_mod
+
+
+def test_local_model_file_hash_cache_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_mod._MODEL_FILE_HASH_CACHE.clear()
+    monkeypatch.setattr(model_mod, "_MODEL_FILE_HASH_CACHE_MAX", 2)
+    for index in range(3):
+        (tmp_path / f"file-{index}.json").write_text(str(index))
+
+    rows = model_mod._local_model_files(tmp_path)
+
+    assert len(rows) == 3
+    assert len(model_mod._MODEL_FILE_HASH_CACHE) == 2
+    assert str((tmp_path / "file-0.json").resolve()) not in (
+        model_mod._MODEL_FILE_HASH_CACHE
+    )
+    model_mod._MODEL_FILE_HASH_CACHE.clear()
+
+
+def test_empty_config_path_never_fingerprints_the_working_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanned: list[Path] = []
+    monkeypatch.setattr(
+        model_mod,
+        "_local_model_files",
+        lambda path: scanned.append(path) or [],
+    )
+
+    assert model_mod.model_source_fingerprint(
+        "remote/model",
+        device="cpu",
+        config=_FakeConfig("qwen3"),
+    ) is None
+    assert scanned == []
 
 
 class _FakeConfig(SimpleNamespace):
@@ -574,7 +610,7 @@ def test_source_fingerprint_recompute_matches_stamp_text_only(tmp_path: Path):
     pre = model_mod.model_source_fingerprint(str(ckpt), device="cpu")
     assert pre is not None
     model = _load_stamped(ckpt, "text-only-stub")
-    assert getattr(model, "_saklas_source_fingerprint", None) == pre
+    assert getattr(model, "_drowse_source_fingerprint", None) == pre
 
 
 def test_source_fingerprint_recompute_matches_stamp_multimodal(tmp_path: Path):
@@ -598,7 +634,7 @@ def test_source_fingerprint_recompute_matches_stamp_multimodal(tmp_path: Path):
     # The extraction path must actually have fired (and with it the in-place
     # plan-config mutations), else this asserts nothing.
     assert type(model).__name__ == "LlamaForCausalLM"
-    assert getattr(model, "_saklas_source_fingerprint", None) == pre
+    assert getattr(model, "_drowse_source_fingerprint", None) == pre
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +691,7 @@ def test_multimodal_routes_to_text_extraction_even_when_outer_accessible():
 def test_text_extraction_preserves_the_pinned_hub_revision():
     """Official artifacts bind to the immutable base-model revision.
 
-    The text-only multimodal loader constructs a new model config, so Saklas
+    The text-only multimodal loader constructs a new model config, so Drowse
     must carry the already-resolved outer revision onto that live config.
     """
     cfg = _FakeConfig(model_type="gemma3", text_model_type="gemma3_text")
@@ -782,7 +818,7 @@ def test_plan_flags_text_extraction_for_supported_submodel():
     assert plan.extract_text_model is True
     assert plan.text_config is not None
 
-    # A text_config saklas has no accessor for stays a full-model load.
+    # A text_config drowse has no accessor for stays a full-model load.
     plan = _plan(_FakeConfig("some_vlm", text_model_type="not_a_family"))
     assert plan.extract_text_model is False
 

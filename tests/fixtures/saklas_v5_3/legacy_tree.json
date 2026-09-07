@@ -1,0 +1,57 @@
+{
+  "tree_format": 2,
+  "saklas_version": "5.3.0",
+  "model_id": null,
+  "session_id": null,
+  "name": null,
+  "rev": 1,
+  "root_id": "01M1W9DSB1AC0VF429RXZ250NJ",
+  "active_node_id": "01M1W9DSB1WV5BHAB21GB97R7D",
+  "nodes": [
+    {
+      "id": "01M1W9DSB1AC0VF429RXZ250NJ",
+      "parent_id": null,
+      "role": "system",
+      "text": "",
+      "role_label": null,
+      "thinking_text": null,
+      "aggregate_readings": {},
+      "applied_steering": null,
+      "finish_reason": null,
+      "starred": false,
+      "notes": "",
+      "created_at": 1788729550.1775308,
+      "edited_at": null,
+      "edit_count": 0,
+      "mean_logprob": null,
+      "mean_surprise": null,
+      "recipe": null
+    },
+    {
+      "id": "01M1W9DSB1WV5BHAB21GB97R7D",
+      "parent_id": "01M1W9DSB1AC0VF429RXZ250NJ",
+      "role": "user",
+      "text": "keep this Saklas conversation",
+      "role_label": null,
+      "thinking_text": null,
+      "aggregate_readings": {},
+      "applied_steering": null,
+      "finish_reason": null,
+      "starred": false,
+      "notes": "",
+      "created_at": 1788729550.1775439,
+      "edited_at": null,
+      "edit_count": 0,
+      "mean_logprob": null,
+      "mean_surprise": null,
+      "recipe": null
+    }
+  ],
+  "children_of": {
+    "01M1W9DSB1AC0VF429RXZ250NJ": [
+      "01M1W9DSB1WV5BHAB21GB97R7D"
+    ],
+    "01M1W9DSB1WV5BHAB21GB97R7D": []
+  },
+  "cast": {}
+}

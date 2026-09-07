@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FluentIcon from "../lib/ui/FluentIcon.svelte";
+  import Select from "../lib/Select.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // TemplateLabDrawer — the standalone templated-completion artifact.
   //
@@ -13,10 +15,12 @@
   // Reached from the command palette, or deep-linked to the build tab
   // (``params: { tab: "build" }``) from the manifold builder's template
   // path — this is the ONE template editor, and the builder derives a
-  // manifold from what it authors (`saklas manifold from-template`).
+  // manifold from what it authors (`drowse manifold from-template`).
 
-  import { onMount, untrack } from "svelte";
-  import { apiTemplates, describeError } from "../lib/api";
+  import { onMount, tick, untrack } from "svelte";
+  import { isFittingCancellation } from "../lib/runtime/fittingCancellation";
+  import { getHostedController } from "../lib/runtime/registry";
+  import { apiTemplates, describeError } from "../lib/runtime/services";
   import { validateTemplateDraft } from "../lib/templates";
   import { closeDrawer } from "../lib/stores.svelte";
   import { pushToast } from "../lib/stores/toasts.svelte";
@@ -52,6 +56,8 @@
   // ----- shared: template catalog --------------------------------------
   let templates: TemplateSummary[] = $state([]);
   let loading = $state(false);
+  let deleteCandidate = $state<string | null>(null);
+  let deleting = $state(false);
 
   async function loadTemplates(): Promise<void> {
     loading = true;
@@ -73,6 +79,8 @@
   let baseline: ChoiceScores[] | null = $state(null);
   let steered: ChoiceScores[] | null = $state(null);
   let scoredKey = $state("");
+  let cancellingScore = $state(false);
+  const hostedController = getHostedController();
 
   const selectedTemplate = $derived(
     templates.find((t) => `${t.namespace}/${t.name}` === selectedKey) ?? null,
@@ -83,8 +91,9 @@
   }
 
   async function runScore(): Promise<void> {
-    if (!selectedTemplate) return;
+    if (!selectedTemplate || scoring) return;
     scoring = true;
+    cancellingScore = false;
     baseline = null;
     steered = null;
     const { namespace, name } = selectedTemplate;
@@ -96,9 +105,32 @@
       }
       scoredKey = selectedKey;
     } catch (e) {
-      pushToast(`scoring failed: ${describeError(e)}`, { kind: "error" });
+      baseline = null;
+      steered = null;
+      scoredKey = "";
+      if (isFittingCancellation(e)) {
+        pushToast("scoring cancelled", { kind: "info" });
+      } else {
+        pushToast(`scoring failed: ${describeError(e)}`, { kind: "error" });
+      }
     } finally {
       scoring = false;
+      cancellingScore = false;
+    }
+  }
+
+  async function cancelScore(): Promise<void> {
+    if (!hostedController || !scoring || cancellingScore) return;
+    cancellingScore = true;
+    try {
+      await hostedController.cancelFitting();
+    } catch (e) {
+      pushToast(`couldn't cancel scoring: ${describeError(e)}`, {
+        kind: "error",
+        ttlMs: null,
+      });
+    } finally {
+      cancellingScore = false;
     }
   }
 
@@ -129,6 +161,8 @@
     { turns: [{ role: "user", content: "" }], assistant: "" },
   ]);
   let building = $state(false);
+  let buildSubmitted = $state(false);
+  let buildForm: HTMLFormElement | null = $state(null);
 
   const bValues = $derived(
     bValuesText
@@ -173,10 +207,24 @@
     ...(bName.trim() ? [] : ["name required"]),
     ...validateTemplateDraft(buildDraft),
   ]);
+  const nameInvalid = $derived(!bName.trim());
+  const slotInvalid = $derived(buildValidation.includes("slot required"));
+  const valuesInvalid = $derived(
+    buildValidation.some((error) => error === "≥ 2 values" || error.startsWith('value "')),
+  );
+  const contextInvalid = (index: number) =>
+    buildValidation.some((error) => error.startsWith(`context ${index + 1}:`));
+  const validationDescription = (invalid: boolean) =>
+    buildSubmitted && invalid ? "template-build-errors" : undefined;
 
   async function submitBuild(ev: Event): Promise<void> {
     ev.preventDefault();
-    if (buildValidation.length) return;
+    if (buildValidation.length) {
+      buildSubmitted = true;
+      await tick();
+      buildForm?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+      return;
+    }
     building = true;
     try {
       await apiTemplates.create({
@@ -198,13 +246,18 @@
   }
 
   async function deleteTemplate(t: TemplateSummary): Promise<void> {
+    if (deleting) return;
+    deleting = true;
     try {
       await apiTemplates.delete(t.namespace, t.name);
       pushToast(`removed ${t.namespace}/${t.name}`, { kind: "info" });
       if (selectedKey === `${t.namespace}/${t.name}`) selectedKey = "";
       await loadTemplates();
+      deleteCandidate = null;
     } catch (e) {
       pushToast(`delete failed: ${describeError(e)}`, { kind: "error" });
+    } finally {
+      deleting = false;
     }
   }
 </script>
@@ -212,7 +265,7 @@
 <section class="drawer-shell" aria-label="Template lab">
   <header class="header">
     <div class="title">
-      <span class="eyebrow">templates</span>
+      <h2 class="eyebrow">Prompt template lab</h2>
     </div>
     <DrawerCloseButton onclick={closeDrawer} />
   </header>
@@ -223,23 +276,19 @@
 
   <div class="body">
     {#if tab === "score"}
-      <p class="hint">restricted-choice probabilities</p>
+      <p class="hint">Compare the model's preference among a fixed set of answers.</p>
 
       {#if loading}
-        <p class="muted">loading…</p>
+        <p class="muted loading-pulse loading-placeholder" role="status">Loading templates…</p>
       {:else if templates.length === 0}
         <p class="muted">no templates</p>
       {:else}
         <label class="field">
           <span class="label">template</span>
-          <select bind:value={selectedKey} disabled={scoring}>
-            <option value="">select…</option>
-            {#each templates as t (`${t.namespace}/${t.name}`)}
-              <option value={`${t.namespace}/${t.name}`}>
-                {t.namespace}/{t.name} · {t.n_values} values × {t.n_contexts} ctx
-              </option>
-            {/each}
-          </select>
+          <Select bind:value={selectedKey} disabled={scoring} ariaLabel="Template"
+            options={[{ value: "", label: "Select…" }, ...templates.map(t => ({
+              value: `${t.namespace}/${t.name}`, label: `${t.namespace}/${t.name} · ${t.n_values} values × ${t.n_contexts} ctx`,
+            }))]} />
         </label>
 
         <label class="field">
@@ -251,12 +300,14 @@
         <div class="controls">
           <label class="byrow">
             <span class="label">rank by</span>
-            <select bind:value={scoreBy}>
-              <option value="sum">sum</option>
-              <option value="mean">mean</option>
-            </select>
+            <Select bind:value={scoreBy} ariaLabel="Rank by" options={[{ value: "sum", label: "sum" }, { value: "mean", label: "mean" }]} />
           </label>
-          <Button variant="solid" disabled={!selectedTemplate || scoring} onclick={runScore}>
+          {#if hostedController && scoring}
+            <Button variant="ghost" disabled={cancellingScore} onclick={cancelScore}>
+              {cancellingScore ? "cancelling…" : "cancel"}
+            </Button>
+          {/if}
+          <Button variant="solid" busy={scoring} disabled={!selectedTemplate || scoring} onclick={runScore}>
             {scoring ? "scoring…" : "score"}
           </Button>
         </div>
@@ -264,7 +315,7 @@
         {#if baseline && scoredKey === selectedKey}
           {#each baseline as _ctx, ci (ci)}
             <div class="ctx-card">
-              <div class="ctx-head">context {ci + 1}{steered ? " — base → steered" : ""}</div>
+              <div class="ctx-head">context {ci + 1}{steered ? " · base → steered" : ""}</div>
               {#each rows(ci) as r (r.label)}
                 <div class="bar-row">
                   <span class="bar-label" title={r.label}>{r.label}</span>
@@ -285,23 +336,27 @@
       {/if}
 
     {:else}
-      <p class="hint">slot · values · contexts</p>
-
-      <form class="form" onsubmit={submitBuild}>
+      <form bind:this={buildForm} class="form" aria-busy={building} onsubmit={submitBuild}>
         <label class="field">
           <span class="label">name</span>
           <input type="text" placeholder="weekday" bind:value={bName} disabled={building}
-            autocomplete="off" spellcheck="false" />
+            autocomplete="off" spellcheck="false"
+            aria-invalid={buildSubmitted && nameInvalid}
+            aria-describedby={validationDescription(nameInvalid)} />
         </label>
         <label class="field">
           <span class="label">slot token</span>
           <input type="text" placeholder="[DAY]" bind:value={bSlot} disabled={building}
-            autocomplete="off" spellcheck="false" />
+            autocomplete="off" spellcheck="false"
+            aria-invalid={buildSubmitted && slotInvalid}
+            aria-describedby={validationDescription(slotInvalid)} />
         </label>
         <label class="field">
           <span class="label">values</span>
           <textarea rows="3" placeholder={"Monday\nTuesday\nWednesday"}
-            bind:value={bValuesText} disabled={building}></textarea>
+            bind:value={bValuesText} disabled={building}
+            aria-invalid={buildSubmitted && valuesInvalid}
+            aria-describedby={validationDescription(valuesInvalid)}></textarea>
         </label>
 
         <fieldset class="contexts">
@@ -311,36 +366,59 @@
               <div class="ctx-build-head">
                 <span>context {ci + 1}</span>
                 {#if bContexts.length > 1}
-                  <button type="button" class="mini" onclick={() => removeContext(ci)}>remove</button>
+                  <button
+                    type="button"
+                    class="mini"
+                    aria-label={`Remove context ${ci + 1}`}
+                    onclick={() => removeContext(ci)}
+                  >remove</button>
                 {/if}
               </div>
               {#each ctx.turns as turn, ti (ti)}
                 <div class="turn-row">
-                  <select bind:value={turn.role} disabled={building} aria-label="turn role">
-                    <option value="user">user</option>
-                    <option value="assistant">assistant</option>
-                    <option value="system">system</option>
-                  </select>
+                  <Select
+                    bind:value={turn.role}
+                    disabled={building}
+                    ariaLabel={`Context ${ci + 1}, turn ${ti + 1} role`}
+                    invalid={buildSubmitted && contextInvalid(ci)}
+                    ariaDescribedby={validationDescription(contextInvalid(ci))}
+                    options={[{ value: "user", label: "user" }, { value: "assistant", label: "assistant" }, { value: "system", label: "system" }]}
+                  />
                   <input type="text" placeholder="turn content" bind:value={turn.content}
-                    disabled={building} autocomplete="off" />
+                    disabled={building} autocomplete="off"
+                    aria-invalid={buildSubmitted && contextInvalid(ci)}
+                    aria-describedby={validationDescription(contextInvalid(ci))}
+                    aria-label={`Context ${ci + 1}, turn ${ti + 1} content`} />
                   {#if ctx.turns.length > 1}
-                    <button type="button" class="mini" onclick={() => removeTurn(ci, ti)}>×</button>
+                    <button
+                      type="button"
+                      class="mini"
+                      aria-label={`Remove turn ${ti + 1} from context ${ci + 1}`}
+                      onclick={() => removeTurn(ci, ti)}
+                    ><FluentIcon name="dismiss" /></button>
                   {/if}
                 </div>
               {/each}
-              <button type="button" class="mini add" onclick={() => addTurn(ci)}>+ turn</button>
+              <button
+                type="button"
+                class="mini add"
+                aria-label={`Add turn to context ${ci + 1}`}
+                onclick={() => addTurn(ci)}
+              >+ turn</button>
               <label class="field assistant-field">
                 <span class="label">assistant · slot</span>
                 <input type="text" placeholder={`today is ${bSlot}`} bind:value={ctx.assistant}
-                  disabled={building} autocomplete="off" />
+                  disabled={building} autocomplete="off"
+                  aria-invalid={buildSubmitted && contextInvalid(ci)}
+                  aria-describedby={validationDescription(contextInvalid(ci))} />
               </label>
             </div>
           {/each}
           <button type="button" class="mini add" onclick={addContext}>+ context</button>
         </fieldset>
 
-        {#if buildValidation.length}
-          <ul class="errs">
+        {#if buildSubmitted && buildValidation.length}
+          <ul id="template-build-errors" class="errs" role="status" aria-live="polite">
             {#each buildValidation as e (e)}<li>{e}</li>{/each}
           </ul>
         {/if}
@@ -350,7 +428,8 @@
           <Button
             type="submit"
             variant="solid"
-            disabled={building || buildValidation.length > 0}
+            busy={building}
+            disabled={building}
           >
             {building ? "creating…" : "create template"}
           </Button>
@@ -365,7 +444,21 @@
           <div class="cat-row">
             <span class="cat-name">{t.namespace}/{t.name}</span>
             <span class="cat-sub">{t.slot} · {t.n_values}×{t.n_contexts}</span>
-            <Button variant="danger" size="sm" onclick={() => deleteTemplate(t)}>delete</Button>
+            {#if deleteCandidate === `${t.namespace}/${t.name}`}
+              <div class="delete-confirmation">
+                <p>Delete {t.namespace}/{t.name}? This removes the saved template and cannot be undone.</p>
+                <Button variant="ghost" size="sm" disabled={deleting} onclick={() => (deleteCandidate = null)}>Cancel</Button>
+                <Button variant="danger" size="sm" disabled={deleting} onclick={() => deleteTemplate(t)}>{deleting ? "Deleting…" : "Delete template"}</Button>
+              </div>
+            {:else}
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={deleting}
+                ariaLabel={`Delete template ${t.namespace}/${t.name}`}
+                onclick={() => (deleteCandidate = `${t.namespace}/${t.name}`)}
+              >Delete…</Button>
+            {/if}
           </div>
         {/each}
       </div>
@@ -374,6 +467,8 @@
 </section>
 
 <style>
+  .delete-confirmation { grid-column: 1 / -1; }
+  .delete-confirmation p { margin: 0 0 var(--space-3); line-height: 1.5; overflow-wrap: anywhere; }
   /* v2 sheet interior — the host paints the sheet surface, so the root
    * stays transparent and chrome speaks sans (values/identifiers stay
    * mono). Templates carry no pillar hue — chrome stays achromatic. */
@@ -391,7 +486,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-5);
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     display: flex;
@@ -408,16 +503,16 @@
   }
 
   .toolbar {
-    padding: var(--space-3) var(--space-6);
+    padding: var(--space-5) var(--drawer-gutter-inline);
   }
 
   .body {
     flex: 1;
     overflow-y: auto;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     display: flex;
     flex-direction: column;
-    gap: var(--space-5);
+    gap: var(--drawer-section-gap);
   }
   .hint {
     font-size: var(--text-sm);
@@ -431,7 +526,6 @@
   .label { font-size: var(--text-sm); color: var(--fg-muted); }
   .optional { color: var(--fg-subtle); }
   input,
-  select,
   textarea {
     background: var(--input-well);
     color: var(--fg);
@@ -443,7 +537,6 @@
     font-size: var(--text-sm);
   }
   input:focus,
-  select:focus,
   textarea:focus {
     outline: none;
     border-color: var(--fg-muted);
@@ -456,7 +549,7 @@
   .ctx-card {
     border-radius: var(--radius);
     background: var(--bg);
-    padding: var(--space-4);
+    padding: var(--surface-padding);
   }
   .ctx-head {
     font-size: var(--text-xs);
@@ -477,7 +570,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .bars { display: flex; flex-direction: column; gap: 2px; }
+  .bars { display: flex; flex-direction: column; gap: var(--data-mark-gap); }
   .bar { height: 7px; border-radius: var(--radius-sm); min-width: 1px; }
   /* Achromatic before/after: the steered bar reads brighter above the
    * muted baseline — no pillar hue borrowed for a non-pillar surface. */
@@ -487,7 +580,7 @@
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--fg-dim);
-    text-align: right;
+    text-align: end;
     font-variant-numeric: tabular-nums;
   }
   .arrow { color: var(--fg-subtle); margin: 0 var(--space-1); }
@@ -497,7 +590,7 @@
     border-radius: var(--radius);
     background: var(--glass);
     box-shadow: var(--shadow-well);
-    padding: var(--space-4);
+    padding: var(--surface-padding);
     margin: 0;
   }
   legend {
@@ -527,13 +620,12 @@
   }
   .assistant-field { margin-top: var(--space-3); }
 
-  /* Icon-ish micro-buttons — dense-row pills, styled like the reference
-   * .scrub-btn rather than the full Button component. */
+  /* Compact row actions use the shared small-control shape. */
   .mini {
     background: var(--glass);
     border: 1px solid transparent;
     color: var(--fg-muted);
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-sm);
     padding: var(--space-2) var(--space-4);
     cursor: pointer;
     font: inherit;
@@ -552,7 +644,7 @@
     color: var(--accent-red);
     font-size: var(--text-sm);
     margin: 0;
-    padding-left: 1.1em;
+    padding-inline-start: var(--space-sm);
   }
   .foot { display: flex; justify-content: flex-end; gap: var(--space-3); }
 
@@ -569,16 +661,20 @@
   }
   .cat-row {
     display: grid;
-    grid-template-columns: 1fr auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: var(--space-3);
     padding: var(--space-2) 0;
     font-size: var(--text-sm);
   }
-  .cat-name { font-family: var(--font-mono); color: var(--fg); }
+  .cat-name { font-family: var(--font-mono); color: var(--fg); overflow-wrap: anywhere; }
   .cat-sub {
     color: var(--fg-muted);
     font-family: var(--font-mono);
     font-size: var(--text-xs);
+  }
+  @media (max-width: 600px) {
+    .cat-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .cat-name { grid-column: 1 / -1; }
   }
 </style>

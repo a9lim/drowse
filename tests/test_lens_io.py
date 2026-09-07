@@ -14,8 +14,8 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-from saklas.core.jlens import JacobianLens, JacobianLensCancelled
-from saklas.io.lens import (
+from drowse.core.jlens import JacobianLens, JacobianLensCancelled
+from drowse.io.lens import (
     LENS_FORMAT_VERSION,
     lens_artifact_size,
     lens_checkpoint_paths,
@@ -32,7 +32,7 @@ from saklas.io.lens import (
     save_lens_checkpoint_accumulator,
     stream_default_lens_corpus,
 )
-from saklas.io.paths import safe_model_id
+from drowse.io.paths import safe_model_id
 
 _MODEL = "test-org/tiny-model"
 
@@ -45,7 +45,7 @@ def test_default_corpus_cancel_does_not_wait_for_blocked_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The web cancel button must not depend on a blocked Hub read returning."""
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     provider_entered = threading.Event()
     cancelled = threading.Event()
@@ -108,7 +108,7 @@ def test_default_corpus_cancel_wins_a_simultaneously_ready_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A cancel arriving during poll must not start the estimator afterward."""
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     cancelled = threading.Event()
 
@@ -156,7 +156,7 @@ _D = 8
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
 
 def _lens(n_layers: int = 3, n_prompts: int = 7) -> JacobianLens:
@@ -275,7 +275,7 @@ def test_missing_layer_topup_reuses_immutable_existing_shards() -> None:
 def test_unverified_shard_reuse_falls_back_to_payload_hashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.integrity as integrity
+    import drowse.io.integrity as integrity
 
     initial = _lens(n_layers=2)
     _save(initial)
@@ -449,7 +449,7 @@ def test_save_lens_preserves_existing_tensor_on_failed_replace(
     def _fail_save(_fd: int) -> None:
         raise RuntimeError("simulated save failure")
 
-    monkeypatch.setattr("saklas.io.lens.os.fsync", _fail_save)
+    monkeypatch.setattr("drowse.io.lens.os.fsync", _fail_save)
     with pytest.raises(RuntimeError, match="simulated"):
         _save(_lens(n_prompts=9))
     assert ts_path.read_bytes() == before
@@ -463,7 +463,7 @@ def test_save_lens_preserves_existing_tensor_on_failed_replace(
 def test_checkpoint_promotion_sidecar_failure_preserves_both_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     final = _lens(n_layers=2, n_prompts=3)
     save_lens(
@@ -727,7 +727,7 @@ def test_remove_lens_reaps_crash_left_streaming_temp() -> None:
 def test_checkpoint_pointer_unlink_is_durable_before_shard_gc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     _save_checkpoint(
         _lens(n_layers=1), _MODEL, base_n_prompts=0,
@@ -758,7 +758,7 @@ def test_checkpoint_pointer_unlink_is_durable_before_shard_gc(
 def test_subsumed_checkpoint_unlink_is_durable_before_shard_gc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     save_lens(
         _lens(n_layers=2, n_prompts=7), _MODEL,
@@ -798,7 +798,7 @@ def test_subsumed_checkpoint_unlink_is_durable_before_shard_gc(
 def test_full_lens_pointer_unlinks_are_durable_before_shard_removal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     _save(_lens())
     _save_checkpoint(
@@ -825,7 +825,7 @@ def test_full_lens_pointer_unlinks_are_durable_before_shard_removal(
 def test_payload_and_pointer_directory_barriers_precede_generation_gc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     events: list[str] = []
     real_write = lens_io.write_json_atomic
@@ -857,7 +857,7 @@ def test_payload_and_pointer_directory_barriers_precede_generation_gc(
 def test_checkpoint_payload_is_durable_before_pointer_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     events: list[str] = []
     real_payload = lens_io._save_fp32_square_safetensors_atomic
@@ -888,7 +888,7 @@ def test_checkpoint_payload_is_durable_before_pointer_publication(
 def test_exception_after_lens_pointer_replace_preserves_new_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     _save(_lens(n_layers=2, n_prompts=3))
     anchor, pointer = lens_io._lens_anchor_paths(_MODEL)
@@ -914,7 +914,7 @@ def test_lens_generation_gc_fails_closed_on_transient_pointer_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import builtins
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     _save(_lens(n_layers=2))
     anchor, pointer = lens_io._lens_anchor_paths(_MODEL)
@@ -938,7 +938,7 @@ def test_lens_generation_gc_fails_closed_on_transient_pointer_read(
 def test_checkpoint_promotion_directory_barrier_precedes_pointer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     checkpoint = _lens(n_layers=2, n_prompts=5)
     _save_checkpoint(

@@ -21,17 +21,17 @@ from typing import Any
 import pytest
 import torch
 
-import saklas.cli.runners as cli_runners
-from saklas.core import capture as V
-from saklas.core import model as model_mod
-from saklas.core.events import EventBus
-from saklas.core.extraction import ManifoldExtractionPipeline
-from saklas.core.model import loaded_model_fingerprint
-from saklas.io import alignment as alignment_mod
-from saklas.io.manifold_authoring import create_discover_manifold_folder
-from saklas.io.manifold_folder import ManifoldFolder, ManifoldSidecar
-from saklas.io.manifolds import preflight_manifold_fit_noop
-from saklas.io.paths import tensor_filename
+import drowse.cli.runners as cli_runners
+from drowse.core import capture as V
+from drowse.core import model as model_mod
+from drowse.core.events import EventBus
+from drowse.core.extraction import ManifoldExtractionPipeline
+from drowse.core.model import loaded_model_fingerprint
+from drowse.io import alignment as alignment_mod
+from drowse.io.manifold_authoring import create_discover_manifold_folder
+from drowse.io.manifold_folder import ManifoldFolder, ManifoldSidecar
+from drowse.io.manifolds import preflight_manifold_fit_noop
+from drowse.io.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
 from tests.test_manifold_extraction import (
     _CaptureTokenizer,
@@ -51,7 +51,7 @@ _CORPORA = {
 class _ProvableHandle:
     """A ``ModelHandle`` whose weights carry a provable checkpoint source.
 
-    ``loaded_model_fingerprint`` folds ``_saklas_source_fingerprint`` in as
+    ``loaded_model_fingerprint`` folds ``_drowse_source_fingerprint`` in as
     ``trusted_source``, and the fit stamps that same attribute onto the sidecar
     — which is exactly the pair the preflight later re-establishes off-model.
     """
@@ -59,7 +59,7 @@ class _ProvableHandle:
     def __init__(self) -> None:
         self.model_id = _MODEL_ID
         self.model: torch.nn.Module = torch.nn.Linear(1, 1)
-        self.model._saklas_source_fingerprint = _SOURCE_FP  # type: ignore[assignment]
+        self.model._drowse_source_fingerprint = _SOURCE_FP  # type: ignore[assignment]
         self.tokenizer: Any = _CaptureTokenizer()
         self.device = torch.device("cpu")
         self.dtype = torch.float32
@@ -82,7 +82,7 @@ class _ProvableHandle:
 def fitted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     """A published fit plus every stub the preflight's model touchpoints need."""
     torch.manual_seed(0)
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _stub_encoder_batch)
     monkeypatch.setattr(V, "_load_baseline_prompts", lambda: ["baseline prompt"])
 
@@ -206,7 +206,7 @@ def test_preflight_refuses_on_a_layer_set_change(fitted: Any) -> None:
 
 
 def test_preflight_refuses_an_old_format_sidecar(fitted: Any) -> None:
-    from saklas.io.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.io.manifold_folder import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
     assert _preflight(fitted) is None
@@ -322,9 +322,25 @@ def test_old_format_sidecar_reads_as_a_cache_miss_not_an_error(
     untouched — and simply report no fit for that model, which is what makes
     the next fit a plain overwrite rather than a repair.
     """
-    from saklas.io.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.io.manifold_folder import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
+
+    mf = ManifoldFolder.load(fitted.folder, verify_manifest=False)
+    assert mf.node_labels == list(_CORPORA)
+    assert mf.tensor_models() == []
+
+
+@pytest.mark.parametrize("brand", ["drowse", "saklas", "polythetic"])
+def test_pre_context_binding_v10_sidecar_reads_as_a_cache_miss(
+    fitted: Any, brand: str,
+) -> None:
+    """The exact pre-proof v10 schema is stale even though its version matches."""
+    sidecar_path = fitted.tensor.with_suffix(".json")
+    payload = json.loads(sidecar_path.read_text())
+    payload.pop("context_binding_sha256")
+    payload[f"{brand}_version"] = payload.pop("drowse_version")
+    sidecar_path.write_text(json.dumps(payload))
 
     mf = ManifoldFolder.load(fitted.folder, verify_manifest=False)
     assert mf.node_labels == list(_CORPORA)
@@ -334,7 +350,7 @@ def test_old_format_sidecar_reads_as_a_cache_miss_not_an_error(
 def test_stale_fit_is_overwritten_by_the_next_fit(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from saklas.io.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.io.manifold_folder import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _stub_encoder_batch)
@@ -357,9 +373,9 @@ def test_stale_fit_resolves_as_a_miss_not_a_codec_error(
     fitting; a raw `ManifoldFormatError` escapes that retry and silently drops
     the probe, which is how a format bump could empty a session's whole roster.
     """
-    from saklas import ManifoldNotRegisteredError
-    from saklas.core.steering_composer import SteeringComposer
-    from saklas.io.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse import ManifoldNotRegisteredError
+    from drowse.core.steering_composer import SteeringComposer
+    from drowse.io.manifold_folder import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
 
@@ -374,7 +390,7 @@ def test_stale_fit_resolves_as_a_miss_not_a_codec_error(
 
 def test_corrupt_sidecar_still_raises(fitted: Any) -> None:
     """Staleness is forgiven; corruption is not."""
-    from saklas.io.manifold_folder import ManifoldFormatError
+    from drowse.io.manifold_folder import ManifoldFormatError
 
     sidecar_path = fitted.tensor.with_suffix(".json")
     payload = json.loads(sidecar_path.read_text())
@@ -400,7 +416,7 @@ def _poison_session(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
 def test_cli_fit_reports_the_hit_without_constructing_a_session(
     fitted: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any,
 ) -> None:
-    import saklas.cli as cli
+    import drowse.cli as cli
 
     calls: list[str] = []
     _poison_session(monkeypatch, calls)
@@ -416,7 +432,7 @@ def test_cli_fit_reports_the_hit_without_constructing_a_session(
 def test_cli_fit_force_still_loads_the_model(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.cli as cli
+    import drowse.cli as cli
 
     calls: list[str] = []
 
@@ -436,7 +452,7 @@ def test_cli_fit_force_still_loads_the_model(
 def test_cli_fit_falls_through_when_a_component_is_unproven(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.cli as cli
+    import drowse.cli as cli
 
     monkeypatch.setattr(
         model_mod, "model_source_fingerprint", lambda *_a, **_k: None,
@@ -460,7 +476,7 @@ def test_cli_extract_reports_the_hit_without_constructing_a_session(
     fitted: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any,
 ) -> None:
     """``extract calm frantic`` canonicalizes onto the same folder."""
-    import saklas.cli as cli
+    import drowse.cli as cli
 
     calls: list[str] = []
     _poison_session(monkeypatch, calls)
@@ -494,7 +510,7 @@ def test_cli_extract_role_mismatch_falls_through_to_the_error_path(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A role request against a role-free corpus is an error, not a hit."""
-    import saklas.cli as cli
+    import drowse.cli as cli
 
     calls: list[str] = []
 

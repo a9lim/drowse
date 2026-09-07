@@ -22,6 +22,7 @@
     probesLiveState,
     setLiveProbes,
     setProbeSortMode,
+    sessionState,
   } from "../lib/stores.svelte";
   import type { ProbeSortMode } from "../lib/types";
 
@@ -34,6 +35,7 @@
 
   const sortMode = $derived(probeRack.sortMode);
   const liveOn = $derived(probesLiveState.enabled);
+  const outputNoun = $derived(sessionState.info?.is_base_model ? "completion" : "reply");
 
   function onToggleLive(): void {
     void setLiveProbes(!liveOn);
@@ -84,13 +86,15 @@
 
 <section class="rack" aria-label="Probe rack">
   <RackSectionHeader
-    title="PROBE"
-    count={`${count} attached`}
+    title="Probes"
+    count={`${count} probe${count === 1 ? "" : "s"}`}
     live={liveOn}
     liveBusy={probesLiveState.busy}
     liveTitle={liveOn
-      ? "live off · keep final aggregate; gates stay active"
-      : "live on · score every token"}
+      ? `Stop word-by-word readings; final ${outputNoun} readings stay available`
+      : "Measure every generated word while the model writes"}
+    liveLabel={`word-by-word ${outputNoun} readings`}
+    liveHelp={`Live measures every generated word. When it is off, saved readings update after the ${outputNoun}.`}
     onLiveToggle={onToggleLive}
     sortValue={sortMode}
     sortOptions={SORT_OPTIONS}
@@ -99,6 +103,9 @@
   />
 
   <div class="strips" class:is-empty={count === 0} role="list">
+    {#if count === 0}
+      <div class="empty-copy" role="listitem">No readings added. Readings observe the {outputNoun} without changing it.</div>
+    {/if}
     {#each probes as name (name)}
         {@const entry = probeEntryForDisplay(name)}
         {#if entry}
@@ -115,18 +122,16 @@
           type="button"
           class="add add-subspace"
           onclick={onAddSubspaceProbe}
-          title="add subspace probe"
         >
-          + probe
+          Add subspace probe
         </button>
       {:else}
         <button
           type="button"
           class="add add-manifold"
           onclick={onAddManifoldProbe}
-          title="add manifold probe"
         >
-          + probe
+          Add manifold probe
         </button>
       {/if}
   </div>
@@ -142,12 +147,12 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: var(--space-5);
+    padding: var(--surface-padding);
     background: transparent;
     height: 100%;
     max-height: 100%;
     min-height: 0;
-    overflow: hidden;
+    overflow-y: auto;
   }
 
   /* Strips own the scroll inside the rack — with many auto-loaded probes
@@ -161,11 +166,18 @@
     min-height: 2.4rem;
     max-height: 100%;
     overflow-y: auto;
-    padding-right: var(--space-1);
+    scrollbar-gutter: stable both-edges;
   }
   .strips.is-empty {
-    align-items: center;
-    justify-content: center;
+    flex: 0 0 auto;
+    min-height: 0;
+  }
+  .empty-copy {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    text-wrap: pretty;
   }
 
   /* Anchored at the bottom — same padding as SteeringRack so the two
@@ -181,7 +193,7 @@
     min-height: var(--control-target);
     flex: 1 1 0;
     border: 1px solid transparent;
-    padding: 2px var(--space-5);
+    padding: var(--space-xs) var(--space-5);
     border-radius: var(--radius);
     font-size: var(--text-sm);
     line-height: normal;

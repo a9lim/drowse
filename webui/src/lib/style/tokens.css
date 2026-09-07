@@ -1,18 +1,20 @@
 /* Design tokens v2 — the Observatory+ system.
  *
- * Dark-only, high-density visual system. Supersedes the a9l.im mirror palette.
+ * A paired light/dark, high-density visual system. The dark palette remains
+ * the default; ``data-theme`` is applied before paint by theme-init.js.
  *
  * The rules:
- *   - HUE ANSWERS "WHICH SPACE AM I LOOKING AT?" — chrome is achromatic;
- *     every colored thing is colored by the space it lives in:
- *       subspace = white · manifold = violet · sae = gold · lens/surprise =
- *       blue (logit-space family) · live/probe+ = green · error/probe− = red.
- *     Warm hue belongs to SAE alone. Roles carry no hue (the cast model).
- *   - Gradients belong to data marks only, and run across the encoding axis
- *     (along-axis only where the gradient IS the data: depth, time).
+ *   - Purple owns interaction by default; saved chats can choose an accent.
+ *     Instrument hues belong to labeled data or status:
+ *       subspace = neutral · manifold = orchid · sae = gold · lens/surprise =
+ *       chat accent (logit-space family) · live/probe+ = green · error/probe− = red.
+ *     Gold data marks identify SAE; yellow notices mean warning.
+ *     Roles and ordinary controls carry no instrument hue.
+ *   - Broad, quiet gradients give surfaces depth; data gradients retain
+ *     their own encoding axis (depth, time).
  *   - Live state is communicated by hue and motion, never a halo.
  *   - Elevation comes from spacing, fill contrast, and only where needed a
- *     neutral shadow — not a decorative edge highlight.
+ *     neutral shadow and a soft surface highlight — never side stripes.
  *   - BORDERLESS BY DEFAULT (Phase 6): separation comes from space, then
  *     fill contrast (the surface ladder), then a shadow where elevation
  *     scroll-shadow) — a hairline is the LAST resort, reserved for
@@ -25,82 +27,121 @@
  */
 
 :root {
+  color-scheme: dark;
+  --loading-accent: var(--accent);
+  --verification-blue: #1e9cf1;
+  --verification-gold: #c9a227;
+  --verification-gray: #82909b;
   /* ---- Geometry ---------------------------------------------------- */
-  --radius-sm: 5px;         /* chips, ticks, small controls */
-  --radius: 8px;            /* controls, inputs, tabs */
-  --radius-lg: 12px;        /* cards, sheets, panels */
+  --surface-radius: 12px;
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-inset: var(--radius);
+  --radius-group: 12px;
+  --radius-lg: 12px;
   --radius-pill: 999px;
 
   /* Shared control/data geometry. Component-specific optical sizes stay
    * local; repeated interaction targets and data marks do not. */
-  --control-target: 24px;
-  --control-compact: 26px;
-  --control-field: 32px;
-  --data-mark-radius: 2px;
+  --control-target: 40px;
+  --control-compact: 40px;
+  --control-field: 40px;
+  --control-label-gap: 8px;
+  --control-neutral-bg: var(--glass-strong);
+  --control-neutral-hover: var(--bg-hover);
+  --data-mark-radius: 4px;
+  --data-mark-gap: 1px;
   --data-bar-height: 8px;
 
   /* ---- Surfaces -----------------------------------------------------
-   * Ground carries a faint blue-violet ambient (set in global.css).
-   * Glass tier = the card material (translucent fill + blur). */
+   * Flat canvases separate top-lit cards and controls from the page. */
   /* Borderless leans on this ladder — the steps are a touch wider than
    * v2.0 so fill contrast alone separates tiers on mediocre panels. */
-  --bg-deep: #04050a;       /* rail — the floor; also the well tone */
-  --bg: #07080e;            /* app canvas */
-  --bg-alt: #10121c;        /* panel tier (opaque composite of glass-on-bg) */
-  --bg-elev: #1a1d2b;       /* elevated */
-  --surface-hi: #222639;    /* highest: modals, popovers, menus */
+  --bg-deep: #070a12;       /* rail — the floor; also the well tone */
+  --bg: #0b0e17;            /* app canvas */
+  --bg-alt: #15181e;        /* panel tier (opaque composite of glass-on-bg) */
+  --bg-elev: #1e222a;       /* elevated */
+  --surface-hi: #272c35;    /* highest: modals, popovers, menus */
 
-  --glass: rgba(255, 255, 255, 0.045);        /* v2 card fill */
-  --glass-strong: rgba(255, 255, 255, 0.075); /* v2 raised fill / wells */
-  --glass-bright: rgba(255, 255, 255, 0.09);  /* selected compact chrome */
-  --glass-line: rgba(233, 236, 248, 0.085);   /* hairline — floating edges + state rings ONLY */
+  --glass: rgba(232, 234, 238, 0.055);       /* card fill */
+  --glass-strong: rgba(232, 234, 238, 0.09); /* raised fill / wells */
+  --glass-bright: rgba(232, 234, 238, 0.13); /* selected compact chrome */
+  --glass-line: rgba(190, 195, 204, 0.14);  /* hairline — floating edges + state rings ONLY */
   --blur-glass: 6px;
   /* Recessed input fill — "type here" reads as a well, not an outline. */
-  --input-well: rgba(2, 3, 8, 0.45);
+  --input-well: rgba(3, 6, 13, 0.58);
   /* Overlays are one material family, not per-surface black guesses. */
-  --scrim-soft: rgba(2, 3, 8, 0.38);
-  --scrim: rgba(2, 3, 8, 0.5);
-  --scrim-strong: rgba(2, 3, 8, 0.55);
+  --scrim-soft: rgba(3, 6, 13, 0.42);
+  --scrim: rgba(3, 6, 13, 0.56);
+  --scrim-strong: rgba(3, 6, 13, 0.66);
 
   /* Translucent wash laid over any surface tier on hover. */
-  --bg-hover: rgba(237, 239, 247, 0.05);
+  --bg-hover: rgba(210, 214, 222, 0.08);
   /* The 1px seam between layout zones. */
-  --grid-line: #05060b;
+  --grid-line: #20283a;
+  --surface-light: rgba(255, 255, 255, 0.028);
+  --surface-edge: rgba(255, 255, 255, 0.075);
+  --surface-shade: rgba(0, 0, 0, 0.05);
+  --control-light: rgba(255, 255, 255, 0.06);
+  --control-shade: rgba(0, 0, 0, 0.03);
+  --action-light: rgba(255, 255, 255, 0.16);
+  --action-shade: rgba(58, 32, 120, 0.06);
+  --action-sheen: linear-gradient(180deg, var(--action-light), var(--action-shade));
+  --control-selected-bg: #30323d;
+  /* Keep small controls from compressing the highlight into a sharp bevel. */
+  --control-sheen:
+    linear-gradient(180deg, var(--control-light) -48px, var(--control-shade) max(100%, 96px));
 
   /* ---- Text ladder ------------------------------------------------- */
-  --fg: #edeff7;            /* primary */
-  --fg-strong: #d3d7e4;     /* slightly recessed body */
-  --fg-dim: #a3a8bd;        /* secondary */
-  --fg-subtle: #8a90a6;     /* tertiary */
-  --fg-muted: #858ba3;      /* labels/hints: >=4.9:1 on elevated cards */
-  --text-on-accent: #07080e;/* dark canvas — sits on white --accent */
+  --fg: #f1f3fa;            /* primary */
+  --fg-strong: #dce1ed;     /* slightly recessed body */
+  --fg-dim: #c1c7d6;        /* secondary */
+  --fg-subtle: #b8c0d1;     /* tertiary */
+  --fg-muted: #b8c0d1;      /* labels/hints: >=7:1 through the highest surface */
+  --text-on-accent: #101421;/* dark ink on the bright interaction accent */
+  --action-bg: #c5b3ff;
+  --action-hover: #c8b8ff;
+  --action-ink: #101421;
+  --pastel-swatch-ink: #101421;
+  --pastel-swatch-rim: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
 
   /* ---- Pillar hues --------------------------------------------------
-   * The four instruments. Subspace shares
-   * white with chrome deliberately: against colored siblings, white
-   * reads as a hue; its active state leans on ring width, not hue. */
-  --pillar-subspace: #edeff7;
-  --pillar-manifold: #a78bfa;
-  --pillar-sae: #f2c94c;
-  --pillar-lens: #6ba6f8;
+   * Lens and token probabilities follow the chat accent.
+   * Subspace remains neutral; its active state leans on ring width. */
+  --pillar-subspace: #dce1ed;
+  --pillar-manifold: #f0a1d9;
+  --pillar-sae: #ffd166;
+  --pillar-lens: var(--accent);
 
   /* ---- Accent + state ----------------------------------------------
-   * --accent (white) is the chrome hue — selection, focus, primary
-   * actions — and doubles as the subspace pillar. State hues map onto
+   * Purple is reserved for interaction — selection, focus, primary
+   * actions. State hues map onto
    * the ontology: green = live/streaming/probe+, red = error/stop/
-   * probe−, blue = logit space, violet = curved geometry, gold = SAE.
-   * Legacy amber/yellow demote to quiet desaturated bronzes (warn +
-   * pending chrome) so the only saturated warm on screen is SAE gold;
-   * their consumers get rebuilt treatments in later phases. */
-  --accent: #edeff7;
-  --accent-light: #ffffff;
-  --accent-green: #34d399;
-  --accent-red: #e5544f;
-  --accent-amber: #b08b52;   /* demoted: pending/edit chrome, anchor rings */
-  --accent-yellow: #c2a44f;  /* demoted: warn chips */
-  --accent-subtle: rgba(237, 239, 247, 0.08);  /* accent fill wash */
-  --accent-strong: rgba(237, 239, 247, 0.18);  /* accent hover */
-  --focus-ring: #a3a8bd;                       /* visible keyboard focus */
+   * probe−, chat accent = logit space, pink = curved geometry, gold = SAE.
+   * Amber/yellow remain reserved for pending and warning states. */
+  --accent: #c5b3ff;
+  --accent-light: #dfd3ff;
+  --accent-green: #62d6a5;
+  --accent-red: #ffa6a2;
+  --error-text: #ffc7c4;
+  --accent-amber: #e4bb78;   /* pending/edit chrome, anchor rings */
+  --accent-yellow: #e4c25c;  /* warning */
+  --warning-bg: #302a14;
+  --warning-ink: #fff0ad;
+  --warning-border: #756329;
+  --warning-action: #f5d76e;
+  --warning-action-hover: #ffe795;
+  --warning-action-ink: #302300;
+  --danger-bg: #39232d;
+  --danger-hover: #462b35;
+  --accent-subtle: rgba(197, 179, 255, 0.16); /* accent fill wash */
+  --accent-strong: rgba(197, 179, 255, 0.25); /* accent hover */
+  --focus-ring: #c5b3ff;                     /* visible keyboard focus */
+  --shadow-field-focus: var(--shadow-well),
+    0 0 0 1px color-mix(in srgb, var(--focus-ring) 35%, transparent),
+    0 0 14px color-mix(in srgb, var(--focus-ring) 18%, transparent);
+  --shadow-field-keyboard: inset 0 0 0 2px var(--focus-ring),
+    0 0 14px color-mix(in srgb, var(--focus-ring) 18%, transparent);
 
   --live: var(--accent-green);
 
@@ -108,93 +149,449 @@
    * Runtime mapping lives in tokens.ts. Constant-hue alpha ramps:
    * tint strength = opacity, hue = meaning, text contrast stays put.
    * Probe ramp poles are OKLCH-matched (green ↔ red); surprise reads
-   * in logit-space blue (it is a vocabulary-distribution quantity —
-   * same family as the lens). */
+   * in the chat accent, shared with the lens. */
   /* Layer heatmaps are solid data marks, not translucent token washes.
    * A visible neutral zero keeps weak readings legible; empty is distinct
    * without falling all the way to black. Cells themselves stay borderless. */
   /* >=3:1 against the rack-card composite: the layer marks remain
    * readable on ordinary/low-contrast displays without reintroducing the
    * black grid the shared LayerStrip removed. */
-  --data-track: #616a82;
-  --data-track-fill: #343a50;
+  --data-track: #737d93;
+  --data-track-fill: #374154;
   --layer-cell-neutral: var(--data-track);
   --layer-cell-empty: var(--data-track-fill);
-  --layer-cell-positive: #6ee7b7;
-  --layer-cell-negative: #ffb1ad;
-  --layer-cell-lens: #aed3ff;
+  --layer-cell-positive: #8be6bd;
+  --layer-cell-negative: #ffb4af;
+  --layer-cell-lens: var(--accent);
 
   /* ---- Elevation ----------------------------------------------------
-   * Cards and wells stay flat. Overlay shadows establish modality; sticky
-   * headers use a neutral depth cue only once content scrolls beneath them. */
-  --shadow-well: none;
-  --shadow-rack: none;
-  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.35);
+   * Controls and cards use low-contrast rings plus short ambient shadows;
+   * overlays establish modality and sticky headers separate scrolled content. */
+  --shadow-control:
+    inset 0 1px 0 var(--surface-edge),
+    inset 0 -1px 0 var(--surface-shade),
+    0 1px 2px rgba(0, 0, 0, 0.12),
+    0 4px 8px -4px rgba(0, 0, 0, 0.18);
+  --shadow-control-hover:
+    inset 0 1px 0 var(--surface-edge),
+    inset 0 -1px 0 var(--surface-shade),
+    0 2px 4px rgba(0, 0, 0, 0.14),
+    0 6px 12px -5px rgba(0, 0, 0, 0.21);
+  --shadow-control-pressed: inset 0 1px 3px rgba(0, 0, 0, 0.22);
+  --shadow-well:
+    inset 0 1px 2px rgba(0, 0, 0, 0.24),
+    0 0 0 1px rgba(237, 239, 247, 0.035);
+  --shadow-rack:
+    inset 0 1px 0 var(--surface-edge),
+    0 2px 4px -2px rgba(0, 0, 0, 0.14),
+    0 8px 18px -8px rgba(0, 0, 0, 0.21);
+  --shadow-rack-hover:
+    inset 0 1px 0 var(--surface-edge),
+    0 3px 6px -3px rgba(0, 0, 0, 0.17),
+    0 12px 24px -9px rgba(0, 0, 0, 0.24);
+  --shadow-card:
+    inset 0 1px 0 var(--surface-edge),
+    0 2px 5px -2px rgba(0, 0, 0, 0.17),
+    0 14px 32px -12px rgba(0, 0, 0, 0.32);
   --shadow-rack-active: 0 0 0 1px color-mix(in srgb, var(--card-accent) 18%, transparent);
   --shadow-card-active:
     0 0 0 1px color-mix(in srgb, var(--card-accent) 20%, transparent),
-    0 8px 28px rgba(0, 0, 0, 0.4);
-  --shadow-overlay: 0 12px 40px rgba(0, 0, 0, 0.5);
+    0 8px 28px rgba(0, 0, 0, 0.3);
+  --shadow-overlay: inset 0 1px 0 var(--surface-edge), 0 12px 40px rgba(0, 0, 0, 0.5);
   --shadow-sheet: var(--shadow-overlay);
+  --popup-bg: var(--surface-hi);
+  --popup-border: var(--glass-line);
+  --popup-radius: var(--radius-lg);
+  --popup-shadow: var(--shadow-overlay);
   --shadow-sticky: 0 2px 8px rgba(0, 0, 0, 0.45);
   --shadow-sticky-inline: 2px 0 8px rgba(0, 0, 0, 0.45);
   --shadow-data-label: 0 0 2px rgba(0, 0, 0, 0.6);
+  --shadow-loom-node:
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    0 12px 30px rgba(0, 0, 0, 0.3);
+  --shadow-loom-node-hover:
+    0 3px 6px rgba(0, 0, 0, 0.34),
+    0 18px 38px rgba(0, 0, 0, 0.36);
+  --shadow-loom-node-active:
+    0 3px 7px rgba(0, 0, 0, 0.34),
+    0 16px 38px rgba(0, 0, 0, 0.38);
+  --shadow-loom-node-current:
+    0 4px 9px rgba(0, 0, 0, 0.4),
+    0 22px 52px rgba(0, 0, 0, 0.46);
+  --shadow-loom-node-muted:
+    0 2px 4px rgba(0, 0, 0, 0.22),
+    0 8px 20px rgba(0, 0, 0, 0.2);
+  --shadow-loom-glyph: 0 2px 5px rgba(0, 0, 0, 0.28);
+  --shadow-loom-menu:
+    0 2px 5px rgba(0, 0, 0, 0.34),
+    0 18px 52px rgba(0, 0, 0, 0.58);
+  --loom-canvas-shade: inset 0 0 72px rgba(0, 0, 0, 0.24);
+  --loom-edge-depth: rgba(0, 0, 0, 0.72);
 
-  /* ---- Type scale — px, base 13.5px --------------------------------- */
-  --text-2xs: 10px;         /* layer ticks, micro-labels */
-  --text-xs: 11px;          /* fine print, tracked-caps eyebrows */
-  --text-sm: 12px;          /* secondary labels, hints, chips */
-  --text: 14px;             /* base — body, controls */
-  --text-md: 15px;          /* emphasised rows, section titles */
-  --text-lg: 18px;          /* drawer / panel headings */
+  /* ---- Type roles ---------------------------------------------------
+   * Six compact application roles. rem units preserve browser text-size
+   * preferences; the legacy aliases keep every component on this one scale. */
+  --type-micro: 0.714285714rem;    /* 10px: layer ticks, optical glyphs */
+  --type-label: 0.857142857rem;    /* 12px: labels and supporting metadata */
+  --type-control: 1rem;           /* 14px: buttons, menus, hints, chips */
+  --type-body: 1rem;         /* 14px: prose and primary controls */
+  --type-heading: 1.142857143rem;  /* 16px: emphasized rows and section headings */
+  --type-title: 1.714285714rem;    /* 24px: drawer and panel titles */
 
-  /* ---- Weight (Recursive wght axis, 300–1000) ----------------------- */
-  --weight-normal: 420;
-  --weight-medium: 560;
-  --weight-bold: 680;
+  --text-2xs: var(--type-micro);
+  --text-xs: var(--type-label);
+  --text-sm: var(--type-control);
+  --text: var(--type-body);
+  --text-md: var(--type-heading);
+  --text-lg: var(--type-title);
+
+  /* Display roles are intentionally separate from the dense workbench. */
+  --text-wordmark: 1.714285714rem;
+  --text-input-touch: 1.142857143rem;
+  --text-page-title: clamp(1.714285714rem, 4vw, 2.285714286rem);
+  --text-onboarding-heading: var(--text-page-title);
+  --text-onboarding-card-title: var(--type-title);
+  --text-onboarding-subheading: var(--type-title);
+  --text-onboarding-lede: var(--type-heading);
+  --text-hero: clamp(4.857142857rem, 10.8vw, 10.571428571rem);
+  --text-hero-compact: clamp(4.285714286rem, 18vw, 6.571428571rem);
+  --text-hero-lede: clamp(1.285714286rem, 2vw, 1.571428571rem);
+  --text-section-display: clamp(3.428571429rem, 7vw, 6.571428571rem);
+  --text-section-lede: clamp(1.214285714rem, 1.8vw, 1.428571429rem);
+  --text-feature-title: clamp(1.714285714rem, 3vw, 2.428571429rem);
+  --text-model-title: clamp(1.714285714rem, 3vw, 2.571428571rem);
+  --text-not-found-title: clamp(2.857142857rem, 9vw, 5.142857143rem);
+  --text-glyph-xs: 0.571428571rem;
+  --text-glyph-sm: 0.642857143rem;
+  --text-marker: 1rem;
+  --text-marker-diamond: 1.035714286rem;
+  --text-marker-square: 0.964285714rem;
+  --text-marker-triangle: 1.071428571rem;
+
+  /* Three text/data weights, plus the original heavy display style. */
+  --weight-reading: 400;
+  --weight-reading-medium: 500;
+  --weight-structure: 500;
+  --weight-structure-bold: 600;
+  --weight-display: 780;
+  --weight-data: 400;
+  --weight-data-medium: 500;
+  --weight-data-bold: 600;
+
+  /* Compatibility aliases for existing components. */
+  --weight-normal: var(--weight-reading);
+  --weight-medium: var(--weight-structure);
+  --weight-bold: var(--weight-structure-bold);
 
   /* ---- Spacing scale ----------------------------------------------- */
-  --space-1: 2px;
-  --space-2: 4px;
-  --space-3: 6px;
-  --space-4: 8px;
-  --space-5: 12px;
-  --space-6: 16px;
-  --space-8: 32px;
-  /* Named spacing aliases kept for ergonomics. */
+  --space-unit: 8px;
+  --space-xs: var(--space-unit);
+  --space-sm: 16px;
+  --space-md: 24px;
+  --space-lg: 32px;
+  --space-xl: 48px;
+  --space-2xl: 64px;
+  --space-3xl: 96px;
+  /* Existing component indices resolve to the same 8px grid. */
+  --space-1: var(--space-xs);
+  --space-2: var(--space-xs);
+  --space-3: var(--space-xs);
+  --space-4: var(--space-xs);
+  --space-5: var(--space-sm);
+  --space-6: var(--space-sm);
+  --space-7: var(--space-md);
+  --space-8: var(--space-lg);
+  --surface-padding: 24px;
+  --surface-gutter: var(--surface-padding);
+  --drawer-gutter-inline: var(--surface-padding);
+  --drawer-gutter-block: var(--surface-padding);
+  --drawer-section-gap: var(--space-md);
+  --panel-padding: var(--surface-padding);
+  --copy-measure: 68ch;
+  --page-max: 80rem;
+  --onboarding-max: 65rem;
+  --page-gutter: var(--surface-padding);
+  --page-header-height: 88px;
+  --page-top-space: var(--surface-padding);
+  --workspace-gutter: var(--surface-padding);
+  --section-space: var(--space-3xl);
+  --group-gap: var(--space-7);
+  --cluster-gap: var(--space-5);
 
   /* ---- Motion --------------------------------------------------------
-   * --ease-spring overshoots (bars, sliders, chips landing); pair with
-   * --dur-slow+. CSS springs approximate; JS motion uses svelte/motion. */
-  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+   * Entering elements decelerate; exiting elements accelerate. The spring
+   * curve is reserved for controls that visibly settle into a destination. */
+  --ease-enter: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-exit: cubic-bezier(0.55, 0.06, 0.68, 0.19);
+  --ease-move: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: var(--ease-enter);
+  --ease-in-out: var(--ease-move);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --dur-fast: 0.12s;
   --dur: 0.2s;
   --dur-slow: 0.3s;
-  --dur-spin: 0.7s;
+  --selection-dur: 0.22s;
+  --selection-ease: var(--ease-move);
+  --dur-theme: var(--selection-dur);
+  --dur-spin: 1.2s;
   --dur-draw: 0.9s;
-  --dur-pulse: 1.6s;
+  --press-scale: 0.96;
 
+  /* Shared workspace and sheet transitions. */
+  --page-slide-dur: 200ms;
+  --page-fade-dur: 200ms;
+  --page-slide-distance: 8px;
+  --page-blur: 3px;
+  --page-stagger: 0ms;
+  --page-exit-enabled: 1;
+  --page-slide-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --page-fade-ease: cubic-bezier(0.22, 1, 0.36, 1);
   /* ---- Fonts ---------------------------------------------------------
-   * One variable file, two families (axes pinned in fonts.css):
-   * chrome speaks sans, data speaks mono. Every value/expression/token
-   * stream should sit in --font-mono; everything else inherits sans. */
-  --font-ui: "Recursive Sans", -apple-system, "SF Pro Text", system-ui,
+   * Structure is the app voice, reading is optimized for wrapped copy,
+   * and data is reserved for values, tags, HUD lines, and key legends. */
+  --structure: "Wix Madefor Display", -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
-  --font-mono: "Recursive Mono", ui-monospace, "SF Mono", Menlo, Consolas,
+  --reading: "Wix Madefor Text", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --data: "Martian Mono", ui-monospace, "SF Mono", Menlo, Consolas,
     monospace;
+
+  --font-structure: var(--structure);
+  --font-reading: var(--reading);
+  --font-data: var(--data);
+
+  /* Compatibility aliases for components not yet expressed semantically. */
+  --font-ui: var(--font-reading);
+  --font-mono: var(--font-data);
 
   /* ---- Z-layers ---------------------------------------------------- */
   --z-drawer: 50;
   --z-modal: 100;
 
   /* Loom conflict/error surface. */
-  --err-bg: rgba(229, 84, 79, 0.08);
-  --warn-bg: rgba(194, 164, 79, 0.06);
+  --err-bg: rgba(255, 130, 123, 0.11);
+  --warn-bg: rgba(228, 194, 92, 0.09);
 
   /* Page-wide material effects live here so components never invent
    * almost-matching scrims or selection fills. */
-  --selection-bg: rgba(237, 239, 247, 0.22);
+  --selection-bg: rgba(197, 179, 255, 0.24);
   --ambient-canvas: var(--bg);
+  --image-outline: rgba(255, 255, 255, 0.1);
+
+  /* Landing artwork preserves its geometry with a dedicated light palette. */
+  --landing-bg: #070a12;
+  --landing-panel-bg: rgb(7 10 18 / 24%);
+  --landing-panel-ink: #ffffff;
+  --landing-panel-muted: #f4f6ff;
+  --landing-panel-text-shadow: 0 1px 3px rgb(0 0 0 / 70%);
+  --workspace-panel-bg: rgb(232 234 238 / 3%);
+  --workspace-field-bg: rgb(232 234 238 / 5%);
+  --workspace-neutral-bg: rgb(232 234 238 / 7%);
+  --workspace-neutral-hover: rgb(232 234 238 / 11%);
+  --workspace-overlay-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  --hero-bg: #070a12;
+  --hero-media-filter: url("#hero-dark-palette");
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --control-neutral-bg: #ffffff;
+  --control-neutral-hover: #f8f9fc;
+
+  --bg-deep: #e3e7ef;
+  --bg: #f2f4f8;
+  --bg-alt: #ffffff;
+  --bg-elev: #e6eaf0;
+  --surface-hi: #ffffff;
+
+  /* Light surfaces are opaque on purpose. They retain their hierarchy over
+   * white panels, the tinted app floor, and content moving under sticky UI. */
+  --glass: #ffffff;
+  --glass-strong: #edf0f5;
+  --glass-bright: #ccd2da;
+  --glass-line: #adb5c1;
+  --input-well: #dde1e7;
+  --scrim-soft: rgba(17, 22, 36, 0.18);
+  --scrim: rgba(17, 22, 36, 0.3);
+  --scrim-strong: rgba(17, 22, 36, 0.42);
+  --bg-hover: #dde3eb;
+  --grid-line: #c4ccd8;
+  --surface-light: rgba(156, 126, 230, 0.07);
+  --surface-edge: rgba(255, 255, 255, 0.65);
+  --surface-shade: rgba(17, 19, 26, 0.018);
+  --control-light: rgba(156, 126, 230, 0.08);
+  --control-shade: rgba(17, 19, 26, 0.018);
+  --control-selected-bg: #e4e7ee;
+
+  --fg: #141822;
+  --fg-strong: #1f2635;
+  --fg-dim: #465168;
+  --fg-subtle: #566278;
+  --fg-muted: #566278;
+  --text-on-accent: #ffffff;
+
+  --pillar-subspace: #354057;
+  --pillar-manifold: #94306f;
+  --pillar-sae: #6f5000;
+  --pillar-lens: var(--accent);
+
+  --accent: #5b3fbf;
+  --accent-light: #49309f;
+  --accent-green: #076b50;
+  --accent-red: #ad2632;
+  --error-text: #a02230;
+  --accent-amber: #6d4c17;
+  --accent-yellow: #684c00;
+  --warning-bg: #fff4c2;
+  --warning-ink: #493700;
+  --warning-border: #c6a33a;
+  --warning-action: #f5d76e;
+  --warning-action-hover: #ebc653;
+  --warning-action-ink: #302300;
+  --danger-bg: #fff0f1;
+  --danger-hover: #ffe2e5;
+  --accent-subtle: rgba(91, 63, 191, 0.12);
+  --accent-strong: rgba(91, 63, 191, 0.2);
+  --focus-ring: #5b3fbf;
+
+  --data-track: #606b7f;
+  --data-track-fill: #c6ced9;
+  --layer-cell-positive: #076b50;
+  --layer-cell-negative: #ad2632;
+  --layer-cell-lens: var(--accent);
+
+  --shadow-control:
+    inset 0 1px 0 var(--surface-edge),
+    inset 0 -1px 0 var(--surface-shade),
+    0 1px 2px rgba(17, 19, 26, 0.035),
+    0 4px 8px -4px rgba(17, 19, 26, 0.06);
+  --shadow-control-hover:
+    inset 0 1px 0 var(--surface-edge),
+    inset 0 -1px 0 var(--surface-shade),
+    0 2px 4px rgba(17, 19, 26, 0.04),
+    0 6px 12px -5px rgba(17, 19, 26, 0.08);
+  --shadow-control-pressed: inset 0 1px 3px rgba(17, 19, 26, 0.09);
+  --shadow-well:
+    inset 0 1px 2px rgba(17, 19, 26, 0.08),
+    0 0 0 1px var(--glass-line);
+  --shadow-rack: var(--shadow-card);
+  --shadow-rack-hover:
+    inset 0 1px 0 var(--surface-edge),
+    0 3px 6px -3px rgba(17, 19, 26, 0.05),
+    0 14px 28px -10px rgba(17, 19, 26, 0.105);
+  --shadow-card:
+    inset 0 1px 0 var(--surface-edge),
+    0 2px 5px -2px rgba(17, 19, 26, 0.04),
+    0 14px 32px -12px rgba(17, 19, 26, 0.09);
+  --shadow-card-active:
+    0 0 0 1px color-mix(in srgb, var(--card-accent) 24%, transparent),
+    0 10px 28px rgba(17, 19, 26, 0.09);
+  --shadow-overlay: inset 0 1px 0 var(--surface-edge), 0 18px 54px rgba(17, 19, 26, 0.18);
+  --shadow-sticky: 0 2px 8px rgba(17, 19, 26, 0.12);
+  --shadow-sticky-inline: 2px 0 8px rgba(17, 19, 26, 0.12);
+  --shadow-data-label: 0 0 2px rgba(255, 255, 255, 0.82);
+  --shadow-loom-node:
+    0 2px 4px rgba(17, 19, 26, 0.08),
+    0 12px 30px rgba(17, 19, 26, 0.1);
+  --shadow-loom-node-hover:
+    0 3px 6px rgba(17, 19, 26, 0.1),
+    0 18px 38px rgba(17, 19, 26, 0.13);
+  --shadow-loom-node-active:
+    0 3px 7px rgba(17, 19, 26, 0.1),
+    0 16px 38px rgba(17, 19, 26, 0.14);
+  --shadow-loom-node-current:
+    0 4px 9px rgba(17, 19, 26, 0.12),
+    0 22px 52px rgba(17, 19, 26, 0.16);
+  --shadow-loom-node-muted:
+    0 2px 4px rgba(17, 19, 26, 0.06),
+    0 8px 20px rgba(17, 19, 26, 0.08);
+  --shadow-loom-glyph: 0 2px 5px rgba(17, 19, 26, 0.12);
+  --shadow-loom-menu:
+    0 2px 5px rgba(17, 19, 26, 0.1),
+    0 18px 52px rgba(17, 19, 26, 0.2);
+  --loom-canvas-shade: inset 0 0 72px rgba(17, 19, 26, 0.1);
+  --loom-edge-depth: rgba(17, 19, 26, 0.32);
+
+  --err-bg: rgba(173, 38, 50, 0.1);
+  --warn-bg: rgba(104, 76, 0, 0.1);
+  --selection-bg: rgba(91, 63, 191, 0.18);
+  --image-outline: rgba(17, 19, 26, 0.11);
+
+  --landing-bg: #f2f4f8;
+  --landing-panel-bg: rgb(255 255 255 / 24%);
+  --landing-panel-ink: #141822;
+  --landing-panel-muted: #1b2130;
+  --landing-panel-text-shadow: none;
+  --workspace-panel-bg: rgb(17 22 36 / 3%);
+  --workspace-field-bg: rgb(17 22 36 / 5%);
+  --workspace-neutral-bg: rgb(17 22 36 / 7%);
+  --workspace-neutral-hover: rgb(17 22 36 / 11%);
+  --workspace-overlay-shadow: 0 12px 40px rgb(17 22 36 / 16%);
+  --hero-bg: #f2f4f8;
+  --hero-media-filter: url("#hero-light-palette");
+}
+
+[data-chat-accent] {
+  --action-bg: var(--chat-accent-dark);
+  --action-hover: color-mix(in srgb, var(--chat-accent-dark) 94%, white);
+  --accent: var(--chat-accent-dark);
+  --pillar-lens: var(--accent);
+  --layer-cell-lens: var(--accent);
+  --accent-light: color-mix(in srgb, var(--accent) 70%, white);
+  --accent-subtle: color-mix(in srgb, var(--accent) 16%, transparent);
+  --accent-strong: color-mix(in srgb, var(--accent) 25%, transparent);
+  --focus-ring: var(--accent);
+  --selection-bg: color-mix(in srgb, var(--accent) 24%, transparent);
+  --loading-accent: var(--accent);
+}
+
+:root[data-theme="light"][data-chat-accent], :root[data-theme="light"] [data-chat-accent] {
+  --accent: var(--chat-accent-light);
+  --accent-light: color-mix(in srgb, var(--accent) 82%, black);
+  --accent-subtle: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-strong: color-mix(in srgb, var(--accent) 20%, transparent);
+  --selection-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+:root, [data-chat-accent] {
+  --surface-sheen:
+    linear-gradient(180deg, var(--surface-light), transparent clamp(96px, 100%, 192px));
+  --surface-card: var(--surface-sheen), var(--bg-alt);
+  --surface-card-hover: var(--surface-sheen), color-mix(in srgb, var(--bg-alt) 96%, var(--fg));
+  --ambient-canvas: var(--bg);
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  :root, [data-chat-accent] { --surface-sheen: none; --control-sheen: none; --action-sheen: none; --ambient-canvas: var(--bg); }
+  [data-chat-accent] { --focus-ring: #ffffff; }
+  :root[data-theme="light"][data-chat-accent], :root[data-theme="light"] [data-chat-accent] { --focus-ring: #141822; }
+  :root {
+    --fg-dim: #cdd3e0;
+    --fg-subtle: #bcc5d6;
+    --fg-muted: #bcc5d6;
+    --glass-line: rgba(205, 214, 239, 0.28);
+    --focus-ring: #ffffff;
+  }
+
+  :root[data-theme="light"] {
+    --fg-dim: #30394d;
+    --fg-subtle: #3f4a61;
+    --fg-muted: #3f4a61;
+    --glass-line: #8d98aa;
+    --focus-ring: #141822;
+  }
+}
+
+@media (max-width: 1279px) {
+  :root {
+    --control-target: 48px;
+    --control-compact: 48px;
+    --control-field: 48px;
+  }
+}
+
+@media (max-width: 760px) {
+  :root {
+    --section-space: var(--space-2xl);
+  }
 }

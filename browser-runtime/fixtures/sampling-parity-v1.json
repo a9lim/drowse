@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "nucleus",
+      "logits": [2.0, 1.0, 0.0, -1.0, 3.0, -2.0],
+      "temperature": 0.7,
+      "topP": 0.8,
+      "topK": 4,
+      "sortedProbabilities": [
+        0.7604929804801941,
+        0.18225297331809998,
+        0.043677110224962234,
+        0.010467263869941235,
+        0.002508490113541484,
+        0.0006011623772792518
+      ],
+      "sortedTokenIds": [4, 0, 1, 2, 3, 5],
+      "requestedTokenIds": [4, 0, 5],
+      "expected": {
+        "supportTokenIds": [4, 0],
+        "supportProbabilities": [0.8066786527633667, 0.19332140684127808],
+        "entropyNats": 0.4910033093308012,
+        "perplexity": 1.6339547598934325,
+        "samples": [
+          { "uniform": 0.0, "tokenId": 4, "logprob": -0.21482988981234347 },
+          { "uniform": 0.3, "tokenId": 4, "logprob": -0.21482988981234347 },
+          { "uniform": 0.7, "tokenId": 4, "logprob": -0.21482988981234347 },
+          { "uniform": 0.999, "tokenId": 0, "logprob": -1.643401154764621 }
+        ]
+      }
+    },
+    {
+      "name": "top_p_zero",
+      "logits": [0.2, 1.1, -0.4, 0.8],
+      "temperature": 1.0,
+      "topP": 0.0,
+      "topK": 0,
+      "sortedProbabilities": [
+        0.42184868454933167,
+        0.31251317262649536,
+        0.17151087522506714,
+        0.09412717074155807
+      ],
+      "sortedTokenIds": [1, 3, 0, 2],
+      "requestedTokenIds": [1, 0],
+      "expected": {
+        "supportTokenIds": [1],
+        "supportProbabilities": [1.0],
+        "entropyNats": 0.0,
+        "perplexity": 1.0,
+        "samples": [
+          { "uniform": 0.999, "tokenId": 1, "logprob": 0.0 }
+        ]
+      }
+    },
+    {
+      "name": "default_top_k",
+      "logits": [0.0, 2.0, 1.0, -2.0, 0.5],
+      "temperature": 1.3,
+      "topP": 1.0,
+      "topK": 0,
+      "sortedProbabilities": [
+        0.490291565656662,
+        0.22718609869480133,
+        0.15464839339256287,
+        0.10527107119560242,
+        0.022602874785661697
+      ],
+      "sortedTokenIds": [1, 2, 4, 0, 3],
+      "requestedTokenIds": [1, 3],
+      "expected": {
+        "supportTokenIds": [1, 2, 4, 0, 3],
+        "supportProbabilities": [
+          0.490291565656662,
+          0.22718609869480133,
+          0.15464839339256287,
+          0.10527107119560242,
+          0.022602874785661697
+        ],
+        "entropyNats": 1.2974568273025875,
+        "perplexity": 3.659976868467981,
+        "samples": [
+          { "uniform": 0.6, "tokenId": 2, "logprob": -1.4819857793292162 }
+        ]
+      }
+    }
+  ]
+}

@@ -2,25 +2,24 @@
 // the chat's right column.
 //
 // ``autoRegenState`` is the whole control surface (there is no standalone
-// A/B toggle).  With ``mode === "unsteered"`` the pairing runs here as a
-// *shadow* generation: ``abState.processingAb`` routes the next
+// A/B toggle). Every mode runs here as a stateless *shadow* generation:
+// ``abState.processingAb`` routes the next
 // ``started``/``token``/``done`` stream into
 // ``chatLog.turns[pendingTurnIdx].abPair`` instead of appending a fresh
-// top-level turn.  Every other mode is an ordinary loom regen with a
-// recipe-override, dispatched from the WS ``done`` handler.
+// top-level turn.
 //
 // The shadow's prompt is reconstructed from ``chatLog.turns`` at fire
 // time, so the comparison works for any turn, not only the just-sent one.
 
-import type { WSClientMessage } from "../api";
+import type { WSClientMessage } from "../types";
 import { chatLog, genStatus } from "./chat.svelte";
 import { buildSamplingPayload, samplingState } from "./sampling.svelte";
-import { ensureWebSocket } from "./ws.svelte";
+import { userFacingError } from "../runtime/userFacingError";
+import { ensureRuntimeChannel } from "./ws.svelte";
 
-/** Transient routing state for the unsteered-shadow generation.
+/** Transient routing state for the automatic shadow generation.
  *
- *  The shadow is ``autoRegenState`` with ``mode === "unsteered"``; there
- *  is no standalone toggle.  ``processingAb`` / ``pendingTurnIdx`` are
+ *  ``processingAb`` / ``pendingTurnIdx`` are
  *  load-bearing for the WS dispatcher — while ``processingAb`` is set the
  *  next ``started``/``token``/``done`` stream routes into
  *  ``chatLog.turns[pendingTurnIdx].abPair`` instead of appending a fresh
@@ -89,47 +88,80 @@ function _buildShadowMessages(
  * server doesn't append to history (the steered branch already did) and
  * the messages list is the *only* context the unsteered model sees.
  * That makes the comparison work for any turn, not just the first. */
-export async function sendShadowGenerate(steeredIdx: number): Promise<void> {
+export async function sendShadowGenerate(
+  steeredIdx: number,
+  recipeOverride = "unsteered",
+): Promise<void> {
   const target = chatLog.turns[steeredIdx];
   if (!target?.generated || target.role === "system") return;
   const messages = _buildShadowMessages(steeredIdx);
-  const sock = await ensureWebSocket();
-  // Shadow path mirrors ``sendGenerate``'s sampling-payload build so the
-  // ``return_top_k`` opt-in rides shadow / auto-regen runs too (matches
-  // the steered turn's wire-shape, keeps logit captures comparable across
-  // siblings).
-  const sampling = buildSamplingPayload() ?? {};
-  if (target.roleLabel) {
-    if (target.role === "user") sampling.user_role = target.roleLabel;
-    else sampling.assistant_role = target.roleLabel;
-  }
-  // Mark the WS reception path before the request lands so the
-  // ``started`` event routes into the abPair and not a fresh turn.
+  // Reserve the one generation slot before awaiting the channel. Without the
+  // reservation, a fast composer send can slip into the connection-open gap
+  // and make both requests fail each other's busy guard.
   abState.pendingTurnIdx = steeredIdx;
   abState.processingAb = true;
   abState.pendingRole = target.role;
   abState.pendingRoleLabel = target.roleLabel ?? null;
-  const payload: WSClientMessage = {
-    type: "generate",
-    // ``input`` accepts ``Any`` server-side; a list goes straight through
-    // to ``session._prepare_input`` which dispatches on isinstance(list).
-    input: messages,
-    // Empty steering string == unsteered shadow per the WS protocol
-    // (the server treats "" as "no expression").
-    steering: "",
-    sampling,
-    thinking: samplingState.thinking ?? false,
-    // Stateless so the shadow doesn't pollute server-side history; the
-    // steered turn already populated history.  Combined with the
-    // explicit messages list this means the shadow's prompt is exactly
-    // the conversation up to (but not including) the steered response.
-    stateless: true,
-    raw: false,
-    generate_seat: target.role,
-  };
-  const send = () => sock.send(JSON.stringify(payload));
-  if (sock.readyState === WebSocket.OPEN) send();
-  else sock.addEventListener("open", send, { once: true });
+  target.abPair = undefined;
+  genStatus.active = true;
+  try {
+    const channel = await ensureRuntimeChannel();
+    // Shadow path mirrors ``sendGenerate``'s sampling-payload build so the
+    // ``return_top_k`` opt-in rides shadow / auto-regen runs too (matches
+    // the steered turn's wire-shape, keeps logit captures comparable across
+    // siblings).
+    const sampling = buildSamplingPayload() ?? {};
+    if (target.roleLabel) {
+      if (target.role === "user") sampling.user_role = target.roleLabel;
+      else sampling.assistant_role = target.roleLabel;
+    }
+    const payload: WSClientMessage = {
+      type: "generate",
+      // ``input`` accepts ``Any`` server-side; a list goes straight through
+      // to ``session._prepare_input`` which dispatches on isinstance(list).
+      input: messages,
+      // Every comparison is stateless. The recipe modifier selects the
+      // alternate behavior without adding a throwaway sibling to the loom.
+      steering: "",
+      sampling,
+      thinking: samplingState.thinking ?? false,
+      stateless: true,
+      raw: false,
+      generate_seat: target.role,
+      recipe_override: recipeOverride,
+      // The parent is used only to resolve the original turn's recipe.
+      parent_node_id: target.nodeId ?? undefined,
+    };
+    channel.send(payload);
+  } catch (error) {
+    genStatus.active = false;
+    abState.pendingTurnIdx = null;
+    abState.processingAb = false;
+    abState.pendingRole = null;
+    abState.pendingRoleLabel = null;
+    target.abPair = {
+      role: "system",
+      text: `Comparison unavailable: ${userFacingError(error, "Try again after the model is ready.")}`,
+    };
+  }
+}
+
+let scheduledComparison: ReturnType<typeof setTimeout> | null = null;
+
+/** Start a comparison after the just-finished generation has completely
+ * released the runtime. Worker and fixture transports acknowledge a request
+ * just after emitting ``done``; sending synchronously from that event races
+ * their busy guard and used to leave the UI stuck at ``pending``. */
+export function scheduleAutoComparison(steeredIdx: number): boolean {
+  const override = currentRecipeOverride();
+  if (override === null) return false;
+  if (scheduledComparison !== null) clearTimeout(scheduledComparison);
+  scheduledComparison = setTimeout(() => {
+    scheduledComparison = null;
+    if (!autoRegenState.enabled || genStatus.active || abState.processingAb) return;
+    void sendShadowGenerate(steeredIdx, override);
+  }, 0);
+  return true;
 }
 
 // --------------------------------- auto-regen recipe-override -------
@@ -163,27 +195,47 @@ export const autoRegenState: AutoRegenState = $state({
 export function toggleAutoRegen(): void {
   const wasOff = !autoRegenState.enabled;
   autoRegenState.enabled = !autoRegenState.enabled;
-  // Off → on with the "unsteered" mode: replay the conversation through
-  // the unsteered model for the most recent generated turn that doesn't
-  // already carry an ``abPair``, so users who flip the toggle on
+  // Off → on: replay the conversation for the most recent generated turn
+  // with the selected recipe when it does not already carry an ``abPair``,
+  // so users who flip the toggle on
   // after-the-fact see the right column populate immediately rather
-  // than waiting for the next send.  Other modes use the loom-regen
-  // path — they take effect on the next ``done`` event by design.
-  if (!wasOff) return;
+  // than waiting for the next send.
+  if (!wasOff) {
+    if (scheduledComparison !== null) {
+      clearTimeout(scheduledComparison);
+      scheduledComparison = null;
+    }
+    return;
+  }
   if (genStatus.active) return; // ``done`` handler will fire its own
-  if (currentRecipeOverride() !== "unsteered") return;
   for (let i = chatLog.turns.length - 1; i >= 0; i--) {
     const t = chatLog.turns[i];
     if (!t) continue;
     if (!t.generated || t.role === "system") continue;
     if (t.abPair) break;
-    void sendShadowGenerate(i);
+    scheduleAutoComparison(i);
     break;
+  }
+}
+
+export function disableAutoRegen(): void {
+  autoRegenState.enabled = false;
+  if (scheduledComparison !== null) {
+    clearTimeout(scheduledComparison);
+    scheduledComparison = null;
   }
 }
 
 export function setAutoRegenMode(mode: AutoRegenMode): void {
   autoRegenState.mode = mode;
+  if (!autoRegenState.enabled || genStatus.active || abState.processingAb) return;
+  for (let i = chatLog.turns.length - 1; i >= 0; i--) {
+    const turn = chatLog.turns[i];
+    if (turn?.generated && turn.role !== "system") {
+      scheduleAutoComparison(i);
+      return;
+    }
+  }
 }
 
 export function setAutoRegenCustom(text: string): void {

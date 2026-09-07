@@ -1,6 +1,6 @@
 """CPU tests for the session-level Jacobian-lens API (stub session).
 
-The real ``SaklasSession`` methods are class-bound onto a light stub (the
+The real ``DrowseSession`` methods are class-bound onto a light stub (the
 established ``__new__``-stub pattern) so ``fit_jlens`` / ``jlens_readout`` /
 ``register_jlens_direction`` run against the toy model with no HF load.
 """
@@ -18,22 +18,28 @@ from typing import Any, cast
 import pytest
 import torch
 
-from saklas.core.jlens import (
+from drowse.core.jlens import (
     JacobianLens,
     JacobianLensError,
     LensNotFittedError,
     MultiTokenWordError,
 )
-from saklas.core.model import loaded_model_fingerprint, model_source_fingerprint
-from saklas.core.loom import (
+from drowse.core.model import loaded_model_fingerprint, model_source_fingerprint
+from drowse.core.loom import (
     InvalidNodeOperationError,
     LoomTree,
     Recipe,
     UnknownNodeError,
 )
-from saklas.core.session import ReadDemand, SaklasSession
-from saklas.core.steering_composer import SteeringComposer
-from saklas.io.lens import (
+from drowse.core.session import (
+    ReadDemand,
+    DrowseSession,
+    _JLENS_DECODE_CACHE_MAX,
+    _JLENS_DEVICE_STACK_CACHE_MAX,
+    _JLENS_SELECTOR_CACHE_MAX,
+)
+from drowse.core.steering_composer import SteeringComposer
+from drowse.io.lens import (
     lens_checkpoint_paths,
     lens_paths,
     load_lens,
@@ -69,40 +75,40 @@ def _save_checkpoint(
 
 
 class _StubSession:
-    jlens = SaklasSession.jlens
-    has_compatible_jlens = SaklasSession.has_compatible_jlens
-    _require_jlens = SaklasSession._require_jlens
-    fit_jlens = SaklasSession.fit_jlens
-    jlens_readout = SaklasSession.jlens_readout
-    _resolve_jlens_layers = SaklasSession._resolve_jlens_layers
-    _resolve_jlens_source_layers = SaklasSession._resolve_jlens_source_layers
-    _jlens_transport_stack = SaklasSession._jlens_transport_stack
-    _jlens_readout_modules = SaklasSession._jlens_readout_modules
-    _jlens_topk_rows = SaklasSession._jlens_topk_rows
-    _jlens_logits_rows = SaklasSession._jlens_logits_rows
-    _jlens_aggregate_rows = SaklasSession._jlens_aggregate_rows
-    _jlens_decode_id = SaklasSession._jlens_decode_id
-    _jlens_depths = SaklasSession._jlens_depths
-    _jlens_depth_tensor = SaklasSession._jlens_depth_tensor
-    _readout_long_tensor = SaklasSession._readout_long_tensor
-    register_jlens_direction = SaklasSession.register_jlens_direction
-    _live_lens_readout_step = SaklasSession._live_lens_readout_step
-    _jlens_workspace_band = SaklasSession._jlens_workspace_band
-    _add_lens_probe = SaklasSession._add_lens_probe
-    _score_lens_gate_scalars = SaklasSession._score_lens_gate_scalars
-    _effective_return_top_k = SaklasSession._effective_return_top_k
-    _select_tensor_rows = staticmethod(SaklasSession._select_tensor_rows)
-    _close_instrument_runs = SaklasSession._close_instrument_runs
-    _bind_instrument_runs = SaklasSession._bind_instrument_runs
-    instruments = SaklasSession.instruments
-    lens = SaklasSession.lens
-    sae = SaklasSession.sae
-    geometry = SaklasSession.geometry
+    jlens = DrowseSession.jlens
+    has_compatible_jlens = DrowseSession.has_compatible_jlens
+    _require_jlens = DrowseSession._require_jlens
+    fit_jlens = DrowseSession.fit_jlens
+    jlens_readout = DrowseSession.jlens_readout
+    _resolve_jlens_layers = DrowseSession._resolve_jlens_layers
+    _resolve_jlens_source_layers = DrowseSession._resolve_jlens_source_layers
+    _jlens_transport_stack = DrowseSession._jlens_transport_stack
+    _jlens_readout_modules = DrowseSession._jlens_readout_modules
+    _jlens_topk_rows = DrowseSession._jlens_topk_rows
+    _jlens_logits_rows = DrowseSession._jlens_logits_rows
+    _jlens_aggregate_rows = DrowseSession._jlens_aggregate_rows
+    _jlens_decode_id = DrowseSession._jlens_decode_id
+    _jlens_depths = DrowseSession._jlens_depths
+    _jlens_depth_tensor = DrowseSession._jlens_depth_tensor
+    _readout_long_tensor = DrowseSession._readout_long_tensor
+    register_jlens_direction = DrowseSession.register_jlens_direction
+    _live_lens_readout_step = DrowseSession._live_lens_readout_step
+    _jlens_workspace_band = DrowseSession._jlens_workspace_band
+    _add_lens_probe = DrowseSession._add_lens_probe
+    _score_lens_gate_scalars = DrowseSession._score_lens_gate_scalars
+    _effective_return_top_k = DrowseSession._effective_return_top_k
+    _select_tensor_rows = staticmethod(DrowseSession._select_tensor_rows)
+    _close_instrument_runs = DrowseSession._close_instrument_runs
+    _bind_instrument_runs = DrowseSession._bind_instrument_runs
+    instruments = DrowseSession.instruments
+    lens = DrowseSession.lens
+    sae = DrowseSession.sae
+    geometry = DrowseSession.geometry
 
     def __init__(self, *, n_layers: int = 3) -> None:
-        from saklas.core.instruments.geometry import GeometryInstrument
-        from saklas.core.instruments.lens import LensInstrument
-        from saklas.core.instruments.sae import SaeInstrument
+        from drowse.core.instruments.geometry import GeometryInstrument
+        from drowse.core.instruments.lens import LensInstrument
+        from drowse.core.instruments.sae import SaeInstrument
 
         self._lens_instrument = LensInstrument(self)  # type: ignore[arg-type]
         # ``_begin_capture`` consumes every family's ``plan()`` demand, so
@@ -125,6 +131,7 @@ class _StubSession:
         self._probe_hash_cache: dict[str, str] = {}
         self._jlens_readout_module_cache: Any = None
         self._jlens_device_cache: dict[Any, Any] = {}
+        self._jlens_decode_cache: dict[int, str] = {}
         self._jlens_depths_cache: dict[Any, list[float]] = {}
         self._jlens_depth_tensor_cache: dict[Any, torch.Tensor] = {}
         self._readout_long_tensor_cache: dict[Any, torch.Tensor] = {}
@@ -142,6 +149,51 @@ class _StubSession:
 
     def _invalidate_analytics_cache(self) -> None:
         pass
+
+
+def test_jlens_device_stacks_use_a_bounded_lru_cache() -> None:
+    session = _StubSession()
+    lens = JacobianLens(
+        {0: torch.eye(6), 1: torch.eye(6)},
+        n_prompts=1,
+        d_model=6,
+    )
+    device = torch.device("cpu")
+
+    first = session._jlens_transport_stack(lens, [0], device)
+    session._jlens_transport_stack(lens, [1], device)
+    assert session._jlens_transport_stack(lens, [0], device) is first
+    session._jlens_transport_stack(lens, [0, 1], device)
+
+    assert len(session._jlens_device_cache) == _JLENS_DEVICE_STACK_CACHE_MAX
+    keys = list(session._jlens_device_cache)
+    assert (id(lens), str(device), (0,)) in keys
+    assert (id(lens), str(device), (0, 1)) in keys
+    assert (id(lens), str(device), (1,)) not in keys
+
+
+def test_jlens_token_decode_cache_is_bounded() -> None:
+    session = _StubSession()
+
+    for token_id in range(_JLENS_DECODE_CACHE_MAX + 1):
+        assert session._jlens_decode_id(token_id) == session._tokenizer.decode([token_id])
+
+    assert len(session._jlens_decode_cache) == _JLENS_DECODE_CACHE_MAX
+    assert 0 not in session._jlens_decode_cache
+    assert _JLENS_DECODE_CACHE_MAX in session._jlens_decode_cache
+
+
+def test_jlens_selector_tensor_caches_are_bounded() -> None:
+    session = _StubSession(n_layers=_JLENS_SELECTOR_CACHE_MAX + 2)
+    for index in range(_JLENS_SELECTOR_CACHE_MAX + 1):
+        layers = list(range(index + 1))
+        session._jlens_depth_tensor(layers, torch.device("cpu"))
+        session._readout_long_tensor(layers, torch.device("cpu"))
+
+    assert len(session._jlens_depths_cache) == _JLENS_SELECTOR_CACHE_MAX
+    assert len(session._jlens_depth_tensor_cache) == _JLENS_SELECTOR_CACHE_MAX
+    assert len(session._readout_long_tensor_cache) == _JLENS_SELECTOR_CACHE_MAX
+    assert (0,) not in session._jlens_depths_cache
 
 
 class _CountingTokenizer(CharTokenizer):
@@ -163,7 +215,7 @@ _PROMPTS = [
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
 
 def test_fit_jlens_persists_and_property_loads() -> None:
@@ -185,8 +237,8 @@ def test_fit_jlens_persists_and_property_loads() -> None:
 def test_terminal_checkpoint_is_promoted_without_second_tensor_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
-    from saklas.io import integrity
+    import drowse.io.lens as lens_io
+    from drowse.io import integrity
 
     real_save = lens_io._save_fp32_square_safetensors_atomic
     writes = 0
@@ -261,7 +313,7 @@ def test_fit_jlens_already_done_short_circuits(
     s = _StubSession()
     first = s.fit_jlens(_PROMPTS)
     messages: list[str] = []
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     monkeypatch.setattr(
         lens_io, "load_lens",
@@ -290,7 +342,7 @@ def test_subset_noop_keeps_full_durable_lens_resident() -> None:
 def test_fresh_subset_noop_reads_only_requested_shard_and_preserves_disk_union(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     _StubSession().fit_jlens(_PROMPTS, source_layers=[0, 1], force=True)
     payload_reads: list[str] = []
@@ -337,7 +389,7 @@ def test_fresh_partial_extension_rejects_before_payload_and_preserves_union(
     import gc
     import weakref
 
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     writer = _StubSession()
     writer.fit_jlens(_PROMPTS[:2], source_layers=[0, 1], force=True)
@@ -539,7 +591,7 @@ def test_generation_boundary_refreshes_external_lens_once() -> None:
     session_a._sae_instrument.live = None
     session_a._sae_instrument.probes = {}
 
-    SaklasSession._begin_capture(
+    DrowseSession._begin_capture(
         cast(Any, session_a), ReadDemand(final_probe_aggregate=True),
     )
 
@@ -558,7 +610,7 @@ def test_generation_boundary_refreshes_external_lens_once() -> None:
     # An external deletion is likewise observed before the next generation,
     # and the validated missing state is pinned (no per-token retry loop).
     assert remove_lens(_MODEL_ID)
-    SaklasSession._begin_capture(
+    DrowseSession._begin_capture(
         cast(Any, session_a), ReadDemand(final_probe_aggregate=True),
     )
     assert session_a._lens_instrument.generation_lens_active is True
@@ -609,7 +661,7 @@ def test_external_lens_replacement_plans_and_freezes_refreshed_layers() -> None:
     session_a._sae_instrument.live = None
     session_a._sae_instrument.probes = {}
 
-    ok = SaklasSession._begin_capture(
+    ok = DrowseSession._begin_capture(
         cast(Any, session_a), ReadDemand(final_probe_aggregate=True),
     )
 
@@ -637,7 +689,7 @@ def test_prepare_is_the_refresh_site_and_supplies_the_pin() -> None:
     special-casing around it — adopts an external replacement lens
     (rewriting the live probe layer lists before any plan is taken) and
     returns the ``LensPrep`` snapshot that ``plan``/``bind`` consume."""
-    from saklas.core.instruments.types import LensPrep, ReadRequest
+    from drowse.core.instruments.types import LensPrep, ReadRequest
 
     session_a = _StubSession()
     session_a.fit_jlens(_PROMPTS, source_layers=[0], force=True)
@@ -674,7 +726,7 @@ def test_interleaved_adoption_cannot_desync_plan_from_pin() -> None:
     consume the prep's snapshot — never the live registry — the run still
     measures A's layers with A pinned; the old registry reread paired A
     with B's layers and KeyErrored in the transport stack."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session_a = _StubSession()
     session_a.fit_jlens(_PROMPTS, source_layers=[0], force=True)
@@ -711,7 +763,7 @@ def test_bound_run_reads_prepare_time_live_state() -> None:
     interleaved adoption rebuilds the instrument-level ``live`` against
     the NEW lens, and a bound run must keep reading the state that
     matches its pin.  Idle runs pass through to the live config."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session = _StubSession()
     inst = session._lens_instrument
@@ -774,7 +826,7 @@ def test_lens_state_lock_serializes_detach_and_reads() -> None:
 
     def _detach() -> None:
         detach_entered.set()
-        SaklasSession.remove_probe(cast(Any, session), "jlens/example")
+        DrowseSession.remove_probe(cast(Any, session), "jlens/example")
 
     def _read_specs() -> None:
         read_entered.set()
@@ -806,7 +858,7 @@ def test_idle_measurement_state_is_coherent() -> None:
     read pair lens A with a concurrently adopted B's rewritten layers.
     The helper's getter read also refreshes, so the pair reflects the
     replacement consistently."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session_a = _StubSession()
     session_a.fit_jlens(_PROMPTS, source_layers=[0], force=True)
@@ -860,7 +912,7 @@ def test_prepare_pin_demand_formula() -> None:
     """Pin demand = a live readout, or attached probes with a final
     aggregate or a lens gate — the one formula both generation
     boundaries (``_begin_capture`` and the batch preamble) reduce to."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS, force=True)
@@ -898,7 +950,7 @@ def test_prepare_on_a_bound_run_raises() -> None:
     """The jlens getter short-circuits on a bound run's pin flag, so a
     prepare taken without closing the prior run would silently skip the
     refresh — every family rejects it instead."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     session = _StubSession()
     session._monitor = SimpleNamespace(probe_names=[])
@@ -923,7 +975,7 @@ def test_bind_and_plan_reject_foreign_or_missing_preps() -> None:
     ``bind(plan)`` is a TypeError, a wrong-family prep (including a
     wrong-family ``LensPrep``) is rejected by every family, and plans are
     validated for family provenance too."""
-    from saklas.core.instruments.types import (
+    from drowse.core.instruments.types import (
         InstrumentPlan,
         InstrumentPrep,
         LensPrep,
@@ -983,7 +1035,7 @@ def test_bind_rejects_same_family_plan_prep_crossing() -> None:
     A's layers while the run measures B.  The per-preparation token the
     plan echoes is compared at bind, in every family (a hand-built plan,
     which carries no token, is rejected the same way)."""
-    from saklas.core.instruments.types import InstrumentPlan, ReadRequest
+    from drowse.core.instruments.types import InstrumentPlan, ReadRequest
 
     session = _StubSession()
     session._monitor = SimpleNamespace(probe_names=[])
@@ -1023,7 +1075,7 @@ def test_prepare_rejects_a_layerless_pin_demanded_lens() -> None:
     """A pin-demanded lens without ``source_layers`` is structurally
     broken (layers align captures, specs, and Jacobians) — it fails at
     the prepare boundary, not as a mid-generation KeyError."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     class _BrokenLensStub(_StubSession):
         _broken_lens: Any
@@ -1044,7 +1096,7 @@ def test_generation_lens_snapshot_avoids_per_token_disk_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Probe and gate scoring share the boundary snapshot without shard opens."""
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     session = _StubSession()
     lens = session.fit_jlens(_PROMPTS, force=True)
@@ -1098,7 +1150,7 @@ def test_fit_jlens_serializes_complete_cross_session_transaction(
             assert release_first.wait(timeout=1.0)
         return "done"
 
-    monkeypatch.setattr(SaklasSession, "_fit_jlens_transaction", _transaction)
+    monkeypatch.setattr(DrowseSession, "_fit_jlens_transaction", _transaction)
     first = _StubSession()
     second = _StubSession()
     results: list[str] = []
@@ -1211,7 +1263,7 @@ def test_fit_jlens_resumes_from_partial_and_matches_full_fit() -> None:
 def test_fit_jlens_changed_prefix_restarts_from_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.core.jlens as jlens_module
+    import drowse.core.jlens as jlens_module
 
     _StubSession().fit_jlens(_PROMPTS[:2], force=True)
     changed = ["a changed first prompt that is long enough", *_PROMPTS[1:]]
@@ -1231,7 +1283,7 @@ def test_fit_jlens_changed_prefix_restarts_from_zero(
 def test_fit_jlens_loaded_weight_change_invalidates_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.core.jlens as jlens_module
+    import drowse.core.jlens as jlens_module
 
     first = _StubSession()
     first.fit_jlens(_PROMPTS)
@@ -1322,7 +1374,7 @@ def test_loaded_model_fingerprint_memoizes_until_sanctioned_mutation(
 
 
 def test_loaded_model_fingerprint_explicitly_invalidates_data_writes() -> None:
-    from saklas.core.model import invalidate_loaded_model_fingerprint
+    from drowse.core.model import invalidate_loaded_model_fingerprint
 
     model = torch.nn.Linear(10, 10, bias=False)
     first = loaded_model_fingerprint(model, "toy")
@@ -1411,7 +1463,7 @@ def test_jlens_property_rejects_changed_loaded_weights() -> None:
 def test_jlens_property_rechecks_loaded_pointer_fingerprint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     session = _StubSession()
     live_fp = loaded_model_fingerprint(session._model, _MODEL_ID)
@@ -1430,7 +1482,7 @@ def test_jlens_property_rechecks_loaded_pointer_fingerprint(
 def test_has_compatible_jlens_rechecks_loaded_pointer_fingerprint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     session = _StubSession()
     live_fp = loaded_model_fingerprint(session._model, _MODEL_ID)
@@ -1496,8 +1548,8 @@ def test_fit_jlens_extends_real_prefix_checkpoint_without_full_artifact() -> Non
 def test_fit_jlens_checkpoint_survives_two_interruptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.core.jlens as jlens_mod
-    import saklas.io.lens as lens_io
+    import drowse.core.jlens as jlens_mod
+    import drowse.io.lens as lens_io
 
     full = _StubSession().fit_jlens(_PROMPTS, force=True)
     head_session = _StubSession()
@@ -1564,7 +1616,7 @@ def test_fit_jlens_checkpoint_survives_two_interruptions(
 def test_corrupt_farther_checkpoint_falls_back_to_durable_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.core.jlens as jlens_mod
+    import drowse.core.jlens as jlens_mod
 
     session = _StubSession()
     durable = session.fit_jlens(_PROMPTS[:2], force=True)
@@ -1614,7 +1666,7 @@ def test_matching_checkpoint_evicts_incompatible_resident_before_load(
     import gc
     import weakref
 
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS[:2], force=True)
@@ -1661,7 +1713,7 @@ def test_matching_checkpoint_evicts_incompatible_resident_before_load(
 def test_resident_prefix_is_reloaded_after_resume_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.core.jlens as jlens_mod
+    import drowse.core.jlens as jlens_mod
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS[:2], force=True)
@@ -1696,7 +1748,7 @@ def test_subset_resume_releases_unrequested_resident_matrices(
     import gc
     import weakref
 
-    import saklas.core.jlens as jlens_mod
+    import drowse.core.jlens as jlens_mod
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS[:2], force=True, source_layers=[0, 1])
@@ -1732,7 +1784,7 @@ def test_subset_resume_releases_unrequested_resident_matrices(
 def test_finalization_failure_rebuilds_evicted_resident(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.io.lens as lens_io
+    import drowse.io.lens as lens_io
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS[:2], force=True)
@@ -1763,9 +1815,9 @@ def test_finalization_failure_rebuilds_evicted_resident(
 def test_fit_jlens_missing_layer_topup_resumes_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import saklas.core.jlens as jlens_mod
-    import saklas.io.lens as lens_io
-    from saklas.io import integrity
+    import drowse.core.jlens as jlens_mod
+    import drowse.io.lens as lens_io
+    from drowse.io import integrity
 
     full = _StubSession().fit_jlens(
         _PROMPTS, force=True, source_layers=[0, 1],
@@ -1834,7 +1886,7 @@ def test_jlens_readout_shape_and_default_position() -> None:
     s = _StubSession()
     s.fit_jlens(_PROMPTS)
     seen_pool: list[int | None] = []
-    import saklas.core.capture as _vectors
+    import drowse.core.capture as _vectors
 
     real_capture = _vectors._capture_all_hidden_states
 
@@ -1901,7 +1953,7 @@ def test_jlens_readout_aggregate_multi_position() -> None:
 
 def test_jlens_readout_requires_fitted_lens() -> None:
     s = _StubSession()
-    with pytest.raises(LensNotFittedError, match="saklas lens fit"):
+    with pytest.raises(LensNotFittedError, match="drowse lens fit"):
         s.jlens_readout("a prompt that is long enough.")
 
 
@@ -2082,9 +2134,9 @@ def test_live_lens_readout_step_avoids_float64_for_mps_compatibility(
 def test_jlens_row_selector_avoids_copy_for_identity_and_contiguous_rows() -> None:
     tensor = torch.arange(24, dtype=torch.float32).reshape(4, 6)
 
-    identity = SaklasSession._select_tensor_rows(tensor, [0, 1, 2, 3])
-    contiguous = SaklasSession._select_tensor_rows(tensor, [1, 2])
-    gathered = SaklasSession._select_tensor_rows(tensor, [0, 2])
+    identity = DrowseSession._select_tensor_rows(tensor, [0, 1, 2, 3])
+    contiguous = DrowseSession._select_tensor_rows(tensor, [1, 2])
+    gathered = DrowseSession._select_tensor_rows(tensor, [0, 2])
 
     assert identity is tensor
     assert contiguous.tolist() == tensor[1:3].tolist()
@@ -2104,7 +2156,7 @@ def test_live_lens_step_normalizes_once_across_all_consumers(
 ) -> None:
     # The instrument binds the readout primitives at module scope (the per-step
     # surfaces must not re-import), so the counters patch its namespace.
-    import saklas.core.instruments.lens as lens_instrument_module
+    import drowse.core.instruments.lens as lens_instrument_module
 
     jlens_module = lens_instrument_module
 
@@ -2193,7 +2245,7 @@ def test_live_lens_exact_stash_reuse_skips_hidden_cast() -> None:
     assert s._lens_instrument.live is not None
     vocab = int(s._model.lm_head.weight.shape[0])
     logits = torch.randn(1, vocab, generator=torch.Generator().manual_seed(7))
-    import saklas.core.jlens as jlens_module
+    import drowse.core.jlens as jlens_module
 
     probabilities = jlens_module.readout_probabilities(logits)
     s._lens_instrument.step_stash = {
@@ -2251,7 +2303,7 @@ def test_lens_full_roster_gate_read_primes_bound_observe_memo() -> None:
     (the live-display superset path) primes the run's observe memo — a
     same-step ``observe`` is a hit; the memo is exactly the stashed
     readings object."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     s = _StubSession()
     s.fit_jlens(_PROMPTS)
@@ -2301,7 +2353,7 @@ def test_lens_negative_step_observe_never_caches() -> None:
     run's observe memo — repeated negative observations rescore (sol's
     round-2 coverage gap: the geometry test alone didn't pin the shared
     fix on this family)."""
-    from saklas.core.instruments.types import ReadRequest
+    from drowse.core.instruments.types import ReadRequest
 
     s = _StubSession()
     s.fit_jlens(_PROMPTS)
@@ -2338,7 +2390,7 @@ _PROMPT_RENDER = "the prompt render, chat shaped."
 class _TreeStubSession(_StubSession):
     """Stub with a real loom tree + recorded prompt render / steering scopes."""
 
-    jlens_token_readout = SaklasSession.jlens_token_readout
+    jlens_token_readout = DrowseSession.jlens_token_readout
 
     def __init__(self) -> None:
         super().__init__()
@@ -2395,7 +2447,7 @@ def test_jlens_token_readout_shape_and_position() -> None:
     node_id = _tree_with_assistant(s, raw_ids)
 
     seen_lens: list[tuple[int, int | None]] = []
-    import saklas.core.capture as _vectors
+    import drowse.core.capture as _vectors
 
     real_capture = _vectors._capture_all_hidden_states
 
@@ -2450,7 +2502,7 @@ def test_jlens_token_readout_index_zero_reads_prompt_only() -> None:
     node_id = _tree_with_assistant(s, s._tokenizer.encode("abc"))
 
     seen_lens: list[tuple[int, int | None]] = []
-    import saklas.core.capture as _vectors
+    import drowse.core.capture as _vectors
 
     real_capture = _vectors._capture_all_hidden_states
 
@@ -2548,7 +2600,7 @@ def test_score_probes_entries_are_disjoint_and_guarded() -> None:
         for layer in layers
     }
 
-    from saklas.core.jlens import readout_probabilities
+    from drowse.core.jlens import readout_probabilities
 
     logits = s._jlens_logits_rows(
         s.jlens, [(layer, hidden[layer]) for layer in layers],

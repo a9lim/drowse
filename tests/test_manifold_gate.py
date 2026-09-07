@@ -21,17 +21,17 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from saklas.core.steering_expr import parse_expr
-from saklas.core.triggers import ProbeGate, TriggerContext
-from saklas.io import selectors as sel
+from drowse.core.steering_expr import parse_expr
+from drowse.core.triggers import ProbeGate, TriggerContext
+from drowse.io import selectors as sel
 
 if TYPE_CHECKING:
-    from saklas.core.steering import Steering
+    from drowse.core.steering import Steering
 
 
 @pytest.fixture(autouse=True)
 def _isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
-    """Run each test against an empty SAKLAS_HOME.
+    """Run each test against an empty DROWSE_HOME.
 
     Bundled bipolar concepts (``angry.calm``) would otherwise resolve
     a bare-pole reference like ``calm`` through ``resolve_pole`` and
@@ -39,7 +39,7 @@ def _isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     composition the cross-probe tests are about.  An isolated home
     keeps every bare slug resolving to itself with sign +1.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     sel.invalidate()
     yield
     sel.invalidate()
@@ -107,12 +107,12 @@ class TestParseStoresNamespacedProbe:
 
     def test_unknown_colon_channel_rejected(self):
         import pytest
-        from saklas.core.steering_expr import SteeringExprError
+        from drowse.core.steering_expr import SteeringExprError
         with pytest.raises(SteeringExprError, match="membership"):
             parse_expr("0.3 happy.sad @when:circumplex:bogus > 0.5")
 
     def test_new_channels_round_trip(self):
-        from saklas.core.steering_expr import format_expr
+        from drowse.core.steering_expr import format_expr
         for text in (
             "0.3 happy.sad@when:circumplex:membership>0.6",
             "0.3 happy.sad@when:circumplex~elated>0.5",

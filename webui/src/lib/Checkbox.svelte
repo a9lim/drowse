@@ -30,51 +30,52 @@
     onchange,
   }: Props = $props();
 
-  function toggle(): void {
-    if (disabled) return;
-    checked = !checked;
+  function onChange(ev: Event): void {
+    checked = (ev.currentTarget as HTMLInputElement).checked;
     onchange?.(checked);
-  }
-
-  function onKeydown(ev: KeyboardEvent): void {
-    if (disabled) return;
-    if (ev.key === " " || ev.key === "Enter") {
-      ev.preventDefault();
-      toggle();
-    }
   }
 </script>
 
-<span class="sk-checkbox-row">
-  <button
-    type="button"
-    role="checkbox"
-    class="sk-checkbox"
-    class:is-checked={checked}
-    class:is-disabled={disabled}
-    aria-checked={checked}
-    aria-label={ariaLabel ?? label}
+<label class="sk-checkbox-row" class:is-disabled={disabled}>
+  <input
+    type="checkbox"
+    class="sk-checkbox-input"
+    bind:checked
+    aria-label={ariaLabel ?? undefined}
     {disabled}
     {title}
-    onclick={toggle}
-    onkeydown={onKeydown}
-  >
+    onchange={onChange}
+  />
+  <span class="sk-checkbox" aria-hidden="true">
     <span class="sk-checkbox-box" aria-hidden="true">
-      {#if checked}<span class="sk-checkbox-glyph">✓</span>{/if}
+      <span class="sk-checkbox-glyph" class:is-visible={checked}>✓</span>
     </span>
-  </button>
+  </span>
   {#if label}
     <span class="sk-checkbox-label" class:is-disabled={disabled}>{label}</span>
   {/if}
-</span>
+</label>
 
 <style>
   .sk-checkbox-row {
+    position: relative;
     display: inline-flex;
     align-items: center;
     gap: var(--space-3);
+    min-height: var(--control-target);
+    color: var(--fg);
+    cursor: pointer;
   }
 
+  .sk-checkbox-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: inherit;
+  }
   .sk-checkbox {
     flex: 0 0 auto;
     display: inline-flex;
@@ -86,8 +87,8 @@
     background: transparent;
     border: 0;
     border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: background var(--dur-fast) var(--ease-out),
+    transition:
+      background var(--dur-fast) var(--ease-out),
       border-color var(--dur-fast) var(--ease-out);
   }
   .sk-checkbox-box {
@@ -100,35 +101,52 @@
     background: var(--bg-elev);
     border: 1px solid var(--glass-line);
     border-radius: var(--radius-sm);
-    transition: background var(--dur-fast) var(--ease-out),
-      border-color var(--dur-fast) var(--ease-out);
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
   }
-  .sk-checkbox:hover:not(.is-disabled) .sk-checkbox-box {
+  .sk-checkbox-row:hover:not(.is-disabled) .sk-checkbox-box {
     border-color: var(--accent-strong);
   }
-  .sk-checkbox:focus-visible {
+  .sk-checkbox-row:active:not(.is-disabled) .sk-checkbox-box {
+    scale: var(--press-scale);
+  }
+  .sk-checkbox-input:focus-visible + .sk-checkbox {
     outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
   }
-  .sk-checkbox.is-checked .sk-checkbox-box {
+  .sk-checkbox-input:checked + .sk-checkbox .sk-checkbox-box {
     background: var(--accent);
     border-color: var(--accent);
   }
-  .sk-checkbox.is-checked:hover:not(.is-disabled) .sk-checkbox-box {
+  .sk-checkbox-row:hover:not(.is-disabled) .sk-checkbox-input:checked + .sk-checkbox .sk-checkbox-box {
     background: var(--accent-light);
     border-color: var(--accent-light);
   }
-  .sk-checkbox.is-disabled {
+  .sk-checkbox-row.is-disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
 
   .sk-checkbox-glyph {
-    font-size: 10px;
+    font-size: var(--text-2xs);
     line-height: 1;
     color: var(--text-on-accent);
     font-weight: var(--weight-bold);
     pointer-events: none;
+    opacity: 0;
+    scale: 0.25;
+    filter: blur(4px);
+    transition:
+      opacity var(--dur-slow) cubic-bezier(0.2, 0, 0, 1),
+      scale var(--dur-slow) cubic-bezier(0.2, 0, 0, 1),
+      filter var(--dur-slow) cubic-bezier(0.2, 0, 0, 1);
+  }
+  .sk-checkbox-glyph.is-visible {
+    opacity: 1;
+    scale: 1;
+    filter: blur(0);
   }
 
   .sk-checkbox-label {

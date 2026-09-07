@@ -1,151 +1,229 @@
 <script lang="ts">
+  import { Blobatar } from "@blobatar/svelte";
+  import { onMount } from "svelte";
+  import ChatAccentPicker from "../lib/ui/ChatAccentPicker.svelte";
+  import type { ChatAccent } from "../lib/chatAccent";
+
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
-  // Save-conversation drawer — serialize the complete authoritative Loom
-  // tree plus rack, probe, sampling, and highlight state to a JSON blob.
-  // The tree payload is the exact inverse of PUT /tree, so branches,
-  // recipes, token metadata, notes, stars, and cast all survive restore.
-  //
-  // Shape: {version, savedAt, model_id, tree, steerRack, subspaceAlong,
-  //         customSteeringExpression,
-  //         probeRack, highlightState, samplingState}.  Steer / probe rack
-  //         Maps are serialized as plain arrays (Map → tuples) for JSON
-  //         safety.
-
   import {
-    steerRack,
-    probeRack,
-    highlightState,
-    samplingState,
-    sessionState,
+    conversationLibrary,
     closeDrawer,
-    currentLoomTreeSnapshot,
+    genStatus,
+    requestPersistentConversationStorage,
+    savedConversationState,
   } from "../lib/stores.svelte";
+  import {
+    defaultConversationName,
+    displayModelName,
+    randomAvatarSeed,
+    ConversationLibraryError,
+    SAVED_CONVERSATION_SCHEMA_VERSION,
+    type SavedConversationRecord,
+  } from "../lib/conversationLibrary";
+  import { captureConversationSnapshot } from "../lib/conversationWorkspace";
+  import { downloadPreparedChatBackup, encodeChatBackup } from "../lib/chatBackup";
+  import { userFacingError } from "../lib/runtime/userFacingError";
+  import { pushToast } from "../lib/stores/toasts.svelte";
+  import { flushConversationAutosave } from "../lib/stores/savedConversations.svelte";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => {
-    void _drawerProps.params;
+  let { embedded = false }: { params?: unknown; embedded?: boolean } = $props();
+
+  let current: SavedConversationRecord | null = $state(null);
+  let name = $state("");
+  let avatarSeed = $state(randomAvatarSeed());
+  let accent: ChatAccent = $state("purple");
+  let error = $state<string | null>(null);
+  let loading = $state(true);
+  let saving = $state(false);
+  let modelName = $state("Current model");
+  let turnCount = $state(0);
+
+  onMount(() => {
+    void initialize();
   });
 
-  // Snapshot once at mount — saving while a generation is in flight
-  // would otherwise capture a partial turn.  User can re-open the drawer
-  // to refresh.
-  const snapshot = $derived.by(() => ({
-    version: 6 as const,
-    savedAt: new Date().toISOString(),
-    model_id: sessionState.info!.model_id,
-    session_id: sessionState.info!.id,
-    tree: currentLoomTreeSnapshot(),
-    // Full steer rack — every term plus the shared subspace-along master.
-    steerRack: [...steerRack.entries.entries()].map(([name, entry]) => ({
-      name,
-      ...entry,
-    })),
-    subspaceAlong: steerRack.subspaceAlong,
-    customSteeringExpression: steerRack.customExpression,
-    probeRack: {
-      sortMode: probeRack.sortMode,
-      active: [...probeRack.active],
-      entries: [...probeRack.entries.entries()].map(([name, e]) => ({
-        name,
-        sparkline: e.sparkline,
-        current: e.current,
-        previous: e.previous,
-      })),
-    },
-    highlightState: { ...highlightState },
-    samplingState: { ...samplingState },
-  }));
-
-  const previewText = $derived(JSON.stringify(snapshot, null, 2));
-  const turnCount = $derived(
-    snapshot.tree?.nodes.filter((node) => node.parent_id !== null).length ?? 0,
-  );
-  const recipeSummary = $derived(
-    snapshot.customSteeringExpression !== null
-      ? "custom expression"
-      : `${snapshot.steerRack.length} term${snapshot.steerRack.length === 1 ? "" : "s"}`,
-  );
-
-  // Cap preview at ~200 lines (~16k chars) so a runaway log doesn't lock
-  // the textarea.  The downloaded blob is always the full snapshot.
-  const previewLines = $derived(previewText.split("\n"));
-  const previewTruncated = $derived(previewLines.length > 200);
-  const previewDisplay = $derived(
-    previewTruncated
-      ? previewLines.slice(0, 200).join("\n") +
-          `\n… (${previewLines.length - 200} more lines)`
-      : previewText,
-  );
-
-  let filename = $state("");
-
-  const defaultFilename = $derived.by(() => {
-    const ts = new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")
-      .replace("T", "_")
-      .slice(0, 19);
-    return `saklas-conversation-${ts}.json`;
-  });
-
-  function effectiveFilename(): string {
-    let n = filename.trim();
-    if (!n) n = defaultFilename;
-    if (!n.endsWith(".json")) n += ".json";
-    return n;
+  async function initialize(): Promise<void> {
+    loading = true;
+    error = null;
+    try {
+      await flushConversationAutosave().catch(() => undefined);
+      const snapshot = captureConversationSnapshot();
+      modelName = displayModelName(snapshot.model_id);
+      turnCount = snapshot.tree.nodes.filter((node) => node.parent_id !== null).length;
+      name = defaultConversationName();
+      const activeId = savedConversationState.activeId;
+      if (activeId) {
+        try {
+          const saved = await conversationLibrary.get(activeId);
+          if (saved.modelId === snapshot.model_id) {
+            current = saved;
+            name = saved.name;
+            avatarSeed = saved.avatarSeed;
+            accent = saved.accent ?? "purple";
+          } else {
+            savedConversationState.activeId = null;
+            savedConversationState.avatarSeed = null;
+            savedConversationState.accent = "purple";
+          }
+        } catch (cause) {
+          if (cause instanceof ConversationLibraryError && cause.code === "NOT_FOUND") {
+            savedConversationState.activeId = null;
+            savedConversationState.avatarSeed = null;
+            savedConversationState.accent = "purple";
+          } else {
+            throw cause;
+          }
+        }
+      }
+    } catch (cause) {
+      error = userFacingError(cause, "This conversation is not ready to save yet.");
+    } finally {
+      loading = false;
+    }
   }
 
-  function download(): void {
-    if (!snapshot.tree) return;
-    const blob = new Blob([previewText], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = effectiveFilename();
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  function regenerateAvatar(): void {
+    avatarSeed = randomAvatarSeed();
+  }
+
+  async function save(asNew = false): Promise<void> {
+    error = null;
+    if (genStatus.active) {
+      error = "Wait for the current reply to finish before saving.";
+      return;
+    }
+    saving = true;
+    try {
+      await flushConversationAutosave().catch(() => undefined);
+      const persistenceProtected = await requestPersistentConversationStorage();
+      const snapshot = captureConversationSnapshot();
+      const activeId = current?.id ?? savedConversationState.activeId;
+      const record = activeId && !asNew
+        ? await conversationLibrary.update(activeId, { name, avatarSeed, accent, snapshot })
+        : await conversationLibrary.create({ name, avatarSeed, accent, snapshot });
+      current = record;
+      name = record.name;
+      avatarSeed = record.avatarSeed;
+      savedConversationState.activeId = record.id;
+      savedConversationState.avatarSeed = record.avatarSeed;
+      savedConversationState.accent = record.accent ?? "purple";
+      savedConversationState.status = "saved";
+      savedConversationState.error = null;
+      pushToast(
+        persistenceProtected === false
+          ? `Saved “${record.name}”. Browser cleanup protection is off.`
+          : `Saved “${record.name}”.`,
+        { kind: persistenceProtected === false ? "warning" : "info" },
+      );
+      if (!embedded) closeDrawer();
+    } catch (cause) {
+      error = userFacingError(cause, "This conversation could not be saved.");
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function downloadCopy(): Promise<void> {
+    if (saving || loading || genStatus.active) return;
+    saving = true;
+    error = null;
+    try {
+      const snapshot = captureConversationSnapshot();
+      const now = Date.now();
+      const record: SavedConversationRecord = {
+        schemaVersion: SAVED_CONVERSATION_SCHEMA_VERSION,
+        id: current?.id ?? crypto.randomUUID(),
+        name: name.trim() || defaultConversationName(now),
+        avatarSeed,
+        accent,
+        modelId: snapshot.model_id,
+        createdAt: current?.createdAt ?? now,
+        updatedAt: Math.max(current?.updatedAt ?? now, now),
+        snapshot,
+      };
+      const blob = new Blob([await encodeChatBackup(record)], { type: "application/json" });
+      downloadPreparedChatBackup(blob, record.name);
+    } catch (cause) {
+      error = userFacingError(cause, "A backup copy could not be created.");
+    } finally { saving = false; }
   }
 </script>
 
-<section class="drawer-shell" aria-label="Save conversation drawer">
+<section class="drawer-shell" class:embedded aria-label={embedded ? "Save and name chat" : "Save conversation drawer"}>
   <header class="header">
-    <span class="title">save conversation</span>
-    <DrawerCloseButton onclick={closeDrawer} />
+    <div>
+      <h2 class="title">{embedded ? "Save and name chat" : current ? "Update saved chat" : "Save chat"}</h2>
+      <p>Keep the full loom, response settings, and readings on this device.</p>
+    </div>
+    {#if !embedded}<DrawerCloseButton onclick={closeDrawer} />{/if}
   </header>
 
   <div class="body">
-    <p class="hint">complete tree + workspace</p>
-
-    <label class="field">
-      <span class="label">filename</span>
-      <input
-        type="text"
-        class="input"
-        bind:value={filename}
-        placeholder={defaultFilename}
-        autocomplete="off"
-        spellcheck="false"
-      />
-    </label>
-
-    <div class="preview-block">
-      <span class="label">preview</span>
-      <pre class="preview" aria-label="Preview JSON">{previewDisplay}</pre>
-      <span class="meta">
-        {turnCount} turn{turnCount === 1 ? "" : "s"} ·
-        {recipeSummary} ·
-        {probeRack.active.length} probe{probeRack.active.length === 1 ? "" : "s"}
-      </span>
+    <div class="identity-card">
+      <div class="avatar-picker">
+        <button
+          type="button"
+          class="avatar-button"
+          onclick={regenerateAvatar}
+          aria-label="Generate another avatar"
+          title="Generate another avatar"
+        >
+          <Blobatar name={avatarSeed} size={76} background="circle" alt="" />
+        </button>
+        <span>Click for a new avatar</span>
+      </div>
+      <label class="name-field">
+        <span>Name</span>
+        <input
+          bind:value={name}
+          maxlength="120"
+          autocomplete="off"
+          placeholder="Untitled conversation"
+          disabled={loading || saving}
+        />
+      </label>
     </div>
+
+    <div class="summary" aria-label="Conversation summary">
+      <span>{modelName}</span>
+      <span>{turnCount} {turnCount === 1 ? "turn" : "turns"}</span>
+    </div>
+
+    <ChatAccentPicker value={accent} disabled={loading || saving} onchange={(value) => { accent = value; }} />
+
+    <p class="storage-note">
+      Stored in this browser. Drowse removes a saved chat only after you confirm Delete.
+    </p>
+
+    {#if genStatus.active}
+      <p class="notice">Wait for the current reply to finish before saving.</p>
+    {/if}
+    {#if error}
+      <p class="error" role="alert">{error}</p>
+    {/if}
   </div>
 
   <footer class="footer">
-    <button type="button" class="btn" onclick={closeDrawer}>cancel</button>
-    <button type="button" class="btn primary" disabled={!snapshot.tree} onclick={download}>
-      download
+    <button type="button" class="text-button" onclick={downloadCopy} disabled={loading || saving || genStatus.active}>
+      Download copy
     </button>
+    <div class="footer-actions">
+      {#if current}
+        <button type="button" class="button" onclick={() => void save(true)} disabled={loading || saving || genStatus.active}>
+          Save as new
+        </button>
+      {/if}
+      <button
+        type="button"
+        class="button primary"
+        class:loading-pulse={saving}
+        aria-busy={saving}
+        onclick={() => void save(false)}
+        disabled={loading || saving || genStatus.active || !name.trim()}
+      >
+        {saving ? "Saving…" : current ? "Update" : "Save"}
+      </button>
+    </div>
   </footer>
 </section>
 
@@ -157,109 +235,162 @@
     min-height: 0;
     color: var(--fg);
     font-family: var(--font-ui);
-    font-size: var(--text);
   }
   .header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    padding: var(--space-5) var(--space-6);
+    gap: var(--space-4);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
+  .drawer-shell.embedded {
+    --drawer-gutter-inline: var(--surface-gutter);
+    --drawer-gutter-block: var(--panel-padding);
+    height: auto;
+  }
+  .embedded .body {
+    flex: none;
+    overflow: visible;
+  }
+  .header div { min-width: 0; }
   .title {
-    color: var(--accent);
-    text-transform: lowercase;
-    letter-spacing: 0;
-    font-size: var(--text-md);
+    margin: 0;
+    color: var(--fg);
+    font-size: var(--text-lg);
     font-weight: var(--weight-medium);
+  }
+  .header p {
+    margin: var(--space-2) 0 0;
+    color: var(--fg-dim);
+    font-size: var(--text-sm);
+    line-height: 1.45;
   }
   .body {
     flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
-    padding: var(--space-6);
     display: flex;
     flex-direction: column;
+    gap: var(--drawer-gutter-block);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
+  }
+  .identity-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
     gap: var(--space-4);
-    min-height: 0;
+    padding: var(--surface-padding);
+    border-radius: var(--radius-lg);
+    background: var(--glass);
+    box-shadow: var(--shadow-rack);
   }
-  .hint {
-    margin: 0;
-    color: var(--fg-dim);
-    font-size: var(--text-sm);
-    line-height: 1.4;
+  .avatar-button {
+    width: 80px;
+    height: 80px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--bg-elev);
+    box-shadow: var(--shadow-control);
+    cursor: pointer;
+    transition: transform 120ms ease, box-shadow 120ms ease;
   }
-  .field {
-    display: flex;
-    flex-direction: column;
+  .avatar-picker {
+    display: grid;
+    justify-items: center;
     gap: var(--space-2);
   }
-  .label {
+  .avatar-picker > span {
+    max-width: 10ch;
     color: var(--fg-muted);
-    font-size: var(--text-sm);
-    text-transform: lowercase;
+    font-size: var(--text-2xs);
+    line-height: 1.3;
+    text-align: center;
   }
-  .input {
-    background: var(--input-well);
-    color: var(--fg);
-    border: 1px solid transparent;
-    padding: var(--space-3) var(--space-3);
-    font: inherit;
-    font-family: var(--font-mono);
-  }
-  .input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-  .preview-block {
-    display: flex;
-    flex-direction: column;
+  .avatar-button:hover { box-shadow: var(--shadow-control-hover); }
+  .avatar-button :global(img) { display: block; width: 100%; height: 100%; min-width: 0; border-radius: inherit; }
+  .avatar-button:active { transform: scale(0.96); }
+  .avatar-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+  .name-field {
+    min-width: 0;
+    display: grid;
     gap: var(--space-2);
-    min-height: 0;
   }
-  .preview {
-    background: var(--bg-deep);
-    padding: var(--space-3) var(--space-4);
-    margin: 0;
-    color: var(--fg-dim);
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    line-height: 1.4;
-    max-height: 360px;
-    overflow: auto;
-    white-space: pre;
-  }
-  .meta {
+  .name-field span {
     color: var(--fg-muted);
     font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
   }
+  .name-field input {
+    width: 100%;
+    min-width: 0;
+    min-height: 46px;
+    box-sizing: border-box;
+    border: 0;
+    border-radius: var(--radius);
+    background: var(--input-well);
+    box-shadow: var(--shadow-well);
+    color: var(--fg);
+    padding: var(--space-3) var(--space-4);
+    font: inherit;
+    font-size: var(--text-md);
+  }
+  .name-field input:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+  .summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    color: var(--fg-dim);
+    font-size: var(--text-sm);
+  }
+  .summary span:first-child { color: var(--fg-strong); }
+  .storage-note, .notice, .error {
+    margin: 0;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+  .storage-note { color: var(--fg-muted); }
+  .notice { color: var(--accent-amber); }
+  .error { color: var(--accent-red); }
   .footer {
     display: flex;
-    justify-content: flex-end;
-    gap: var(--space-3);
-    padding: var(--space-3) var(--space-6);
-    color: var(--fg-muted);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--drawer-gutter-block);
+    padding: 0 var(--drawer-gutter-inline) var(--drawer-gutter-block);
   }
-  .btn {
-    background: var(--glass);
-    color: var(--fg-strong);
-    border: 1px solid transparent;
-    padding: var(--space-3) var(--space-5);
+  .footer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--drawer-gutter-block); }
+  .button, .text-button {
+    min-height: var(--control-field);
+    border: 0;
+    border-radius: var(--radius);
     font: inherit;
-    font-family: var(--font-mono);
     cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
   }
-  .btn:hover:not(:disabled) {
+  .button {
+    padding: var(--space-3) var(--space-5);
     background: var(--glass-strong);
+    color: var(--fg-strong);
+    box-shadow: var(--shadow-control);
   }
-  .btn.primary {
-    background: var(--accent);
-    color: var(--text-on-accent);
-    border-color: transparent;
-  }
-  .btn.primary:hover:not(:disabled) {
-    background: var(--accent-light);
-    border-color: transparent;
-  }
-  .btn.primary:disabled {
-    background: var(--bg-elev);
+  .button:hover:not(:disabled) { background: var(--glass-bright); }
+  .button.primary { background: var(--action-bg); color: var(--action-ink); }
+  .button.primary:hover:not(:disabled) { background: var(--action-hover); }
+  .button:active:not(:disabled), .text-button:active:not(:disabled) { transform: scale(0.96); }
+  .text-button { padding: var(--space-2); background: transparent; color: var(--fg-dim); }
+  .text-button:hover:not(:disabled) { color: var(--fg); background: var(--bg-hover); }
+  .button:disabled, .text-button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .button:focus-visible, .text-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+  @media (max-width: 520px) {
+    .drawer-shell.embedded { --drawer-gutter-inline: var(--panel-padding); }
+    .footer { align-items: stretch; flex-direction: column-reverse; }
+    .footer-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+    .text-button { align-self: flex-start; }
   }
 </style>

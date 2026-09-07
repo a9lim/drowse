@@ -3,7 +3,7 @@
 import warnings
 from typing import Callable
 
-from saklas.core.events import (
+from drowse.core.events import (
     Event,
     EventBus,
     GenerationFinished,
@@ -13,7 +13,7 @@ from saklas.core.events import (
     SteeringApplied,
     SteeringCleared,
 )
-from saklas.core.triggers import Trigger
+from drowse.core.triggers import Trigger
 
 
 def test_subscribe_and_emit():
@@ -40,6 +40,15 @@ def test_unsubscribe_twice_is_noop():
     unsub = bus.subscribe(lambda e: None)
     unsub()
     unsub()  # must not raise
+
+
+def test_clear_releases_all_subscribers():
+    bus = EventBus()
+    seen = []
+    bus.subscribe(seen.append)
+    bus.clear()
+    bus.emit(SteeringCleared())
+    assert seen == []
 
 
 def test_multiple_subscribers_all_fire():
@@ -153,18 +162,18 @@ def test_loom_mutated_is_in_the_event_union():
     """
     import typing
 
-    from saklas.core.events import LoomMutated
+    from drowse.core.events import LoomMutated
 
     assert LoomMutated in typing.get_args(Event)
-    # ``saklas.core.loom`` re-exports it, so the historical import path and
+    # ``drowse.core.loom`` re-exports it, so the historical import path and
     # the owning module hand back the same class.
-    from saklas.core.loom import LoomMutated as ReExported
+    from drowse.core.loom import LoomMutated as ReExported
 
     assert ReExported is LoomMutated
 
 
 def test_loom_mutated_rides_the_bus_as_an_event():
-    from saklas.core.loom import LoomTree
+    from drowse.core.loom import LoomTree
 
     bus = EventBus()
     seen: list[Event] = []

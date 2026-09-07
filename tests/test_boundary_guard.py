@@ -1,8 +1,8 @@
 """Server ↔ engine boundary guard.
 
-The HTTP server is a frontend over :class:`SaklasSession`; it must talk to the
+The HTTP server is a frontend over :class:`DrowseSession`; it must talk to the
 engine through its public API, never reach past it into a
-``SaklasSession`` private (``session._monitor``, ``session._profiles``, …).
+``DrowseSession`` private (``session._monitor``, ``session._profiles``, …).
 Reaching in couples a frontend to the engine's internal layout, so a private
 rename silently breaks it — exactly the migration this test guards against
 regressing.  Every former reach-in has a public accessor now (``monitor``,
@@ -31,7 +31,7 @@ import tokenize
 from pathlib import Path
 
 # Genuinely-unavoidable session-private reach-ins, each as
-# "<relpath-from-saklas>:<receiver>._<attr>" with a comment justifying it.
+# "<relpath-from-drowse>:<receiver>._<attr>" with a comment justifying it.
 # Do NOT add a site here to silence a fixable reach-in — only one with no
 # public accessor belongs.
 ALLOWLIST: list[str] = [
@@ -43,7 +43,7 @@ ALLOWLIST: list[str] = [
 
 _FRONTEND_DIRS = ("server",)
 
-# Receiver expressions that denote the SaklasSession object, each matched
+# Receiver expressions that denote the DrowseSession object, each matched
 # right before ``._<attr>``.  Two left-boundary regimes, so the dotted and the
 # bare forms can't bleed into each other:
 #   * a *dotted* receiver (``self._session`` / ``self.session`` / any
@@ -62,8 +62,8 @@ _SESSION_PRIVATE_RE = re.compile(
 )
 
 
-def _saklas_root() -> Path:
-    return Path(__file__).resolve().parent.parent / "saklas"
+def _drowse_root() -> Path:
+    return Path(__file__).resolve().parent.parent / "drowse"
 
 
 def _strip_comments_and_strings(source: str) -> str:
@@ -98,7 +98,7 @@ def _strip_comments_and_strings(source: str) -> str:
 
 
 def _iter_frontend_files() -> list[Path]:
-    root = _saklas_root()
+    root = _drowse_root()
     files: list[Path] = []
     for sub in _FRONTEND_DIRS:
         files.extend(sorted((root / sub).rglob("*.py")))
@@ -108,7 +108,7 @@ def _iter_frontend_files() -> list[Path]:
 
 def _find_reach_ins() -> dict[str, list[str]]:
     """Map ``<relpath>:<receiver>._<attr>`` -> list of human-readable hits."""
-    root = _saklas_root()
+    root = _drowse_root()
     hits: dict[str, list[str]] = {}
     for path in _iter_frontend_files():
         rel = path.relative_to(root).as_posix()
@@ -122,7 +122,7 @@ def _find_reach_ins() -> dict[str, list[str]]:
 
 
 def test_no_frontend_session_private_reach_ins() -> None:
-    """No ``saklas/server`` code reaches a SaklasSession private."""
+    """No ``drowse/server`` code reaches a DrowseSession private."""
     hits = _find_reach_ins()
     allow = set(ALLOWLIST)
     offenders = {key: lines for key, lines in hits.items() if key not in allow}
@@ -131,7 +131,7 @@ def test_no_frontend_session_private_reach_ins() -> None:
             line for lines in offenders.values() for line in lines
         )
         raise AssertionError(
-            "frontend code reaches past the SaklasSession public API.\n"
+            "frontend code reaches past the DrowseSession public API.\n"
             "Use the public accessor (monitor / manifolds / profiles / "
             "model_info / generation_state / gen_lock / "
             "joint_logprob_cache / loom_conflict_check / "
@@ -176,7 +176,7 @@ _UNDERSCORE_IMPORT_RE = re.compile(
 
 def _find_promoted_old_name_imports() -> list[str]:
     """Return one diagnostic string per import of a now-promoted name."""
-    root = _saklas_root()
+    root = _drowse_root()
     offenders: list[str] = []
     for sub in _ALL_FRONTEND_DIRS:
         for path in sorted((root / sub).rglob("*.py")):
@@ -217,7 +217,7 @@ def test_promoted_names_not_imported_by_old_underscore_form() -> None:
 # ---------------------------------------------------------------------------
 
 _SERVER_PRIVATE_IMPORT_RE = re.compile(
-    r"(?:^|\s)from\s+saklas\.server[\w.]*\s+import\s+[^#\n]*?(?<![\w.])"
+    r"(?:^|\s)from\s+drowse\.server[\w.]*\s+import\s+[^#\n]*?(?<![\w.])"
     r"(_[A-Za-z]\w*)"
 )
 
@@ -233,7 +233,7 @@ def test_server_modules_do_not_import_each_others_privates() -> None:
     not manifold-specific look like manifold-route internals, and made either
     module's private rename break the other.
     """
-    root = _saklas_root()
+    root = _drowse_root()
     offenders: list[str] = []
     for path in sorted((root / "server").rglob("*.py")):
         rel = path.relative_to(root).as_posix()

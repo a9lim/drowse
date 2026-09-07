@@ -32,20 +32,22 @@
 <div class="inst-head" style:--inst-accent={accent}>
   <span class="context-label">readout</span>
   {#if origin}
-    <span class="kv origin" title="capture or replay">{origin}</span>
+    <span class="kv origin" title={origin === "captured"
+      ? "Recorded when this token was generated. No new model run was needed."
+      : "Computed by running the recorded context through the model again."}>{origin}</span>
   {/if}
   {#if source}
-    <span class="kv source" title={`source · ${source}`}>{source}</span>
+    <span class="kv source">{source}</span>
   {/if}
   {#if layer != null && layer >= 0}
-    <span class="kv" title="resident hook layer">L{layer}</span>
+    <span class="kv" title="The model layer where this SAE measures feature activations.">L{layer}</span>
   {/if}
   {#if steering !== null}
-    <span class="kv steer-chip" title="steered read">
+    <span class="kv steer-chip" title="These steering settings were applied when computing this readout.">
       steered: <code>{steering}</code>
     </span>
   {:else if !steered}
-    <span class="kv" title="unsteered replay">unsteered</span>
+    <span class="kv" title="Computed without steering so you can compare it with the steered readout.">unsteered</span>
   {/if}
   {#if showToggle}
     <button
@@ -53,7 +55,9 @@
       class="steer-toggle"
       class:on={steered}
       aria-pressed={steered}
-      title="replay with recipe steering"
+      title={steered
+        ? "Recompute without the original steering to compare its effect."
+        : "Recompute using the steering saved with this generation."}
       onclick={() => { steered = !steered; }}
     >recipe {steered ? "on" : "off"}</button>
   {/if}
@@ -67,7 +71,7 @@
     gap: var(--space-3);
     flex-wrap: wrap;
     min-height: var(--control-field);
-    padding: var(--space-2) var(--space-3);
+    padding: var(--surface-padding);
     border-radius: var(--radius);
     background: var(--input-well);
     font-size: var(--text-sm);
@@ -79,7 +83,7 @@
     font-weight: var(--weight-bold);
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    margin-right: var(--space-1);
+    margin-inline-end: var(--space-1);
   }
   .kv {
     color: var(--fg-dim);
@@ -94,10 +98,7 @@
     letter-spacing: 0.06em;
   }
   .source {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 30ch;
+    overflow-wrap: anywhere;
   }
   .steer-chip code {
     color: var(--fg-strong);
@@ -106,8 +107,8 @@
   }
   button.steer-toggle {
     min-height: var(--control-target);
-    margin-left: auto;
-    padding: 1px var(--space-3);
+    margin-inline-start: auto;
+    padding: var(--space-xs) var(--space-3);
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
     background: var(--glass);

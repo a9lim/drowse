@@ -1,0 +1,269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:drowse:schema:browser-runtime-lock-v1",
+  "title": "Drowse browser runtime lock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "status",
+    "runtimeAbi",
+    "hookAbi",
+    "exactReadoutAbi",
+    "toolchain",
+    "models"
+  ],
+  "properties": {
+    "$schema": { "const": "./runtime-lock.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "status": { "enum": ["feasibility-required", "verified"] },
+    "runtimeAbi": {
+      "type": "string",
+      "pattern": "^drowse-web-runtime-v[0-9]+$"
+    },
+    "hookAbi": { "const": "post-block-residual-v4" },
+    "exactReadoutAbi": { "const": "exact-readout-v1" },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "forkManifestSha256",
+        "mlcLlmFork",
+        "webLlmFork",
+        "webLlmPackage",
+        "tvmRepository",
+        "tvmCommit",
+        "tvmFfiCommit",
+        "emsdkCommit",
+        "emccVersion",
+        "emccRevision",
+        "emccPlatform",
+        "llvmVersion",
+        "llvmArtifacts",
+        "compilerImage"
+      ],
+      "properties": {
+        "forkManifestSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mlcLlmFork": { "$ref": "#/$defs/repositoryPin" },
+        "webLlmFork": { "$ref": "#/$defs/repositoryPin" },
+        "webLlmPackage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256",
+            "name",
+            "version",
+            "repository",
+            "sourceCommit"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^browser-runtime/vendor/drowse-web-llm-[0-9A-Za-z.-]+\\.tgz$"
+            },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "name": { "const": "@drowse/web-llm" },
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-drowse\\.[0-9]+$"
+            },
+            "repository": {
+              "const": "https://github.com/a9lim/web-llm-polythetic"
+            },
+            "sourceCommit": {
+              "type": ["string", "null"],
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        },
+        "tvmRepository": {
+          "const": "https://github.com/apache/tvm.git"
+        },
+        "tvmCommit": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "tvmFfiCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "emsdkCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "emccVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "emccRevision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "emccPlatform": { "enum": ["linux/amd64"] },
+        "llvmVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "llvmArtifacts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/llvmArtifact" }
+        },
+        "compilerImage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reference", "digest", "recipeSha256"],
+          "properties": {
+            "reference": {
+              "type": ["string", "null"],
+              "pattern": "^[a-z0-9.-]+(?::[1-9][0-9]{0,4})?/[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?$"
+            },
+            "digest": {
+              "type": ["string", "null"],
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "recipeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/modelPin" }
+    }
+  },
+  "$defs": {
+    "llvmArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "archive", "sha256"],
+      "properties": {
+        "platform": { "enum": ["linux/amd64", "linux/arm64"] },
+        "archive": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "repositoryPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit"],
+      "properties": {
+        "repository": { "type": "string", "format": "uri" },
+        "commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "modelPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "architecture",
+        "structuredHookProfile",
+        "thinkingProfile",
+        "sourceRepository",
+        "sourceRevision",
+        "convertedRepository",
+        "convertedRevision",
+        "manifestSha256",
+        "librarySha256",
+        "tokenizerSha256",
+        "chatTemplateSha256",
+        "hiddenSize",
+        "layerMap",
+        "quantization",
+        "contextProfiles"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "architecture": { "enum": ["qwen3", "llama", "gemma3_text", "gpt2", "gpt_neox", "qwen3_5"] },
+        "modelType": { "enum": ["chat", "base"] },
+        "structuredHookProfile": {
+          "enum": ["standard-v1", "standard-v2", "standard-v3"]
+        },
+        "thinkingProfile": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/thinkingProfile" }]
+        },
+        "sourceRepository": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "convertedRepository": { "type": "string", "minLength": 1 },
+        "convertedRevision": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "manifestSha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "librarySha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "tokenizerSha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "chatTemplateSha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hiddenSize": { "type": ["integer", "null"], "minimum": 1 },
+        "layerMap": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "integer", "minimum": 0 },
+              "uniqueItems": true
+            }
+          ]
+        },
+        "quantization": { "enum": ["q4f16_1", "q4f32_1", "q0f32"] },
+        "contextProfiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": [1024, 2048, 4096] },
+          "uniqueItems": true
+        }
+      }
+    },
+    "thinkingProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "startsInThinking",
+        "startTokenIds",
+        "endTokenIds"
+      ],
+      "properties": {
+        "start": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "end": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "startsInThinking": { "type": "boolean" },
+        "startTokenIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "endTokenIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

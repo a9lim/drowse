@@ -7,6 +7,8 @@
 // endpoint, so they build the same hyperparams and validate them the same
 // way.
 
+import { getRuntimeManifoldFitMaxIntrinsicDim } from "../../lib/runtime/registry";
+
 /** Raw (unslugged) identity inputs, owned by the drawer shell. */
 export interface ManifoldIdentity {
   namespace: string;
@@ -46,6 +48,8 @@ export function parseTokens(text: string): string[] {
 
 export type DiscoverFitMode = "pca" | "spectral" | "auto";
 
+export const SERVER_DEFAULT_MAX_DIM = 8;
+
 /** The fit-method choice plus its method-specific hyperparameters. */
 export interface DiscoverTuning {
   fitMode: DiscoverFitMode;
@@ -58,10 +62,14 @@ export interface DiscoverTuning {
 /** ``auto`` is the friendly default — ``select_topology`` picks
  *  flat / curved / periodic per-model, so a newcomer needn't know which
  *  geometry their concepts want.  pca / spectral pin it for power users. */
-export function defaultTuning(): DiscoverTuning {
+export function defaultTuning(
+  maxDimLimit: number | null = getRuntimeManifoldFitMaxIntrinsicDim(),
+): DiscoverTuning {
   return {
     fitMode: "auto",
-    maxDim: 8,
+    maxDim: maxDimLimit === null
+      ? SERVER_DEFAULT_MAX_DIM
+      : Math.min(SERVER_DEFAULT_MAX_DIM, maxDimLimit),
     varThreshold: 0.7,
     kNN: null,
     bandwidth: null,
@@ -86,9 +94,26 @@ export function tuningHyperparams(t: DiscoverTuning): Record<string, number> {
   return hp;
 }
 
-export function tuningMessages(t: DiscoverTuning): string[] {
+export function maxDimensionValidationMessage(
+  value: number | null,
+  maxDimLimit: number | null = getRuntimeManifoldFitMaxIntrinsicDim(),
+): string | null {
+  if (value !== null && value < 1) {
+    return "Use a maximum dimension of at least 1.";
+  }
+  if (value !== null && maxDimLimit !== null && value > maxDimLimit) {
+    return `Hosted browser fitting supports at most ${maxDimLimit} dimensions.`;
+  }
+  return null;
+}
+
+export function tuningMessages(
+  t: DiscoverTuning,
+  maxDimLimit: number | null = getRuntimeManifoldFitMaxIntrinsicDim(),
+): string[] {
   const messages: string[] = [];
-  if (t.maxDim < 1) messages.push("max dim ≥1");
+  const maxDimensionMessage = maxDimensionValidationMessage(t.maxDim, maxDimLimit);
+  if (maxDimensionMessage) messages.push(maxDimensionMessage);
   if (
     (t.fitMode === "pca" || t.fitMode === "auto") &&
     (t.varThreshold <= 0 || t.varThreshold > 1)

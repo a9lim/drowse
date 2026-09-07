@@ -1,26 +1,30 @@
 <script lang="ts">
+  import { slidingSelection } from "../lib/slidingSelection";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // ManifoldPacksDrawer — local manifold catalog and HF search/install.
   //
-  // Two tabs at the top: "Installed" lists what saklas knows locally
-  // (proxied through GET /saklas/v1/manifolds); "Search HF" hits
-  // GET /saklas/v1/manifolds/search with a debounced query and offers
-  // an Install button per row that POSTs the install request and
-  // refreshes the local list on success.
+  // Hosted search accepts only repositories with one immutable, provenance-
+  // bound .drowse; the Python runtime also supports legacy folder repos.
   //
   // The rack browser is the active-session surface (steer, probe, fit,
   // delete); this drawer is the catalog surface (list local, browse HF,
   // install). It is reachable from the command palette.
 
   import { onMount } from "svelte";
-  import { ApiError, apiManifoldInstallStream, apiManifolds } from "../lib/api";
+  import { ApiError, apiManifoldInstallStream, apiManifolds } from "../lib/runtime/services";
+  import { runtimeClient } from "../lib/runtime/client";
+  import { userFacingError } from "../lib/runtime/userFacingError";
+  import { runtimeOperationAvailability } from "../lib/runtime/ui-capabilities";
   import {
     closeDrawer,
+    probeRack,
     steerRack,
     refreshManifoldList,
   } from "../lib/stores.svelte";
   import { pushToast } from "../lib/stores/toasts.svelte";
+  import type { HostedManifoldPackInfo } from "../lib/runtime/contracts";
   import type { ManifoldInfo, RemoteManifoldInfo } from "../lib/types";
+  import { manifoldUsage, manifoldUsageMessage } from "../lib/manifolds/selectors";
 
   type Tab = "installed" | "search";
 
@@ -38,6 +42,18 @@
   // Latest ``progress`` frame of the in-flight install, shown in place of a
   // bare spinner — an HF manifold repo can be hundreds of megabytes.
   let installStage: string | null = $state(null);
+  const browserMode = runtimeClient.mode !== "http";
+  const artifactAvailability = runtimeOperationAvailability("manifold_artifacts");
+  const hfDiscoveryAvailable = !browserMode || artifactAvailability.available;
+  let installedTabButton: HTMLButtonElement | null = $state(null);
+  let searchTabButton: HTMLButtonElement | null = $state(null);
+  let localPacks: HostedManifoldPackInfo[] = $state([]);
+  let localPacksLoading = $state(false);
+  let archiveBusy: string | null = $state(null);
+  let archiveError: string | null = $state(null);
+  let archiveProgress: string | null = $state(null);
+  let pendingReplacement: File | null = $state(null);
+  let confirmLocalDelete: string | null = $state(null);
 
   // Redo searches 300ms after the user stops typing.
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -65,15 +81,19 @@
       searchResults = [];
       if (e instanceof ApiError) {
         if (e.status === 503) {
-          searchError =
-            "huggingface_hub isn't installed on the server. Run `pip install -e \".[serve]\"` and restart.";
+          searchError = browserMode
+            ? "Hugging Face search is unavailable. Check your connection and try again."
+            : "huggingface_hub isn't installed on the server. Run `pip install -e \".[serve]\"` and restart.";
         } else if (e.status === 502) {
-          searchError = `HF transport error: ${e.message}`;
+          searchError = userFacingError(
+            e,
+            "Hugging Face search was interrupted. Check your connection and try again.",
+          );
         } else {
-          searchError = e.message;
+          searchError = userFacingError(e, "Unable to search Hugging Face. Try again.");
         }
       } else {
-        searchError = e instanceof Error ? e.message : String(e);
+        searchError = userFacingError(e, "Unable to search Hugging Face. Try again.");
       }
     } finally {
       searchLoading = false;
@@ -81,45 +101,76 @@
   }
 
   async function installRow(row: RemoteManifoldInfo): Promise<void> {
-    const target = `${row.namespace}/${row.name}`;
-    installing = target;
+    const repository = typeof row.repository === "string"
+      ? row.repository
+      : `${row.namespace}/${row.name}`;
+    const displayTarget = selectorOf(row);
+    const requestTarget = typeof row.revision === "string"
+      ? `${repository}@${row.revision}`
+      : repository;
+    installing = displayTarget;
     installStage = null;
     try {
       // Streaming client, like the fit / generate flows: the terminal
       // ``error`` frame surfaces as a plain Error (no HTTP status), so the
       // ApiError branches below only fire for a pre-stream rejection.
-      await apiManifoldInstallStream({ target }, (ev) => {
+      const installed = await apiManifoldInstallStream({ target: requestTarget }, (ev) => {
         if (ev.event === "progress") {
-          const msg = (ev.data as { message?: string } | null)?.message;
-          if (msg) installStage = msg;
+          const progress = ev.data as {
+            message?: string;
+            phase?: string;
+            downloadedBytes?: number;
+            totalBytes?: number | null;
+          } | null;
+          if (progress?.message) {
+            installStage = progress.message;
+          } else if (progress?.phase === "downloading" && progress.downloadedBytes !== undefined) {
+            const downloaded = `${(progress.downloadedBytes / 1_000_000).toFixed(1)} MB`;
+            const total = progress.totalBytes
+              ? ` of ${(progress.totalBytes / 1_000_000).toFixed(1)} MB`
+              : "";
+            installStage = `Downloading ${downloaded}${total}`;
+          } else if (progress?.phase) {
+            installStage = `${progress.phase[0].toUpperCase()}${progress.phase.slice(1)} archive`;
+          }
         }
       });
       await refreshManifoldList();
       tab = "installed";
-      pushToast(`installed manifold ${target}`, { kind: "info" });
+      pushToast(`installed ${installed.namespace}/${installed.name}`, { kind: "info" });
     } catch (e) {
       if (e instanceof ApiError) {
         if (e.status === 503) {
           pushToast(
-            "huggingface_hub isn't installed on the server",
+            browserMode
+              ? "Hugging Face install is unavailable. Check your connection and try again."
+              : "huggingface_hub isn't installed on the server",
             { kind: "error", ttlMs: null },
           );
         } else if (e.status === 502) {
-          pushToast(`HF transport error: ${e.message}`, {
+          pushToast(userFacingError(
+            e,
+            "The Hugging Face download was interrupted. Check your connection and try again.",
+          ), {
             kind: "error", ttlMs: null,
           });
         } else if (e.status === 409) {
-          pushToast(`${target} is already installed`, {
+          pushToast(`${displayTarget} is already installed`, {
             kind: "error", ttlMs: null,
           });
         } else {
-          pushToast(`install '${target}' failed — ${e.message}`, {
+          pushToast(userFacingError(
+            e,
+            `Unable to install ${displayTarget}. Check the pack and try again.`,
+          ), {
             kind: "error", ttlMs: null,
           });
         }
       } else {
-        const msg = e instanceof Error ? e.message : String(e);
-        pushToast(`install '${target}' failed — ${msg}`, {
+        pushToast(userFacingError(
+          e,
+          `Unable to install ${displayTarget}. Check the pack and try again.`,
+        ), {
           kind: "error", ttlMs: null,
         });
       }
@@ -129,8 +180,127 @@
     }
   }
 
+  async function refreshLocalPacks(): Promise<void> {
+    if (!browserMode || !artifactAvailability.available) return;
+    localPacksLoading = true;
+    try {
+      localPacks = (await apiManifolds.drowseArchiveList()).packs;
+      archiveError = null;
+    } catch (error) {
+      archiveError = describe(error);
+    } finally {
+      localPacksLoading = false;
+    }
+  }
+
+  async function importArchive(file: File, force = false): Promise<void> {
+    if (!file.name.toLowerCase().endsWith(".drowse")) {
+      archiveError = "Choose a .drowse file.";
+      return;
+    }
+    archiveBusy = "import";
+    archiveError = null;
+    archiveProgress = "Inspecting archive";
+    try {
+      const installed = await apiManifolds.drowseArchiveInstall(
+        file,
+        { force },
+        (event) => {
+          if (!event.data || typeof event.data !== "object") return;
+          const progress = event.data as { phase?: string; path?: string | null };
+          archiveProgress = progress.path
+            ? `${progress.phase ?? "Verifying"}: ${progress.path}`
+            : progress.phase ?? "Verifying archive";
+        },
+      );
+      pendingReplacement = null;
+      await refreshLocalPacks();
+      await refreshManifoldList();
+      pushToast(`installed ${installed.namespace}/${installed.name}`, { kind: "info" });
+    } catch (error) {
+      const message = describe(error);
+      archiveError = message;
+      pendingReplacement = /already installed/i.test(message) && !force ? file : null;
+    } finally {
+      archiveBusy = null;
+      archiveProgress = null;
+    }
+  }
+
+  async function exportArchive(pack: HostedManifoldPackInfo): Promise<void> {
+    archiveBusy = `export:${pack.id}`;
+    archiveError = null;
+    try {
+      const archive = await apiManifolds.drowseArchiveExport(pack.id);
+      const url = URL.createObjectURL(archive);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${pack.name}.drowse`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      archiveError = describe(error);
+    } finally {
+      archiveBusy = null;
+    }
+  }
+
+  async function deleteArchive(pack: HostedManifoldPackInfo): Promise<void> {
+    const guard = manifoldUsageMessage(
+      pack,
+      manifoldUsage(pack, steerRack.entries, probeRack.entries),
+    );
+    if (guard) {
+      archiveError = guard;
+      return;
+    }
+    archiveBusy = `delete:${pack.id}`;
+    archiveError = null;
+    try {
+      await apiManifolds.drowseArchiveDelete(pack.id);
+      confirmLocalDelete = null;
+      await refreshLocalPacks();
+      await refreshManifoldList();
+    } catch (error) {
+      archiveError = describe(error);
+    } finally {
+      archiveBusy = null;
+    }
+  }
+
+  function describe(error: unknown): string {
+    return userFacingError(
+      error,
+      "Unable to update local direction packs. Check the file and try again.",
+    );
+  }
+
+  function selectTab(next: Tab, focus = false): void {
+    tab = next;
+    if (!focus) return;
+    queueMicrotask(() => {
+      (next === "installed" ? installedTabButton : searchTabButton)?.focus();
+    });
+  }
+
+  function onTabKeydown(event: KeyboardEvent): void {
+    if (!hfDiscoveryAvailable) return;
+    let next: Tab | null = null;
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      next = tab === "installed" ? "search" : "installed";
+    } else if (event.key === "Home") {
+      next = "installed";
+    } else if (event.key === "End") {
+      next = "search";
+    }
+    if (next === null) return;
+    event.preventDefault();
+    selectTab(next, true);
+  }
+
   // ----- installed-tab state -------------------------------------------
   function selectorOf(row: ManifoldInfo | RemoteManifoldInfo): string {
+    if ("repository" in row && typeof row.repository === "string") return row.repository;
     return `${row.namespace}/${row.name}`;
   }
   function fitBadge(row: ManifoldInfo | RemoteManifoldInfo): string | null {
@@ -142,39 +312,125 @@
   // we landed here without having visited ManifoldDrawer first.
   onMount(() => {
     void refreshManifoldList();
+    void refreshLocalPacks();
   });
 </script>
 
 <div class="drawer-shell">
   <header class="header">
-    <span class="title">packs</span>
+    <h2 class="title">Downloaded response controls</h2>
     <DrawerCloseButton onclick={closeDrawer} />
   </header>
 
-  <div class="tabs" role="tablist">
+  <div class="tabs" role="tablist" aria-label="Manifold pack views" use:slidingSelection>
     <button
+      bind:this={installedTabButton}
+      id="packs-tab-installed"
       type="button"
       role="tab"
       aria-selected={tab === "installed"}
+      aria-controls="packs-panel"
+      tabindex={tab === "installed" ? 0 : -1}
       class:active={tab === "installed"}
-      onclick={() => (tab = "installed")}
-    >installed</button>
-    <button
-      type="button"
-      role="tab"
-      aria-selected={tab === "search"}
-      class:active={tab === "search"}
-      onclick={() => (tab = "search")}
-    >hf</button>
+      onclick={() => selectTab("installed")}
+      onkeydown={onTabKeydown}
+    >Installed</button>
+    {#if hfDiscoveryAvailable}
+      <button
+        bind:this={searchTabButton}
+        id="packs-tab-search"
+        type="button"
+        role="tab"
+        aria-selected={tab === "search"}
+        aria-controls="packs-panel"
+        tabindex={tab === "search" ? 0 : -1}
+        class:active={tab === "search"}
+        onclick={() => selectTab("search")}
+        onkeydown={onTabKeydown}
+      >Hugging Face</button>
+    {/if}
   </div>
 
-  <div class="body">
+  <div
+    class="body"
+    id="packs-panel"
+    role="tabpanel"
+    aria-labelledby={tab === "installed" ? "packs-tab-installed" : "packs-tab-search"}
+  >
     {#if tab === "installed"}
+      {#if browserMode}
+        <section class="archive-tools" aria-labelledby="archive-tools-title">
+          <div class="archive-heading">
+            <div>
+              <h2 id="archive-tools-title">Portable control files</h2>
+              <p>Checksums verify archive integrity, not the publisher’s identity.</p>
+            </div>
+            {#if artifactAvailability.available}
+              <label class="file-action" class:disabled={archiveBusy !== null}>
+                <span>{archiveBusy === "import" ? "verifying…" : "import pack"}</span>
+                <input
+                  type="file"
+                  accept=".drowse,application/zip"
+                  disabled={archiveBusy !== null}
+                  onchange={(event) => {
+                    const input = event.currentTarget;
+                    const file = input.files?.[0];
+                    if (file) void importArchive(file);
+                    input.value = "";
+                  }}
+                />
+              </label>
+            {/if}
+          </div>
+          {#if !artifactAvailability.available}
+            <p class="muted">{artifactAvailability.reason}</p>
+          {:else if archiveProgress}
+            <p class="install-stage" aria-live="polite">{archiveProgress}</p>
+          {/if}
+          {#if artifactAvailability.available && archiveError}<p class="error" role="alert">{archiveError}</p>{/if}
+          {#if artifactAvailability.available && pendingReplacement}
+            <div class="replace-warning" role="alert">
+              <span>This replaces the installed pack and its included templates. The current files stay in place until the replacement passes verification.</span>
+              <button type="button" disabled={archiveBusy !== null} onclick={() => void importArchive(pendingReplacement!, true)}>replace installed pack</button>
+              <button type="button" disabled={archiveBusy !== null} onclick={() => (pendingReplacement = null)}>keep current pack</button>
+            </div>
+          {/if}
+          {#if artifactAvailability.available && localPacksLoading}
+            <p class="muted">loading portable packs…</p>
+          {:else if artifactAvailability.available && localPacks.length > 0}
+            <ul class="archive-list" role="list">
+              {#each localPacks as pack (pack.id)}
+                <li>
+                  <div>
+                    <strong>{pack.namespace}/{pack.name}</strong>
+                    <span>{pack.source.repository ? `${pack.source.repository}@${pack.source.revision}` : pack.source.uri}</span>
+                    <span>Publisher unverified</span>
+                  </div>
+                  <div class="actions">
+                    <button type="button" disabled={archiveBusy !== null} onclick={() => void exportArchive(pack)}>export</button>
+                    {#if confirmLocalDelete === pack.id}
+                      <span>Delete {pack.namespace}/{pack.name} from this device? Export a backup first if you want to keep it.</span>
+                      <button type="button" class="danger" disabled={archiveBusy !== null} onclick={() => void deleteArchive(pack)}>Delete pack</button>
+                      <button type="button" disabled={archiveBusy !== null} onclick={() => (confirmLocalDelete = null)}>cancel</button>
+                    {:else}
+                      <button type="button" disabled={archiveBusy !== null} onclick={() => (confirmLocalDelete = pack.id)}>delete</button>
+                    {/if}
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+      {/if}
       {#if steerRack.loading && steerRack.catalog.length === 0}
         <p class="muted">loading manifolds…</p>
       {:else if steerRack.catalog.length === 0}
         <p class="muted">
-          none installed
+          {artifactAvailability.available
+            ? browserMode
+              ? "No manifolds installed. Import a .drowse or search Hugging Face."
+              : "No manifolds installed. Search Hugging Face to find compatible sources."
+            : "No manifolds installed."}
         </p>
       {:else}
         <ul class="rows" role="list">
@@ -207,22 +463,20 @@
           <span class="vh">search query</span>
           <input
             type="search"
-            placeholder="search HF…"
-            aria-label="Search HF for saklas-manifold repos"
+            placeholder="Search Hugging Face…"
+            aria-label="Search HF for drowse-manifold repos"
             bind:value={query}
             oninput={scheduleSearch}
           />
         </label>
         {#if !query.trim()}
-          <p class="muted">
-            <code>saklas-manifold</code> repos
-          </p>
+          <p class="muted">Only public, browser-compatible Drowse packs appear here.</p>
         {:else if searchLoading}
           <p class="muted">searching…</p>
         {:else if searchError}
           <p class="error" role="alert">{searchError}</p>
         {:else if searchResults.length === 0}
-          <p class="muted">no matches</p>
+          <p class="muted">No Hugging Face packs match “{query.trim()}”. Try a different search.</p>
         {:else}
           <ul class="rows" role="list">
             {#each searchResults as row (selectorOf(row))}
@@ -281,7 +535,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     color: var(--accent);
@@ -296,6 +550,7 @@
     padding: 0 var(--space-5);
   }
   .tabs button {
+    min-height: 44px;
     background: transparent;
     border: 0;
     border-bottom: 2px solid transparent;
@@ -313,11 +568,15 @@
     color: var(--accent);
     border-bottom-color: var(--accent);
   }
+  .tabs button:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
 
   .body {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -344,6 +603,7 @@
     border: 0;
   }
   .search input[type="search"] {
+    min-height: 44px;
     background: var(--input-well);
     color: var(--fg);
     border: 1px solid transparent;
@@ -364,16 +624,119 @@
     margin: 0;
     line-height: 1.4;
   }
-  .muted code {
-    font-family: var(--font-mono);
-    color: var(--fg-strong);
-    font-size: var(--text-sm);
-  }
   .error {
     margin: 0;
     color: var(--accent-red);
     font-size: var(--text-sm);
     word-break: break-word;
+  }
+
+  .archive-tools {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--surface-padding);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--radius-lg);
+    background: var(--surface-sheen), var(--glass);
+  }
+  .archive-heading,
+  .archive-list li,
+  .replace-warning {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+  .archive-heading h2 {
+    margin: 0;
+    color: var(--fg-strong);
+    font-size: var(--text-sm);
+  }
+  .archive-heading p {
+    margin: var(--space-1) 0 0;
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+  }
+  .file-action,
+  .archive-tools button {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    color: var(--pillar-manifold);
+    background: var(--bg-elev);
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+  .file-action:hover:not(.disabled),
+  .archive-tools button:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--pillar-manifold) 12%, var(--bg-elev));
+  }
+  .file-action.disabled,
+  .archive-tools button:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+  }
+  .file-action input {
+    position: absolute;
+    inset: -1px;
+    cursor: pointer;
+    opacity: 0;
+  }
+  .file-action { position: relative; }
+  .file-action.disabled input { cursor: not-allowed; }
+  .file-action:focus-within,
+  .archive-tools button:focus-visible {
+    outline: 2px solid var(--pillar-manifold);
+    outline-offset: 2px;
+  }
+  .archive-list {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .archive-list li {
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--glass-line);
+  }
+  .archive-list li > div:first-child {
+    display: grid;
+    min-width: 0;
+    gap: var(--space-1);
+  }
+  .archive-list strong,
+  .archive-list span {
+    overflow-wrap: anywhere;
+  }
+  .archive-list span {
+    color: var(--fg-muted);
+    font-size: var(--text-2xs);
+  }
+  .archive-tools button.danger {
+    color: var(--accent-red);
+  }
+  .replace-warning {
+    padding: var(--surface-padding);
+    border-radius: var(--radius);
+    color: var(--warning-ink);
+    background: var(--warning-bg);
+    font-size: var(--text-xs);
+  }
+
+  @media (max-width: 38rem) {
+    .archive-heading,
+    .archive-list li,
+    .replace-warning {
+      align-items: stretch;
+      flex-direction: column;
+    }
   }
 
   .rows {
@@ -389,10 +752,10 @@
     grid-template-columns: 1fr auto;
     align-items: center;
     gap: var(--space-3);
-    background: var(--bg-deep);
+    background: var(--surface-sheen), var(--bg-deep);
     border: 1px solid transparent;
     border-radius: var(--radius);
-    padding: var(--space-3) var(--space-4);
+    padding: var(--surface-padding);
     transition: background var(--dur) var(--ease-out);
   }
   .row:hover { background: color-mix(in srgb, var(--pillar-manifold) 8%, var(--bg-deep)); }
@@ -416,7 +779,7 @@
   }
   .fit-badge {
     display: inline-block;
-    margin-left: var(--space-2);
+    margin-inline-start: var(--space-2);
     padding: 0 var(--space-2);
     border-radius: var(--radius);
     text-transform: uppercase;
@@ -432,14 +795,14 @@
   }
   .fit-tag {
     color: var(--accent-green);
-    margin-left: var(--space-2);
+    margin-inline-start: var(--space-2);
     font-size: var(--text-2xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
   .stale {
     color: var(--accent-yellow);
-    margin-left: var(--space-2);
+    margin-inline-start: var(--space-2);
   }
   .hf-fit-count {
     color: var(--fg-muted);
@@ -462,6 +825,7 @@
     gap: var(--space-2);
   }
   .act {
+    min-height: 44px;
     background: var(--glass);
     color: var(--pillar-manifold);
     border: 1px solid transparent;

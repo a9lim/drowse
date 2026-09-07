@@ -22,14 +22,15 @@ export function pushToast(
   } = {},
 ): number {
   const id = ++_toastSeq;
+  const kind = opts.kind ?? "info";
   toasts.entries = [
     ...toasts.entries,
     {
       id,
-      kind: opts.kind ?? "info",
+      kind,
       message,
       detail: opts.detail ?? null,
-      ttlMs: opts.ttlMs === undefined ? 6000 : opts.ttlMs,
+      ttlMs: opts.ttlMs === undefined ? (kind === "error" ? null : 6000) : opts.ttlMs,
     },
   ];
   return id;

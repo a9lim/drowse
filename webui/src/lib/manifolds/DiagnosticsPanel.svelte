@@ -6,6 +6,8 @@
   // gracefully on authored fits / fits with no diagnostics).
 
   import type { ManifoldInfo } from "../types";
+  import { chartValue } from "../charts/chartValues";
+  import { quotientDescription } from "./surfaceGeometry";
   import {
     classifyDiagnostics,
     diagnosticsSummary,
@@ -28,6 +30,12 @@
   );
 </script>
 
+{#if quotientDescription(manifold.domain)}
+  <div class="diag">
+    <p class="summary">{quotientDescription(manifold.domain)}</p>
+    <p class="muted">Authored geometry · not an automatic topology detection</p>
+  </div>
+{/if}
 {#if diag !== null}
   <div class="diag" data-kind={diag.kind}>
     <p class="summary">{diagnosticsSummary(diag)}</p>
@@ -36,7 +44,7 @@
         <li
           class="bar"
           class:picked={bar.picked}
-          title={`#${bar.index} · ${bar.value.toPrecision(4)}${bar.picked ? " (kept)" : ""}`}
+          title={`#${bar.index} · ${diag.kind === "pca" ? `${chartValue(bar.value, true)} variance` : `eigenvalue ${chartValue(bar.value)}`} · ${chartValue(bar.frac, true)} of largest component${bar.picked ? " (kept)" : ""}`}
         >
           <span class="bar-fill" style="height: {Math.max(2, bar.frac * 100)}%"
           ></span>
@@ -68,8 +76,8 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    padding: var(--space-3);
-    background: var(--bg-deep);
+    padding: var(--surface-padding);
+    background: var(--surface-sheen), var(--bg-deep);
     border: 1px solid var(--glass-line);
     border-radius: var(--radius);
   }
@@ -85,8 +93,9 @@
     padding: 0;
     display: flex;
     align-items: flex-end;
-    gap: 2px;
+    gap: var(--data-mark-gap);
     height: 72px;
+    margin-bottom: var(--space-5);
     border-bottom: 1px solid var(--glass-line);
   }
   .bar {
@@ -102,7 +111,7 @@
   .bar-fill {
     width: 100%;
     background: var(--fg-muted);
-    border-radius: 1px 1px 0 0;
+    border-radius: var(--data-mark-radius) var(--data-mark-radius) 0 0;
     transition: background var(--dur) var(--ease-out);
   }
   .bar.picked .bar-fill {

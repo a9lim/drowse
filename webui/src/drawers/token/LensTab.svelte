@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { chartValue } from "../../lib/charts/chartValues";
+  import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // J-lens tab — pinned ``jlens/<word>`` probe readings (when captured
   // live), the layer-aggregated chip row, then the all-fitted-layer
   // readout matrix: each row ranks softmax(W_U · norm(J_l h)) at the
@@ -20,6 +22,7 @@
   import InstrumentHeader from "./InstrumentHeader.svelte";
   import DetailSection from "./DetailSection.svelte";
   import DetailCardHeader from "./DetailCardHeader.svelte";
+  import JLensMissingState from "@runtime-jlens-missing";
 
   let {
     readout,
@@ -28,6 +31,7 @@
     hasReplayContext,
     pinned,
     modelId,
+    replayAvailable,
   }: {
     readout: ReplayReadout<LensTokenReadoutJSON>;
     steered: boolean;
@@ -37,10 +41,11 @@
     pinned: Record<string, ScalarReadingJSON> | null;
     /** For the unfitted-state CLI hint. */
     modelId: string | null;
+    replayAvailable: boolean;
   } = $props();
 
   const showToggle = $derived(
-    (readout.data?.steering ?? null) !== null || !steered,
+    replayAvailable && ((readout.data?.steering ?? null) !== null || !steered),
   );
 
   const columnCount = $derived(
@@ -48,6 +53,22 @@
   );
 
   const layerCount = $derived(readout.data?.layers.length ?? 0);
+
+  const determinateProgress = $derived(
+    readout.progress !== null && readout.progress.progress > 0,
+  );
+
+  const progressPercent = $derived(
+    Math.round((readout.progress?.progress ?? 0) * 100),
+  );
+
+  const progressTitle = $derived(
+    readout.progress?.phase === "readout"
+      ? "Reading the J-lens"
+      : readout.progress?.phase === "queued"
+        ? "Waiting for the model"
+        : "Preparing this token",
+  );
 
   function cellStyle(logprob: number): string {
     const p = Math.min(1, Math.exp(logprob));
@@ -58,7 +79,7 @@
   function cellTitle(layer: number, t: { token: string; logprob: number }): string {
     const p = Math.exp(t.logprob);
     const pTxt = p >= 0.001 ? p.toFixed(4) : p.toExponential(2);
-    return `L${layer} · ${JSON.stringify(t.token)} · p=${pTxt} · logprob=${t.logprob.toFixed(3)}`;
+    return `L${layer} · ${JSON.stringify(t.token)} · ${chartValue(p, true)} · p=${pTxt} · logprob=${t.logprob.toFixed(3)}`;
   }
 
   function cellText(t: { token: string }): string {
@@ -78,15 +99,14 @@
 
   function aggregateCells(chip: LensAggregateTokenJSON): AggregateCell[] {
     return (readout.data?.layers ?? []).map((row) => {
-      const hit = row.tokens.find((token) => token.token === chip.token)
-        ?? row.tokens.find((token) => token.token.trim() === chip.token.trim());
+      const hit = row.tokens.find((token) => token.token === chip.token);
       const value = hit ? Math.exp(hit.logprob) : null;
       return {
         layer: row.layer,
         value,
         title: value == null
           ? `L${row.layer} · below top-${columnCount}`
-          : `L${row.layer} · p ${value.toPrecision(3)}`,
+          : `L${row.layer} · ${chartValue(value, true)} · p ${value.toPrecision(3)}`,
       };
     });
   }
@@ -99,10 +119,43 @@
     const p = Math.exp(logprob);
     return p >= 0.001 ? p.toFixed(3) : p.toExponential(1);
   }
+
+  function handVerticalWheelToDrawer(event: WheelEvent): void {
+    if (event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    const drawerBody = (event.currentTarget as HTMLElement).closest<HTMLElement>("[data-token-details-scroll]");
+    if (!drawerBody) return;
+    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? 16
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? drawerBody.clientHeight
+        : 1;
+    const before = drawerBody.scrollTop;
+    drawerBody.scrollTop += event.deltaY * unit;
+    if (drawerBody.scrollTop !== before) event.preventDefault();
+  }
 </script>
 
 {#if readout.loading}
-  <EmptyState title="computing…" />
+  <div class="readout-progress loading-pulse" role="status" aria-live="polite">
+    <div class="progress-heading">
+      <span>{progressTitle}</span>
+      <code>{#if determinateProgress}<RollingNumber value={progressPercent} />%{:else}starting{/if}</code>
+    </div>
+    <div
+      class="progress-track"
+      class:indeterminate={!determinateProgress}
+      role="progressbar"
+      aria-label="J-lens readout progress"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow={determinateProgress ? progressPercent : undefined}
+      aria-valuetext={determinateProgress ? `${progressPercent}%` : "Starting"}
+    >
+      <span style={determinateProgress ? `width: ${progressPercent}%` : undefined}></span>
+    </div>
+    <p>{readout.progress?.message ?? "Waiting for the model"}</p>
+    <p class="progress-note">You can inspect another token while this finishes. This result will be kept.</p>
+  </div>
 {:else if readout.error}
   <EmptyState title={`readout: ${readout.error}`} />
 {:else if readout.data}
@@ -114,14 +167,13 @@
     {showToggle}
     accent="var(--pillar-lens)"
   />
-  {#if pinned && Object.keys(pinned).length > 0}
+  {#if readout.origin === "captured" && pinned && Object.keys(pinned).length > 0}
     <PinnedReadings readings={pinned} accent="--pillar-lens" shape="square" />
   {/if}
   {#if (readout.data.aggregate ?? []).length > 0}
     <DetailSection
       title="AGGREGATE WORKSPACE"
       count={`${readout.data.aggregate?.length ?? 0} tokens`}
-      description="The main J-lens card grammar, expanded with every fitted layer retained on the token."
       accent="var(--pillar-lens)"
     >
       <div class="aggregate-grid" role="list" aria-label="Aggregate lens tokens">
@@ -132,14 +184,14 @@
             <RackCard
               accent="--pillar-lens"
               disabled={false}
-              active={chip.token.trim() === readout.data.token_text.trim()}
+              active={chip.token === readout.data.token_text}
             >
               {#snippet statline()}
                 <DetailCardHeader
                   primary={displayToken(chip.token)}
                   meta={`@${chip.com.toFixed(2)} ±${chip.spread.toFixed(2)}`}
-                  metaTitle="depth center ± spread"
-                  badge={chip.token.trim() === readout.data?.token_text.trim() ? "generated" : null}
+                  metaTitle="Where this word’s probability is concentrated across layers: 0 is the first layer, 1 is the last. The ± value shows how widely it is spread."
+                  badge={chip.token === readout.data?.token_text ? "generated" : null}
                 >
                   {#snippet lead()}<span>#{i + 1}</span>{/snippet}
                 </DetailCardHeader>
@@ -148,7 +200,7 @@
                 <ProbeReadingRow ariaLabel={`Strength ${chip.strength.toFixed(3)}`}>
                   {#snippet left()}<span class="row-label">strength</span>{/snippet}
                   {#snippet bar()}
-                    <Bar value={chip.strength} max={1} color="var(--pillar-lens)" />
+                    <Bar percentage value={chip.strength} max={1} color="var(--pillar-lens)" />
                   {/snippet}
                   {#snippet middle()}<span class="row-context">{hitCount}/{layerCount} layers</span>{/snippet}
                   {#snippet right()}<span class="row-value">{chip.strength.toFixed(3)}</span>{/snippet}
@@ -169,10 +221,9 @@
   <DetailSection
     title="LAYER × VOCABULARY"
     count={`${readout.data.layers.length} layers × ${columnCount} ranks`}
-    description="The complete matrix is preserved: token text and probability are visible in every retained cell, with the generated token outlined."
     accent="var(--pillar-lens)"
   >
-    <div class="grid-scroll">
+    <div class="grid-scroll" onwheel={handVerticalWheelToDrawer}>
       <table class="lens-table">
         <thead>
           <tr>
@@ -185,7 +236,7 @@
         <tbody>
           {#each readout.data.layers as row (row.layer)}
             <tr>
-              <th class="row-label" title={`Layer ${row.layer}`}>
+              <th class="row-label">
                 L{row.layer}
               </th>
               {#each row.tokens as cell (cell.id)}
@@ -206,9 +257,7 @@
     </div>
   </DetailSection>
 {:else if !jlensFitted}
-  <EmptyState title="no J-LENS fit">
-    <code>saklas lens fit {modelId ?? "<model>"}</code>
-  </EmptyState>
+  <JLensMissingState {modelId} />
 {:else if !hasReplayContext}
   <EmptyState
     title="no raw decode record"
@@ -219,6 +268,67 @@
 {/if}
 
 <style>
+  .readout-progress {
+    max-width: 62ch;
+    padding: var(--surface-padding);
+    border-radius: var(--radius);
+  }
+  .progress-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-4);
+    color: var(--fg-dim);
+    font-family: var(--font-ui);
+    font-weight: var(--weight-medium);
+  }
+  .progress-heading code {
+    color: var(--pillar-lens);
+    font-family: var(--font-mono);
+    font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
+  }
+  .progress-track {
+    height: 6px;
+    margin-top: var(--space-3);
+    overflow: hidden;
+    border-radius: var(--radius-pill);
+    background: var(--bg);
+    box-shadow: var(--shadow-rack);
+  }
+  .progress-track span {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    border-radius: inherit;
+    background: var(--pillar-lens);
+    transition: width var(--dur) linear;
+  }
+  .progress-track.indeterminate span {
+    width: 38%;
+    min-width: 72px;
+    animation: readout-wait 1.15s linear infinite;
+  }
+  @keyframes readout-wait {
+    from { transform: translateX(-110%); }
+    to { transform: translateX(290%); }
+  }
+  .readout-progress p {
+    margin: var(--space-2) 0 0;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+  .readout-progress .progress-note {
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .progress-track.indeterminate span {
+      animation: none;
+      transform: none;
+    }
+  }
   .aggregate-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -234,18 +344,21 @@
   }
   .row-label,
   .row-value {
-    text-align: right;
+    text-align: end;
   }
   .row-value {
     color: var(--pillar-lens);
   }
 
   .grid-scroll {
+    overflow-x: auto;
     border-radius: var(--radius-lg);
     background: var(--bg);
     box-shadow: var(--shadow-rack);
   }
   .lens-table {
+    width: max-content;
+    min-width: 100%;
     border-collapse: separate;
     border-spacing: 0;
     font-variant-numeric: tabular-nums;
@@ -254,8 +367,11 @@
   .lens-table th,
   .lens-table td {
     padding: var(--space-2) var(--space-3);
-    text-align: left;
+    text-align: start;
     background: var(--bg);
+  }
+  .lens-table tbody tr:last-child > :last-child {
+    border-end-end-radius: var(--radius-lg);
   }
   .lens-table thead th {
     position: sticky;
@@ -271,15 +387,15 @@
   }
   .lens-table .corner {
     position: sticky;
-    left: 0;
+    inset-inline-start: 0;
     z-index: 3;
     box-shadow: var(--shadow-sticky), var(--shadow-sticky-inline);
   }
   .lens-table .row-label {
     position: sticky;
-    left: 0;
+    inset-inline-start: 0;
     z-index: 1;
-    text-align: right;
+    text-align: end;
     color: var(--fg-dim);
     font-family: var(--font-mono);
     font-weight: var(--weight-normal);
@@ -304,12 +420,17 @@
   }
   .cell-prob {
     margin-top: var(--space-1);
-    color: var(--fg-muted);
+    color: var(--fg-strong);
     font-size: var(--text-2xs);
   }
   .lens-cell.hit {
-    outline: 2px solid var(--pillar-lens);
-    outline-offset: -2px;
+    box-shadow: inset 0 0 0 2px var(--pillar-lens);
+  }
+  @media (forced-colors: active) {
+    .lens-cell.hit {
+      outline: 2px solid Highlight;
+      outline-offset: -2px;
+    }
   }
   @media (max-width: 760px) {
     .aggregate-grid {

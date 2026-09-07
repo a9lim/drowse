@@ -1,0 +1,100 @@
+{
+  "inputIds": [
+    504,
+    2240,
+    4971,
+    10573,
+    897,
+    5738,
+    284,
+    7803,
+    20151,
+    1012,
+    2905,
+    28,
+    6811,
+    4658,
+    28,
+    284,
+    1692,
+    2821,
+    1092,
+    6139,
+    1478,
+    738,
+    260,
+    5949,
+    30
+  ],
+  "positions": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24
+  ],
+  "greedyPrompt": "The sky looks blue because",
+  "greedyMaxTokens": 4,
+  "namedRoleCheck": {
+    "row": {
+      "system": "be brief.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello",
+          "roleName": "captain"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "roleName": "distant_voice"
+        }
+      ]
+    },
+    "expectedInputIds": [
+      1,
+      9690,
+      198,
+      1425,
+      5453,
+      30,
+      2,
+      198,
+      1,
+      36014,
+      402,
+      198,
+      28120,
+      2,
+      198,
+      1,
+      8184,
+      403,
+      5274,
+      198,
+      2,
+      198
+    ],
+    "expectedPosition": 19
+  }
+}

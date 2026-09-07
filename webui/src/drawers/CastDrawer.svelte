@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Cast manager (phase 3 of the cast model) — the tree's roster of
   // named labels, each with a standing steering recipe.  A member's
@@ -13,7 +14,8 @@
   // canonical user/assistant roles; a turn labeled with a member's slug
   // generates under its recipe.
 
-  import { apiTree } from "../lib/api";
+  import { apiTree } from "../lib/runtime/services";
+  import { userFacingError } from "../lib/runtime/userFacingError";
   import {
     castState,
     pushToast,
@@ -21,30 +23,23 @@
     sessionState,
   } from "../lib/stores.svelte";
   import { closeDrawer } from "../lib/stores/drawers.svelte";
-  import Combobox from "../lib/Combobox.svelte";
+  import InfoTip from "../lib/ui/InfoTip.svelte";
+  import type { CastMemberJSON } from "../lib/types";
 
   let _drawerProps: { params?: unknown } = $props();
   $effect(() => {
     void _drawerProps.params;
   });
 
-  const SLUG_RE = /^[a-z][a-z0-9._-]*$/;
-  const ROLE_SLUG_RE = /^[a-z0-9._-]+$/;
-
-  let label = $state("");
   let steering = $state("");
   let notes = $state("");
-  let editing = $state<string | null>(null);
+  let editingLabel = $state<string | null>(null);
   let editingKey = $state<string | null>(null);
   let busy = $state(false);
   let err = $state<string | null>(null);
-
-  const labelValid = $derived(
-    label.trim() === "" || SLUG_RE.test(label.trim()),
-  );
-  const canSave = $derived(
-    !busy && label.trim() !== "" && SLUG_RE.test(label.trim()),
-  );
+  let lastSavedKey = $state<string | null>(null);
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let saveRequest: Promise<boolean> | null = null;
 
   const defaultUserRole = $derived(
     sessionState.info?.default_user_role ?? "user",
@@ -52,16 +47,19 @@
   const defaultAssistantRole = $derived(
     sessionState.info?.default_assistant_role ?? "assistant",
   );
-  const standardRoles = $derived(
-    [...new Set([defaultUserRole, defaultAssistantRole])],
-  );
-  // The server roster is keyed by Saklas's structural roles. Present those
+  const activeRoles = $derived.by(() => [...new Set([
+    defaultUserRole,
+    defaultAssistantRole,
+    samplingState.user_role.trim(),
+    samplingState.assistant_role.trim(),
+  ].filter(Boolean))]);
+  // The server roster is keyed by Drowse's structural roles. Present those
   // two entries through the model's actual chat-template vocabulary, while
   // retaining the hidden key so structural cast recipes still round-trip.
   const roster = $derived.by(() => {
     const byLabel = new Map<
       string,
-      { key: string; label: string; member: (typeof castState.roster)[string] }
+      { key: string; label: string; member: CastMemberJSON | null }
     >();
     for (const [key, member] of Object.entries(castState.roster)) {
       const displayLabel =
@@ -76,222 +74,250 @@
         byLabel.set(displayLabel, { key, label: displayLabel, member });
       }
     }
-    const standard = standardRoles
+    for (const role of activeRoles) {
+      if (byLabel.has(role)) continue;
+      const key = role === defaultUserRole
+        ? "user"
+        : role === defaultAssistantRole
+          ? "assistant"
+          : role;
+      byLabel.set(role, {
+        key,
+        label: role,
+        member: castState.roster[key] ?? null,
+      });
+    }
+    const standard = activeRoles
       .map((role) => byLabel.get(role))
       .filter((row) => row !== undefined);
     const custom = [...byLabel.values()]
-      .filter((row) => !standardRoles.includes(row.label))
+      .filter((row) => !activeRoles.includes(row.label))
       .sort((a, b) => a.label.localeCompare(b.label));
     return [...standard, ...custom];
   });
-  const roleOptions = $derived(
-    [
-      ...standardRoles,
-      ...roster
-        .map((row) => row.label)
-        .filter((role) => !standardRoles.includes(role)),
-    ].map((value) => ({ value, label: value })),
+
+  const selectedMember = $derived(
+    editingKey ? (castState.roster[editingKey] ?? null) : null,
   );
-  const userRoleSupported = $derived(
-    sessionState.info?.is_base_model === false
-      && sessionState.info?.user_role_supported === true,
+  const dirty = $derived(
+    editingKey !== null && (
+      steering.trim() !== (selectedMember?.recipe?.steering ?? "")
+      || notes.trim() !== (selectedMember?.notes ?? "")
+    ),
   );
-  const assistantRoleSupported = $derived(
-    sessionState.info?.is_base_model === false
-      && sessionState.info?.role_substitution_supported === true,
-  );
-  const userRoleValid = $derived(
-    samplingState.user_role.trim() === ""
-      || ROLE_SLUG_RE.test(samplingState.user_role.trim()),
-  );
-  const assistantRoleValid = $derived(
-    samplingState.assistant_role.trim() === ""
-      || ROLE_SLUG_RE.test(samplingState.assistant_role.trim()),
+  const saveStatus = $derived(
+    busy
+      ? "Saving…"
+      : dirty
+        ? "Changes save automatically"
+        : lastSavedKey === editingKey
+          ? "Saved"
+          : "Changes save automatically",
   );
 
-  function loadMember(slug: string, key: string): void {
-    const m = castState.roster[key];
-    if (!m) return;
-    editing = slug;
-    editingKey = key;
-    label = slug;
-    steering = m.recipe?.steering ?? "";
-    notes = m.notes ?? "";
+  function loadMember(row: (typeof roster)[number]): void {
+    editingLabel = row.label;
+    editingKey = row.key;
+    steering = row.member?.recipe?.steering ?? "";
+    notes = row.member?.notes ?? "";
     err = null;
   }
 
-  function clearForm(): void {
-    editing = null;
-    editingKey = null;
-    label = "";
-    steering = "";
-    notes = "";
-    err = null;
+  function cancelScheduledSave(): void {
+    if (saveTimer === null) return;
+    clearTimeout(saveTimer);
+    saveTimer = null;
   }
 
-  async function save(): Promise<void> {
-    const slug = label.trim();
-    if (!canSave) return;
-    const target = editing !== null && slug === editing
-      ? (editingKey ?? slug)
-      : slug;
+  function scheduleSave(): void {
+    err = null;
+    lastSavedKey = null;
+    cancelScheduledSave();
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      void saveCurrent();
+    }, 450);
+  }
+
+  $effect(() => {
+    const rows = roster;
+    if (editingKey !== null && rows.some((row) => row.key === editingKey)) return;
+    if (rows[0]) loadMember(rows[0]);
+  });
+
+  async function saveCurrent(): Promise<boolean> {
+    cancelScheduledSave();
+    if (saveRequest) {
+      const saved = await saveRequest;
+      if (!saved) return false;
+    }
+    const target = editingKey;
+    if (!target || !dirty) return true;
+    const targetLabel = editingLabel;
+    const nextSteering = steering.trim();
+    const nextNotes = notes.trim();
     busy = true;
     err = null;
-    try {
-      const r = await apiTree.castPut(target, {
-        steering: steering.trim() === "" ? null : steering.trim(),
-        notes: notes.trim(),
-      });
-      // Optimistic merge — the ``op="cast"`` frame confirms shortly.
-      castState.roster = { ...castState.roster, [target]: r.member };
-      clearForm();
-    } catch (e) {
-      err = e instanceof Error ? e.message : String(e);
-    } finally {
-      busy = false;
+    const request = (async (): Promise<boolean> => {
+      try {
+        const r = await apiTree.castPut(target, {
+          steering: nextSteering === "" ? null : nextSteering,
+          notes: nextNotes,
+        });
+        // Optimistic merge — the ``op="cast"`` frame confirms shortly.
+        castState.roster = { ...castState.roster, [target]: r.member };
+        if (editingKey === target) lastSavedKey = target;
+        return true;
+      } catch (e) {
+        err = userFacingError(e, `Unable to save ${targetLabel ?? "this role"}. Check the fields and try again.`);
+        return false;
+      } finally {
+        busy = false;
+      }
+    })();
+    saveRequest = request;
+    const saved = await request;
+    if (saveRequest === request) saveRequest = null;
+    if (saved && editingKey === target && dirty) {
+      return saveCurrent();
     }
+    return saved;
+  }
+
+  async function selectMember(row: (typeof roster)[number]): Promise<void> {
+    if (row.key === editingKey) return;
+    if (!(await saveCurrent())) return;
+    loadMember(row);
+  }
+
+  async function closeWithSave(): Promise<void> {
+    if (await saveCurrent()) closeDrawer();
   }
 
   async function remove(slug: string): Promise<void> {
     try {
       await apiTree.castDelete(slug);
-      if (editingKey === slug) clearForm();
+      const nextRoster = { ...castState.roster };
+      delete nextRoster[slug];
+      castState.roster = nextRoster;
+      if (editingKey === slug) {
+        steering = "";
+        notes = "";
+        lastSavedKey = null;
+      }
     } catch (e) {
-      pushToast(
-        `remove cast member: ${e instanceof Error ? e.message : String(e)}`,
-        { kind: "error" },
-      );
+      pushToast(userFacingError(e, "Unable to remove this speaker. Try again."), {
+        kind: "error",
+      });
     }
   }
+
+  async function clearSelectedSettings(): Promise<void> {
+    cancelScheduledSave();
+    if (saveRequest && !(await saveRequest)) return;
+    if (editingKey) await remove(editingKey);
+  }
+
+  onDestroy(() => {
+    cancelScheduledSave();
+    if (dirty) void saveCurrent();
+  });
 </script>
 
-<section class="drawer-shell" aria-label="Cast manager drawer">
+<section class="drawer-shell" aria-label="Role settings drawer">
   <header class="header">
-    <span class="title">cast</span>
-    <DrawerCloseButton onclick={closeDrawer} />
+    <div>
+      <h2 class="title">Role settings</h2>
+    </div>
+    <DrawerCloseButton onclick={() => void closeWithSave()} />
   </header>
 
   <div class="body">
-    <div class="role-map" aria-label="Active role labels">
-      <span class="form-title">active roles</span>
-      <div class="role-grid">
-        <label class="field">
-          <span class="label">{defaultUserRole} role</span>
-          <Combobox
-            bind:value={samplingState.user_role}
-            options={roleOptions}
-            disabled={!userRoleSupported}
-            invalid={!userRoleValid}
-            placeholder={defaultUserRole}
-            spellcheck={false}
-            ariaLabel={`${defaultUserRole} role label`}
-          />
-        </label>
-        <label class="field">
-          <span class="label">{defaultAssistantRole} role</span>
-          <Combobox
-            bind:value={samplingState.assistant_role}
-            options={roleOptions}
-            disabled={!assistantRoleSupported}
-            invalid={!assistantRoleValid}
-            placeholder={defaultAssistantRole}
-            spellcheck={false}
-            ariaLabel={`${defaultAssistantRole} role label`}
-          />
-        </label>
+    <section class="panel role-picker" aria-labelledby="conversation-roles-title">
+      <div class="section-heading">
+        <div>
+          <h3 id="conversation-roles-title">Conversation roles</h3>
+        </div>
       </div>
-    </div>
-
-    <p class="hint">roles appear from conversation history · recipes are saved</p>
-
-    {#if roster.length === 0}
-      <p class="empty">none</p>
-    {:else}
-      <ul class="roster" aria-label="Cast roster">
+      <ul class="roster" aria-label="Conversation roles">
         {#each roster as row (row.label)}
-          <li class="member" class:editing={editing === row.label}>
+          <li class="member" class:editing={editingKey === row.key}>
             <button
               type="button"
               class="member-main"
-              title="edit {row.label}"
-              onclick={() => loadMember(row.label, row.key)}
+              aria-pressed={editingKey === row.key}
+              onclick={() => void selectMember(row)}
             >
-              <span class="glyph">{row.label.slice(0, 1).toUpperCase()}</span>
+              <span class="glyph" aria-hidden="true">{row.label.slice(0, 1).toUpperCase()}</span>
               <span class="member-text">
                 <span class="member-label">{row.label}</span>
-                {#if row.member.recipe?.steering}
-                  <span class="member-recipe">{row.member.recipe.steering}</span>
+                {#if row.member?.recipe?.steering}
+                  <span class="member-recipe">Custom guidance</span>
+                {:else}
+                  <span class="member-notes">Uses the current reply settings</span>
                 {/if}
-                {#if row.member.notes}
+                {#if row.member?.notes}
                   <span class="member-notes">{row.member.notes}</span>
                 {/if}
               </span>
             </button>
-            {#if row.member.origin === "configured"}
-              <button
-                type="button"
-                class="remove"
-                aria-label="clear configuration for {row.label}"
-                title="clear recipe and notes"
-                onclick={() => void remove(row.key)}
-              >✕</button>
-            {/if}
           </li>
         {/each}
       </ul>
-    {/if}
+    </section>
 
-    <div class="form" aria-label={editing ? `Edit ${editing}` : "Add cast member"}>
-      <span class="form-title">{editing ? `edit ${editing}` : "add member"}</span>
-      <label class="field">
-        <span class="label">label</span>
-        <input
-          class="input mono"
-          class:invalid={!labelValid}
-          bind:value={label}
-          placeholder="deer"
-          spellcheck="false"
-          autocomplete="off"
-        />
-      </label>
-      <label class="field">
-        <span class="label">recipe</span>
-        <input
-          class="input mono"
-          bind:value={steering}
-          placeholder="0.5 personas%deer"
-          spellcheck="false"
-          autocomplete="off"
-        />
-      </label>
-      <label class="field">
-        <span class="label">notes</span>
-        <input
-          class="input"
-          bind:value={notes}
-          placeholder="—"
-          spellcheck="false"
-          autocomplete="off"
-        />
-      </label>
-      {#if err}
-        <p class="error" role="alert">{err}</p>
-      {/if}
-    </div>
+    {#if editingKey && editingLabel}
+      <section class="panel form" aria-labelledby="selected-role-title">
+        <div class="section-heading">
+          <div>
+            <h3 id="selected-role-title">{editingLabel}</h3>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-heading">
+            <span class="label">Response guidance</span>
+            <InfoTip
+              label="About role guidance"
+              text="Guidance used whenever this role writes. Settings for one reply take priority."
+            />
+          </span>
+          <input
+            class="input mono"
+            bind:value={steering}
+            placeholder="Leave blank for normal behavior"
+            spellcheck="false"
+            autocomplete="off"
+            aria-label={`Response guidance for ${editingLabel}`}
+            oninput={scheduleSave}
+          />
+        </div>
+        <label class="field">
+          <span class="label">Private note</span>
+          <input
+            class="input"
+            bind:value={notes}
+            placeholder="What should you remember about this role?"
+            autocomplete="off"
+            oninput={scheduleSave}
+          />
+        </label>
+        {#if err}
+          <p class="error" role="alert">{err}</p>
+        {/if}
+        <div class="form-actions">
+          <p class="save-status" role="status" aria-live="polite">{saveStatus}</p>
+          {#if selectedMember?.origin === "configured"}
+            <button
+              type="button"
+              class="btn quiet"
+              disabled={busy}
+              onclick={() => void clearSelectedSettings()}
+            >Clear settings</button>
+          {/if}
+        </div>
+      </section>
+    {/if}
   </div>
-
-  <footer class="footer">
-    {#if editing}
-      <button type="button" class="btn" onclick={clearForm}>new</button>
-    {/if}
-    <button type="button" class="btn" onclick={closeDrawer}>close</button>
-    <button
-      type="button"
-      class="btn primary"
-      disabled={!canSave}
-      onclick={() => void save()}
-    >{editing ? "save" : "add"}</button>
-  </footer>
 </section>
 
 <style>
@@ -306,82 +332,93 @@
   }
   .header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    padding: var(--space-5) var(--space-6);
+    gap: var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     color: var(--accent);
-    text-transform: lowercase;
+    font-family: var(--font-structure);
     font-size: var(--text-md);
-    font-weight: var(--weight-medium);
+    font-weight: var(--weight-structure);
   }
   .body {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: var(--space-6);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
+    display: grid;
+    grid-auto-rows: max-content;
+    align-content: start;
+    gap: var(--drawer-section-gap);
     min-height: 0;
   }
-  .hint {
-    margin: 0;
-    color: var(--fg-dim);
-    font-size: var(--text-sm);
-    line-height: 1.4;
+  .panel {
+    padding: var(--panel-padding);
+    border-radius: var(--radius-lg);
+    background: var(--surface-sheen), var(--glass);
+    box-shadow: var(--shadow-well);
   }
-  .role-map {
+  .section-heading {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
   }
-  .role-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: var(--space-3);
-  }
-  .empty {
+  h3 {
     margin: 0;
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
+    color: var(--fg);
+    font-family: var(--font-structure);
+    font-size: var(--text);
+    font-weight: var(--weight-structure);
   }
   .roster {
     list-style: none;
     margin: 0;
     padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
   }
   .member {
-    display: flex;
-    align-items: stretch;
-    gap: var(--space-2);
-    background: var(--glass);
+    min-width: 0;
     border-radius: var(--radius);
   }
-  .member.editing {
-    background: var(--glass-strong);
-  }
   .member-main {
-    flex: 1 1 auto;
+    width: 100%;
+    min-height: var(--control-field);
     display: flex;
     align-items: center;
     gap: var(--space-3);
-    background: none;
-    border: none;
+    background: var(--bg-elev);
+    border: 1px solid transparent;
+    border-radius: var(--radius);
     color: inherit;
     font: inherit;
-    text-align: left;
-    padding: var(--space-3) var(--space-4);
+    text-align: start;
+    padding: var(--surface-padding);
     cursor: pointer;
     min-width: 0;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .member-main:hover {
+    background: var(--surface-hi);
+  }
+  .member-main:active {
+    transform: scale(var(--press-scale));
+  }
+  .member-main[aria-pressed="true"] {
+    background: var(--accent-subtle);
+    border-color: var(--accent-strong);
   }
   .glyph {
     flex: none;
-    width: 22px;
-    height: 22px;
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     background: var(--glass-bright);
     color: var(--fg-strong);
@@ -394,52 +431,28 @@
   .member-text {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-xs);
     min-width: 0;
   }
   .member-label {
     font-family: var(--font-mono);
     color: var(--fg-strong);
   }
-  .member-recipe {
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    color: var(--fg-dim);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  .member-recipe,
   .member-notes {
     font-size: var(--text-xs);
-    color: var(--fg-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .remove {
-    flex: none;
-    align-self: center;
-    background: none;
-    border: none;
+  .member-recipe { color: var(--accent); }
+  .member-notes {
     color: var(--fg-muted);
-    font: inherit;
-    font-size: var(--text-sm);
-    cursor: pointer;
-    padding: var(--space-2) var(--space-3);
-  }
-  .remove:hover {
-    color: var(--accent-red);
   }
   .form {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding-top: var(--space-3);
-  }
-  .form-title {
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    text-transform: lowercase;
   }
   .field {
     display: flex;
@@ -447,61 +460,81 @@
     gap: var(--space-2);
   }
   .label {
-    color: var(--fg-muted);
+    color: var(--fg-strong);
+    font-family: var(--font-structure);
     font-size: var(--text-sm);
-    text-transform: lowercase;
+    font-weight: var(--weight-structure);
+  }
+  .field-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
   }
   .input {
+    min-height: var(--control-field);
     background: var(--input-well);
     color: var(--fg);
     border: 1px solid transparent;
-    padding: var(--space-3) var(--space-3);
+    border-radius: var(--radius);
+    padding: var(--space-3) var(--space-4);
     font: inherit;
   }
   .input.mono {
     font-family: var(--font-mono);
   }
-  .input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-  .input.invalid {
-    border-color: var(--accent-red);
+  .input:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
   }
   .error {
     margin: 0;
     color: var(--accent-red);
     font-size: var(--text-sm);
   }
-  .footer {
+  .form-actions {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
     gap: var(--space-3);
-    padding: var(--space-3) var(--space-6);
+    margin-top: var(--space-2);
+  }
+  .save-status {
+    margin: 0;
     color: var(--fg-muted);
+    font-size: var(--text-xs);
   }
   .btn {
+    min-height: var(--control-field);
     background: var(--glass);
     color: var(--fg-strong);
     border: 1px solid transparent;
     padding: var(--space-3) var(--space-5);
     font: inherit;
-    font-family: var(--font-mono);
+    border-radius: var(--radius);
+    font-family: var(--font-structure);
+    font-weight: var(--weight-structure);
     cursor: pointer;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out);
   }
   .btn:hover:not(:disabled) {
     background: var(--glass-strong);
   }
-  .btn.primary {
-    background: var(--accent);
-    color: var(--text-on-accent);
-  }
-  .btn.primary:hover:not(:disabled) {
-    background: var(--accent-light);
-  }
-  .btn.primary:disabled {
-    background: var(--bg-elev);
+  .btn.quiet {
+    background: transparent;
     color: var(--fg-muted);
-    cursor: default;
+  }
+  .btn.quiet:hover:not(:disabled) {
+    color: var(--accent-red);
+  }
+  .btn:active:not(:disabled) {
+    transform: scale(var(--press-scale));
+  }
+
+  @media (max-width: 560px) {
+    .roster { grid-template-columns: minmax(0, 1fr); }
   }
 </style>

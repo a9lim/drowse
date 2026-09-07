@@ -1,0 +1,29 @@
+:where(a[href], button, summary, select, [role="button"], [role="option"], input[type="checkbox"], input[type="radio"], input[type="file"], label:has(input[type="checkbox"], input[type="radio"])) {
+  cursor: pointer;
+}
+
+:where(input:not([type]), input[type="text"], input[type="search"], input[type="number"], input[type="email"], input[type="url"], input[type="password"], textarea, [contenteditable="true"]) {
+  cursor: text;
+}
+
+[data-cursor="copy"]:not(:disabled):not([aria-disabled="true"]) { cursor: copy; }
+[data-cursor="text"]:not(:disabled):not([aria-disabled="true"]) { cursor: text; }
+[data-cursor="inspect"]:not(:disabled):not([aria-disabled="true"]) { cursor: crosshair; }
+[data-cursor="context-menu"]:not(:disabled):not([aria-disabled="true"]) { cursor: context-menu; }
+[data-cursor="zoom-in"]:not(:disabled):not([aria-disabled="true"]) { cursor: zoom-in; }
+[data-cursor="zoom-out"]:not(:disabled):not([aria-disabled="true"]) { cursor: zoom-out; }
+
+/* State feedback wins over component-specific action cursors. */
+:is(button, input, select, textarea, option):disabled,
+[aria-disabled="true"],
+label:has(input[type="checkbox"]:disabled, input[type="radio"]:disabled) {
+  cursor: not-allowed !important;
+}
+
+:is(button, [role="button"])[aria-busy="true"] {
+  cursor: progress !important;
+}
+
+:is(button, [role="button"])[aria-busy="true"]:is(:disabled, [aria-disabled="true"]) {
+  cursor: wait !important;
+}

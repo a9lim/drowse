@@ -16,14 +16,14 @@ import pytest
 import torch
 from torch import nn
 
-from saklas.core.hooks import (
+from drowse.core.hooks import (
     _MANIFOLD_ALONG_GAIN,
     _MANIFOLD_ONTO_GAIN,
     _manifold_layer_shares,
     SteeringHook,
     SteeringManager,
 )
-from saklas.core.manifold import (
+from drowse.core.manifold import (
     BoxAxis,
     BoxDomain,
     Manifold,
@@ -32,12 +32,12 @@ from saklas.core.manifold import (
     fit_layer_subspace,
     invert_parameterization,
 )
-from saklas.core.errors import (
+from drowse.core.errors import (
     ManifoldArityError,
     OverlappingManifoldError,
     SteeringCompositionError,
 )
-from saklas.core.triggers import Trigger, TriggerContext
+from drowse.core.triggers import Trigger, TriggerContext
 
 
 def fit_layer_subspace_only(*args: Any, **kwargs: Any) -> Any:

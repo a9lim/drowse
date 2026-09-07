@@ -19,14 +19,14 @@ from typing import cast
 
 import pytest
 
-from saklas.core.events import EventBus
-from saklas.core.session import SaklasSession
-from saklas.core.steering import Steering
-from saklas.core.steering_composer import SteeringComposer
-from saklas.core.steering_expr import (
+from drowse.core.events import EventBus
+from drowse.core.session import DrowseSession
+from drowse.core.steering import Steering
+from drowse.core.steering_composer import SteeringComposer
+from drowse.core.steering_expr import (
     SteeringExprError, format_expr, parse_expr,
 )
-from saklas.core.triggers import (
+from drowse.core.triggers import (
     ProbeGate, Trigger, TriggerContext,
 )
 
@@ -165,8 +165,8 @@ class TestTriggerContextProbeScores:
 class TestGrammar:
     @pytest.fixture(autouse=True)
     def _isolated_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path):
-        from saklas.io import selectors as _sel
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+        from drowse.io import selectors as _sel
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         _sel.invalidate()
         yield
         _sel.invalidate()
@@ -249,7 +249,7 @@ class TestGrammar:
 
 # ------------------------------------------ session probe-gate detection ---
 
-class _StubSession(SaklasSession):
+class _StubSession(DrowseSession):
     """Stub for ``_steering_needs_probe_gating`` testing.
 
     Bypasses model load; only the steering stack helpers are exercised.

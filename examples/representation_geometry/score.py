@@ -34,8 +34,8 @@ def yr(label: str) -> int:
 
 
 def score(probe: str, model_id: str) -> dict[str, object]:
-    from saklas import SaklasSession
-    with SaklasSession.from_pretrained(model_id, device="auto") as s:
+    from drowse import DrowseSession
+    with DrowseSession.from_pretrained(model_id, device="auto") as s:
         per_ctx = s.score_template(f"local/{probe}")
     years = sorted({yr(c.label) for cs in per_ctx for c in cs.choices})
     y2i = {y: i for i, y in enumerate(years)}

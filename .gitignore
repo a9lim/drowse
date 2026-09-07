@@ -10,12 +10,21 @@ build/
 
 # Web UI build artifact ships in the wheel — committed despite the
 # generic dist/ rule above.  Refresh via `cd webui && npm run build`.
-!saklas/web/dist/
-!saklas/web/dist/**
+!drowse/web/dist/
+!drowse/web/dist/**
 
 # Node modules from the webui/ Svelte source.
 webui/node_modules/
 webui/dist/
+webui/dist-hosted/
+.playwright-mcp/
+
+# Browser-runtime compiler scratch directories are local feasibility outputs.
+browser-runtime/.v3-compile.*/
+browser-runtime/.local-build/
+browser-runtime/vendor/*.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.32.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.34.tgz
 
 # Virtual environments
 .venv/

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from saklas.core.jlens import sparse_nonneg_decompose
+from drowse.core.jlens import sparse_nonneg_decompose
 from tests.test_jlens_session import _PROMPTS, _StubSession
 
 _D = 32
@@ -84,7 +84,7 @@ def test_respects_k_budget() -> None:
 
 @pytest.fixture()
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
 
 def test_session_jspace_decompose_on_registered_profile(_isolated_home: None) -> None:
@@ -94,9 +94,9 @@ def test_session_jspace_decompose_on_registered_profile(_isolated_home: None) ->
     # the decomposition should attribute it (near-)fully to that atom.
     name = session.register_jlens_direction("g")
     session.ensure_profile_registered = lambda sel: session._profiles[sel]  # type: ignore[attr-defined]
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
-    out = SaklasSession.jspace_decompose(session, name, k=4)  # type: ignore[arg-type]
+    out = DrowseSession.jspace_decompose(session, name, k=4)  # type: ignore[arg-type]
     del lens
     assert set(out) == {0, 1}
     for share, tokens in out.values():

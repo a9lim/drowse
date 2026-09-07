@@ -1,4 +1,4 @@
-"""CPU tests for ``saklas.io.hf_manifolds`` — the HF distribution surface.
+"""CPU tests for ``drowse.io.hf_manifolds`` — the HF distribution surface.
 
 Network-free: every huggingface_hub indirection (``_hf_snapshot_download`` /
 ``_hf_hub_download`` / ``_hf_api`` / ``HfApi``) is monkeypatched, so these run in
@@ -26,9 +26,9 @@ from typing import Any
 
 import pytest
 
-from saklas.io import hf_manifolds as hfm
-from saklas.io.hf import HFError
-from saklas.io.manifolds import MANIFOLD_FORMAT_VERSION
+from drowse.io import hf_manifolds as hfm
+from drowse.io.hf import HFError
+from drowse.io.manifolds import MANIFOLD_FORMAT_VERSION
 
 
 # --------------------------------------------------------------------------- #
@@ -89,7 +89,7 @@ def _write_manifest(folder: Path, payload: dict[str, Any]) -> Path:
 
 def test_fetch_manifold_info_box_domain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A box-domain authored manifold reports ``box(1d)`` + node count + tensors."""
-    from saklas.io.paths import safe_model_id, tensor_filename
+    from drowse.io.paths import safe_model_id, tensor_filename
 
     manifest = _write_manifest(tmp_path / "repo", {
         "format_version": MANIFOLD_FORMAT_VERSION,
@@ -215,7 +215,7 @@ def test_search_manifolds_filters_by_tag_and_caps(monkeypatch: pytest.MonkeyPatc
     """The query rides ``search=``, the tag rides ``filter=``, rows respect the cap."""
     # More rows than the cap so the [:_HF_SEARCH_CAP] slice bites.
     models = [
-        _FakeModel(f"alice/m{i}", tags=["saklas-manifold"], desc=f"d{i}")
+        _FakeModel(f"alice/m{i}", tags=["drowse-manifold"], desc=f"d{i}")
         for i in range(hfm._HF_SEARCH_CAP + 5)
     ]
     api = _FakeApi(models=models)
@@ -224,45 +224,64 @@ def test_search_manifolds_filters_by_tag_and_caps(monkeypatch: pytest.MonkeyPatc
     rows = hfm.search_manifolds("mood")
     assert len(rows) == hfm._HF_SEARCH_CAP
     call = api.list_models_calls[0]
-    assert call["filter"] == ["saklas-manifold"]
+    assert call["filter"] == ["drowse-manifold"]
     assert call["search"] == "mood"
     assert call["limit"] == hfm._HF_SEARCH_CAP
     # description + tags present means no per-row fetch_manifold_info probe.
     first = rows[0]
     assert first["namespace"] == "alice"
     assert first["name"] == "m0"
-    assert first["tags"] == ["saklas-manifold"]
+    assert first["tags"] == ["drowse-manifold"]
     assert first["description"] == "d0"
 
 
 def test_search_manifolds_empty_query_omits_search(monkeypatch: pytest.MonkeyPatch):
-    api = _FakeApi(models=[_FakeModel("a/m", tags=["saklas-manifold"], desc="d")])
+    api = _FakeApi(models=[_FakeModel("a/m", tags=["drowse-manifold"], desc="d")])
     monkeypatch.setattr(hfm, "_hf_api", lambda: api)
     hfm.search_manifolds(None)
     assert "search" not in api.list_models_calls[0]
-    assert api.list_models_calls[0]["filter"] == ["saklas-manifold"]
+    assert api.list_models_calls[0]["filter"] == ["drowse-manifold"]
 
 
 def test_search_manifolds_falls_back_to_tags_kwarg(monkeypatch: pytest.MonkeyPatch):
     """Older huggingface_hub: ``filter=`` raises TypeError → retry with ``tags=``."""
     api = _FakeApi(
-        models=[_FakeModel("a/m", tags=["saklas-manifold"], desc="d")],
+        models=[_FakeModel("a/m", tags=["drowse-manifold"], desc="d")],
         list_models_raises_on_filter=True,
     )
     monkeypatch.setattr(hfm, "_hf_api", lambda: api)
     rows = hfm.search_manifolds("q")
     assert len(rows) == 1
     # Two calls: the filter= attempt (raised) and the tags= retry.
-    assert len(api.list_models_calls) == 2
+    assert len(api.list_models_calls) == 6
     assert "filter" not in api.list_models_calls[1]
-    assert api.list_models_calls[1]["tags"] == ["saklas-manifold"]
+    assert api.list_models_calls[1]["tags"] == ["drowse-manifold"]
+
+
+def test_search_preserves_legacy_repositories_without_duplicates(monkeypatch: pytest.MonkeyPatch) -> None:
+    models = [
+        _FakeModel("a/current", tags=["drowse-manifold"], desc="current"),
+        _FakeModel("a/shared", tags=["drowse-manifold", "saklas-manifold"], desc="shared"),
+        _FakeModel("a/original", tags=["saklas-manifold"], desc="original"),
+        _FakeModel("a/intermediate", tags=["polythetic-manifold"], desc="intermediate"),
+    ]
+
+    class TaggedApi:
+        def list_models(self, **kwargs: Any) -> list[_FakeModel]:
+            assert kwargs["search"] == "a/"
+            return [model for model in models if kwargs["filter"][0] in model.tags]
+
+    monkeypatch.setattr(hfm, "_hf_api", TaggedApi)
+    rows = hfm.search_manifolds("a/")
+    assert {row["name"] for row in rows} == {"current", "shared", "original", "intermediate"}
+    assert len(rows) == 4
 
 
 def test_search_manifolds_enriches_row_when_fields_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """A row missing description/tags triggers a fetch_manifold_info enrichment."""
-    from saklas.io.paths import safe_model_id, tensor_filename
+    from drowse.io.paths import safe_model_id, tensor_filename
 
     api = _FakeApi(
         models=[_FakeModel("alice/months", tags=None, desc="")],
@@ -313,7 +332,7 @@ def test_search_manifolds_enrichment_failure_is_best_effort(
 
 def test_search_manifolds_splits_namespaceless_id(monkeypatch: pytest.MonkeyPatch):
     """A bare (slash-free) repo id yields an empty namespace."""
-    api = _FakeApi(models=[_FakeModel("solo", tags=["saklas-manifold"], desc="d")])
+    api = _FakeApi(models=[_FakeModel("solo", tags=["drowse-manifold"], desc="d")])
     monkeypatch.setattr(hfm, "_hf_api", lambda: api)
     rows = hfm.search_manifolds(None)
     assert rows[0]["namespace"] == ""
@@ -358,7 +377,7 @@ def test_pull_manifold_no_manifest_no_statements_rejected(
 def test_install_manifold_coord_requires_namespace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     with pytest.raises(ValueError, match="must be '<ns>/<name>"):
         hfm.install_manifold("noslash")
 
@@ -366,7 +385,7 @@ def test_install_manifold_coord_requires_namespace(
 def test_install_manifold_bad_as_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     with pytest.raises(ValueError, match="as_ must be"):
         hfm.install_manifold("alice/mood", as_="noslash")
 
@@ -374,7 +393,7 @@ def test_install_manifold_bad_as_rejected(
 def test_install_manifold_bad_name_regex_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     # Uppercase violates NAME_REGEX (^[a-z]...).
     with pytest.raises(ValueError, match="NAME_REGEX"):
         hfm.install_manifold("alice/Mood")
@@ -384,8 +403,8 @@ def test_install_manifold_conflict_raises_409(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """An existing destination without ``force`` raises ManifoldInstallConflict."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
-    from saklas.io.paths import manifold_dir
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
+    from drowse.io.paths import manifold_dir
 
     dst = manifold_dir("local", "mood")
     dst.mkdir(parents=True)
@@ -406,8 +425,8 @@ def test_install_manifold_conflict_relocate_via_as(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """``as_`` retargets the destination namespace/name, dodging the conflict."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
-    from saklas.io.paths import manifold_dir
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
+    from drowse.io.paths import manifold_dir
 
     # Occupy local/mood, then install to alice/mood instead.
     manifold_dir("local", "mood").mkdir(parents=True)
@@ -438,8 +457,8 @@ def test_install_manifold_default_namespace_is_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """Without ``as_`` the destination namespace defaults to ``local``."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
-    from saklas.io.paths import manifold_dir
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
+    from drowse.io.paths import manifold_dir
 
     seen: dict[str, Any] = {}
 
@@ -461,7 +480,7 @@ def test_install_manifold_revision_threads_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """``ns/name@rev`` splits the revision and forwards it to pull_manifold."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     seen: dict[str, Any] = {}
 
     def fake_pull(
@@ -486,7 +505,7 @@ def test_install_manifold_local_folder_routes_to_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """An existing local directory routes to the folder-copy install path."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     src = tmp_path / "srcdir"
     src.mkdir()
 
@@ -510,8 +529,8 @@ def test_install_local_manifold_bad_as_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """``_install_local_manifold`` rejects a slash-free ``as_`` before copying."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "home"))
-    from saklas.io.manifolds import create_manifold_folder
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
+    from drowse.io.manifolds import create_manifold_folder
 
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}

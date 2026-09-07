@@ -1,4 +1,4 @@
-# saklas examples
+# drowse examples
 
 These scripts exercise the Python API against a local Hugging Face model. The
 generation examples need the base package and a CUDA or Apple Silicon MPS device:

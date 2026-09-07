@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from saklas import CastMember, LoomTree, Recipe, SamplingConfig
-from saklas.core.session import SaklasSession
+from drowse import CastMember, LoomTree, Recipe, SamplingConfig
+from drowse.core.session import DrowseSession
 
 
 class _Stub:
@@ -20,8 +20,8 @@ class _Stub:
         self.tree = LoomTree()
 
 
-def _as_session(stub: _Stub) -> SaklasSession:
-    return cast(SaklasSession, stub)
+def _as_session(stub: _Stub) -> DrowseSession:
+    return cast(DrowseSession, stub)
 
 
 def _apply(
@@ -33,7 +33,7 @@ def _apply(
     raw: bool = False,
     gen_seat: str = "assistant",
 ) -> tuple[Any, SamplingConfig | None, bool | None]:
-    return SaklasSession._apply_cast_defaults(
+    return DrowseSession._apply_cast_defaults(
         _as_session(stub), steering, sampling, thinking,
         raw=raw, gen_seat=gen_seat,
     )
@@ -156,23 +156,23 @@ def test_bare_member_contributes_nothing():
 
 def test_session_set_cast_member_validates_steering():
     import pytest
-    from saklas.core.steering_expr import SteeringExprError
+    from drowse.core.steering_expr import SteeringExprError
 
     stub = _Stub()
     with pytest.raises(SteeringExprError):
-        SaklasSession.set_cast_member(
+        DrowseSession.set_cast_member(
             _as_session(stub), "deer", steering="0.5 !!bad!!",
         )
-    member = SaklasSession.set_cast_member(
+    member = DrowseSession.set_cast_member(
         _as_session(stub), "deer", steering="0.5 formal.casual",
     )
     assert member.recipe is not None
     assert member.recipe.steering == "0.5 formal.casual"
     assert stub.tree.cast["deer"] == member
     # Field-less call authors a bare named label.
-    bare = SaklasSession.set_cast_member(_as_session(stub), "narrator")
+    bare = DrowseSession.set_cast_member(_as_session(stub), "narrator")
     assert bare.recipe is None
-    SaklasSession.remove_cast_member(_as_session(stub), "narrator")
+    DrowseSession.remove_cast_member(_as_session(stub), "narrator")
     assert "narrator" not in stub.tree.cast
 
 
@@ -180,7 +180,7 @@ def test_ws_explicit_clear_survives_as_empty_steering():
     """The server's steering merge must hand the session an *empty*
     Steering on an explicit clear (``steering: ""``) — None means
     "unset" and would let the cast roster fill it back in."""
-    from saklas.server.request_helpers import merge_steering, parse_request_steering
+    from drowse.server.request_helpers import merge_steering, parse_request_steering
 
     req, clear = parse_request_steering("")
     assert req is None and clear is True

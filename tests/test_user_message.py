@@ -1,4 +1,4 @@
-"""Tests for ``SaklasError.user_message()`` centralization (Phase 4).
+"""Tests for ``DrowseError.user_message()`` centralization (Phase 4).
 
 Each subclass returns an HTTP-style ``(status, msg)`` tuple; the server and CLI
 consume the value to translate
@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from saklas.cli.config_file import ConfigFileError
-from saklas.io.selectors import AmbiguousSelectorError, SelectorError
-from saklas.core.errors import (
+from drowse.cli.config_file import ConfigFileError
+from drowse.io.selectors import AmbiguousSelectorError, SelectorError
+from drowse.core.errors import (
     AmbiguousVariantError,
     ManifoldArityError,
     OverlappingManifoldError,
@@ -21,36 +21,36 @@ from saklas.core.errors import (
     SaeCoverageError,
     SaeModelMismatchError,
     SaeReleaseNotFoundError,
-    SaklasError,
+    DrowseError,
     SteeringCompositionError,
     UnknownVariantError,
     WhitenerError,
 )
-from saklas.core.session import (
+from drowse.core.session import (
     ConcurrentGenerationError,
     ProfileNotRegisteredError,
 )
-from saklas.core.steering_expr import SteeringExprError
-from saklas.io.hf_manifolds import ManifoldInstallConflict
-from saklas.io.gguf_io import GGUFNotInstalled
-from saklas.io.hf import HFError
-from saklas.io.bake import MergeError
+from drowse.core.steering_expr import SteeringExprError
+from drowse.io.hf_manifolds import ManifoldInstallConflict
+from drowse.io.gguf_io import GGUFNotInstalled
+from drowse.io.hf import HFError
+from drowse.io.bake import MergeError
 
 
 def test_base_default_status_and_message():
-    """Plain ``SaklasError`` returns ``(500, str(self))``."""
-    assert SaklasError("x").user_message() == (500, "x")
+    """Plain ``DrowseError`` returns ``(500, str(self))``."""
+    assert DrowseError("x").user_message() == (500, "x")
 
 
 def test_base_empty_falls_back_to_class_name():
     """Empty args fall back to the class name so the user sees something."""
-    assert SaklasError().user_message() == (500, "SaklasError")
+    assert DrowseError().user_message() == (500, "DrowseError")
 
 
 # (subclass, expected_status_code) — one entry per overriding class.
 # Bumping the status is a deliberate contract change; any drift here is
 # user-visible.
-_OVERRIDES: list[tuple[type[SaklasError], int]] = [
+_OVERRIDES: list[tuple[type[DrowseError], int]] = [
     # core/errors.py
     (SaeBackendImportError, 400),
     (SaeReleaseNotFoundError, 400),
@@ -87,7 +87,7 @@ _OVERRIDES: list[tuple[type[SaklasError], int]] = [
 
 
 @pytest.mark.parametrize("cls,expected_status", _OVERRIDES)
-def test_subclass_status_codes(cls: type[SaklasError], expected_status: int):
+def test_subclass_status_codes(cls: type[DrowseError], expected_status: int):
     """Each overriding subclass returns its declared status code."""
     code, _msg = cls("test message").user_message()
     assert code == expected_status, (
@@ -96,7 +96,7 @@ def test_subclass_status_codes(cls: type[SaklasError], expected_status: int):
 
 
 @pytest.mark.parametrize("cls,_status", _OVERRIDES)
-def test_subclass_message_round_trips(cls: type[SaklasError], _status: int):
+def test_subclass_message_round_trips(cls: type[DrowseError], _status: int):
     """The message string is non-empty and contains the original payload.
 
     KeyError-derived subclasses (``UnknownVariantError``,
@@ -148,13 +148,13 @@ def test_steering_expr_error_carries_col_in_message():
 
 
 def test_server_routes_user_message_status_codes():
-    """``server/app.py:_on_saklas_error`` honors ``user_message()`` status."""
+    """``server/app.py:_on_drowse_error`` honors ``user_message()`` status."""
     import asyncio
     from unittest.mock import MagicMock
 
     from fastapi.testclient import TestClient
 
-    from saklas.server import create_app
+    from drowse.server import create_app
 
     def _mock_session():
         s = MagicMock()
@@ -218,16 +218,16 @@ def test_server_routes_user_message_status_codes():
 
 
 def _public_exception_classes() -> list[type[BaseException]]:
-    """Every public exception class defined anywhere under ``saklas``."""
+    """Every public exception class defined anywhere under ``drowse``."""
     import importlib
     import inspect
     import pkgutil
     import warnings
 
-    import saklas
+    import drowse
 
-    modules = [saklas]
-    for info in pkgutil.walk_packages(saklas.__path__, prefix="saklas."):
+    modules = [drowse]
+    for info in pkgutil.walk_packages(drowse.__path__, prefix="drowse."):
         # Underscore-private modules are internal; their classes are too.
         if any(part.startswith("_") for part in info.name.split(".")[1:]):
             continue
@@ -255,10 +255,10 @@ def _public_exception_classes() -> list[type[BaseException]]:
     return list(found)
 
 
-def test_every_public_exception_is_a_saklas_error() -> None:
-    """AGENTS.md: "Every saklas exception subclasses ``SaklasError``".
+def test_every_public_exception_is_a_drowse_error() -> None:
+    """AGENTS.md: "Every drowse exception subclasses ``DrowseError``".
 
-    The point is that ``except SaklasError`` catches the whole family, so one
+    The point is that ``except DrowseError`` catches the whole family, so one
     escapee silently drops out of every caller written against the contract —
     and out of the server's status mapping, landing as a 500.  Nothing
     enforced the invariant until now; ``SaeTrainingCancelled`` and
@@ -269,32 +269,32 @@ def test_every_public_exception_is_a_saklas_error() -> None:
     escapees = sorted(
         f"{cls.__module__}.{cls.__qualname__}"
         for cls in classes
-        if not issubclass(cls, SaklasError)
+        if not issubclass(cls, DrowseError)
     )
     assert not escapees, (
-        "public exception classes outside the SaklasError family (add "
-        "SaklasError to the bases, keeping the stdlib base first, and give "
+        "public exception classes outside the DrowseError family (add "
+        "DrowseError to the bases, keeping the stdlib base first, and give "
         "it a user_message()):\n  " + "\n  ".join(escapees)
     )
 
 
 def test_cancellation_errors_agree_across_preparation_families() -> None:
     """A cooperative cancel reports 409 on both background-job families."""
-    from saklas.core.jlens import JacobianLensCancelled
-    from saklas.core.sae_training import SaeTrainingCancelled
+    from drowse.core.jlens import JacobianLensCancelled
+    from drowse.core.sae_training import SaeTrainingCancelled
 
     for exc in (JacobianLensCancelled("stopped"), SaeTrainingCancelled("stopped")):
-        assert isinstance(exc, SaklasError)
+        assert isinstance(exc, DrowseError)
         assert isinstance(exc, RuntimeError)
         assert exc.user_message()[0] == 409
 
 
 def test_manifold_authoring_conflict_is_a_retryable_409() -> None:
     """Re-authoring under an in-flight fit is a conflict, not a server fault."""
-    from saklas.core.extraction import ManifoldAuthoringChangedError
+    from drowse.core.extraction import ManifoldAuthoringChangedError
 
     exc = ManifoldAuthoringChangedError("authoring changed during fit")
-    assert isinstance(exc, SaklasError)
+    assert isinstance(exc, DrowseError)
     assert isinstance(exc, RuntimeError)
     status, message = exc.user_message()
     assert status == 409

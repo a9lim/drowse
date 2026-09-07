@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:drowse:schema:browser-release-evidence-config-v1",
+  "title": "Drowse browser release evidence producer config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "evidenceType", "observer", "arguments"],
+  "properties": {
+    "$schema": { "const": "../evidence-config.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "evidenceType": {
+      "enum": [
+        "gemmaTinyFp32Parity",
+        "llamaTinyFp32Parity",
+        "qwenTinyFp32Parity",
+        "gemmaProductionQ4Parity",
+        "smolProductionQ4Parity",
+        "qwenProductionQ4Parity",
+        "gemmaLongPrefill",
+        "runtimeLifecycle",
+        "activationCapture",
+        "fittingKernelParity",
+        "topologyOrchestration",
+        "manifoldSerialization",
+        "instrumentIntegration",
+        "sharedGoldenResults",
+        "physicalBrowserFitting",
+        "physicalBrowserBenchmark"
+      ]
+    },
+    "observer": {
+      "type": "string",
+      "pattern": "^(?:webui|browser-runtime)/[A-Za-z0-9][A-Za-z0-9._/-]*$"
+    },
+    "arguments": {
+      "oneOf": [
+        { "$ref": "#/$defs/argumentSet" },
+        {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/argumentSet" }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "argumentSet": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    }
+  }
+}

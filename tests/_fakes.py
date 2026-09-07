@@ -1,6 +1,6 @@
 """Shared mock-session factory for the native-API CPU tests.
 
-``test_saklas_api.py``, ``test_server_manifold_probes.py`` and
+``test_drowse_api.py``, ``test_server_manifold_probes.py`` and
 ``test_profiles_bake_api.py`` each opened their local ``_mock_session()``
 with the same block — model identity, the device/dtype/created-at scalars,
 the default sampling config, empty ``profiles``/``probes``, and a real
@@ -38,7 +38,7 @@ from unittest.mock import MagicMock
 
 
 def make_mock_session(**overrides: Any) -> Any:
-    """Return a ``MagicMock`` pre-wired to look like a ``SaklasSession``.
+    """Return a ``MagicMock`` pre-wired to look like a ``DrowseSession``.
 
     The shared wiring covers what the native routes touch on every one of
     its three consumers:

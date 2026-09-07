@@ -10,8 +10,10 @@
 // authoritative" and "live tokens land on an existing turn".
 
 import { SvelteMap } from "svelte/reactivity";
-import { apiTree } from "../api";
-import type { LoomNodeJSON, LoomTreeJSON } from "../api";
+import { apiTree } from "../runtime/services";
+import { userFacingError } from "../runtime/userFacingError";
+import { invalidateTokenReadoutCache } from "../runtime/tokenReadoutCache";
+import type { LoomNodeJSON, LoomTreeJSON } from "../types";
 import type { CastMemberJSON, ChatTurn, TokenScore } from "../types";
 import { isScalarReading } from "../types";
 import { pushToast } from "./toasts.svelte";
@@ -28,7 +30,7 @@ export interface LoomTreeState {
    * double as an initialization sentinel. */
   loaded: boolean;
   tree_format: number | null;
-  saklas_version: string | null;
+  drowse_version: string | null;
   session_id: string | null;
   name: string | null;
   root_id: string | null;
@@ -50,14 +52,14 @@ export interface LoomTreeState {
   /** Last seen server-side model id; used to invalidate cache across
    *  model swaps. */
   modelId: string | null;
-  /** Last fetch error message; surfaced in the sidebar. */
+  /** Fatal tree synchronization error; surfaced in the sidebar. */
   error: string | null;
 }
 
 export const loomTree: LoomTreeState = $state({
   loaded: false,
   tree_format: null,
-  saklas_version: null,
+  drowse_version: null,
   session_id: null,
   name: null,
   root_id: null,
@@ -105,7 +107,7 @@ export function recomputeActivePath(): void {
  *  WS handler; keeping a single converter means the rehydrated tokens
  *  are bit-identical to the live-streamed shape so the highlight / click
  *  / fork affordances behave the same way. */
-function tokenRowToScore(row: NonNullable<LoomNodeJSON["tokens"]>[number]): TokenScore {
+export function tokenRowToScore(row: NonNullable<LoomNodeJSON["tokens"]>[number]): TokenScore {
   const m = row.measurements;
   const out: TokenScore = {
     text: row.text,
@@ -113,6 +115,8 @@ function tokenRowToScore(row: NonNullable<LoomNodeJSON["tokens"]>[number]): Toke
   };
   if (row.token_id !== undefined) out.tokenId = row.token_id;
   if (row.logprob !== undefined) out.logprob = row.logprob;
+  if (row.sampler_entropy !== undefined) out.samplerEntropy = row.sampler_entropy;
+  if (row.perplexity !== undefined) out.perplexity = row.perplexity;
   if (row.top_alts) out.topAlts = row.top_alts;
   if (row.raw_index !== undefined) out.rawIndex = row.raw_index;
   const scores = m?.scores ?? row.probes;
@@ -225,7 +229,7 @@ function upsertLoomNode(raw: LoomNodeJSON & { children?: string[] }): LoomNodeJS
  *  flowing in via WS keep accumulating on it.  This is the bridge
  *  between "tree is authoritative" and "live tokens land on an existing
  *  turn object." */
-export function syncChatLogFromTree(): void {
+export function syncChatLogFromTree(preserveLiveTokens = true): void {
   if (!loomTree.loaded) return;
   const path = loomTree.activePath;
   if (path.length === 0) {
@@ -234,6 +238,7 @@ export function syncChatLogFromTree(): void {
     return;
   }
   const out: ChatTurn[] = [];
+  const previousTurns = new Map(chatLog.turns.map((turn) => [turn.nodeId, turn]));
   let pendingIdx: number | null = null;
   for (const nid of path) {
     const node = loomTree.nodes.get(nid);
@@ -243,28 +248,26 @@ export function syncChatLogFromTree(): void {
     if (node.parent_id === null && node.role === "system" && !node.text) continue;
     // Try to keep the existing turn object if it already represents this
     // node (token-stream preservation for the live target).
-    const prev = chatLog.turns.find((t) => t.nodeId === nid);
+    const prev = previousTurns.get(nid);
     let turn: ChatTurn;
     if (
+      preserveLiveTokens &&
       prev &&
       prev.role === node.role &&
       prev.nodeId === nid
     ) {
       // Mutate-in-place so the streaming token arrays survive.
       prev.nodeId = nid;
-      // A same-role generated continuation deliberately clears and reuses
-      // its existing node before replaying the old text as a forced prefix.
-      // The tree snapshot is authoritative even when that temporary value is
-      // empty; preserving the prior UI text here would duplicate the prefix
-      // as streamed tokens arrive.
-      prev.text = node.text;
+      if (loomTree.pendingNodeId !== nid || !genStatus.active || node.finish_reason !== null) {
+        prev.text = node.text;
+      }
       prev.generated = node.recipe !== null;
       prev.appliedSteering = node.applied_steering ?? prev.appliedSteering ?? null;
       prev.aggregateReadings = node.aggregate_readings ?? prev.aggregateReadings;
       prev.finishReason = node.finish_reason ?? prev.finishReason;
       // Server-shipped node tokens are authoritative. Preserve the live
       // arrays only until the finalized node snapshot carries them.
-      if ((prev.tokens?.length ?? 0) === 0) {
+      if (node.finish_reason !== null || (prev.tokens?.length ?? 0) === 0) {
         const fromNode = nodeToTurn(node);
         if (fromNode.tokens || fromNode.thinkingTokens) {
           prev.tokens = fromNode.tokens;
@@ -282,11 +285,84 @@ export function syncChatLogFromTree(): void {
   chatLog.pendingIndex = pendingIdx;
 }
 
+function invalidateChangedEdgeLabels(nextNodes: readonly LoomNodeJSON[], removed: readonly string[]): void {
+  const changedEdges = new Set<string>();
+  const invalidateNodeEdges = (node: LoomNodeJSON): void => {
+    if (node.parent_id) changedEdges.add(`${node.parent_id}|${node.id}`);
+    for (const childId of loomTree.children_of.get(node.id) ?? []) {
+      changedEdges.add(`${node.id}|${childId}`);
+    }
+  };
+  for (const next of nextNodes) {
+    const previous = loomTree.nodes.get(next.id);
+    if (!previous || previous.parent_id !== next.parent_id ||
+      (previous.applied_steering ?? previous.recipe?.steering ?? null) !==
+        (next.applied_steering ?? next.recipe?.steering ?? null)) {
+      if (previous) invalidateNodeEdges(previous);
+      invalidateNodeEdges(next);
+    }
+  }
+  for (const id of removed) {
+    const node = loomTree.nodes.get(id);
+    if (node) invalidateNodeEdges(node);
+  }
+  invalidateEdgeLabels(changedEdges);
+}
+
+function replayContextChanged(nextNodes: readonly LoomNodeJSON[], removed: readonly string[]): boolean {
+  return removed.length > 0 || nextNodes.some((next) => {
+    const previous = loomTree.nodes.get(next.id);
+    if (!previous) return false;
+    return previous.parent_id !== next.parent_id || previous.role !== next.role ||
+      previous.role_label !== next.role_label || previous.text !== next.text ||
+      previous.thinking_text !== next.thinking_text ||
+      previous.applied_steering !== next.applied_steering ||
+      JSON.stringify(previous.recipe) !== JSON.stringify(next.recipe) ||
+      previous.raw_token_ids?.length !== next.raw_token_ids?.length ||
+      (previous.raw_token_ids ?? []).some((id, index) => id !== next.raw_token_ids?.[index]);
+  });
+}
+
 /** Replace the in-memory tree with a current server snapshot. */
-export function applyTreeSnapshot(snap: LoomTreeJSON): void {
+export function applyTreeSnapshot(
+  snap: LoomTreeJSON,
+  options: {
+    preserveLiveTokens?: boolean;
+    allowRevisionRegression?: boolean;
+    reconcileEdgeLabels?: boolean;
+  } = {},
+): boolean {
+  if (
+    loomTree.loaded && !options.allowRevisionRegression &&
+    snap.model_id === loomTree.modelId &&
+    snap.session_id === loomTree.session_id && snap.rev < loomTree.rev
+  ) return false;
+  if (loomTree.loaded && (snap.model_id !== loomTree.modelId || snap.session_id !== loomTree.session_id)) {
+    Object.assign(genStatus, {
+      active: false,
+      replay: null,
+      tokensSoFar: 0,
+      maxTokens: 0,
+      startedAt: null,
+      finishedAt: null,
+      tokPerSec: 0,
+      ppl: { logSum: 0, count: 0, mean: null },
+      finishReason: null,
+    });
+  }
+  if (options.reconcileEdgeLabels && snap.model_id === loomTree.modelId &&
+    snap.session_id === loomTree.session_id && snap.root_id === loomTree.root_id) {
+    const nextIds = new Set(snap.nodes.map((node) => node.id));
+    const removed = [...loomTree.nodes.keys()].filter((id) => !nextIds.has(id));
+    invalidateChangedEdgeLabels(snap.nodes, removed);
+    if (replayContextChanged(snap.nodes, removed)) invalidateTokenReadoutCache();
+  } else {
+    invalidateEdgeLabels();
+    invalidateTokenReadoutCache();
+  }
   loomTree.loaded = true;
   loomTree.tree_format = snap.tree_format;
-  loomTree.saklas_version = snap.saklas_version;
+  loomTree.drowse_version = snap.drowse_version;
   loomTree.session_id = snap.session_id;
   loomTree.name = snap.name;
   loomTree.root_id = snap.root_id;
@@ -302,8 +378,9 @@ export function applyTreeSnapshot(snap: LoomTreeJSON): void {
   }
   castState.roster = snap.cast;
   recomputeActivePath();
-  syncChatLogFromTree();
+  syncChatLogFromTree(options.preserveLiveTokens ?? true);
   hydrateProbeRackFromActiveNode();
+  return true;
 }
 
 /** Materialize the reactive Loom slice in the server's portable JSON shape.
@@ -311,7 +388,7 @@ export function applyTreeSnapshot(snap: LoomTreeJSON): void {
 export function currentLoomTreeSnapshot(): LoomTreeJSON | null {
   if (
     !loomTree.loaded || !loomTree.root_id || !loomTree.active_node_id ||
-    loomTree.tree_format === null || loomTree.saklas_version === null
+    loomTree.tree_format === null || loomTree.drowse_version === null
   ) return null;
   const nodes: LoomNodeJSON[] = [];
   for (const [, node] of loomTree.nodes) nodes.push(node);
@@ -324,7 +401,7 @@ export function currentLoomTreeSnapshot(): LoomTreeJSON | null {
   }
   return {
     tree_format: loomTree.tree_format,
-    saklas_version: loomTree.saklas_version,
+    drowse_version: loomTree.drowse_version,
     root_id: loomTree.root_id,
     active_node_id: loomTree.active_node_id,
     rev: loomTree.rev,
@@ -356,6 +433,8 @@ export function applyTreeDelta(ev: {
   // First event after bootstrap is the rev=1 mutation; accept rev > 0
   // when our local rev is 0 (cold start) without claiming a gap.
   if (loomTree.loaded && ev.rev > loomTree.rev + 1) return false;
+  invalidateChangedEdgeLabels([...(ev.added ?? []), ...(ev.updated ?? [])], ev.removed ?? []);
+  if (replayContextChanged(ev.updated ?? [], ev.removed ?? [])) invalidateTokenReadoutCache();
   // ``added``: inject node + extend its parent's children list.  Node
   // payloads from the server may include a ``children`` field
   // (the server serializer adds it); use it only to seed children_of, while
@@ -402,10 +481,6 @@ export function applyTreeDelta(ev: {
     if (newRoot) loomTree.root_id = newRoot.id;
   }
   loomTree.rev = ev.rev;
-  // Phase 5: applied_steering strings can shift after edit/regen, so
-  // bust the edge-label cache wholesale on any mutation.  Cheap — the
-  // sidebar refetches lazily on first re-render.
-  invalidateEdgeLabels();
   recomputeActivePath();
   syncChatLogFromTree();
   hydrateProbeRackFromActiveNode();
@@ -414,28 +489,49 @@ export function applyTreeDelta(ev: {
 
 /** Bootstrap fetch of the required tree surface. */
 export async function refreshLoomTree(): Promise<void> {
+  // Streaming events already maintain the map; a queued read would wait for
+  // the entire reply and can time out in the browser runtime.
+  if (genStatus.active && loomTree.loaded) return;
   try {
     const snap = await apiTree.get();
-    applyTreeSnapshot(snap);
+    applyTreeSnapshot(snap, { reconcileEdgeLabels: true });
   } catch (e) {
-    loomTree.error = e instanceof Error ? e.message : String(e);
-    pushToast(`tree: ${loomTree.error}`, { kind: "error" });
+    const msg = userFacingError(e, "The conversation map could not be refreshed.");
+    // A refresh failure after the initial snapshot is transient. Keep the
+    // last authoritative map usable instead of replacing it with the empty
+    // fatal-error state.
+    if (!loomTree.loaded) loomTree.error = msg;
+    pushToast(`tree: ${msg}`, { kind: "error" });
   }
 }
 
-/** Capture mutation failures on ``loomTree.error`` AND a toast.
- *
- *  ``loomTree.error`` is the persistent banner inside the empty-state
- *  branch of the sidebar; for trees with nodes that branch never
- *  renders, so the toast is the only surface the user sees.  Fires
- *  for every mutator path so 409s on edit-during-gen, network drops,
- *  ambiguous prefix rejections, and any other server error reach the
- *  user instead of vanishing silently.
- */
+/** Surface mutation failures without invalidating the loaded tree. */
 function _captureLoomError(op: string, e: unknown): void {
-  const msg = e instanceof Error ? e.message : String(e);
-  loomTree.error = msg;
+  const msg = userFacingError(e, "That conversation change could not be saved.");
   pushToast(`${op}: ${msg}`, { kind: "error" });
+}
+
+export const LOOM_DELETE_DURING_GENERATION_MESSAGE =
+  "Finish or stop the current reply before deleting this branch.";
+
+/** True when deleting ``nodeId`` would intersect the runtime's in-flight
+ * generation reservation. Unrelated branches remain editable while a reply
+ * is being generated, matching the authoritative Loom policy. */
+export function loomNodeIntersectsGeneration(nodeId: string): boolean {
+  if (!genStatus.active) return false;
+  const reservedId = loomTree.pendingNodeId;
+  if (!reservedId || !loomTree.nodes.has(reservedId)) return true;
+  if (nodeId === reservedId) return true;
+
+  const isAncestor = (ancestorId: string, descendantId: string): boolean => {
+    let current = loomTree.nodes.get(descendantId) ?? null;
+    while (current?.parent_id) {
+      if (current.parent_id === ancestorId) return true;
+      current = loomTree.nodes.get(current.parent_id) ?? null;
+    }
+    return false;
+  };
+  return isAncestor(nodeId, reservedId) || isAncestor(reservedId, nodeId);
 }
 
 /** Right-click ops + keyboard shortcuts route through these helpers.
@@ -486,12 +582,21 @@ export async function loomSwapSeat(node_id: string): Promise<string | null> {
   return loomBranch(node_id, node.text, flipped);
 }
 
-export async function loomDelete(node_id: string): Promise<void> {
+export async function loomDelete(node_id: string): Promise<boolean> {
+  if (loomNodeIntersectsGeneration(node_id)) {
+    pushToast(LOOM_DELETE_DURING_GENERATION_MESSAGE, { kind: "warning" });
+    return false;
+  }
   try {
+    const parentId = loomTree.nodes.get(node_id)?.parent_id;
+    if (!parentId) return false;
+    if (loomTree.activePath.includes(node_id)) await apiTree.navigate(parentId);
     await apiTree.delete(node_id);
     await refreshLoomTree();
+    return true;
   } catch (e) {
     _captureLoomError("delete", e);
+    return false;
   }
 }
 
@@ -530,6 +635,7 @@ export async function loomRegenerateNode(
   try {
     await sendGenerate({
       parent_node_id: parentId,
+      append_same_role: false,
       n,
       recipe_override: opts.recipe_override ?? undefined,
       generate_seat: node.role,

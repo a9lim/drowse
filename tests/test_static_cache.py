@@ -12,6 +12,8 @@ not run in the CPU-only matrix.
 """
 from __future__ import annotations
 
+import gc
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -20,17 +22,15 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from saklas.core import static_cache as cg
+from drowse.core import static_cache as cg
 
 
 @pytest.fixture(autouse=True)
 def _isolate_cg_module_caches():
     """Clear the module-level support/warn caches around every test.
 
-    ``is_static_cache_supported`` memoizes by ``id(model)``, which Python can
-    reuse across the throwaway ``_FakeModel`` instances different tests build —
-    so without isolation a cached ``(id, device) -> True`` can leak into a later
-    test that expects a construction failure.  Clear before and after.
+    Keep each test independent even though the production caches now use weak
+    model keys and release entries automatically with the model.
     """
     cg._support_cache.clear()
     cg._warned_models.clear()
@@ -217,6 +217,28 @@ def test_support_probe_cache_survives_compile_wrapper(monkeypatch: pytest.Monkey
     assert len(calls) == 1
 
 
+def test_support_probe_cache_releases_collected_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import transformers
+
+    class _FakeStaticCache:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self.layers = [object()]
+
+    monkeypatch.setattr(transformers, "StaticCache", _FakeStaticCache, raising=False)
+    model: Any = _FakeModel()
+    model_ref = weakref.ref(model)
+    assert cg.is_static_cache_supported(model, "cpu") == (True, None)
+    assert len(cg._support_cache) == 1
+
+    del model
+    gc.collect()
+
+    assert model_ref() is None
+    assert len(cg._support_cache) == 0
+
+
 def test_make_static_cache_early_initializes_standard_gqa_geometry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -271,7 +293,7 @@ def test_make_static_cache_early_initializes_standard_gqa_geometry(
 def test_session_reuses_and_resets_generation_static_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
     class _Cache:
         def __init__(self, capacity: int) -> None:
@@ -303,10 +325,10 @@ def test_session_reuses_and_resets_generation_static_cache(
         return cache
 
     monkeypatch.setattr(
-        "saklas.core.static_cache.make_static_cache",
+        "drowse.core.static_cache.make_static_cache",
         _make_static_cache,
     )
-    session = SaklasSession.__new__(SaklasSession)
+    session = DrowseSession.__new__(DrowseSession)
     session._device = torch.device("cpu")
     session._generation_static_cache = None
     session._generation_static_cache_len = 0
@@ -343,7 +365,7 @@ def test_session_reuses_and_resets_generation_static_cache(
 
 
 def test_cuda_graphs_flag_parses():
-    from saklas import cli
+    from drowse import cli
     args = cli.parse_args(["serve", "google/gemma-2-2b-it"])
     assert getattr(args, "cuda_graphs", False) is False
     args = cli.parse_args(["serve", "google/gemma-2-2b-it", "--cuda-graphs"])
@@ -351,9 +373,9 @@ def test_cuda_graphs_flag_parses():
 
 
 def test_yaml_cuda_graphs_true_folds_onto_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    from saklas import cli
-    from saklas.cli import runners as cli_runners
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    from drowse import cli
+    from drowse.cli import runners as cli_runners
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "on.yaml"
     p.write_text("model: google/gemma-2-2b-it\ncuda_graphs: true\n")
     args = cli.parse_args(["serve", "-c", str(p)])
@@ -365,7 +387,7 @@ def test_yaml_cuda_graphs_true_folds_onto_args(monkeypatch: pytest.MonkeyPatch, 
 def test_yaml_cuda_graphs_invalid_type_errors(tmp_path: Path):
     """``cuda_graphs: "true"`` (a YAML string) must reject rather than
     coerce — coercion would silently turn the static-cache path on."""
-    from saklas.cli.config_file import ConfigFile, ConfigFileError
+    from drowse.cli.config_file import ConfigFile, ConfigFileError
     p = tmp_path / "bad.yaml"
     p.write_text('cuda_graphs: "false"\n')
     with pytest.raises(ConfigFileError, match="cuda_graphs must be a boolean"):
@@ -374,9 +396,9 @@ def test_yaml_cuda_graphs_invalid_type_errors(tmp_path: Path):
 
 def test_yaml_compile_and_cuda_graphs_compose(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Both opt-ins in one YAML — the runner sees both args set."""
-    from saklas import cli
-    from saklas.cli import runners as cli_runners
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    from drowse import cli
+    from drowse.cli import runners as cli_runners
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "on.yaml"
     p.write_text(
         "model: google/gemma-2-2b-it\ncompile: true\ncuda_graphs: true\n"

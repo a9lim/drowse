@@ -1,17 +1,19 @@
-"""Tests for SaklasSession programmatic API.
-Requires a GPU (CUDA or Apple Silicon MPS) and downloads
-google/gemma-3-4b-it (~8GB) on first run.
+"""Tests for DrowseSession programmatic API.
+Requires a GPU (CUDA or Apple Silicon MPS) and downloads the public
+SmolLM2-360M-Instruct test model on first run. Override with
+``DROWSE_TEST_MODEL``.
 """
 from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 import pytest
 import torch
-from saklas.core.profile import Profile
-from saklas.core.results import GenerationResult, RunSet, TokenEvent
+from drowse.core.profile import Profile
+from drowse.core.results import GenerationResult, RunSet, TokenEvent
+from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
 
 if TYPE_CHECKING:
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
 _HAS_GPU = torch.cuda.is_available() or torch.backends.mps.is_available()
 pytestmark = [
@@ -22,11 +24,11 @@ pytestmark = [
     ),
 ]
 
-MODEL_ID = "google/gemma-3-4b-it"
+MODEL_ID = gpu_model_id()
 
 
 def _corpus(response: str) -> list[str]:
-    from saklas.core.capture import _load_baseline_prompts
+    from drowse.core.capture import _load_baseline_prompts
 
     return [response] * len(_load_baseline_prompts())
 
@@ -34,54 +36,56 @@ def _corpus(response: str) -> list[str]:
 @pytest.fixture(scope="module")
 def session(tmp_path_factory: pytest.TempPathFactory):
     import os
-    from saklas.core.session import SaklasSession
-    # Isolate $SAKLAS_HOME so this module's extract/merge writes (e.g.
+    from drowse.core.session import DrowseSession
+    # Isolate $DROWSE_HOME so this module's extract/merge writes (e.g.
     # local/formal.casual, happy.sad, honest) land in a throwaway cache instead
-    # of the user's real ~/.saklas — where they would shadow bundled manifolds of
+    # of the user's real ~/.drowse — where they would shadow bundled manifolds of
     # the same name and break bare-name resolution (AmbiguousSelectorError)
     # across the whole suite on the next run.
-    home = tmp_path_factory.mktemp("saklas_home")
-    prev = os.environ.get("SAKLAS_HOME")
-    os.environ["SAKLAS_HOME"] = str(home)
+    home = tmp_path_factory.mktemp("drowse_home")
+    prev = os.environ.get("DROWSE_HOME")
+    os.environ["DROWSE_HOME"] = str(home)
     # device="auto" picks cuda > mps > cpu; skipif above guarantees a GPU.
     try:
-        s = SaklasSession.from_pretrained(MODEL_ID, device="auto", probes=["register"])
+        s = load_or_skip_inaccessible(
+            lambda: DrowseSession.from_pretrained(MODEL_ID, device="auto", probes=["register"]),
+            MODEL_ID,
+        )
         yield s
         s.close()
     finally:
         if prev is None:
-            os.environ.pop("SAKLAS_HOME", None)
+            os.environ.pop("DROWSE_HOME", None)
         else:
-            os.environ["SAKLAS_HOME"] = prev
+            os.environ["DROWSE_HOME"] = prev
 
 class TestConstruction:
-    def test_model_info(self, session: SaklasSession) -> None:
+    def test_model_info(self, session: DrowseSession) -> None:
         info = session.model_info
-        # gemma-3-4b-it loads as the text-only submodule of a multimodal checkpoint,
-        # so model_type is "gemma3_text" (see model.py:_load_text_from_multimodal).
-        assert info["model_type"].startswith("gemma3")
+        assert isinstance(info["model_type"], str)
+        assert info["model_type"]
         assert info["hidden_dim"] > 0
         assert info["num_layers"] > 0
 
-    def test_config_defaults(self, session: SaklasSession) -> None:
+    def test_config_defaults(self, session: DrowseSession) -> None:
         assert session.config.temperature == 1.0
         assert session.config.top_p == 0.9
         assert session.config.max_new_tokens == 1024
 
-    def test_probes_loaded(self, session: SaklasSession) -> None:
+    def test_probes_loaded(self, session: DrowseSession) -> None:
         assert len(session.probes) > 0
 
-    def test_history_starts_empty(self, session: SaklasSession) -> None:
+    def test_history_starts_empty(self, session: DrowseSession) -> None:
         assert session.tree.messages_for() == []
 
-    def test_vectors_starts_empty(self, session: SaklasSession) -> None:
+    def test_vectors_starts_empty(self, session: DrowseSession) -> None:
         assert session.profiles == {}
 
-    def test_last_result_starts_none(self, session: SaklasSession) -> None:
+    def test_last_result_starts_none(self, session: DrowseSession) -> None:
         assert session.last_result is None
 
 class TestSteering:
-    def test_extract_and_steer(self, session: SaklasSession) -> None:
+    def test_extract_and_steer(self, session: DrowseSession) -> None:
         name, profile = session.extract_from_corpora(
             "happy", _corpus("I am happy"), _corpus("I am sad"),
         )
@@ -92,24 +96,24 @@ class TestSteering:
         # profile registry stores raw per-layer tensor dicts (wrap in Profile for the public view).
         assert isinstance(session.profiles["happy"], dict)
 
-    def test_unsteer(self, session: SaklasSession) -> None:
+    def test_unsteer(self, session: DrowseSession) -> None:
         session.unsteer("happy")
         assert "happy" not in session.profiles
 
-    def test_extract_curated(self, session: SaklasSession) -> None:
+    def test_extract_curated(self, session: DrowseSession) -> None:
         name, profile = session.extract("happy", baseline="sad")
         assert name == "happy.sad"
         assert isinstance(profile, Profile)
         assert len(profile) > 0
 
-    def test_extract_datasource(self, session: SaklasSession) -> None:
+    def test_extract_datasource(self, session: DrowseSession) -> None:
         name, profile = session.extract_from_corpora(
             "formal.casual", _corpus("formal"), _corpus("casual"),
         )
         assert isinstance(profile, Profile)
 
 class TestMonitoring:
-    def test_monitor_and_unmonitor(self, session: SaklasSession) -> None:
+    def test_monitor_and_unmonitor(self, session: DrowseSession) -> None:
         # Extract registers the folded direction; ``add_probe`` resolves it
         # (the unified probe API — one attach for vector + manifold probes).
         name, _profile = session.extract_from_corpora(
@@ -122,12 +126,16 @@ class TestMonitoring:
 
 class TestLifecycle:
     def test_context_manager(self):
-        from saklas.core.session import SaklasSession
-        with SaklasSession.from_pretrained(MODEL_ID, device="auto", probes=[]) as s:
-            assert s.model_info["model_type"].startswith("gemma3")
+        from drowse.core.session import DrowseSession
+        created = load_or_skip_inaccessible(
+            lambda: DrowseSession.from_pretrained(MODEL_ID, device="auto", probes=[]),
+            MODEL_ID,
+        )
+        with created as s:
+            assert s.model_info["model_type"]
 
 class TestGeneration:
-    def test_generate_unsteered(self, session: SaklasSession) -> None:
+    def test_generate_unsteered(self, session: DrowseSession) -> None:
         result = session.generate("Say hello in one word.")
         assert isinstance(result, RunSet)
         assert isinstance(result.first, GenerationResult)
@@ -138,7 +146,7 @@ class TestGeneration:
         assert single.elapsed > 0
         assert single.steering_alphas == {}
 
-    def test_generate_blocking_messages(self, session: SaklasSession) -> None:
+    def test_generate_blocking_messages(self, session: DrowseSession) -> None:
         result = session.generate([
             {"role": "user", "content": "Say hello in one word."},
         ])
@@ -146,7 +154,7 @@ class TestGeneration:
         assert isinstance(result.first, GenerationResult)
         assert len(result.first.text) > 0
 
-    def test_generate_appends_to_history(self, session: SaklasSession) -> None:
+    def test_generate_appends_to_history(self, session: DrowseSession) -> None:
         session.clear_history()
         session.generate("Say hi.")
         messages = session.tree.messages_for()
@@ -154,7 +162,7 @@ class TestGeneration:
         assert messages[0]["role"] == "user"
         assert messages[1]["role"] == "assistant"
 
-    def test_generate_with_alphas(self, session: SaklasSession) -> None:
+    def test_generate_with_alphas(self, session: DrowseSession) -> None:
         name, profile = session.extract_from_corpora(
             "formal.casual", _corpus("formal"), _corpus("casual"),
         )
@@ -163,18 +171,18 @@ class TestGeneration:
         assert result.steering_alphas == {name: 0.1}
         session.unsteer(name)
 
-    def test_generate_with_probes(self, session: SaklasSession) -> None:
+    def test_generate_with_probes(self, session: DrowseSession) -> None:
         session.clear_history()
         result = session.generate("Tell me something exciting!").first
         if session.probes:
             assert isinstance(result.probe_readings, dict)
 
-    def test_last_result(self, session: SaklasSession) -> None:
+    def test_last_result(self, session: DrowseSession) -> None:
         session.clear_history()
         result = session.generate("Hello.")
         assert session.last_result is result.first
 
-    def test_ab_comparison(self, session: SaklasSession) -> None:
+    def test_ab_comparison(self, session: DrowseSession) -> None:
         """A/B test: same prompt, with and without steering."""
         name, profile = session.extract_from_corpora(
             "happy", _corpus("I am happy"), _corpus("I am sad"),
@@ -191,7 +199,7 @@ class TestGeneration:
         assert len(unsteered.text) > 0
         session.unsteer(name)
 
-    def test_unknown_vector_raises(self, session: SaklasSession) -> None:
+    def test_unknown_vector_raises(self, session: DrowseSession) -> None:
         with pytest.raises(KeyError, match="nonexistent"):
             session.generate("Hello.", steering="0.1 nonexistent")
 
@@ -199,7 +207,7 @@ class TestCliRoundTrip:
     def test_extract_cli_roundtrip(self, tmp_path: Path) -> None:
         import subprocess
         import sys
-        from saklas.io.paths import manifold_dir, safe_model_id
+        from drowse.io.paths import manifold_dir, safe_model_id
 
         folder = manifold_dir("local", "happy.sad")
         sid = safe_model_id(MODEL_ID)
@@ -209,7 +217,7 @@ class TestCliRoundTrip:
         try:
             proc = subprocess.run(
                 [
-                    sys.executable, "-m", "saklas", "manifold", "extract",
+                    sys.executable, "-m", "drowse", "manifold", "extract",
                     "happy.sad", "-m", MODEL_ID, "--namespace", "local",
                 ],
                 capture_output=True, text=True, timeout=600,
@@ -229,7 +237,7 @@ class TestCliRoundTrip:
 
 
 class TestStreamingGeneration:
-    def test_generate_stream(self, session: SaklasSession) -> None:
+    def test_generate_stream(self, session: DrowseSession) -> None:
         session.clear_history()
         tokens = []
         for event in session.generate_stream("Say hello."):
@@ -240,7 +248,7 @@ class TestStreamingGeneration:
         assert session.last_result is not None
         assert session.last_result.token_count == len(tokens)
 
-    def test_stream_with_alphas(self, session: SaklasSession) -> None:
+    def test_stream_with_alphas(self, session: DrowseSession) -> None:
         name, profile = session.extract_from_corpora(
             "happy", _corpus("I am happy"), _corpus("I am sad"),
         )
@@ -267,7 +275,7 @@ class TestAblation:
         "Deferred to the monitor-shape pass (GPU, owner: a9); also revisit the "
         "fixture, which bootstraps the dropped 'affect' category."
     ))
-    def test_ablation_suppresses_self_probe_score(self, session: SaklasSession) -> None:
+    def test_ablation_suppresses_self_probe_score(self, session: DrowseSession) -> None:
         """Ablating a concept suppresses its own direction in activation space.
 
         See the skip reason: the original pinned the removed Euclidean monitor;
@@ -276,9 +284,9 @@ class TestAblation:
         """
 
 
-def test_return_hidden_round_trip(session: SaklasSession) -> None:
+def test_return_hidden_round_trip(session: DrowseSession) -> None:
     """return_hidden=True populates hidden_states; score_hidden round-trips."""
-    from saklas import SamplingConfig
+    from drowse import SamplingConfig
 
     num_layers = len(session._layers)
     hidden_dim = session.model_info["hidden_dim"]
@@ -324,8 +332,8 @@ def test_return_hidden_round_trip(session: SaklasSession) -> None:
             assert abs(a - b) < tol, f"probe {name}: {a} vs {b}"
 
 
-def test_return_hidden_false_leaves_hidden_states_none(session: SaklasSession) -> None:
-    from saklas import SamplingConfig
+def test_return_hidden_false_leaves_hidden_states_none(session: DrowseSession) -> None:
+    from drowse import SamplingConfig
 
     result = session.generate(
         "Hello.",
@@ -336,10 +344,10 @@ def test_return_hidden_false_leaves_hidden_states_none(session: SaklasSession) -
 
 class TestPrefixCache:
     """Prefix KV cache: opt-in optimization for batch workloads with a
-    shared chat prefix.  See ``SaklasSession.cache_prefix``.
+    shared chat prefix.  See ``DrowseSession.cache_prefix``.
     """
 
-    def _shared_prefix_messages(self, session: SaklasSession, prompt_body: str):
+    def _shared_prefix_messages(self, session: DrowseSession, prompt_body: str):
         """Build a (prefix_messages, full_messages) pair where the
         full chat-template encoding of full_messages begins with the
         prefix_messages encoding.
@@ -358,7 +366,7 @@ class TestPrefixCache:
         # ISN'T sufficient — the False-encoded prefix may differ
         # by trailing tokens.  Instead, encode the prefix as a token
         # tensor to bypass the issue.
-        from saklas.core.generation import build_chat_input
+        from drowse.core.generation import build_chat_input
 
         prefix_msg = [
             {"role": "user", "content": "Be concise. Always end with a period."},
@@ -389,8 +397,8 @@ class TestPrefixCache:
         prefix_ids_trim = prefix_ids[:, :L]
         return prefix_ids_trim, full_msg
 
-    def test_cache_hit_matches_no_cache_output(self, session: SaklasSession) -> None:
-        from saklas import SamplingConfig
+    def test_cache_hit_matches_no_cache_output(self, session: DrowseSession) -> None:
+        from drowse import SamplingConfig
 
         session.clear_history()
         prefix_ids, full_msg = self._shared_prefix_messages(
@@ -423,7 +431,7 @@ class TestPrefixCache:
         # Cleanup so other tests aren't affected.
         session.cache_prefix(None)
 
-    def test_steering_invalidates_cache(self, session: SaklasSession) -> None:
+    def test_steering_invalidates_cache(self, session: DrowseSession) -> None:
         # Warm the cache.
         prefix_ids, _ = self._shared_prefix_messages(session, "Hello.")
         session.cache_prefix(prefix_ids)

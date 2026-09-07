@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polythetic.ai/schemas/release-corpus-v1.json",
+  "title": "Polythetic hosted release corpus",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "algorithm",
+    "generatorSha256",
+    "sourceManifestSha256",
+    "source",
+    "license",
+    "wordSeeds",
+    "selection",
+    "outputs"
+  ],
+  "properties": {
+    "$schema": { "const": "https://polythetic.ai/schemas/release-corpus-v1.json" },
+    "schemaVersion": { "const": 1 },
+    "algorithm": { "const": "polythetic-release-corpus-v1" },
+    "generatorSha256": { "$ref": "#/$defs/sha256" },
+    "sourceManifestSha256": { "$ref": "#/$defs/sha256" },
+    "source": { "$ref": "https://polythetic.ai/schemas/release-corpus-source-v1.json#/$defs/source" },
+    "license": { "$ref": "https://polythetic.ai/schemas/release-corpus-source-v1.json#/$defs/license" },
+    "wordSeeds": { "$ref": "https://polythetic.ai/schemas/release-corpus-source-v1.json#/$defs/wordSeeds" },
+    "selection": { "$ref": "https://polythetic.ai/schemas/release-corpus-source-v1.json#/$defs/selection" },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sae", "jlens", "words"],
+      "properties": {
+        "sae": { "$ref": "#/$defs/corpusOutput" },
+        "jlens": { "$ref": "#/$defs/corpusOutput" },
+        "words": { "$ref": "#/$defs/wordOutput" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "corpusOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes", "documents", "characters"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "$ref": "#/$defs/positiveInteger" },
+        "documents": { "$ref": "#/$defs/positiveInteger" },
+        "characters": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "wordOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes", "count", "candidateCount", "tokenIds"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "$ref": "#/$defs/positiveInteger" },
+        "count": { "$ref": "#/$defs/positiveInteger" },
+        "candidateCount": { "$ref": "#/$defs/positiveInteger" },
+        "tokenIds": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 """Tests for the cross-branch joint-logprob computation
-(``saklas.core.joint_logprobs``).
+(``drowse.core.joint_logprobs``).
 
 Covers the pure-math helpers in isolation — building a real model would
 load weights and a tokenizer, but the inner alignment + lookup is a
@@ -16,7 +16,8 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.joint_logprobs import (
+from drowse.core.generation import GenerationConfig
+from drowse.core.joint_logprobs import (
     JointLogprobRow,
     JointLogprobs,
     _approx_kl_topk,
@@ -26,14 +27,32 @@ from saklas.core.joint_logprobs import (
     _shared_prefix_len,
     reorient_for_request,
 )
-from saklas.core.generation import GenerationConfig
-from saklas.core.triggers import TriggerContext
+from drowse.server.tree_routes import (
+    _JOINT_LOGPROB_CACHE_MAX,
+    _cached_joint_logprobs,
+    _remember_joint_logprobs,
+)
+from drowse.core.triggers import TriggerContext
 from tests.conftest import FakeLogitsModel
 
 
 # ---------------------------------------------------------------------------
 # Shared-prefix walker
 # ---------------------------------------------------------------------------
+
+
+def test_joint_logprob_cache_is_bounded_and_lru() -> None:
+    cache: dict[int, str] = {}
+    for key in range(_JOINT_LOGPROB_CACHE_MAX):
+        _remember_joint_logprobs(cache, key, str(key))
+
+    assert _cached_joint_logprobs(cache, 0) == "0"
+    _remember_joint_logprobs(cache, _JOINT_LOGPROB_CACHE_MAX, "new")
+
+    assert len(cache) == _JOINT_LOGPROB_CACHE_MAX
+    assert 0 in cache
+    assert 1 not in cache
+    assert cache[_JOINT_LOGPROB_CACHE_MAX] == "new"
 
 
 def test_shared_prefix_len_identical():
@@ -313,7 +332,7 @@ class _MockTree:
     """Minimal LoomTree surface the joint-logprob path consumes."""
 
     def __init__(self):
-        from saklas.core.loom import LoomNode
+        from drowse.core.loom import LoomNode
 
         # parent (user node) and two assistant children with different
         # assistant text.  The base-model fallback in build_chat_input
@@ -328,7 +347,7 @@ class _MockTree:
         self.nodes = {"root": root, "u1": user, "a1": a1, "a2": a2}
 
     def messages_for(self, leaf_id: str, *, include_system: bool = False):
-        from saklas.core.loom import LoomNode
+        from drowse.core.loom import LoomNode
 
         # Walk parent chain; return [{role, content}], skip synthetic
         # root unless include_system is true.
@@ -359,11 +378,11 @@ class _MockSession:
     def __init__(self):
         from types import MethodType
 
-        from saklas.core.instruments.geometry import GeometryInstrument
-        from saklas.core.instruments.lens import LensInstrument
-        from saklas.core.instruments.sae import SaeInstrument
-        from saklas.core.instruments.types import ReadRequest
-        from saklas.core.session import SaklasSession
+        from drowse.core.instruments.geometry import GeometryInstrument
+        from drowse.core.instruments.lens import LensInstrument
+        from drowse.core.instruments.sae import SaeInstrument
+        from drowse.core.instruments.types import ReadRequest
+        from drowse.core.session import DrowseSession
 
         self.tokenizer = _MockTokenizer()
         # Build a vocabulary that covers the strings we'll feed.  The
@@ -403,7 +422,7 @@ class _MockSession:
         self._begin_capture = _bind_all
         self._end_capture = lambda: None
         self._close_instrument_runs = MethodType(
-            SaklasSession._close_instrument_runs, self,
+            DrowseSession._close_instrument_runs, self,
         )
         self._steering_needs_probe_gating = lambda: False
         self._build_gating_score_callback = lambda: None
@@ -423,7 +442,7 @@ def test_gated_replay_passes_the_forward_step_to_the_gate_callback():
     zero-arg call TypeErrors under the step-aware contract (sol's observe
     round-2 P1: the rest of this suite never exercises gated steering, so
     the regression was invisible here)."""
-    from saklas.core.joint_logprobs import compute_joint_logprobs
+    from drowse.core.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
     steps: list[int] = []
@@ -449,7 +468,7 @@ def test_gated_replay_passes_the_forward_step_to_the_gate_callback():
 
 
 def test_compute_joint_logprobs_runs_end_to_end_on_mock():
-    from saklas.core.joint_logprobs import compute_joint_logprobs
+    from drowse.core.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
     result = compute_joint_logprobs(session, "a1", "a2")
@@ -486,7 +505,7 @@ def test_joint_logprobs_closes_runs_on_replay_failure():
     """A mid-replay model failure must still close every bound run — the
     bind happens inside the replay ``try`` so even a partial-bind failure
     reaches the teardown."""
-    from saklas.core.joint_logprobs import compute_joint_logprobs
+    from drowse.core.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
 
@@ -503,7 +522,7 @@ def test_joint_logprobs_closes_runs_on_replay_failure():
 def test_joint_logprobs_closes_runs_when_detach_raises():
     """Teardown is exception-hard: a raising hook detach must not skip run
     closure (a leaked bound run pins a stale lens between generations)."""
-    from saklas.core.joint_logprobs import compute_joint_logprobs
+    from drowse.core.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
 
@@ -517,7 +536,7 @@ def test_joint_logprobs_closes_runs_when_detach_raises():
 
 
 def test_compute_joint_logprobs_to_dict_round_trip():
-    from saklas.core.joint_logprobs import compute_joint_logprobs
+    from drowse.core.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
     result = compute_joint_logprobs(session, "a1", "a2")

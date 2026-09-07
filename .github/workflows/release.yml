@@ -16,19 +16,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read version from saklas/__init__.py
+      - name: Read version from drowse/__init__.py
         # Source of truth for the version is ``__version__`` in
-        # saklas/__init__.py; pyproject.toml resolves it dynamically via
+        # drowse/__init__.py; pyproject.toml resolves it dynamically via
         # setuptools.dynamic.attr.  Parse the literal directly here rather
         # than ``pip install -e .`` just to read it.
         id: ver
         run: |
           python - <<'EOF' >> "$GITHUB_OUTPUT"
           import pathlib, re
-          text = pathlib.Path("saklas/__init__.py").read_text()
+          text = pathlib.Path("drowse/__init__.py").read_text()
           match = re.search(r'^__version__ = "([^"]+)"', text, re.M)
           if match is None:
-              raise SystemExit("saklas/__init__.py has no __version__")
+              raise SystemExit("drowse/__init__.py has no __version__")
           print(f"version={match.group(1)}")
           EOF
 

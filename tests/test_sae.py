@@ -6,9 +6,9 @@ from typing import Any
 import pytest
 
 
-def test_errors_subclass_saklas_error():
-    from saklas.core.errors import (
-        SaklasError,
+def test_errors_subclass_drowse_error():
+    from drowse.core.errors import (
+        DrowseError,
         SaeBackendImportError,
         SaeReleaseNotFoundError,
         SaeModelMismatchError,
@@ -24,11 +24,11 @@ def test_errors_subclass_saklas_error():
         AmbiguousVariantError,
         UnknownVariantError,
     ):
-        assert issubclass(cls, SaklasError)
+        assert issubclass(cls, DrowseError)
 
 
 def test_errors_preserve_stdlib_mro():
-    from saklas.core.errors import (
+    from drowse.core.errors import (
         SaeBackendImportError,
         SaeReleaseNotFoundError,
         SaeModelMismatchError,
@@ -45,7 +45,7 @@ def test_errors_preserve_stdlib_mro():
 
 
 def test_sae_backend_protocol_shape():
-    from saklas.core.sae import SaeBackend, MockSaeBackend
+    from drowse.core.sae import SaeBackend, MockSaeBackend
     # Structural conformance — downstream code type-hints `SaeBackend | None`
     # and we want the mock to pass isinstance checks at runtime.
     assert hasattr(SaeBackend, "encode_layer")
@@ -61,7 +61,7 @@ def test_mock_sae_backend_roundtrip():
     needing sae_lens or real SAE weights.
     """
     import torch
-    from saklas.core.sae import MockSaeBackend
+    from drowse.core.sae import MockSaeBackend
 
     backend = MockSaeBackend(
         layers=frozenset({4, 8, 12}),
@@ -85,7 +85,7 @@ def test_mock_sae_backend_roundtrip():
 def test_mock_sae_backend_custom_encode_decode():
     """MockSaeBackend lets tests inject per-layer transforms for non-identity cases."""
     import torch
-    from saklas.core.sae import MockSaeBackend
+    from drowse.core.sae import MockSaeBackend
 
     backend = MockSaeBackend(
         layers=frozenset({3}),
@@ -104,7 +104,7 @@ def test_mock_sae_backend_custom_encode_decode():
 def test_mock_sae_backend_passes_layer_idx_to_overrides():
     """Per-layer fns receive the layer index so tests can verify dispatch."""
     import torch
-    from saklas.core.sae import MockSaeBackend
+    from drowse.core.sae import MockSaeBackend
 
     seen: list[int] = []
     backend = MockSaeBackend(
@@ -164,7 +164,7 @@ def test_sae_lens_backend_encodes_and_decodes(monkeypatch: pytest.MonkeyPatch):
     }
     monkeypatch.setitem(sys.modules, "sae_lens", fake_sae_lens)
 
-    from saklas.core.sae import SaeLensBackend, load_sae_backend
+    from drowse.core.sae import SaeLensBackend, load_sae_backend
     backend = load_sae_backend("mock-canonical", model_id="test-model", device="cpu")
     assert isinstance(backend, SaeLensBackend)
     assert backend.layers == frozenset({2, 5, 8})
@@ -193,7 +193,7 @@ def test_sae_lens_backend_encodes_and_decodes(monkeypatch: pytest.MonkeyPatch):
 
 def test_installed_sae_lens_registry_api_resolves_without_loading_weights() -> None:
     pytest.importorskip("sae_lens")
-    from saklas.core.sae import SaeLensBackend, load_sae_backend
+    from drowse.core.sae import SaeLensBackend, load_sae_backend
 
     backend = load_sae_backend(
         "gemma-scope-2-4b-it-res",
@@ -258,7 +258,7 @@ def test_provider_backend_records_the_resolved_hub_commit(
     monkeypatch.setitem(sys.modules, "sae_lens", fake_sae_lens)
     monkeypatch.setattr(huggingface_hub, "HfApi", FakeHfApi)
 
-    from saklas.core.sae import load_sae_backend
+    from drowse.core.sae import load_sae_backend
 
     backend = load_sae_backend(
         "mock-provider", model_id="test-model", device="cpu",
@@ -285,7 +285,7 @@ def test_release_discovery_omits_known_non_residual_families(
     }
     monkeypatch.setitem(sys.modules, "sae_lens", fake)
 
-    from saklas.core.sae import list_sae_releases
+    from drowse.core.sae import list_sae_releases
 
     assert [row["release"] for row in list_sae_releases("m")] == [
         "custom", "scope-res",
@@ -294,8 +294,8 @@ def test_release_discovery_omits_known_non_residual_families(
 
 def test_loaded_attention_hook_is_rejected_before_use() -> None:
     import types
-    from saklas.core.errors import SaeCoverageError
-    from saklas.core.sae import _validate_residual_hook
+    from drowse.core.errors import SaeCoverageError
+    from drowse.core.sae import _validate_residual_hook
 
     sae = types.SimpleNamespace(cfg=types.SimpleNamespace(
         metadata={"hook_name": "blocks.22.attn.hook_z"},
@@ -305,8 +305,8 @@ def test_loaded_attention_hook_is_rejected_before_use() -> None:
 
 
 def test_residual_width_must_match_model_hidden_size() -> None:
-    from saklas.core.errors import SaeCoverageError
-    from saklas.core.sae import MockSaeBackend, validate_residual_width
+    from drowse.core.errors import SaeCoverageError
+    from drowse.core.sae import MockSaeBackend, validate_residual_width
 
     backend = MockSaeBackend(layers=frozenset({2}), d_model=3)
     with pytest.raises(SaeCoverageError, match="model residual stream has width 4"):
@@ -317,8 +317,8 @@ def test_sae_lens_backend_missing_dep_raises(monkeypatch: pytest.MonkeyPatch):
     """When sae_lens isn't installed, load_sae_backend raises SaeBackendImportError."""
     import sys
     monkeypatch.setitem(sys.modules, "sae_lens", None)
-    from saklas.core.sae import load_sae_backend
-    from saklas.core.errors import SaeBackendImportError
+    from drowse.core.sae import load_sae_backend
+    from drowse.core.errors import SaeBackendImportError
     with pytest.raises(SaeBackendImportError):
         load_sae_backend("any", model_id="m", device="cpu")
 
@@ -335,8 +335,8 @@ def test_sae_lens_backend_release_not_found(monkeypatch: pytest.MonkeyPatch):
     fake.SAE = object  # pyright: ignore[reportAttributeAccessIssue]  # types.ModuleType stub has no dynamic attrs
     monkeypatch.setitem(sys.modules, "sae_lens", fake)
 
-    from saklas.core.sae import load_sae_backend
-    from saklas.core.errors import SaeReleaseNotFoundError
+    from drowse.core.sae import load_sae_backend
+    from drowse.core.errors import SaeReleaseNotFoundError
     with pytest.raises(SaeReleaseNotFoundError) as exc:
         load_sae_backend("nonexistent", model_id="m", device="cpu")
     msg = str(exc.value)
@@ -364,8 +364,8 @@ def test_sae_lens_backend_model_mismatch(monkeypatch: pytest.MonkeyPatch):
     }
     monkeypatch.setitem(sys.modules, "sae_lens", fake)
 
-    from saklas.core.sae import load_sae_backend
-    from saklas.core.errors import SaeModelMismatchError
+    from drowse.core.sae import load_sae_backend
+    from drowse.core.errors import SaeModelMismatchError
     with pytest.raises(SaeModelMismatchError):
         load_sae_backend("mock", model_id="my-model", device="cpu")
 
@@ -405,7 +405,7 @@ def test_sae_lens_backend_canonical_layer_map_warns_on_multiple(monkeypatch: pyt
     }
     monkeypatch.setitem(sys.modules, "sae_lens", fake)
 
-    from saklas.core.sae import load_sae_backend
+    from drowse.core.sae import load_sae_backend
     backend = load_sae_backend("mock", model_id="test-model", device="cpu")
     # Warning emitted because layer 0 has two candidates.
     warnings_about_multiple = [w for w in recwarn.list if "multiple SAEs" in str(w.message)]
@@ -415,7 +415,7 @@ def test_sae_lens_backend_canonical_layer_map_warns_on_multiple(monkeypatch: pyt
 
 
 def test_canonical_layer_map_sorts_width_and_l0_numerically() -> None:
-    from saklas.core.sae import _canonical_layer_map
+    from drowse.core.sae import _canonical_layer_map
 
     with pytest.warns(UserWarning, match="multiple SAEs"):
         chosen = _canonical_layer_map({
@@ -437,7 +437,7 @@ def test_canonical_layer_map_prefers_neuronpedia_hosted() -> None:
     # Neuronpedia typically hosts one L0 variant per layer/width, and hosting
     # is where feature labels + the maxActApprox strength unit come from — a
     # hosted SAE beats a narrower/sparser unhosted one.
-    from saklas.core.sae import _canonical_layer_map
+    from drowse.core.sae import _canonical_layer_map
 
     saes_map = {
         "layer_0_width_131k_l0_small": 0,

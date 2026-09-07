@@ -7,20 +7,22 @@
 // owns the pure ramp math (no store dependency); this module is the thin
 // layer that reads ``highlightState`` and applies it to a token.
 
-import { highlightState, highlightScale } from "./stores.svelte";
+import { highlightState, highlightScale, probeRack } from "./stores.svelte";
 import {
+  ENTROPY_TARGET,
+  PROBABILITY_TARGET,
   SURPRISE_TARGET,
+  entropyScore,
   highlightHue,
+  parseProbeTarget,
+  probabilityScore,
   probeScoreForTarget,
   surpriseScore,
   tokenBackgroundStyle,
 } from "./tokens";
 import type { TokenScore } from "./types";
 
-/** The deepest per-layer score row captured for a token, or undefined.
- *  Used as the last fallback before the collapsed single-probe ``score``:
- *  a reloaded tree can carry per-layer rows for a probe whose axis-0
- *  ``probes`` row was never streamed. */
+/** The deepest recorded layer, for the explicitly layer-labeled tooltip. */
 export function latestLayerScores(
   t: TokenScore,
 ): Record<string, number> | undefined {
@@ -36,8 +38,8 @@ export function latestLayerScores(
  *  ``SURPRISE_TARGET`` routes to the logit-pass surprise value.  A real
  *  probe target reads the live per-axis coords first (the full rank-R
  *  reading), then the collapsed axis-0 ``probes`` row (what ``done`` and a
- *  tree reload restore), then the deepest per-layer row, then the cached
- *  single-probe ``score`` (live tokens before ``done``).  Returns
+ *  tree reload restore). A layer-specific or unnamed legacy score cannot
+ *  stand in for the selected probe's aggregate. Returns
  *  ``undefined`` when nothing carries the target — the caller renders
  *  transparent. */
 export function highlightScoreFor(
@@ -46,11 +48,9 @@ export function highlightScoreFor(
 ): number | undefined {
   if (!target) return undefined;
   if (target === SURPRISE_TARGET) return surpriseScore(t.logprob);
-  const direct = probeScoreForTarget(t, target);
-  if (direct !== undefined) return direct;
-  const latest = latestLayerScores(t);
-  if (latest && target in latest) return latest[target];
-  return t.score;
+  if (target === PROBABILITY_TARGET) return probabilityScore(t.logprob);
+  if (target === ENTROPY_TARGET) return entropyScore(t.samplerEntropy);
+  return probeScoreForTarget(t, target);
 }
 
 /** Background style for one token under the current highlight selection.
@@ -58,7 +58,7 @@ export function highlightScoreFor(
  *  Single-probe mode paints a ``background-color``; compare-two paints the
  *  two-stripe (or smooth-blend) gradient, each half on its own scale and
  *  hue — ``SURPRISE_TARGET`` works in either slot and reads in the
- *  logit-space blue regardless of what the other slot holds.  Falls back
+ *  chat accent regardless of what the other slot holds. Falls back
  *  to single-probe rendering when compare-two is on but no second target
  *  is picked. */
 export function highlightStyleFor(
@@ -76,9 +76,16 @@ export function highlightStyleFor(
     highlightState.smoothBlend,
     highlightScale(a),
     compare === null ? undefined : highlightScale(compare),
-    highlightHue(a),
-    compare === null ? undefined : highlightHue(compare),
+    probeHue(a),
+    compare === null ? undefined : probeHue(compare),
   );
+}
+
+function probeHue(target: string) {
+  const info = probeRack.entries.get(parseProbeTarget(target).base)?.info;
+  if (info?.family === "lens") return "surprise";
+  if (info?.family === "sae") return "sae";
+  return highlightHue(target);
 }
 
 /** ``highlightStyleFor`` flattened to an inline ``style`` attribute. */

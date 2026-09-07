@@ -2,7 +2,7 @@
 
 Pure tensor math is tested in ``TestProjectProfile``; the session-level
 integration rides on the same ``_Stub`` pattern used by
-``test_steering_context.py`` — a ``SaklasSession`` that bypasses the
+``test_steering_context.py`` — a ``DrowseSession`` that bypasses the
 model-loading machinery and pre-registers profiles directly.
 
 Mahalanobis-only (4.0 collapse): ``project_profile`` is the closed-form LEACE
@@ -18,15 +18,15 @@ from typing import Any
 import pytest
 import torch
 
-from saklas.core.events import EventBus
-from saklas.core.mahalanobis import WhitenerError
-from saklas.core.session import (
-    SaklasSession, ProfileNotRegisteredError,
+from drowse.core.events import EventBus
+from drowse.core.mahalanobis import WhitenerError
+from drowse.core.session import (
+    DrowseSession, ProfileNotRegisteredError,
 )
-from saklas.core.steering_composer import SteeringComposer
-from saklas.core.steering_expr import parse_expr
-from saklas.core.triggers import Trigger
-from saklas.core.capture import project_profile
+from drowse.core.steering_composer import SteeringComposer
+from drowse.core.steering_expr import parse_expr
+from drowse.core.triggers import Trigger
+from drowse.core.capture import project_profile
 from tests._whitener import synthetic_whitener
 
 
@@ -178,8 +178,8 @@ class TestProjectProfile:
 
 # ---------------------------------------------- session-level integration ---
 
-class _Stub(SaklasSession):
-    """SaklasSession without real model/tokenizer, mirrors test_steering_context.
+class _Stub(DrowseSession):
+    """DrowseSession without real model/tokenizer, mirrors test_steering_context.
 
     Projection materialization is Mahalanobis-only, so the stub exposes a real
     covering whitener over the registered profiles' layer/dim (no model load).
@@ -190,7 +190,7 @@ class _Stub(SaklasSession):
         # v2.2: _push_steering / _pop_steering acquire _gen_lock and
         # consult _gen_phase + _internal_steering_pop.
         self._gen_lock = threading.RLock()
-        from saklas.core.session import GenState
+        from drowse.core.session import GenState
         self._gen_phase = GenState.IDLE
         self._internal_steering_pop = False
         self._layer_means = {}
@@ -344,7 +344,7 @@ class TestLayerMeansLazy:
             called.append(args)
             return {99: torch.tensor([0.0])}
 
-        from saklas.core import session as session_mod
+        from drowse.core import session as session_mod
         monkeypatch.setattr(session_mod, "bootstrap_layer_means", _fail_bootstrap)
         result = s.layer_means
         assert set(result.keys()) == {0}
@@ -355,7 +355,7 @@ class TestLayerMeansLazy:
         """Empty ``self._layer_means`` triggers ``bootstrap_layer_means``
         on first access; result is cached on subsequent calls."""
         s = _Stub({"a": _profile_a()})
-        from saklas.core.session import SaklasSession
+        from drowse.core.session import DrowseSession
         built = {3: torch.tensor([5.0, 6.0]), 4: torch.tensor([7.0, 8.0])}
         calls: list[Any] = []
 
@@ -363,7 +363,7 @@ class TestLayerMeansLazy:
             calls.append(args)
             return built
 
-        from saklas.core import session as session_mod
+        from drowse.core import session as session_mod
 
         # Give the stub the minimal handle attributes the bootstrap call
         # looks at, so the try-block actually runs.
@@ -374,11 +374,11 @@ class TestLayerMeansLazy:
         monkeypatch.setattr(session_mod, "bootstrap_layer_means", _spy)
 
         # First access — triggers build.
-        out = SaklasSession.layer_means.fget(s)  # pyright: ignore[reportOptionalCall]  # fget present on real property
+        out = DrowseSession.layer_means.fget(s)  # pyright: ignore[reportOptionalCall]  # fget present on real property
         assert out is built
         assert len(calls) == 1
         # Second access — caches; no second call.
-        out2 = SaklasSession.layer_means.fget(s)  # pyright: ignore[reportOptionalCall]  # same as above
+        out2 = DrowseSession.layer_means.fget(s)  # pyright: ignore[reportOptionalCall]  # same as above
         assert out2 is built
         assert len(calls) == 1
 
@@ -386,8 +386,8 @@ class TestLayerMeansLazy:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Whitener bootstrap shares one neutral-cache read with mean derivation."""
-        from saklas.core.session import SaklasSession
-        from saklas.io import alignment as alignment_mod
+        from drowse.core.session import DrowseSession
+        from drowse.io import alignment as alignment_mod
 
         s = _Stub({"a": _profile_a()})
         s._model = object()  # pyright: ignore[reportAttributeAccessIssue]
@@ -405,7 +405,7 @@ class TestLayerMeansLazy:
         monkeypatch.setattr(
             alignment_mod, "load_or_compute_neutral_activations", _load,
         )
-        whitener = SaklasSession._build_whitener_from_cache_or_compute(s)
+        whitener = DrowseSession._build_whitener_from_cache_or_compute(s)
 
         assert whitener is not None
         assert calls == ["test/model"]
@@ -427,7 +427,7 @@ class TestComputeDlsAxesBipolarGuard:
         directions: dict[int, torch.Tensor],
         layer_means: dict[int, torch.Tensor] | None,
     ) -> set[int]:
-        from saklas.core.capture import compute_dls_axes
+        from drowse.core.capture import compute_dls_axes
         node_centroids = {
             L: torch.stack([mu_pos[L].reshape(-1), mu_neg[L].reshape(-1)])
             for L in mu_pos
@@ -509,7 +509,7 @@ class TestComputeDlsAxes:
         # Three nodes, neutral at 0.  Axis 0 (x): projections {+2, 0.5, -1}
         # straddle zero ⇒ KEEP.  Axis 1 (y): projections {1, 2, 3} all
         # positive ⇒ no straddle ⇒ DROP (a common offset, not a contrast).
-        from saklas.core.capture import compute_dls_axes
+        from drowse.core.capture import compute_dls_axes
         node_centroids = {
             7: torch.tensor([
                 [2.0, 1.0],
@@ -523,7 +523,7 @@ class TestComputeDlsAxes:
         assert out == {7: {0}}
 
     def test_n_node_disabled_keeps_every_axis(self):
-        from saklas.core.capture import compute_dls_axes
+        from drowse.core.capture import compute_dls_axes
         node_centroids = {0: torch.randn(4, 3), 1: torch.randn(4, 3)}
         bases = {0: torch.eye(3), 1: torch.eye(3)}
         out = compute_dls_axes(node_centroids, bases, None)
@@ -531,14 +531,14 @@ class TestComputeDlsAxes:
 
     def test_n_node_missing_baseline_conservative_keep(self):
         # A layer whose neutral baseline is absent keeps every checkable axis.
-        from saklas.core.capture import compute_dls_axes
+        from drowse.core.capture import compute_dls_axes
         node_centroids = {3: torch.randn(5, 4)}
         bases = {3: torch.eye(4)}
         out = compute_dls_axes(node_centroids, bases, {})  # empty ⇒ disabled
         assert out == {3: {0, 1, 2, 3}}
 
     def test_n_node_degenerate_row_skipped(self):
-        from saklas.core.capture import compute_dls_axes
+        from drowse.core.capture import compute_dls_axes
         node_centroids = {0: torch.tensor([[1.0, 0.0], [-1.0, 0.0]])}
         bases = {0: torch.tensor([[1.0, 0.0], [0.0, 0.0]])}  # row 1 zero-norm
         layer_means = {0: torch.zeros(2)}
@@ -547,7 +547,7 @@ class TestComputeDlsAxes:
 
     def test_n_node_all_fail_fallback(self):
         import warnings as _warnings
-        from saklas.core.capture import compute_dls_axes
+        from drowse.core.capture import compute_dls_axes
         # Every node on the same side of neutral on both axes ⇒ no straddle.
         node_centroids = {0: torch.tensor([[0.5, 0.7], [0.3, 0.4], [0.6, 0.9]])}
         bases = {0: torch.eye(2)}

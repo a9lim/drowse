@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from saklas.core import profile as V
+from drowse.core import profile as V
 
 
 class TestProvenanceRoundTrip:
@@ -37,7 +37,7 @@ class TestProvenanceRoundTrip:
         with open(path.with_suffix(".json")) as f:
             raw = json.load(f)
         assert set(raw) == {
-            "format_version", "saklas_version", "method",
+            "format_version", "drowse_version", "method",
             "tensor_sha256", "provenance",
         }
         assert raw["provenance"]["diagnostics"] == diagnostics

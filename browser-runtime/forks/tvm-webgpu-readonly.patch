@@ -1,0 +1,361 @@
+diff --git a/python/tvm/relax/frontend/nn/llm/_decode_kernels.py b/python/tvm/relax/frontend/nn/llm/_decode_kernels.py
+index f03b9ff43..f6227b96c 100644
+--- a/python/tvm/relax/frontend/nn/llm/_decode_kernels.py
++++ b/python/tvm/relax/frontend/nn/llm/_decode_kernels.py
+@@ -179,6 +179,7 @@ def _attention_decode_cpu(num_kv_heads, num_qo_heads, head_dim, qkv_dtype, slidi
+ 
+ 
+ def _attention_decode(num_kv_heads, num_qo_heads, head_dim, qkv_dtype, sliding_window: bool, rope_scaling: dict[str, Any], target: Target, page_size: int = 16):
++    local_window = int(rope_scaling.get("drowse_local_window", 0)) if sliding_window else 0
+     qkv_dtype_bytes = 2
+     H_qo = num_qo_heads
+     H_kv = num_kv_heads
+@@ -289,7 +290,7 @@ def _attention_decode(num_kv_heads, num_qo_heads, head_dim, qkv_dtype, sliding_w
+                                 )
+ 
+                                 # init states
+-                                st_m[0] = -5e4
++                                st_m[0] = T.min_value("float32")
+                                 st_d[0] = 1.0
+                                 for vec in T.vectorized(VEC_SIZE):
+                                     O_local[vec] = 0.0
+@@ -347,8 +348,8 @@ def _attention_decode(num_kv_heads, num_qo_heads, head_dim, qkv_dtype, sliding_w
+                                             )
+                                             T.tvm_thread_allreduce(T.uint32(1), S_reduce_local[0], True, t0[0], tx, dtype="void")
+ 
+-                                        S_local[j] = -5e4
+-                                        if (iterator * bdz + tz) * bdy * tile_size_per_bdx + j < kv_chunk_len[0]:
++                                        S_local[j] = T.min_value("float32")
++                                        if (iterator * bdz + tz) * bdy * tile_size_per_bdx + j < kv_chunk_len[0] and (local_window == 0 or k_rope_pos_offset[bx] + (iterator * bdz + tz) * bdy * tile_size_per_bdx + j > q_rope_position[bx] - local_window):
+                                             S_local[j] = t0[0]
+                                         # update st_m
+                                         st_m[0] = T.max(st_m[0], S_local[j])
+@@ -357,7 +358,10 @@ def _attention_decode(num_kv_heads, num_qo_heads, head_dim, qkv_dtype, sliding_w
+                                     o_scale: T.let[T.float32] = T.exp2(m_prev[0] - st_m[0])
+                                     st_d[0] *= o_scale
+                                     for j in T.serial(bdy * tile_size_per_bdx):
+-                                        S_local[j] = T.exp2(S_local[j] - st_m[0])
++                                        if (iterator * bdz + tz) * bdy * tile_size_per_bdx + j < kv_chunk_len[0] and (local_window == 0 or k_rope_pos_offset[bx] + (iterator * bdz + tz) * bdy * tile_size_per_bdx + j > q_rope_position[bx] - local_window):
++                                            S_local[j] = T.exp2(S_local[j] - st_m[0])
++                                        else:
++                                            S_local[j] = 0.0
+                                         st_d[0] += S_local[j]
+                                     for j in T.vectorized(VEC_SIZE):
+                                         O_local[j] *= o_scale
+@@ -378,7 +382,7 @@ def _attention_decode(num_kv_heads, num_qo_heads, head_dim, qkv_dtype, sliding_w
+                                     md_allreduce[tz, ty, 1] = st_d[0]
+                                     T.tvm_storage_sync("shared")
+ 
+-                                    st_m[0] = -5e4
++                                    st_m[0] = T.min_value("float32")
+                                     st_d[0] = 1.0
+                                     for vec in T.vectorized(VEC_SIZE):
+                                         O_local[vec] = 0.0
+diff --git a/python/tvm/relax/frontend/nn/llm/_kernel_common.py b/python/tvm/relax/frontend/nn/llm/_kernel_common.py
+index 6d7450e4f..21cd71310 100644
+--- a/python/tvm/relax/frontend/nn/llm/_kernel_common.py
++++ b/python/tvm/relax/frontend/nn/llm/_kernel_common.py
+@@ -200,7 +200,7 @@ def _alloc_tile_walk_state():
+     return _var("int32"), _var("int32"), _var("int32"), _var("int32"), _var("int32"), _var("int32")
+ 
+ 
+-def _make_prefill_macros(tile_x, tile_y, tile_z, tile_o, bdx, num_warps, group_size):
++def _make_prefill_macros(tile_x, tile_y, tile_z, tile_o, bdx, num_warps, group_size, local_window=0, absolute_causal=False):
+     """Build @T.macro helpers shared across tiled online-softmax prefill kernels.
+ 
+     Parameters
+@@ -217,7 +217,7 @@ def _make_prefill_macros(tile_x, tile_y, tile_z, tile_o, bdx, num_warps, group_s
+         for i in T.serial(T.ceildiv(tile_x, bdx * num_warps)):
+             row: T.let[T.int32] = i * bdx * num_warps + ty * bdx + tx
+             if row < tile_x:
+-                m_smem[row] = -5e4
++                m_smem[row] = T.min_value("float32")
+                 d_smem[row] = 1.0
+         for li, lj in T.grid(tile_x, tile_o):
+             with T.sblock("O_init"):
+@@ -249,6 +249,7 @@ def _make_prefill_macros(tile_x, tile_y, tile_z, tile_o, bdx, num_warps, group_s
+         m_new: T.Buffer, m_prev: T.Buffer, d_new: T.Buffer,
+         ty: T.int32, tx: T.int32, LH_start: T.int32, L_kv_start: T.int32,
+         causal: T.int32, kv_len: T.int32, qo_len: T.int32,
++        local_position_offset: T.int32 = 0,
+     ):
+         # Phase 1: compute m_new = max(masked S over kv tile), d_new = d_prev * exp2(m_prev - m_new)
+         for i in T.serial(T.ceildiv(tile_x, bdx * num_warps)):
+@@ -259,10 +260,10 @@ def _make_prefill_macros(tile_x, tile_y, tile_z, tile_o, bdx, num_warps, group_s
+                     m_new[i] = m_smem[row]
+                     row_: T.let[T.int32] = (LH_start + row) // group_size
+                     for j in T.serial(tile_z):
+-                        if _causal_mask(causal, row=row_, col=L_kv_start + j, kv_len=kv_len, qo_len=qo_len):
++                        if _causal_mask(causal, row=row_, col=L_kv_start + j, kv_len=kv_len, qo_len=qo_len) and (not absolute_causal or L_kv_start + j <= local_position_offset + row_) and (local_window == 0 or L_kv_start + j > local_position_offset + row_ - local_window):
+                             m_new[i] = T.max(m_new[i], S_smem[row, j])
+                     d_new[i] = d_smem[row] * T.exp2(m_prev[i] - m_new[i])
+-        # Phase 2: exp-and-scale S_smem; masked-out entries use -inf
++        # Phase 2: exp-and-scale S_smem; masked-out entries have zero weight
+         for i in T.serial(T.ceildiv(tile_x, bdx * num_warps)):
+             row: T.let[T.int32] = i * bdx * num_warps + ty * bdx + tx
+             with T.sblock("update"):
+@@ -270,10 +271,10 @@ def _make_prefill_macros(tile_x, tile_y, tile_z, tile_o, bdx, num_warps, group_s
+                     # predicate sits inside loop so sync stays outside conditional branches
+                     if row < tile_x:
+                         row_: T.let[T.int32] = (LH_start + row) // group_size
+-                        if _causal_mask(causal, row=row_, col=L_kv_start + j, kv_len=kv_len, qo_len=qo_len):
++                        if _causal_mask(causal, row=row_, col=L_kv_start + j, kv_len=kv_len, qo_len=qo_len) and (not absolute_causal or L_kv_start + j <= local_position_offset + row_) and (local_window == 0 or L_kv_start + j > local_position_offset + row_ - local_window):
+                             S_smem[row, j] = T.exp2(S_smem[row, j] - m_new[i])
+                         else:
+-                            S_smem[row, j] = T.exp2(-5e4 - m_new[i])
++                            S_smem[row, j] = 0.0
+         # Phase 3: d_new += sum(S_smem[row, :]); write m/d/m_prev back to smem
+         for i in T.serial(T.ceildiv(tile_x, bdx * num_warps)):
+             row: T.let[T.int32] = i * bdx * num_warps + ty * bdx + tx
+@@ -371,7 +372,7 @@ def _make_prefill_macros(tile_x, tile_y, tile_z, tile_o, bdx, num_warps, group_s
+                         if tirx.And(tirx.And(row_ < qo_len, row_ < valid_len), L_kv_start + j < valid_len):
+                             S_smem[row, j] = T.exp2(S_smem[row, j] - m_new[i])
+                         else:
+-                            S_smem[row, j] = T.exp2(-5e4 - m_new[i])
++                            S_smem[row, j] = 0.0
+         for i in T.serial(T.ceildiv(tile_x, bdx * num_warps)):
+             row: T.let[T.int32] = i * bdx * num_warps + ty * bdx + tx
+             if row < tile_x:
+@@ -420,7 +421,7 @@ def _make_prefill_macros(tile_x, tile_y, tile_z, tile_o, bdx, num_warps, group_s
+                         if tirx.And(tirx.And(row_ < qo_len, row_ >= pad_q), tirx.And(col_ >= pad_kv, col_ < kv_len - qo_len + row_ + 1)):
+                             S_smem[row, j] = T.exp2(S_smem[row, j] - m_new[i])
+                         else:
+-                            S_smem[row, j] = T.exp2(-5e4 - m_new[i])
++                            S_smem[row, j] = 0.0
+         for i in T.serial(T.ceildiv(tile_x, bdx * num_warps)):
+             row: T.let[T.int32] = i * bdx * num_warps + ty * bdx + tx
+             if row < tile_x:
+diff --git a/python/tvm/relax/frontend/nn/llm/_prefill_kernels.py b/python/tvm/relax/frontend/nn/llm/_prefill_kernels.py
+index 54e7424e7..a738dcf94 100644
+--- a/python/tvm/relax/frontend/nn/llm/_prefill_kernels.py
++++ b/python/tvm/relax/frontend/nn/llm/_prefill_kernels.py
+@@ -210,7 +210,9 @@ def _attention_prefill(h_kv, h_q, d, dtype, sliding_window: bool, rope_scaling:
+     if sliding_window:
+         global_symbol += "_sliding_window"
+ 
+-    init_states, compute_s_gemm, softmax_update_causal, compute_o_gemm, _, advance_tile_batch, paged_store_output_lse, *_ = _make_prefill_macros(tile_x, tile_y, tile_z, tile_y, bdx, num_warps, group_size)
++    local_window = int(rope_scaling.get("drowse_local_window", 0)) if sliding_window else 0
++    absolute_causal = "drowse_local_window" in rope_scaling
++    init_states, compute_s_gemm, softmax_update_causal, compute_o_gemm, _, advance_tile_batch, paged_store_output_lse, *_ = _make_prefill_macros(tile_x, tile_y, tile_z, tile_y, bdx, num_warps, group_size, local_window, absolute_causal)
+ 
+     # pylint: disable=too-many-branches
+     @T.prim_func(s_tir=True)
+@@ -355,7 +357,7 @@ def _attention_prefill(h_kv, h_q, d, dtype, sliding_window: bool, rope_scaling:
+                                         T.tvm_storage_sync("shared")
+ 
+                                         compute_s_gemm(Q_smem, K_smem, S_local, S_smem, sm_scale)
+-                                        softmax_update_causal(S_smem, m_smem, d_smem, m_prev_smem, m_new, m_prev, d_new, ty, tx, LH_start, L_kv_start, causal, kv_chunk_len[0], q_indptr[b_idx + 1] - q_indptr[b_idx])
++                                        softmax_update_causal(S_smem, m_smem, d_smem, m_prev_smem, m_new, m_prev, d_new, ty, tx, LH_start, L_kv_start, causal, kv_chunk_len[0], q_indptr[b_idx + 1] - q_indptr[b_idx], q_rope_position[q_indptr_val] - k_rope_pos_offset[b_idx])
+                                         compute_o_gemm(S_smem, V_smem, O_local, m_prev_smem, m_smem)
+ 
+                                     paged_store_output_lse(output, lse, O_local, m_smem, d_smem, q_indptr, b_idx, by, LH_start)
+diff --git a/src/backend/webgpu/codegen/codegen_webgpu.cc b/src/backend/webgpu/codegen/codegen_webgpu.cc
+index 933a81f82..fe67febc4 100644
+--- a/src/backend/webgpu/codegen/codegen_webgpu.cc
++++ b/src/backend/webgpu/codegen/codegen_webgpu.cc
+@@ -31,7 +31,9 @@
+ #include <tvm/tirx/transform.h>
+ 
+ #include <algorithm>
++#include <optional>
+ #include <string>
++#include <unordered_map>
+ #include <unordered_set>
+ #include <utility>
+ #include <vector>
+@@ -67,6 +69,22 @@ class WebGPUWorkgroupInfoCollector : public StmtExprVisitor {
+  private:
+   using StmtExprVisitor::VisitExpr_;
+ 
++  static ffi::Optional<Var> GetBufferDataVar(const Expr& data) {
++    if (auto var = data.as<Var>()) {
++      return var;
++    }
++    if (const auto* call = data.as<CallNode>();
++        call && call->op.same_as(tirx::builtin::buffer_data()) && call->args.size() == 1) {
++      return call->args[0].as<Var>();
++    }
++    return std::nullopt;
++  }
++
++  Var ResolveBuffer(Var buffer_var) const {
++    auto it = buffer_aliases_.find(buffer_var.get());
++    return it == buffer_aliases_.end() ? buffer_var : it->second;
++  }
++
+   void VisitExpr_(const VarNode* op) final {
+     StmtExprVisitor::VisitExpr_(op);
+     Var buffer_var = ffi::GetRef<Var>(op);
+@@ -77,7 +95,15 @@ class WebGPUWorkgroupInfoCollector : public StmtExprVisitor {
+ 
+   void VisitStmt_(const BufferStoreNode* op) final {
+     StmtExprVisitor::VisitStmt_(op);
+-    info_.write_access_set.insert(op->buffer.var());
++    info_.write_access_set.insert(ResolveBuffer(op->buffer.var()));
++  }
++
++  void VisitStmt_(const DeclBufferNode* op) final {
++    if (auto source = GetBufferDataVar(op->data)) {
++      buffer_aliases_.insert_or_assign(op->buffer.get(), ResolveBuffer(source.value()));
++      return;
++    }
++    StmtExprVisitor::VisitStmt_(op);
+   }
+ 
+   void VisitStmt_(const AttrStmtNode* op) final {
+@@ -104,6 +130,7 @@ class WebGPUWorkgroupInfoCollector : public StmtExprVisitor {
+     StmtExprVisitor::VisitStmt_(op);
+   }
+   WebGPUWorkGroupInfo info_;
++  std::unordered_map<const VarNode*, Var> buffer_aliases_;
+ };
+ 
+ std::string CodeGenWebGPU::Finish() {
+diff --git a/src/runtime/vm/paged_kv_cache.cc b/src/runtime/vm/paged_kv_cache.cc
+index efd099e82..ef053bd27 100644
+--- a/src/runtime/vm/paged_kv_cache.cc
++++ b/src/runtime/vm/paged_kv_cache.cc
+@@ -926,7 +926,8 @@ class PagedAttentionKVCacheObj : public AttentionKVCacheObj {
+       TVM_FFI_ICHECK_EQ(chunked_block_ids_arr[num_depths_ - 1].size(), cur_batch_size_);
+     }
+ 
+-    append_before_attn_ = !support_sliding_window_ && use_decode_kernel_.back();
++    append_before_attn_ = support_layer_sliding_window_ ||
++                          (!support_sliding_window_ && use_decode_kernel_.back());
+     if (NeedKernelBeginForward() && num_qo_heads_ / num_kv_heads_ >= 4) {
+       // When GQA group size is at least 4 and FlashInfer is enabled,
+       // we always use prefill kernel for better performance.
+@@ -1023,18 +1024,10 @@ class PagedAttentionKVCacheObj : public AttentionKVCacheObj {
+               // Do the same for page_indices_sliding_window
+             }
+ 
+-            // For sliding window, the first page and last page will both be partially used
+-            page_indptr_sliding_window_h.push_back(
+-                page_indptr_sliding_window_h.back() +
+-                std::min(static_cast<int32_t>(block.page_ids.size()),
+-                         static_cast<int32_t>(1024 / page_size_ +
+-                                              (block.seq_length % page_size_ ? 1 : 0))));
+-            for (int i = page_indices_h.size() - page_indptr_sliding_window_h.back();
+-                 i < static_cast<int32_t>(page_indices_h.size()); i++) {
+-              page_indices_sliding_window_h.push_back(page_indices_h[i]);
++            page_indptr_sliding_window_h.push_back(page_indptr_h.back());
++            for (int32_t page_id : block.page_ids) {
++              page_indices_sliding_window_h.push_back(page_id);
+             }
+-            // set up the page indices properly by choosing the last (sliding_window_size /
+-            // page_size_) pages (at most)
+             last_page_len_h.push_back(
+                 block.seq_length == 0
+                     ? 0
+@@ -1042,11 +1035,7 @@ class PagedAttentionKVCacheObj : public AttentionKVCacheObj {
+                               page_size_ +
+                           1);
+             if (support_layer_sliding_window_) {
+-              if (block.seq_length < 1024) {
+-                sliding_window_offset_h.push_back(0);
+-              } else {
+-                sliding_window_offset_h.push_back(block.seq_length % page_size_);
+-              }
++              sliding_window_offset_h.push_back(0);
+             } else {
+               sliding_window_offset_h.push_back(block.sliding_window_offset);
+             }
+@@ -1055,8 +1044,7 @@ class PagedAttentionKVCacheObj : public AttentionKVCacheObj {
+ 
+             // If sliding window, we need to calculate the positional offset
+             if (support_layer_sliding_window_) {
+-              k_rope_pos_offset_sliding_window_h.push_back(
+-                  std::max(0, block.start_pos + block.seq_length - 1024));
++              k_rope_pos_offset_sliding_window_h.push_back(block.start_pos);
+             }
+           } else {
+             // Blocks at maximum depth
+@@ -1078,14 +1066,10 @@ class PagedAttentionKVCacheObj : public AttentionKVCacheObj {
+               last_block_id = id;
+             }
+             page_indptr_h.push_back(page_indptr_h.back() + num_pages);
+-            page_indptr_sliding_window_h.push_back(
+-                page_indptr_sliding_window_h.back() +
+-                std::min(static_cast<int32_t>(block.page_ids.size()),
+-                         static_cast<int32_t>(1024 / page_size_ +
+-                                              (block.seq_length % page_size_ ? 1 : 0))));
+-            for (int i = page_indices_h.size() - page_indptr_sliding_window_h.back();
+-                 i < static_cast<int32_t>(page_indices_h.size()); i++) {
+-              page_indices_sliding_window_h.push_back(page_indices_h[i]);
++            page_indptr_sliding_window_h.push_back(page_indptr_h.back());
++            for (int page_index = page_indptr_h[page_indptr_h.size() - 2];
++                 page_index < page_indptr_h.back(); ++page_index) {
++              page_indices_sliding_window_h.push_back(page_indices_h[page_index]);
+             }
+             const Block& last_block = global_block_pool_[last_block_id];
+             last_page_len_h.push_back(total_seq_length == 0
+@@ -1095,19 +1079,14 @@ class PagedAttentionKVCacheObj : public AttentionKVCacheObj {
+                                                     page_size_ +
+                                                 1);
+             if (support_layer_sliding_window_) {
+-              if (last_block.seq_length < 1024) {
+-                sliding_window_offset_h.push_back(0);
+-              } else {
+-                sliding_window_offset_h.push_back(last_block.seq_length % page_size_);
+-              }
++              sliding_window_offset_h.push_back(0);
+             } else {
+               sliding_window_offset_h.push_back(last_block.sliding_window_offset);
+             }
+             sink_size_h.push_back(last_block.sink_length);
+             k_rope_pos_offset_h.push_back(block.start_pos);
+             if (support_layer_sliding_window_) {
+-              k_rope_pos_offset_sliding_window_h.push_back(
+-                  std::max(0, block.start_pos + block.seq_length - 1024));
++              k_rope_pos_offset_sliding_window_h.push_back(block.start_pos);
+             }
+           }
+         }
+diff --git a/tests/python/codegen/test_target_codegen_webgpu.py b/tests/python/codegen/test_target_codegen_webgpu.py
+new file mode 100644
+index 000000000..96bfc6b90
+--- /dev/null
++++ b/tests/python/codegen/test_target_codegen_webgpu.py
+@@ -0,0 +1,42 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++import tvm
++import tvm.testing
++from tvm.script import ir as I
++from tvm.script import tirx as T
++
++
++def test_codegen_buffer_access_modes():
++    """Read-only typed buffer parameters should remain read-only in WGSL."""
++
++    @I.ir_module(s_tir=True)
++    class Module:
++        @T.prim_func(s_tir=True)
++        def main(A: T.Buffer((8,), "float32"), B: T.Buffer((8,), "float32")):
++            for tx in T.thread_binding(8, thread="threadIdx.x"):
++                B[tx] = A[tx]
++
++    executable = tvm.compile(Module, target="webgpu")
++    source = executable.mod.imports[0].inspect_source("wgsl")
++
++    assert "var<storage, read> A_ptr" in source
++    assert "var<storage, read_write> B_ptr" in source
++
++
++if __name__ == "__main__":
++    tvm.testing.main()

@@ -14,13 +14,19 @@
   // template lab's build tab, linked below — and this tab picks one of
   // those templates and runs the derivation the lab has no verb for.
 
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     apiManifoldFitStream,
     apiManifolds,
     apiTemplates,
     describeError,
-  } from "../../lib/api";
+  } from "../../lib/runtime/services";
+  import { isFittingCancellation } from "../../lib/runtime/fittingCancellation";
+  import { runtimeClient } from "../../lib/runtime/client";
+  import {
+    getHostedController,
+    getRuntimeManifoldFitMaxIntrinsicDim,
+  } from "../../lib/runtime/registry";
   import { closeDrawer, openDrawer, refreshManifoldList } from "../../lib/stores.svelte";
   import { dismissToast, pushToast, updateToast } from "../../lib/stores/toasts.svelte";
   import type {
@@ -32,17 +38,20 @@
   import Select from "../../lib/Select.svelte";
   import AdvancedSection from "../../lib/builder/AdvancedSection.svelte";
   import ValidationBlock from "../../lib/builder/ValidationBlock.svelte";
+  import Button from "../../lib/ui/Button.svelte";
   import FitMethodPicker from "./FitMethodPicker.svelte";
   import {
     defaultTuning,
     identitySlugs,
+    maxDimensionValidationMessage,
     slug,
     type ManifoldIdentity,
   } from "./shared";
 
-  let { identity }: { identity: ManifoldIdentity } = $props();
+  let { identity, oncomplete }: { identity: ManifoldIdentity; oncomplete?: () => void } = $props();
 
-  const tuning = $state(defaultTuning());
+  const maxDimLimit = getRuntimeManifoldFitMaxIntrinsicDim();
+  const tuning = $state(defaultTuning(maxDimLimit));
   let templates: TemplateSummary[] = $state([]);
   let loadingTemplates = $state(true);
   let selectedKey = $state("");
@@ -50,6 +59,16 @@
   let alsoFit = $state(true);
   let advancedOpen = $state(false);
   let submitting = $state(false);
+  let validationAttempted = $state(false);
+  let progress = $state("");
+  let formRegion: HTMLDivElement | null = $state(null);
+  let templateField: HTMLLabelElement | null = $state(null);
+  let maxDimField: HTMLLabelElement | null = $state(null);
+  let authorTemplateButton: HTMLButtonElement | null = $state(null);
+  let fittingActive = $state(false);
+  let cancelling = $state(false);
+  const hostedController = getHostedController();
+  const browserMode = runtimeClient.mode !== "http";
 
   onMount(async () => {
     try {
@@ -78,9 +97,67 @@
     const messages: string[] = [];
     if (!slug(identity.name)) messages.push("name required");
     if (!selected) messages.push("template required");
-    if (maxDim !== null && maxDim < 1) messages.push("max dim ≥1");
+    const maxDimensionMessage = maxDimensionValidationMessage(maxDim, maxDimLimit);
+    if (maxDimensionMessage) messages.push(maxDimensionMessage);
     return { ok: messages.length === 0, messages };
   });
+
+  const templateError = $derived(
+    validationAttempted && !selected ? "Choose a template." : null,
+  );
+  const maxDimError = $derived(
+    validationAttempted
+      ? maxDimensionValidationMessage(maxDim, maxDimLimit)
+      : null,
+  );
+
+  $effect(() => {
+    const trigger = templateField?.querySelector("button");
+    if (!trigger) return;
+    if (templateError) {
+      trigger.setAttribute("aria-invalid", "true");
+      trigger.setAttribute("aria-describedby", "templated-source-error");
+    } else {
+      trigger.removeAttribute("aria-invalid");
+      trigger.removeAttribute("aria-describedby");
+    }
+  });
+
+  $effect(() => {
+    const input = maxDimField?.querySelector("input");
+    if (!input) return;
+    if (maxDimError) {
+      input.setAttribute("aria-invalid", "true");
+      input.setAttribute("aria-describedby", "templated-max-dim-error");
+    } else {
+      input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby");
+    }
+  });
+
+  function sharedNameInput(): HTMLInputElement | null {
+    const body = formRegion?.closest(".mb-form");
+    return body?.querySelector<HTMLInputElement>(
+      ":scope > .grid2 > .field:nth-child(2) input",
+    ) ?? null;
+  }
+
+  async function focusFirstInvalid(): Promise<void> {
+    await tick();
+    if (!slug(identity.name)) {
+      sharedNameInput()?.focus();
+      return;
+    }
+    if (templateError) {
+      const trigger = templateField?.querySelector<HTMLButtonElement>("button");
+      (trigger ?? authorTemplateButton)?.focus();
+      return;
+    }
+    if (!maxDimError) return;
+    advancedOpen = true;
+    await tick();
+    maxDimField?.querySelector<HTMLInputElement>("input")?.focus();
+  }
 
   /** Hand authoring to the one editor that speaks the full multi-turn
    *  context shape, then come back here to derive. */
@@ -89,9 +166,31 @@
     openDrawer("template_lab", { tab: "build" });
   }
 
+  async function cancelFit(): Promise<void> {
+    if (!hostedController || !fittingActive || cancelling) return;
+    cancelling = true;
+    progress = "Cancelling fit…";
+    try {
+      await hostedController.cancelFitting();
+    } catch (e) {
+      pushToast(`Couldn't cancel the fit: ${describeError(e)}`, {
+        kind: "error",
+        ttlMs: null,
+      });
+    } finally {
+      cancelling = false;
+    }
+  }
+
   async function save(): Promise<void> {
-    if (!validation.ok || !selected || submitting) return;
+    if (submitting) return;
+    validationAttempted = true;
+    if (!validation.ok || !selected) {
+      await focusFirstInvalid();
+      return;
+    }
     submitting = true;
+    progress = "Starting authoring…";
     const { namespace, name, description } = identitySlugs(identity);
     const hyperparams: Record<string, number> = {};
     if (maxDim !== null && maxDim >= 1) hyperparams.max_dim = maxDim;
@@ -115,6 +214,8 @@
           kind: "info",
           ttlMs: null,
         });
+        progress = "Starting fit…";
+        fittingActive = true;
         try {
           await apiManifoldFitStream(
             namespace,
@@ -126,7 +227,10 @@
                 ev.data && typeof ev.data === "object"
                   ? (ev.data as { message?: string }).message
                   : null;
-              if (msg) updateToast(fitToastId, { detail: msg });
+              if (msg) {
+                progress = msg;
+                updateToast(fitToastId, { detail: msg });
+              }
             },
           );
           dismissToast(fitToastId);
@@ -135,33 +239,50 @@
           });
         } catch (e) {
           dismissToast(fitToastId);
-          pushToast(`fit failed — ${describeError(e)}`, {
-            kind: "error",
-            ttlMs: null,
-          });
+          if (isFittingCancellation(e)) {
+            pushToast(
+              `Fit cancelled. ${namespace}/${name} was kept and can be fitted later.`,
+              { kind: "info" },
+            );
+          } else {
+            pushToast(`Couldn't fit the manifold: ${describeError(e)}`, {
+              kind: "error",
+              ttlMs: null,
+            });
+          }
+        } finally {
+          fittingActive = false;
+          cancelling = false;
         }
       } else {
         pushToast(
-          `authored ${namespace}/${name} — open manifolds drawer to fit`,
+          `Created ${namespace}/${name}. Open Manifolds to fit it.`,
           { kind: "info" },
         );
       }
       await refreshManifoldList();
-      closeDrawer();
-      openDrawer("manifolds");
+      if (oncomplete) oncomplete();
+      else { closeDrawer(); openDrawer("manifolds"); }
     } catch (e) {
       dismissToast(toastId);
-      pushToast(`author failed — ${describeError(e)}`, {
+      pushToast(`Couldn't create the manifold: ${describeError(e)}`, {
         kind: "error",
         ttlMs: null,
       });
     } finally {
       submitting = false;
+      progress = "";
     }
   }
 </script>
 
-<div class="form-stack">
+<div
+  bind:this={formRegion}
+  class="form-stack"
+  role="form"
+  aria-label="Build manifold from template"
+  aria-busy={submitting}
+>
   <section class="step">
     <h2 class="step-title">template</h2>
     {#if loadingTemplates}
@@ -169,16 +290,19 @@
     {:else if templates.length === 0}
       <p class="muted">no templates yet</p>
     {:else}
-      <label class="field">
+      <label bind:this={templateField} class="field template-source">
         <span class="label">source *</span>
         <Select
           value={selectedKey}
-          options={[{ value: "", label: "— pick a template —" }, ...options]}
+          options={[{ value: "", label: "Choose a template" }, ...options]}
           ariaLabel="Template"
           onchange={(v) => {
             selectedKey = String(v);
           }}
         />
+        {#if templateError}
+          <span id="templated-source-error" class="field-error">{templateError}</span>
+        {/if}
       </label>
       {#if selected}
         <p class="dim-note">
@@ -188,40 +312,97 @@
         </p>
       {/if}
     {/if}
-    <button type="button" class="add-node" onclick={openTemplateLab}>
+    <button
+      bind:this={authorTemplateButton}
+      type="button"
+      class="add-node"
+      onclick={openTemplateLab}
+    >
       author a template…
     </button>
   </section>
 
-  <FitMethodPicker {tuning} />
+  <FitMethodPicker
+    {tuning}
+    linearOnly={browserMode}
+    onchange={(fitMode) => (tuning.fitMode = fitMode)}
+  />
 
   <AdvancedSection bind:expanded={advancedOpen}>
-    <label class="field">
+    <label bind:this={maxDimField} class="field">
       <span class="label">max dim</span>
       <NumberInput
         value={maxDim}
         min={1}
+        max={maxDimLimit ?? undefined}
         step={1}
         allowEmpty
-        placeholder="auto"
+        placeholder={maxDimLimit === null ? "auto" : `auto · max ${maxDimLimit}`}
         oninput={(v) => {
           maxDim = v;
         }}
       />
+      {#if maxDimError}
+        <span id="templated-max-dim-error" class="field-error">{maxDimError}</span>
+      {:else if maxDimLimit !== null}
+        <span class="dim-note">
+          hosted browser limit · <strong>{maxDimLimit}</strong> dimensions
+        </span>
+      {/if}
     </label>
     <div class="check-stack">
       <Checkbox bind:checked={alsoFit} label="fit now" />
     </div>
   </AdvancedSection>
 
-  <ValidationBlock verb="author" messages={validation.messages} />
+  <p class="progress form-status" role="status" aria-live="polite" aria-atomic="true">
+    {progress}
+  </p>
 
-  <button
-    type="button"
-    class="save-btn"
-    disabled={!validation.ok || submitting}
-    onclick={save}
-  >
-    {submitting ? "building…" : alsoFit ? "build + fit" : "build"}
-  </button>
+  <ValidationBlock
+    verb="building"
+    messages={validationAttempted ? validation.messages : []}
+  />
+
+  <div class="form-actions">
+    {#if hostedController && fittingActive}
+      <Button variant="ghost" disabled={cancelling} onclick={cancelFit}>
+        {cancelling ? "cancelling…" : "cancel"}
+      </Button>
+    {/if}
+    <button
+      type="button"
+      class="save-btn"
+      disabled={submitting}
+      onclick={save}
+    >
+      {submitting ? "building…" : alsoFit ? "build + fit" : "build"}
+    </button>
+  </div>
 </div>
+
+<style>
+  .field-error {
+    color: var(--accent-red);
+    font-size: var(--text-xs);
+    line-height: 1.4;
+  }
+
+  .form-status:empty {
+    display: none;
+  }
+
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-3);
+  }
+
+  .form-actions .save-btn {
+    flex: 1;
+  }
+
+  .template-source :global(.sk-select-trigger[aria-invalid="true"]) {
+    border-color: var(--accent-red);
+  }
+</style>

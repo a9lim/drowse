@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from tests.conftest import CharTokenizer, FakeLogitsModel
-from saklas.core.manifold import BoxAxis, BoxDomain
-from saklas.core.naturalness import (
+from drowse.core.manifold import BoxAxis, BoxDomain
+from drowse.core.naturalness import (
     bhattacharyya_distance,
     compute_node_behavior_centroid,
     compute_trajectory_distributions,
@@ -182,15 +182,15 @@ def test_naturalness_preflight_does_not_hash_fitted_payloads(
     import json
     from argparse import Namespace
 
-    import saklas.cli.runners as runners
-    from saklas.io import integrity
-    from saklas.io.manifolds import (
+    import drowse.cli.runners as runners
+    from drowse.io import integrity
+    from drowse.io.manifolds import (
         ManifoldFolder,
         create_manifold_folder,
     )
-    from saklas.io.manifold_folder import canonical_manifold_sidecar_payload
+    from drowse.io.manifold_folder import canonical_manifold_sidecar_payload
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "period": 1.0,
          "lo": 0.0, "hi": 1.0},
@@ -204,7 +204,7 @@ def test_naturalness_preflight_does_not_hash_fitted_payloads(
     sidecar = folder / "unrelated.json"
     tensor.write_bytes(b"unrelated fitted payload")
     sidecar.write_text(json.dumps(canonical_manifold_sidecar_payload(
-        name="behavior", method="manifold_pca", saklas_version="0",
+        name="behavior", method="manifold_pca", drowse_version="0",
         domain=domain, node_labels=["a", "b", "c"], feature_space="raw",
         fit_mode="authored",
     )))

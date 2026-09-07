@@ -8,17 +8,20 @@
   // generation leaves inspectable corpora — but "fit now" chains them so
   // the common case is one gesture.
 
+  import { onMount, tick } from "svelte";
+
   import {
     apiManifoldFitStream,
     apiManifoldGenerateStream,
     describeError,
-  } from "../../lib/api";
+  } from "../../lib/runtime/services";
   import { closeDrawer, openDrawer, refreshManifoldList } from "../../lib/stores.svelte";
   import { dismissToast, pushToast, updateToast } from "../../lib/stores/toasts.svelte";
   import type { GenerateManifoldRequest } from "../../lib/types";
   import Checkbox from "../../lib/Checkbox.svelte";
   import NumberInput from "../../lib/NumberInput.svelte";
   import Radio from "../../lib/Radio.svelte";
+  import Select from "../../lib/Select.svelte";
   import AdvancedSection from "../../lib/builder/AdvancedSection.svelte";
   import ValidationBlock from "../../lib/builder/ValidationBlock.svelte";
   import DiscoverTuningFields from "./DiscoverTuningFields.svelte";
@@ -33,12 +36,21 @@
     tuningMessages,
     type ManifoldIdentity,
   } from "./shared";
+  import { getRuntimeManifoldFitMaxIntrinsicDim } from "../../lib/runtime/registry";
+  import { runtimeClient } from "../../lib/runtime/client";
+  import { PER_NODE_ROLE_HELP } from "../../lib/manifolds/selectors";
+  import {
+    refreshSaeSources,
+    saeSourceState,
+  } from "../../lib/stores/instruments.svelte";
 
-  let { identity }: { identity: ManifoldIdentity } = $props();
+  let { identity, oncomplete }: { identity: ManifoldIdentity; oncomplete?: () => void } = $props();
 
   type DiscoverKind = "abstract" | "concrete" | "custom";
 
-  const tuning = $state(defaultTuning());
+  const maxDimLimit = getRuntimeManifoldFitMaxIntrinsicDim();
+  const browserMode = runtimeClient.mode !== "http";
+  const tuning = $state(defaultTuning(maxDimLimit));
   let conceptsText = $state("");
   // Conversational corpus knobs: ``kind`` frames each concept's system
   // prompt (abstract → "someone {c}", concrete → "{article} {c}");
@@ -58,10 +70,26 @@
   let saeRelease = $state("");
   let alsoFit = $state(true);
   let advancedOpen = $state(false);
-  let progress: string | null = $state(null);
+  let progress = $state("");
   let submitting = $state(false);
+  let validationAttempted = $state(false);
+  let formRegion: HTMLDivElement | null = $state(null);
+  let conceptsInput: HTMLTextAreaElement | null = $state(null);
+  let samplesField: HTMLLabelElement | null = $state(null);
+  let customSystemInput: HTMLTextAreaElement | null = $state(null);
 
   const concepts = $derived(parseTokens(conceptsText));
+  const browserSaeOptions = $derived([
+    { value: "", label: "Standard fit (no feature pack)" },
+    ...saeSourceState.sources.map((source) => ({
+      value: source.source,
+      label: source.name?.trim() || source.source,
+    })),
+  ]);
+
+  onMount(() => {
+    if (browserMode) void refreshSaeSources();
+  });
 
   const validation = $derived.by<{ ok: boolean; messages: string[] }>(() => {
     const messages: string[] = [];
@@ -93,14 +121,101 @@
         messages.push('system template needs "{c}"');
       }
     }
-    messages.push(...tuningMessages(tuning));
+    messages.push(...tuningMessages(tuning, maxDimLimit));
     return { ok: messages.length === 0, messages };
   });
 
+  const conceptsError = $derived.by<string | null>(() => {
+    if (!validationAttempted) return null;
+    if (concepts.length < 2) return "Enter at least two concepts.";
+    const seen = new Set<string>();
+    for (const concept of concepts) {
+      const formatted = slug(concept);
+      if (!formatted) return `Concept “${concept}” needs a letter or number.`;
+      if (seen.has(formatted)) return "Each concept must be unique after formatting.";
+      seen.add(formatted);
+    }
+    return null;
+  });
+
+  const samplesError = $derived(
+    validationAttempted && samplesPerPrompt <= 0
+      ? "Use at least one sample per prompt."
+      : null,
+  );
+
+  const customSystemError = $derived.by<string | null>(() => {
+    if (!validationAttempted || kind !== "custom") return null;
+    if (!customSystem.trim()) return "Enter a system template.";
+    if (!customSystem.includes("{c}")) return 'Include the "{c}" placeholder.';
+    return null;
+  });
+
+  $effect(() => {
+    const input = samplesField?.querySelector("input");
+    if (!input) return;
+    if (samplesError) {
+      input.setAttribute("aria-invalid", "true");
+      input.setAttribute("aria-describedby", "discover-samples-error");
+    } else {
+      input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby");
+    }
+  });
+
+  function sharedNameInput(): HTMLInputElement | null {
+    const body = formRegion?.closest(".mb-form");
+    return body?.querySelector<HTMLInputElement>(
+      ":scope > .grid2 > .field:nth-child(2) input",
+    ) ?? null;
+  }
+
+  function tuningInput(label: string): HTMLInputElement | null {
+    const fields = formRegion?.querySelectorAll<HTMLElement>(".field") ?? [];
+    for (const field of fields) {
+      const text = field.querySelector<HTMLElement>(".label")?.textContent?.trim();
+      if (text === label) return field.querySelector<HTMLInputElement>("input");
+    }
+    return null;
+  }
+
+  async function focusFirstInvalid(): Promise<void> {
+    await tick();
+    if (!slug(identity.name)) {
+      sharedNameInput()?.focus();
+      return;
+    }
+    if (conceptsError) {
+      conceptsInput?.focus();
+      return;
+    }
+    if (samplesError) {
+      samplesField?.querySelector<HTMLInputElement>("input")?.focus();
+      return;
+    }
+    if (customSystemError) {
+      customSystemInput?.focus();
+      return;
+    }
+    const tuningErrors = tuningMessages(tuning, maxDimLimit);
+    if (tuningErrors.length === 0) return;
+    advancedOpen = true;
+    await tick();
+    const label = tuning.maxDim < 1 || maxDimLimit !== null && tuning.maxDim > maxDimLimit
+      ? "max dim"
+      : "variance";
+    tuningInput(label)?.focus();
+  }
+
   async function save(): Promise<void> {
-    if (!validation.ok || submitting) return;
+    if (submitting) return;
+    validationAttempted = true;
+    if (!validation.ok) {
+      await focusFirstInvalid();
+      return;
+    }
     submitting = true;
-    progress = null;
+    progress = "Starting generation…";
     const { namespace, name, description } = identitySlugs(identity);
     const hyperparams = tuningHyperparams(tuning);
     const req: GenerateManifoldRequest = {
@@ -139,6 +254,7 @@
           kind: "info",
           ttlMs: null,
         });
+        progress = "Starting fit…";
         try {
           await apiManifoldFitStream(
             namespace,
@@ -163,45 +279,57 @@
           });
         } catch (e) {
           dismissToast(fitToastId);
-          pushToast(`fit failed — ${describeError(e)}`, {
+          pushToast(`Couldn't fit the manifold: ${describeError(e)}`, {
             kind: "error",
             ttlMs: null,
           });
         }
       } else {
         pushToast(
-          `generated ${namespace}/${name} — open manifolds drawer to fit`,
+          `Generated ${namespace}/${name}. Open Manifolds to fit it.`,
           { kind: "info" },
         );
       }
       await refreshManifoldList();
-      closeDrawer();
-      openDrawer("manifolds");
+      if (oncomplete) oncomplete();
+      else { closeDrawer(); openDrawer("manifolds"); }
     } catch (e) {
       dismissToast(toastId);
-      pushToast(`generate failed — ${describeError(e)}`, {
+      pushToast(`Couldn't generate the manifold: ${describeError(e)}`, {
         kind: "error",
         ttlMs: null,
       });
     } finally {
       submitting = false;
-      progress = null;
+      progress = "";
     }
   }
 </script>
 
-<div class="form-stack">
+<div
+  bind:this={formRegion}
+  class="form-stack"
+  role="form"
+  aria-label="Generate manifold"
+  aria-busy={submitting}
+>
   <section class="step">
     <h2 class="step-title">concepts</h2>
     <label class="field">
       <span class="label">concepts * · ≥2</span>
       <textarea
+        bind:this={conceptsInput}
         class="input"
         rows="4"
         placeholder="pirate caveman assistant scholar robot"
         bind:value={conceptsText}
         spellcheck="false"
+        aria-invalid={!!conceptsError}
+        aria-describedby={conceptsError ? "discover-concepts-error" : undefined}
       ></textarea>
+      {#if conceptsError}
+        <span id="discover-concepts-error" class="field-error">{conceptsError}</span>
+      {/if}
       <span class="dim-note">
         <strong>{concepts.length}</strong> parsed
       </span>
@@ -209,13 +337,13 @@
     <div class="grid2">
       <div class="field">
         <span class="label">kind</span>
-        <div class="radio-row">
+        <div class="radio-row" role="radiogroup" aria-label="Concept kind">
           <Radio bind:group={kind} value="abstract" label="abstract" />
           <Radio bind:group={kind} value="concrete" label="concrete" />
           <Radio bind:group={kind} value="custom" label="custom" />
         </div>
       </div>
-      <label class="field">
+      <label bind:this={samplesField} class="field">
         <span class="label">samples / prompt</span>
         <NumberInput
           value={samplesPerPrompt}
@@ -225,62 +353,116 @@
             if (v !== null) samplesPerPrompt = v;
           }}
         />
+        {#if samplesError}
+          <span id="discover-samples-error" class="field-error">{samplesError}</span>
+        {/if}
       </label>
     </div>
     {#if kind === "custom"}
       <label class="field">
         <span class="label">system template</span>
         <textarea
+          bind:this={customSystemInput}
           class="input"
           rows="3"
           bind:value={customSystem}
           spellcheck="false"
+          aria-invalid={!!customSystemError}
+          aria-describedby={customSystemError
+            ? "discover-system-error"
+            : undefined}
         ></textarea>
+        {#if customSystemError}
+          <span id="discover-system-error" class="field-error">
+            {customSystemError}
+          </span>
+        {/if}
       </label>
     {/if}
   </section>
 
-  <FitMethodPicker {tuning} spectralNote="curved · best with ≥50 nodes" />
+  <FitMethodPicker
+    {tuning}
+    linearOnly={browserMode}
+    spectralNote="curved · best with ≥50 nodes"
+    onchange={(fitMode) => (tuning.fitMode = fitMode)}
+  />
 
   <AdvancedSection bind:expanded={advancedOpen}>
-    <label class="field">
-      <span class="label">SAE release</span>
-      <!-- ``text-input`` has never had a rule in this drawer, so the field
-           renders unstyled.  Preserved verbatim: the visual language is
-           locked for this pass, and correcting it to ``input`` would be a
-           look change, not a structural one. -->
-      <input
-        class="text-input"
-        bind:value={saeRelease}
-        placeholder="e.g. gemma-scope-2-4b-it-res"
-        spellcheck="false"
-      />
-    </label>
-    <DiscoverTuningFields {tuning} />
+    {#if browserMode}
+      <div class="field">
+        <span class="label">feature space for fit</span>
+        <Select
+          bind:value={saeRelease}
+          options={browserSaeOptions}
+          disabled={saeSourceState.loading || saeSourceState.busy}
+          ariaLabel="Feature space used for manifold fitting"
+        />
+        {#if saeSourceState.error}
+          <span class="field-error">{saeSourceState.error}</span>
+        {:else if !saeSourceState.loading && saeSourceState.sources.length === 0}
+          <span class="dim-note">No compatible learned-feature pack is installed.</span>
+        {/if}
+      </div>
+    {:else}
+      <label class="field">
+        <span class="label">SAE release</span>
+        <input
+          class="input"
+          bind:value={saeRelease}
+          placeholder="e.g. gemma-scope-2-4b-it-res"
+          spellcheck="false"
+        />
+      </label>
+    {/if}
+    <DiscoverTuningFields {tuning} {maxDimLimit} />
     <div class="check-stack">
       <Checkbox bind:checked={alsoFit} label="fit now" />
-      <Checkbox bind:checked={rolePerNode} label="node roles" />
+      <Checkbox
+        bind:checked={rolePerNode}
+        label="node roles"
+        title={PER_NODE_ROLE_HELP}
+      />
       {#if rolePerNode}
         <p class="role-hint">
-          uses each concept as its assistant role; unsupported models fail at fit
+          each concept becomes its assistant voice; unsupported chat templates fail before fitting
         </p>
       {/if}
       <Checkbox bind:checked={force} label="overwrite" />
     </div>
   </AdvancedSection>
 
-  {#if progress}
-    <p class="progress">{progress}</p>
-  {/if}
+  <p class="progress form-status" role="status" aria-live="polite" aria-atomic="true">
+    {progress}
+  </p>
 
-  <ValidationBlock verb="generate" messages={validation.messages} />
+  <ValidationBlock
+    verb="generating"
+    messages={validationAttempted ? validation.messages : []}
+  />
 
   <button
     type="button"
     class="save-btn"
-    disabled={!validation.ok || submitting}
+    disabled={submitting}
     onclick={save}
   >
     {submitting ? "generating…" : alsoFit ? "generate + fit" : "generate"}
   </button>
 </div>
+
+<style>
+  .field-error {
+    color: var(--accent-red);
+    font-size: var(--text-xs);
+    line-height: 1.4;
+  }
+
+  .form-status:empty {
+    display: none;
+  }
+
+  textarea[aria-invalid="true"] {
+    border-color: var(--accent-red);
+  }
+</style>

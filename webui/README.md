@@ -1,7 +1,7 @@
-# Saklas web UI
+# Drowse web UI
 
-Svelte 5 + Vite source for the dashboard served by `saklas serve`. Production
-builds go directly to `../saklas/web/dist/`; that committed directory is package
+Svelte 5 + Vite source for the dashboard served by `drowse serve`. Production
+builds go directly to `../drowse/web/dist/`; that committed directory is package
 data and is the UI users receive from the wheel.
 
 ## Development
@@ -11,12 +11,12 @@ cd webui
 npm ci
 
 # In another terminal:
-saklas serve <model>
+drowse serve <model>
 
 npm run dev
 ```
 
-Vite runs on `http://localhost:5173` and proxies `/saklas`, `/v1`, and `/api`
+Vite runs on `http://localhost:5173` and proxies `/drowse`, `/v1`, and `/api`
 (including the native WebSocket) to `http://localhost:8000`.
 
 Before committing a UI change:
@@ -24,12 +24,72 @@ Before committing a UI change:
 ```bash
 npm run check
 npm run build
-git diff --exit-code ../saklas/web/dist
+git diff --exit-code ../drowse/web/dist
 ```
 
 `npm run check` runs Svelte/TypeScript checks and the theme-token validator.
 `npm run build` wipes and regenerates the committed production bundle. CI repeats
 both commands and fails if the rebuilt bundle differs.
+
+### Test the hosted app on an iPhone
+
+An iPhone must load the LAN build over trusted HTTPS for WebGPU, workers, and
+device storage to run in a secure context. Connect the Mac and iPhone to the same
+Wi-Fi network, then run:
+
+```bash
+npm run dev:hosted:ios
+```
+
+The command discovers the Mac's LAN address, creates a local development CA and
+a certificate containing the current LAN addresses, and starts the hosted Vite
+app on `0.0.0.0:4173`. It prints the exact Safari URL and the path of the public
+CA certificate to AirDrop. Private keys remain under the git-ignored
+`../browser-runtime/.local-build/https/` directory and are never printed.
+
+On the iPhone:
+
+1. AirDrop the printed `.cer` file to the iPhone and accept it.
+2. Open **Settings > General > VPN & Device Management**, select the downloaded
+   **Drowse local development CA** profile, and install it.
+3. Open **Settings > General > About > Certificate Trust Settings** and enable
+   full trust for **Drowse local development CA**.
+4. Open the printed `https://<LAN-IP>:4173/app` URL in Safari.
+5. To install it as a web app, use **Share > Add to Home Screen > Add**.
+
+Run the command again after the Mac's LAN address changes; the server certificate
+is regenerated with the new address. Use `npm run dev:hosted:ios -- --port 4180`
+to choose another port, or `--ip <address>` if automatic LAN discovery selects
+the wrong interface. Safari 26 or newer is required for WebGPU. Passing the
+compatibility screen establishes browser capabilities, but model inference still
+needs validation on each physical iPhone model and available-memory class.
+
+For an existing trusted certificate, the hosted Vite config also accepts
+`DROWSE_HTTPS_CERT` and `DROWSE_HTTPS_KEY`; set both or neither. HTTPS
+does not remove the hosted server's COOP/COEP isolation headers.
+
+#### Physical iPhone release gate
+
+Keep iPhone inference marked as a preview until a release candidate passes this
+matrix in Safari on real hardware. Record the iPhone model, iOS build, available
+storage, model variant, runtime identity, and context size with the result.
+
+- Start from cleared site data, pass the graphics and OPFS write/read/delete
+  checks over trusted HTTPS, and install the site from **Add to Home Screen**.
+- Download each offered compact model and its required J-lens; pause, resume,
+  reload, and verify hashes without restarting the download.
+- Load and generate at the 2,048-token context and 256-token output limits;
+  exercise Stop, retry, background/foreground, device loss, and a second-tab
+  takeover while generation is active.
+- Open a saved chat after killing and relaunching the web app. Confirm model,
+  avatar, branches, response settings, and generated text all persist.
+- Pan, zoom, branch, and inspect tokens in Loom in portrait, landscape, and with
+  the software keyboard open. Enable J-lens live readings only on demand.
+- On a compatible Gemma model, install the SAE separately and verify feature
+  reads and steering. Models without an SAE must keep that surface unavailable.
+- Run one 8 GB-class iPhone expected to load the compact model and one lower-
+  memory device expected to fail safely, preserve downloaded data, and require
+  an explicit retry rather than entering a reload loop.
 
 ## Application shape
 
@@ -48,7 +108,7 @@ exist and asks the replay endpoints for historical or newly attached readouts.
 
 Below 1280 px those same areas become explicit `threads`, `chat`, and
 `instruments` views. Dense tools open in a focus-trapped drawer. The command
-palette (`⌘K` / `Ctrl+K`) is the global launcher.
+palette is available from **Menu → All tools**; it has no global keyboard shortcut.
 
 ## Source map
 
@@ -81,8 +141,8 @@ src/
 ```
 
 The server-owned wire contract is documented beside the implementation in
-`../saklas/server/AGENTS.md`; dashboard-specific ownership and interaction
-contracts live in `../saklas/web/AGENTS.md`. Prefer those sources over copying a
+`../drowse/server/AGENTS.md`; dashboard-specific ownership and interaction
+contracts live in `../drowse/web/AGENTS.md`. Prefer those sources over copying a
 route inventory into this file.
 
 ## State and component rules
@@ -113,10 +173,11 @@ route inventory into this file.
 
 ## Visual system
 
-The dashboard is dark-only. Hue identifies data space: subspace/chrome is
-achromatic, manifold violet, SAE gold, J-lens and surprise blue, live/positive
-green, and error/negative red. Roles do not carry hue. Gradients encode depth or
-time only when direction is the data; shared chrome uses depth/focus shadows, not
-decorative top-light or glow treatments. The source of truth is
-`src/lib/style/tokens.css`, with Recursive Sans/Mono axes defined in
-`src/lib/style/fonts.css`.
+The dashboard ships paired light and dark themes. Hue identifies data space:
+subspace/chrome is achromatic, manifold violet, SAE gold, J-lens and surprise
+blue, live/positive green, and error/negative red. Roles do not carry hue.
+Gradients encode depth or time only when direction is the data; shared chrome
+uses depth/focus shadows, not decorative top-light or glow treatments. The
+source of truth is `src/lib/style/tokens.css`; `src/lib/style/fonts.css`
+self-hosts Wix Madefor for interface and reading text, with Martian Mono for
+data.

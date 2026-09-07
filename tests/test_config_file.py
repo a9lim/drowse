@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from saklas.cli import config_file as cfg
+from drowse.cli import config_file as cfg
 
 
 def test_parse_minimal(tmp_path: Path) -> None:
@@ -117,13 +117,13 @@ def test_apply_flag_overrides() -> None:
 
 
 def test_ensure_vectors_installed_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     # ``default/confident.uncertain`` is a bundled manifold — ensure_vectors_installed
     # materializes the bundled set, so the ``default/`` reference resolves
     # against the just-dropped folder with nothing to install.  Reset the
     # process-scope materialize guard so it actually fires under this test's
-    # SAKLAS_HOME (in a real CLI run, config load is the first materialize).
-    monkeypatch.setattr("saklas.io.manifolds._materialized_home", None)
+    # DROWSE_HOME (in a real CLI run, config load is the first materialize).
+    monkeypatch.setattr("drowse.io.manifolds._materialized_home", None)
     c = cfg.ConfigFile(vectors="0.5 default/confident.uncertain")
     missing = cfg.ensure_vectors_installed(c, strict=False)
     assert missing == []
@@ -133,22 +133,22 @@ def test_bundled_manifolds_materialize_after_in_process_home_switch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """The process guard must not strand a newly selected artifact root."""
-    from saklas.io import manifolds as manifolds_mod
-    from saklas.io.paths import manifolds_dir
+    from drowse.io import manifolds as manifolds_mod
+    from drowse.io.paths import manifolds_dir
 
     monkeypatch.setattr(manifolds_mod, "_materialized_home", None)
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "first"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "first"))
     manifolds_mod.materialize_bundled_manifolds()
     assert (manifolds_dir() / "default" / "formal.casual").is_dir()
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path / "second"))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "second"))
     manifolds_mod.materialize_bundled_manifolds()
     assert (manifolds_dir() / "default" / "formal.casual").is_dir()
 
 
 def test_ensure_vectors_installed_missing_hf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.selectors import invalidate
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.selectors import invalidate
     invalidate()
     installed: dict[str, Any] = {}
 
@@ -158,7 +158,7 @@ def test_ensure_vectors_installed_missing_hf(monkeypatch: pytest.MonkeyPatch, tm
 
     # 4.0: HF auto-install of a referenced concept routes through the manifold
     # install path, not the retired pack one.
-    monkeypatch.setattr("saklas.io.hf_manifolds.install_manifold", fake_install)
+    monkeypatch.setattr("drowse.io.hf_manifolds.install_manifold", fake_install)
     c = cfg.ConfigFile(vectors="0.5 user/happy")
     missing = cfg.ensure_vectors_installed(c, strict=False)
     assert installed["target"] == "user/happy"
@@ -166,8 +166,8 @@ def test_ensure_vectors_installed_missing_hf(monkeypatch: pytest.MonkeyPatch, tm
 
 
 def test_ensure_vectors_installed_strict_raises_on_local_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.selectors import invalidate
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.selectors import invalidate
     invalidate()
     c = cfg.ConfigFile(vectors="0.5 local/bard")
     with pytest.raises(cfg.ConfigFileError, match="local/bard"):
@@ -175,12 +175,12 @@ def test_ensure_vectors_installed_strict_raises_on_local_missing(monkeypatch: py
 
 
 def test_load_default_returns_none_when_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     assert cfg.ConfigFile.load_default() is None
 
 
 def test_load_default_returns_file_when_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("model: default-model\n")
     c = cfg.ConfigFile.load_default()
     assert c is not None
@@ -188,7 +188,7 @@ def test_load_default_returns_file_when_present(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_effective_composes_default_and_extras(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("model: default-model\ntemperature: 0.5\n")
     extra = tmp_path / "extra.yaml"
     extra.write_text("model: extra-model\ntop_p: 0.9\n")
@@ -199,7 +199,7 @@ def test_effective_composes_default_and_extras(monkeypatch: pytest.MonkeyPatch, 
 
 
 def test_effective_no_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("model: default-model\n")
     c = cfg.ConfigFile.effective([], include_default=False)
     assert c.model is None
@@ -223,9 +223,9 @@ def test_bare_pole_validates_against_installed_packs(monkeypatch: pytest.MonkeyP
     ``wolf``), so bare ``wolf`` resolves through the manifold-label tier in
     ``_bare_concept_resolves`` rather than the old ``vectors/`` pole alias.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifolds import create_discover_manifold_folder
-    from saklas.io.selectors import invalidate
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifolds import create_discover_manifold_folder
+    from drowse.io.selectors import invalidate
     create_discover_manifold_folder(
         "local", "deer.wolf", "x", fit_mode="pca",
         node_corpora={"deer": ["a statement."], "wolf": ["b statement."]},

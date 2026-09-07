@@ -1,4 +1,7 @@
 <script lang="ts">
+  import FluentIcon from "../../lib/ui/FluentIcon.svelte";
+  import { slidingSelection } from "../../lib/slidingSelection";
+  import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // Unified steer card — one row for every steering term.  Every term is a
   // position on a fitted geometry; the card branches on ``entry.mode``:
   //
@@ -13,9 +16,8 @@
   //              statline: glyph · name · unfitted/stale warn · trigger · ✕
   //              body:     snap-to-node Select · XYPad · along · onto
   //
-  // The pre-4.0 ``~``/``|`` projection, ``!`` ablation, and ``:variant`` chip
-  // are gone from the card (a ``%`` term can't carry projection/ablation;
-  // variant survives on the entry for round-trip but isn't authored here).
+  // Rank-one subspaces expose push/ablate. Higher-rank ``~``/``|`` projection
+  // and tensor variants remain advanced-expression operations.
   // ``s`` / ``m`` are the narrowed entry views the template renders behind
   // ``{#if s}`` / ``{#if m}`` so svelte-check enforces mode-correct access.
 
@@ -25,6 +27,7 @@
     setSubspaceLabel,
     setSubspaceTrigger,
     setSubspaceEnabled,
+    setSubspaceAblate,
     removeSubspaceFromRack,
     setManifoldBlend,
     setManifoldOnto,
@@ -71,6 +74,7 @@
   const info = $derived(manifoldByName(name));
   const fitted = $derived(info?.fitted_for_session === true);
   const stale = $derived(info?.stale === true);
+  const rankOne = $derived(info?.node_count === 1 || info?.node_count === 2);
 
   // ---------- trigger cycle (shared vocabulary in ./triggers) ----------
 
@@ -134,7 +138,6 @@
       class="enable"
       class:off={!entry.enabled}
       onclick={toggleEnabled}
-      title={entry.enabled ? "disable" : "enable"}
       aria-pressed={entry.enabled}
       aria-label="Toggle steering for {name}"
     >
@@ -158,52 +161,65 @@
       </span>
     {/if}
 
-    <span class="spacer"></span>
-
-    <button
-      type="button"
-      class="trigger-pill"
-      onclick={cycleTrigger}
-      title="trigger: {TRIGGER_LABEL[entry.trigger]}"
-      aria-label="trigger for {name}: {entry.trigger}"
-    >
-      {TRIGGER_WORD[entry.trigger]}
-    </button>
-
     <button
       type="button"
       class="icon remove"
       onclick={removeTerm}
       aria-label="remove {name}"
-      title="remove {name}"
     >
-      ✕
+      <FluentIcon name="dismiss" />
     </button>
   {/snippet}
 
   {#snippet body()}
+    <div class="trigger-row">
+      <span class="ctl-label">Trigger</span>
+      <button type="button" class="trigger-pill" onclick={cycleTrigger}
+        aria-label="trigger for {name}: {entry.trigger}" title={TRIGGER_LABEL[entry.trigger]}>
+        {TRIGGER_WORD[entry.trigger]}
+      </button>
+    </div>
     {#if info}
-      {#if info.node_labels.length > 0}
+      {#if s && rankOne}
+        <div class="operation" role="group" aria-label="steering operation for {name}" use:slidingSelection>
+          <button
+            type="button"
+            class:active={!s.ablate}
+            aria-pressed={!s.ablate}
+            onclick={() => setSubspaceAblate(name, false)}
+          >push</button>
+          <button
+            type="button"
+            class:active={s.ablate}
+            aria-pressed={s.ablate}
+            onclick={() => setSubspaceAblate(name, true)}
+          >ablate</button>
+        </div>
+      {/if}
+      {#if !s?.ablate && info.node_labels.length > 0}
         <label class="ctl-row">
-          <span class="ctl-label">node</span>
+          <span class="ctl-label">Target node</span>
           <span class="ctl-select">
             <Select
               value={activeLabel ?? ""}
               options={snapOptions}
               onchange={onSnapToNode}
               ariaLabel="snap to node"
-              title="node or free position"
             />
           </span>
         </label>
       {/if}
-      <XYPad
-        manifold={info}
-        coords={activeCoords}
-        onchange={onCoordsChange}
-        locked={activeLabel !== null}
-      />
-      {#if m}
+      {#if !s?.ablate}
+        <XYPad
+          manifold={info}
+          coords={activeCoords}
+          onchange={onCoordsChange}
+          locked={activeLabel !== null}
+        />
+      {/if}
+      {#if s?.ablate}
+        <p class="hint">removes this direction from the current activation</p>
+      {:else if m}
         <!-- Curved manifold: per-card along + onto.  Subspace terms have no
              per-card along — they share the rack-level "subspace along". -->
         <div class="along-row">
@@ -215,9 +231,8 @@
             step={0.05}
             oninput={onBlendInput}
             ariaLabel="along fraction for {name}"
-            title="along"
           />
-          <span class="along-val" title="along fraction">{m.blend.toFixed(2)}</span>
+          <span class="along-val"><RollingNumber value={m.blend} digits={2} /></span>
         </div>
         <div class="along-row">
           <span class="along-label">onto</span>
@@ -228,12 +243,11 @@
             step={0.05}
             oninput={onOntoInput}
             ariaLabel="onto fraction for {name}"
-            title="onto"
           />
-          <span class="along-val" title="onto fraction">{m.onto.toFixed(2)}</span>
+          <span class="along-val"><RollingNumber value={m.onto} digits={2} /></span>
         </div>
       {:else}
-        <p class="hint">shared rack magnitude</p>
+        <p class="hint">Uses shared subspace α</p>
       {/if}
     {:else}
       <p class="missing">metadata unavailable</p>
@@ -248,7 +262,7 @@
     place-items: center;
     inline-size: 24px;
     block-size: 24px;
-    margin: 0 -3px;
+    margin: 0 calc(var(--space-xs) * -1);
     background: transparent;
     border: 0;
     border-radius: var(--radius-sm);
@@ -265,9 +279,8 @@
     color: var(--fg-strong);
     font-family: var(--font-mono);
     font-size: var(--text-sm);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    flex: 1;
+    overflow-wrap: anywhere;
     min-width: 0;
   }
   .name.struck {
@@ -277,18 +290,15 @@
 
   .warn {
     flex: 0 0 auto;
-    color: var(--accent-yellow);
+    color: var(--warning-ink);
     font-size: var(--text-2xs);
-    background: color-mix(in srgb, var(--accent-yellow) 15%, transparent);
+    background: var(--warning-bg);
     border: 1px solid transparent;
     border-radius: var(--radius);
     padding: 0 var(--space-2);
   }
 
-  .spacer {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
+  .trigger-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 
   .trigger-pill {
     min-height: var(--control-target);
@@ -331,10 +341,34 @@
   }
 
   /* ----- body: position controls ----- */
+  .operation {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-xs);
+    padding: var(--space-xs);
+    border-radius: var(--radius-group);
+    background: var(--surface-sheen), var(--glass);
+  }
+  .operation button {
+    min-height: var(--control-target);
+    border: 0;
+    border-radius: var(--radius-inset);
+    background: transparent;
+    color: var(--fg-muted);
+    font-family: var(--font-structure);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-structure);
+    cursor: pointer;
+  }
+  .operation button.active {
+    background: var(--bg-elev);
+    color: var(--fg-strong);
+    box-shadow: var(--shadow-rack-active);
+  }
   .ctl-row {
-    display: flex;
+    display: grid;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-3);
     min-width: 0;
     color: var(--fg-strong);
     font-size: var(--text-xs);
@@ -364,7 +398,7 @@
     color: var(--fg-muted);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
-    text-align: right;
+    text-align: end;
   }
   .hint,
   .missing {

@@ -12,12 +12,12 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from saklas.core.instruments.geometry import GeometryInstrument
-from saklas.core.instruments.lens import LensInstrument
-from saklas.core.instruments.sae import SaeInstrument
+from drowse.core.instruments.geometry import GeometryInstrument
+from drowse.core.instruments.lens import LensInstrument
+from drowse.core.instruments.sae import SaeInstrument
 
 _SID = "default"
-_BASE = f"/saklas/v1/sessions/{_SID}/instruments"
+_BASE = f"/drowse/v1/sessions/{_SID}/instruments"
 
 
 class _FakeLens(LensInstrument):
@@ -109,7 +109,7 @@ def _mock_session() -> Any:
 
 @pytest.fixture
 def session_and_client():
-    from saklas.server import create_app
+    from drowse.server import create_app
     session = _mock_session()
     app = create_app(session, default_steering=None)
     with TestClient(app) as client:
@@ -175,7 +175,7 @@ class TestListing:
         """
         session, client = session_and_client
         monkeypatch.setattr(
-            "saklas.io.lens_sources.list_lens_sources", lambda _m: [],
+            "drowse.io.lens_sources.list_lens_sources", lambda _m: [],
         )
         session.lens.source = "local:default"
         fams = {f["family"]: f for f in client.get(_BASE).json()["instruments"]}
@@ -237,7 +237,7 @@ class TestLiveToggle:
         assert session.lens.disable_calls == 1
 
     def test_lens_not_fitted_404(self, session_and_client: Any) -> None:
-        from saklas.core.jlens import LensNotFittedError
+        from drowse.core.jlens import LensNotFittedError
         session, client = session_and_client
         session.lens.enable_error = LensNotFittedError("no lens")
         resp = client.post(f"{_BASE}/lens/live", json={"enabled": True})
@@ -305,7 +305,7 @@ class TestSources:
     ) -> None:
         _session, client = session_and_client
         monkeypatch.setattr(
-            "saklas.io.lens_sources.list_lens_sources",
+            "drowse.io.lens_sources.list_lens_sources",
             lambda _m: [{
                 "source": "local:default", "kind": "local", "name": "default",
                 "active": True, "path": "/tmp/x.json",
@@ -322,7 +322,7 @@ class TestSources:
     ) -> None:
         _session, client = session_and_client
         monkeypatch.setattr(
-            "saklas.io.sae.list_sae_sources",
+            "drowse.io.sae.list_sae_sources",
             lambda _m: [{
                 "source": "local:mine", "kind": "local", "name": "mine",
                 "active": True, "path": "/tmp/m.json", "layer": 14,
@@ -330,7 +330,7 @@ class TestSources:
             }],
         )
         monkeypatch.setattr(
-            "saklas.core.sae.list_sae_releases",
+            "drowse.core.sae.list_sae_releases",
             # A release row is keyed by ``release`` and carries ``layers``
             # (plural) — the registry's own shape, not the prepared-source
             # shape above.
@@ -383,7 +383,7 @@ class TestSourceSwitch:
 
 class TestPreparations:
     def test_lens_fit_request_defaults_to_relp(self) -> None:
-        from saklas.server.instrument_routes import LensFitRequest
+        from drowse.server.instrument_routes import LensFitRequest
 
         assert LensFitRequest().relp is True
 
@@ -440,7 +440,7 @@ class TestPreparations:
 
         session.fit_jlens.side_effect = _blocking_fit
         monkeypatch.setattr(
-            "saklas.io.lens.stream_default_lens_corpus",
+            "drowse.io.lens.stream_default_lens_corpus",
             lambda _n, *, cancel_event=None: (["a long enough prompt."], "spec"),
         )
         resp = client.post(
@@ -485,7 +485,7 @@ class TestPreparations:
             "runtime": {}, "metrics": {"tokens_trained": 100}, "source": "local:s",
         }
         monkeypatch.setattr(
-            "saklas.io.lens.stream_default_lens_corpus",
+            "drowse.io.lens.stream_default_lens_corpus",
             lambda _n, **_k: (["p"], "spec"),
         )
         resp = client.post(
@@ -553,7 +553,7 @@ class TestTokenReadout:
 
     @staticmethod
     def _geometry_out(steering: "str | None") -> dict[str, Any]:
-        from saklas.core.results import ProbeReading
+        from drowse.core.results import ProbeReading
 
         return {
             "node_id": "n1", "raw_index": 3, "token_id": 42,
@@ -619,7 +619,7 @@ class TestTokenReadout:
         assert resp.status_code == 400
 
     def test_geometry_unknown_node_404(self, session_and_client: Any) -> None:
-        from saklas.core.loom import UnknownNodeError
+        from drowse.core.loom import UnknownNodeError
 
         session, client = session_and_client
         session.geometry_token_readout.side_effect = UnknownNodeError("gone")
@@ -674,7 +674,7 @@ class TestTokenReadout:
         assert session.jlens_token_readout.call_args.kwargs["apply_steering"] is False
 
     def test_lens_not_fitted_404(self, session_and_client: Any) -> None:
-        from saklas.core.jlens import LensNotFittedError
+        from drowse.core.jlens import LensNotFittedError
         session, client = session_and_client
         session.jlens_token_readout.side_effect = LensNotFittedError("nope")
         resp = client.get(

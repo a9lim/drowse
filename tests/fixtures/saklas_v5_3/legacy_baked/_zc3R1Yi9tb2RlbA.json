@@ -1,0 +1,58 @@
+{
+  "format_version": 10,
+  "name": "legacy_baked",
+  "method": "folded_vector",
+  "saklas_version": "5.3.0",
+  "domain": {
+    "type": "custom",
+    "embed_dim": 1,
+    "bounds": null
+  },
+  "node_count": 1,
+  "node_labels": [
+    "test"
+  ],
+  "feature_space": "raw",
+  "fit_mode": "baked",
+  "hyperparams": {},
+  "diagnostics": {},
+  "node_spread_per_layer": {},
+  "mahalanobis_share_per_layer": {
+    "0": 5.477225575051661
+  },
+  "origin_per_layer": {},
+  "nodes_sha256": "294e68e76db69d63cd0fd6504d6b94ccb22ee3e77fa01c88dc2a40fd58c9e531",
+  "sae_release": null,
+  "sae_revision": null,
+  "sae_fingerprint": null,
+  "sae_ids_by_layer": {},
+  "sae_full_coverage": false,
+  "model_fingerprint": "fp:stub/model",
+  "model_source_fingerprint": null,
+  "capture_sha256": null,
+  "capture_version": null,
+  "capture_render_sha256": null,
+  "baseline_prompts_sha256": null,
+  "fitted_layers": [
+    0
+  ],
+  "fit_policy_version": null,
+  "share_metric": "mahalanobis",
+  "subspace_metric": null,
+  "rbf_smoothing_per_layer": {},
+  "sigma_field_per_layer": {},
+  "resolved_fit_mode": null,
+  "topology_winner": null,
+  "topology_candidates": [],
+  "node_roles": [
+    null
+  ],
+  "node_kinds": [
+    null
+  ],
+  "components": null,
+  "bake_policy": null,
+  "source_model_id": null,
+  "source_model_fingerprint": null,
+  "transfer_quality_estimate": null
+}

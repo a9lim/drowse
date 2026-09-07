@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -57,7 +58,7 @@ jobs:
       - run: pip install -e ".[dev]"
       # Coverage is informational only — no --cov-fail-under, and --cov stays out
       # of pyproject addopts so local runs without pytest-cov keep working.
-      - run: pytest -q -m "not gpu" --cov=saklas --cov-report=term-missing
+      - run: pytest -q -m "not gpu" --cov=drowse --cov-report=term-missing
 
   # Stable aggregator so branch protection can require a single ``test`` context
   # instead of every ``test-matrix (x.y)`` leg by name. ``if: always()`` makes the
@@ -78,7 +79,7 @@ jobs:
 
   build:
     # Validates the PEP 621 dynamic-version setup in pyproject.toml: confirms
-    # ``python -m build`` resolves ``saklas.__version__`` via AST parse without
+    # ``python -m build`` resolves ``drowse.__version__`` via AST parse without
     # executing the module (which would import torch and break the build).
     runs-on: ubuntu-latest
     steps:
@@ -87,26 +88,75 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip build
-      - run: python -m build
+      - name: Seed a stale dashboard build cache
+        run: python scripts/check_package_isolation.py seed
+      - run: python -m build --sdist --wheel
+      - name: Verify wheel dashboard files match the source distribution
+        run: python scripts/check_package_isolation.py check
       - name: Verify wheel imports and version round-trips
         run: |
-          pip install dist/saklas-*.whl
-          python -c "import saklas; print('version:', saklas.__version__)"
+          pip install dist/drowse_ai-*.whl
+          python -c "import drowse; from importlib.metadata import version; assert version('drowse.ai') == drowse.__version__; print('version:', drowse.__version__)"
 
   webui:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: webui/package-lock.json
+      - name: Install Python artifact dependencies
+        run: pip install -e .
       - run: npm ci
         working-directory: webui
       - run: npm run check
         working-directory: webui
+      - run: npm run check:hosted
+        working-directory: webui
+      - run: npm run test:hosted
+        working-directory: webui
+      - name: Install the pinned Playwright browsers
+        run: npx playwright install --with-deps chromium webkit firefox
+        working-directory: webui
+      - run: npm run test:e2e
+        working-directory: webui
       - run: npm run build
         working-directory: webui
+      - name: Verify default and hosted builds are isolated
+        run: |
+          node scripts/check-build-isolation.mjs default ../drowse/web/dist
+          node scripts/check-build-isolation.mjs hosted dist-hosted
+        working-directory: webui
       - name: Verify committed web bundle is current
-        run: git diff --exit-code saklas/web/dist/
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all -- drowse/web/dist/)" ]; then
+            git status --short --untracked-files=all -- drowse/web/dist/
+            exit 1
+          fi
+
+  fitting-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust components and WebAssembly target
+        run: |
+          rustup component add rustfmt clippy
+          rustup target add wasm32-unknown-unknown
+      - name: Check formatting
+        run: cargo fmt --manifest-path browser-runtime/fitting-wasm/Cargo.toml -- --check
+      - name: Run tests
+        run: cargo test --locked --manifest-path browser-runtime/fitting-wasm/Cargo.toml
+      - name: Run Clippy
+        run: cargo clippy --locked --manifest-path browser-runtime/fitting-wasm/Cargo.toml --all-targets -- -D warnings
+      - name: Build optimized WebAssembly module
+        run: cargo build --locked --release --target wasm32-unknown-unknown --manifest-path browser-runtime/fitting-wasm/Cargo.toml
+      - name: Install the pinned wasm-bindgen packager
+        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+      - name: Verify committed browser bindings are reproducible
+        run: npm run check:fitting-wasm
+        working-directory: webui

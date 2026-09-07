@@ -1,4 +1,4 @@
-// Command-palette state shared by the app shell and launcher hint.
+// Tool-directory state shared by the app shell and workspace menu.
 
 export const paletteState: { open: boolean } = $state({ open: false });
 
@@ -22,9 +22,4 @@ export function closePalette(): void {
   queueMicrotask(() => {
     if (restore?.isConnected) restore.focus();
   });
-}
-
-export function togglePalette(): void {
-  if (paletteState.open) closePalette();
-  else openPalette();
 }

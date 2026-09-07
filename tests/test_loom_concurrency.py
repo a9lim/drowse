@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from saklas import (
+from drowse import (
     LoomTree,
     MutationDuringGenerationError,
 )

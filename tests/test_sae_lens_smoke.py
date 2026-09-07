@@ -1,6 +1,6 @@
 """Opt-in end-to-end smoke test for the SAE pipeline.
 
-Gated on SAKLAS_TEST_SAELENS=1 because it requires ``sae_lens`` installed
+Gated on DROWSE_TEST_SAELENS=1 because it requires ``sae_lens`` installed
 and downloads a real SAE release (hundreds of MB). Not on CI by default.
 """
 from __future__ import annotations
@@ -11,9 +11,10 @@ import pytest
 
 pytestmark = [
     pytest.mark.gpu,
+    pytest.mark.gpu_gemma,
     pytest.mark.skipif(
-        os.environ.get("SAKLAS_TEST_SAELENS") != "1",
-        reason="opt in via SAKLAS_TEST_SAELENS=1",
+        os.environ.get("DROWSE_TEST_SAELENS") != "1",
+        reason="opt in via DROWSE_TEST_SAELENS=1",
     ),
 ]
 
@@ -21,7 +22,7 @@ pytestmark = [
 def test_end_to_end_sae_extraction_and_generate():
     import torch
 
-    from saklas import SaklasSession
+    from drowse import DrowseSession
 
     has_gpu = torch.cuda.is_available() or (
         hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
@@ -29,7 +30,7 @@ def test_end_to_end_sae_extraction_and_generate():
     if not has_gpu:
         pytest.skip("requires CUDA or MPS")
 
-    session = SaklasSession.from_pretrained(
+    session = DrowseSession.from_pretrained(
         "google/gemma-2-2b-it", device="auto", probes=[],
     )
 

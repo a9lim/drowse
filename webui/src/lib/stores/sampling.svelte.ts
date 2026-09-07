@@ -9,8 +9,19 @@
 // the per-call values is what keeps "change a field, press Send"
 // honest.
 
-import { apiSessions } from "../api";
-import type { ChatRole, WSSampling } from "../types";
+import { apiSessions } from "../runtime/services";
+import {
+  getRuntimeCapabilities,
+  getRuntimeClient,
+  getHostedController,
+} from "../runtime/registry";
+import {
+  clampOutputTokenCount,
+  outputTokenLimitForSignals,
+} from "../runtime/outputTokenPolicy";
+import { clampTokenAlternativeCount } from "../runtime/samplingCapabilities";
+import { runtimeOperationAvailability } from "../runtime/ui-capabilities";
+import type { ChatRole, WSSampling, SessionInfo } from "../types";
 import { probeRack } from "./probes.svelte";
 import { sessionState } from "./session.svelte";
 
@@ -85,22 +96,39 @@ export function setSampling<K extends keyof SamplingState>(
  * so the gen-status footer rendered ``gen N/256`` even when the engine
  * was running against a 1024-token cap.  Sync once on every refresh so
  * the displayed cap matches what generation actually used. */
-let _roleDefaultsModelId: string | null = null;
+let _roleDefaultsSignature: string | null = null;
+export const modelDefaultsState: { info: SessionInfo | null } = $state({ info: null });
+
+function outputTokenLimit(): number {
+  return outputTokenLimitForSignals(getRuntimeCapabilities()?.signals);
+}
 
 export function hydrateSamplingFromInfo(): void {
   const info = sessionState.info;
+  const original = getHostedController()?.snapshot.modelDefaults;
+  if (info && original?.model_id === info.model_id) {
+    modelDefaultsState.info = structuredClone($state.snapshot(original));
+  } else if (info && modelDefaultsState.info?.model_id !== info.model_id) {
+    modelDefaultsState.info = structuredClone($state.snapshot(info));
+  }
   // The editable values are the actual labels used by this model family's
-  // chat template. Seed once per
-  // loaded model so ordinary refreshes never erase a custom cast label.
-  if (info && _roleDefaultsModelId !== info.model_id) {
-    _roleDefaultsModelId = info.model_id;
+  // chat template. Seed again if verified template metadata changes for the
+  // same model, while ordinary refreshes preserve a custom cast label.
+  const roleDefaultsSignature = info
+    ? `${info.model_id}\0${info.default_user_role ?? ""}\0${info.default_assistant_role ?? ""}`
+    : null;
+  if (info && _roleDefaultsSignature !== roleDefaultsSignature) {
+    _roleDefaultsSignature = roleDefaultsSignature;
     samplingState.user_role = info.default_user_role ?? "user";
     samplingState.assistant_role = info.default_assistant_role ?? "assistant";
   }
   const cfg = info?.config;
   if (!cfg) return;
   if (typeof cfg.max_tokens === "number" && Number.isFinite(cfg.max_tokens)) {
-    samplingState.max_tokens = cfg.max_tokens;
+    samplingState.max_tokens = clampOutputTokenCount(
+      cfg.max_tokens,
+      outputTokenLimit(),
+    );
   }
   if (typeof cfg.temperature === "number") {
     samplingState.temperature = cfg.temperature;
@@ -117,22 +145,48 @@ export function hydrateSamplingFromInfo(): void {
   if (typeof cfg.thinking === "boolean") {
     samplingState.thinking = cfg.thinking;
   }
+  samplingState.return_top_k = clampTokenAlternativeCount(
+    samplingState.return_top_k,
+    getRuntimeClient().mode,
+  );
 }
 
-export async function patchSessionDefaults(
-  body: Partial<{
+type SessionDefaultsPatch = Partial<{
     temperature: number;
     top_p: number;
     top_k: number | null;
     max_tokens: number;
     system_prompt: string;
     thinking: boolean;
-  }>,
-): Promise<void> {
-  const info = await apiSessions.patch(body);
-  sessionState.info = info;
-  sessionState.lastRefresh = Date.now();
-  hydrateSamplingFromInfo();
+  }>;
+
+let pendingDefaults: SessionDefaultsPatch = {};
+let savingDefaults: Promise<void> | null = null;
+
+export function patchSessionDefaults(body: SessionDefaultsPatch): Promise<void> {
+  const patch = body.max_tokens === undefined
+    ? body
+    : {
+        ...body,
+        max_tokens: clampOutputTokenCount(body.max_tokens, outputTokenLimit()),
+      };
+  Object.assign(samplingState, patch);
+  Object.assign(pendingDefaults, patch);
+  if (!savingDefaults) {
+    savingDefaults = persistDefaults().finally(() => { savingDefaults = null; });
+  }
+  return savingDefaults;
+}
+
+async function persistDefaults(): Promise<void> {
+  while (Object.keys(pendingDefaults).length > 0) {
+    const patch = pendingDefaults;
+    pendingDefaults = {};
+    const info = await apiSessions.patch(patch);
+    sessionState.info = info;
+    sessionState.lastRefresh = Date.now();
+    if (Object.keys(pendingDefaults).length === 0) hydrateSamplingFromInfo();
+  }
 }
 
 // ------------------------------------------------- wire payload ------
@@ -173,6 +227,10 @@ function parsedLogitBias(): Record<string, number> | null {
 function nonDefaultSamplingOverrides(): Partial<WSSampling> {
   const stop = parsedStopSequences();
   const logit_bias = parsedLogitBias();
+  const return_top_k = clampTokenAlternativeCount(
+    samplingState.return_top_k,
+    getRuntimeClient().mode,
+  );
   return {
     ...(stop ? { stop } : {}),
     ...(logit_bias ? { logit_bias } : {}),
@@ -182,8 +240,8 @@ function nonDefaultSamplingOverrides(): Partial<WSSampling> {
     ...(samplingState.frequency_penalty !== 0
       ? { frequency_penalty: samplingState.frequency_penalty }
       : {}),
-    ...(samplingState.return_top_k > 0
-      ? { return_top_k: samplingState.return_top_k }
+    ...(return_top_k > 0
+      ? { return_top_k }
       : {}),
     // Per-message role labels (roleplay scaffold) ride every send like
     // ``seed`` — trimmed.  Empty = standard role, omitted.  A value equal to
@@ -215,7 +273,8 @@ function roleOverride(
   key: "user_role" | "assistant_role",
 ): Partial<WSSampling> {
   const value = raw.trim();
-  if (!value || value === structural || value === fallback) return {};
+  const defaultLabel = fallback?.trim() || structural;
+  if (!value || value === defaultLabel) return {};
   return { [key]: value };
 }
 
@@ -230,15 +289,16 @@ export function buildSamplingPayload(): WSSampling | null {
     temperature: samplingState.temperature,
     top_p: samplingState.top_p,
     top_k: samplingState.top_k,
-    max_tokens: samplingState.max_tokens,
+    max_tokens: clampOutputTokenCount(
+      samplingState.max_tokens,
+      outputTokenLimit(),
+    ),
     persist_per_layer_scores: true,
-    // The probe-inspector live point + fading trail need per-layer whitened
-    // subspace coords on each token reading.  Sent whenever a probe is attached
-    // so the trajectory is always captured — opening the inspector after any
-    // generation shows the run's path with no prior opt-in.  (The Python
-    // SamplingConfig default stays off, so non-webui callers and the throughput
-    // benchmark are unaffected.)
-    ...(probeRack.active.length > 0
+    // Exact per-layer whitened subspace coordinates are optional runtime data.
+    // The Python dashboard supports them; hosted mode advertises their absence
+    // and must not ask the GPU runtime to approximate them.
+    ...(probeRack.active.length > 0 &&
+        runtimeOperationAvailability("probe_subspace_trails").available
       ? { persist_subspace_coords: true }
       : {}),
     ...nonDefaultSamplingOverrides(),

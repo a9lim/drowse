@@ -1,0 +1,3035 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-06T09:16:57.751Z",
+  "scope": "Core-only base-model installation and measured numerical behavior on one Apple Metal/Chrome device. Not universal platform, prompt, semantic steering-quality, or bit-exact certification.",
+  "catalog": {
+    "repository": "logitsml/drowse-web-catalog",
+    "revision": "9ed3c63c8840fd93a53fcf8012c9c2d46315a5aa",
+    "sequence": 3,
+    "catalogSha256": "a6ac8309c0fd1f14c87ea79c14c44faa1195609fdced66e5d91c3fe43d06946c",
+    "models": [
+      "gpt2-base",
+      "pythia-70m-base",
+      "gemma3-1b-pt",
+      "qwen35-2b-base"
+    ]
+  },
+  "models": [
+    {
+      "id": "gpt2-base",
+      "repository": "logitsml/drowse-web-gpt2-base",
+      "revision": "787a18eed89e1c5e342382c6b88fb5f4dcd5f978",
+      "preflight": {
+        "reportSha256": "033d6bd7279c52d10ed32dc22a2b4c3cb370acc3a26c9a03cafc05470c5cf6d0",
+        "files": 29,
+        "bytes": 672193509,
+        "checkedAt": "2026-09-06T08:09:55.596Z"
+      },
+      "browserRuns": [
+        {
+          "reportSha256": "87d82b93eb80eef06d4e60be71c450c7d6853faadaac3c411ab9e148ace6e68d",
+          "status": "passed-smoke-only",
+          "startedAt": "2026-09-06T08:25:43.186Z",
+          "finishedAt": "2026-09-06T08:25:57.469Z",
+          "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "adapter": {
+            "vendor": "apple",
+            "architecture": "metal-3",
+            "device": "",
+            "description": "",
+            "features": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "bgra8unorm-storage",
+              "texture-formats-tier1",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "texture-compression-astc-sliced-3d",
+              "float32-blendable",
+              "texture-compression-astc",
+              "texture-compression-etc2",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "texture-formats-tier2",
+              "shader-f16",
+              "clip-distances",
+              "timestamp-query",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "maxBufferSize": 4294967292,
+            "maxStorageBufferBindingSize": 4294967292
+          },
+          "architecture": "gpt2",
+          "quantization": "q0f32",
+          "sourceRepository": "openai-community/gpt2",
+          "sourceRevision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+          "modelBuildSha256": "d7e9eb8f5fb9b64f4f77221f99373c1d1f1ebcbf0bc8bbb1f9e822e7df8abd29",
+          "librarySha256": "858a656f68972067a27d8d702dbec641300b3fff266f0be96c519f05ba1bda48",
+          "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+          "inputTokens": 996,
+          "inputIdsSha256": "6d73227930540b93c924b40719f65eb8e4662bde6a0310396321c97ee684a12d",
+          "capturePositions": [
+            0,
+            1,
+            2,
+            127,
+            128,
+            511,
+            512,
+            513,
+            995
+          ],
+          "captureShape": [
+            12,
+            9,
+            768
+          ],
+          "generatedIds": [
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926
+          ],
+          "steps": [
+            "finite generation logits",
+            "finite post-block residuals",
+            "repeat capture parity",
+            "generation after capture parity",
+            "cancellation and fresh generation parity",
+            "overlong context rejection and recovery parity",
+            "branch isolation and explicit state reset parity",
+            "forced EOS termination and recovery parity"
+          ],
+          "unloaded": true,
+          "captureReplayMaxAbs": 0,
+          "branchReplayMaxAbs": 0,
+          "forcedEosChecks": [
+            {
+              "token": 50256,
+              "finishReason": "stop",
+              "completion": ""
+            }
+          ]
+        }
+      ],
+      "accuracy": [
+        {
+          "reportSha256": "68ea7fd31c18862cef74f17d86fec831bf53d6652753cf517c0690ad10e75a5f",
+          "referenceWeights": "original-checkpoint",
+          "referenceArchitecture": "source-config",
+          "referenceAttention": "eager",
+          "referencePrecision": "torch.float32",
+          "referenceDevice": "cpu",
+          "torchVersion": "2.13.0",
+          "inputTokens": 996,
+          "logits": {
+            "cosine": 0.9999999999999801,
+            "relativeL2": 1.6980542267273408e-7,
+            "rmse": 0.00004331705788323176,
+            "maxAbs": 0.000152587890625
+          },
+          "maximumLayerRelativeL2": 9.827628942051264e-7,
+          "maximumPositionRelativeL2": 0.0000019707431792362045,
+          "maximumLayerAbsolute": 0.000701904296875,
+          "greedyTokenIdsMatch": true,
+          "referenceGeneratedIds": [
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926
+          ],
+          "browserGeneratedIds": [
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926,
+            1667,
+            27926
+          ],
+          "browserArtifact": {
+            "schemaVersion": 1,
+            "source": {
+              "chatTemplateSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "files": [
+                {
+                  "bytes": 8092,
+                  "path": "README.md",
+                  "sha256": "0fcd631078093c2aa1d93438b898320b8a1167784e2a1ab37b8016e9de8b3c2e"
+                },
+                {
+                  "bytes": 665,
+                  "path": "config.json",
+                  "sha256": "0daed7749b4f02b8f76240d5444551d7b08712dab4d0adb8239c56ba823bb7b4"
+                },
+                {
+                  "bytes": 124,
+                  "path": "generation_config.json",
+                  "sha256": "ed0b32ac72c0f5f44a719abb2d7786ea5146c871f83717b7f2018065954de02b"
+                },
+                {
+                  "bytes": 456318,
+                  "path": "merges.txt",
+                  "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+                },
+                {
+                  "bytes": 548105171,
+                  "path": "model.safetensors",
+                  "sha256": "248dfc3911869ec493c76e65bf2fcf7f615828b0254c12b473182f0f81d3a707"
+                },
+                {
+                  "bytes": 1355256,
+                  "path": "tokenizer.json",
+                  "sha256": "8414cab924d8b9b33013f0d221c5862f365ee9be39c5c2bfae8a5a9e970478a6"
+                },
+                {
+                  "bytes": 26,
+                  "path": "tokenizer_config.json",
+                  "sha256": "5e04eb606e3a1583530a42e36c2a6b6615c86f34fe77e44d9ddeb43ff940931f"
+                },
+                {
+                  "bytes": 1042301,
+                  "path": "vocab.json",
+                  "sha256": "196139668be63f3b5d6574427317ae82f612a97c5d1cdaf36ed2256dbf636783"
+                }
+              ],
+              "repository": "openai-community/gpt2",
+              "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e"
+            },
+            "modelBuildSha256": "d7e9eb8f5fb9b64f4f77221f99373c1d1f1ebcbf0bc8bbb1f9e822e7df8abd29",
+            "librarySha256": "858a656f68972067a27d8d702dbec641300b3fff266f0be96c519f05ba1bda48",
+            "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+            "architecture": "gpt2",
+            "quantization": "q0f32",
+            "contextTokens": 1024
+          }
+        }
+      ],
+      "coreOnlyRuntime": {
+        "reportSha256": "5b1e7c8ac35984cf0aae3b19daea55d28ea9683ce86512f60c74eb7c4c041fac",
+        "scope": "production runtime core-only load and offline model reload; not signed installation or offline page navigation",
+        "optionalPacks": 0,
+        "networkAttempts": [],
+        "deviceLosses": [],
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "status": "passed",
+        "checks": [
+          {
+            "type": "check",
+            "name": "core-only load",
+            "values": {
+              "identity": "986375f3fe036f2a2170d1dc57beaaeb132c6e40be792e61da4cc9fb6388fb0e",
+              "optionalPacks": 0,
+              "layers": 12
+            }
+          },
+          {
+            "type": "check",
+            "name": "base generation",
+            "values": {
+              "ids": [
+                484,
+                821,
+                523,
+                2562,
+                284,
+                787,
+                13,
+                314,
+                1842,
+                262,
+                835,
+                484,
+                804,
+                13,
+                314,
+                1842,
+                262,
+                835,
+                484,
+                804,
+                13,
+                314,
+                1842,
+                262
+              ],
+              "performance": {
+                "text": " they're so easy to make. I love the way they look. I love the way they look. I love the",
+                "thinkingText": null,
+                "tokens": 24,
+                "finishReason": "length",
+                "terminalReason": "length",
+                "usage": {
+                  "promptTokens": 6,
+                  "completionTokens": 24,
+                  "totalTokens": 30
+                },
+                "meanLogprob": 0,
+                "meanSurprise": 0,
+                "prefillTokensPerSecond": 7.81753864800526,
+                "decodeTokensPerSecond": 22.019894491158578
+              }
+            }
+          },
+          {
+            "type": "check",
+            "name": "physical core steering",
+            "values": {
+              "expression": "0.5 default/welcoming.detached",
+              "ordinaryLogprob": -0.7599400766089991,
+              "steeredLogprob": -1.3728146313335237,
+              "ids": [
+                314,
+                1101,
+                523,
+                12008,
+                286,
+                606,
+                526,
+                198,
+                198,
+                1,
+                40,
+                1101,
+                407,
+                1107,
+                257,
+                1263,
+                11,
+                314,
+                1101,
+                407,
+                1107,
+                257,
+                1263,
+                11
+              ]
+            }
+          },
+          {
+            "type": "check",
+            "name": "network-blocked OPFS model reload",
+            "values": {
+              "networkAttempts": 0,
+              "baselineIds": [
+                484,
+                821,
+                523,
+                2562,
+                284,
+                787,
+                13,
+                314,
+                1842,
+                262,
+                835,
+                484,
+                804,
+                13,
+                314,
+                1842,
+                262,
+                835,
+                484,
+                804,
+                13,
+                314,
+                1842,
+                262
+              ],
+              "steeredIds": [
+                314,
+                1101,
+                523,
+                12008,
+                286,
+                606,
+                526,
+                198,
+                198,
+                1,
+                40,
+                1101,
+                407,
+                1107,
+                257,
+                1263,
+                11,
+                314,
+                1101,
+                407,
+                1107,
+                257,
+                1263,
+                11
+              ]
+            }
+          }
+        ],
+        "blockedServerRequests": [],
+        "modelId": "gpt2-base",
+        "runtimeIdentity": {
+          "sourceModel": "openai-community/gpt2",
+          "sourceRevision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+          "convertedManifestSha256": "571e5c3a42148b976ceb2b714408cf48589d6fc2d71ff20101586577773124d5",
+          "quantization": "q0f32",
+          "tokenizerSha256": "8414cab924d8b9b33013f0d221c5862f365ee9be39c5c2bfae8a5a9e970478a6",
+          "chatTemplateSha256": "5e04eb606e3a1583530a42e36c2a6b6615c86f34fe77e44d9ddeb43ff940931f",
+          "modelLibrarySha256": "858a656f68972067a27d8d702dbec641300b3fff266f0be96c519f05ba1bda48",
+          "runtimeAbi": "drowse-web-runtime-v1",
+          "hookAbi": "post-block-residual-v4",
+          "hiddenSize": 768,
+          "layerMap": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ]
+        },
+        "recordedAt": "2026-09-06T08:04:01.366Z"
+      },
+      "appUiChecks": {
+        "method": "manual interaction in physical Chrome with signed catalog and real model weights",
+        "signedDownloadAndOpen": true,
+        "rawGeneration": true,
+        "coreSteeringGeneration": true,
+        "fullPageReload": true,
+        "reopenSavedCompletion": true,
+        "generationAfterReopen": true,
+        "optionalPacksInstalled": 0,
+        "offlinePageNavigationTested": false
+      }
+    },
+    {
+      "id": "pythia-70m-base",
+      "repository": "logitsml/drowse-web-pythia-70m-base",
+      "revision": "b312ef57bd3852969fd43c8254ceb93b79317d27",
+      "preflight": {
+        "reportSha256": "229a892a2ea6e9f5d2bb3b678f72536302a9abdce4e41d955784d3466d75564c",
+        "files": 19,
+        "bytes": 294738051,
+        "checkedAt": "2026-09-06T08:10:54.060Z"
+      },
+      "browserRuns": [
+        {
+          "reportSha256": "5cfbe784cf79f1106c7300521d6c368d6e7c0d26630f05cc97f23abdbad16705",
+          "status": "passed-smoke-only",
+          "startedAt": "2026-09-06T08:26:55.507Z",
+          "finishedAt": "2026-09-06T08:27:22.523Z",
+          "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "adapter": {
+            "vendor": "apple",
+            "architecture": "metal-3",
+            "device": "",
+            "description": "",
+            "features": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "texture-formats-tier1",
+              "bgra8unorm-storage",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "texture-compression-astc-sliced-3d",
+              "float32-blendable",
+              "texture-compression-astc",
+              "texture-compression-etc2",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "timestamp-query",
+              "texture-formats-tier2",
+              "shader-f16",
+              "clip-distances",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "maxBufferSize": 4294967292,
+            "maxStorageBufferBindingSize": 4294967292
+          },
+          "architecture": "gpt_neox",
+          "quantization": "q0f32",
+          "sourceRepository": "EleutherAI/pythia-70m-deduped",
+          "sourceRevision": "e93a9faa9c77e5d09219f6c868bfc7a1bd65593c",
+          "modelBuildSha256": "6523423c1b898671726687f94fdaec03f6220c06077f2871d44c9bf2484905a5",
+          "librarySha256": "f44343c7f80be8c1a9aa058f57ee21aa0882cbbba13060b59f91916fcffb83f2",
+          "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+          "inputTokens": 1926,
+          "inputIdsSha256": "3509e285c6ed0b6d6fadf414faae6eed9b5dafc65bf2b040f602b6751c92dab7",
+          "capturePositions": [
+            0,
+            1,
+            2,
+            127,
+            128,
+            511,
+            512,
+            513,
+            1023,
+            1024,
+            1025,
+            1925
+          ],
+          "captureShape": [
+            6,
+            12,
+            512
+          ],
+          "generatedIds": [
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302
+          ],
+          "steps": [
+            "finite generation logits",
+            "finite post-block residuals",
+            "repeat capture parity",
+            "generation after capture parity",
+            "cancellation and fresh generation parity",
+            "overlong context rejection and recovery parity",
+            "branch isolation and explicit state reset parity",
+            "forced EOS termination and recovery parity"
+          ],
+          "unloaded": true,
+          "captureReplayMaxAbs": 0,
+          "branchReplayMaxAbs": 0,
+          "forcedEosChecks": [
+            {
+              "token": 0,
+              "finishReason": "stop",
+              "completion": ""
+            }
+          ]
+        }
+      ],
+      "accuracy": [
+        {
+          "reportSha256": "86fee6bb6bc1ba6b4f1ede23115508949b2c3461865f94d38652ab463b09ee39",
+          "referenceWeights": "original-checkpoint",
+          "referenceArchitecture": "source-config",
+          "referenceAttention": "eager",
+          "referencePrecision": "torch.float32",
+          "referenceDevice": "cpu",
+          "torchVersion": "2.13.0",
+          "inputTokens": 1926,
+          "logits": {
+            "cosine": 0.9999999999995638,
+            "relativeL2": 0.0000012902040491668387,
+            "rmse": 0.002005498225841566,
+            "maxAbs": 0.0076904296875
+          },
+          "maximumLayerRelativeL2": 0.0003002113626412633,
+          "maximumPositionRelativeL2": 0.0009829584639300865,
+          "maximumLayerAbsolute": 0.003325223922729492,
+          "greedyTokenIdsMatch": true,
+          "referenceGeneratedIds": [
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302
+          ],
+          "browserGeneratedIds": [
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302,
+            278,
+            1513,
+            302
+          ],
+          "browserArtifact": {
+            "schemaVersion": 1,
+            "source": {
+              "chatTemplateSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "files": [
+                {
+                  "bytes": 13677,
+                  "path": "README.md",
+                  "sha256": "0b8eff9fd326d9089f00c4984db07f89a9dac674ae3191a9bc8ae128b8a37580"
+                },
+                {
+                  "bytes": 567,
+                  "path": "config.json",
+                  "sha256": "002050231a9b1ec3ac77aa6b9b3bbdc4d923f4068a7dd33b8da72a9bd6ad9a43"
+                },
+                {
+                  "bytes": 166029852,
+                  "path": "model.safetensors",
+                  "sha256": "3da388330e4549156d76b58d6d268c63cd005e9336b4f4d2d378421e7b7a33fd"
+                },
+                {
+                  "bytes": 99,
+                  "path": "special_tokens_map.json",
+                  "sha256": "6f50ab5a5a509a1c309d6171f339b196a900dc9c99ad0408ff23bb615fdae7ad"
+                },
+                {
+                  "bytes": 2113710,
+                  "path": "tokenizer.json",
+                  "sha256": "c24618a1b3e6a38167beff1c72cffd126c3a66254347304b50547d12c5f25624"
+                },
+                {
+                  "bytes": 396,
+                  "path": "tokenizer_config.json",
+                  "sha256": "70e38394e494931c6f773ba41e19460dd4436526b852207367f04341b4066d3f"
+                }
+              ],
+              "repository": "EleutherAI/pythia-70m-deduped",
+              "revision": "e93a9faa9c77e5d09219f6c868bfc7a1bd65593c"
+            },
+            "modelBuildSha256": "6523423c1b898671726687f94fdaec03f6220c06077f2871d44c9bf2484905a5",
+            "librarySha256": "f44343c7f80be8c1a9aa058f57ee21aa0882cbbba13060b59f91916fcffb83f2",
+            "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+            "architecture": "gpt_neox",
+            "quantization": "q0f32",
+            "contextTokens": 2048
+          }
+        }
+      ],
+      "coreOnlyRuntime": {
+        "reportSha256": "0be23fc8106ee30d60522d2f2269ee36d58824ba730d550ef2223640fdaed012",
+        "scope": "production runtime core-only load and offline model reload; not signed installation or offline page navigation",
+        "optionalPacks": 0,
+        "networkAttempts": [],
+        "deviceLosses": [],
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "status": "passed",
+        "checks": [
+          {
+            "type": "check",
+            "name": "core-only load",
+            "values": {
+              "identity": "40d46d0ca1a69f14a40eaf707aa65bb35750aa0283d5a358ac5b7034e497531b",
+              "optionalPacks": 0,
+              "layers": 6
+            }
+          },
+          {
+            "type": "check",
+            "name": "base generation",
+            "values": {
+              "ids": [
+                597,
+                403,
+                253,
+                1682,
+                15,
+                309,
+                2389,
+                731,
+                15,
+                309,
+                2389,
+                731,
+                15,
+                309,
+                2389,
+                731,
+                15,
+                309,
+                2389,
+                731,
+                15,
+                309,
+                2389,
+                731
+              ],
+              "performance": {
+                "text": " they are the best. I love them. I love them. I love them. I love them. I love them",
+                "thinkingText": null,
+                "tokens": 24,
+                "finishReason": "length",
+                "terminalReason": "length",
+                "usage": {
+                  "promptTokens": 6,
+                  "completionTokens": 24,
+                  "totalTokens": 30
+                },
+                "meanLogprob": 0,
+                "meanSurprise": 0,
+                "prefillTokensPerSecond": 6.4879243511031435,
+                "decodeTokensPerSecond": 41.514372087975964
+              }
+            }
+          },
+          {
+            "type": "check",
+            "name": "physical core steering",
+            "values": {
+              "expression": "0.5 default/welcoming.detached",
+              "ordinaryLogprob": -1.3255881640731364,
+              "steeredLogprob": -1.5769882339144625,
+              "ids": [
+                309,
+                2389,
+                731,
+                449,
+                346,
+                42,
+                2389,
+                731,
+                449,
+                346,
+                42,
+                2389,
+                731,
+                449,
+                346,
+                42,
+                2389,
+                731,
+                449,
+                346,
+                42,
+                2389,
+                731,
+                449
+              ]
+            }
+          },
+          {
+            "type": "check",
+            "name": "network-blocked OPFS model reload",
+            "values": {
+              "networkAttempts": 0,
+              "baselineIds": [
+                597,
+                403,
+                253,
+                1682,
+                15,
+                309,
+                2389,
+                731,
+                15,
+                309,
+                2389,
+                731,
+                15,
+                309,
+                2389,
+                731,
+                15,
+                309,
+                2389,
+                731,
+                15,
+                309,
+                2389,
+                731
+              ],
+              "steeredIds": [
+                309,
+                2389,
+                731,
+                449,
+                346,
+                42,
+                2389,
+                731,
+                449,
+                346,
+                42,
+                2389,
+                731,
+                449,
+                346,
+                42,
+                2389,
+                731,
+                449,
+                346,
+                42,
+                2389,
+                731,
+                449
+              ]
+            }
+          }
+        ],
+        "blockedServerRequests": [],
+        "modelId": "pythia-70m-base",
+        "runtimeIdentity": {
+          "sourceModel": "EleutherAI/pythia-70m-deduped",
+          "sourceRevision": "e93a9faa9c77e5d09219f6c868bfc7a1bd65593c",
+          "convertedManifestSha256": "587eee3dadf689c9354c76452e618a14df7c6ad50b0ea88b3e68dcca9ed4872d",
+          "quantization": "q0f32",
+          "tokenizerSha256": "c24618a1b3e6a38167beff1c72cffd126c3a66254347304b50547d12c5f25624",
+          "chatTemplateSha256": "70e38394e494931c6f773ba41e19460dd4436526b852207367f04341b4066d3f",
+          "modelLibrarySha256": "f44343c7f80be8c1a9aa058f57ee21aa0882cbbba13060b59f91916fcffb83f2",
+          "runtimeAbi": "drowse-web-runtime-v1",
+          "hookAbi": "post-block-residual-v4",
+          "hiddenSize": 512,
+          "layerMap": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        "recordedAt": "2026-09-06T08:07:56.964Z"
+      },
+      "appUiChecks": {
+        "method": "manual interaction in physical Chrome with signed catalog and real model weights",
+        "signedDownloadAndOpen": true,
+        "rawGeneration": true,
+        "coreSteeringGeneration": true,
+        "fullPageReload": true,
+        "reopenSavedCompletion": true,
+        "generationAfterReopen": true,
+        "optionalPacksInstalled": 0,
+        "offlinePageNavigationTested": false
+      }
+    },
+    {
+      "id": "gemma3-1b-pt",
+      "repository": "logitsml/drowse-web-gemma3-1b-pt",
+      "revision": "b771368a80809580545d340358de1ceab28632f4",
+      "preflight": {
+        "reportSha256": "cc153cdce6c5a524aeca1f66edb41f204331e28082305d66512cd831ef76a715",
+        "files": 31,
+        "bytes": 638672075,
+        "checkedAt": "2026-09-06T08:10:59.869Z"
+      },
+      "browserRuns": [
+        {
+          "reportSha256": "ecc08bd9d91e541a2b99558c11e30d91ef33a965cc4f09f8791fa45d62bf617f",
+          "status": "passed-smoke-only",
+          "startedAt": "2026-09-06T07:43:42.008Z",
+          "finishedAt": "2026-09-06T07:44:26.048Z",
+          "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "adapter": {
+            "vendor": "apple",
+            "architecture": "metal-3",
+            "device": "",
+            "description": "",
+            "features": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "texture-formats-tier1",
+              "bgra8unorm-storage",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "texture-compression-astc-sliced-3d",
+              "float32-blendable",
+              "texture-compression-astc",
+              "texture-compression-etc2",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "shader-f16",
+              "texture-formats-tier2",
+              "clip-distances",
+              "timestamp-query",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "maxBufferSize": 4294967292,
+            "maxStorageBufferBindingSize": 4294967292
+          },
+          "architecture": "gemma3_text",
+          "quantization": "q4f32_1",
+          "sourceRepository": "google/gemma-3-1b-pt",
+          "sourceRevision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
+          "modelBuildSha256": "3691c7875d4b52c335b70bde9347768a2ca388be03405c821a90b2a3c39e8a76",
+          "librarySha256": "9a53f7e3ec75a531441ad190191c7c183d945110f0c05c31882688fca4eba451",
+          "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+          "inputTokens": 6,
+          "inputIdsSha256": "11e794857213ed37d12af68d884920c67a921dce4a598ff6d8921edf24c3266f",
+          "capturePositions": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "captureShape": [
+            26,
+            6,
+            1152
+          ],
+          "generatedIds": [
+            901,
+            659,
+            834,
+            12864,
+            532,
+            901,
+            659,
+            834,
+            12864,
+            236761,
+            564,
+            2765,
+            96863,
+            1498,
+            1547,
+            901,
+            659,
+            834,
+            12864,
+            236761,
+            564,
+            2765,
+            96863,
+            1498
+          ],
+          "steps": [
+            "finite generation logits",
+            "finite post-block residuals",
+            "repeat capture parity",
+            "generation after capture parity",
+            "cancellation and fresh generation parity",
+            "overlong context rejection and recovery parity",
+            "branch isolation and explicit state reset parity",
+            "forced EOS termination and recovery parity"
+          ],
+          "unloaded": true,
+          "captureReplayMaxAbs": 0,
+          "branchReplayMaxAbs": 0,
+          "forcedEosChecks": [
+            {
+              "token": 1,
+              "finishReason": "stop",
+              "completion": ""
+            },
+            {
+              "token": 106,
+              "finishReason": "stop",
+              "completion": ""
+            }
+          ]
+        },
+        {
+          "reportSha256": "9ce168285359be4f445f7d83dd89c1d4eac7ff4d1cf311c6e130f21b2c2ed63d",
+          "status": "passed-smoke-only",
+          "startedAt": "2026-09-06T07:46:15.976Z",
+          "finishedAt": "2026-09-06T07:49:38.512Z",
+          "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "adapter": {
+            "vendor": "apple",
+            "architecture": "metal-3",
+            "device": "",
+            "description": "",
+            "features": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "texture-formats-tier1",
+              "bgra8unorm-storage",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "texture-compression-astc-sliced-3d",
+              "float32-blendable",
+              "texture-compression-astc",
+              "texture-compression-etc2",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "timestamp-query",
+              "shader-f16",
+              "clip-distances",
+              "texture-formats-tier2",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "maxBufferSize": 4294967292,
+            "maxStorageBufferBindingSize": 4294967292
+          },
+          "architecture": "gemma3_text",
+          "quantization": "q4f32_1",
+          "sourceRepository": "google/gemma-3-1b-pt",
+          "sourceRevision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
+          "modelBuildSha256": "3691c7875d4b52c335b70bde9347768a2ca388be03405c821a90b2a3c39e8a76",
+          "librarySha256": "9a53f7e3ec75a531441ad190191c7c183d945110f0c05c31882688fca4eba451",
+          "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+          "inputTokens": 1806,
+          "inputIdsSha256": "9df099c749f6528e926e9906577c2c6d6295ff3056323d49728859fb68849dd0",
+          "capturePositions": [
+            0,
+            1,
+            2,
+            127,
+            128,
+            511,
+            512,
+            513,
+            1023,
+            1024,
+            1025,
+            1805
+          ],
+          "captureShape": [
+            26,
+            12,
+            1152
+          ],
+          "generatedIds": [
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557
+          ],
+          "steps": [
+            "finite generation logits",
+            "finite post-block residuals",
+            "repeat capture parity",
+            "generation after capture parity",
+            "cancellation and fresh generation parity",
+            "overlong context rejection and recovery parity",
+            "branch isolation and explicit state reset parity",
+            "forced EOS termination and recovery parity"
+          ],
+          "unloaded": true,
+          "captureReplayMaxAbs": 0,
+          "branchReplayMaxAbs": 0,
+          "forcedEosChecks": [
+            {
+              "token": 1,
+              "finishReason": "stop",
+              "completion": ""
+            },
+            {
+              "token": 106,
+              "finishReason": "stop",
+              "completion": ""
+            }
+          ]
+        }
+      ],
+      "accuracy": [
+        {
+          "reportSha256": "426b640db8ca25e329accd0560ee22b14217aa5abc70e5fc95922fef2a4bf840",
+          "referenceWeights": "exact-dequantized-browser",
+          "referenceArchitecture": "source-config",
+          "referenceAttention": "eager",
+          "referencePrecision": "torch.float32",
+          "referenceDevice": "cpu",
+          "torchVersion": "2.13.0",
+          "inputTokens": 6,
+          "logits": {
+            "cosine": 0.9999999999995084,
+            "relativeL2": 9.658430104632945e-7,
+            "rmse": 0.000007163434439414066,
+            "maxAbs": 0.0000400543212890625
+          },
+          "maximumLayerRelativeL2": 0.0000012945004571110207,
+          "maximumPositionRelativeL2": 0.0000024863181598439893,
+          "maximumLayerAbsolute": 0.015625,
+          "greedyTokenIdsMatch": true,
+          "referenceGeneratedIds": [
+            901,
+            659,
+            834,
+            12864,
+            532,
+            901,
+            659,
+            834,
+            12864,
+            236761,
+            564,
+            2765,
+            96863,
+            1498,
+            1547,
+            901,
+            659,
+            834,
+            12864,
+            236761,
+            564,
+            2765,
+            96863,
+            1498
+          ],
+          "browserGeneratedIds": [
+            901,
+            659,
+            834,
+            12864,
+            532,
+            901,
+            659,
+            834,
+            12864,
+            236761,
+            564,
+            2765,
+            96863,
+            1498,
+            1547,
+            901,
+            659,
+            834,
+            12864,
+            236761,
+            564,
+            2765,
+            96863,
+            1498
+          ],
+          "browserArtifact": {
+            "schemaVersion": 1,
+            "source": {
+              "chatTemplateSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "files": [
+                {
+                  "bytes": 23496,
+                  "path": "README.md",
+                  "sha256": "1a07e8c0d17528f69c487b2f84abcdd9144ab959335417cd00bf9930f2598fdd"
+                },
+                {
+                  "bytes": 35,
+                  "path": "added_tokens.json",
+                  "sha256": "50b2f405ba56a26d4913fd772089992252d7f942123cc0a034d96424221ba946"
+                },
+                {
+                  "bytes": 880,
+                  "path": "config.json",
+                  "sha256": "4dd5218cebc4fdea9004b944d34672a2d47f9ef930e3bb16a3fc4bbbe0fcee81"
+                },
+                {
+                  "bytes": 215,
+                  "path": "generation_config.json",
+                  "sha256": "fd9324becc53c4be610db39e13a613006f09fd6ef71a95fb6320dc33157490a3"
+                },
+                {
+                  "bytes": 1999811208,
+                  "path": "model.safetensors",
+                  "sha256": "ee5250f6eb1aa7cfb729dfd4dc8d9964fd772324776c6d00bf2bc674c069cb27"
+                },
+                {
+                  "bytes": 662,
+                  "path": "special_tokens_map.json",
+                  "sha256": "2f7b0adf4fb469770bb1490e3e35df87b1dc578246c5e7e6fc76ecf33213a397"
+                },
+                {
+                  "bytes": 33384570,
+                  "path": "tokenizer.json",
+                  "sha256": "7d4046bf0505a327dd5a0abbb427ecd4fc82f99c2ceaa170bc61ecde12809b0c"
+                },
+                {
+                  "bytes": 4689074,
+                  "path": "tokenizer.model",
+                  "sha256": "1299c11d7cf632ef3b4e11937501358ada021bbdf7c47638d13c0ee982f2e79c"
+                },
+                {
+                  "bytes": 1155349,
+                  "path": "tokenizer_config.json",
+                  "sha256": "4d97b6d876fd05ffaf72c3243231975c50263ad4fc620bc9f0b44be2ca11fa31"
+                }
+              ],
+              "repository": "google/gemma-3-1b-pt",
+              "revision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29"
+            },
+            "modelBuildSha256": "3691c7875d4b52c335b70bde9347768a2ca388be03405c821a90b2a3c39e8a76",
+            "librarySha256": "9a53f7e3ec75a531441ad190191c7c183d945110f0c05c31882688fca4eba451",
+            "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+            "architecture": "gemma3_text",
+            "quantization": "q4f32_1",
+            "contextTokens": 2048
+          }
+        },
+        {
+          "reportSha256": "f7c4e9828ddcf7c56bab03dfb756c99104cf53c0ccf8c8ef3335280dfea5af11",
+          "referenceWeights": "exact-dequantized-browser",
+          "referenceArchitecture": "source-config",
+          "referenceAttention": "eager",
+          "referencePrecision": "torch.float32",
+          "referenceDevice": "cpu",
+          "torchVersion": "2.13.0",
+          "inputTokens": 1806,
+          "logits": {
+            "cosine": 0.9999999999858911,
+            "relativeL2": 0.0000070703578094593805,
+            "rmse": 0.000049053374083495015,
+            "maxAbs": 0.000217437744140625
+          },
+          "maximumLayerRelativeL2": 0.0000026333325977528664,
+          "maximumPositionRelativeL2": 0.000017361638168987536,
+          "maximumLayerAbsolute": 0.208984375,
+          "greedyTokenIdsMatch": true,
+          "referenceGeneratedIds": [
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557
+          ],
+          "browserGeneratedIds": [
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557,
+            96863,
+            557
+          ],
+          "browserArtifact": {
+            "schemaVersion": 1,
+            "source": {
+              "chatTemplateSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "files": [
+                {
+                  "bytes": 23496,
+                  "path": "README.md",
+                  "sha256": "1a07e8c0d17528f69c487b2f84abcdd9144ab959335417cd00bf9930f2598fdd"
+                },
+                {
+                  "bytes": 35,
+                  "path": "added_tokens.json",
+                  "sha256": "50b2f405ba56a26d4913fd772089992252d7f942123cc0a034d96424221ba946"
+                },
+                {
+                  "bytes": 880,
+                  "path": "config.json",
+                  "sha256": "4dd5218cebc4fdea9004b944d34672a2d47f9ef930e3bb16a3fc4bbbe0fcee81"
+                },
+                {
+                  "bytes": 215,
+                  "path": "generation_config.json",
+                  "sha256": "fd9324becc53c4be610db39e13a613006f09fd6ef71a95fb6320dc33157490a3"
+                },
+                {
+                  "bytes": 1999811208,
+                  "path": "model.safetensors",
+                  "sha256": "ee5250f6eb1aa7cfb729dfd4dc8d9964fd772324776c6d00bf2bc674c069cb27"
+                },
+                {
+                  "bytes": 662,
+                  "path": "special_tokens_map.json",
+                  "sha256": "2f7b0adf4fb469770bb1490e3e35df87b1dc578246c5e7e6fc76ecf33213a397"
+                },
+                {
+                  "bytes": 33384570,
+                  "path": "tokenizer.json",
+                  "sha256": "7d4046bf0505a327dd5a0abbb427ecd4fc82f99c2ceaa170bc61ecde12809b0c"
+                },
+                {
+                  "bytes": 4689074,
+                  "path": "tokenizer.model",
+                  "sha256": "1299c11d7cf632ef3b4e11937501358ada021bbdf7c47638d13c0ee982f2e79c"
+                },
+                {
+                  "bytes": 1155349,
+                  "path": "tokenizer_config.json",
+                  "sha256": "4d97b6d876fd05ffaf72c3243231975c50263ad4fc620bc9f0b44be2ca11fa31"
+                }
+              ],
+              "repository": "google/gemma-3-1b-pt",
+              "revision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29"
+            },
+            "modelBuildSha256": "3691c7875d4b52c335b70bde9347768a2ca388be03405c821a90b2a3c39e8a76",
+            "librarySha256": "9a53f7e3ec75a531441ad190191c7c183d945110f0c05c31882688fca4eba451",
+            "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+            "architecture": "gemma3_text",
+            "quantization": "q4f32_1",
+            "contextTokens": 2048
+          }
+        }
+      ],
+      "coreOnlyRuntime": {
+        "reportSha256": "9f815cbeb21298a4652908440e1cf29ce82ed13db6f493bf08d809c75ef30426",
+        "scope": "production runtime core-only load and offline model reload; not signed installation or offline page navigation",
+        "optionalPacks": 0,
+        "networkAttempts": [],
+        "deviceLosses": [],
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "status": "passed",
+        "checks": [
+          {
+            "type": "check",
+            "name": "core-only load",
+            "values": {
+              "identity": "df89e3eafd8c8cea7ab2039b24079341a587480c4d072165326928af49cb3738",
+              "optionalPacks": 0,
+              "layers": 26
+            }
+          },
+          {
+            "type": "check",
+            "name": "base generation",
+            "values": {
+              "ids": [
+                901,
+                659,
+                834,
+                12864,
+                532,
+                901,
+                659,
+                834,
+                12864,
+                236761,
+                564,
+                2765,
+                96863,
+                1498,
+                1547,
+                901,
+                659,
+                834,
+                12864,
+                236761,
+                564,
+                2765,
+                96863,
+                1498
+              ],
+              "performance": {
+                "text": " they are so cute and they are so cute. I love marmots because they are so cute. I love marmots",
+                "thinkingText": null,
+                "tokens": 24,
+                "finishReason": "length",
+                "terminalReason": "length",
+                "usage": {
+                  "promptTokens": 6,
+                  "completionTokens": 24,
+                  "totalTokens": 30
+                },
+                "meanLogprob": 0,
+                "meanSurprise": 0,
+                "prefillTokensPerSecond": 11.158534885952946,
+                "decodeTokensPerSecond": 11.990313912167894
+              }
+            }
+          },
+          {
+            "type": "check",
+            "name": "physical core steering",
+            "values": {
+              "expression": "0.5 default/welcoming.detached",
+              "ordinaryLogprob": -0.37906629591659713,
+              "steeredLogprob": -1.586014839851826,
+              "ids": [
+                564,
+                2765,
+                47656,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602
+              ]
+            }
+          },
+          {
+            "type": "check",
+            "name": "network-blocked OPFS model reload",
+            "values": {
+              "networkAttempts": 0,
+              "baselineIds": [
+                901,
+                659,
+                834,
+                12864,
+                532,
+                901,
+                659,
+                834,
+                12864,
+                236761,
+                564,
+                2765,
+                96863,
+                1498,
+                1547,
+                901,
+                659,
+                834,
+                12864,
+                236761,
+                564,
+                2765,
+                96863,
+                1498
+              ],
+              "steeredIds": [
+                564,
+                2765,
+                47656,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602,
+                29602
+              ]
+            }
+          }
+        ],
+        "blockedServerRequests": [],
+        "modelId": "gemma3-1b-pt",
+        "runtimeIdentity": {
+          "sourceModel": "google/gemma-3-1b-pt",
+          "sourceRevision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
+          "convertedManifestSha256": "41bb76ef5854f93346114bb6ff8e6028960012470a0e96e5d6eedc060ac079cd",
+          "quantization": "q4f32_1",
+          "tokenizerSha256": "7d4046bf0505a327dd5a0abbb427ecd4fc82f99c2ceaa170bc61ecde12809b0c",
+          "chatTemplateSha256": "4d97b6d876fd05ffaf72c3243231975c50263ad4fc620bc9f0b44be2ca11fa31",
+          "modelLibrarySha256": "9a53f7e3ec75a531441ad190191c7c183d945110f0c05c31882688fca4eba451",
+          "runtimeAbi": "drowse-web-runtime-v1",
+          "hookAbi": "post-block-residual-v4",
+          "hiddenSize": 1152,
+          "layerMap": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25
+          ]
+        },
+        "recordedAt": "2026-09-06T08:06:30.993Z"
+      },
+      "appUiChecks": {
+        "method": "manual interaction in physical Chrome with signed catalog and real model weights",
+        "signedDownloadAndOpen": true,
+        "rawGeneration": true,
+        "coreSteeringGeneration": true,
+        "fullPageReload": true,
+        "reopenSavedCompletion": true,
+        "generationAfterReopen": true,
+        "optionalPacksInstalled": 0,
+        "offlinePageNavigationTested": false
+      }
+    },
+    {
+      "id": "qwen35-2b-base",
+      "repository": "logitsml/drowse-web-qwen35-2b-base",
+      "revision": "4a839d1c2a91f397a91bc25dbaa07825930adea7",
+      "preflight": {
+        "reportSha256": "56773d0c9c886e559c8d7f0344522b08fb2a7cffb94c293b751d7aec238c056e",
+        "files": 47,
+        "bytes": 1126220788,
+        "checkedAt": "2026-09-06T09:11:31.912Z"
+      },
+      "browserRuns": [
+        {
+          "reportSha256": "dbb7fcc3950f36bc8c777125354eff617099fe0266e2ad00fc3b008332d59934",
+          "status": "passed-smoke-only",
+          "startedAt": "2026-09-06T08:57:03.307Z",
+          "finishedAt": "2026-09-06T09:00:33.365Z",
+          "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "adapter": {
+            "vendor": "apple",
+            "architecture": "metal-3",
+            "device": "",
+            "description": "",
+            "features": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "bgra8unorm-storage",
+              "texture-formats-tier1",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "texture-compression-astc-sliced-3d",
+              "float32-blendable",
+              "texture-compression-astc",
+              "texture-compression-etc2",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "texture-formats-tier2",
+              "shader-f16",
+              "clip-distances",
+              "timestamp-query",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "maxBufferSize": 4294967292,
+            "maxStorageBufferBindingSize": 4294967292
+          },
+          "architecture": "qwen3_5",
+          "quantization": "q4f32_1",
+          "sourceRepository": "Qwen/Qwen3.5-2B-Base",
+          "sourceRevision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+          "modelBuildSha256": "bc90954c0d4ff118975aa7fdd6ef0b3fb5f17ef7cb9ba7db08f2c3d8604c125c",
+          "librarySha256": "dc379bbccd2b1f5bf2c8726e02eae49ffc9925a5e76bbd305d9065b7fe85ff00",
+          "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+          "inputTokens": 1626,
+          "inputIdsSha256": "d2438de0c5bde9c650215b57122a9eef9622d5e64edad2a06dc5f57bc5fe80b1",
+          "capturePositions": [
+            0,
+            1,
+            2,
+            127,
+            128,
+            511,
+            512,
+            513,
+            1023,
+            1024,
+            1025,
+            1625
+          ],
+          "captureShape": [
+            24,
+            12,
+            2048
+          ],
+          "generatedIds": [
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349
+          ],
+          "steps": [
+            "finite generation logits",
+            "finite post-block residuals",
+            "repeat capture parity",
+            "generation after capture parity",
+            "cancellation and fresh generation parity",
+            "overlong context rejection and recovery parity",
+            "branch isolation and explicit state reset parity",
+            "forced EOS termination and recovery parity"
+          ],
+          "unloaded": true,
+          "captureReplayMaxAbs": 0.0000247955322265625,
+          "branchReplayMaxAbs": 0.0000247955322265625,
+          "replayComparison": {
+            "policy": "fp32",
+            "tolerance": {
+              "maxAbsolute": 0.0001,
+              "maxRelativeL2": 0.00001
+            },
+            "maxAbsolute": 0.0000247955322265625,
+            "maxRelativeL2": 0.0000021091009425797027,
+            "passed": true
+          },
+          "branches": [
+            {
+              "round": 0,
+              "branchTokens": 1629,
+              "maxAbs": 0.0000247955322265625,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0.0000247955322265625,
+                "maxRelativeL2": 0.0000021091009425797027,
+                "passed": true
+              }
+            },
+            {
+              "round": 1,
+              "branchTokens": 1632,
+              "maxAbs": 0.0000667572021484375,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0.0000667572021484375,
+                "maxRelativeL2": 0.0000026790759630744377,
+                "passed": true
+              }
+            },
+            {
+              "round": 2,
+              "branchTokens": 1635,
+              "maxAbs": 0.0000247955322265625,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0.0000247955322265625,
+                "maxRelativeL2": 0.0000021091009425797027,
+                "passed": true
+              }
+            },
+            {
+              "round": 3,
+              "branchTokens": 1638,
+              "maxAbs": 0.0000247955322265625,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0.0000247955322265625,
+                "maxRelativeL2": 0.0000021091009425797027,
+                "passed": true
+              }
+            },
+            {
+              "round": 4,
+              "branchTokens": 1641,
+              "maxAbs": 0.0000247955322265625,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0.0000247955322265625,
+                "maxRelativeL2": 0.0000021091009425797027,
+                "passed": true
+              }
+            },
+            {
+              "round": 5,
+              "branchTokens": 1644,
+              "maxAbs": 0.000023603439331054688,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0.000023603439331054688,
+                "maxRelativeL2": 0.0000020968642375100193,
+                "passed": true
+              }
+            },
+            {
+              "round": 6,
+              "branchTokens": 1647,
+              "maxAbs": 0.000087738037109375,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0.000087738037109375,
+                "maxRelativeL2": 0.0000025288695048671927,
+                "passed": true
+              }
+            },
+            {
+              "round": 7,
+              "branchTokens": 1650,
+              "maxAbs": 0.0000247955322265625,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0.0000247955322265625,
+                "maxRelativeL2": 0.0000021091009425797027,
+                "passed": true
+              }
+            }
+          ],
+          "forcedEosChecks": [
+            {
+              "token": 248044,
+              "finishReason": "stop",
+              "completion": ""
+            }
+          ]
+        },
+        {
+          "reportSha256": "922ea6de94db3976aa50a21355d21bea8051892d1317d3b39129011a39d96021",
+          "status": "passed-smoke-only",
+          "startedAt": "2026-09-06T09:02:01.152Z",
+          "finishedAt": "2026-09-06T09:02:51.910Z",
+          "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "adapter": {
+            "vendor": "apple",
+            "architecture": "metal-3",
+            "device": "",
+            "description": "",
+            "features": [
+              "depth32float-stencil8",
+              "rg11b10ufloat-renderable",
+              "bgra8unorm-storage",
+              "texture-formats-tier1",
+              "texture-compression-bc",
+              "dual-source-blending",
+              "core-features-and-limits",
+              "float32-filterable",
+              "indirect-first-instance",
+              "texture-compression-astc-sliced-3d",
+              "float32-blendable",
+              "texture-compression-astc",
+              "texture-compression-etc2",
+              "depth-clip-control",
+              "texture-compression-bc-sliced-3d",
+              "texture-formats-tier2",
+              "shader-f16",
+              "clip-distances",
+              "timestamp-query",
+              "primitive-index",
+              "texture-component-swizzle",
+              "subgroups"
+            ],
+            "maxBufferSize": 4294967292,
+            "maxStorageBufferBindingSize": 4294967292
+          },
+          "architecture": "qwen3_5",
+          "quantization": "q4f32_1",
+          "sourceRepository": "Qwen/Qwen3.5-2B-Base",
+          "sourceRevision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+          "modelBuildSha256": "bc90954c0d4ff118975aa7fdd6ef0b3fb5f17ef7cb9ba7db08f2c3d8604c125c",
+          "librarySha256": "dc379bbccd2b1f5bf2c8726e02eae49ffc9925a5e76bbd305d9065b7fe85ff00",
+          "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+          "inputTokens": 6,
+          "inputIdsSha256": "eb7d9b0522f833b009e02b45ccac12c52f51d94daf8cc403449bc0a52816c9fd",
+          "capturePositions": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "captureShape": [
+            24,
+            6,
+            2048
+          ],
+          "generatedIds": [
+            781,
+            513,
+            748,
+            18268,
+            321,
+            781,
+            513,
+            748,
+            7539,
+            13,
+            198,
+            760,
+            220,
+            16,
+            15,
+            6886,
+            43282,
+            303,
+            710,
+            1554,
+            772,
+            11,
+            6650,
+            198
+          ],
+          "steps": [
+            "finite generation logits",
+            "finite post-block residuals",
+            "repeat capture parity",
+            "generation after capture parity",
+            "cancellation and fresh generation parity",
+            "overlong context rejection and recovery parity",
+            "branch isolation and explicit state reset parity",
+            "forced EOS termination and recovery parity"
+          ],
+          "unloaded": true,
+          "captureReplayMaxAbs": 0,
+          "branchReplayMaxAbs": 0,
+          "replayComparison": {
+            "policy": "fp32",
+            "tolerance": {
+              "maxAbsolute": 0.0001,
+              "maxRelativeL2": 0.00001
+            },
+            "maxAbsolute": 0,
+            "maxRelativeL2": 0,
+            "passed": true
+          },
+          "branches": [
+            {
+              "round": 0,
+              "branchTokens": 9,
+              "maxAbs": 0,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0,
+                "maxRelativeL2": 0,
+                "passed": true
+              }
+            },
+            {
+              "round": 1,
+              "branchTokens": 12,
+              "maxAbs": 0,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0,
+                "maxRelativeL2": 0,
+                "passed": true
+              }
+            },
+            {
+              "round": 2,
+              "branchTokens": 15,
+              "maxAbs": 0,
+              "comparison": {
+                "policy": "fp32",
+                "tolerance": {
+                  "maxAbsolute": 0.0001,
+                  "maxRelativeL2": 0.00001
+                },
+                "maxAbsolute": 0,
+                "maxRelativeL2": 0,
+                "passed": true
+              }
+            }
+          ],
+          "forcedEosChecks": [
+            {
+              "token": 248044,
+              "finishReason": "stop",
+              "completion": ""
+            }
+          ]
+        }
+      ],
+      "accuracy": [
+        {
+          "reportSha256": "56b6877ac9dcee2294df7c42e7511f1992c3526068c7a234823e01b5daf50d06",
+          "referenceWeights": "exact-dequantized-browser",
+          "referenceArchitecture": "source-config",
+          "referenceAttention": "eager",
+          "referencePrecision": "torch.float32",
+          "referenceDevice": "cpu",
+          "torchVersion": "2.13.0",
+          "inputTokens": 1626,
+          "logits": {
+            "cosine": 0.9999999996813765,
+            "relativeL2": 0.00002525739645210886,
+            "rmse": 0.00006281738468494245,
+            "maxAbs": 0.00041878223419189453
+          },
+          "maximumLayerRelativeL2": 0.00001151285400214211,
+          "maximumPositionRelativeL2": 0.000027203609162242967,
+          "maximumLayerAbsolute": 0.0001277923583984375,
+          "greedyTokenIdsMatch": true,
+          "referenceGeneratedIds": [
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349
+          ],
+          "browserGeneratedIds": [
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349,
+            295,
+            2109,
+            349
+          ],
+          "browserArtifact": {
+            "schemaVersion": 1,
+            "source": {
+              "chatTemplateSha256": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80",
+              "files": [
+                {
+                  "bytes": 11343,
+                  "path": "LICENSE",
+                  "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
+                },
+                {
+                  "bytes": 3721,
+                  "path": "README.md",
+                  "sha256": "50ca45b87d976d9850de95ad00e76fba77e105c2cdef1093b8e3bb261d9a1787"
+                },
+                {
+                  "bytes": 2908,
+                  "path": "config.json",
+                  "sha256": "ed1c1723241f23f7f4e23430759cbd7dcfb4103cbdfe052bfe7626b57c2615b4"
+                },
+                {
+                  "bytes": 3353259,
+                  "path": "merges.txt",
+                  "sha256": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d"
+                },
+                {
+                  "bytes": 4548221488,
+                  "path": "model.safetensors-00001-of-00001.safetensors",
+                  "sha256": "928acbf11878c32185bbd863514d191769285065ab9ea14fbfe431303f5fdf2d"
+                },
+                {
+                  "bytes": 64460,
+                  "path": "model.safetensors.index.json",
+                  "sha256": "74d2ddfe79f10f35b27b498632f02b97b60dd9ec39b35d7c5a890c399284e319"
+                },
+                {
+                  "bytes": 12807196,
+                  "path": "tokenizer.json",
+                  "sha256": "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927"
+                },
+                {
+                  "bytes": 16712,
+                  "path": "tokenizer_config.json",
+                  "sha256": "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de"
+                },
+                {
+                  "bytes": 6722759,
+                  "path": "vocab.json",
+                  "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+                }
+              ],
+              "repository": "Qwen/Qwen3.5-2B-Base",
+              "revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c"
+            },
+            "modelBuildSha256": "bc90954c0d4ff118975aa7fdd6ef0b3fb5f17ef7cb9ba7db08f2c3d8604c125c",
+            "librarySha256": "dc379bbccd2b1f5bf2c8726e02eae49ffc9925a5e76bbd305d9065b7fe85ff00",
+            "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+            "architecture": "qwen3_5",
+            "quantization": "q4f32_1",
+            "contextTokens": 2048
+          }
+        },
+        {
+          "reportSha256": "27325177861e5d9d7c1a8fa8519f65eb1f164c4d9f14606c1b64361802d11b07",
+          "referenceWeights": "exact-dequantized-browser",
+          "referenceArchitecture": "source-config",
+          "referenceAttention": "eager",
+          "referencePrecision": "torch.float32",
+          "referenceDevice": "cpu",
+          "torchVersion": "2.13.0",
+          "inputTokens": 6,
+          "logits": {
+            "cosine": 0.999999999998422,
+            "relativeL2": 0.0000017546017992484809,
+            "rmse": 0.000003909211590263263,
+            "maxAbs": 0.000026702880859375
+          },
+          "maximumLayerRelativeL2": 0.00000309251423462991,
+          "maximumPositionRelativeL2": 0.000006621395276166779,
+          "maximumLayerAbsolute": 0.00004863739013671875,
+          "greedyTokenIdsMatch": true,
+          "referenceGeneratedIds": [
+            781,
+            513,
+            748,
+            18268,
+            321,
+            781,
+            513,
+            748,
+            7539,
+            13,
+            198,
+            760,
+            220,
+            16,
+            15,
+            6886,
+            43282,
+            303,
+            710,
+            1554,
+            772,
+            11,
+            6650,
+            198
+          ],
+          "browserGeneratedIds": [
+            781,
+            513,
+            748,
+            18268,
+            321,
+            781,
+            513,
+            748,
+            7539,
+            13,
+            198,
+            760,
+            220,
+            16,
+            15,
+            6886,
+            43282,
+            303,
+            710,
+            1554,
+            772,
+            11,
+            6650,
+            198
+          ],
+          "browserArtifact": {
+            "schemaVersion": 1,
+            "source": {
+              "chatTemplateSha256": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80",
+              "files": [
+                {
+                  "bytes": 11343,
+                  "path": "LICENSE",
+                  "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
+                },
+                {
+                  "bytes": 3721,
+                  "path": "README.md",
+                  "sha256": "50ca45b87d976d9850de95ad00e76fba77e105c2cdef1093b8e3bb261d9a1787"
+                },
+                {
+                  "bytes": 2908,
+                  "path": "config.json",
+                  "sha256": "ed1c1723241f23f7f4e23430759cbd7dcfb4103cbdfe052bfe7626b57c2615b4"
+                },
+                {
+                  "bytes": 3353259,
+                  "path": "merges.txt",
+                  "sha256": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d"
+                },
+                {
+                  "bytes": 4548221488,
+                  "path": "model.safetensors-00001-of-00001.safetensors",
+                  "sha256": "928acbf11878c32185bbd863514d191769285065ab9ea14fbfe431303f5fdf2d"
+                },
+                {
+                  "bytes": 64460,
+                  "path": "model.safetensors.index.json",
+                  "sha256": "74d2ddfe79f10f35b27b498632f02b97b60dd9ec39b35d7c5a890c399284e319"
+                },
+                {
+                  "bytes": 12807196,
+                  "path": "tokenizer.json",
+                  "sha256": "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927"
+                },
+                {
+                  "bytes": 16712,
+                  "path": "tokenizer_config.json",
+                  "sha256": "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de"
+                },
+                {
+                  "bytes": 6722759,
+                  "path": "vocab.json",
+                  "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+                }
+              ],
+              "repository": "Qwen/Qwen3.5-2B-Base",
+              "revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c"
+            },
+            "modelBuildSha256": "bc90954c0d4ff118975aa7fdd6ef0b3fb5f17ef7cb9ba7db08f2c3d8604c125c",
+            "librarySha256": "dc379bbccd2b1f5bf2c8726e02eae49ffc9925a5e76bbd305d9065b7fe85ff00",
+            "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+            "architecture": "qwen3_5",
+            "quantization": "q4f32_1",
+            "contextTokens": 2048
+          }
+        }
+      ],
+      "coreOnlyRuntime": {
+        "reportSha256": "7a2d1c3f68a078f7aee0f799a73ec09937452dfc017a1d6cf1b0238ec006f302",
+        "scope": "production runtime core-only load and offline model reload; not signed installation or offline page navigation",
+        "optionalPacks": 0,
+        "networkAttempts": [],
+        "deviceLosses": [],
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "status": "passed",
+        "checks": [
+          {
+            "type": "check",
+            "name": "core-only load",
+            "values": {
+              "identity": "2848a526dffb0b89c03a6d429c321fb4494597df45f8c7ca990ea3e80775a6e3",
+              "optionalPacks": 0,
+              "layers": 24
+            }
+          },
+          {
+            "type": "check",
+            "name": "base generation",
+            "values": {
+              "ids": [
+                781,
+                513,
+                748,
+                18268,
+                321,
+                781,
+                513,
+                748,
+                7539,
+                13,
+                198,
+                760,
+                220,
+                16,
+                15,
+                6886,
+                43282,
+                303,
+                710,
+                1554,
+                772,
+                11,
+                6650,
+                198
+              ],
+              "performance": {
+                "text": " they are so cute and they are so smart.\nThe 10 Best Hotels in Kitchener, Canada\n",
+                "thinkingText": null,
+                "tokens": 24,
+                "finishReason": "length",
+                "terminalReason": "length",
+                "usage": {
+                  "promptTokens": 6,
+                  "completionTokens": 24,
+                  "totalTokens": 30
+                },
+                "meanLogprob": 0,
+                "meanSurprise": 0,
+                "prefillTokensPerSecond": 6.255440929863912,
+                "decodeTokensPerSecond": 10.559516651359987
+              }
+            }
+          },
+          {
+            "type": "check",
+            "name": "physical core steering",
+            "values": {
+              "expression": "0.5 default/welcoming.detached",
+              "ordinaryLogprob": -0.5733752658916785,
+              "steeredLogprob": -0.6381370296412325,
+              "ids": [
+                781,
+                2224,
+                748,
+                2993,
+                321,
+                781,
+                2224,
+                748,
+                7539,
+                13,
+                198,
+                40,
+                2688,
+                748,
+                15252,
+                488,
+                2224,
+                1532,
+                13,
+                198,
+                40,
+                2688,
+                748,
+                15252
+              ]
+            }
+          },
+          {
+            "type": "check",
+            "name": "network-blocked OPFS model reload",
+            "values": {
+              "networkAttempts": 0,
+              "baselineIds": [
+                781,
+                513,
+                748,
+                18268,
+                321,
+                781,
+                513,
+                748,
+                7539,
+                13,
+                198,
+                760,
+                220,
+                16,
+                15,
+                6886,
+                43282,
+                303,
+                710,
+                1554,
+                772,
+                11,
+                6650,
+                198
+              ],
+              "steeredIds": [
+                781,
+                2224,
+                748,
+                2993,
+                321,
+                781,
+                2224,
+                748,
+                7539,
+                13,
+                198,
+                40,
+                2688,
+                748,
+                15252,
+                488,
+                2224,
+                1532,
+                13,
+                198,
+                40,
+                2688,
+                748,
+                15252
+              ]
+            }
+          }
+        ],
+        "blockedServerRequests": [],
+        "modelId": "qwen35-2b-base",
+        "runtimeIdentity": {
+          "sourceModel": "Qwen/Qwen3.5-2B-Base",
+          "sourceRevision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+          "convertedManifestSha256": "6f4d36a4eebec65a1764d304a0ea563a7b57ffb21b1558056207ef3a34c11831",
+          "quantization": "q4f32_1",
+          "tokenizerSha256": "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927",
+          "chatTemplateSha256": "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de",
+          "modelLibrarySha256": "dc379bbccd2b1f5bf2c8726e02eae49ffc9925a5e76bbd305d9065b7fe85ff00",
+          "runtimeAbi": "drowse-web-runtime-v1",
+          "hookAbi": "post-block-residual-v4",
+          "hiddenSize": 2048,
+          "layerMap": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ]
+        },
+        "recordedAt": "2026-09-06T08:56:32.328Z"
+      },
+      "appUiChecks": {
+        "method": "manual interaction in physical Chrome with signed catalog and real model weights",
+        "signedDownloadAndOpen": true,
+        "rawGeneration": true,
+        "coreSteeringGeneration": true,
+        "fullPageReload": true,
+        "reopenSavedCompletion": true,
+        "generationAfterReopen": true,
+        "optionalPacksInstalled": 0,
+        "offlinePageNavigationTested": false
+      }
+    }
+  ],
+  "withheldFp16Qwen": [
+    {
+      "reportSha256": "cdd336265d7706537281fe095d47a82de3b1b76e0a51f3d2ac2d591eb61b9bec",
+      "status": "failed",
+      "startedAt": "2026-09-06T08:11:07.954Z",
+      "finishedAt": "2026-09-06T08:12:20.721Z",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+      "adapter": {
+        "vendor": "apple",
+        "architecture": "metal-3",
+        "device": "",
+        "description": "",
+        "features": [
+          "depth32float-stencil8",
+          "rg11b10ufloat-renderable",
+          "texture-formats-tier1",
+          "bgra8unorm-storage",
+          "texture-compression-bc",
+          "dual-source-blending",
+          "core-features-and-limits",
+          "float32-filterable",
+          "indirect-first-instance",
+          "texture-compression-astc-sliced-3d",
+          "float32-blendable",
+          "texture-compression-astc",
+          "texture-compression-etc2",
+          "depth-clip-control",
+          "texture-compression-bc-sliced-3d",
+          "timestamp-query",
+          "texture-formats-tier2",
+          "shader-f16",
+          "clip-distances",
+          "primitive-index",
+          "texture-component-swizzle",
+          "subgroups"
+        ],
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292
+      },
+      "architecture": "qwen3_5",
+      "quantization": "q4f16_1",
+      "sourceRepository": "Qwen/Qwen3.5-2B-Base",
+      "sourceRevision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+      "modelBuildSha256": "3bcd529396a5f47ef9c0c37a60db23364bbd5bbdbcb02f03c83408a34ca6c3c5",
+      "librarySha256": "3abe520c27ef80595ef768361a9beae1feff67fc2ba4bd8d4ea2e83493d39e51",
+      "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+      "inputTokens": 1626,
+      "inputIdsSha256": "d2438de0c5bde9c650215b57122a9eef9622d5e64edad2a06dc5f57bc5fe80b1",
+      "capturePositions": [
+        0,
+        1,
+        2,
+        127,
+        128,
+        511,
+        512,
+        513,
+        1023,
+        1024,
+        1025,
+        1625
+      ],
+      "captureShape": [
+        24,
+        12,
+        2048
+      ],
+      "generatedIds": [
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349
+      ],
+      "steps": [
+        "finite generation logits",
+        "finite post-block residuals",
+        "repeat capture parity",
+        "generation after capture parity",
+        "cancellation and fresh generation parity",
+        "overlong context rejection and recovery parity"
+      ],
+      "unloaded": true,
+      "error": "Error: A different branch contaminated recurrent or KV state\n    at run.onclick (http://127.0.0.1:4215/:143:51)",
+      "failedStage": "Checking branch isolation and explicit state reset",
+      "captureReplayMaxAbs": 0,
+      "branchReplayMaxAbs": 0.09375
+    },
+    {
+      "reportSha256": "93801e164363a118c6a801c156e5a28c3495b597f3da7e8bd6c8d31e30346937",
+      "status": "failed",
+      "startedAt": "2026-09-06T08:20:36.611Z",
+      "finishedAt": "2026-09-06T08:21:10.203Z",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+      "adapter": {
+        "vendor": "apple",
+        "architecture": "metal-3",
+        "device": "",
+        "description": "",
+        "features": [
+          "depth32float-stencil8",
+          "rg11b10ufloat-renderable",
+          "texture-formats-tier1",
+          "bgra8unorm-storage",
+          "texture-compression-bc",
+          "dual-source-blending",
+          "core-features-and-limits",
+          "float32-filterable",
+          "indirect-first-instance",
+          "texture-compression-astc-sliced-3d",
+          "float32-blendable",
+          "texture-compression-astc",
+          "texture-compression-etc2",
+          "depth-clip-control",
+          "texture-compression-bc-sliced-3d",
+          "timestamp-query",
+          "texture-formats-tier2",
+          "shader-f16",
+          "clip-distances",
+          "primitive-index",
+          "texture-component-swizzle",
+          "subgroups"
+        ],
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292
+      },
+      "architecture": "qwen3_5",
+      "quantization": "q4f16_1",
+      "sourceRepository": "Qwen/Qwen3.5-2B-Base",
+      "sourceRevision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+      "modelBuildSha256": "3bcd529396a5f47ef9c0c37a60db23364bbd5bbdbcb02f03c83408a34ca6c3c5",
+      "librarySha256": "3abe520c27ef80595ef768361a9beae1feff67fc2ba4bd8d4ea2e83493d39e51",
+      "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+      "inputTokens": 1626,
+      "inputIdsSha256": "d2438de0c5bde9c650215b57122a9eef9622d5e64edad2a06dc5f57bc5fe80b1",
+      "capturePositions": [
+        0,
+        1,
+        2,
+        127,
+        128,
+        511,
+        512,
+        513,
+        1023,
+        1024,
+        1025,
+        1625
+      ],
+      "captureShape": [
+        24,
+        12,
+        2048
+      ],
+      "generatedIds": [
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349,
+        295,
+        2109,
+        349
+      ],
+      "steps": [
+        "finite generation logits",
+        "finite post-block residuals"
+      ],
+      "unloaded": true,
+      "error": "Error: Repeated capture changed residuals\n    at run.onclick (http://127.0.0.1:4221/:88:50)",
+      "failedStage": "Capturing residuals",
+      "captureReplayMaxAbs": 0.171875
+    }
+  ],
+  "fp32QwenStrictDiagnostic": {
+    "reportSha256": "3aa5341061514900350de6a1963e69e1b8c386eff847a924db5f5e636088410a",
+    "status": "diagnostic-only",
+    "startedAt": "2026-09-06T08:43:40.582Z",
+    "finishedAt": "2026-09-06T08:48:39.170Z",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "adapter": {
+      "vendor": "apple",
+      "architecture": "metal-3",
+      "device": "",
+      "description": "",
+      "features": [
+        "depth32float-stencil8",
+        "rg11b10ufloat-renderable",
+        "texture-formats-tier1",
+        "bgra8unorm-storage",
+        "texture-compression-bc",
+        "dual-source-blending",
+        "core-features-and-limits",
+        "float32-filterable",
+        "indirect-first-instance",
+        "texture-compression-astc-sliced-3d",
+        "float32-blendable",
+        "texture-compression-astc",
+        "texture-compression-etc2",
+        "depth-clip-control",
+        "texture-compression-bc-sliced-3d",
+        "timestamp-query",
+        "texture-formats-tier2",
+        "shader-f16",
+        "clip-distances",
+        "primitive-index",
+        "texture-component-swizzle",
+        "subgroups"
+      ],
+      "maxBufferSize": 4294967292,
+      "maxStorageBufferBindingSize": 4294967292
+    },
+    "architecture": "qwen3_5",
+    "quantization": "q4f32_1",
+    "sourceRepository": "Qwen/Qwen3.5-2B-Base",
+    "sourceRevision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "modelBuildSha256": "bc90954c0d4ff118975aa7fdd6ef0b3fb5f17ef7cb9ba7db08f2c3d8604c125c",
+    "librarySha256": "dc379bbccd2b1f5bf2c8726e02eae49ffc9925a5e76bbd305d9065b7fe85ff00",
+    "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+    "inputTokens": 1626,
+    "inputIdsSha256": "d2438de0c5bde9c650215b57122a9eef9622d5e64edad2a06dc5f57bc5fe80b1",
+    "capturePositions": [
+      0,
+      1,
+      2,
+      127,
+      128,
+      511,
+      512,
+      513,
+      1023,
+      1024,
+      1025,
+      1625
+    ],
+    "captureShape": [
+      24,
+      12,
+      2048
+    ],
+    "generatedIds": [
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349
+    ],
+    "steps": [
+      "finite generation logits",
+      "finite post-block residuals",
+      "generation after capture parity",
+      "cancellation and fresh generation parity",
+      "overlong context rejection and recovery parity",
+      "branch isolation and explicit state reset parity",
+      "forced EOS termination and recovery parity"
+    ],
+    "unloaded": true,
+    "captureReplayMaxAbs": 0.00002822279930114746,
+    "branchReplayMaxAbs": 0.000011444091796875,
+    "branches": [
+      {
+        "round": 0,
+        "branchTokens": 1629,
+        "maxAbs": 0.0000514984130859375
+      },
+      {
+        "round": 1,
+        "branchTokens": 1632,
+        "maxAbs": 0.000011444091796875
+      },
+      {
+        "round": 2,
+        "branchTokens": 1635,
+        "maxAbs": 0.0000514984130859375
+      },
+      {
+        "round": 3,
+        "branchTokens": 1638,
+        "maxAbs": 0.000011444091796875
+      },
+      {
+        "round": 4,
+        "branchTokens": 1641,
+        "maxAbs": 0.000012964010238647461
+      },
+      {
+        "round": 5,
+        "branchTokens": 1644,
+        "maxAbs": 0.000011444091796875
+      },
+      {
+        "round": 6,
+        "branchTokens": 1647,
+        "maxAbs": 0.000030517578125
+      },
+      {
+        "round": 7,
+        "branchTokens": 1650,
+        "maxAbs": 0.000011444091796875
+      }
+    ],
+    "forcedEosChecks": [
+      {
+        "token": 248044,
+        "finishReason": "stop",
+        "completion": ""
+      }
+    ],
+    "diagnosticFailures": [
+      "repeat capture exceeds absolute 1e-5",
+      "branch 0 exceeds absolute 1e-5",
+      "branch 1 exceeds absolute 1e-5",
+      "branch 2 exceeds absolute 1e-5",
+      "branch 3 exceeds absolute 1e-5",
+      "branch 4 exceeds absolute 1e-5",
+      "branch 5 exceeds absolute 1e-5",
+      "branch 6 exceeds absolute 1e-5",
+      "branch 7 exceeds absolute 1e-5"
+    ]
+  },
+  "fp32QwenSourceAccuracyBrowserRun": {
+    "reportSha256": "045129404c352abb8f8ab63c162733b9ac0996a3daca13cefc466f74bfc93645",
+    "status": "failed",
+    "startedAt": "2026-09-06T08:38:09.446Z",
+    "finishedAt": "2026-09-06T08:39:08.201Z",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "adapter": {
+      "vendor": "apple",
+      "architecture": "metal-3",
+      "device": "",
+      "description": "",
+      "features": [
+        "depth32float-stencil8",
+        "rg11b10ufloat-renderable",
+        "texture-formats-tier1",
+        "bgra8unorm-storage",
+        "texture-compression-bc",
+        "dual-source-blending",
+        "core-features-and-limits",
+        "float32-filterable",
+        "indirect-first-instance",
+        "texture-compression-astc-sliced-3d",
+        "float32-blendable",
+        "texture-compression-astc",
+        "texture-compression-etc2",
+        "depth-clip-control",
+        "texture-compression-bc-sliced-3d",
+        "timestamp-query",
+        "texture-formats-tier2",
+        "shader-f16",
+        "clip-distances",
+        "primitive-index",
+        "texture-component-swizzle",
+        "subgroups"
+      ],
+      "maxBufferSize": 4294967292,
+      "maxStorageBufferBindingSize": 4294967292
+    },
+    "architecture": "qwen3_5",
+    "quantization": "q4f32_1",
+    "sourceRepository": "Qwen/Qwen3.5-2B-Base",
+    "sourceRevision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "modelBuildSha256": "bc90954c0d4ff118975aa7fdd6ef0b3fb5f17ef7cb9ba7db08f2c3d8604c125c",
+    "librarySha256": "dc379bbccd2b1f5bf2c8726e02eae49ffc9925a5e76bbd305d9065b7fe85ff00",
+    "webllmSha256": "35a8398dc34db22ff59d4a2c22174995b2d7bcc63f264fe990009e1ba8001b4e",
+    "inputTokens": 1626,
+    "inputIdsSha256": "d2438de0c5bde9c650215b57122a9eef9622d5e64edad2a06dc5f57bc5fe80b1",
+    "capturePositions": [
+      0,
+      1,
+      2,
+      127,
+      128,
+      511,
+      512,
+      513,
+      1023,
+      1024,
+      1025,
+      1625
+    ],
+    "captureShape": [
+      24,
+      12,
+      2048
+    ],
+    "generatedIds": [
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349,
+      295,
+      2109,
+      349
+    ],
+    "steps": [
+      "finite generation logits",
+      "finite post-block residuals"
+    ],
+    "unloaded": true,
+    "error": "Error: Repeated capture changed residuals\n    at run.onclick (http://127.0.0.1:4222/:88:50)",
+    "failedStage": "Capturing residuals",
+    "captureReplayMaxAbs": 0.0000247955322265625
+  },
+  "verification": {
+    "runtimeTestRunners": 44,
+    "pythonBuilderAndReferenceTests": 47,
+    "replayPolicyUnitTests": true,
+    "hostedBuild": true,
+    "svelteCheck": true,
+    "overlayIntegrity": true,
+    "hostedIsolation": true,
+    "knownWarnings": [
+      "existing large bundle chunk warning"
+    ],
+    "steeringCaveat": "Gemma and Qwen at 0.5 UI strength can over-steer into repetition. The Gemma 0.1 smoke completion remains readable; these are not semantic-quality evaluations."
+  }
+}

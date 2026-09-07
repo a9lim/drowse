@@ -1,9 +1,9 @@
 """Web UI mount + protocol additions for the analytics dashboard.
 
 Covers:
-* ``saklas.web.register_web_routes`` mounts the SPA bundle at ``/`` with
+* ``drowse.web.register_web_routes`` mounts the SPA bundle at ``/`` with
   a fallback to index.html for client-side routes.
-* GET /saklas/v1/sessions/{id}/correlation returns the right matrix shape.
+* GET /drowse/v1/sessions/{id}/correlation returns the right matrix shape.
 * The WS token event surfaces per_layer_scores when probes are loaded.
 
 CPU-only.  No npm build runs here — the committed dist/ bundle is the
@@ -20,7 +20,7 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from saklas.core.profile import Profile
+from drowse.core.profile import Profile
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ def _mock_session_with_vectors(vectors: dict[str, Profile]):
 
 @pytest.fixture
 def web_client():
-    from saklas.server import create_app
+    from drowse.server import create_app
 
     vectors = {
         "honest": _profile_from_layers({
@@ -109,12 +109,32 @@ def web_client():
     return session, TestClient(app)
 
 
+@pytest.mark.parametrize("path,content_type", [
+    ("/icons/tab-home.png", "image/png"),
+    ("/icons/apple-touch-icon.png", "image/png"),
+    ("/theme-init.js", "javascript"),
+])
+def test_dashboard_public_assets_are_served_as_files(
+    web_client: Any, path: str, content_type: str,
+) -> None:
+    _, client = web_client
+    response = client.get(path)
+    assert response.status_code == 200
+    assert content_type in response.headers["content-type"]
+    assert not response.content.lstrip().lower().startswith(b"<!doctype html")
+
+
+def test_missing_dashboard_icon_is_not_an_html_fallback(web_client: Any) -> None:
+    _, client = web_client
+    assert client.get("/icons/nonexistent.png").status_code == 404
+
+
 @pytest.fixture
 def api_only_client():
     """Same session but no dashboard mount; mirrors ``--no-web`` mode
     on the CLI and the library default (``create_app(..., web=False)``)
     so embedded API surfaces don't pick up the dashboard."""
-    from saklas.server import create_app
+    from drowse.server import create_app
 
     vectors = {
         "honest": _profile_from_layers({0: [1.0, 0.0]}),
@@ -134,7 +154,7 @@ def _index_asset_paths(html: bytes) -> list[str]:
     """Extract /assets/* paths the index.html references.
 
     Vite emits hashed filenames by default; the source-tree config pins
-    saklas.js but lets the CSS chunk name itself.  Pulling references
+    drowse.js but lets the CSS chunk name itself.  Pulling references
     out of the html keeps the tests robust across bundler changes
     without sacrificing real coverage of the asset-mount path.
     """
@@ -211,7 +231,7 @@ class TestWebMount:
 class TestCorrelationEndpoint:
     def test_default_returns_all_loaded_vectors(self, web_client: Any) -> None:
         _session, client = web_client
-        r = client.get("/saklas/v1/sessions/default/correlation")
+        r = client.get("/drowse/v1/sessions/default/correlation")
         assert r.status_code == 200
         data = r.json()
         assert sorted(data["names"]) == ["honest", "warm"]
@@ -221,7 +241,7 @@ class TestCorrelationEndpoint:
 
     def test_names_filter_restricts_matrix(self, web_client: Any) -> None:
         _session, client = web_client
-        r = client.get("/saklas/v1/sessions/default/correlation?names=honest")
+        r = client.get("/drowse/v1/sessions/default/correlation?names=honest")
         assert r.status_code == 200
         data = r.json()
         assert data["names"] == ["honest"]
@@ -229,12 +249,12 @@ class TestCorrelationEndpoint:
 
     def test_unknown_name_returns_404(self, web_client: Any) -> None:
         _session, client = web_client
-        r = client.get("/saklas/v1/sessions/default/correlation?names=missing,honest")
+        r = client.get("/drowse/v1/sessions/default/correlation?names=missing,honest")
         assert r.status_code == 404
 
     def test_layers_shared_records_pair_overlap(self, web_client: Any) -> None:
         _session, client = web_client
-        r = client.get("/saklas/v1/sessions/default/correlation")
+        r = client.get("/drowse/v1/sessions/default/correlation")
         data = r.json()
         # honest + warm both have layers {0, 5}, so shared = 2.
         key = "honest__warm"
@@ -243,7 +263,7 @@ class TestCorrelationEndpoint:
 
     def test_whitens_each_profile_layer_once_per_request(self, web_client: Any) -> None:
         session, client = web_client
-        r = client.get("/saklas/v1/sessions/default/correlation")
+        r = client.get("/drowse/v1/sessions/default/correlation")
         assert r.status_code == 200
         # 2 names × 2 layers.  The endpoint should reuse these factors across
         # the upper-triangle matrix instead of reapplying the whitener per pair.
@@ -253,7 +273,7 @@ class TestCorrelationEndpoint:
 class TestRemovedDashboardSurfaces:
     def test_vector_profile_omits_layer_norm_payload(self, web_client: Any) -> None:
         _session, client = web_client
-        r = client.get("/saklas/v1/sessions/default/profiles/honest")
+        r = client.get("/drowse/v1/sessions/default/profiles/honest")
         assert r.status_code == 200
         data = r.json()
         assert set(data) == {"name", "layers", "metadata"}
@@ -263,8 +283,8 @@ class TestRemovedDashboardSurfaces:
     ) -> None:
         _session, client = web_client
         for path in (
-            "/saklas/v1/sessions/default/profiles/honest/diagnostics",
-            "/saklas/v1/sessions/default/experiments/fan",
+            "/drowse/v1/sessions/default/profiles/honest/diagnostics",
+            "/drowse/v1/sessions/default/experiments/fan",
             "/styleguide",
             "/styleguide/anything",
         ):
@@ -279,7 +299,7 @@ class TestRepeatMount:
     def test_second_call_appends_shadowed_routes_and_still_serves(
         self, web_client: Any,
     ) -> None:
-        from saklas.web import register_web_routes
+        from drowse.web import register_web_routes
 
         _session, client = web_client
         app = client.app
@@ -302,7 +322,7 @@ class TestRepeatMount:
 
 def _per_layer_scores(monitor: Any, hidden: dict[int, Any]) -> dict[str, Any]:
     """The heatmap row the token tap writes, from a live single-token read."""
-    from saklas.core.token_payloads import _per_layer_axis0
+    from drowse.core.token_payloads import _per_layer_axis0
 
     return _per_layer_axis0(monitor.score_single_token(hidden)) or {}
 
@@ -311,8 +331,8 @@ class TestPerLayerScores:
     def test_returns_per_layer_per_probe_dict(self) -> None:
         # Two probes sharing layer 0, scored against a hidden state.  No
         # torch model needed.
-        from saklas.core.monitor import Monitor
-        from saklas.core.capture import fold_directions_to_subspace
+        from drowse.core.monitor import Monitor
+        from drowse.core.capture import fold_directions_to_subspace
 
         from tests._whitener import isotropic_whitener
         means = {0: torch.zeros(4)}
@@ -344,8 +364,8 @@ class TestPerLayerScores:
         assert result["0"]["warm"] == pytest.approx(0.0, abs=0.1)
 
     def test_empty_input_returns_empty(self) -> None:
-        from saklas.core.monitor import Monitor
-        from saklas.core.capture import fold_directions_to_subspace
+        from drowse.core.monitor import Monitor
+        from drowse.core.capture import fold_directions_to_subspace
         from tests._whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}
@@ -358,8 +378,8 @@ class TestPerLayerScores:
         assert _per_layer_scores(monitor, {}) == {}
 
     def test_layers_outside_probe_cache_omitted(self) -> None:
-        from saklas.core.monitor import Monitor
-        from saklas.core.capture import fold_directions_to_subspace
+        from drowse.core.monitor import Monitor
+        from drowse.core.capture import fold_directions_to_subspace
         from tests._whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}
@@ -376,13 +396,13 @@ class TestPerLayerScores:
 
 
 # ---------------------------------------------------------------------------
-# saklas.web.dist_path / register_web_routes wiring.
+# drowse.web.dist_path / register_web_routes wiring.
 # ---------------------------------------------------------------------------
 
 
 class TestRegisterWebRoutes:
     def test_dist_path_resolves_to_real_directory(self) -> None:
-        from saklas.web import dist_path
+        from drowse.web import dist_path
 
         d = dist_path()
         assert d.is_dir()
@@ -392,7 +412,7 @@ class TestRegisterWebRoutes:
     def test_register_against_empty_dist_raises_clear_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from fastapi import FastAPI
 
-        from saklas.web import routes as web_routes
+        from drowse.web import routes as web_routes
 
         # Point dist_path at an empty temp directory and verify the
         # error message names the build command.

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:drowse:schema:browser-authoring-evidence-v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "status", "drowseRevision", "evidence"],
+  "properties": {
+    "$schema": { "const": "./authoring-evidence.schema.json" },
+    "schemaVersion": { "const": 3 },
+    "status": { "enum": ["feasibility-required", "integrated-unverified", "verified"] },
+    "drowseRevision": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Git commit whose executable source produced the referenced evidence"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activationCapture",
+        "fittingKernelParity",
+        "topologyOrchestration",
+        "manifoldSerialization",
+        "instrumentIntegration",
+        "sharedGoldenResults",
+        "physicalBrowserFitting"
+      ],
+      "properties": {
+        "activationCapture": { "$ref": "#/$defs/reference" },
+        "fittingKernelParity": { "$ref": "#/$defs/reference" },
+        "topologyOrchestration": { "$ref": "#/$defs/reference" },
+        "manifoldSerialization": { "$ref": "#/$defs/reference" },
+        "instrumentIntegration": { "$ref": "#/$defs/reference" },
+        "sharedGoldenResults": { "$ref": "#/$defs/reference" },
+        "physicalBrowserFitting": { "$ref": "#/$defs/reference" }
+      }
+    }
+  },
+  "$defs": {
+    "reference": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": { "type": "string", "pattern": "^evidence/[a-z0-9][a-z0-9._/-]*\\.json$" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      ]
+    }
+  }
+}

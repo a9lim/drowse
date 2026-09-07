@@ -1,0 +1,101 @@
+:root:has(.workspace-material),
+.workspace-material,
+.workspace-material [data-chat-accent] {
+  --fg-muted: var(--fg-dim);
+  --fg-subtle: var(--fg-dim);
+  --surface-sheen: none;
+  --surface-card: var(--workspace-panel-bg);
+  --surface-card-hover: var(--workspace-field-bg);
+  --control-neutral-bg: var(--workspace-neutral-bg);
+  --control-neutral-hover: var(--workspace-neutral-hover);
+  --control-sheen: none;
+  --action-sheen: none;
+  --shadow-control: none;
+  --shadow-control-hover: none;
+  --shadow-control-pressed: none;
+  --shadow-rack: none;
+  --shadow-rack-hover: none;
+  --shadow-card: none;
+  --popup-shadow: var(--workspace-overlay-shadow);
+  --shadow-overlay: var(--workspace-overlay-shadow);
+}
+
+.workspace-material {
+  --workspace-surface-padding: 12px;
+  --workbench-header-height: 44px;
+  --radius-sm: 4px;
+  --radius: 4px;
+  --radius-inset: 4px;
+  --radius-group: 8px;
+  --radius-lg: 8px;
+  --popup-radius: calc(var(--radius) + var(--surface-padding));
+  --text-wordmark: 1.428571429rem;
+  --text-lg: 1.285714286rem;
+}
+
+.workspace-library {
+  --surface-padding: var(--workspace-surface-padding);
+  --surface-gutter: var(--surface-padding);
+  --page-gutter: var(--surface-padding);
+  --page-max: 100%;
+  --page-top-space: var(--space-lg);
+  --text-onboarding-heading: var(--text-lg);
+  --text-onboarding-lede: var(--text-sm);
+  --text-onboarding-card-title: var(--text-md);
+}
+
+.shell {
+  --workspace-message-bg: var(--workspace-field-bg);
+  --workspace-buffer-bg: transparent;
+  --workspace-message-size: var(--text);
+  --workspace-status-padding: 0px;
+  --workspace-status-height: var(--control-target);
+}
+
+@media (prefers-contrast: more), (forced-colors: active), (prefers-reduced-transparency: reduce) {
+  :root:has(.workspace-material),
+  .workspace-material {
+    --workspace-panel-bg: Canvas;
+    --workspace-field-bg: Canvas;
+    --workspace-neutral-bg: ButtonFace;
+    --workspace-neutral-hover: ButtonFace;
+  }
+}
+
+:root[data-theme="light"] .shell {
+  --workspace-background-strength: 0.55;
+}
+
+@media (min-width: 761px) and (pointer: fine) {
+  .workspace-material {
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 16px;
+    --space-lg: 24px;
+    --space-1: var(--space-xs);
+    --space-2: var(--space-xs);
+    --space-3: var(--space-xs);
+    --space-4: var(--space-xs);
+    --space-5: var(--space-sm);
+    --space-6: var(--space-sm);
+    --space-7: var(--space-md);
+    --space-8: var(--space-lg);
+    --control-target: 40px;
+    --control-compact: 40px;
+    --control-field: 40px;
+    --control-label-gap: 8px;
+    --text-sm: 0.928571429rem;
+    --text-xs: 0.785714286rem;
+    --text-md: 1rem;
+    --text-lg: 1.142857143rem;
+    --workspace-surface-padding: 12px;
+  }
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .workspace-material {
+    --control-target: 44px;
+    --control-field: 44px;
+    --control-compact: 44px;
+  }
+}

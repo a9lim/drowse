@@ -1,20 +1,28 @@
 <script lang="ts">
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
-  // Correlation overlay — N×N magnitude-weighted cosine matrix across
-  // every registered steering profile and every active probe.
+  // Correlation overlay — N×N magnitude-weighted cosine matrix across the
+  // profiles the runtime can represent as one residual direction. Readout,
+  // curved, and multidimensional probes are named explicitly as omissions.
   //
-  // Data: GET /saklas/v1/sessions/{id}/correlation with no ``names=`` filter —
-  // the server-side pool unions registered profiles and monitor probes, so
-  // probe-only names still show up.
+  // Data: GET /drowse/v1/sessions/{id}/correlation with no ``names=`` filter —
+  // the runtime returns its supported direction pool. It deliberately omits
+  // probe families/shapes for which a direction cosine is not defined.
   //
   // Layout mirrors TokenDrilldownDrawer: header (title + ✕) · sticky-
   // header table body · footer hint.  Cells reuse <HeatmapCell showValue>
   // for the printed cosine — same color mapping as the click-token grid
   // so reading a row across both surfaces stays consistent.
 
-  import { closeDrawer, refreshCorrelation, steerRack } from "../lib/stores.svelte";
+  import {
+    closeDrawer,
+    probeRack,
+    refreshCorrelation,
+    steerRack,
+  } from "../lib/stores.svelte";
   import HeatmapCell from "../lib/charts/HeatmapCell.svelte";
   import Button from "../lib/ui/Button.svelte";
+  import { omittedAnalyticsProbes } from "../lib/profileAnalytics";
+  import { userFacingError } from "../lib/runtime/userFacingError";
 
   // Drawer host forwards { params } — unused here, but the prop must
   // exist so the host's switch can pass it uniformly.
@@ -30,11 +38,10 @@
     loading = true;
     error = null;
     try {
-      // ``refreshCorrelation()`` with no names → server unions vectors +
-      // probes and returns the full matrix.
+      // No names filter asks the runtime for every supported direction.
       await refreshCorrelation(null);
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      error = userFacingError(e, "Unable to compare the active directions. Try again.");
     } finally {
       loading = false;
     }
@@ -48,9 +55,12 @@
 
   const data = $derived(steerRack.correlation);
   const names = $derived<string[]>(data?.names ?? []);
+  const omissions = $derived(data
+    ? omittedAnalyticsProbes(probeRack.active, probeRack.entries, data.names)
+    : []);
 
   function cellTitle(a: string, b: string, v: number | null): string {
-    return `${a} vs ${b}: ${v == null ? "—" : v.toFixed(3)}`;
+    return `${a} vs ${b}: ${v == null ? "-" : v.toFixed(3)}`;
   }
 
   function onClose(): void {
@@ -75,11 +85,13 @@
 <aside class="drawer" aria-label="Correlation matrix">
   <header class="drawer-header">
     <div class="title">
-      <span class="eyebrow">correlation matrix</span>
+      <h2 class="eyebrow">Direction correlations</h2>
       <div class="name-row">
         <span class="meta">
-          {names.length} {names.length === 1 ? "name" : "names"}
-          {#if names.length > 0} · steering + probes{/if}
+          {names.length} comparable {names.length === 1 ? "direction" : "directions"}
+          {#if omissions.length > 0}
+            · {omissions.length} unsupported {omissions.length === 1 ? "probe" : "probes"} omitted
+          {/if}
         </span>
       </div>
     </div>
@@ -94,13 +106,24 @@
     </div>
   </header>
 
-  <div class="body">
+  {#if data && omissions.length > 0}
+    <div class="omissions" role="note">
+      <span>Omitted unsupported probes:</span>
+      {#each omissions as omission, index (omission.name)}
+        {#if index > 0}<span aria-hidden="true">, </span>{/if}
+        <code title={omission.reason}>{omission.name}</code>
+        <span class="omission-reason"> ({omission.reason})</span>
+      {/each}
+    </div>
+  {/if}
+
+  <div class="body" aria-busy={loading}>
     {#if error}
-      <div class="empty err">error: {error}</div>
+      <div class="empty err" role="alert">Correlation failed: {error}</div>
     {:else if loading && !data}
-      <div class="empty">loading…</div>
+      <div class="empty loading-pulse loading-placeholder" role="status">Loading correlations…</div>
     {:else if !data || names.length === 0}
-      <div class="empty">no data</div>
+      <div class="empty">No single-direction profiles are available for correlation.</div>
     {:else}
       <div class="grid-scroll">
         <table class="grid" style="--cell: {CELL_SIZE}px;">
@@ -136,9 +159,6 @@
     {/if}
   </div>
 
-  <footer class="drawer-footer">
-    <span class="hint">magnitude-weighted cosine · shared layers</span>
-  </footer>
 </aside>
 
 <style>
@@ -161,7 +181,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-5);
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
     display: flex;
@@ -193,12 +213,27 @@
     align-items: center;
     flex: none;
   }
+  .omissions {
+    margin: 0 var(--space-6);
+    padding: var(--surface-padding);
+    border-radius: var(--radius);
+    background: var(--surface-sheen), var(--glass);
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    line-height: 1.6;
+  }
+  .omissions code {
+    color: var(--fg-dim);
+  }
+  .omission-reason {
+    color: var(--fg-subtle);
+  }
 
   .body {
     flex: 1 1 auto;
     overflow: auto;
     min-height: 0;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .empty {
     color: var(--fg-muted);
@@ -239,9 +274,9 @@
   }
   .grid .row-label {
     position: sticky;
-    left: 0;
+    inset-inline-start: 0;
     z-index: 1;
-    text-align: right;
+    text-align: end;
     padding: 0 var(--space-3) 0 var(--space-2);
     color: var(--fg-dim);
     font-size: var(--text-xs);
@@ -251,11 +286,11 @@
   .grid .corner {
     position: sticky;
     top: 0;
-    left: 0;
+    inset-inline-start: 0;
     z-index: 3;
     color: var(--fg-muted);
     font-size: var(--text-xs);
-    text-align: left;
+    text-align: start;
     padding: var(--space-1) var(--space-3);
     box-shadow: var(--shadow-sticky), var(--shadow-sticky-inline);
   }
@@ -280,12 +315,4 @@
     line-height: 0;
   }
 
-  .drawer-footer {
-    padding: var(--space-3) var(--space-6);
-    color: var(--fg-muted);
-    font-size: var(--text-xs);
-  }
-  .hint {
-    line-height: 1.5;
-  }
 </style>

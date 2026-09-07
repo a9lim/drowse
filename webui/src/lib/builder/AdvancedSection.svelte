@@ -16,7 +16,7 @@
 
   let {
     expanded = $bindable(false),
-    summary = "advanced",
+    summary = "Advanced options",
     children,
   }: Props = $props();
 </script>

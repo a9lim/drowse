@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 1,
+  "initial": {
+    "tree_format": 2,
+    "drowse_version": "fixture",
+    "model_id": "fixture/drowse-tiny",
+    "session_id": "default",
+    "name": "shared loom parity",
+    "rev": 0,
+    "root_id": "root-1",
+    "active_node_id": "assistant-1",
+    "nodes": [
+      {
+        "id": "root-1",
+        "parent_id": null,
+        "role": "system",
+        "text": "",
+        "role_label": null,
+        "thinking_text": null,
+        "recipe": null,
+        "aggregate_readings": {},
+        "applied_steering": null,
+        "finish_reason": null,
+        "starred": false,
+        "notes": "",
+        "created_at": 1,
+        "edited_at": null,
+        "edit_count": 0,
+        "mean_logprob": null,
+        "mean_surprise": null,
+        "tokens": null,
+        "thinking_tokens": null,
+        "raw_token_ids": null
+      },
+      {
+        "id": "user-1",
+        "parent_id": "root-1",
+        "role": "user",
+        "text": "Original question",
+        "role_label": null,
+        "thinking_text": null,
+        "recipe": null,
+        "aggregate_readings": {},
+        "applied_steering": null,
+        "finish_reason": null,
+        "starred": false,
+        "notes": "",
+        "created_at": 2,
+        "edited_at": null,
+        "edit_count": 0,
+        "mean_logprob": null,
+        "mean_surprise": null,
+        "tokens": null,
+        "thinking_tokens": null,
+        "raw_token_ids": null
+      },
+      {
+        "id": "assistant-1",
+        "parent_id": "user-1",
+        "role": "assistant",
+        "text": "Original answer",
+        "role_label": null,
+        "thinking_text": null,
+        "recipe": null,
+        "aggregate_readings": {"local/calm.alert": 0.8},
+        "applied_steering": "0.25 calm",
+        "finish_reason": "stop",
+        "starred": false,
+        "notes": "",
+        "created_at": 3,
+        "edited_at": null,
+        "edit_count": 0,
+        "mean_logprob": -0.1,
+        "mean_surprise": 0.1,
+        "tokens": [
+          {
+            "token_id": 42,
+            "text": "Original answer",
+            "logprob": -0.1,
+            "sampler_entropy": 0.2,
+            "perplexity": 1.2214027581601699,
+            "raw_index": 0,
+            "probes": {"local/calm.alert": 0.8},
+            "per_layer_scores": {"9": {"local/calm.alert": 0.8}},
+            "measurements": {
+              "version": 1,
+              "scope": "token",
+              "provenance": "captured",
+              "instruments": {},
+              "scores": {"local/calm.alert": 0.8},
+              "per_layer_scores": {"9": {"local/calm.alert": 0.8}}
+            }
+          }
+        ],
+        "thinking_tokens": null,
+        "raw_token_ids": [42]
+      }
+    ],
+    "children_of": {
+      "root-1": ["user-1"],
+      "user-1": ["assistant-1"],
+      "assistant-1": []
+    },
+    "cast": {}
+  },
+  "operations": [
+    {"op": "edit", "node": "user-1", "text": "Edited question"},
+    {
+      "op": "branch",
+      "node": "assistant-1",
+      "text": "Alternate answer",
+      "role": "assistant",
+      "createdId": "branch-1"
+    },
+    {"op": "star", "node": "branch-1", "value": true},
+    {"op": "note", "node": "branch-1", "text": "keep this fork"},
+    {"op": "navigate", "node": "assistant-1"},
+    {
+      "op": "castPut",
+      "label": "captain",
+      "steering": "0.25 calm",
+      "thinking": false,
+      "seed": 7,
+      "notes": "fixture captain"
+    },
+    {"op": "delete", "node": "branch-1"},
+    {"op": "navigate", "node": "user-1"},
+    {"op": "reset", "createdId": "reset-root"}
+  ],
+  "expected": {
+    "events": [
+      {"op": "edit", "rev": 1, "added": [], "removed": [], "updated": ["user-1"], "active_node_id": null},
+      {"op": "branch", "rev": 2, "added": ["branch-1"], "removed": [], "updated": [], "active_node_id": "branch-1"},
+      {"op": "star", "rev": 3, "added": [], "removed": [], "updated": ["branch-1"], "active_node_id": null},
+      {"op": "note", "rev": 4, "added": [], "removed": [], "updated": ["branch-1"], "active_node_id": null},
+      {"op": "navigate", "rev": 5, "added": [], "removed": [], "updated": [], "active_node_id": "assistant-1"},
+      {"op": "cast", "rev": 6, "added": [], "removed": [], "updated": [], "active_node_id": null},
+      {"op": "delete", "rev": 7, "added": [], "removed": ["branch-1"], "updated": [], "active_node_id": null},
+      {"op": "navigate", "rev": 8, "added": [], "removed": [], "updated": [], "active_node_id": "user-1"},
+      {"op": "reset", "rev": 9, "added": ["reset-root"], "removed": ["root-1", "user-1", "assistant-1"], "updated": [], "active_node_id": "reset-root"}
+    ],
+    "preservedMeasurementsBeforeReset": {
+      "version": 1,
+      "scope": "token",
+      "provenance": "captured",
+      "instruments": {},
+      "scores": {"local/calm.alert": 0.8},
+      "per_layer_scores": {"9": {"local/calm.alert": 0.8}}
+    },
+    "final": {
+      "rev": 9,
+      "root_id": "reset-root",
+      "active_node_id": "reset-root",
+      "nodes": [
+        {
+          "id": "reset-root",
+          "parent_id": null,
+          "role": "system",
+          "text": "",
+          "starred": false,
+          "notes": "",
+          "edit_count": 0
+        }
+      ],
+      "children_of": {"reset-root": []},
+      "cast": {
+        "captain": {
+          "recipe": {
+            "steering": "0.25 calm",
+            "sampling": null,
+            "thinking": false,
+            "seed": 7,
+            "probes": [],
+            "probe_hashes": {}
+          },
+          "notes": "fixture captain"
+        }
+      }
+    }
+  }
+}

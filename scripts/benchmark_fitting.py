@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Reproducible wall-time/RSS/work counters for Saklas fitting paths.
+"""Reproducible wall-time/RSS/work counters for Drowse fitting paths.
 
 Examples:
 
   python scripts/benchmark_fitting.py jlens google/gemma-3-4b-it \
     --corpus prompts.txt --prompts 4 --layers workspace --seq-len 64
   python scripts/benchmark_fitting.py manifold google/gemma-3-4b-it \
-    ~/.saklas/manifolds/local/personas --layers workspace
+    ~/.drowse/manifolds/local/personas --layers workspace
 
-Each run uses a fresh temporary SAKLAS_HOME unless ``--home`` is supplied,
+Each run uses a fresh temporary DROWSE_HOME unless ``--home`` is supplied,
 prints newline-delimited JSON, and measures an immediate cache/no-op repeat.
 The model-forward counter is structural evidence alongside wall time; peak RSS
 is the process high-water mark reported by the OS (including model weights).
@@ -86,7 +86,7 @@ def _staged_authoring_folder(source: Path):
     source = source.expanduser().resolve()
     if not (source / "manifold.json").is_file():
         raise ValueError(f"{source} is not a manifold folder")
-    with tempfile.TemporaryDirectory(prefix="saklas-manifold-benchmark-") as root:
+    with tempfile.TemporaryDirectory(prefix="drowse-manifold-benchmark-") as root:
         staged = Path(root) / source.name
         shutil.copytree(source, staged, ignore=shutil.ignore_patterns(".locks"))
         for path in staged.glob("*.safetensors"):
@@ -105,10 +105,10 @@ def _staged_authoring_folder(source: Path):
 
 
 def _run_jlens(args: argparse.Namespace) -> None:
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
     prompts = _load_prompts(args.corpus, args.prompts)
-    with SaklasSession.from_pretrained(
+    with DrowseSession.from_pretrained(
         args.model, device=args.device, quantize=args.quantize, probes=[],
     ) as session:
         counters, handle = _install_forward_counter(session._model)
@@ -135,10 +135,10 @@ def _run_jlens(args: argparse.Namespace) -> None:
 
 
 def _run_manifold(args: argparse.Namespace) -> None:
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
     with _staged_authoring_folder(args.folder) as staged:
-        with SaklasSession.from_pretrained(
+        with DrowseSession.from_pretrained(
             args.model, device=args.device, quantize=args.quantize, probes=[],
         ) as session:
             counters, handle = _install_forward_counter(session._model)
@@ -163,7 +163,7 @@ def _run_manifold(args: argparse.Namespace) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--home", type=Path, help="Persistent SAKLAS_HOME")
+    parser.add_argument("--home", type=Path, help="Persistent DROWSE_HOME")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def model_args(child: argparse.ArgumentParser) -> None:
@@ -193,11 +193,11 @@ def main() -> None:
     args = _parser().parse_args()
     if args.home is not None:
         args.home.mkdir(parents=True, exist_ok=True)
-        os.environ["SAKLAS_HOME"] = str(args.home)
+        os.environ["DROWSE_HOME"] = str(args.home)
         args.run(args)
         return
-    with tempfile.TemporaryDirectory(prefix="saklas-fit-benchmark-") as home:
-        os.environ["SAKLAS_HOME"] = home
+    with tempfile.TemporaryDirectory(prefix="drowse-fit-benchmark-") as home:
+        os.environ["DROWSE_HOME"] = home
         args.run(args)
 
 

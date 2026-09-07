@@ -13,15 +13,15 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import pytest
 
-from saklas.core.results import GenerationResult, ProbeReading
-from saklas.core.steering_composer import SteeringComposer
+from drowse.core.results import GenerationResult, ProbeReading
+from drowse.core.steering_composer import SteeringComposer
 
 if TYPE_CHECKING:
-    from saklas.core.session import SaklasSession
+    from drowse.core.session import DrowseSession
 
 
 # ---------------------------------------------------------------------------
-# Helpers — mock just enough of SaklasSession for the batch path.
+# Helpers — mock just enough of DrowseSession for the batch path.
 # ---------------------------------------------------------------------------
 
 
@@ -40,7 +40,7 @@ def _make_result(text: str, applied: str | None = None) -> GenerationResult:
     )
 
 
-def _stub_generate_core(session: SaklasSession, *, capture: list[Any]) -> None:
+def _stub_generate_core(session: DrowseSession, *, capture: list[Any]) -> None:
     """Replace ``session._generate_core`` with a stub that records calls.
 
     Returns one ``GenerationResult`` per call carrying the call's index
@@ -71,7 +71,7 @@ class _NoopSteeringContext:
         return None
 
 
-def _install_noop_steering(session: SaklasSession) -> None:
+def _install_noop_steering(session: DrowseSession) -> None:
     session_any = cast(Any, session)
     session_any._profiles = {"a": {}}
     session_any.steering = lambda value: _NoopSteeringContext()
@@ -172,11 +172,11 @@ class _ProbeBatchModel(_BatchModel):
 
 def _fast_batch_session():
     import torch
-    from saklas.core.generation import GenerationConfig, GenerationState
-    from saklas.core.session import CaptureState, GenState, SaklasSession
-    from saklas.core.triggers import TriggerContext
+    from drowse.core.generation import GenerationConfig, GenerationState
+    from drowse.core.session import CaptureState, GenState, DrowseSession
+    from drowse.core.triggers import TriggerContext
 
-    s = SaklasSession.__new__(SaklasSession)
+    s = DrowseSession.__new__(DrowseSession)
     model = _BatchModel()
     s_any = cast(Any, s)
     s_any._model = model
@@ -213,7 +213,7 @@ def _fast_batch_session():
     s._active_gen_reservation = None
     s._last_token_probe_payload = None
     s._capture_state = CaptureState()
-    from saklas.core.hooks import HiddenCapture
+    from drowse.core.hooks import HiddenCapture
     s._capture = HiddenCapture()
     s._compiled_clean_eligible = False
     s._incremental_readings = []
@@ -253,7 +253,7 @@ def _fast_batch_session():
 
 def _probe_fast_batch_session():
     import torch
-    from saklas.core.hooks import HiddenCapture
+    from drowse.core.hooks import HiddenCapture
 
     s, _model = _fast_batch_session()
     s._layers = torch.nn.ModuleList([torch.nn.Identity()])
@@ -266,21 +266,21 @@ def _probe_fast_batch_session():
 
 
 # ---------------------------------------------------------------------------
-# session.generate_batch — pure unit tests against a real SaklasSession
+# session.generate_batch — pure unit tests against a real DrowseSession
 # subclass that overrides _generate_core.
 # ---------------------------------------------------------------------------
 
 
 class TestGenerateBatch:
     def _session(self):
-        # Construct a minimal SaklasSession by bypassing __init__; the
+        # Construct a minimal DrowseSession by bypassing __init__; the
         # batch methods only need ``_generate_core`` to exist.  These tests
         # pin the SERIAL fan-out contract (prompt order, per-row steering /
         # sampling pass-through), so the one-shot fast path is declined
         # outright rather than through some incidental engine attribute.
-        from saklas.core.session import SaklasSession
+        from drowse.core.session import DrowseSession
 
-        s = SaklasSession.__new__(SaklasSession)
+        s = DrowseSession.__new__(DrowseSession)
         s._steering_composer = SteeringComposer(s)
         cast(Any, s)._generate_batch_fast = lambda *_a, **_kw: None
         return s
@@ -384,7 +384,7 @@ class TestGenerateBatch:
         assert model.calls[0]["eos_token_id"] == [42, 98, 99]
 
     def test_greedy_batch_allows_seeded_sampling_config(self) -> None:
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
 
         s, model = _fast_batch_session()
 
@@ -403,7 +403,7 @@ class TestGenerateBatch:
         assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14]]
 
     def test_stochastic_seeded_batch_stays_serial(self) -> None:
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
 
         s, model = _fast_batch_session()
         capture: list[Any] = []
@@ -456,7 +456,7 @@ class TestGenerateBatch:
         assert cast(Any, s._monitor).scored == [2.0, 30.0, 100.0]
 
     def test_probe_batch_fast_path_honors_return_probe_readings_false(self) -> None:
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
 
         s, model = _probe_fast_batch_session()
 
@@ -477,7 +477,7 @@ class TestGenerateBatch:
         assert cast(Any, s._monitor).scored == []
 
     def test_sae_readout_probe_batch_fast_path_scores_per_row_aggregate(self) -> None:
-        from saklas.core.sae import MockSaeBackend
+        from drowse.core.sae import MockSaeBackend
 
         s, model = _probe_fast_batch_session()
         cast(Any, s)._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
@@ -509,7 +509,7 @@ class TestGenerateBatch:
         ]
 
     def test_sae_readout_probe_batch_fast_path_honors_return_probe_readings_false(self) -> None:
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
 
         s, model = _probe_fast_batch_session()
         cast(Any, s)._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
@@ -572,7 +572,7 @@ class TestGenerateBatch:
         ]
 
     def test_lens_readout_probe_batch_fast_path_honors_return_probe_readings_false(self) -> None:
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
 
         s, model = _probe_fast_batch_session()
         s_any = cast(Any, s)
@@ -617,7 +617,7 @@ class TestGenerateBatch:
         assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14], [15]]
 
     def test_deterministic_fan_honors_return_probe_readings_false(self) -> None:
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
 
         s, model = _probe_fast_batch_session()
 
@@ -640,7 +640,7 @@ class TestGenerateBatch:
         assert cast(Any, s._monitor).scored == []
 
     def test_deterministic_fan_with_seed_uses_batched_generation(self) -> None:
-        from saklas.core.sampling import SamplingConfig
+        from drowse.core.sampling import SamplingConfig
 
         s, model = _fast_batch_session()
 
@@ -670,8 +670,8 @@ class TestGenerateBatch:
 
 class TestPrefixCacheEligibility:
     def _session(self):
-        from saklas.core.session import SaklasSession
-        session = SaklasSession.__new__(SaklasSession)
+        from drowse.core.session import DrowseSession
+        session = DrowseSession.__new__(DrowseSession)
         session._steering_composer = SteeringComposer(session)
         session._profiles = {}
         return session
@@ -707,7 +707,7 @@ class TestPrefixCacheEligibility:
         assert s._steering_value_prefill_inactive("0.5 !nope~bad") is False
 
     def test_active_in_prefill_reads_the_live_stack(self) -> None:
-        from saklas.core.triggers import Trigger
+        from drowse.core.triggers import Trigger
 
         s = self._session()
         s._steering_composer._stack = []
@@ -752,7 +752,7 @@ class TestPrefixCacheEligibility:
 
     def test_static_prefix_hit_requires_static_eligibility_and_headroom(self) -> None:
         import torch
-        from saklas.core.session import _PrefixCacheEntry
+        from drowse.core.session import _PrefixCacheEntry
 
         s = self._session()
         cache = object()
@@ -786,8 +786,8 @@ class TestPrefixCacheEligibility:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import torch
-        from saklas.core.generation import GenerationConfig
-        from saklas.core.session import CaptureState, _PrefixCacheEntry
+        from drowse.core.generation import GenerationConfig
+        from drowse.core.session import CaptureState, _PrefixCacheEntry
 
         class _Cache:
             def __init__(self) -> None:
@@ -843,7 +843,7 @@ class TestPrefixCacheEligibility:
             seen.update(kwargs)
             return [42]
 
-        monkeypatch.setattr("saklas.core.session.generate_steered", _fake_generate)
+        monkeypatch.setattr("drowse.core.session.generate_steered", _fake_generate)
 
         out, _elapsed = s._run_generation_loop(
             torch.tensor([[1, 2, 3]], dtype=torch.long),
@@ -870,7 +870,7 @@ class TestPrefixCacheEligibility:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import torch
-        from saklas.core.generation import GenerationConfig
+        from drowse.core.generation import GenerationConfig
 
         s = self._session()
         s._static_cache_active = True
@@ -878,7 +878,7 @@ class TestPrefixCacheEligibility:
         s.config = GenerationConfig(max_new_tokens=4)
         s._steering_composer._stack = []
         s._prefix_cache = None
-        from saklas.core.session import GenState
+        from drowse.core.session import GenState
         s._gen_phase = GenState.IDLE
         s._end_capture = lambda: None
 
@@ -895,7 +895,7 @@ class TestPrefixCacheEligibility:
             return static_cache
 
         monkeypatch.setattr(
-            "saklas.core.static_cache.make_static_cache", _make_static_cache,
+            "drowse.core.static_cache.make_static_cache", _make_static_cache,
         )
 
         class _Model:
@@ -944,10 +944,10 @@ class TestPrefixCacheEligibility:
 
 class TestGenerateSweep:
     def _session(self):
-        from saklas.core.session import SaklasSession
+        from drowse.core.session import DrowseSession
 
-        s = SaklasSession.__new__(SaklasSession)
-        from saklas.core.generation import GenerationConfig
+        s = DrowseSession.__new__(DrowseSession)
+        from drowse.core.generation import GenerationConfig
         s.config = GenerationConfig()
         return s
 
@@ -1094,10 +1094,10 @@ class TestBatchFastSteeringGate:
 
     @staticmethod
     def _gate(value: str | None) -> bool:
-        from saklas.core.session import SaklasSession
-        from saklas.core.steering import Steering
+        from drowse.core.session import DrowseSession
+        from drowse.core.steering import Steering
 
-        return SaklasSession._batch_fast_steering_is_always_on(
+        return DrowseSession._batch_fast_steering_is_always_on(
             Steering.from_value(value),
         )
 
@@ -1128,11 +1128,11 @@ class TestBatchFastSteeringGate:
 
     def test_a_nondefault_steering_level_trigger_disqualifies(self) -> None:
         """Bare floats inherit ``Steering.trigger``, so it counts too."""
-        from saklas.core.session import SaklasSession
-        from saklas.core.steering import Steering
-        from saklas.core.triggers import Trigger
+        from drowse.core.session import DrowseSession
+        from drowse.core.steering import Steering
+        from drowse.core.triggers import Trigger
 
         steering = Steering(
             alphas={"formal.casual": 0.5}, trigger=Trigger.GENERATED_ONLY,
         )
-        assert SaklasSession._batch_fast_steering_is_always_on(steering) is False
+        assert DrowseSession._batch_fast_steering_is_always_on(steering) is False

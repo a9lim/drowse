@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "status": "feasibility-overlay",
+  "hookAbi": "post-block-residual-v4",
+  "structuredHookProfile": "standard-v3",
+  "exactReadoutAbi": "exact-readout-v1",
+  "tvmRepository": "https://github.com/apache/tvm.git",
+  "tvmCommit": "68ba2b31c2a6d202fcd44e5780ef10ce08721dd5",
+  "tvmFfiCommit": "12dbf053b3d9ba4ebd9da3123b1aeca79cf74229",
+  "emsdkCommit": "e10826f9196bb0e704014af2252ef58fb4ba261b",
+  "emccVersion": "3.1.56",
+  "emccRevision": "cf90417346b78455089e64eb909d71d091ecc055",
+  "emccPlatform": "linux/amd64",
+  "llvmVersion": "18.1.8",
+  "llvmArtifacts": [
+    {
+      "platform": "linux/amd64",
+      "archive": "clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz",
+      "sha256": "54ec30358afcc9fb8aa74307db3046f5187f9fb89fb37064cdde906e062ebf36"
+    },
+    {
+      "platform": "linux/arm64",
+      "archive": "clang+llvm-18.1.8-aarch64-linux-gnu.tar.xz",
+      "sha256": "dcaa1bebbfbb86953fdfbdc7f938800229f75ad26c5c9375ef242edad737d999"
+    }
+  ],
+  "overlays": [
+    {
+      "id": "tvm-webgpu-readonly",
+      "upstreamRepository": "https://github.com/apache/tvm.git",
+      "upstreamPullRequest": "https://github.com/apache/tvm/pull/20113",
+      "baseCommit": "68ba2b31c2a6d202fcd44e5780ef10ce08721dd5",
+      "baseTree": "be3cfff2686e6fe08acac33211d031eb154b62b4",
+      "patch": "tvm-webgpu-readonly.patch",
+      "patchBytes": 20558,
+      "patchSha256": "8d68492fa0ae767815d3dfc8588209ffda03e1eb4a448300a61538e4fda593fb",
+      "resultFiles": {
+        "python/tvm/relax/frontend/nn/llm/_decode_kernels.py": "4cfba82db3cd92e0b02081bd9679f24663fdca327de767966ae50c135c92e3ce",
+        "python/tvm/relax/frontend/nn/llm/_kernel_common.py": "f5bc8999ae5a6f06e96da1c8262fedc5ae53230c61439285be0cdb0828a43012",
+        "python/tvm/relax/frontend/nn/llm/_prefill_kernels.py": "cbb41ed61ece7c8741c73dcd3690635c66fd7cdb71a755b78d1b70e0c5ad992e",
+        "src/backend/webgpu/codegen/codegen_webgpu.cc": "753ff21703a741cf7a8bc49678f4737127f04fa1f28f0fef06aefb4859b5d4a7",
+        "src/runtime/vm/paged_kv_cache.cc": "90ec1ed27fa2cc3faf426f60ab46e1b5c6ba352de177d50db168a4357dba3ed2",
+        "tests/python/codegen/test_target_codegen_webgpu.py": "3da351a5fd03a1a0b05ed926581fe3d46e5160c23f926f931b0a8776d3f2e9c9"
+      }
+    },
+    {
+      "id": "mlc-llm-drowse",
+      "upstreamRepository": "https://github.com/mlc-ai/mlc-llm.git",
+      "intendedForkRepository": "https://github.com/a9lim/mlc-llm-polythetic",
+      "baseCommit": "9fa644f54b04983adea4d0168f49fc6af4a893ba",
+      "baseTree": "3ecd325c3ab1f631e4c1390917ae48bbf07bf965",
+      "patch": "mlc-llm-drowse.patch",
+      "patchBytes": 316446,
+      "patchSha256": "0dd13a8be446b1db856ca9723cbfcee7a8d2e689f87335677b7c3d04a0cd3d84",
+      "resultFiles": {
+        "python/mlc_llm/interface/compile.py": "435876d96e9ba6fbc3f02dd6f5ed858df559ebded169ce91c5cdd8151e610d32",
+        "python/mlc_llm/interface/convert_weight.py": "dffc4af8487f54087bc27f9a35f959df318a70c4c33326b65d4a6d9f6479a1b5",
+        "python/mlc_llm/model/drowse_hooks.py": "bc1763ba32ef304b4c45be05bcbd2f2eb1240fc5fd7f95f48e025d96dce76c9e",
+        "python/mlc_llm/model/gemma3/gemma3_model.py": "fd219c4779b1a7497fa533b264d5c77a973c5a1f46f41ed29923c312d6220f18",
+        "python/mlc_llm/model/llama/llama_model.py": "2a34402c81074ce0a773f9a73dc95aea20a7a0533b2561708d32ceeb72aec7dc",
+        "python/mlc_llm/model/qwen3/qwen3_model.py": "0621190a80fc12ec58ca3fd5d439411135815c4f4f6596a5a0d258475b5c7291",
+        "python/mlc_llm/op/moe_misc.py": "4141be404d6d31b1ee152ef495fd5bdfc75b16af968ad01e07c3d1d26637ef92"
+      }
+    },
+    {
+      "id": "web-llm-drowse",
+      "upstreamRepository": "https://github.com/mlc-ai/web-llm.git",
+      "intendedForkRepository": "https://github.com/a9lim/web-llm-polythetic",
+      "baseCommit": "90f67096b68d3b77509c938f2221e4cef03b7d76",
+      "baseTree": "ac223f95dc7ea27acaba299fe6b780ccb5d67b6f",
+      "patch": "web-llm-drowse.patch",
+      "patchBytes": 392927,
+      "patchSha256": "0a80debfe0693955577e1d7f293f4b707f0c0d318c0317f94c087b18cc948668",
+      "resultFiles": {
+        "package-lock.json": "c01a525defae1664dae121e3645b51ac6e9a0ebed13cac5c3a3dd7b7cadf18a3",
+        "package.json": "b1635062bc71a34e6333cccdf84c8b178f0e6870fa09eac4410262e0fbb17e67",
+        "src/cache_util.ts": "22068a3108e0df16d9bd6c1397283cdb0f33aafa5f22eb2c26678cc30342ec08",
+        "src/config.ts": "eb970e2a5c3a5fde7eff65ac4c2d453aa8e832f3d669392ef6a739a3bb79addd",
+        "src/conversation.ts": "2a078e8a777689a8ebb885916d68823e674c4e5c56b0834dfd3be0496e9ff63c",
+        "src/drowse.ts": "24d0e584e18d79eef3104ab63321169f74ea1e2486d4bf8cb142600539e00124",
+        "src/engine.ts": "e2e788270dfd3043cadcc6ebb75c253a5c8fa0577d852d0f7eeccb18bb808815",
+        "src/gpu.ts": "0a8659a2b19f9ecad0ce9d7aeae621ff276190fb895d9cc0e5d8097889f8ca3d",
+        "src/index.ts": "9d8f7765b16b275f03560a17113aafd8cc98e4fa4524d68a666724edecf71385",
+        "src/llm_chat.ts": "f173796266f5a860dc9a7eedea19251ef23f2d3f5b60e251fb86130c66628a12",
+        "src/message.ts": "6e8e949e1313fd782fb72b801409eba0fc19b3b7237fa300cce58ff58c4f032e",
+        "src/openai_api_protocols/chat_completion.ts": "a8f89455d4f4c5c6f022ca3092c19a62f993d1e0e8eb254aa3a508ac939d5743",
+        "src/openai_api_protocols/completion.ts": "4fa1472e257293603d6d639e0ea726dcd4b8afc968240c6d79ebe21bf460d42a",
+        "src/openai_api_protocols/index.ts": "13b993b69d41bdfc8d7118dd2dbc5dd45021b87853cf7fe396000ba9e3c85cbe",
+        "src/types.ts": "6bfbd71fe8015fa26dc3b1f86b0c88a22ae40eae5ac53ef16b832d68d4212c28",
+        "src/utils.ts": "d462c6a68a159c863ce382dd3ea367da649f5801b877265d3080d9436ae8fef4",
+        "src/web_worker.ts": "1f17d1cd3468aa497aa0244f4f4b21080ba5c3fc7a145d00422e1828d704a4bf",
+        "tests/cache_util.test.ts": "7ea1dd54414e9a9b8cff3c82bf3bedcf5d7d4e44bc7f1aae57d54ef2cebf2a94",
+        "tests/conversation.test.ts": "b8f9da1d951f507db7f49596d1d96b9ea6a44a14689015c7234acd60af9114cb",
+        "tests/drowse_pipeline.test.ts": "27177cf79695b54ba59f8398c22f74bc6c5a94f5c7690958710592c24e52d1a0",
+        "tests/drowse.test.ts": "034c5a81ea624df0bd4bd9ee35ffefc05bee9a9818544244cf0890364a1c4e4f",
+        "tests/engine_integration.test.ts": "395859e36419227e1a74835fc4c55d4bb7494a08cab216b3d51754ee13c9867f",
+        "tests/generation_config.test.ts": "82b9d418f2fbb2e33870ba3f9f028b9c5e55d9ad0854afbaf0b744a710494147",
+        "tests/gpu.test.ts": "d6e798cf62547d2835569d9e59636fc578d9a2d43db09e603e26bcd13a783edf",
+        "tests/llm_chat_abi.test.ts": "11e39a16bbd4015f6db94f9499f77ee60f43d90549d5bc548adc72ec4835328b",
+        "tests/llm_chat_pipeline.test.ts": "2c8943d0f48627c76c208c11d9503c902bec47981aa7ac44e5a4acdd0a7295f2",
+        "tests/web_worker_handler.test.ts": "726f53f4e38496c6d00ac5ccca0087d37345f6544f5f038abb073118851d405a"
+      }
+    }
+  ],
+  "baseModels": {
+    "gpt2": {
+      "modelAdapterFiles": {
+        "base_model_adapters.py": "eed323ea949e87c537ca7b1c49c3db2841f26711cadd3921e3d46a5cd45eaca7"
+      },
+      "modelSourceFiles": {
+        "python/mlc_llm/model/gpt2/gpt2_loader.py": "d9e91af06a275b8b4e6b2419e51c9670702fddfb3ad9e3fecdf63901310e4c36",
+        "python/mlc_llm/model/gpt2/gpt2_model.py": "b46e88b1c6eba7a4ad1e971792c19f89c547f98f44ebe761de09e2726929d6c5"
+      }
+    },
+    "gpt_neox": {
+      "modelAdapterFiles": {
+        "base_model_adapters.py": "eed323ea949e87c537ca7b1c49c3db2841f26711cadd3921e3d46a5cd45eaca7"
+      },
+      "modelSourceFiles": {
+        "python/mlc_llm/model/gpt_neox/gpt_neox_loader.py": "0440155050e86cba299b8b6ce18cc016dfcc25e790e3cfdc3b209f86b99cd3c9",
+        "python/mlc_llm/model/gpt_neox/gpt_neox_model.py": "219b09c91012214c58e9e82a273d1ea02521b2111d84db110a3575bcdeb9d7d2"
+      }
+    },
+    "qwen3_5": {
+      "modelAdapterFiles": {
+        "base_model_adapters.py": "eed323ea949e87c537ca7b1c49c3db2841f26711cadd3921e3d46a5cd45eaca7",
+        "qwen35_adapter.py": "02f78f5acc870f27d46efd1dea5551dbddf67cd5e18b7280cb71fb0ef0b77fdf",
+        "hybrid_state_kernels.py": "7075a4b80b11093503ca5048074095eb41c39cade72edf4fa6a0f69b2fdfb8a3"
+      },
+      "modelSourceFiles": {
+        "python/mlc_llm/model/qwen35/qwen35_model.py": "f8cabfa42d659643e6068f1c47160fc8e54269593ca93243a5f75ea7b507f2ac",
+        "python/mlc_llm/model/qwen35/qwen35_loader.py": "67c7d0e9b285438a6d5c92e508346d9916c0c782cf758fb212497679bdbb1dd1"
+      }
+    }
+  }
+}

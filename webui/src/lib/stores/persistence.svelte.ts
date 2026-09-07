@@ -19,10 +19,13 @@
 import { loomTree } from "./loom.svelte";
 import { highlightState } from "./probes.svelte";
 import { sessionState } from "./session.svelte";
+import { migrateLegacyStorageItem, removeLegacyStorageItem } from "../../hosted/runtime/brandMigration";
+import { registerDrowseLocalDataClearer } from "../runtime/localData";
+import { PROBABILITY_TARGET, SURPRISE_TARGET } from "../tokens";
 
 const PERSIST_VERSION = 4;
-const PERSIST_KEY_PREFIX = "saklas.chat.v" + PERSIST_VERSION + ".";
-const LEGACY_TREE_PERSIST_KEY_PREFIX = "saklas.chat.v3.";
+const PERSIST_KEY_PREFIX = "drowse.chat.v" + PERSIST_VERSION + ".";
+const LEGACY_TREE_PERSIST_KEY_PREFIX = "drowse.chat.v3.";
 
 function persistKey(): string | null {
   const id = sessionState.info?.model_id;
@@ -55,7 +58,7 @@ function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
 
 export function safeLocalStorageGet(key: string): string | null {
   try {
-    return globalThis.localStorage?.getItem(key) ?? null;
+    return globalThis.localStorage ? migrateLegacyStorageItem(globalThis.localStorage, key) : null;
   } catch {
     return null;
   }
@@ -72,7 +75,7 @@ export function safeLocalStorageSet(key: string, value: string): void {
 
 function safeLocalStorageRemove(key: string): void {
   try {
-    globalThis.localStorage?.removeItem(key);
+    if (globalThis.localStorage) removeLegacyStorageItem(globalThis.localStorage, key);
   } catch {
     /* ignore */
   }
@@ -96,9 +99,15 @@ export function loadPersistedPreferences(): void {
     }
     if (parsed.model_id !== sessionState.info?.model_id) return;
     loomTree.pendingNodeId = null;
-    highlightState.target = parsed.highlight.target;
-    highlightState.compareTarget = parsed.highlight.compareTarget;
-    highlightState.compareTwo = parsed.highlight.compareTwo;
+    const target = parsed.highlight.target === PROBABILITY_TARGET
+      ? SURPRISE_TARGET
+      : parsed.highlight.target;
+    const compareTarget = parsed.highlight.compareTarget === PROBABILITY_TARGET
+      ? SURPRISE_TARGET
+      : parsed.highlight.compareTarget;
+    highlightState.target = target;
+    highlightState.compareTarget = compareTarget === target ? null : compareTarget;
+    highlightState.compareTwo = parsed.highlight.compareTwo && highlightState.compareTarget !== null;
   } catch {
     safeLocalStorageRemove(key);
   }
@@ -125,11 +134,10 @@ function schedulePersist(): void {
   }, 250);
 }
 
-/** Wire a $effect.root that watches the highlight slice and
- * debounces a save to localStorage.  Called from ``bootstrap`` after
- * the model id is known so the storage key resolves. */
-export function attachPersistence(): void {
-  $effect.root(() => {
+/** Watch preferences while the workbench is mounted; return its cleanup. */
+export function attachPersistence(): () => void {
+  _disposePersistence?.();
+  const disposeRoot = $effect.root(() => {
     $effect(() => {
       // Touch every reactive field we want to persist so the effect
       // re-runs whenever any of them change.
@@ -146,6 +154,23 @@ export function attachPersistence(): void {
       schedulePersist();
     });
   });
+  const dispose = () => {
+    if (_disposePersistence !== dispose) return;
+    _disposePersistence = null;
+    disposeRoot();
+    if (_persistTimer !== null) clearTimeout(_persistTimer);
+    _persistTimer = null;
+    _persistArmed = false;
+  };
+  _disposePersistence = dispose;
+  return dispose;
 }
 
 let _persistArmed = false;
+let _disposePersistence: (() => void) | null = null;
+
+registerDrowseLocalDataClearer(() => {
+  if (_persistTimer !== null) clearTimeout(_persistTimer);
+  _persistTimer = null;
+  _persistArmed = false;
+});

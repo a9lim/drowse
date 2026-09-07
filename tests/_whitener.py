@@ -18,7 +18,7 @@ from collections.abc import Iterable
 
 import torch
 
-from saklas.core.mahalanobis import LayerWhitener
+from drowse.core.mahalanobis import LayerWhitener
 
 
 def synthetic_means(

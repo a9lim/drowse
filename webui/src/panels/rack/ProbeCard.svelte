@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FluentIcon from "../../lib/ui/FluentIcon.svelte";
+  import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // Unified probe card — one row for every probe shape.  Replaces the
   // SubspaceProbeCard / ManifoldProbeCard split: the store already
   // normalises ``current`` / ``sparkline`` / ``perLayer`` per family
@@ -36,6 +38,7 @@
     setHighlightTarget,
   } from "../../lib/stores.svelte";
   import { pushToast } from "../../lib/stores/toasts.svelte";
+  import { userFacingError } from "../../lib/runtime/userFacingError";
   import { polesOf } from "../../lib/concepts";
   import RackCard from "./RackCard.svelte";
   import ProbePinButton from "./ProbePinButton.svelte";
@@ -71,12 +74,12 @@
   /** Subspaceness — share of the centered activation living in this probe's
    *  subspace, [0,1].  Backs the white top-row bar. */
   const fraction = $derived(
-    latest?.fraction ?? (!affine ? entry.savedAggregate ?? 0 : 0),
+    latest?.fraction ?? entry.savedFraction ?? null,
   );
   /** Domain-frame coordinates, one per intrinsic dimension — each gets its
    *  own signed bar below the subspaceness row. */
   const coordVec = $derived(
-    latest?.coords ?? (affine && entry.savedAggregate !== null
+    latest?.coords ?? entry.savedCoordinates ?? (affine && entry.savedAggregate !== null
       ? [entry.savedAggregate]
       : []),
   );
@@ -150,7 +153,7 @@
   function cellTooltip(layer: string): string {
     const v = entry.perLayer?.[layer];
     if (typeof v !== "number" || !Number.isFinite(v)) {
-      return `L${layer} · —`;
+      return `L${layer} · no reading`;
     }
     // Flat per-layer is signed (axis-0); curved is a [0,1] fraction.
     const sign = affine && v >= 0 ? "+" : "";
@@ -169,10 +172,7 @@
     return Number.isFinite(v) ? v.toFixed(2) : "0.00";
   }
   function fmtDistance(v: number | null): string {
-    return v !== null && Number.isFinite(v) ? v.toFixed(2) : "—";
-  }
-  function fmtCoord(v: number): string {
-    return Number.isFinite(v) ? v.toFixed(2) : "0.00";
+    return v !== null && Number.isFinite(v) ? v.toFixed(2) : "-";
   }
 
   // ---------- highlight select / detach ----------
@@ -196,8 +196,7 @@
       await detachProbe(name);
       pushToast(`detached probe ${name}`, { kind: "info" });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      pushToast(`detach ${name} failed — ${msg}`, {
+      pushToast(userFacingError(e, `Unable to detach ${name}. Try again.`), {
         kind: "error",
         ttlMs: null,
       });
@@ -221,7 +220,7 @@
       <span
         class="com"
         title="depth ± spread"
-      >@{fmtCoord(depthCom)}{depthSpread !== null ? ` ±${fmtCoord(depthSpread)}` : ""}</span>
+      >@<RollingNumber value={Number.isFinite(depthCom) ? depthCom : 0} digits={2} />{#if depthSpread !== null} ±<RollingNumber value={Number.isFinite(depthSpread) ? depthSpread : 0} digits={2} />{/if}</span>
     {/if}
 
     <span class="spacer"></span>
@@ -232,7 +231,7 @@
       aria-label="Inspect probe {name}"
       title="inspect"
       onclick={onInspect}
-    >ⓘ</button>
+    ><FluentIcon name="info" /></button>
 
     <button
       type="button"
@@ -263,7 +262,7 @@
          much of the centered activation lives in this probe's subspace" —
          the scale runs higher for higher-rank fits, which is expected. -->
     <ProbeReadingRow
-      ariaLabel={`Subspace fraction ${fmtFraction(fraction)}${topNearest ? `, nearest ${nearestLabel}` : ""}`}
+      ariaLabel={fraction === null ? "Subspace fraction unavailable" : `Subspace fraction ${fmtFraction(fraction)}${topNearest ? `, nearest ${nearestLabel}` : ""}`}
     >
       {#snippet left()}
         <span
@@ -272,7 +271,9 @@
         >subspace</span>
       {/snippet}
       {#snippet bar()}
-        <Bar value={fraction} max={1} width={160} height={8} color="var(--fg)" />
+        {#if fraction !== null}
+          <Bar percentage value={fraction} max={1} width={160} height={8} color="var(--fg)" />
+        {/if}
       {/snippet}
       {#snippet middle()}
         <span
@@ -283,13 +284,13 @@
         >
           {#if topNearest}
             <span class="nearest-label">{nearestLabel}</span>
-            <span class="nearest-dist">d={fmtDistance(nearestDistance)}</span>
+            <span class="nearest-dist">d={#if nearestDistance !== null && Number.isFinite(nearestDistance)}<RollingNumber value={nearestDistance} digits={2} />{:else}-{/if}</span>
           {:else}
-            <span class="nearest-empty">—</span>
+            <span class="nearest-empty">-</span>
           {/if}
         </span>
       {/snippet}
-      {#snippet right()}<span class="value">{fmtFraction(fraction)}</span>{/snippet}
+      {#snippet right()}<span class="value">{#if fraction !== null}<RollingNumber value={fraction} digits={2} />{:else}-{/if}</span>{/snippet}
     </ProbeReadingRow>
 
     <!-- One signed bar per coordinate axis.  A rank-1 concept axis carries
@@ -320,7 +321,7 @@
         {/snippet}
         {#snippet right()}
           <span class="value" class:pos={ax.value > 0} class:neg={ax.value < 0}>
-            {ax.value >= 0 ? "+" : ""}{ax.value.toFixed(2)}
+            <RollingNumber value={ax.value} digits={2} signed />
           </span>
         {/snippet}
       </ProbeReadingRow>
@@ -331,7 +332,7 @@
            CoM moved to the statline, right of the probe name). -->
       <div class="meta">
         <span class="meta-item" title="residual">
-          residual {fmtCoord(residual)}
+          residual <RollingNumber value={Number.isFinite(residual) ? residual : 0} digits={2} />
         </span>
       </div>
     {/if}
@@ -341,7 +342,7 @@
       cells={layerCells}
       scale={axisScale}
       ariaLabel={`Per-layer readings for ${name}`}
-      emptyMessage={entry.savedAggregate !== null
+      emptyMessage={entry.savedAggregate !== null || (entry.savedCoordinates?.length ?? 0) > 0
         ? "saved aggregate; per-layer detail was not retained"
         : "no data yet, generate a token first"}
     />
@@ -425,7 +426,7 @@
     color: var(--fg-muted);
     font-family: var(--font-mono);
     font-size: var(--text-sm);
-    text-align: right;
+    text-align: end;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -442,11 +443,11 @@
   }
   .pole.neg {
     color: var(--fg-muted);
-    text-align: right;
+    text-align: end;
   }
   .pole.pos {
     color: var(--fg-strong);
-    text-align: left;
+    text-align: start;
   }
   .nearest {
     display: inline-flex;
@@ -455,7 +456,7 @@
     white-space: nowrap;
     font-size: var(--text-sm);
     color: var(--fg-strong);
-    text-align: left;
+    text-align: start;
     min-width: 0;
   }
   .nearest-label {
@@ -479,7 +480,7 @@
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
     min-width: 3.5em;
-    text-align: right;
+    text-align: end;
     flex: 0 0 auto;
   }
   .value.pos {

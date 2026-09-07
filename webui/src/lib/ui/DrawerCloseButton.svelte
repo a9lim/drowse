@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FluentIcon from "./FluentIcon.svelte";
+
   interface Props {
     onclick: (ev: MouseEvent) => void;
     label?: string;
@@ -7,7 +9,9 @@
   let { onclick, label = "Close drawer" }: Props = $props();
 </script>
 
-<button type="button" class="drawer-close" aria-label={label} {onclick}>✕</button>
+<button type="button" class="drawer-close" aria-label={label} {onclick}>
+  <FluentIcon name="dismiss" />
+</button>
 
 <style>
   .drawer-close {
@@ -18,23 +22,32 @@
     height: var(--control-compact);
     padding: 0;
     border: 1px solid transparent;
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius);
     background: var(--glass);
     color: var(--fg-muted);
+    cursor: pointer;
     font-size: var(--text-sm);
     line-height: 1;
     transition:
       color var(--dur-fast) var(--ease-out),
       background var(--dur-fast) var(--ease-out),
-      transform var(--dur-fast) var(--ease-out);
+      box-shadow var(--dur-fast) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
+    box-shadow: var(--shadow-control);
   }
 
   .drawer-close:hover {
     background: var(--glass-strong);
     color: var(--fg);
+    box-shadow: var(--shadow-control-hover);
   }
 
   .drawer-close:active {
-    transform: scale(0.94);
+    scale: var(--press-scale);
+  }
+
+  :global(.drawer-close svg) {
+    width: 1rem;
+    height: 1rem;
   }
 </style>

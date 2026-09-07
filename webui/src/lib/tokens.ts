@@ -17,6 +17,14 @@ export const HIGHLIGHT_SAT = 0.5;
  *  any real probe name (probes are slugged ``[a-z0-9._-]``); ``__``-bracketed
  *  reserves the namespace without colliding. */
 export const SURPRISE_TARGET = "__surprise__";
+export const PROBABILITY_TARGET = "__probability__";
+export const ENTROPY_TARGET = "__entropy__";
+
+export function isBuiltInHighlightTarget(target: string | null): boolean {
+  return target === SURPRISE_TARGET ||
+    target === PROBABILITY_TARGET ||
+    target === ENTROPY_TARGET;
+}
 
 /** Split a highlight target into its base probe name and coordinate axis.
  *  ``"personas[3]"`` → ``{base: "personas", axis: 3}``; a bare name → axis 0.
@@ -71,11 +79,26 @@ export function surpriseScore(
   return tint * HIGHLIGHT_SAT;
 }
 
+/** High-probability counterpart to ``surpriseScore``. */
+export function probabilityScore(
+  logprob: number | null | undefined,
+): number | undefined {
+  if (logprob == null || !Number.isFinite(logprob)) return undefined;
+  return Math.exp(Math.min(0, logprob)) * HIGHLIGHT_SAT;
+}
+
+/** Normalize sampler entropy for a color ramp while preserving the raw nats
+ * value for tooltips. ``1 - exp(-H)`` is monotonic and bounded. */
+export function entropyScore(
+  entropy: number | null | undefined,
+): number | undefined {
+  if (entropy == null || !Number.isFinite(entropy) || entropy < 0) return undefined;
+  return (1 - Math.exp(-entropy)) * HIGHLIGHT_SAT;
+}
+
 /** Which constant-hue ramp a tint reads in.  ``signed`` is the probe
- *  ramp (green +pole ↔ red −pole); ``surprise`` is the logit-space blue
- *  — surprise is a vocabulary-distribution quantity, so it shares the
- *  J-lens hue family and is unmistakably distinct from any probe
- *  reading. */
+ *  ramp (green +pole ↔ red −pole); ``surprise`` shares the chat accent
+ *  with the J-lens vocabulary-distribution readouts. */
 export type TintHue = "signed" | "surprise" | "sae";
 
 /* Ramp poles (tokens.css: --highlight-pos / --highlight-neg /
@@ -104,7 +127,7 @@ const TINT_MAX_ALPHA = 0.62;
  * cutoff rather than dividing by zero.
  *
  * ``hue`` picks the ramp: ``signed`` (default — green/red poles),
- * ``surprise`` (unsigned logit/J-lens blue), or ``sae`` (unsigned gold).
+ * ``surprise`` (unsigned logit/J-lens accent), or ``sae`` (unsigned gold).
  * J-LENS and metadata-backed SAE probes pass scale=1; metadata-less SAE
  * probes pass their shared raw-activation denominator.  Either way the
  * readout strength saturates on the same unit interval as surprise. */
@@ -131,7 +154,12 @@ export function scoreToRgb(
 
 /** Color family for a selected transcript-highlight channel. */
 export function highlightHue(target: string | null): TintHue {
-  if (target === SURPRISE_TARGET || target?.startsWith("jlens/")) {
+  if (
+    target === SURPRISE_TARGET ||
+    target === PROBABILITY_TARGET ||
+    target === ENTROPY_TARGET ||
+    target?.startsWith("jlens/")
+  ) {
     return "surprise";
   }
   if (target?.startsWith("sae/")) return "sae";

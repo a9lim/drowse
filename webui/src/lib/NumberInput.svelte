@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FluentIcon from "./ui/FluentIcon.svelte";
   // Themed numeric input — strips the OS spinner buttons, exposes a
   // hover-revealed ▴/▾ pair on the right edge.  Keyboard ↑/↓ still
   // works natively because the underlying ``<input type="number">`` is
@@ -18,7 +19,9 @@
     step?: number;
     placeholder?: string;
     disabled?: boolean;
+    invalid?: boolean;
     ariaLabel?: string;
+    ariaDescribedby?: string;
     title?: string;
     /** Allow a blank state — emits ``null`` on empty.  Default false. */
     allowEmpty?: boolean;
@@ -42,7 +45,9 @@
     step = 1,
     placeholder,
     disabled = false,
+    invalid = false,
     ariaLabel,
+    ariaDescribedby,
     title,
     allowEmpty = false,
     oninput,
@@ -144,7 +149,7 @@
   }
 </script>
 
-<span class="sk-number" class:is-disabled={disabled}>
+<span class="sk-number" class:is-disabled={disabled} class:is-invalid={invalid}>
   <input
     bind:this={inputEl}
     type="number"
@@ -157,6 +162,8 @@
     {disabled}
     {title}
     aria-label={ariaLabel}
+    aria-invalid={invalid}
+    aria-describedby={ariaDescribedby}
     oninput={onInput}
     onchange={onChange}
     onkeydown={handleKeydown}
@@ -168,13 +175,13 @@
         class="sk-number-step"
         tabindex="-1"
         onclick={() => nudge(1)}
-      >▴</button>
+      ><FluentIcon name="up" size={12} /></button>
       <button
         type="button"
         class="sk-number-step"
         tabindex="-1"
         onclick={() => nudge(-1)}
-      >▾</button>
+      ><FluentIcon name="down" size={12} /></button>
     </span>
   {/if}
 </span>
@@ -185,26 +192,32 @@
     display: inline-flex;
     align-items: stretch;
     width: 100%;
+    border-radius: var(--radius);
   }
 
   /* Strip the native spinner across browsers. */
   .sk-number-input {
     flex: 1 1 0;
     min-width: 0;
+    min-height: var(--control-field);
     width: 100%;
     padding: var(--space-2) var(--space-3);
-    padding-right: var(--space-6); /* room for the steppers */
+    padding-inline-end: var(--space-6); /* room for the steppers */
     /* Borderless input: recessed well fill; ring on focus only. */
-    background: var(--input-well);
+    background: var(--control-sheen), var(--input-well);
+    box-shadow: var(--shadow-well);
     color: var(--fg);
     border: 1px solid transparent;
-    border-radius: var(--radius-sm);
+    border-radius: inherit;
     font: inherit;
     font-family: var(--font-mono);
     font-size: var(--text-sm);
     -moz-appearance: textfield;
     appearance: textfield;
-    transition: border-color var(--dur-fast) var(--ease-out);
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out);
   }
   .sk-number-input::-webkit-outer-spin-button,
   .sk-number-input::-webkit-inner-spin-button {
@@ -215,6 +228,13 @@
     outline: 2px solid var(--focus-ring);
     outline-offset: 1px;
     border-color: var(--accent-strong);
+    box-shadow: var(--shadow-control-hover);
+  }
+  .sk-number:hover .sk-number-input:not(:disabled) {
+    background: var(--control-sheen), color-mix(in srgb, var(--surface-hi) 72%, var(--input-well));
+  }
+  .sk-number.is-invalid .sk-number-input {
+    border-color: var(--accent-red);
   }
   .sk-number-input:disabled {
     opacity: 0.5;
@@ -225,11 +245,13 @@
     position: absolute;
     top: 1px;
     bottom: 1px;
-    right: 1px;
+    inset-inline-end: 1px;
     display: flex;
     flex-direction: column;
     width: 14px;
-    border-left: 1px solid transparent;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    overflow: hidden;
+    border-inline-start: 1px solid transparent;
     opacity: 0;
     transition: opacity var(--dur-fast) var(--ease-out);
     pointer-events: none;
@@ -246,7 +268,7 @@
     background: transparent;
     color: var(--fg-muted);
     border: 0;
-    font-size: 8px;
+    font-size: var(--text-glyph-xs);
     line-height: 1;
     cursor: pointer;
     transition: background var(--dur-fast) var(--ease-out),
@@ -262,5 +284,12 @@
 
   .sk-number.is-disabled {
     opacity: 0.6;
+  }
+
+  @media (max-width: 720px) {
+    .sk-number-input {
+      padding-inline-end: var(--space-3);
+    }
+    .sk-number-steppers { display: none; }
   }
 </style>

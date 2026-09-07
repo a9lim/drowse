@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:drowse:schema:browser-distribution-lock-v1",
+  "title": "Drowse browser distribution lock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "status",
+    "catalogUrl",
+    "signatureUrl",
+    "minimumAcceptedSequence",
+    "publicKeys",
+    "allowedCatalogRedirectOrigins",
+    "allowedArtifactRedirectOrigins"
+  ],
+  "properties": {
+    "$schema": { "const": "./distribution-lock.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "status": { "enum": ["feasibility-required", "verified"] },
+    "catalogUrl": { "type": "string", "format": "uri" },
+    "signatureUrl": { "type": "string", "format": "uri" },
+    "minimumAcceptedSequence": { "type": "integer", "minimum": 1 },
+    "publicKeys": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["keyId", "ed25519PublicKeyBase64"],
+        "properties": {
+          "keyId": { "type": "string", "minLength": 1 },
+          "ed25519PublicKeyBase64": { "type": "string", "minLength": 43 }
+        }
+      }
+    },
+    "allowedCatalogRedirectOrigins": {
+      "type": "array",
+      "items": { "type": "string", "format": "uri" },
+      "uniqueItems": true
+    },
+    "allowedArtifactRedirectOrigins": {
+      "type": "array",
+      "items": { "type": "string", "format": "uri" },
+      "uniqueItems": true
+    }
+  }
+}

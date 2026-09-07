@@ -44,7 +44,9 @@
     background: var(--glass);
     border-radius: var(--radius-pill);
     padding: var(--space-1) var(--space-3);
-    white-space: nowrap;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
   }
   .soft,
   .value {

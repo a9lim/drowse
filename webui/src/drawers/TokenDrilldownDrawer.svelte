@@ -1,4 +1,9 @@
 <script lang="ts">
+  import FluentIcon from "../lib/ui/FluentIcon.svelte";
+  import SidebarIcon from "../lib/ui/SidebarIcon.svelte";
+  import { dockTokenDetails, hideTokenDetails, undockTokenDetails } from "../lib/stores/drawers.svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { fly } from "svelte/transition";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Per-token drilldown drawer — opens when a chat / raw-buffer token is
   // clicked.
@@ -9,8 +14,8 @@
   // identity header (token text + id / raw / logprob chips), the context
   // ribbon, then a per-tab InstrumentHeader (provenance · source ·
   // steering · apply-recipe toggle) over the body.  The selected tab is
-  // STICKY for the page session (drilldown.svelte.ts); j-lens is the
-  // default.
+  // STICKY while available (drilldown.svelte.ts); otherwise opening the
+  // drawer selects a captured or replayable view.
   //
   // Navigation is a conversation-walking cursor (drawers/token/cursor.ts):
   // ←/→ step tokens and ROLL ACROSS segment + turn boundaries (thinking →
@@ -21,10 +26,10 @@
   // tokenIdx, isThinking? }) and index chatLog.turns.
 
   import {
-    drawerState,
     closeDrawer,
     chatLog,
     loomTree,
+    loomUiState,
     samplingState,
     sessionState,
     effectiveRawMode,
@@ -33,6 +38,9 @@
     saeSourceState,
     instrumentFamily,
     saeLoaded,
+    genStatus,
+    sendFork,
+    sendTextFork,
   } from "../lib/stores.svelte";
   import type {
     ChatTurn,
@@ -55,13 +63,19 @@
     ReplayReadout,
     type GeometryTokenReadout,
   } from "./token/readout.svelte";
-  import { drilldownUi, type DrilldownTab } from "./token/drilldown.svelte";
+  import { availableDrilldownTab, drilldownUi, type DrilldownTab } from "./token/drilldown.svelte";
   import TokenRibbon from "./token/TokenRibbon.svelte";
   import GeometryTab from "./token/GeometryTab.svelte";
   import LogitsTab from "./token/LogitsTab.svelte";
   import SaeTab from "./token/SaeTab.svelte";
   import LensTab from "./token/LensTab.svelte";
   import { resolveReadoutTopK } from "../lib/readouts";
+  import { selectionIn } from "../lib/motion";
+  import { userFacingError } from "../lib/runtime/userFacingError";
+  import {
+    currentCatalogInstrumentAvailability,
+    type CatalogInstrumentAvailability,
+  } from "../lib/runtime/instrumentAvailability";
 
   interface DrawerParams {
     turnIdx: number;
@@ -69,16 +83,26 @@
     /** When true the click came from the thinking-collapsible body, so
      * the anchor segment is ``turn.thinkingTokens``. */
     isThinking?: boolean;
+    /** Loom entry points prioritize replacement over the sticky tab. */
+    initialTab?: DrilldownTab;
   }
 
   // ---- params → anchor cursor -------------------------------------------
 
-  // Drawer host forwards { params } — but we read off the store via
-  // $derived below since drawerState.params is the source of truth.
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => { void _drawerProps.params; });
+  let { params: inputParams, docked = false, active = true }: { params?: unknown; docked?: boolean; active?: boolean } = $props();
+  let inspectorEl: HTMLElement | null = $state(null);
+  const params = $derived(inputParams as DrawerParams | null);
 
-  const params = $derived(drawerState.params as DrawerParams | null);
+  function closeDetails(): void {
+    if (docked) hideTokenDetails();
+    else closeDrawer();
+  }
+
+  function toggleDock(): void {
+    const position = effCursor ? { turnIdx: effCursor.turnIdx, tokenIdx: effCursor.tokenIdx, isThinking: effCursor.seg === "thinking" } : params;
+    if (docked) undockTokenDetails(position);
+    else dockTokenDetails(position);
+  }
 
   /** The position the user actually CLICKED — the drawer's anchor.  A
    *  fresh click (params object identity changes) snaps the cursor back
@@ -185,6 +209,93 @@
   const hasReplayContext = $derived(
     loomNodeId != null && token?.rawIndex != null,
   );
+  const canContinueFromToken = $derived(
+    branch === "primary" &&
+      loomNodeId != null &&
+      token?.rawIndex != null &&
+      token?.tokenId != null &&
+      !genStatus.active,
+  );
+  const canReplaceToken = $derived(
+    branch === "primary" &&
+      loomNodeId != null &&
+      token?.rawIndex != null &&
+      !genStatus.active,
+  );
+  let continuingFromToken = $state(false);
+  let continuationError = $state<string | null>(null);
+  let replacementOpen = $state(false);
+  let replacementText = $state("");
+  let replacingToken = $state(false);
+  let replacementInput = $state<HTMLInputElement | null>(null);
+
+  $effect(() => {
+    void loomNodeId;
+    void token?.rawIndex;
+    continuationError = null;
+    replacementOpen = false;
+    replacementText = "";
+  });
+
+  async function showReplacement(): Promise<void> {
+    if (!canReplaceToken || !token) return;
+    replacementText = token.text;
+    replacementOpen = true;
+    continuationError = null;
+    await tick();
+    replacementInput?.focus();
+    const firstContent = replacementText.search(/\S/);
+    const lastContent = replacementText.trimEnd().length;
+    replacementInput?.setSelectionRange(
+      firstContent >= 0 ? firstContent : 0,
+      lastContent > 0 ? lastContent : replacementText.length,
+    );
+  }
+
+  async function replaceToken(): Promise<void> {
+    if (!canReplaceToken || !loomNodeId || token?.rawIndex == null) return;
+    if (replacementText.length === 0) {
+      continuationError = "Enter replacement text.";
+      replacementInput?.focus();
+      return;
+    }
+    continuationError = null;
+    replacingToken = true;
+    try {
+      await sendTextFork(loomNodeId, token.rawIndex, replacementText);
+      if (!docked) closeDrawer();
+      loomUiState.view = "map";
+      window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: "branches" }));
+    } catch (error) {
+      continuationError = userFacingError(
+        error,
+        "Unable to replace this token and start a new branch.",
+      );
+    } finally {
+      replacingToken = false;
+    }
+  }
+
+  async function continueFromToken(): Promise<void> {
+    if (!canContinueFromToken || !loomNodeId || token?.rawIndex == null || token.tokenId == null) {
+      return;
+    }
+    continuationError = null;
+    continuingFromToken = true;
+    try {
+      await sendFork(loomNodeId, token.rawIndex, token.tokenId, true);
+      if (!docked) closeDrawer();
+      loomUiState.view = "map";
+      window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: "branches" }));
+    } catch (error) {
+      continuationError = userFacingError(
+        error,
+        "Unable to continue this branch from the selected token.",
+      );
+    } finally {
+      continuingFromToken = false;
+    }
+  }
 
   /** The durable generation record behind the inspected token. The
    *  detail view keeps this recipe beside the token rather than making
@@ -197,7 +308,7 @@
     loomNode?.recipe?.steering ?? inspected?.appliedSteering ?? null,
   );
   function fmtSetting(value: number | null | undefined): string {
-    if (value == null || !Number.isFinite(value)) return "—";
+    if (value == null || !Number.isFinite(value)) return "-";
     return Number.isInteger(value) ? String(value) : value.toFixed(2);
   }
 
@@ -206,17 +317,17 @@
     const recipe = loomNode?.recipe;
     if (!sampling && !recipe) return [];
     const chips = [
-      `T ${fmtSetting(sampling?.temperature)}`,
-      `top-p ${fmtSetting(sampling?.top_p)}`,
-      `top-k ${fmtSetting(sampling?.top_k)}`,
-      `max ${fmtSetting(sampling?.max_tokens)}`,
+      `Temperature ${fmtSetting(sampling?.temperature)}`,
+      `Top P ${fmtSetting(sampling?.top_p)}`,
+      `Top K ${fmtSetting(sampling?.top_k)}`,
+      `Max tokens ${fmtSetting(sampling?.max_tokens)}`,
     ];
     const seed = recipe?.seed ?? sampling?.seed;
-    if (seed != null) chips.push(`seed ${seed}`);
-    if (sampling?.presence_penalty) chips.push(`presence ${fmtSetting(sampling.presence_penalty)}`);
-    if (sampling?.frequency_penalty) chips.push(`frequency ${fmtSetting(sampling.frequency_penalty)}`);
-    if (sampling?.return_top_k != null) chips.push(`alts ${sampling.return_top_k}`);
-    if (recipe?.thinking != null) chips.push(recipe.thinking ? "thinking on" : "thinking off");
+    if (seed != null) chips.push(`Seed ${seed}`);
+    if (sampling?.presence_penalty) chips.push(`Presence penalty ${fmtSetting(sampling.presence_penalty)}`);
+    if (sampling?.frequency_penalty) chips.push(`Frequency penalty ${fmtSetting(sampling.frequency_penalty)}`);
+    if (sampling?.return_top_k != null) chips.push(`Return top K ${sampling.return_top_k}`);
+    if (recipe?.thinking != null) chips.push(recipe.thinking ? "Thinking on" : "Thinking off");
     if ((recipe?.probes.length ?? 0) > 0) chips.push(`${recipe!.probes.length} recipe probes`);
     return chips;
   });
@@ -285,9 +396,11 @@
   }
 
   function onKeydown(ev: KeyboardEvent): void {
+    if (ev.defaultPrevented || !active) return;
+    if (docked && !inspectorEl?.contains(ev.target as Node)) return;
     if (ev.key === "Escape") {
       ev.preventDefault();
-      closeDrawer();
+      if (!docked) closeDrawer();
       return;
     }
     // Never steal keys from a focusable field or the layer-strip
@@ -299,7 +412,7 @@
         t.tagName === "TEXTAREA" ||
         t.tagName === "SELECT" ||
         t.isContentEditable ||
-        t.closest('[role="slider"]'))
+        t.closest('[role="slider"], [role="listbox"]'))
     ) {
       return;
     }
@@ -343,7 +456,7 @@
   });
 
   function fmtP(p: number): string {
-    if (!Number.isFinite(p)) return "—";
+    if (!Number.isFinite(p)) return "-";
     if (p >= 0.001) return p.toFixed(3);
     return p.toExponential(1);
   }
@@ -398,6 +511,31 @@
 
   const jlensFitted = $derived(sessionState.info?.jlens_fitted === true);
   const saeResident = $derived(saeLoaded());
+  let saeAvailability = $state<CatalogInstrumentAvailability>("unknown");
+  onMount(() => {
+    let mounted = true;
+    void currentCatalogInstrumentAvailability("sae").then((availability) => {
+      if (mounted) saeAvailability = availability;
+    });
+    return () => {
+      mounted = false;
+    };
+  });
+  const lensTokenReplayAvailable = $derived(
+    instrumentFamily("lens")?.capabilities.token_readout === true,
+  );
+  const saeTokenReplayAvailable = $derived(
+    instrumentFamily("sae")?.capabilities.token_readout === true,
+  );
+  const geometryTokenReplayAvailable = $derived(
+    instrumentFamily("geometry")?.capabilities.token_readout === true,
+  );
+  const lensReplayUnavailableReason =
+    "J-lens token replay is unavailable in this runtime. J-lens data captured during generation can still be inspected.";
+  const saeReplayUnavailableReason =
+    "SAE token replay is unavailable in this runtime. Sparse-feature data captured during generation can still be inspected.";
+  const geometryReplayUnavailableReason =
+    "Geometry token replay is unavailable in this runtime. Geometry captured during generation can still be inspected.";
 
   // Share the logit-alternative width. Zero means the ordinary logit
   // capture is off, so retain the canonical eight-wide read-side view.
@@ -406,6 +544,31 @@
   const lensReadout = new ReplayReadout<LensTokenReadoutJSON>();
   const saeReadout = new ReplayReadout<SaeTokenReadoutJSON>();
   const geometryReadout = new ReplayReadout<GeometryTokenReadout>();
+
+  const bodyStateKey = $derived.by(() => {
+    const tab = drilldownUi.tab;
+    if (!token || !effCursor) return `${tab}:missing`;
+    if (tab === "logits") return `${tab}:ready`;
+    const readout = tab === "geometry"
+      ? geometryReadout
+      : tab === "sae"
+        ? saeReadout
+        : lensReadout;
+    const state = readout.loading
+      ? "loading"
+      : readout.error
+        ? "error"
+        : readout.data
+          ? "ready"
+          : "empty";
+    return `${tab}:${state}`;
+  });
+
+  onDestroy(() => {
+    lensReadout.dispose();
+    saeReadout.dispose();
+    geometryReadout.dispose();
+  });
   let lensSteered = $state(true);
   let saeSteered = $state(true);
   let geometrySteered = $state(true);
@@ -464,10 +627,25 @@
     };
   });
 
+  let selectionAnchor = $state<DrawerParams | null>(null);
   $effect(() => {
-    if (drilldownUi.tab !== "lens") return;
+    if (!active || !params || !token || !sessionState.info || selectionAnchor === params) return;
+    drilldownUi.tab = availableDrilldownTab(
+      params.initialTab ?? untrack(() => drilldownUi.tab),
+      {
+        lens: capturedLensData !== null || (hasReplayContext && jlensFitted && lensTokenReplayAvailable),
+        sae: capturedSaeData !== null || (hasReplayContext && saeResident && saeTokenReplayAvailable),
+        geometry: capturedGeometryData !== null || (hasReplayContext && hasGeometryProbes && geometryTokenReplayAvailable),
+      },
+    );
+    selectionAnchor = params;
+  });
+
+  $effect(() => {
+    if (!active || drilldownUi.tab !== "lens") return;
     const captured = capturedLensData;
-    if (lensSteered && captured) {
+    if (!lensTokenReplayAvailable && !lensSteered) lensSteered = true;
+    if ((lensSteered || !lensTokenReplayAvailable) && captured) {
       lensReadout.adopt(
         captured,
         token?.measurements?.instruments.lens?.binding.source ?? null,
@@ -475,10 +653,15 @@
       return;
     }
     lensReadout.clear();
+    if (!lensTokenReplayAvailable) return;
     if (!jlensFitted) return;
     const nodeId = loomNodeId;
     const rawIndex = token?.rawIndex;
     if (!nodeId || rawIndex == null) return;
+    const replayTokenId = token?.tokenId ?? -1;
+    const replayTokenText = token?.text ?? "";
+    const fallbackSource =
+      lensSourceState.sources.find((source) => source.active)?.source ?? null;
     lensReadout.replay(
       "lens",
       nodeId,
@@ -486,19 +669,22 @@
       { topK: readoutTopK, steered: lensSteered, raw: effectiveRawMode(), layers: "all" },
       (m) => {
         const lens = m.instruments.lens;
+        if (!lens?.readout) {
+          throw new Error("No J-lens reading was returned. Check the active lens source and try again.");
+        }
         return {
           data: {
             node_id: nodeId,
             raw_index: rawIndex,
-            token_id: token?.tokenId ?? -1,
-            token_text: token?.text ?? "",
+            token_id: replayTokenId,
+            token_text: replayTokenText,
             steering: lens?.binding.steering ?? null,
-            aggregate: lens?.readout?.aggregate ?? [],
-            layers: lens?.readout?.layers ?? [],
+            aggregate: lens.readout.aggregate,
+            layers: lens.readout.layers,
           },
           source:
             lens?.binding.source ??
-            lensSourceState.sources.find((source) => source.active)?.source ??
+            fallbackSource ??
             null,
         };
       },
@@ -506,9 +692,10 @@
   });
 
   $effect(() => {
-    if (drilldownUi.tab !== "sae") return;
+    if (!active || drilldownUi.tab !== "sae") return;
     const captured = capturedSaeData;
-    if (saeSteered && captured) {
+    if (!saeTokenReplayAvailable && !saeSteered) saeSteered = true;
+    if ((saeSteered || !saeTokenReplayAvailable) && captured) {
       saeReadout.adopt(
         captured,
         token?.measurements?.instruments.sae?.binding.source ?? null,
@@ -516,10 +703,17 @@
       return;
     }
     saeReadout.clear();
+    if (!saeTokenReplayAvailable) return;
     if (!saeResident) return;
     const nodeId = loomNodeId;
     const rawIndex = token?.rawIndex;
     if (!nodeId || rawIndex == null) return;
+    const replayTokenId = token?.tokenId ?? -1;
+    const replayTokenText = token?.text ?? "";
+    const fallbackSource =
+      saeSourceState.sources.find((source) => source.active)?.source ??
+      instrumentFamily("sae")?.source ??
+      null;
     saeReadout.replay(
       "sae",
       nodeId,
@@ -527,20 +721,22 @@
       { topK: readoutTopK, steered: saeSteered, raw: effectiveRawMode() },
       (m) => {
         const sae = m.instruments.sae;
+        if (!sae?.readout) {
+          throw new Error("No SAE reading was returned. Check the active feature source and try again.");
+        }
         return {
           data: {
             node_id: nodeId,
             raw_index: rawIndex,
-            token_id: token?.tokenId ?? -1,
-            token_text: token?.text ?? "",
+            token_id: replayTokenId,
+            token_text: replayTokenText,
             steering: sae?.binding.steering ?? null,
             layer: sae?.binding.layer ?? -1,
-            features: sae?.readout?.features ?? [],
+            features: sae.readout.features,
           },
           source:
             sae?.binding.source ??
-            saeSourceState.sources.find((source) => source.active)?.source ??
-            instrumentFamily("sae")?.source ??
+            fallbackSource ??
             null,
         };
       },
@@ -548,13 +744,15 @@
   });
 
   $effect(() => {
-    if (drilldownUi.tab !== "geometry") return;
+    if (!active || drilldownUi.tab !== "geometry") return;
     const captured = capturedGeometryData;
-    if (geometrySteered && captured) {
+    if (!geometryTokenReplayAvailable && !geometrySteered) geometrySteered = true;
+    if ((geometrySteered || !geometryTokenReplayAvailable) && captured) {
       geometryReadout.adopt(captured, null);
       return;
     }
     geometryReadout.clear();
+    if (!geometryTokenReplayAvailable) return;
     if (!hasGeometryProbes) return;
     const nodeId = loomNodeId;
     const rawIndex = token?.rawIndex;
@@ -566,6 +764,9 @@
       { steered: geometrySteered, raw: effectiveRawMode() },
       (m) => {
         const geometry = m.instruments.geometry;
+        if (!geometry) {
+          throw new Error("No probe readings were returned. Check that the probes are attached and try again.");
+        }
         return {
           data: {
             steering: geometry?.binding?.steering ?? null,
@@ -581,15 +782,26 @@
 <svelte:window onkeydown={onKeydown} />
 
 <aside
+  bind:this={inspectorEl}
   class="drawer"
+  class:docked
+  data-token-details-scroll
   aria-label="Token drilldown"
+  tabindex="-1"
 >
   <header class="drawer-header">
+    <div class="heading-row">
+      <button type="button" class="dock-toggle" aria-pressed={docked}
+        aria-label={docked ? "Undock token details" : "Dock token details"}
+        title={docked ? "Show token details in a window" : "Keep token details in a sidebar"}
+        onclick={toggleDock}><SidebarIcon side="right" /></button>
+      <h2 class="eyebrow">Generated word details</h2>
+      <DrawerCloseButton onclick={closeDetails} />
+    </div>
     <div class="title">
-      <span class="eyebrow">token drilldown</span>
       {#if token && effCursor}
         <div class="name-row">
-          <code class="tok-text" title={`token ${JSON.stringify(token.text)}`}>
+          <code class="tok-text">
             {JSON.stringify(token.text)}
           </code>
           <button
@@ -598,22 +810,22 @@
             disabled={!otherSeg}
             onclick={toggleSeg}
             title={otherSeg
-              ? `${otherSeg} tokens in this turn`
-              : "turn segment"}
+              ? `Show the ${otherSeg} tokens from this same turn.`
+              : undefined}
           >
-            turn {effCursor.turnIdx} · {roleLabel} · {effCursor.seg}
+            {#if sessionState.info?.is_base_model}Completion {effCursor.turnIdx}{:else}turn {effCursor.turnIdx} · {roleLabel} · {effCursor.seg}{/if}
           </button>
           {#if token.tokenId != null}
-            <span class="kv-chip" title="vocabulary id">id {token.tokenId}</span>
+            <span class="kv-chip" title="This token’s ID in the model’s vocabulary.">id {token.tokenId}</span>
           {/if}
           {#if token.rawIndex != null}
-            <span class="kv-chip" title="fork / replay key">
+            <span class="kv-chip" title="Position in the recorded generation, used to replay or branch from this token.">
               raw {token.rawIndex}
             </span>
           {:else}
             <span
               class="kv-chip warn"
-              title="no raw record · fork/replay unavailable"
+              title="The generation record is missing, so this token cannot be replayed or branched."
             >
               no replay
             </span>
@@ -621,7 +833,7 @@
           {#if token.logprob != null}
             <span
               class="kv-chip"
-              title="sampler p · after temperature + top-k/p"
+              title="Probability after temperature and Top K / Top P filtering, not the model’s unmodified probability."
             >
               p {fmtP(Math.exp(token.logprob))} · logp {token.logprob.toFixed(3)}{chosenRank !== null
                 ? ` · rank ${chosenRank}/${token.topAlts?.length ?? 0}`
@@ -630,14 +842,15 @@
           {/if}
         </div>
         <div class="nav-row">
-          <span class="scrub" title="previous / next token">
+          <span class="scrub">
             <button
               type="button"
               class="scrub-btn"
               disabled={!canStepBack}
               onclick={() => step(-1)}
               aria-label="Previous token"
-            >◀</button>
+              title="Inspect the previous token"
+            ><FluentIcon name="back" /></button>
             <span class="scrub-pos">{effCursor.tokenIdx + 1} / {tokenList.length}</span>
             <button
               type="button"
@@ -645,16 +858,18 @@
               disabled={!canStepFwd}
               onclick={() => step(1)}
               aria-label="Next token"
-            >▶</button>
+              title="Inspect the next token"
+            ><FluentIcon name="next" /></button>
           </span>
-          <span class="scrub" title="previous / next turn">
+          <span class="scrub">
             <button
               type="button"
               class="scrub-btn"
               disabled={!canPrevTurn}
               onclick={() => turnHop(-1)}
               aria-label="Previous turn"
-            >▲</button>
+              title="Inspect the previous turn"
+            ><FluentIcon name="up" /></button>
             <span class="scrub-pos">turn {effCursor.turnIdx}</span>
             <button
               type="button"
@@ -662,15 +877,17 @@
               disabled={!canNextTurn}
               onclick={() => turnHop(1)}
               aria-label="Next turn"
-            >▼</button>
+              title="Inspect the next turn"
+            ><FluentIcon name="down" /></button>
           </span>
           {#if !atAnchor}
             <button
               type="button"
               class="scrub-btn scrub-home"
               onclick={resetToAnchor}
-              title="clicked token"
-            >↩</button>
+              aria-label="Return to the token you opened"
+              title="Return to the token you opened"
+            ><FluentIcon name="return" /></button>
           {/if}
         </div>
         <div class="generation-context">
@@ -687,12 +904,11 @@
       {:else}
         <div class="name-row">
           <span class="coord">
-            no token at (turn {params?.turnIdx ?? "?"}, {params?.tokenIdx ?? "?"})
+            {params ? "Selected token unavailable" : "No token selected"}
           </span>
         </div>
       {/if}
     </div>
-    <DrawerCloseButton onclick={closeDrawer} />
   </header>
 
   {#if token && effCursor}
@@ -703,6 +919,73 @@
         if (effCursor) cursor = { ...effCursor, tokenIdx: i };
       }}
     />
+
+    <section class="branch-point" aria-label="Selected token branch point">
+      <div class="branch-point-copy">
+        <strong>Branch from this token</strong>
+        <span>Keep the text up to here and write a new ending. Your original {sessionState.info?.is_base_model ? "completion" : "response"} stays saved.</span>
+      </div>
+      <div class="branch-point-actions">
+        <button
+          type="button"
+          class="secondary-action"
+          disabled={!canReplaceToken || replacingToken}
+          title={canReplaceToken
+            ? undefined
+            : genStatus.active
+              ? "Finish or stop the current generation first"
+              : "This saved token does not have an exact replay boundary"}
+          onclick={() => {
+            if (replacementOpen) {
+              replacementOpen = false;
+              continuationError = null;
+            } else {
+              void showReplacement();
+            }
+          }}
+        >{replacementOpen ? "Cancel replacement" : "Replace token…"}</button>
+        <button
+          type="button"
+          class="primary-action"
+          disabled={!canContinueFromToken || continuingFromToken}
+          title={canContinueFromToken
+            ? undefined
+            : genStatus.active
+              ? "Finish or stop the current generation first"
+              : "This saved token does not have an exact replay boundary"}
+          onclick={() => void continueFromToken()}
+        >{continuingFromToken ? "Starting…" : "Continue from here"}</button>
+      </div>
+      {#if replacementOpen}
+        <form class="replacement-form" onsubmit={(event) => {
+          event.preventDefault();
+          void replaceToken();
+        }}>
+          <label for="token-replacement">Replacement text</label>
+          <div class="replacement-controls">
+            <input
+              id="token-replacement"
+              bind:this={replacementInput}
+              bind:value={replacementText}
+              aria-describedby="token-replacement-help"
+              autocomplete="off"
+              spellcheck="true"
+            />
+            <button
+              type="submit"
+              class="primary-action"
+              disabled={!canReplaceToken || replacingToken || replacementText.length === 0}
+            >{replacingToken ? "Starting…" : "Start branch"}</button>
+          </div>
+          <span id="token-replacement-help">
+            Edit this token or replace it with a longer phrase. Spacing is preserved.
+          </span>
+        </form>
+      {/if}
+      {#if continuationError}
+        <p class="branch-point-error" role="alert">{continuationError}</p>
+      {/if}
+    </section>
   {/if}
 
   <!-- View tabs + the steered/unsteered branch toggle when this turn has
@@ -716,14 +999,28 @@
   </div>
 
   <div class="body">
+    {#key bodyStateKey}
+      <div
+        class="tab-content"
+        in:selectionIn
+      >
+    {#if token && effCursor && drilldownUi.tab === "geometry" && !geometryTokenReplayAvailable && (hasGeometryProbes || capturedGeometryData)}
+      <p class="replay-unavailable" role="note">{geometryReplayUnavailableReason}</p>
+    {:else if token && effCursor && drilldownUi.tab === "lens" && !lensTokenReplayAvailable && (jlensFitted || capturedLensData)}
+      <p class="replay-unavailable" role="note">{lensReplayUnavailableReason}</p>
+    {:else if token && effCursor && drilldownUi.tab === "sae" && !saeTokenReplayAvailable && (saeResident || capturedSaeData)}
+      <p class="replay-unavailable" role="note">{saeReplayUnavailableReason}</p>
+    {/if}
     {#if !token || !effCursor}
-      <div class="empty">token unavailable</div>
+      <div class="empty">{params ? "This token is no longer available. Select another token to inspect it." : "Select a token in your conversation or Loom to see its full details here."}</div>
     {:else if drilldownUi.tab === "geometry"}
       <GeometryTab
         readout={geometryReadout}
+        returnToToken={{ turnIdx: effCursor.turnIdx, tokenIdx: effCursor.tokenIdx, isThinking: effCursor.seg === "thinking" }}
         bind:steered={geometrySteered}
         {hasGeometryProbes}
         {hasReplayContext}
+        replayAvailable={geometryTokenReplayAvailable}
       />
     {:else if drilldownUi.tab === "logits"}
       <LogitsTab {token} nodeId={loomNodeId} />
@@ -732,8 +1029,10 @@
         readout={saeReadout}
         bind:steered={saeSteered}
         saeLoaded={saeResident}
+        availability={saeAvailability}
         {hasReplayContext}
         pinned={saePinned}
+        replayAvailable={saeTokenReplayAvailable}
       />
     {:else}
       <LensTab
@@ -743,36 +1042,13 @@
         {hasReplayContext}
         pinned={lensPinned}
         modelId={sessionState.info?.model_id ?? null}
+        replayAvailable={lensTokenReplayAvailable}
       />
     {/if}
+      </div>
+    {/key}
   </div>
 
-  <footer class="drawer-footer">
-    <span class="hint">
-      {#if drilldownUi.tab === "geometry"}
-        Full whitened Monitor readings at the forward that produced this
-        token: coords are domain-frame subspace coordinates, fraction the
-        in-subspace share, nearest the whitened node distances. Replay
-        scores the current roster post-hoc, so aggregate-only generations
-        and probes attached after the fact still read.
-      {:else if drilldownUi.tab === "logits"}
-        Logprob is the chosen-token natural-log probability under the
-        post-temperature / post-top-p / post-top-k distribution the sampler
-        drew from. Bars show absolute probability.
-      {:else if drilldownUi.tab === "sae"}
-        Post-nonlinearity sparse-feature activations from the resident SAE's
-        hook layer. Strength is activation / Neuronpedia maxActApprox — the
-        absolute 0..1 unit gates read; features without metadata show raw
-        activation on this readout's own scale.
-      {:else}
-        Each row ranks softmax(W_U · norm(J_l·h)) at the forward that
-        produced this token — what that layer's residual was disposed to
-        make the model say. Cell tint = probability; highlighted cells match
-        the produced token. All fitted layers are shown because the
-        informative depth range is model-dependent.
-      {/if}
-    </span>
-  </footer>
 </aside>
 
 <style>
@@ -780,23 +1056,59 @@
    * radius, --bg-alt fill), so the root is transparent; chrome speaks sans
    * and every value/token/expression sits in mono. */
   .drawer {
-    display: flex;
-    flex-direction: column;
+    display: block;
     height: 100%;
     min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
     background: transparent;
     color: var(--fg);
     font-family: var(--font-ui);
     font-size: var(--text);
   }
+  .drawer:focus {
+    /* This scroll container is not a control; its children show keyboard focus. */
+    outline: none !important;
+  }
+
+  .tab-content {
+    display: grid;
+    gap: var(--space-7);
+    min-width: 0;
+  }
 
   .drawer-header {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-5);
-    padding: var(--space-5) var(--space-6) var(--space-3);
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
+  .heading-row { display: flex; align-items: center; gap: var(--space-3); width: 100%; min-width: 0; }
+  .heading-row h2 { flex: 1; min-width: 0; margin: 0; }
+  .dock-toggle {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: var(--control-compact);
+    height: var(--control-compact);
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--fg-muted);
+  }
+  .dock-toggle:hover { background: var(--glass); color: var(--fg); }
+  .dock-toggle[aria-pressed="true"] { background: var(--glass-strong); color: var(--accent); }
+  .docked .eyebrow { font-size: var(--text); }
+  .docked .branch-point { grid-template-columns: minmax(0, 1fr); }
+  .docked .branch-point-actions { align-items: stretch; flex-direction: column; }
+  .docked .replacement-controls { grid-template-columns: minmax(0, 1fr); }
+  .docked .toolbar { align-items: flex-start; flex-direction: column; }
+  .docked .toolbar :global(.sk-tabs) { flex-wrap: wrap; max-width: 100%; }
+  .docked :global(.logit-grid),
+  .docked :global(.geo-list),
+  .docked :global(.aggregate-grid),
+  .docked :global(.sae-list) { grid-template-columns: minmax(0, 1fr); }
   .title {
     display: flex;
     flex-direction: column;
@@ -805,11 +1117,10 @@
     flex: 1 1 auto;
   }
   .eyebrow {
-    color: var(--fg-muted);
-    font-size: var(--text-xs);
+    color: var(--fg);
+    font-size: var(--text-lg);
     font-weight: var(--weight-medium);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0;
   }
   .name-row {
     display: flex;
@@ -837,17 +1148,17 @@
     white-space: nowrap;
   }
 
-  /* Identity chips — quiet mono capsules; the segment chip doubles as
+  /* Identity labels — the segment chip doubles as
    * the thinking/response jump when the turn has both. */
   .kv-chip {
     color: var(--fg-dim);
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
     font-variant-numeric: tabular-nums;
-    background: var(--glass);
-    border: 1px solid transparent;
-    border-radius: var(--radius-pill);
-    padding: var(--space-1) var(--space-3);
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
+    padding: var(--space-xs) 0;
     white-space: nowrap;
   }
   .kv-chip.warn {
@@ -855,6 +1166,7 @@
     font-style: italic;
   }
   button.seg-chip {
+    min-height: var(--control-target);
     font: inherit;
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
@@ -883,10 +1195,12 @@
     gap: var(--space-2);
   }
   .scrub-btn {
+    min-width: var(--control-target);
+    min-height: var(--control-target);
     background: var(--glass);
     color: var(--fg-muted);
     border: 1px solid transparent;
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius);
     font: inherit;
     font-size: var(--text-2xs);
     line-height: 1;
@@ -927,16 +1241,15 @@
     flex-wrap: wrap;
     min-width: 0;
     margin: 0;
-    padding: var(--space-3);
+    padding: 0;
     border-radius: var(--radius);
-    background: var(--input-well);
+    background: transparent;
   }
   .recipe-label {
     color: var(--fg-muted);
     font-size: var(--text-2xs);
     font-weight: var(--weight-medium);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0;
     white-space: nowrap;
   }
   .recipe code {
@@ -967,17 +1280,149 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-5);
-    padding: var(--space-3) var(--space-6);
+    padding: var(--space-5) var(--drawer-gutter-inline);
+  }
+  .branch-point {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-4) var(--space-6);
+    margin: var(--space-4) var(--drawer-gutter-inline) 0;
+    padding: var(--surface-padding);
+    border-radius: var(--radius-lg);
+    background: var(--input-well);
+    box-shadow: var(--shadow-control);
+    min-width: 0;
+  }
+  .branch-point-copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+  .branch-point-copy strong {
+    color: var(--fg);
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+  .branch-point-copy span {
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+  }
+  .branch-point-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .branch-point-actions button {
+    min-height: var(--control-target);
+    padding: 0 var(--space-4);
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font: inherit;
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+  }
+  .branch-point-actions .secondary-action {
+    color: var(--fg-dim);
+    background: var(--glass);
+  }
+  .branch-point-actions .primary-action {
+    color: var(--action-ink);
+    background: var(--action-bg);
+  }
+  .branch-point-actions button:hover:not(:disabled),
+  .branch-point-actions button:focus-visible:not(:disabled) {
+    filter: brightness(1.08);
+    outline: none;
+  }
+  .branch-point-actions button:focus-visible {
+    box-shadow: 0 0 0 2px var(--focus-ring);
+  }
+  .branch-point-actions button:active:not(:disabled) {
+    transform: scale(var(--press-scale));
+  }
+  .branch-point-actions button:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+  .replacement-form {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+  .replacement-form label {
+    color: var(--fg);
+    font-family: var(--font-structure);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+  }
+  .replacement-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2);
+  }
+  .replacement-controls input {
+    min-width: 0;
+    min-height: var(--control-target);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--radius);
+    padding: 0 var(--space-3);
+    background: var(--input-well);
+    color: var(--fg);
+    font: inherit;
+    font-family: var(--font-mono);
+  }
+  .replacement-controls input:focus-visible {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--focus-ring);
+    outline: none;
+  }
+  .replacement-controls .primary-action {
+    min-height: var(--control-target);
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    padding: 0 var(--space-4);
+    color: var(--action-ink);
+    background: var(--action-bg);
+    cursor: pointer;
+    font: inherit;
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+  .replacement-form > span {
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+  }
+  .branch-point-error {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: var(--accent-red);
+    font-size: var(--text-xs);
+  }
+  .replay-unavailable {
+    margin: 0 0 var(--space-3);
+    padding: var(--surface-padding);
+    border-radius: var(--radius);
+    background: var(--input-well);
+    color: var(--fg-muted);
+    font-family: var(--font-reading);
+    font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   .body {
-    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     gap: var(--space-6);
-    overflow: auto;
-    min-height: 0;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .empty {
     color: var(--fg-muted);
@@ -986,16 +1431,17 @@
     max-width: 62ch;
   }
 
-  .drawer-footer {
-    padding: var(--space-3) var(--space-6);
-    color: var(--fg-muted);
-    font-size: var(--text-xs);
-  }
-  .hint {
-    line-height: 1.5;
-  }
-
   @media (max-width: 820px) {
+    .branch-point {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .branch-point-actions {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .replacement-controls {
+      grid-template-columns: 1fr;
+    }
     .toolbar {
       align-items: flex-start;
       flex-direction: column;

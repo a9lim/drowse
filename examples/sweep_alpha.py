@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 
-from saklas import SaklasSession, SamplingConfig
+from drowse import DrowseSession, SamplingConfig
 
 
 def main() -> None:
@@ -24,7 +24,7 @@ def main() -> None:
 
     alphas = [float(x) for x in args.alphas.split(",")]
 
-    with SaklasSession.from_pretrained(args.model, device="auto") as session:
+    with DrowseSession.from_pretrained(args.model, device="auto") as session:
         # The fitted manifold is the artifact; steering expressions resolve
         # ``name`` straight off it, so no separate registration step is needed.
         name, _profile = session.extract(args.concept)

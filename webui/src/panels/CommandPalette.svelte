@@ -1,14 +1,17 @@
 <script lang="ts">
-  // ⌘K command palette — the primary navigation surface.  Flattens the
+  // Searchable tool directory, opened from the workspace menu. Flattens the
   // rail's tool registry plus instrument-tab jumps and pages into one
   // filterable list.  The rail's category fly-outs remain as the mouse
   // path; this is the keyboard path (and the only place everything is
   // reachable from one input).
 
   import { tick } from "svelte";
+  import { fade, fly } from "svelte/transition";
   import { paletteState, closePalette } from "../lib/stores/palette.svelte";
   import { paletteCommands, type PaletteCommand } from "../lib/commands";
   import { openDrawer, setInspectorTab } from "../lib/stores.svelte";
+  import { modalIn, modalOut, scrimIn, scrimOut } from "../lib/motion";
+  import FluentIcon from "../lib/ui/FluentIcon.svelte";
 
   const COMMANDS = paletteCommands();
 
@@ -31,10 +34,22 @@
     const q = query.trim().toLowerCase();
     if (!q) return COMMANDS;
     const terms = q.split(/\s+/);
-    return COMMANDS.filter((c) => {
-      const hay = `${c.label} ${c.group} ${c.keywords ?? ""}`.toLowerCase();
-      return terms.every((t) => hay.includes(t));
-    });
+    return COMMANDS
+      .filter((c) => {
+        const hay = `${c.label} ${c.group} ${c.keywords ?? ""}`.toLowerCase();
+        return terms.every((t) => hay.includes(t));
+      })
+      .sort((a, b) => {
+        const rank = (command: PaletteCommand): number => {
+          const label = command.label.toLowerCase();
+          if (label === q) return 0;
+          if (label.startsWith(q)) return 1;
+          if (label.includes(q)) return 2;
+          if ((command.keywords ?? "").toLowerCase().includes(q)) return 3;
+          return 4;
+        };
+        return rank(a) - rank(b);
+      });
   });
 
   // Reset + focus on every open; clamp selection as the filter narrows.
@@ -70,6 +85,12 @@
         break;
       case "tab":
         setInspectorTab(cmd.action.tab);
+        window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: "controls" }));
+        break;
+      case "controls":
+        window.dispatchEvent(new CustomEvent("drowse:workspace", {
+          detail: { view: "controls", section: cmd.action.section },
+        }));
         break;
     }
   }
@@ -137,6 +158,8 @@
     tabindex="-1"
     aria-label="Close command palette"
     onclick={closePalette}
+    in:fade={scrimIn()}
+    out:fade={scrimOut()}
     onkeydown={(ev) => {
       if (ev.key === "Enter" || ev.key === " ") closePalette();
     }}
@@ -149,12 +172,13 @@
     aria-label="Command palette"
     tabindex="-1"
     onkeydown={trapFocus}
+    in:fly={modalIn()}
+    out:fly={modalOut()}
+    onintrostart={(event) => { event.currentTarget.inert = false; }}
+    onoutrostart={(event) => { event.currentTarget.inert = true; }}
   >
     <div class="input-row">
-      <svg viewBox="0 0 24 24" aria-hidden="true" class="glass-icon">
-        <circle cx="11" cy="11" r="7"></circle>
-        <path d="M21 21l-4.35-4.35"></path>
-      </svg>
+      <FluentIcon name="search" class="glass-icon" />
       <input
         bind:this={inputEl}
         bind:value={query}
@@ -178,7 +202,7 @@
       role="listbox"
     >
       {#if filtered.length === 0}
-        <p class="none">no matches</p>
+        <p class="none" role="status">No commands match “{query.trim()}”. Edit or clear the search.</p>
       {:else}
         {#each filtered as cmd, i (cmd.group + cmd.label)}
           {@const hue = hueFor(cmd)}
@@ -224,42 +248,29 @@
     display: flex;
     flex-direction: column;
     z-index: calc(var(--z-modal) + 11);
-    background: color-mix(in srgb, var(--surface-hi) 92%, transparent);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--glass-line);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-overlay);
+    background: var(--surface-sheen), var(--popup-bg);
+    border: 1px solid var(--popup-border);
+    border-radius: var(--popup-radius);
+    box-shadow: var(--popup-shadow);
     overflow: hidden;
-    animation: palette-in var(--dur) var(--ease-out);
-  }
-  @keyframes palette-in {
-    from {
-      opacity: 0;
-      transform: translateX(-50%) translateY(-6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(-50%) translateY(0);
-    }
   }
 
   .input-row {
     display: flex;
     align-items: center;
     gap: var(--space-4);
-    padding: var(--space-5) var(--space-6);
+    padding: var(--surface-padding);
   }
-  .glass-icon {
+  :global(.glass-icon) {
     width: 15px;
     height: 15px;
     flex: none;
-    fill: none;
-    stroke: var(--fg-muted);
-    stroke-width: 2;
-    stroke-linecap: round;
+    color: var(--fg-muted);
   }
   input {
     flex: 1;
+    min-width: 0;
+    min-height: var(--control-target);
     background: transparent;
     border: 0;
     outline: none;
@@ -276,15 +287,15 @@
     color: var(--fg-muted);
     border: 1px solid var(--glass-line);
     border-radius: var(--radius-sm);
-    padding: 2px 6px;
+    padding: var(--space-xs) var(--space-xs);
   }
 
   .list {
     overflow-y: auto;
-    padding: var(--space-3);
+    padding: 0 var(--surface-padding) var(--surface-padding);
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: var(--space-xs);
   }
   .none {
     margin: 0;
@@ -295,13 +306,15 @@
   }
   .row {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
+    min-height: var(--control-target);
     gap: var(--space-4);
     padding: var(--space-3) var(--space-5);
     background: transparent;
     border: 0;
     border-radius: var(--radius);
-    text-align: left;
+    text-align: start;
     color: var(--fg-dim);
     font-size: var(--text-sm);
     cursor: pointer;
@@ -324,11 +337,17 @@
     white-space: nowrap;
   }
   .group {
-    font-family: var(--font-mono);
+    font-family: var(--font-ui);
     font-size: var(--text-2xs);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    letter-spacing: 0;
     color: var(--fg-muted);
     flex: none;
+  }
+
+  @media (max-width: 680px) {
+    .row { display: grid; grid-template-columns: 7px minmax(0, 1fr); gap: 0 var(--space-sm); }
+    .dot { grid-column: 1; grid-row: 1; }
+    .label { grid-column: 2; grid-row: 1; white-space: normal; overflow: visible; }
+    .group { grid-column: 2; grid-row: 2; }
   }
 </style>

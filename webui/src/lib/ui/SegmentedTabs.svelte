@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { slidingSelection } from "../slidingSelection";
   // v2 segmented tabs — the instrument-stack pillar switch (and any other
   // exclusive-choice strip). Each item may carry a hue: the dot always
-  // wears it, the active tab lifts onto glass with a hue-tinted hairline.
+  // wears it, while every active tab uses the same neutral selected surface.
   //
   // Generic over the value type so callers keep literal unions
   // ("subspace" | "manifold" | ...) without casts.
@@ -11,7 +12,7 @@
     label: string;
     /** Optional compact evidence count shown beside the label. */
     meta?: string;
-    /** Pillar hue for the dot + active tint — any CSS color. */
+    /** Pillar hue for the identifying dot — any CSS color. */
     color?: string;
     title?: string;
     disabled?: boolean;
@@ -45,12 +46,13 @@
   }
 </script>
 
-<div class="sk-tabs" class:fill role="group" aria-label={ariaLabel}>
+<div class="sk-tabs" class:fill role="group" aria-label={ariaLabel} use:slidingSelection>
   {#each items as item (item.value)}
     <button
       class="tab"
       class:on={item.value === value}
       style:--tab-c={item.color}
+      aria-label={item.label}
       aria-pressed={item.value === value}
       title={item.title}
       disabled={item.disabled}
@@ -75,12 +77,13 @@
   .tab {
     --tab-c: var(--accent);
     display: inline-flex;
+    min-height: var(--control-target);
     align-items: center;
     justify-content: center;
     gap: var(--space-3);
     font-size: var(--text-sm);
     letter-spacing: 0.04em;
-    padding: 6px 12px;
+    padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius);
     border: 1px solid transparent;
     background: transparent;
@@ -88,7 +91,8 @@
     transition:
       color var(--dur-fast) var(--ease-out),
       background var(--dur-fast) var(--ease-out),
-      border-color var(--dur-fast) var(--ease-out);
+      border-color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out);
   }
   .tab:hover:not(:disabled):not(.on) {
     color: var(--fg-dim);
@@ -98,11 +102,14 @@
     opacity: 0.4;
     cursor: not-allowed;
   }
+  .tab:active:not(:disabled) {
+    transform: scale(var(--press-scale));
+  }
 
-  /* Active: a quiet hue-tinted glass fill carries selection. */
+  /* Purple marks selection; the dot retains its data-family hue. */
   .tab.on {
     color: var(--fg);
-    background: color-mix(in srgb, var(--tab-c) 9%, var(--glass));
+    background: var(--accent-subtle);
   }
 
   .dot {
@@ -111,14 +118,20 @@
     border-radius: 50%;
     background: var(--tab-c);
     flex: none;
+    opacity: 1;
+    transform: scale(1);
+    transition:
+      opacity var(--selection-dur) var(--selection-ease),
+      transform var(--selection-dur) var(--selection-ease);
   }
   .tab:not(.on) .dot {
     opacity: 0.55;
+    transform: scale(0.96);
   }
 
   .meta {
     min-width: 1.5em;
-    padding: 1px var(--space-2);
+    padding: var(--space-xs) var(--space-2);
     border-radius: var(--radius-pill);
     background: var(--glass);
     color: var(--fg-muted);
@@ -126,14 +139,28 @@
     font-size: var(--text-2xs);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0;
+    transition:
+      color var(--selection-dur) var(--selection-ease),
+      background var(--selection-dur) var(--selection-ease),
+      transform var(--selection-dur) var(--selection-ease);
   }
   .tab.on .meta {
     color: var(--fg-dim);
-    background: color-mix(in srgb, var(--tab-c) 10%, var(--glass-strong));
+    background: var(--glass-strong);
+    transform: scale(1.04);
   }
 
   .tab:focus-visible {
     outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
+  }
+
+  @media (max-width: 760px) {
+    .sk-tabs {
+      flex-wrap: wrap;
+    }
+    .sk-tabs.fill .tab {
+      flex: 1 1 calc(50% - var(--space-2));
+    }
   }
 </style>

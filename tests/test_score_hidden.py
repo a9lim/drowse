@@ -1,14 +1,14 @@
 """CPU tests for hidden-state round-trip scoring.
 
-Covers Monitor.score_stack and SaklasSession.score_hidden using a synthetic
-monitor and a mock SaklasSession built without a real model.
+Covers Monitor.score_stack and DrowseSession.score_hidden using a synthetic
+monitor and a mock DrowseSession built without a real model.
 
 Mahalanobis-only (4.0 collapse): probe scoring *requires* a whitener covering
 every probed layer — there is no Euclidean path — so every monitor here is
 built with a synthetic covering whitener (``tests/_whitener.py``).
 
 Post-unification (the read side is the unified ``Monitor``): a probe is a
-:class:`~saklas.core.manifold.Manifold`, and a single steering direction is
+:class:`~drowse.core.manifold.Manifold`, and a single steering direction is
 attached as a 1-node neutral-anchored ray via ``fold_directions_to_subspace``
 (exactly the session's ``_fold_profile_probe`` path).  The read is the
 in-subspace **domain coordinate** (``ProbeReading.coords[0]``), not a signed
@@ -24,9 +24,9 @@ import torch
 
 from typing import Any
 
-from saklas.core.manifold import Manifold
-from saklas.core.monitor import Monitor
-from saklas.core.capture import fold_directions_to_subspace
+from drowse.core.manifold import Manifold
+from drowse.core.monitor import Monitor
+from drowse.core.capture import fold_directions_to_subspace
 from tests._whitener import synthetic_means, synthetic_whitener
 
 # A probe along axis 0, layer 0, dim 4 — easy to reason about.  The fold
@@ -154,7 +154,7 @@ def test_score_stack_uneven_T_raises_value_error():
 def test_score_probes_without_whitener_raises():
     """A probe attach without a whitener can't build its factors — Mahalanobis
     is mandatory, so ``add_probe`` raises rather than reading Euclidean."""
-    from saklas.core.mahalanobis import WhitenerError
+    from drowse.core.mahalanobis import WhitenerError
 
     m = _probe_manifold({0: _PROBE0.clone()}, _MEANS0, _WHIT0)
     mon = Monitor()  # no whitener wired
@@ -163,21 +163,21 @@ def test_score_probes_without_whitener_raises():
 
 
 # ---------------------------------------------------------------------------
-# SaklasSession.score_hidden
+# DrowseSession.score_hidden
 # ---------------------------------------------------------------------------
 
-from saklas.core.errors import SaklasError  # noqa: E402
-from saklas.core.session import SaklasSession  # noqa: E402
+from drowse.core.errors import DrowseError  # noqa: E402
+from drowse.core.session import DrowseSession  # noqa: E402
 
 
-def _mock_session() -> SaklasSession:
-    """Build a SaklasSession without touching a real model.
+def _mock_session() -> DrowseSession:
+    """Build a DrowseSession without touching a real model.
 
     We bypass __init__ (which requires a PreTrainedModel) and wire up
     only the fields score_hidden reads: _monitor, _device.  Every other
     attribute remains un-set; score_hidden must not touch them.
     """
-    s = SaklasSession.__new__(SaklasSession)
+    s = DrowseSession.__new__(DrowseSession)
     s._monitor = _monitor_with_probe()
     s._device = torch.device("cpu")
     return s
@@ -221,7 +221,7 @@ def test_score_hidden_stack_per_token_returns_tuple():
 
 def test_score_hidden_empty_dict_raises():
     s = _mock_session()
-    with pytest.raises(SaklasError, match="no layers"):
+    with pytest.raises(DrowseError, match="no layers"):
         s.score_hidden({})
 
 
@@ -231,7 +231,7 @@ def test_score_hidden_mixed_shapes_raises():
         0: torch.tensor([1.0, 0.0, 0.0, 0.0]),        # [D]
         1: torch.tensor([[1.0, 0.0, 0.0, 0.0]]),      # [T, D]
     }
-    with pytest.raises(SaklasError, match="mixed shapes"):
+    with pytest.raises(DrowseError, match="mixed shapes"):
         s.score_hidden(bad)
 
 
@@ -242,27 +242,27 @@ def test_score_hidden_uneven_T_raises():
         1: torch.zeros(2, 4),
     }
     # Both the monitor's ValueError (uneven T) and the session's
-    # SaklasError wrapping must surface as SaklasError at the public
-    # boundary — callers catching SaklasError must not miss this.
-    with pytest.raises(SaklasError):
+    # DrowseError wrapping must surface as DrowseError at the public
+    # boundary — callers catching DrowseError must not miss this.
+    with pytest.raises(DrowseError):
         s.score_hidden(bad)
 
 
 def test_score_hidden_bad_ndim_raises():
-    """ndim=3 and beyond are not [D] or [T, D]; must raise SaklasError."""
+    """ndim=3 and beyond are not [D] or [T, D]; must raise DrowseError."""
     s = _mock_session()
     bad = {0: torch.zeros(2, 3, 4)}
-    with pytest.raises(SaklasError, match="expected \\[D\\] or \\[T, D\\]"):
+    with pytest.raises(DrowseError, match="expected \\[D\\] or \\[T, D\\]"):
         s.score_hidden(bad)
 
 
 def test_score_hidden_dim_mismatch_raises():
-    """A tensor with wrong hidden_dim must raise SaklasError, not leak
+    """A tensor with wrong hidden_dim must raise DrowseError, not leak
     a raw torch RuntimeError from the scoring matmul."""
     s = _mock_session()
     # Monitor probe is dim=4 at layer 0; pass dim=8 input.
     bad = {0: torch.zeros(2, 8)}
-    with pytest.raises(SaklasError, match="dim mismatch"):
+    with pytest.raises(DrowseError, match="dim mismatch"):
         s.score_hidden(bad)
 
 
@@ -288,7 +288,7 @@ def _whitener_from_neutrals(
     X: torch.Tensor, mean: torch.Tensor, layer: int = 0,
 ):
     """Build a single-layer LayerWhitener from synthetic neutrals."""
-    from saklas.core.mahalanobis import LayerWhitener
+    from drowse.core.mahalanobis import LayerWhitener
 
     return LayerWhitener.from_neutral_activations(
         {layer: X}, {layer: mean},
@@ -362,7 +362,7 @@ def test_partial_coverage_raises():
     """All-or-nothing read metric: a whitener covering only some probed
     layers is a hard error (Mahalanobis is mandatory; there is no
     per-layer mix and no Euclidean fallback)."""
-    from saklas.core.mahalanobis import WhitenerError
+    from drowse.core.mahalanobis import WhitenerError
 
     torch.manual_seed(3)
     X0 = torch.randn(120, 4)

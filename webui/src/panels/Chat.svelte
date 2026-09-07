@@ -1,4 +1,10 @@
 <script lang="ts">
+  import { tokenInspectorUi } from "../lib/stores/drawers.svelte";
+  import FluentIcon from "../lib/ui/FluentIcon.svelte";
+  import StateIcon from "../lib/ui/StateIcon.svelte";
+  import { Blobatar } from "@blobatar/svelte";
+  import { savedConversationState } from "../lib/stores/savedConversations.svelte";
+  let { headersVisible = true }: { headersVisible?: boolean } = $props();
   // Chat panel: collapsible thinking per turn, per-token tinted spans,
   // optional compare-two stripe overlay, click-token drilldown, send /
   // stop, and an A/B split-view container.
@@ -9,9 +15,9 @@
   // gen-status accounting belongs to the store.
   //
   // Turn surface follows the cast model:
-  // every speaker gets one neutral glass card — roles aren't a "space",
-  // so they carry no hue — with identity in the role chip (glyph letter +
-  // label, arbitrary strings first-class). Analysis badges appear only when
+  // every speaker gets one neutral card, with the chat's blob avatar for
+  // the model and an accent marker for the user. Role labels remain
+  // arbitrary strings. Analysis badges appear only when
   // their backing artifacts exist. System turns render as stage directions (a
   // note about the scene, not a speaker). The ``speaking as`` chips in
   // the composer are the promoted SamplingStrip role boxes — same client
@@ -20,13 +26,23 @@
   // Token rhythm: strip leading whitespace after </think>, with plain-text
   // fall-through when no probe is selected.
 
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
+  import { fly, slide } from "svelte/transition";
   import StatusFooter from "./StatusFooter.svelte";
   import PendingBubbles from "./PendingBubbles.svelte";
   import RawBuffer from "./RawBuffer.svelte";
+  import TokenLogitsPopover from "../lib/ui/TokenLogitsPopover.svelte";
+  import {
+    collapseIn,
+    collapseOut,
+    contentIn,
+    contentOut,
+    motionDuration,
+  } from "../lib/motion";
   import {
     autoRegenState,
+    abState,
     chatLog,
     highlightState,
     loomTree,
@@ -34,6 +50,7 @@
     setHighlightTarget,
     setCompareTarget,
     toggleCompareTwo,
+    setCompareTwo,
     unpinComparison,
     probeRack,
     sendSubmit,
@@ -52,40 +69,86 @@
     cancelPendingAction,
     isPendingBusy,
     toggleAutoRegen,
+    disableAutoRegen,
     setAutoRegenMode,
     setAutoRegenCustom,
     effectiveRawMode,
     genUiMode,
-    setGenUiMode,
     roleDisplayLabel,
-    roleGlyphLetter,
+    castState,
     samplingState,
     sessionState,
+    clearChat,
     beginTokenHover,
     endTokenHover,
   } from "../lib/stores.svelte";
   import type { AutoRegenMode } from "../lib/stores.svelte";
-  import { togglePalette } from "../lib/stores/palette.svelte";
   import type { ChatRole, ChatTurn, TokenScore } from "../lib/types";
   import {
-    formatScoreTooltip,
+    ENTROPY_TARGET,
     SURPRISE_TARGET,
-    probeScoreForTarget,
   } from "../lib/tokens";
   import {
     highlightStyleString,
-    latestLayerScores,
   } from "../lib/highlight";
   import Select from "../lib/Select.svelte";
+  import Combobox from "../lib/Combobox.svelte";
   import Checkbox from "../lib/Checkbox.svelte";
   import Button from "../lib/ui/Button.svelte";
+  import InfoTip from "../lib/ui/InfoTip.svelte";
+  import { runtimeOperationAvailability } from "../lib/runtime/ui-capabilities";
+
+  function startsCompact(): boolean {
+    return typeof window !== "undefined" && window.matchMedia(
+      "(max-width: 720px), (max-height: 600px), (pointer: coarse) and (max-width: 1120px)",
+    ).matches;
+  }
 
   // --------------------------------------------------------------- input --
 
   let input = $state("");
+  let chatRef: HTMLDivElement | null = $state(null);
   let textareaRef: HTMLTextAreaElement | null = $state(null);
+  let clearConversationArmed = $state(false);
+  let rolePlanOpen = $state(false);
+  let rolePlanShell: HTMLDivElement | null = $state(null);
+  let rolePlanAnimation: Animation | null = null;
+  let composerHeight: number | null = $state(null);
+  let composerMaxHeight = $state(420);
+  let composerManuallySized = $state(false);
+  let resizeStart = $state<{
+    pointerId: number;
+    y: number;
+    height: number;
+  } | null>(null);
+  const COMPOSER_MIN_HEIGHT = 64;
+  const COMPOSER_DEFAULT_HEIGHT = 80;
+  const COMPACT_COMPOSER_MIN_HEIGHT = 64;
+  const COMPACT_COMPOSER_DEFAULT_HEIGHT = 72;
+  let composerMinHeight = $state(
+    startsCompact() ? COMPACT_COMPOSER_MIN_HEIGHT : COMPOSER_MIN_HEIGHT,
+  );
+  let composerDefaultHeight = $state(
+    startsCompact() ? COMPACT_COMPOSER_DEFAULT_HEIGHT : COMPOSER_DEFAULT_HEIGHT,
+  );
+  const composerControlHeight = $derived(Math.round(Math.max(
+    composerMinHeight,
+    Math.min(composerMaxHeight, composerHeight ?? composerDefaultHeight),
+  )));
+  const canClearConversation = $derived(
+    loomTree.root_id !== null && loomTree.active_node_id !== loomTree.root_id,
+  );
 
-  /** Auto-grow the textarea between 1 and 6 rows (≈ 132px at 13px line-h).
+  function requestClearConversation(): void {
+    if (!clearConversationArmed) {
+      clearConversationArmed = true;
+      return;
+    }
+    clearConversationArmed = false;
+    clearChat();
+  }
+
+  /** Auto-grow the textarea from its comfortable default through 6 rows.
    *  With ``box-sizing: border-box`` set in CSS, ``el.scrollHeight``
    *  includes top/bottom padding — which is exactly what we want to write
    *  back into ``style.height``, so a one-line draft sits flush with no
@@ -94,15 +157,96 @@
   function autosize(): void {
     const el = textareaRef;
     if (!el) return;
+    if (composerManuallySized && composerHeight !== null) {
+      el.style.height = `${composerHeight}px`;
+      el.style.overflowY = el.scrollHeight > el.clientHeight ? "auto" : "hidden";
+      return;
+    }
     el.style.height = "auto";
     const rowHeight = 22; // mono line-height fudge — matches font-size-base
-    const maxH = rowHeight * 6;
-    const next = Math.min(el.scrollHeight, maxH);
+    const maxH = Math.min(rowHeight * 6, composerMaxHeight);
+    const next = Math.min(Math.max(el.scrollHeight, composerDefaultHeight), maxH);
     el.style.height = `${next}px`;
     // Only show the scrollbar once we've actually hit the cap.  Without
     // this the browser's "always reserve a scrollbar gutter" heuristic
     // paints a 1-2px up/down nub on single-line input.
     el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
+  }
+
+  function updateComposerBounds(): void {
+    if (!chatRef) return;
+    const compact = chatRef.clientHeight < 560 || chatRef.clientWidth <= 620 ||
+      (window.visualViewport?.height ?? window.innerHeight) < 600;
+    composerMinHeight = compact ? COMPACT_COMPOSER_MIN_HEIGHT : COMPOSER_MIN_HEIGHT;
+    composerDefaultHeight = compact
+      ? COMPACT_COMPOSER_DEFAULT_HEIGHT
+      : COMPOSER_DEFAULT_HEIGHT;
+    const reservedHeight = compact ? 190 : 300;
+    composerMaxHeight = Math.max(
+      composerMinHeight,
+      Math.min(480, Math.floor(chatRef.clientHeight - reservedHeight)),
+    );
+    if (composerHeight !== null && composerHeight > composerMaxHeight) {
+      composerHeight = composerMaxHeight;
+    }
+    queueMicrotask(autosize);
+  }
+
+  function clampComposerHeight(value: number): number {
+    return Math.max(composerMinHeight, Math.min(composerMaxHeight, value));
+  }
+
+  function resizeComposerTo(value: number): void {
+    composerManuallySized = true;
+    composerHeight = clampComposerHeight(value);
+    queueMicrotask(autosize);
+  }
+
+  function beginComposerResize(event: PointerEvent): void {
+    if (event.button !== 0 || !textareaRef) return;
+    const target = event.currentTarget as HTMLElement;
+    updateComposerBounds();
+    resizeStart = {
+      pointerId: event.pointerId,
+      y: event.clientY,
+      height: textareaRef.getBoundingClientRect().height,
+    };
+    target.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function moveComposerResize(event: PointerEvent): void {
+    if (!resizeStart || resizeStart.pointerId !== event.pointerId) return;
+    resizeComposerTo(resizeStart.height + resizeStart.y - event.clientY);
+  }
+
+  function endComposerResize(event: PointerEvent): void {
+    if (!resizeStart || resizeStart.pointerId !== event.pointerId) return;
+    const target = event.currentTarget as HTMLElement;
+    if (target.hasPointerCapture(event.pointerId)) {
+      target.releasePointerCapture(event.pointerId);
+    }
+    resizeStart = null;
+  }
+
+  function resizeComposerWithKeyboard(event: KeyboardEvent): void {
+    const current = textareaRef?.getBoundingClientRect().height
+      ?? composerHeight
+      ?? composerDefaultHeight;
+    let next: number | null = null;
+    if (event.key === "ArrowUp") next = current + 24;
+    else if (event.key === "ArrowDown") next = current - 24;
+    else if (event.key === "Home") next = composerMinHeight;
+    else if (event.key === "End") next = composerMaxHeight;
+    if (next === null) return;
+    event.preventDefault();
+    resizeComposerTo(next);
+  }
+
+  function resetComposerHeight(): void {
+    composerManuallySized = false;
+    composerHeight = null;
+    queueMicrotask(autosize);
   }
 
   $effect(() => {
@@ -128,6 +272,8 @@
   );
   const sceneMode = $derived(sessionState.info?.scene_mode ?? false);
   type ContinuationRole = ChatRole | "none";
+  const ROLE_SLUG_RE = /^[a-z0-9._-]+$/;
+
   let authoredRole = $state<ChatRole>("user");
   let continuationRole = $state<ContinuationRole>("assistant");
   $effect(() => {
@@ -142,34 +288,144 @@
   const generatedRole = $derived<ChatRole | null>(
     continuationRole === "none" ? null : continuationRole,
   );
+  const defaultUserLabel = $derived(
+    sessionState.info?.default_user_role || "user",
+  );
+  const defaultAssistantLabel = $derived(
+    sessionState.info?.default_assistant_role || "assistant",
+  );
   const userLabel = $derived(
     samplingState.user_role.trim()
-      || sessionState.info?.default_user_role
-      || "user",
+      || defaultUserLabel,
   );
   const assistantLabel = $derived(
     samplingState.assistant_role.trim()
-      || sessionState.info?.default_assistant_role
-      || "assistant",
+      || defaultAssistantLabel,
   );
   const authoredLabel = $derived(authoredRole === "user" ? userLabel : assistantLabel);
-  const duplicateRoleLabels = $derived(userLabel === assistantLabel);
-  const userRoleOption = $derived(
-    duplicateRoleLabels ? `${userLabel} · user` : userLabel,
+  const authoredRoleValue = $derived(
+    authoredRole === "user" ? samplingState.user_role : samplingState.assistant_role,
   );
-  const assistantRoleOption = $derived(
-    duplicateRoleLabels ? `${assistantLabel} · assistant` : assistantLabel,
+  const continuationRoleValue = $derived(
+    continuationRole === "user" ? samplingState.user_role : samplingState.assistant_role,
+  );
+  const userRoleSupported = $derived(
+    sessionState.info?.is_base_model === false
+      && sessionState.info?.user_role_supported === true,
+  );
+  const assistantRoleSupported = $derived(
+    sessionState.info?.is_base_model === false
+      && sessionState.info?.role_substitution_supported === true,
+  );
+  const customRoleLabels = $derived.by(() => {
+    const labels = new Set(
+      Object.keys(castState.roster).filter((key) => (
+        key !== "user"
+        && key !== "assistant"
+        && key !== defaultUserLabel
+        && key !== defaultAssistantLabel
+      )),
+    );
+    if (userLabel !== defaultUserLabel && userLabel !== defaultAssistantLabel) {
+      labels.add(userLabel);
+    }
+    if (
+      assistantLabel !== defaultUserLabel
+      && assistantLabel !== defaultAssistantLabel
+    ) {
+      labels.add(assistantLabel);
+    }
+    return [...labels].sort((a, b) => a.localeCompare(b));
+  });
+
+  const roleLabelOptions = $derived(
+    [...new Set([defaultUserLabel, defaultAssistantLabel, ...customRoleLabels])]
+      .map((value) => ({ value, label: value })),
   );
 
-  const authoredRoleOptions = $derived([
-    { value: "user" as ChatRole, label: userRoleOption },
-    { value: "assistant" as ChatRole, label: assistantRoleOption, disabled: !sceneMode },
-  ]);
-  const continuationRoleOptions = $derived([
-    { value: "user" as ContinuationRole, label: userRoleOption, disabled: !sceneMode },
-    { value: "assistant" as ContinuationRole, label: assistantRoleOption },
-    { value: "none" as ContinuationRole, label: "none" },
-  ]);
+  function roleLabelValid(value: string): boolean {
+    const label = value.trim();
+    return label === "" || ROLE_SLUG_RE.test(label);
+  }
+
+  const authoredRoleValid = $derived(roleLabelValid(authoredRoleValue));
+  const continuationRoleValid = $derived(
+    continuationRole === "none" || roleLabelValid(continuationRoleValue),
+  );
+  const rolesValid = $derived(authoredRoleValid && continuationRoleValid);
+  const rolePlanSummary = $derived(
+    generatedRole === null
+      ? `${authoredLabel} only`
+      : `${authoredLabel} → ${generatedRole === "user" ? userLabel : assistantLabel}`,
+  );
+
+  $effect(() => {
+    if (!rolesValid) rolePlanOpen = true;
+  });
+
+  async function setRolePlanOpen(open: boolean): Promise<void> {
+    if (rolePlanOpen === open) return;
+    const shell = rolePlanShell;
+    const startHeight = shell?.getBoundingClientRect().height ?? 0;
+    const restoreFocus = Boolean(shell?.contains(document.activeElement));
+    rolePlanAnimation?.cancel();
+    rolePlanAnimation = null;
+    shell?.style.removeProperty("overflow");
+    rolePlanOpen = open;
+    await tick();
+    if (!shell) return;
+    if (restoreFocus) {
+      shell.querySelector<HTMLElement>(open ? ".plan-minimize" : ".turn-plan-summary")
+        ?.focus({ preventScroll: true });
+    }
+    const duration = motionDuration(220);
+    if (duration === 0) return;
+    const endHeight = shell.getBoundingClientRect().height;
+    const easing = getComputedStyle(shell).getPropertyValue("--ease-move").trim()
+      || "ease-in-out";
+    shell.style.overflow = "hidden";
+    const animation = shell.animate(
+      [{ height: `${startHeight}px` }, { height: `${endHeight}px` }],
+      { duration, easing },
+    );
+    rolePlanAnimation = animation;
+    const finish = () => {
+      if (rolePlanAnimation !== animation) return;
+      rolePlanAnimation = null;
+      shell.style.removeProperty("overflow");
+    };
+    animation.onfinish = finish;
+    animation.oncancel = finish;
+  }
+
+  function roleSupportsCustomLabel(role: ChatRole): boolean {
+    return role === "user" ? userRoleSupported : assistantRoleSupported;
+  }
+  const continuationRoleEditable = $derived(
+    continuationRole !== "none" && roleSupportsCustomLabel(continuationRole),
+  );
+
+  function applyRoleChoice(role: ChatRole, label: string): void {
+    if (role === "user") samplingState.user_role = label;
+    else samplingState.assistant_role = label;
+  }
+
+  function selectAuthoredRole(label: string): void {
+    applyRoleChoice(authoredRole, label);
+  }
+
+  function selectContinuationRole(label: string): void {
+    if (continuationRole === "none") return;
+    applyRoleChoice(continuationRole, label);
+  }
+
+  function setReplyEnabled(enabled: boolean): void {
+    if (!enabled) {
+      continuationRole = "none";
+      return;
+    }
+    continuationRole = sceneMode && authoredRole === "assistant" ? "user" : "assistant";
+  }
   const canSwapPlan = $derived(
     sceneMode && generatedRole !== null && generatedRole !== authoredRole,
   );
@@ -197,12 +453,12 @@
   const hasText = $derived(input.trim() !== "");
   const appendSelected = $derived(generatedRole === null);
   const primaryDisabled = $derived(
-    !loomTree.loaded || (!hasText && generatedRole === null),
+    !loomTree.loaded || !rolesValid || (!hasText && generatedRole === null),
   );
 
-  const inputPlaceholder = $derived(`message as ${authoredLabel}…`);
+  const inputPlaceholder = $derived(`Write as ${authoredLabel}…`);
   const sendLabel = $derived(
-    appendSelected ? "append" : hasText ? "send" : "generate",
+    appendSelected ? "Add message" : hasText ? "Send" : "Generate reply",
   );
 
   function doSend(): void {
@@ -343,6 +599,11 @@
   }
 
   function onCompareToggle(): void {
+    if (!highlightState.compareTwo) {
+      const first = compareOptions[0]?.value ?? null;
+      if (first === null) return;
+      setCompareTarget(first);
+    }
     toggleCompareTwo();
   }
 
@@ -370,13 +631,32 @@
     return [{ value: name, label: display }];
   }
 
-  /** Highlight-target picker options: "(off)" + surprise sentinel + live
-   *  probe names, fanned out per coordinate axis for multi-axis probes. */
+  /** Highlight-target picker options: built-in generation measurements plus
+   *  live probe names, fanned out per coordinate axis for multi-axis probes. */
+  const samplerEntropyAvailable = $derived(
+    chatLog.turns.some((turn) => (
+      [...(turn.thinkingTokens ?? []), ...(turn.tokens ?? [])]
+        .some((token) => token.samplerEntropy != null && Number.isFinite(token.samplerEntropy))
+    )),
+  );
+  const hasColorableTokens = $derived(
+    chatLog.turns.some((turn) => (
+      (turn.thinkingTokens?.length ?? 0) > 0 || (turn.tokens?.length ?? 0) > 0
+    )),
+  );
+
+  const builtInHighlightOptions = $derived.by<{ value: string; label: string }[]>(() => [
+    { value: SURPRISE_TARGET, label: "Token surprisal" },
+    ...(samplerEntropyAvailable
+      ? [{ value: ENTROPY_TARGET, label: "Sampler entropy" }]
+      : []),
+  ]);
+
   const highlightOptions = $derived.by<{ value: string; label: string }[]>(
     () => {
       const opts: { value: string; label: string }[] = [
-        { value: "", label: "(off)" },
-        { value: SURPRISE_TARGET, label: "surprise (logprob)" },
+        { value: "", label: "No color" },
+        ...builtInHighlightOptions,
       ];
       for (const name of probeNames) opts.push(...axisOptionsFor(name));
       return opts;
@@ -387,18 +667,33 @@
    *  don't pick the same axis.  Distinct axes of one probe (PC0 vs PC1) are
    *  allowed — that's a useful two-stripe compare. */
   const compareOptions = $derived.by<{ value: string; label: string }[]>(() => {
-    const opts: { value: string; label: string }[] = [
-      { value: "", label: "(off)" },
-    ];
-    if (highlightState.target !== SURPRISE_TARGET) {
-      opts.push({ value: SURPRISE_TARGET, label: "surprise (logprob)" });
-    }
+    const opts = builtInHighlightOptions.filter(
+      (option) => option.value !== highlightState.target,
+    );
     for (const name of probeNames) {
       for (const opt of axisOptionsFor(name)) {
         if (opt.value !== highlightState.target) opts.push(opt);
       }
     }
     return opts;
+  });
+
+  const compareColorAvailable = $derived(
+    hasColorableTokens && highlightState.target !== null && compareOptions.length > 0,
+  );
+
+  $effect(() => {
+    if (!compareColorAvailable) {
+      if (highlightState.compareTwo) setCompareTwo(false);
+      if (highlightState.compareTarget !== null) setCompareTarget(null);
+      return;
+    }
+    if (
+      highlightState.compareTwo &&
+      !compareOptions.some((option) => option.value === highlightState.compareTarget)
+    ) {
+      setCompareTarget(compareOptions[0]?.value ?? null);
+    }
   });
 
   // -------------------------------------------------- conversation actions --
@@ -409,13 +704,27 @@
   // queues rather than racing the WS.
 
   const AUTO_REGEN_MODES: { value: AutoRegenMode; label: string }[] = [
-    { value: "unsteered", label: "unsteered" },
-    { value: "inverted", label: "inverted" },
-    { value: "reseed", label: "reseed" },
-    { value: "cool", label: "cool" },
-    { value: "hot", label: "hot" },
-    { value: "custom", label: "custom…" },
+    { value: "unsteered", label: "Original behavior" },
+    { value: "inverted", label: "Opposite guidance" },
+    { value: "reseed", label: "New random seed" },
+    { value: "cool", label: "More focused" },
+    { value: "hot", label: "More varied" },
+    { value: "custom", label: "Custom recipe…" },
   ];
+
+  const generationAvailability = runtimeOperationAvailability("generation");
+  const automaticComparisonAvailable = $derived(
+    generationAvailability.available &&
+    sessionState.info !== null &&
+    sessionState.info.is_base_model !== true &&
+    !rawMode,
+  );
+
+  $effect(() => {
+    if (!automaticComparisonAvailable && autoRegenState.enabled) {
+      disableAutoRegen();
+    }
+  });
 
   function regenMessage(turn: ChatTurn): void {
     const nodeId = turn.nodeId;
@@ -434,10 +743,6 @@
     }
   }
 
-  function openTranscript(): void {
-    openDrawer("transcript");
-  }
-
   // Save / load act on the whole conversation tree; they live here at
   // the chat's edge rather than buried in a rail menu.  Regenerate-N and
   // fan-out used to sit here too — both were redundant (the loom right-
@@ -449,17 +754,15 @@
 
   // ------------------------------------------------------------- A/B split --
 
-  /** The right column renders either a pinned sibling's path or — when
-   *  auto-regen is on — the most recent auto-generated shadow / sibling.
-   *  The ``autoRegenState.enabled`` flag drives both branches; mode
-   *  ``"unsteered"`` is the unsteered-shadow A/B. */
-  const autoRegenActive = $derived(autoRegenState.enabled);
+  /** Do not open an empty comparison pane merely because the setting is on.
+   * It appears when a shadow has started or a completed comparison exists. */
+  const autoRegenActive = $derived(
+    autoRegenState.enabled &&
+    (abState.processingAb || chatLog.turns.some((turn) => turn.abPair !== undefined)),
+  );
 
-  /** Phase-5: the right column renders either the pinned sibling's
-   *  subtree path or — when pinning is off — the auto-regen shadow.
-   *  Auto-regen overwrites the pin with each new auto-generated
-   *  sibling, so the same pane shows whichever sibling is "the other
-   *  one" at this moment. */
+  /** A manually pinned Loom branch takes precedence over the automatic
+   * comparison while it remains in the authoritative tree. */
   const pinnedActive = $derived(
     pinnedComparison.nodeId !== null &&
     loomTree.nodes.has(pinnedComparison.nodeId),
@@ -526,6 +829,50 @@
     collapsedThinking.set(turnIdx, !cur);
   }
 
+  // Keep the streamed transcript outside a live region: announcing every
+  // token makes generation unusable with a screen reader. This stable,
+  // atomic status reports only lifecycle transitions and completed
+  // conversation updates.
+  let streamAnnouncement = $state("");
+  let announcementInitialized = false;
+  let previousGenerationActive = false;
+  let previousTurnCount = 0;
+  $effect(() => {
+    const active = genStatus.active;
+    const finishReason = genStatus.finishReason;
+    const pendingIndex = chatLog.pendingIndex;
+    const turnCount = chatLog.turns.length;
+
+    untrack(() => {
+      if (!announcementInitialized) {
+        announcementInitialized = true;
+      } else if (active && !previousGenerationActive) {
+        streamAnnouncement = rawMode ? "Updating completion." : "Generating response.";
+      } else if (!active && previousGenerationActive) {
+        streamAnnouncement = finishReason === "cancelled"
+          ? "Generation stopped."
+          : finishReason === null
+            ? "Generation ended."
+            : rawMode
+              ? genStatus.tokensSoFar === 0 && chatLog.turns.at(-1)?.generated === false
+                ? "Edit saved."
+                : finishReason === "length" ? "Token limit reached." : "Completion finished."
+              : "Response complete.";
+      } else if (
+        !active
+        && pendingIndex === null
+        && turnCount !== previousTurnCount
+      ) {
+        streamAnnouncement = rawMode
+          ? "Completion updated."
+          : `Conversation updated. ${turnCount} ${turnCount === 1 ? "message" : "messages"}.`;
+      }
+
+      previousGenerationActive = active;
+      previousTurnCount = turnCount;
+    });
+  });
+
   // Cross-component input restore: when a queue drain pops the slot
   // the user was currently editing, ``drainNextPendingAction`` parks
   // the stash on ``inputRestore`` and bumps ``rev``.  This $effect
@@ -587,87 +934,21 @@
   onMount(() => {
     autosize();
     scrollToBottom();
-    textareaRef?.focus();
+    if (!window.matchMedia("(pointer: coarse)").matches) textareaRef?.focus();
+    updateComposerBounds();
+    const observer = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(updateComposerBounds);
+    if (chatRef) observer?.observe(chatRef);
+    window.visualViewport?.addEventListener("resize", updateComposerBounds);
+    return () => {
+      observer?.disconnect();
+      window.visualViewport?.removeEventListener("resize", updateComposerBounds);
+      rolePlanAnimation?.cancel();
+    };
   });
 
   // ----------------------------------------------------------- token render --
-
-  /** Format the logprob suffix for the surprise-mode tooltip.  Includes
-   *  the rank-of-K readout when ``top_alts`` was captured for this
-   *  position so researchers can read "this is rank 1 of 8" at a glance. */
-  function surpriseTooltip(t: TokenScore): string {
-    if (t.logprob == null || !Number.isFinite(t.logprob)) {
-      return "no logprob data";
-    }
-    const lp = `logprob = ${t.logprob.toFixed(3)}`;
-    const alts = t.topAlts;
-    if (!alts || alts.length === 0) return lp;
-    // Look up the chosen token's rank by its current wire identity.
-    if (t.tokenId == null) return lp;
-    let rank: number | null = null;
-    for (let i = 0; i < alts.length; i++) {
-      const a = alts[i];
-      if (a.id === t.tokenId) {
-        rank = i + 1;
-        break;
-      }
-    }
-    return rank !== null
-      ? `${lp}, rank ${rank} of ${alts.length}`
-      : `${lp}, chosen not in top-${alts.length}`;
-  }
-
-  /** A dedicated tooltip line for an axis highlight target (``personas[3]``)
-   *  whose value isn't already in the bare-name ``probes`` row.  Returns null
-   *  for axis 0 / a plain probe (already shown) or when no value is known. */
-  function axisTooltipLine(t: TokenScore, target: string | null): string | null {
-    if (!target || target === SURPRISE_TARGET) return null;
-    if (t.probes && target in t.probes) return null;
-    const v = probeScoreForTarget(t, target);
-    if (v === undefined) return null;
-    return `${target} ${v >= 0 ? "+" : ""}${v.toFixed(3)}`;
-  }
-
-  function tooltipFor(t: TokenScore): string {
-    // Logit-pass: surprise mode owns the tooltip when active so the
-    // surprise number is what hovers on the inline tint.
-    if (highlightState.target === SURPRISE_TARGET) return surpriseTooltip(t);
-    if (
-      highlightState.compareTwo &&
-      highlightState.compareTarget === SURPRISE_TARGET
-    ) {
-      // compare-two with surprise as the B stripe — prefer the probe
-      // tooltip but append the surprise number so hover gives both.
-      const probeTip = t.probes
-        ? formatScoreTooltip(t.probes)
-        : t.score !== undefined && highlightState.target
-          ? `${highlightState.target} ${t.score >= 0 ? "+" : ""}${t.score.toFixed(3)}`
-          : "";
-      const sup = surpriseTooltip(t);
-      return probeTip ? `${probeTip}\n${sup}` : sup;
-    }
-    if (t.probes) {
-      // Lead with the selected axis target(s) so a per-PC tint reports its
-      // own value, then the full axis-0 probe row underneath.
-      const extra: string[] = [];
-      const la = axisTooltipLine(t, highlightState.target);
-      if (la) extra.push(la);
-      if (highlightState.compareTwo) {
-        const lb = axisTooltipLine(t, highlightState.compareTarget);
-        if (lb) extra.push(lb);
-      }
-      const base = formatScoreTooltip(t.probes);
-      return extra.length ? `${extra.join("\n")}\n${base}` : base;
-    }
-    const latest = latestLayerScores(t);
-    if (latest) return formatScoreTooltip(latest);
-    if (t.score !== undefined && highlightState.target) {
-      return `${highlightState.target} ${
-        t.score >= 0 ? "+" : ""
-      }${t.score.toFixed(3)}`;
-    }
-    return "";
-  }
 
   /** Drop whitespace-only tokens from the head of the response so the gap below ``</think>``
    * goes away in plain-text mode too.  Returns the surviving slice
@@ -686,18 +967,67 @@
     }));
   }
 
+  let tokenPopup = $state<{
+    token: TokenScore; anchor: HTMLElement; turnIdx: number; tokenIdx: number; isThinking: boolean;
+  } | null>(null);
+  const tokenFocusIndices = new SvelteMap<string, number>();
+
   function tokenClicked(
     turnIdx: number,
     tokenIdx: number,
-    ev: MouseEvent,
+    ev: MouseEvent | KeyboardEvent,
     isThinking: boolean = false,
   ): void {
     ev.stopPropagation();
-    // Pass ``isThinking`` through so the drilldown drawer reads from
-    // ``turn.thinkingTokens`` when the click came from the thinking
-    // body (otherwise it would index the response stream and either
-    // miss or surface the wrong token).
-    openDrawer("token_drilldown", { turnIdx, tokenIdx, isThinking });
+    const turn = chatLog.turns[turnIdx];
+    const token = (isThinking ? turn?.thinkingTokens : turn?.tokens)?.[tokenIdx];
+    if (!token) return;
+    if (tokenInspectorUi.docked) {
+      tokenPopup = null;
+      openDrawer("token_drilldown", { turnIdx, tokenIdx, isThinking });
+      return;
+    }
+    tokenPopup = { token, anchor: ev.currentTarget as HTMLElement, turnIdx, tokenIdx, isThinking };
+  }
+
+  function tokenKeydown(ev: KeyboardEvent, turnIdx: number, tokenIdx: number, isThinking = false): void {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      tokenClicked(turnIdx, tokenIdx, ev, isThinking);
+      return;
+    }
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key)) return;
+    const target = ev.currentTarget as HTMLElement;
+    const tokens = [...target.parentElement!.querySelectorAll<HTMLElement>(".tok")];
+    const current = tokens.indexOf(target);
+    const next = ev.key === "Home" ? 0 : ev.key === "End" ? tokens.length - 1
+      : (current + (ev.key === "ArrowRight" ? 1 : -1) + tokens.length) % tokens.length;
+    ev.preventDefault();
+    tokens[next].focus();
+  }
+
+  /** One keyboard stop per message opens the drawer at a real token; the
+   * drawer's arrow-key controls then traverse every token and segment. */
+  function inspectTurnTokens(turn: ChatTurn, turnIdx: number): void {
+    const firstResponse = visibleResponseTokens(turn.tokens ?? [])[0];
+    if (firstResponse) {
+      openDrawer("token_drilldown", {
+        turnIdx,
+        tokenIdx: firstResponse.originalIdx,
+      });
+      return;
+    }
+    if ((turn.thinkingTokens?.length ?? 0) > 0) {
+      openDrawer("token_drilldown", {
+        turnIdx,
+        tokenIdx: 0,
+        isThinking: true,
+      });
+      return;
+    }
+    if ((turn.tokens?.length ?? 0) > 0) {
+      openDrawer("token_drilldown", { turnIdx, tokenIdx: 0 });
+    }
   }
 
   // The bare-text form for plain (no-highlight) rendering still strips
@@ -714,36 +1044,49 @@
   }
 </script>
 
-<div class="chat" aria-label="Chat">
-  <header class="chat-header">
-    <label class="ctl">
-      <span class="ctl-label">highlight</span>
-      <!-- Logit-pass: ``surprise`` tints tokens by ``-logprob /
-           (1 - logprob)`` per Decision 4.  Sentinel value sits next to
-           real probe names in the same picker so a single dropdown
-           covers both axes. -->
-      <span class="ctl-select">
-        <Select
-          value={highlightState.target ?? ""}
-          options={highlightOptions}
-          onchange={onHighlightChange}
-          ariaLabel="Highlight probe"
-        />
-      </span>
-    </label>
+<div class="chat-panel">
+  {#if headersVisible}
+  <header class="chat-header" id="chat-tools-header" inert={!headersVisible}
+    in:slide={collapseIn()} out:slide={collapseOut()}>
+    <div class="reading-tools">
+      <div class="color-control">
+        <label class="ctl">
+          <span class="ctl-label">Color words by</span>
+          <!-- Logit-pass: ``surprise`` tints tokens by ``-logprob /
+               (1 - logprob)`` per Decision 4.  Sentinel value sits next to
+               real probe names in the same picker so a single dropdown
+               covers both axes. -->
+          <span class="ctl-select">
+            <Select
+              value={highlightState.target ?? ""}
+              options={highlightOptions}
+              onchange={onHighlightChange}
+              ariaLabel={rawMode ? "Color completion tokens by" : "Color generated words by"}
+            />
+          </span>
+        </label>
 
-    <span class="ctl ctl-inline">
-      <Checkbox
-        checked={highlightState.compareTwo}
-        onchange={onCompareToggle}
-        ariaLabel="compare-two"
-      />
-      <span class="ctl-label">compare</span>
-    </span>
+        <InfoTip
+          label="About word colors"
+          text={rawMode
+            ? "Colors show recorded readings in both editing and inspection views, and pause for unsaved edits. Open Inspect tokens for exact values. Surprisal and entropy use the sampling distribution; greedy decoding can record zero for both."
+            : "Color words by token surprisal, sampler entropy, or an attached model reading. Select a word for its exact value."}
+        />
+      </div>
+
+    {#if compareColorAvailable}
+      <button
+        type="button"
+        class="compare-color"
+        class:active={highlightState.compareTwo}
+        aria-pressed={highlightState.compareTwo}
+        onclick={onCompareToggle}
+      >{highlightState.compareTwo ? "Use one color" : "Compare colors"}</button>
+      {/if}
 
     {#if highlightState.compareTwo}
       <label class="ctl">
-        <span class="ctl-label">vs.</span>
+        <span class="ctl-label">With</span>
         <!-- Allow surprise as the B-stripe target too — "probe X vs.
              surprise" is a useful axis ("does probe X light up at the
              surprising tokens?"). -->
@@ -753,76 +1096,67 @@
             options={compareOptions}
             onchange={onCompareChange}
             disabled={!highlightState.compareTwo}
-            ariaLabel="Compare probe"
+            ariaLabel="Second word color"
           />
         </span>
       </label>
-    {/if}
+      {/if}
 
-    <!-- Render-mode badge — raw/chat toggle.  The mode is seeded from
-         the model (base → raw, chat → chat) the first time it is seen,
-         then it's a plain two-state toggle; the same control also sits
-         in the advanced sampling drawer. -->
-    <button
-      type="button"
-      class="mode-badge"
-      class:raw={rawMode}
-      onclick={() => setGenUiMode(rawMode ? "chat" : "raw")}
-      title={`render: ${genUiMode.mode}`}
-    >
-      {genUiMode.mode}
-    </button>
+    </div>
 
-    <!-- Conversation actions — transcript + auto-regen.  Clear / save /
-         load moved up to the threads-column header (they act on the
-         whole tree, not on the active chat path). -->
+    <!-- Conversation actions. -->
     <div class="header-actions">
-      <!-- The workspace rail is gone — the palette is the tool launcher,
-           and this chip is its one persistent visible hint. -->
-      <button
-        type="button"
-        class="hbtn kbd-hint"
-        onclick={togglePalette}
-        title="tools"
-      >
-        ⌘K
-      </button>
-      <button type="button" class="hbtn" onclick={openTranscript}>
-        transcript
-      </button>
-      <span class="ctl ctl-inline">
-        <Checkbox
-          checked={autoRegenState.enabled}
-          onchange={toggleAutoRegen}
-          ariaLabel="auto-regen"
-        />
-        <span class="ctl-label">auto</span>
-      </span>
-      {#if autoRegenState.enabled}
-        <span class="ctl-select">
-          <Select
-            value={autoRegenState.mode}
-            options={AUTO_REGEN_MODES}
-            onchange={onAutoRegenModeChange}
-            ariaLabel="Auto-regen mode"
+      {#if automaticComparisonAvailable}
+        <div class="comparison-control">
+          <span class="ctl ctl-inline">
+            <Checkbox
+              checked={autoRegenState.enabled}
+              onchange={toggleAutoRegen}
+              label="Compare replies"
+            />
+          </span>
+          <InfoTip
+            label="About automatic comparison"
+            text="Create a second version after every reply using the comparison settings."
           />
-        </span>
-        {#if autoRegenState.mode === "custom"}
-          <input
-            type="text"
-            class="ctl-input"
-            value={autoRegenState.custom}
-            oninput={(ev) =>
-              setAutoRegenCustom(
-                (ev.currentTarget as HTMLInputElement).value,
-              )}
-            placeholder="seed=42, temperature=1.5"
-            aria-label="Custom auto-regen recipe"
-          />
+        </div>
+        {#if autoRegenState.enabled}
+          <span class="ctl-select">
+            <Select
+              value={autoRegenState.mode}
+              options={AUTO_REGEN_MODES}
+              onchange={onAutoRegenModeChange}
+              disabled={abState.processingAb}
+              ariaLabel="Automatic comparison style"
+            />
+          </span>
+          {#if autoRegenState.mode === "custom"}
+            <input
+              type="text"
+              class="ctl-input"
+              value={autoRegenState.custom}
+              disabled={abState.processingAb}
+              oninput={(ev) =>
+                setAutoRegenCustom(
+                  (ev.currentTarget as HTMLInputElement).value,
+                )}
+              placeholder="Example: seed=42, temperature=1.5"
+              aria-label="Custom automatic comparison recipe"
+            />
+          {/if}
         {/if}
       {/if}
     </div>
   </header>
+  {/if}
+
+<div class="chat" aria-label={rawMode ? "Text completion" : "Chat"} bind:this={chatRef}>
+  <div
+    class="sr-only"
+    role="status"
+    aria-live="polite"
+    aria-atomic="true"
+  >{streamAnnouncement}</div>
 
   {#if rawMode}
     <RawBuffer />
@@ -832,14 +1166,20 @@
     class:ab={twoColumns}
     bind:this={logRef}
     onscroll={onScroll}
-    role="log"
-    aria-live="polite"
+    role="region"
+    aria-label="Conversation"
   >
-    {#if twoColumns}
-      <!-- Two-column split.  Right column is the *pinned* sibling's
-           subtree path when pinning is on, the auto-regen output's
-           path when auto-regen is on (auto-regen pins on done), or the
-           legacy A/B shadow when only A/B is on. -->
+    {#if chatLog.turns.length === 0}
+      <div
+        class="conversation-empty"
+        in:fly={contentIn(8)}
+        out:fly={contentOut()}
+      >
+        <p>Type a prompt to get started</p>
+      </div>
+    {:else if twoColumns}
+      <!-- Two-column split. The right column is a pinned branch path or a
+           stateless automatic comparison. Comparisons never alter the loom. -->
       <div class="ab-grid">
         <div class="ab-col ab-primary">
           {#each chatLog.turns as turn, turnIdx (turnIdx)}
@@ -870,13 +1210,12 @@
               {:else}
                 <div class="msg placeholder" aria-hidden="true">
                   <div class="who">
-                    <span class="role-chip">
-                      <b>{roleGlyphLetter(turn.role, turn.roleLabel)}</b>
-                      {roleDisplayLabel(turn.role, turn.roleLabel)}
-                    </span>
+                    {@render speaker(turn, false)}
                     <span class="who-meta">(alt)</span>
                   </div>
-                  <span class="placeholder-text">pending…</span>
+                  <span class="placeholder-text">
+                    {abState.pendingTurnIdx === turnIdx ? "Generating comparison…" : "Not compared"}
+                  </span>
                 </div>
               {/if}
             {/each}
@@ -890,50 +1229,124 @@
     {/if}
   </div>
 
+  <div
+    class="composer-resizer-shell"
+    class:dragging={resizeStart !== null}
+  >
+    <input
+      type="range"
+      class="composer-resizer"
+      min={composerMinHeight}
+      max={composerMaxHeight}
+      value={composerControlHeight}
+      aria-label="Resize writing area"
+      aria-orientation="vertical"
+      aria-controls="conversation-composer"
+      aria-valuetext={`${composerControlHeight} pixel writing area`}
+      aria-describedby="composer-resize-help"
+      onpointerdown={beginComposerResize}
+      onpointermove={moveComposerResize}
+      onpointerup={endComposerResize}
+      onpointercancel={endComposerResize}
+      onkeydown={resizeComposerWithKeyboard}
+      ondblclick={resetComposerHeight}
+    />
+    <span aria-hidden="true"></span>
+    <p class="sr-only" id="composer-resize-help">Use arrow keys to resize. Double-click to reset.</p>
+  </div>
+
   <StatusFooter />
 
   <PendingBubbles />
 
-  <div class="turn-plan" aria-label="Next turn">
+  <div class="turn-plan-shell" bind:this={rolePlanShell}>
+  {#if rolePlanOpen}
+    <div
+      id="turn-role-controls"
+      class="turn-plan"
+      aria-label="Next turn"
+      in:fly={contentIn(2)}
+    >
     <div class="plan-card">
-      <span class="plan-actor">you write</span>
-      <Select
-        bind:value={authoredRole}
-        options={authoredRoleOptions}
+      <span class="plan-actor">You</span>
+      <Combobox
+        value={authoredRoleValue}
+        options={roleLabelOptions}
+        onchange={selectAuthoredRole}
+        disabled={!roleSupportsCustomLabel(authoredRole)}
+        invalid={!authoredRoleValid}
+        placeholder={authoredRole === "user" ? defaultUserLabel : defaultAssistantLabel}
         ariaLabel="You write as"
-        title={`you write as ${authoredLabel}`}
+        ariaDescribedby={!authoredRoleValid ? "role-label-error" : undefined}
       />
     </div>
 
-    <div class="plan-swap">
+    <div class="plan-card">
+      <span class="plan-actor">Model</span>
+      <Combobox
+        value={continuationRole === "none" ? "" : continuationRoleValue}
+        options={roleLabelOptions}
+        onchange={selectContinuationRole}
+        disabled={!continuationRoleEditable}
+        invalid={!continuationRoleValid}
+        placeholder={continuationRole === "user" ? defaultUserLabel : defaultAssistantLabel}
+        ariaLabel="Model writes as"
+        ariaDescribedby={!continuationRoleValid ? "role-label-error" : undefined}
+      />
+    </div>
+
+    <div class="plan-actions">
       <Button
         variant="flat"
         size="sm"
         disabled={!canSwapPlan}
         onclick={swapPlanRoles}
-        title="swap roles"
         ariaLabel="Swap writer roles"
-      >⇄</Button>
-    </div>
-
-    <div class="plan-card">
-      <span class="plan-actor">model writes</span>
-      <Select
-        bind:value={continuationRole}
-        options={continuationRoleOptions}
-        ariaLabel="Model writes as"
-        title={generatedRole === null ? "model does not write" : `model writes as ${generatedRole === "user" ? userLabel : assistantLabel}`}
-      />
-    </div>
-
-    <div class="cast-manage">
+      >Swap</Button>
+      <label class="reply-toggle">
+        <Checkbox
+          checked={generatedRole !== null}
+          onchange={setReplyEnabled}
+          ariaLabel="Generate a model reply"
+        />
+        <span>Reply</span>
+      </label>
       <Button
         size="sm"
-        title="cast"
+        variant="flat"
+        disabled={!rolesValid}
         onclick={() => openDrawer("cast")}
-      >cast…</Button>
+      >Role settings</Button>
+      <button
+        type="button"
+        class="plan-minimize"
+        aria-expanded="true"
+        aria-controls="turn-role-controls"
+        onclick={() => setRolePlanOpen(false)}
+      >Collapse roles</button>
     </div>
+    </div>
+  {:else}
+    <button
+      type="button"
+      class="turn-plan-summary"
+      aria-expanded="false"
+      aria-controls="turn-role-controls"
+      onclick={() => setRolePlanOpen(true)}
+      in:fly={contentIn(2)}
+    >
+      <span class="summary-label">Roles</span>
+      <span class="summary-value">{rolePlanSummary}</span>
+      <span class="summary-action">Edit roles</span>
+    </button>
+  {/if}
   </div>
+
+  {#if !rolesValid}
+    <p id="role-label-error" class="role-error" role="alert">
+      Use lowercase letters, numbers, periods, underscores, or hyphens for role names.
+    </p>
+  {/if}
 
   {#if thinkingInputSupported}
     <div class="thinking-row">
@@ -943,54 +1356,113 @@
           size="sm"
           accent={thinkingDraft.trim() !== "" ? "var(--pillar-manifold)" : undefined}
           onclick={() => (thinkingOpen = !thinkingOpen)}
-          title="next authored line"
-        >{thinkingOpen ? "− thinking" : "+ thinking"}</Button>
+          title="Add private reasoning text to the next authored line"
+        >{thinkingOpen ? "Hide reasoning" : "Add reasoning"}</Button>
       </div>
       {#if thinkingOpen}
-        <div class="thinking-box">
+        <div class="thinking-box" in:slide={collapseIn()} out:slide={collapseOut()}>
           <textarea
-            class="thinking-input"
+            class="thinking-input field-focus"
             bind:value={thinkingDraft}
-            placeholder="thinking…"
+            dir="auto"
+            placeholder="Optional reasoning for this line…"
             rows="2"
             spellcheck="false"
-            aria-label="authored thinking block"
+            aria-label="Reasoning for the next authored line"
           ></textarea>
           {#if stripsHistoryThinking}
-            <p class="thinking-warn" role="note">one turn only</p>
+            <p class="thinking-warn" role="note">This model uses it for one turn only.</p>
           {/if}
         </div>
       {/if}
     </div>
   {/if}
 
-  <form class="input-row" onsubmit={(ev) => { ev.preventDefault(); doSend(); }}>
+  <form
+    id="conversation-composer"
+    class="input-row"
+    onsubmit={(ev) => { ev.preventDefault(); doSend(); }}
+  >
     <textarea
-      class="input"
+      class="input field-focus"
       bind:this={textareaRef}
       bind:value={input}
+      dir="auto"
       onkeydown={onKeydown}
       placeholder={inputPlaceholder}
-      rows="1"
+      rows="3"
       aria-label={`Compose as ${authoredLabel}`}
     ></textarea>
-    <div class="input-actions">
+    <div class="input-actions" class:has-clear={canClearConversation}>
       <Button
         type="submit"
-        accent="var(--accent-green)"
+        variant="solid"
         disabled={primaryDisabled}
-        title={appendSelected ? "⏎ append" : "⏎ submit"}
-      >{sendLabel}</Button>
+        title={appendSelected ? "Enter · add your message only" : "Enter · send and generate a reply"}
+      ><StateIcon icons={["add", "send", "conversation"]} name={appendSelected ? "add" : hasText ? "send" : "conversation"} />{sendLabel}</Button>
       <Button
         variant="danger"
         onclick={sendStop}
         disabled={!genStatus.active}
-        title="Esc"
-      >stop</Button>
+        title="Escape · stop the current reply"
+      ><FluentIcon name="stop" />Stop</Button>
+      {#if canClearConversation}
+        <button
+          type="button"
+          class="clear-conversation"
+          class:confirm-clear={clearConversationArmed}
+          onclick={requestClearConversation}
+          onblur={() => (clearConversationArmed = false)}
+          onkeydown={(event) => {
+            if (event.key === "Escape") clearConversationArmed = false;
+          }}
+          title={clearConversationArmed
+            ? "Clear the current view and start a new path"
+            : "Start a blank conversation; existing branches remain available"}
+          aria-label={clearConversationArmed ? "Confirm clear conversation" : "Clear conversation"}
+        >
+          {clearConversationArmed ? "Confirm clear" : "Clear conversation"}
+        </button>
+      {/if}
     </div>
   </form>
   {/if}
 </div>
+  {#if sessionState.info?.model_id}
+    <div class="active-model" aria-label="Active model" title={sessionState.info.model_id}>
+      <span>Model</span>
+      <span class="active-model-name">{sessionState.info.model_id.split("/").at(-1)}</span>
+    </div>
+  {/if}
+
+{#if tokenPopup}
+  {@const popup = tokenPopup}
+  {#key popup.anchor}
+    <TokenLogitsPopover token={popup.token} anchor={popup.anchor}
+      source={chatLog.turns[popup.turnIdx]?.generated ? "Model token" : "User text · recorded"}
+      onclose={() => tokenPopup = null}
+      ondetails={() => openDrawer("token_drilldown", { turnIdx: popup.turnIdx, tokenIdx: popup.tokenIdx, isThinking: popup.isThinking, initialTab: "logits" })} />
+  {/key}
+{/if}
+</div>
+
+{#snippet speaker(turn: ChatTurn, interactive = true)}
+  <span class="role-chip">
+    {#if turn.role === "assistant"}
+      {#if interactive}
+        <button type="button" class="model-avatar" aria-label="Open model settings" title="Model settings"
+          onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "model" } }))}>
+          <Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={32} background="circle" alt="" />
+        </button>
+      {:else}
+        <span class="speaker-marker" aria-hidden="true"><Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={32} background="circle" alt="" /></span>
+      {/if}
+    {:else}
+      <span class="speaker-marker" aria-hidden="true"><span class="user-avatar"></span></span>
+    {/if}
+    <span class="role-label">{roleDisplayLabel(turn.role, turn.roleLabel)}</span>
+  </span>
+{/snippet}
 
 {#snippet bubble(turn: ChatTurn, turnIdx: number, isShadow: boolean)}
   {#if turn.role === "system"}
@@ -998,18 +1470,19 @@
     <div
       class="stage"
       class:shadow={isShadow}
+      dir="auto"
       title="system prompt"
+      in:fly={contentIn()}
     >{turn.text}</div>
   {:else}
   <div
     class="msg"
     class:shadow={isShadow}
+    class:generation-active={genStatus.active && (isShadow ? abState.pendingTurnIdx === turnIdx : !abState.processingAb && chatLog.pendingIndex === turnIdx)}
+    in:fly={contentIn()}
   >
     <div class="who">
-      <span class="role-chip" title="{turn.role}{turn.roleLabel ? ` as ${turn.roleLabel}` : ''}">
-        <b>{roleGlyphLetter(turn.role, turn.roleLabel)}</b>
-        {roleDisplayLabel(turn.role, turn.roleLabel)}
-      </span>
+      {@render speaker(turn)}
       {#if turn.nodeId}
         <Button
           size="sm"
@@ -1017,9 +1490,20 @@
           onclick={() => regenMessage(turn)}
           title="reroll this message"
           ariaLabel={`Reroll ${roleDisplayLabel(turn.role, turn.roleLabel)} message`}
-        >↻</Button>
+        ><FluentIcon name="refresh" /></Button>
+      {/if}
+      {#if (turn.tokens?.length ?? 0) > 0 || (turn.thinkingTokens?.length ?? 0) > 0}
+        <Button
+          size="sm"
+          variant="flat"
+          onclick={() => inspectTurnTokens(turn, turnIdx)}
+          ariaLabel={`Inspect tokens in ${roleDisplayLabel(turn.role, turn.roleLabel)} message`}
+        >inspect tokens</Button>
       {/if}
       {#if isShadow && !pinnedActive}<span class="who-meta">(unsteered)</span>{/if}
+      {#if genStatus.active && (isShadow ? abState.pendingTurnIdx === turnIdx : !abState.processingAb && chatLog.pendingIndex === turnIdx)}
+        <span class="who-meta generation-label" role="status">{(turn.tokens?.length ?? 0) > 0 ? "Writing…" : (turn.thinkingTokens?.length ?? 0) > 0 ? "Thinking…" : "Preparing reply…"}</span>
+      {/if}
       {#if turn.meanLogprob != null && Number.isFinite(turn.meanLogprob)}
         <span
           class="prov"
@@ -1036,31 +1520,32 @@
           onclick={() => toggleThinking(turnIdx)}
           aria-expanded={!turnCollapsed(turnIdx, turn)}
         >
-          <span class="caret">{turnCollapsed(turnIdx, turn) ? "▶" : "▼"}</span>
+          <span class="caret" class:collapsed={turnCollapsed(turnIdx, turn)}><FluentIcon name="down" /></span>
           <span>thinking{turnCollapsed(turnIdx, turn) ? "…" : ""}</span>
         </button>
         {#if !turnCollapsed(turnIdx, turn)}
-          <div class="thinking-body">
+          <div
+            class="thinking-body"
+            dir="auto"
+            in:slide={collapseIn()}
+            out:slide={collapseOut()}
+          >
             {#each turn.thinkingTokens ?? [] as tok, tokenIdx (tokenIdx)}
               <span
                 class="tok"
+                data-cursor="inspect"
                 class:tinted={highlightState.target !== null}
                 style={highlightStyleString(tok)}
-                title={tooltipFor(tok)}
                 onpointerenter={() => beginTokenHover(tok, turn.nodeId)}
                 onpointerleave={endTokenHover}
-                onfocus={() => beginTokenHover(tok, turn.nodeId)}
+                onfocus={() => { tokenFocusIndices.set(`${turn.nodeId ?? turnIdx}:thinking`, tokenIdx); beginTokenHover(tok, turn.nodeId); }}
                 onblur={endTokenHover}
                 onclick={(ev) => tokenClicked(turnIdx, tokenIdx, ev, true)}
-                onkeydown={(ev) => {
-                  if (ev.key === "Enter" || ev.key === " ") {
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                    openDrawer("token_drilldown", { turnIdx, tokenIdx, isThinking: true });
-                  }
-                }}
+                onkeydown={(ev) => tokenKeydown(ev, turnIdx, tokenIdx, true)}
                 role="button"
-                tabindex="-1"
+                tabindex={tokenIdx === (tokenFocusIndices.get(`${turn.nodeId ?? turnIdx}:thinking`) ?? 0) ? 0 : -1}
+                aria-haspopup="dialog"
+                aria-label={`Inspect token ${tok.text.trim() || "whitespace"}`}
               >{tok.text}</span>
             {/each}
           </div>
@@ -1068,28 +1553,24 @@
       </div>
     {/if}
 
-    <div class="response-body">
+    <div class="response-body" dir="auto">
       {#if (turn.tokens?.length ?? 0) > 0}
-        {#each visibleResponseTokens(turn.tokens ?? []) as { tok, originalIdx } (originalIdx)}
+        {#each visibleResponseTokens(turn.tokens ?? []) as { tok, originalIdx }, visibleIdx (originalIdx)}
           <span
             class="tok"
+            data-cursor="inspect"
             class:tinted={highlightState.target !== null}
             style={highlightStyleString(tok)}
-            title={tooltipFor(tok)}
             onpointerenter={() => beginTokenHover(tok, turn.nodeId)}
             onpointerleave={endTokenHover}
-            onfocus={() => beginTokenHover(tok, turn.nodeId)}
+            onfocus={() => { tokenFocusIndices.set(`${turn.nodeId ?? turnIdx}:response`, originalIdx); beginTokenHover(tok, turn.nodeId); }}
             onblur={endTokenHover}
             onclick={(ev) => tokenClicked(turnIdx, originalIdx, ev, false)}
-            onkeydown={(ev) => {
-              if (ev.key === "Enter" || ev.key === " ") {
-                ev.preventDefault();
-                ev.stopPropagation();
-                openDrawer("token_drilldown", { turnIdx, tokenIdx: originalIdx });
-              }
-            }}
+            onkeydown={(ev) => tokenKeydown(ev, turnIdx, originalIdx)}
             role="button"
-            tabindex="-1"
+            tabindex={(tokenFocusIndices.has(`${turn.nodeId ?? turnIdx}:response`) ? tokenFocusIndices.get(`${turn.nodeId ?? turnIdx}:response`) === originalIdx : visibleIdx === 0) ? 0 : -1}
+            aria-haspopup="dialog"
+            aria-label={`Inspect token ${tok.text.trim() || "whitespace"}`}
           >{tok.text}</span>
         {/each}
       {:else}
@@ -1101,25 +1582,82 @@
 {/snippet}
 
 <style>
+  .chat-panel {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-2);
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+  }
+  .active-model {
+    display: flex;
+    flex: 0 0 auto;
+    align-self: flex-end;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    max-width: 100%;
+    color: var(--fg-muted);
+    font-family: var(--font-ui);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+  .active-model-name { min-width: 0; overflow-wrap: anywhere; text-align: end; }
   .chat {
     display: flex;
+    flex: 1 1 auto;
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    gap: var(--space-3);
-    font-family: var(--font-mono);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable both-edges;
+    gap: var(--space-2);
+    font-family: var(--font-reading);
     font-size: var(--text);
     color: var(--fg);
+    padding: var(--surface-padding);
+    border-radius: var(--radius-lg);
+    background: var(--workspace-panel-bg);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .chat-header {
-    display: flex;
+    display: grid;
+    flex: 0 0 auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: var(--space-4);
-    flex-wrap: wrap;
+    gap: var(--group-gap);
     padding-bottom: var(--space-2);
     color: var(--fg-dim);
     font-size: var(--text-sm);
+  }
+  .reading-tools {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--cluster-gap);
+    min-width: 0;
+  }
+  .color-control,
+  .comparison-control {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
   }
   .ctl {
     display: inline-flex;
@@ -1131,8 +1669,9 @@
     user-select: none;
   }
   .ctl-label {
-    color: var(--fg-muted);
-    text-transform: lowercase;
+    color: var(--fg-dim);
+    font-family: var(--font-structure);
+    font-weight: var(--weight-structure);
     letter-spacing: 0;
   }
   /* Layout host for the themed Select — Select owns its own theme. */
@@ -1141,66 +1680,38 @@
     min-width: 9em;
   }
 
-  /* Render-mode badge — compact raw/chat pill.  Sits between the
-   * highlight controls and the conversation actions. */
-  .mode-badge {
-    background: var(--accent-subtle);
-    color: var(--accent);
+  .compare-color {
+    min-height: var(--control-target);
+    padding: var(--space-1) var(--space-3);
     border: 0;
     border-radius: var(--radius);
-    padding: var(--space-1) var(--space-3);
+    background: transparent;
+    color: var(--fg-dim);
     font: inherit;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    text-transform: lowercase;
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-structure);
     cursor: pointer;
-    transition: background var(--dur) var(--ease-out);
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out);
   }
-  .mode-badge:hover {
-    background: var(--accent-strong);
+  .compare-color:hover,
+  .compare-color.active {
+    background: var(--glass);
+    color: var(--fg);
   }
-  .mode-badge.raw {
-    background: color-mix(in srgb, var(--pillar-manifold) 12%, transparent);
-    color: var(--pillar-manifold);
-  }
+  .compare-color:active { transform: scale(var(--press-scale)); }
 
   /* Conversation-actions strip — inline, pushed to the right edge of
    * the header.  Wraps onto a second row on narrow layouts. */
   .header-actions {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
-    flex-wrap: wrap;
-    margin-left: auto;
-  }
-  /* Borderless workhorse — glass fill is the shape, hover lifts it. */
-  .hbtn {
-    background: var(--glass);
-    border: 0;
-    border-radius: var(--radius);
-    color: var(--fg-dim);
-    padding: var(--space-1) var(--space-4);
-    font: inherit;
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    cursor: pointer;
-    transition:
-      background var(--dur) var(--ease-out),
-      color var(--dur) var(--ease-out);
-  }
-  .hbtn:hover:not(:disabled) {
-    background: var(--glass-strong);
-    color: var(--accent);
-  }
-  .hbtn:disabled {
-    color: var(--fg-muted);
-    cursor: not-allowed;
-  }
-  /* The palette hint reads as a key, not a word — slightly tighter. */
-  .kbd-hint {
-    font-size: var(--text-xs);
-    letter-spacing: 0.06em;
-    padding: var(--space-1) var(--space-3);
+    gap: var(--cluster-gap);
+    flex-wrap: nowrap;
+    justify-content: flex-end;
   }
   .ctl-input {
     background: var(--input-well);
@@ -1224,9 +1735,25 @@
     overflow-x: hidden;
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-md);
     min-height: 0;
-    padding-right: var(--space-2);
+    padding-inline-end: var(--space-2);
+  }
+
+  .conversation-empty {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    margin: auto;
+    padding: var(--space-8) var(--space-5);
+    text-align: center;
+  }
+
+  .conversation-empty p {
+    margin: 0;
+    color: var(--fg-dim);
+    font-size: var(--text);
   }
 
   .log.ab {
@@ -1275,23 +1802,19 @@
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     cursor: pointer;
+    min-height: var(--control-target);
   }
   .pin-unpin:hover {
     color: var(--accent-red);
     background: color-mix(in srgb, var(--accent-red) 12%, transparent);
   }
-  /* Every speaker wears ONE neutral glass card — role identity lives in
-   * the chip, while optional analysis artifacts live beside it. Hue stays
-   * reserved for spaces and states.  Borderless: the glass fill +
-   * quiet fill defines the card; the border slot exists only so the A/B
-   * shadow column can wear its violet-tinted hairline (a comparison
-   * marker — state, not chrome). */
+  /* The neutral fill groups each turn; the border marks A/B comparisons. */
   .msg {
     border: 1px solid transparent;
     border-radius: var(--radius-lg);
-    background: var(--glass);
-    box-shadow: var(--shadow-well);
-    padding: var(--space-3) var(--space-5);
+    background: var(--workspace-message-bg, var(--surface-card));
+    box-shadow: var(--shadow-rack);
+    padding: var(--surface-padding);
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
@@ -1301,9 +1824,14 @@
   .msg.shadow {
     border-color: color-mix(in srgb, var(--pillar-manifold) 26%, transparent);
   }
+  .msg.generation-active {
+    box-shadow: var(--shadow-rack);
+  }
+  .generation-label { display: inline-flex; align-items: center; gap: var(--space-2); }
 
   .who {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-3);
     min-width: 0;
@@ -1312,39 +1840,36 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-3);
-    font-family: var(--font-mono);
-    font-size: var(--text-2xs);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    letter-spacing: 0;
+    text-transform: none;
     color: var(--fg-dim);
-    padding: 2px 9px 2px 3px;
-    border-radius: var(--radius-pill);
-    background: var(--glass-strong);
+    padding: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
     max-width: 40%;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .role-chip b {
-    font-weight: var(--weight-bold);
-    width: 15px;
-    height: 15px;
-    border-radius: 50%;
-    background: var(--glass-bright);
-    color: var(--fg);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 9px;
-    flex: none;
-  }
+  .role-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .model-avatar, .speaker-marker { display: inline-grid; place-items: center; width: var(--control-target); height: var(--control-target); flex: none; }
+  .model-avatar { padding: 0; border: 0; border-radius: var(--radius-pill); background: transparent; cursor: pointer; }
+  .model-avatar:hover { background: var(--bg-hover); }
+  .model-avatar:active { transform: scale(0.96); }
+  .model-avatar:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+  .model-avatar :global(img), .speaker-marker :global(img) { display: block; width: 32px; height: 32px; border-radius: var(--radius-pill); outline: 1px solid oklch(1 0 0 / 0.1); outline-offset: -1px; }
+  :global(:root[data-theme="light"]) .model-avatar :global(img), :global(:root[data-theme="light"]) .speaker-marker :global(img) { outline-color: oklch(0 0 0 / 0.1); }
+  .user-avatar { width: 24px; height: 24px; border-radius: var(--radius-pill); background: var(--accent); }
+  @media (forced-colors: active) { .msg { border-color: CanvasText; } .user-avatar { background: Highlight; forced-color-adjust: none; } }
   .who-meta {
     color: var(--fg-muted);
+    font-family: var(--font-data);
     font-size: var(--text-xs);
   }
   .prov {
-    margin-left: auto;
+    margin-inline-start: auto;
     color: var(--fg-muted);
+    font-family: var(--font-data);
     font-size: var(--text-2xs);
     font-variant-numeric: tabular-nums;
     flex: none;
@@ -1377,7 +1902,8 @@
     white-space: pre-wrap;
     word-break: break-word;
     color: var(--fg-strong);
-    line-height: 1.45;
+    font-size: var(--workspace-message-size, var(--text-md));
+    line-height: 1.55;
   }
   .plain {
     white-space: pre-wrap;
@@ -1397,23 +1923,26 @@
     font-family: var(--font-mono);
     padding: var(--space-1) 0;
     cursor: pointer;
-    text-align: left;
+    text-align: start;
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
     width: 100%;
+    min-height: var(--control-target);
   }
   .thinking-toggle:hover {
     color: var(--fg-strong);
   }
   .thinking-toggle .caret {
     color: var(--fg-muted);
-    width: 1ch;
-    display: inline-block;
+    display: inline-flex;
+    transition: transform var(--dur) var(--ease-out);
   }
+  .thinking-toggle .caret.collapsed { transform: rotate(-90deg); }
   .thinking-body {
-    /* 1.6em left pad is a hanging indent tuned to the caret width — kept raw. */
-    padding: var(--space-1) 0 var(--space-2) 1.6em;
+    /* The inline-start pad is a hanging indent tuned to the caret width. */
+    padding-block: var(--space-1) var(--space-2);
+    padding-inline: var(--space-md) 0;
     color: var(--fg-dim);
     font-style: italic;
     white-space: pre-wrap;
@@ -1439,46 +1968,176 @@
 
   /* The visible next-turn plan names roles; each option carries its structural
    * seat internally so the composer never makes the user manage both. */
+  .turn-plan-shell {
+    min-width: 0;
+  }
   .turn-plan {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
-    align-items: end;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    align-items: center;
     gap: var(--space-2);
-    padding: 0 var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-group);
+    background: transparent;
+    --control-field: var(--control-target);
+    --control-compact: var(--control-target);
   }
   .plan-card {
     display: grid;
-    gap: var(--space-1);
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-3);
     min-width: 0;
   }
   .plan-actor {
-    font-family: var(--font-mono);
-    font-size: var(--text-2xs);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    letter-spacing: 0;
+    text-transform: none;
     color: var(--fg-muted);
   }
-  .plan-swap {
-    align-self: end;
-    display: flex;
+  .reply-toggle {
+    display: inline-flex;
     align-items: center;
-    min-height: 32px;
+    gap: var(--space-2);
+    color: var(--fg-muted);
+    font-family: var(--font-structure);
+    font-size: var(--text-xs);
+    cursor: pointer;
   }
-  .cast-manage {
-    align-self: end;
+  .plan-actions {
+    align-self: center;
     display: flex;
     align-items: center;
-    min-height: 32px;
+    gap: var(--space-2);
+    min-height: var(--control-target);
+  }
+  .plan-minimize,
+  .turn-plan-summary {
+    border: 0;
+    font: inherit;
+    font-family: var(--font-structure);
+    cursor: pointer;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .plan-minimize {
+    min-height: var(--control-target);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius);
+    background: var(--glass);
+    box-shadow: var(--shadow-control);
+    color: var(--fg-dim);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-structure);
+    white-space: nowrap;
+  }
+  .plan-minimize:hover {
+    background: var(--glass-strong);
+    box-shadow: var(--shadow-control-hover);
+    color: var(--fg);
+  }
+  .turn-plan-summary {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+    width: 100%;
+    min-height: var(--control-target);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-lg);
+    background: var(--workspace-panel-bg);
+    color: var(--fg-dim);
+    text-align: start;
+  }
+  .turn-plan-summary:hover {
+    background: var(--glass);
+    color: var(--fg);
+  }
+  .plan-minimize:active,
+  .turn-plan-summary:active {
+    transform: scale(var(--press-scale));
+  }
+  .plan-minimize:focus-visible,
+  .turn-plan-summary:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+  .summary-label,
+  .summary-action {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-structure);
+  }
+  .summary-label {
+    color: var(--fg-muted);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .summary-value {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .summary-action {
+    color: var(--accent);
+  }
+  .role-error {
+    margin: calc(-1 * var(--space-2)) var(--space-6) 0;
+    color: var(--accent-red);
+    font-size: var(--text-sm);
+    line-height: 1.45;
   }
 
   @media (max-width: 720px) {
     .turn-plan {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr);
+      align-items: stretch;
+      padding: var(--space-4);
     }
-    .cast-manage {
+    .plan-actions {
+      grid-column: 1;
+      justify-self: start;
+      flex-wrap: wrap;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .ab-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (min-width: 381px) and (max-width: 560px) {
+    .turn-plan {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-rows: auto auto;
+      gap: var(--space-2);
+      padding: var(--space-3);
+    }
+    .plan-card {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--space-2);
+    }
+    .plan-card:first-child {
+      grid-column: 1;
+      grid-row: 1;
+    }
+    .plan-card:nth-child(2) {
+      grid-column: 2;
+      grid-row: 1;
+    }
+    .plan-actions {
       grid-column: 1 / -1;
-      justify-self: end;
+      grid-row: 2;
+      justify-self: stretch;
+      justify-content: space-between;
     }
   }
 
@@ -1497,19 +2156,19 @@
     gap: var(--space-2);
   }
   .thinking-input {
-    background: var(--input-well);
+    background: var(--workspace-field-bg);
     color: var(--fg-dim);
     border: 1px solid transparent;
     border-radius: var(--radius);
-    font-family: var(--font-mono);
+    font-family: var(--font-reading);
     font-size: var(--text-sm);
-    padding: var(--space-2) var(--space-3);
+    padding: var(--surface-padding);
     resize: vertical;
     min-height: 44px;
+    transition: box-shadow var(--dur-fast) var(--ease-out);
   }
   .thinking-input:focus-visible {
     outline: none;
-    border-color: var(--accent-strong);
     color: var(--fg);
   }
   .thinking-warn {
@@ -1519,23 +2178,70 @@
     font-style: italic;
   }
 
+  .composer-resizer-shell {
+    position: relative;
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+    width: 100%;
+    min-height: var(--control-target);
+    margin-block: 0;
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+  }
+  .composer-resizer {
+    position: absolute;
+    inset-inline: 0;
+    inset-block: 0;
+    z-index: 1;
+    width: 5.5rem;
+    height: 100%;
+    margin: 0 auto;
+    opacity: 0;
+    cursor: row-resize;
+    touch-action: none;
+    pointer-events: auto;
+  }
+  .composer-resizer-shell span {
+    width: 3.5rem;
+    height: 3px;
+    border-radius: var(--radius-pill);
+    background: var(--glass-strong);
+    transition:
+      width var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
+  }
+  .composer-resizer:hover + span,
+  .composer-resizer-shell:focus-within span,
+  .composer-resizer-shell.dragging span {
+    width: 4.5rem;
+    background: var(--accent);
+  }
+  .composer-resizer-shell:focus-within span {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus-ring);
+  }
+
   .input-row {
-    display: flex;
-    gap: var(--space-3);
-    align-items: flex-end;
-    /* No border-top — the status footer directly above already caps
-     * the input region with its own hairline. */
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--composer-space, var(--space-6));
+    padding: var(--surface-padding);
+    border-radius: var(--popup-radius);
+    background: var(--workspace-field-bg);
+    -webkit-backdrop-filter: blur(1px);
+    backdrop-filter: blur(1px);
   }
   .input {
-    flex: 1 1 auto;
-    /* Borderless input: recessed well fill; the accent ring on focus. */
-    background: var(--input-well);
+    --shadow-field-focus: none;
+    --shadow-field-keyboard: none;
+    width: 100%;
+    background: transparent;
     color: var(--fg);
     border: 1px solid transparent;
     border-radius: var(--radius);
-    padding: var(--space-2) var(--space-4);
+    padding: var(--space-xs);
     font: inherit;
-    font-family: var(--font-mono);
+    font-family: var(--font-reading);
     resize: none;
     /* border-box lets autosize() write ``scrollHeight`` straight into
      * ``style.height`` without a padding/border double-count — without
@@ -1543,17 +2249,253 @@
      * vertical scrollbar leaked through as a tiny up/down nub. */
     box-sizing: border-box;
     overflow-y: hidden;
-    min-height: 2.4em;
-    max-height: 132px;
+    min-height: 64px;
+    max-height: 480px;
     line-height: 1.45;
+    transition: box-shadow var(--dur-fast) var(--ease-out);
   }
   .input:focus {
     outline: none;
-    border-color: var(--accent);
   }
   .input-actions {
     display: flex;
-    gap: var(--space-2);
+    gap: var(--composer-space, var(--space-6));
     align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .clear-conversation {
+    min-height: var(--control-target);
+    padding: var(--space-2) var(--space-4);
+    border: 0;
+    border-radius: var(--radius);
+    background: var(--danger-bg);
+    color: var(--accent-red);
+    font: inherit;
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-structure);
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .clear-conversation:hover:not(:disabled),
+  .clear-conversation.confirm-clear {
+    background: var(--danger-hover);
+  }
+  .clear-conversation:active:not(:disabled) {
+    transform: scale(var(--press-scale));
+  }
+  .clear-conversation:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+  .clear-conversation:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  @media (prefers-contrast: more), (forced-colors: active), (prefers-reduced-transparency: reduce) {
+    .input-row { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  }
+
+  @media (max-width: 860px) {
+    .chat-header {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--space-6);
+    }
+    .header-actions {
+      justify-content: flex-start;
+      flex-wrap: wrap;
+    }
+  }
+
+  @media (max-width: 620px) {
+    .reading-tools {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-items: stretch;
+      gap: var(--space-3);
+    }
+    .color-control {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      width: 100%;
+    }
+    .color-control .ctl {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      width: 100%;
+    }
+    .ctl-select {
+      flex: 1 1 auto;
+      min-width: 0;
+      width: 100%;
+    }
+    .header-actions {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      gap: var(--space-3);
+    }
+    .header-actions > .ctl-select,
+    .header-actions > .ctl-input {
+      grid-column: 1 / -1;
+    }
+    .msg {
+      padding: var(--surface-padding);
+    }
+    .response-body {
+      font-size: var(--text);
+    }
+  }
+
+  @media (max-width: 420px) {
+    .input-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .input {
+      width: 100%;
+      min-height: 92px;
+    }
+    .input-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: stretch;
+    }
+    .input-actions.has-clear { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .input-actions.has-clear :global(button:first-child) {
+      grid-column: 1 / -1;
+    }
+    .input-actions :global(button) {
+      width: 100%;
+      min-height: var(--control-target);
+    }
+    .clear-conversation {
+      padding-inline: var(--space-2);
+      white-space: normal;
+    }
+  }
+
+  /* Wrap compact controls so scrolling does not clip their focus halos. */
+  @media (max-width: 620px), (max-height: 600px) {
+    .chat-header {
+      display: flex;
+      flex: 0 0 auto;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-2);
+      min-height: var(--control-target);
+      padding-bottom: 0;
+      overflow: visible;
+    }
+
+    .reading-tools,
+    .header-actions {
+      display: flex;
+      flex: 0 1 auto;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+    }
+
+    .color-control,
+    .comparison-control,
+    .color-control .ctl {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      width: auto;
+    }
+
+    .ctl-label {
+      display: none;
+    }
+
+    .ctl-select {
+      flex: 0 0 auto;
+      width: 8.75rem;
+      min-width: 8.75rem;
+    }
+
+    .header-actions > .ctl-select,
+    .header-actions > .ctl-input {
+      grid-column: auto;
+    }
+
+    .input {
+      min-height: calc(var(--surface-padding) * 2 + var(--space-lg));
+    }
+  }
+
+  @media (max-width: 620px) {
+    .chat {
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scroll-padding-block-end: var(--surface-padding);
+    }
+
+    .chat > :global(*) {
+      flex-shrink: 0;
+    }
+
+    .chat > .log {
+      flex: 1 1 0;
+      min-height: 8rem;
+    }
+
+    .chat-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      width: 100%;
+      overflow: visible;
+    }
+
+    .reading-tools,
+    .header-actions {
+      width: 100%;
+      min-width: 0;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      overflow: visible;
+    }
+
+    .comparison-control {
+      flex: 1 1 auto;
+      min-width: 0;
+      justify-content: space-between;
+    }
+  }
+
+  @media (max-height: 600px) {
+    .chat {
+      gap: var(--space-1);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scroll-padding-block-end: var(--control-target);
+    }
+
+  }
+
+  @media (max-width: 760px), (max-height: 600px) {
+    .input,
+    .ctl-input,
+    .thinking-input {
+      font-size: var(--text-input-touch);
+    }
+
+    .composer-resizer-shell {
+      min-height: var(--control-target);
+      margin-block: 0;
+    }
+
+    .composer-resizer {
+      inset-block: 0;
+      height: 100%;
+    }
   }
 </style>

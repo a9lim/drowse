@@ -20,19 +20,19 @@ import pytest
 import torch
 from torch import nn
 
-from saklas.core.errors import RelpUnsupportedError
-from saklas.core.relp import (
+from drowse.core.errors import RelpUnsupportedError
+from drowse.core.relp import (
     RELP_RULES,
     _act_backward_factor,
     _relp_norm_forward,
     relp_backward_rules,
 )
-from saklas.io.lens import (
+from drowse.io.lens import (
     lens_estimator_policy,
     load_local_lens,
     load_local_lens_sidecar,
 )
-from saklas.io.lens_sources import (
+from drowse.io.lens_sources import (
     LOCAL_SOURCE_PREFIX,
     list_lens_sources,
     load_active_lens_source,
@@ -47,7 +47,7 @@ DENSE_D = 6
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
 
 # ---------------------------------------------------------------------------

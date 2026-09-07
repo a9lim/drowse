@@ -1,7 +1,7 @@
 """Steering dataclass unit tests — from_value coercion + trigger entries."""
 
-from saklas.core.steering import Steering
-from saklas.core.triggers import Trigger
+from drowse.core.steering import Steering
+from drowse.core.triggers import Trigger
 
 
 def test_construct():
@@ -93,7 +93,7 @@ def test_normalized_entries_coerces_int_alpha_to_float():
 
 
 def _mixed_steering() -> Steering:
-    from saklas.core.steering_expr import AblationTerm, ManifoldTerm, ProjectedTerm
+    from drowse.core.steering_expr import AblationTerm, ManifoldTerm, ProjectedTerm
 
     return Steering(alphas={
         "bare": 0.3,
@@ -113,7 +113,7 @@ def _mixed_steering() -> Steering:
 
 
 def test_classified_splits_every_entry_kind():
-    from saklas.core.steering_expr import AblationTerm, ManifoldTerm
+    from drowse.core.steering_expr import AblationTerm, ManifoldTerm
 
     entries = _mixed_steering().classified()
 
@@ -170,8 +170,8 @@ def test_triggers_gives_bare_floats_the_steering_default():
 
 
 def test_entry_readers_are_shape_blind():
-    from saklas.core.steering import entry_coeff, entry_trigger
-    from saklas.core.steering_expr import AblationTerm, ManifoldTerm
+    from drowse.core.steering import entry_coeff, entry_trigger
+    from drowse.core.steering_expr import AblationTerm, ManifoldTerm
 
     tuple_entry = (0.4, Trigger.AFTER_THINKING)
     ablation = AblationTerm(coeff=0.25, trigger=Trigger.BOTH, target="gone")

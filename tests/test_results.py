@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from saklas.core.results import (
+from drowse.core.results import (
     ProbeReadings,
     ProbeReading,
     GenerationResult,
@@ -18,10 +18,10 @@ from saklas.core.results import (
 
 class TestPublicAPI:
     def test_imports(self):
-        from saklas import SaklasSession, ResultCollector
-        from saklas import RunSet
-        from saklas import GenerationResult, TokenEvent, ProbeReadings
-        assert SaklasSession is not None
+        from drowse import DrowseSession, ResultCollector
+        from drowse import RunSet
+        from drowse import GenerationResult, TokenEvent, ProbeReadings
+        assert DrowseSession is not None
         assert ResultCollector is not None
         assert RunSet is not None
         assert GenerationResult is not None
@@ -112,10 +112,10 @@ class TestGenerationResult:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ):
         """Stored expression round-trips through ``parse_expr``."""
-        monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-        from saklas.io import selectors as _sel
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        from drowse.io import selectors as _sel
         _sel.invalidate()
-        from saklas.core.steering_expr import parse_expr
+        from drowse.core.steering_expr import parse_expr
         result = GenerationResult(
             text="Hi", tokens=[1], token_count=1, tok_per_sec=5.0, elapsed=0.2,
             applied_steering="0.5 myvec + 0.3 othervec@after",
@@ -151,7 +151,7 @@ class TestTokenEvent:
         """Populated logprob + top_alts (phase 1 logit pass) land on the
         dataclass as given. ``top_alts`` is ``list[TokenAlt]`` post-pass
         replacing the legacy ``top_logprobs: list[tuple[int, float]]``."""
-        from saklas import TokenAlt
+        from drowse import TokenAlt
         alts = [TokenAlt(id=0, text=" a", logprob=-0.2),
                 TokenAlt(id=1, text=" b", logprob=-2.3)]
         event = TokenEvent(
@@ -378,8 +378,8 @@ class TestMonitorScoring:
 
     @classmethod
     def _make_monitor(cls):
-        from saklas.core.monitor import Monitor
-        from saklas.core.capture import fold_directions_to_subspace
+        from drowse.core.monitor import Monitor
+        from drowse.core.capture import fold_directions_to_subspace
         from tests._whitener import synthetic_whitener
         probe_vec = torch.zeros(cls._DIM)
         probe_vec[0] = 1.0  # unit vector along dim 0

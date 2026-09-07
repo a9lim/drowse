@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { chartValue } from "../../lib/charts/chartValues";
+  import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // J-lens probe card — one workspace token, pinned (a ``jlens/<word>``
   // token probe: persistent, gate-able) or unpinned (a live discovery row
   // from the per-step aggregate).  Both card kinds are the same shape —
@@ -24,6 +26,7 @@
   import Sparkline from "../../lib/charts/Sparkline.svelte";
   import { detachProbe, highlightState } from "../../lib/stores.svelte";
   import { pushToast } from "../../lib/stores/toasts.svelte";
+  import { userFacingError } from "../../lib/runtime/userFacingError";
   import RackCard from "./RackCard.svelte";
   import ProbePinButton from "./ProbePinButton.svelte";
   import ProbeHighlightButton from "./ProbeHighlightButton.svelte";
@@ -35,14 +38,15 @@
      *  probe's word is already bare). */
     token: string;
     /** Mean fitted-layer probability, 0..1. */
-    strength: number;
+    strength: number | null;
+    probeName?: string;
     /** Probability-mass-weighted depth centre of mass, 0..1; null hides
      *  the chip. */
     com: number | null;
     /** Depth spread around the CoM; null omits the ± part. */
     spread: number | null;
-    /** Recent strength history (0 where the token fell below top-k). */
-    series: number[];
+    /** Missing top-k observations leave gaps, not zero-valued readings. */
+    series: (number | null)[];
     /** Per-layer strength cells in layer order; ``p === null`` means the
      *  token sat below that layer's top-k cutoff. */
     cells: { layer: number; p: number | null }[];
@@ -54,13 +58,12 @@
   }
 
   let {
-    token, strength, com, spread, series, cells, pinned, busy = false, onpin,
+    token, strength, com, spread, series, cells, pinned, probeName, busy = false, onpin,
   }: Props = $props();
 
   const display = $derived(token.trim() || JSON.stringify(token));
-  /** Whitespace-only tokens have no pinnable single-token word. */
-  const pinnable = $derived(token.trim().length > 0);
-  const name = $derived(`jlens/${display}`);
+  const pinnable = $derived(token.length > 0 && token === token.trim());
+  const name = $derived(probeName ?? `jlens/${display}`);
   const isHighlight = $derived(highlightState.target === name);
 
   /** Colour scale — the card's own max p (absolute p spans orders of
@@ -73,13 +76,9 @@
       value: cell.p,
       title: cell.p === null
         ? `L${cell.layer} · below top-k`
-        : `L${cell.layer} · p ${cell.p.toPrecision(3)}`,
+        : `L${cell.layer} · ${chartValue(cell.p, true)} · p ${cell.p.toPrecision(3)}`,
     })),
   );
-
-  function fmtCoord(v: number): string {
-    return Number.isFinite(v) ? v.toFixed(2) : "0.00";
-  }
 
   let unpinBusy = $state(false);
 
@@ -94,8 +93,7 @@
       await detachProbe(probeName);
       pushToast(`unpinned ${probeName}`, { kind: "info" });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      pushToast(`unpin ${probeName} failed — ${msg}`, {
+      pushToast(userFacingError(e, `Unable to unpin ${probeName}. Try again.`), {
         kind: "error",
         ttlMs: null,
       });
@@ -107,29 +105,18 @@
 
 <RackCard accent="--pillar-lens" disabled={false} active={pinned && isHighlight}>
   {#snippet statline()}
-    {#if pinned}
-      <ProbePinButton
-        shape="square"
-        pinned={true}
-        disabled={unpinBusy}
-        onclick={() => void onUnpin()}
-        title="unpin"
-        ariaLabel={`Unpin probe ${name}`}
-      />
-    {:else}
-      <ProbePinButton
-        shape="square"
-        pinned={false}
-        disabled={busy || !pinnable}
-        onclick={() => onpin?.(display)}
-        title="pin"
-        ariaLabel={`Pin probe ${name}`}
-      />
-    {/if}
+    <ProbePinButton
+      shape="square"
+      {pinned}
+      disabled={pinned ? unpinBusy : busy || !pinnable}
+      onclick={() => pinned ? void onUnpin() : onpin?.(token)}
+      title={pinned ? "unpin" : pinnable ? "pin" : "This token includes whitespace. Use Watch word to add a separate word probe."}
+      ariaLabel={`${pinned ? "Unpin" : "Pin"} probe ${name}`}
+    />
 
     <span
       class="name"
-      title={pinned ? `probe ${name}` : `"${token}" — aggregate workspace token`}
+      title={pinned ? `probe ${name}` : `"${token}": averaged across fitted layers`}
     >
       {display}
     </span>
@@ -138,7 +125,7 @@
       <span
         class="com"
         title="depth ± spread"
-      >@{fmtCoord(com)}{spread !== null ? ` ±${fmtCoord(spread)}` : ""}</span>
+      >@<RollingNumber value={Number.isFinite(com) ? com : 0} digits={2} />{#if spread !== null} ±<RollingNumber value={Number.isFinite(spread) ? spread : 0} digits={2} />{/if}</span>
     {/if}
 
     <span class="spacer"></span>
@@ -147,12 +134,15 @@
       <ProbeHighlightButton {name} />
     {/if}
 
-    <Sparkline points={series} width={56} height={14} color="var(--card-accent)" />
+    <Sparkline percentage points={series} width={56} height={14} color="var(--card-accent)" />
   {/snippet}
 
   {#snippet body()}
     <!-- Strength: mean fitted-layer probability, absolute 0→1. -->
-    <ProbeReadingRow ariaLabel={`Strength ${strength.toFixed(2)}`}>
+    {#if strength === null}
+      <span class="row-label">Not measured</span>
+    {:else}
+    <ProbeReadingRow ariaLabel={strength === null ? "Not measured" : `Strength ${strength.toPrecision(3)}`}>
       {#snippet left()}
         <span
           class="row-label"
@@ -160,11 +150,14 @@
         >strength</span>
       {/snippet}
       {#snippet bar()}
-        <Bar value={strength} max={1} width={160} height={8} color="var(--card-accent)" />
+        {#if strength !== null}
+          <Bar percentage value={strength} max={1} width={160} height={8} color="var(--card-accent)" />
+        {/if}
       {/snippet}
       {#snippet middle()}<span aria-hidden="true"></span>{/snippet}
-      {#snippet right()}<span class="value">{strength.toFixed(2)}</span>{/snippet}
+      {#snippet right()}<span class="value"><RollingNumber value={strength} format={{ useGrouping: false, minimumSignificantDigits: 3, maximumSignificantDigits: 3, notation: strength !== 0 && (Math.abs(strength) < 1e-6 || Math.abs(strength) >= 1e3) ? "scientific" : "standard" }} /></span>{/snippet}
     </ProbeReadingRow>
+    {/if}
 
     <!-- Per-layer strength strip with L endcaps. -->
     <LayerStrip
@@ -204,7 +197,7 @@
     color: var(--fg-muted);
     font-family: var(--font-mono);
     font-size: var(--text-sm);
-    text-align: right;
+    text-align: end;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -214,7 +207,7 @@
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
     min-width: 3.5em;
-    text-align: right;
+    text-align: end;
     flex: 0 0 auto;
   }
 </style>

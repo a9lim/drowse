@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from saklas import cli
-from saklas.cli import runners as cli_runners
-from saklas.core.instruments.types import LensLiveState, SaeLiveState
+from drowse import cli
+from drowse.cli import runners as cli_runners
+from drowse.core.instruments.types import LensLiveState, SaeLiveState
 
 
 @pytest.mark.parametrize(
@@ -41,7 +41,7 @@ def test_parse_zero_args_prints_help_and_exits_zero(capsys: pytest.CaptureFixtur
 
 
 def test_parse_bare_unknown_model_id_errors():
-    # No more argv[0] peek: bare `saklas some/model-id` is an invalid verb.
+    # No more argv[0] peek: bare `drowse some/model-id` is an invalid verb.
     with pytest.raises(SystemExit):
         cli.parse_args(["google/gemma-2-2b-it"])
 
@@ -125,14 +125,14 @@ def test_parse_config_validate():
 
 
 def test_config_show_runs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     cli.main(["config", "show", "--no-default"])
     out = capsys.readouterr().out
-    assert "saklas" in out  # header
+    assert "drowse" in out  # header
 
 
 def test_config_show_with_extra(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "x.yaml"
     p.write_text("model: google/gemma-2-2b-it\ntemperature: 0.7\n")
     cli.main(["config", "show", "--no-default", "-c", str(p)])
@@ -142,7 +142,7 @@ def test_config_show_with_extra(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 
 
 def test_config_validate_ok(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "x.yaml"
     p.write_text("model: google/gemma-2-2b-it\n")
     cli.main(["config", "validate", str(p)])
@@ -157,7 +157,7 @@ def test_config_validate_missing_file(tmp_path: Path):
 
 
 def test_config_validate_local_vector_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "x.yaml"
     p.write_text("vectors:\n  local/nope: 0.5\n")
     with pytest.raises(SystemExit) as ex:
@@ -181,7 +181,7 @@ def test_serve_compile_flag_parses():
 def test_yaml_compile_true_folds_onto_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """YAML ``compile: true`` should set ``args.compile=True`` when the
     CLI didn't already pass ``--compile``."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "on.yaml"
     p.write_text("model: google/gemma-2-2b-it\ncompile: true\n")
     args = cli.parse_args(["serve", "-c", str(p)])
@@ -195,7 +195,7 @@ def test_yaml_compile_true_folds_onto_args(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_yaml_compile_false_is_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """``compile: false`` matches the default — accepting it in YAML
     keeps round-trip symmetry but doesn't flip ``args.compile``."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "off.yaml"
     p.write_text("model: google/gemma-2-2b-it\ncompile: false\n")
     args = cli.parse_args(["serve", "-c", str(p)])
@@ -206,7 +206,7 @@ def test_yaml_compile_false_is_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 def test_cli_compile_overrides_yaml_compile_false(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """CLI flag wins over YAML — passing ``--compile`` even with
     ``compile: false`` in YAML must keep the opt-in."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "off.yaml"
     p.write_text("model: google/gemma-2-2b-it\ncompile: false\n")
     args = cli.parse_args(["serve", "-c", str(p), "--compile"])
@@ -245,7 +245,7 @@ def test_cli_max_tokens_survives_effective_config(
     The shared helper was written for ``serve`` (no such flag) and used to
     stamp the YAML value or a hardcoded 1024 over whatever the flag parsed.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "setup.yaml"
     p.write_text("max_tokens: 999\n")
     args = cli.parse_args([*argv, "-c", str(p), "--max-tokens", "64"])
@@ -263,7 +263,7 @@ def test_yaml_max_tokens_fills_unset_flag(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ):
     """With the flag unset, YAML fills the gap (the flag defaults to None)."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "setup.yaml"
     p.write_text("max_tokens: 999\n")
     args = cli.parse_args([*argv, "-c", str(p)])
@@ -281,7 +281,7 @@ def test_runner_default_max_tokens_floors_unset_flag_and_yaml(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ):
     """Neither CLI nor YAML supplied one — the runner's own default lands."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     args = cli.parse_args(argv)
     cli_runners._load_effective_config(args, default_max_tokens=runner_default)
     assert args.max_tokens == runner_default
@@ -292,7 +292,7 @@ def test_serve_max_tokens_defaults_to_1024(
 ):
     """``serve`` has no ``--max-tokens`` flag, so it always gets the helper's
     own 1024 default (unchanged by the CLI-wins seeding)."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     args = cli.parse_args(["serve", "google/gemma-2-2b-it"])
     assert getattr(args, "max_tokens", None) is None
     cli_runners._load_effective_config(args)
@@ -303,7 +303,7 @@ def test_yaml_compile_invalid_type_errors(monkeypatch: pytest.MonkeyPatch, tmp_p
     """Reject non-boolean ``compile:`` values rather than coercing —
     ``compile: "true"`` (a string) would otherwise pass through as
     truthy and silently turn compile on."""
-    from saklas.cli.config_file import ConfigFile, ConfigFileError
+    from drowse.cli.config_file import ConfigFile, ConfigFileError
     p = tmp_path / "bad.yaml"
     p.write_text("compile: \"false\"\n")
     with pytest.raises(ConfigFileError, match="compile must be a boolean"):
@@ -315,9 +315,9 @@ def test_yaml_compile_invalid_type_errors(monkeypatch: pytest.MonkeyPatch, tmp_p
 # ---------------------------------------------------------------------------
 
 def test_run_extract_corrupt_tensor_does_not_short_circuit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
-    from saklas.io.paths import manifold_dir, tensor_filename
+    from drowse.io.paths import manifold_dir, tensor_filename
     model_id = "fake/model"
     # A steering vector is a 2-node pca manifold (4.0); extract lands it under
     # ``manifolds/<ns>/<canonical>/``.  A present per-model tensor is the
@@ -357,9 +357,9 @@ def test_run_role_extract_reports_canonical_tensor_path(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from saklas.io.paths import tensor_filename
+    from drowse.io.paths import tensor_filename
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
     class FakeSession:
         def extract(self, *_args: Any, **_kwargs: Any) -> Any:
@@ -399,10 +399,10 @@ def test_sae_revision_flag_is_not_advertised(argv: list[str]) -> None:
 def test_fit_smoothing_override_is_delegated_to_fit_transaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from saklas.core.manifold import CustomDomain
-    from saklas.io.manifold_authoring import create_discover_manifold_folder
+    from drowse.core.manifold import CustomDomain
+    from drowse.io.manifold_authoring import create_discover_manifold_folder
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "roles", "", fit_mode="auto",
         node_corpora={"pirate": ["arrr"], "scholar": ["indeed"]},
@@ -461,10 +461,10 @@ def test_no_dls_reaches_session_construction(
     (``self._dls`` -> ``pipe.fit(dls=...)``) is pinned in
     ``test_manifold_extraction``.
     """
-    from saklas.core.session import SaklasSession
-    from saklas.io.manifold_authoring import create_discover_manifold_folder
+    from drowse.core.session import DrowseSession
+    from drowse.io.manifold_authoring import create_discover_manifold_folder
 
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
         "local", "happy.sad", "", fit_mode="pca",
         node_corpora={"happy": ["yes"], "sad": ["no"]},
@@ -478,7 +478,7 @@ def test_no_dls_reaches_session_construction(
             return "happy.sad", object()
 
         def fit(self, *_args: Any, **_kwargs: Any) -> Any:
-            from saklas.core.manifold import CustomDomain
+            from drowse.core.manifold import CustomDomain
             return SimpleNamespace(
                 name="happy.sad", layers={0: object()},
                 node_labels=["happy", "sad"], domain=CustomDomain(1),
@@ -490,7 +490,7 @@ def test_no_dls_reaches_session_construction(
         return _FakeSession()
 
     monkeypatch.setattr(
-        SaklasSession, "from_pretrained", staticmethod(_fake_from_pretrained),
+        DrowseSession, "from_pretrained", staticmethod(_fake_from_pretrained),
     )
     monkeypatch.setattr(cli_runners, "_print_startup", lambda _args: None)
     monkeypatch.setattr(cli_runners, "_print_model_info", lambda _session: None)
@@ -542,7 +542,7 @@ def test_serve_selects_cached_lens_when_active_pointer_is_missing(
             self.selected = source
 
     monkeypatch.setattr(
-        "saklas.io.lens_sources.list_lens_sources",
+        "drowse.io.lens_sources.list_lens_sources",
         lambda _model: [{
             "source": "local:default", "kind": "local", "active": False,
         }],
@@ -572,7 +572,7 @@ def test_serve_prefers_workspace_r_over_active_lower_priority_source(
             self.selected = source
 
     monkeypatch.setattr(
-        "saklas.io.lens_sources.list_lens_sources",
+        "drowse.io.lens_sources.list_lens_sources",
         lambda _model: [
             {"source": "local:default", "kind": "local", "active": True},
             {"source": "workspace-j", "kind": "huggingface", "active": False},
@@ -627,11 +627,11 @@ def test_serve_attaches_best_sae_and_enables_live(
             return {"release": release, "layer": 22, "width": 16_384}
 
     monkeypatch.setattr(
-        "saklas.io.sae.list_sae_sources",
+        "drowse.io.sae.list_sae_sources",
         lambda _model: [],
     )
     monkeypatch.setattr(
-        "saklas.core.sae.list_sae_releases",
+        "drowse.core.sae.list_sae_releases",
         lambda _model: [{
             "release": "gemma-scope-2-4b-it-res",
             "source": "saelens",
@@ -665,13 +665,13 @@ def test_serve_prefers_cached_sae_over_registry_default(
             return {"release": release, "layer": 22, "width": 16_384}
 
     monkeypatch.setattr(
-        "saklas.io.sae.list_sae_sources",
+        "drowse.io.sae.list_sae_sources",
         lambda _model: [{
             "source": "local:cached", "kind": "local", "active": False,
         }],
     )
     monkeypatch.setattr(
-        "saklas.core.sae.list_sae_releases",
+        "drowse.core.sae.list_sae_releases",
         lambda _model: (_ for _ in ()).throw(
             AssertionError("registry should not be consulted")
         ),
@@ -684,17 +684,17 @@ def test_serve_prefers_cached_sae_over_registry_default(
 def test_config_vectors_register_on_a_model_backed_surface(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     # 4.0: a concept is a 2-node ``pca`` manifold — author ``default/happy.sad``
     # so the config reference resolves (and ``ensure_vectors_installed`` sees it
     # as already installed).
-    from saklas.io.manifolds import create_discover_manifold_folder
+    from drowse.io.manifolds import create_discover_manifold_folder
     create_discover_manifold_folder(
         "default", "happy.sad", "x", fit_mode="pca",
         node_corpora={"happy": ["a statement."], "sad": ["b statement."]},
         hyperparams={"max_dim": 1},
     )
-    from saklas.io import selectors as _sel
+    from drowse.io import selectors as _sel
     _sel.invalidate()
 
     p = tmp_path / "setup.yaml"
@@ -795,7 +795,7 @@ def _patch_fold_helpers(
     ``"default/happy.sad"``) to a mock profile.  All concepts are authored
     under ``default/``, so the returned identity is ``("default", bare)``.
     """
-    import saklas.cli.runners as runners
+    import drowse.cli.runners as runners
 
     def _fold(name: str, model_id: str, variant: str | None):
         bare = name.split("/", 1)[1] if "/" in name else name
@@ -826,7 +826,7 @@ def _patch_fold_helpers(
 
 
 def _setup_compare_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Set SAKLAS_HOME and return the manifolds_dir path.
+    """Set DROWSE_HOME and return the manifolds_dir path.
 
     ``manifold compare`` is Mahalanobis-only now: ``_run_compare`` loads the
     per-model whitener via ``LayerWhitener.from_cache`` up front and fails if
@@ -834,10 +834,10 @@ def _setup_compare_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     ignores the whitener), so we patch ``from_cache`` to return a sentinel
     rather than seed a real neutral cache.
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io import selectors
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io import selectors
     selectors.invalidate()
-    from saklas.core import mahalanobis as _maha
+    from drowse.core import mahalanobis as _maha
     monkeypatch.setattr(
         _maha.LayerWhitener, "from_cache",
         classmethod(lambda cls, model_id, **kw: object()),
@@ -975,9 +975,9 @@ def test_run_compare_matrix_verbose_text_unchanged(monkeypatch: pytest.MonkeyPat
 # ---------------------------------------------------------------------------
 
 def _setup_why_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Set SAKLAS_HOME and return the manifolds_dir path."""
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io import selectors
+    """Set DROWSE_HOME and return the manifolds_dir path."""
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io import selectors
     selectors.invalidate()
     return tmp_path / "manifolds"
 
@@ -1066,7 +1066,7 @@ def test_run_why_text_buckets_large_profile(monkeypatch: pytest.MonkeyPatch, tmp
     # Range label form used when buckets span more than one layer.
     assert "-" in out
     # Exactly HIST_BUCKETS histogram rows — count bar glyphs on left edge.
-    from saklas.core.histogram import HIST_BUCKETS
+    from drowse.core.histogram import HIST_BUCKETS
     bar_lines = [ln for ln in out.splitlines() if "█" in ln or "░" in ln]
     assert len(bar_lines) == HIST_BUCKETS
 
@@ -1106,7 +1106,7 @@ def test_run_why_concept_not_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 def test_split_variant_suffix_parses_sae_variants():
-    from saklas.cli.runners import _split_variant_suffix
+    from drowse.cli.runners import _split_variant_suffix
     assert _split_variant_suffix("honest") == ("honest", None)
     assert _split_variant_suffix("honest:raw") == ("honest", "raw")
     assert _split_variant_suffix("honest:sae") == ("honest", "sae")
@@ -1182,17 +1182,17 @@ def test_config_bare_pole_resolves_canonical(monkeypatch: pytest.MonkeyPatch, tm
     ``pca`` manifold (nodes ``deer``/``wolf``), so ``0.5 wolf`` resolves to a
     label-form ``ManifoldTerm`` at the ``wolf`` node (``default/deer.wolf%wolf``).
     """
-    monkeypatch.setenv("SAKLAS_HOME", str(tmp_path))
-    from saklas.io.manifolds import create_discover_manifold_folder
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.io.manifolds import create_discover_manifold_folder
     create_discover_manifold_folder(
         "default", "deer.wolf", "x", fit_mode="pca",
         node_corpora={"deer": ["a statement."], "wolf": ["b statement."]},
         hyperparams={"max_dim": 1},
     )
-    from saklas.io.selectors import invalidate
+    from drowse.io.selectors import invalidate
     invalidate()
 
-    from saklas.core.steering_expr import ManifoldTerm, parse_expr
+    from drowse.core.steering_expr import ManifoldTerm, parse_expr
     steering = parse_expr("0.5 wolf")
     assert "default/deer.wolf%wolf" in steering.alphas
     term = steering.alphas["default/deer.wolf%wolf"]
@@ -1258,7 +1258,7 @@ class _FanSession:
     def generate_sweep(
         self, _prompt: Any, sweep: dict[str, list[float]], **kwargs: Any,
     ) -> Any:
-        from saklas.core.results import GenerationResult, RunSet
+        from drowse.core.results import GenerationResult, RunSet
 
         self.on_result_arg = kwargs.get("on_result")
         rows = [
