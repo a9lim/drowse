@@ -1596,12 +1596,13 @@ function validateOrigins(values, label) {
   }
 }
 
-function validateHostedConnectSources(headers, distributionLock) {
+export function validateHostedConnectSources(headers, distributionLock) {
   const match = /(?:^|;)\s*connect-src\s+([^;\n]+)/m.exec(headers);
   if (!match) throw new Error("hosted CSP has no connect-src directive");
   const actual = new Set(match[1].trim().split(/\s+/));
   const expected = new Set([
     "'self'",
+    "https://www.neuronpedia.org",
     ...distributionLock.allowedCatalogRedirectOrigins,
     ...distributionLock.allowedArtifactRedirectOrigins,
   ]);
@@ -1610,7 +1611,7 @@ function validateHostedConnectSources(headers, distributionLock) {
     [...actual].some((source) => !expected.has(source))
   ) {
     throw new Error(
-      "hosted CSP connect-src does not match the distribution lock",
+      "hosted CSP connect-src does not match distribution and description sources",
     );
   }
   if ([...actual].some((source) => source.includes("*"))) {

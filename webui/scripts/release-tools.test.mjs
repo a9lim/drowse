@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { validateHostedConnectSources } from "./check-runtime-lock.mjs";
 import {
   accessHeaders,
   assertAccessProtected,
@@ -23,6 +24,11 @@ const distributionLock = {
   allowedCatalogRedirectOrigins: ["https://huggingface.co"],
   allowedArtifactRedirectOrigins: ["https://cdn.example.test"],
 };
+const connectSources = "connect-src 'self' https://www.neuronpedia.org https://huggingface.co https://cdn.example.test;";
+assert.doesNotThrow(() => validateHostedConnectSources(connectSources, distributionLock));
+assert.throws(() => validateHostedConnectSources(connectSources.replace("https://www.neuronpedia.org ", ""), distributionLock));
+assert.throws(() => validateHostedConnectSources(connectSources.replace("https://www.neuronpedia.org", "https://unexpected.example.test"), distributionLock));
+assert.throws(() => validateHostedConnectSources(connectSources.replace("https://www.neuronpedia.org", "https://*.neuronpedia.org"), distributionLock));
 
 function expectFailure(callback, pattern) {
   assert.throws(callback, pattern);
