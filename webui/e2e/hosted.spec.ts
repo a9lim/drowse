@@ -6,12 +6,12 @@ const devUrl = "http://127.0.0.1:4176";
 const fixtureResponse = "This is a deterministic local Drowse runtime fixture.";
 const toastModuleUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
 const fixtureModelHashes = [
-  "7867f3a41523c10847863e0dc1e7de68e99aa6a486e48bd86fbac122540f3fd2",
-  "2ae33cdf163ca521afdb50969cc456c94493e120a9a792971039afe0f0b80e95",
+  "f85e180e7e8d61d1e225062424360dcc7b1997ce4c28233188af886d8511156f",
+  "89ff00a0903817d42e9fddb23babfbc8d2956d5e9b044729074062d1dc41bb93",
 ] as const;
 const fixturePackHashes = [
-  "bd202dd90b332ce80c5ca3062eac16128c9388c2d36d06140ad2fe25b1a8da4f",
-  "4a275f923eb563e6cfa1dec9af87a4a61e0de6e18b3c2b3751b143934cb4df57",
+  "fb79e067d57e7def0b65653f5f6329db5db98144c88d61c59ff84c77f1696770",
+  "e6386fbf77c663ac05ac0b296e441476ad8aa8f2cdc0c905b75f84a41e0bdb0c",
 ] as const;
 const fixtureHashes = [...fixtureModelHashes, ...fixturePackHashes] as const;
 
@@ -1105,10 +1105,10 @@ test("fixture installs, opens the shared workbench, stops, and generates", async
     "qwen3-1.7b-fixture",
   ]);
   expect(storage.sizes).toEqual({
-    [fixtureHashes[0]]: 49,
-    [fixtureHashes[1]]: 57,
-    [fixtureHashes[2]]: 61,
-    [fixtureHashes[3]]: 58,
+    [fixtureHashes[0]]: 45,
+    [fixtureHashes[1]]: 53,
+    [fixtureHashes[2]]: 57,
+    [fixtureHashes[3]]: 54,
   });
   expect(pageErrors).toEqual([]);
 });
@@ -1152,11 +1152,11 @@ test("first run includes J-lens while additional model tools remain manageable",
   await expect(includedJlens).toContainText("J-lens");
   await expect(includedJlens.locator('input[type="checkbox"]')).toHaveCount(0);
   await expect(featureChoice).toBeChecked();
-  await expect(toolPicker.locator(".tool-total")).toContainText("225 B");
+  await expect(toolPicker.locator(".tool-total")).toContainText("209 B");
 
   await featureChoice.uncheck();
   await expect(featureChoice).not.toBeChecked();
-  await expect(toolPicker.locator(".tool-total")).toContainText("167 B");
+  await expect(toolPicker.locator(".tool-total")).toContainText("155 B");
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([

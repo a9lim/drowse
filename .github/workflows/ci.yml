@@ -114,14 +114,14 @@ jobs:
         run: pip install -e .
       - run: npm ci
         working-directory: webui
+      - name: Install the pinned Playwright browsers
+        run: npx playwright install --with-deps chromium webkit firefox
+        working-directory: webui
       - run: npm run check
         working-directory: webui
       - run: npm run check:hosted
         working-directory: webui
       - run: npm run test:hosted
-        working-directory: webui
-      - name: Install the pinned Playwright browsers
-        run: npx playwright install --with-deps chromium webkit firefox
         working-directory: webui
       - run: npm run test:e2e
         working-directory: webui
@@ -140,7 +140,11 @@ jobs:
           fi
 
   fitting-wasm:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust components and WebAssembly target
@@ -156,7 +160,11 @@ jobs:
       - name: Build optimized WebAssembly module
         run: cargo build --locked --release --target wasm32-unknown-unknown --manifest-path browser-runtime/fitting-wasm/Cargo.toml
       - name: Install the pinned wasm-bindgen packager
+        if: runner.os == 'macOS'
         run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+      # Compare on the same host architecture that produces the committed assets;
+      # Cargo's host-dependent metadata changes Wasm function ordering on Linux.
       - name: Verify committed browser bindings are reproducible
+        if: runner.os == 'macOS'
         run: npm run check:fitting-wasm
         working-directory: webui

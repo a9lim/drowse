@@ -12,10 +12,10 @@ import { HostedRuntimeWorker } from "./worker";
 const revision = "b".repeat(40);
 const runtimeIdentitySha256 = "a".repeat(64);
 const contextBindingSha256 = "c".repeat(64);
-const modelSha256 = "7867f3a41523c10847863e0dc1e7de68e99aa6a486e48bd86fbac122540f3fd2";
-const coreSha256 = "2ae33cdf163ca521afdb50969cc456c94493e120a9a792971039afe0f0b80e95";
-const jlensSha256 = "bd202dd90b332ce80c5ca3062eac16128c9388c2d36d06140ad2fe25b1a8da4f";
-const saeSha256 = "4a275f923eb563e6cfa1dec9af87a4a61e0de6e18b3c2b3751b143934cb4df57";
+const modelSha256 = "f85e180e7e8d61d1e225062424360dcc7b1997ce4c28233188af886d8511156f";
+const coreSha256 = "89ff00a0903817d42e9fddb23babfbc8d2956d5e9b044729074062d1dc41bb93";
+const jlensSha256 = "fb79e067d57e7def0b65653f5f6329db5db98144c88d61c59ff84c77f1696770";
+const saeSha256 = "e6386fbf77c663ac05ac0b296e441476ad8aa8f2cdc0c905b75f84a41e0bdb0c";
 const runtimeAbi = "drowse-web-fixture-v1";
 const fixtureModelUrl = new URL("./fixtures/model.fixture.bin", import.meta.url).href;
 const fixtureCoreUrl = new URL("./fixtures/core.fixture.bin", import.meta.url).href;
@@ -34,7 +34,7 @@ const fixtureSaePack: CatalogInstrumentPack = {
   license: "AGPL-3.0-or-later",
   sourceRepository: "a9lim/drowse-web-fixture",
   sourceRevision: revision,
-  bytes: 58,
+  bytes: 54,
   required: false,
   runtimeIdentitySha256,
   compatibleContextBindingSha256: [contextBindingSha256],
@@ -43,7 +43,7 @@ const fixtureSaePack: CatalogInstrumentPack = {
     role: "instrument",
     url: fixtureSaeSource,
     revision,
-    bytes: 58,
+    bytes: 54,
     sha256: saeSha256,
   }],
 };
@@ -75,8 +75,8 @@ const document: CatalogDocument = {
         expectedDecodeTokensPerSecond: [40, 56],
         measuredDevices: 1,
       }],
-      downloadBytes: 49,
-      requiredCorePackBytes: 57,
+      downloadBytes: 45,
+      requiredCorePackBytes: 53,
       requirements: {
         features: [],
         limits: {
@@ -105,7 +105,7 @@ const document: CatalogDocument = {
         role: "weight",
         url: fixtureModelSource,
         revision,
-        bytes: 49,
+        bytes: 45,
         sha256: modelSha256,
       }],
       packs: [{
@@ -115,7 +115,7 @@ const document: CatalogDocument = {
         license: "AGPL-3.0-or-later",
         sourceRepository: "a9lim/drowse-web-fixture",
         sourceRevision: revision,
-        bytes: 57,
+        bytes: 53,
         required: true,
         runtimeIdentitySha256,
         compatibleContextBindingSha256: [contextBindingSha256],
@@ -124,7 +124,7 @@ const document: CatalogDocument = {
           role: "core_pack",
           url: fixtureCoreSource,
           revision,
-          bytes: 57,
+          bytes: 53,
           sha256: coreSha256,
         }],
       }, {
@@ -134,7 +134,7 @@ const document: CatalogDocument = {
         license: "AGPL-3.0-or-later",
         sourceRepository: "a9lim/drowse-web-fixture",
         sourceRevision: revision,
-        bytes: 61,
+        bytes: 57,
         required: false,
         runtimeIdentitySha256,
         compatibleContextBindingSha256: [contextBindingSha256],
@@ -143,7 +143,7 @@ const document: CatalogDocument = {
           role: "instrument",
           url: fixtureJlensSource,
           revision,
-          bytes: 61,
+          bytes: 57,
           sha256: jlensSha256,
         }],
       }, ...(saeAvailable ? [fixtureSaePack] : []), {
@@ -153,7 +153,7 @@ const document: CatalogDocument = {
         license: "AGPL-3.0-or-later",
         sourceRepository: "a9lim/drowse-web-fixture",
         sourceRevision: revision,
-        bytes: 61,
+        bytes: 57,
         required: false,
         runtimeIdentitySha256,
         compatibleContextBindingSha256: [contextBindingSha256],
@@ -162,7 +162,7 @@ const document: CatalogDocument = {
           role: "instrument",
           url: fixtureJlensSource,
           revision,
-          bytes: 61,
+          bytes: 57,
           sha256: jlensSha256,
         }],
       }],
