@@ -114,10 +114,17 @@ test("help popovers retain their exit and reverse a dismissal without losing Esc
   const tip = page.locator(".info-popover").filter({ hasText: /^Top K / });
   await trigger.click();
   await expect(tip).toHaveCSS("opacity", "1");
-  await trigger.evaluate(el => el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-  const closing = await tip.evaluate(el => ({ open: el.matches(":popover-open"), inert: (el as HTMLElement).inert, duration: getComputedStyle(el).transitionDuration }));
+  const closing = await trigger.evaluate(async el => {
+    const { tick } = await import("/e2e/svelte-runtime.ts");
+    const tip = document.getElementById(el.getAttribute("aria-describedby")!)!;
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await tick();
+    const closing = { open: tip.matches(":popover-open"), inert: tip.inert, duration: getComputedStyle(tip).transitionDuration };
+    (el as HTMLButtonElement).click();
+    await tick();
+    return closing;
+  });
   expect(closing).toEqual({ open: true, inert: true, duration: "0.15s, 0.15s" });
-  await trigger.evaluate(el => (el as HTMLButtonElement).click());
   await expect(tip).toHaveCSS("opacity", "1");
   await expect(tip).toHaveJSProperty("inert", false);
   await trigger.press("Escape");
@@ -183,8 +190,14 @@ test("token probability popovers fade out through their parent conditional and r
   await token.click();
   const popup = page.locator(".token-logits-popover");
   await expect(popup).toHaveCSS("opacity", "1");
-  await popup.getByRole("button", { name: "Close token probabilities" }).evaluate(el => (el as HTMLButtonElement).click());
-  expect(await popup.evaluate(el => ({ inert: (el as HTMLElement).inert, open: el.matches(":popover-open") }))).toEqual({ inert: true, open: true });
+  const closing = await popup.getByRole("button", { name: "Close token probabilities" }).evaluate(async el => {
+    const { tick } = await import("/e2e/svelte-runtime.ts");
+    const popup = el.closest<HTMLElement>(".token-logits-popover")!;
+    (el as HTMLButtonElement).click();
+    await tick();
+    return { inert: popup.inert, open: popup.matches(":popover-open") };
+  });
+  expect(closing).toEqual({ inert: true, open: true });
   await expect(popup).toHaveCount(0);
   await expect(token).toBeFocused();
   await token.click();
