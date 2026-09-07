@@ -14,7 +14,7 @@
   } = $props();
 
   const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string"
-    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/polythetic";
+    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
 
   function navigate(event: MouseEvent, action?: () => void) {
     if (!action || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

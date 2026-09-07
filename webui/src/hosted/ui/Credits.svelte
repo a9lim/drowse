@@ -13,7 +13,7 @@
   import PwaUpdatePrompt from "./PwaUpdatePrompt.svelte";
 
   const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string"
-    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/polythetic";
+    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
   // X profile verification snapshot, checked 2026-09-06 (voooooogel: 2026-09-07).
   const team = [
     { name: "a9lim", handle: "@_a9lim", profile: "https://x.com/_a9lim", website: "a9l.im", portrait: a9limPortrait, verification: "blue" },

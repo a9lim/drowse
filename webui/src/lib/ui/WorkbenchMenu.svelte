@@ -23,7 +23,7 @@
   const uid = $props.id();
   const presence = dropdownMotion();
   const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string"
-    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/polythetic";
+    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
   let open = $state(false);
   let trigger: HTMLButtonElement | null = $state(null);
   let panel: HTMLDivElement | null = $state(null);

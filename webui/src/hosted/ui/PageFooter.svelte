@@ -3,7 +3,7 @@
 
   const releaseBuild = typeof __DROWSE_HOSTED_RELEASE__ !== "undefined" && __DROWSE_HOSTED_RELEASE__;
   const sourceRevision = typeof __DROWSE_SOURCE_REVISION__ === "string" ? __DROWSE_SOURCE_REVISION__ : "preview";
-  const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string" ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/polythetic";
+  const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string" ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
 </script>
 
 <footer class="page-footer" class:compact>

@@ -452,11 +452,12 @@
               class="workspace-parent"
               class:active={workspaceView === "conversation"}
               aria-current={workspaceView === "conversation" ? "page" : undefined}
+              aria-describedby="workspace-conversation-description"
               onclick={() => (workspaceView = "conversation")}
             >
               <FluentIcon name="conversation" size={16} />
               <span class="nav-copy"><span class="wide-label">{sessionState.info?.is_base_model ? "Completion" : "Conversation"}</span>
-                <span class="nav-description">Write and inspect text</span></span>
+                <span class="nav-description" id="workspace-conversation-description" aria-hidden="true">Write and inspect text</span></span>
               <span class="short-label">{sessionState.info?.is_base_model ? "Text" : "Chat"}</span>
             </button>
             <div class="workspace-subnav" aria-label="Conversation tools">
@@ -465,9 +466,10 @@
                 class="workspace-child"
                 class:active={workspaceView === "controls"}
                 aria-current={workspaceView === "controls" ? "page" : undefined}
+                aria-describedby="workspace-controls-description"
                 onclick={() => (workspaceView = "controls")}
               >
-                <FluentIcon name="controls" size={16} /><span class="nav-copy"><span>Controls</span><span class="nav-description">Shape and measure output</span></span>
+                <FluentIcon name="controls" size={16} /><span class="nav-copy"><span>Controls</span><span class="nav-description" id="workspace-controls-description" aria-hidden="true">Shape and measure output</span></span>
               </button>
             </div>
           </div>
@@ -477,8 +479,9 @@
             class="workspace-parent"
             class:active={workspaceView === "branches"}
             aria-current={workspaceView === "branches" ? "page" : undefined}
+            aria-describedby="workspace-loom-description"
             onclick={() => (workspaceView = "branches")}
-          ><FluentIcon name="loom" size={16} /><span class="nav-copy"><span>Loom</span><span class="nav-description">Explore alternate paths</span></span></button>
+          ><FluentIcon name="loom" size={16} /><span class="nav-copy"><span>Loom</span><span class="nav-description" id="workspace-loom-description" aria-hidden="true">Explore alternate paths</span></span></button>
 
         </nav>
         <nav class="sidebar-links" aria-label="Library and tools">

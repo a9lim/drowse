@@ -134,14 +134,16 @@ expectFailure(
 const previewHtml = `
   <meta name="drowse-release-channel" content="preview">
   <meta name="drowse-source-revision" content="preview">
-  <meta name="drowse-source-url" content="https://github.com/a9lim/polythetic">`;
+  <meta name="drowse-source-url" content="https://github.com/a9lim/drowse">`;
 assert.doesNotThrow(() => assertChannelHtml(previewHtml, "preview"));
 const releaseHtml = `
   <meta name="drowse-release-channel" content="release">
   <meta name="drowse-source-revision" content="${revision}">
-  <meta name="drowse-source-url" content="https://github.com/a9lim/polythetic">`;
+  <meta name="drowse-source-url" content="https://github.com/a9lim/drowse/tree/${revision}">`;
 assert.doesNotThrow(() => assertChannelHtml(releaseHtml, "release"));
 assert.doesNotThrow(() => assertChannelHtml(releaseHtml, "candidate"));
+assert.throws(() => assertChannelHtml(releaseHtml.replace(`/tree/${revision}`, ""), "release"));
+assert.throws(() => assertChannelHtml(releaseHtml.replace(`/tree/${revision}`, `/tree/${"b".repeat(40)}`), "release"));
 expectFailure(
   () => assertChannelHtml(releaseHtml, "release", "b".repeat(40)),
   /differs from --revision/,

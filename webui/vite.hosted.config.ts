@@ -28,7 +28,7 @@ if (
 ) {
   throw new Error("Hosted build could not resolve the browser runtime and hook ABIs");
 }
-const sourceRepositoryUrl = "https://github.com/a9lim/polythetic";
+const sourceRepositoryUrl = "https://github.com/a9lim/drowse";
 const sourceUrl = releaseBuild
   ? `${sourceRepositoryUrl}/tree/${artifactSourceRevision}`
   : sourceRepositoryUrl;

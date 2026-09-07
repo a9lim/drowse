@@ -38,7 +38,7 @@
 
   const controller = getHostedController();
   const contributeUrl = typeof __DROWSE_SOURCE_URL__ === "string"
-    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/polythetic";
+    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
   const capabilities = getRuntimeCapabilities();
   let snapshot = $state<RuntimeSnapshot>(controller?.snapshot ?? initialRuntimeSnapshot());
   let storage = $state(capabilities?.storage ?? null);

@@ -85,10 +85,10 @@ assert.ok(
 );
 if (release) {
   assert.match(sourceRevision, /^[0-9a-f]{40}$/);
-  assert.equal(sourceUrl, `https://github.com/a9lim/polythetic/tree/${sourceRevision}`);
+  assert.equal(sourceUrl, `https://github.com/a9lim/drowse/tree/${sourceRevision}`);
 } else {
   assert.equal(sourceRevision, "preview");
-  assert.equal(sourceUrl, "https://github.com/a9lim/polythetic");
+  assert.equal(sourceUrl, "https://github.com/a9lim/drowse");
 }
 assert.equal(builtLicense, sourceLicense, "hosted build has the wrong AGPL license");
 assert.match(serviceWorker, /index\.html/);
