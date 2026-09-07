@@ -1,5 +1,5 @@
 import { expect, test as base, type Page } from "@playwright/test";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import AxeBuilder from "@axe-core/playwright";
 
 const test = base.extend<{ updateOrigin: string }>({
@@ -7,6 +7,10 @@ const test = base.extend<{ updateOrigin: string }>({
     let version = 1;
     const upstream = testInfo.project.use.baseURL!;
     const server = createServer(async (request, response) => {
+      if (!request.url?.startsWith("/") || request.url.startsWith("//")) {
+        response.writeHead(400).end();
+        return;
+      }
       if (request.url === "/__drowse_test__/update" && request.method === "POST") {
         version += 1;
         response.writeHead(204).end();
@@ -26,7 +30,11 @@ const test = base.extend<{ updateOrigin: string }>({
         `);
         return;
       }
-      const result = await fetch(new URL(request.url!, upstream));
+      const target = new URL(upstream);
+      const query = request.url.indexOf("?");
+      target.pathname = query < 0 ? request.url : request.url.slice(0, query);
+      target.search = query < 0 ? "" : request.url.slice(query);
+      const result = await fetch(target, { redirect: "error" });
       const headers = Object.fromEntries(result.headers);
       delete headers["content-encoding"];
       delete headers["content-length"];
@@ -47,6 +55,33 @@ const test = base.extend<{ updateOrigin: string }>({
 
 const key = "drowse.pwa-update-reminder.v1";
 const updateNotice = (page: Page) => page.locator(".pwa-notice").filter({ hasText: "A Drowse update is ready." });
+
+test("update fixture rejects requests that could replace its upstream origin", async ({ updateOrigin }) => {
+  let unexpectedRequests = 0;
+  const other = createServer((_request, response) => {
+    unexpectedRequests += 1;
+    response.writeHead(200).end();
+  });
+  await new Promise<void>(resolve => other.listen(0, "127.0.0.1", resolve));
+  const address = other.address();
+  if (!address || typeof address === "string") throw new Error("Regression fixture has no TCP address");
+  try {
+    for (const path of [`http://127.0.0.1:${address.port}/`, `//127.0.0.1:${address.port}/`]) {
+      const status = await new Promise<number | undefined>((resolve, reject) => {
+        const request = httpRequest(updateOrigin, { path }, response => {
+          response.resume();
+          response.once("end", () => resolve(response.statusCode));
+        });
+        request.once("error", reject);
+        request.end();
+      });
+      expect(status).toBe(400);
+    }
+    expect(unexpectedRequests).toBe(0);
+  } finally {
+    await new Promise<void>((resolve, reject) => other.close(error => error ? reject(error) : resolve()));
+  }
+});
 
 async function installUpdate(page: Page) {
   await page.goto("/");
