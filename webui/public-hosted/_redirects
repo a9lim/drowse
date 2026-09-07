@@ -1,4 +1,5 @@
-/app /index.html 200
-/app/* /index.html 200
-/credits /index.html 200
-/credits/ /index.html 200
+/app / 200
+/app/ / 200
+/credits / 200
+/credits/ / 200
+/app/* / 200
