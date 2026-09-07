@@ -10,7 +10,8 @@ test("composer and dialog actions follow their container spacing", async ({ page
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 320, height: 640 }, { width: 844, height: 390 }]) {
     await page.setViewportSize(viewport);
     const composer = page.locator(".chat-zone");
-    const spacing = await composer.evaluate(element => {
+    const compactDesktop = viewport.width > 760;
+    await expect.poll(() => composer.evaluate(element => {
       const inset = parseFloat(getComputedStyle(element).paddingBottom);
       const input = element.querySelector(".input-row")!;
       const actions = element.querySelector(".input-actions")!;
@@ -19,12 +20,12 @@ test("composer and dialog actions follow their container spacing", async ({ page
         buttons: parseFloat(getComputedStyle(actions).gap),
         overflow: element.scrollWidth > element.clientWidth,
       };
+    })).toEqual({
+      row: compactDesktop ? 8 : 16,
+      buttons: compactDesktop ? 8 : 16,
+      inset: viewport.width > 620 && viewport.height <= 600 ? 0 : 12,
+      overflow: false,
     });
-    const compactDesktop = viewport.width > 760;
-    expect(spacing.row).toBe(compactDesktop ? 8 : 16);
-    expect(spacing.buttons).toBe(compactDesktop ? 8 : 16);
-    expect(spacing.inset).toBe(viewport.width > 620 && viewport.height <= 600 ? 0 : 12);
-    expect(spacing.overflow).toBe(false);
 
     for (const name of ["download_chat", "save_conversation", "system_prompt", "transcript"]) {
       await page.evaluate(async ({ storesModule, name }) => { (await import(storesModule)).openDrawer(name); }, { storesModule, name });
