@@ -1,4 +1,10 @@
 (function () {
+  if (document.activeViewTransition) document.activeViewTransition.ready.catch(function () {});
+  function handlePageTransition(event) {
+    if (event.viewTransition) event.viewTransition.ready.catch(function () {});
+  }
+  window.addEventListener("pageswap", handlePageTransition);
+  window.addEventListener("pagereveal", handlePageTransition);
   var theme = null;
   try {
     theme = window.localStorage.getItem("drowse.theme");

@@ -36,19 +36,19 @@ test("filled actions have visible but restrained top-down shading", async ({ pag
   }
 });
 
-test("compact controls keep one gentle size-aware gradient", async ({ page }, testInfo) => {
+test("compact controls put their size-aware gradient on the selection indicator", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/credits");
   const toggle = page.getByRole("group", { name: "Appearance" });
   for (const theme of ["Light", "Dark"]) {
     await toggle.getByRole("button", { name: theme, exact: true }).click();
-    await expect(toggle).toHaveCSS("background-image", "none");
-    await expect(toggle.locator(".selection-indicator")).toHaveCSS("background-image", "none");
+    await expect(toggle).toHaveCSS("background-image", /linear-gradient/);
+    const gradient = await toggle.locator(".selection-indicator").evaluate(element => getComputedStyle(element).backgroundImage);
+    expect(gradient.match(/linear-gradient/g)).toHaveLength(1);
+    expect(gradient).toContain("-48px");
+    expect(gradient).toContain("96px");
     for (const button of await toggle.getByRole("button").all()) {
-      const gradient = await button.evaluate(element => getComputedStyle(element).backgroundImage);
-      expect(gradient.match(/linear-gradient/g)).toHaveLength(1);
-      expect(gradient).toContain("-48px");
-      expect(gradient).toContain("96px");
+      await expect(button).toHaveCSS("background-image", "none");
     }
     await page.mouse.move(0, 0);
     await toggle.screenshot({ path: testInfo.outputPath(`compact-gradient-${theme}.png`) });
@@ -60,7 +60,7 @@ test("all button variants retain the shared gradient through interaction states"
   await page.goto("http://127.0.0.1:4176/credits");
   await page.evaluate(async url => {
     const [{ mount, createRawSnippet }, { default: Button }] = await Promise.all([
-      import("/@id/svelte"), import(url),
+      import("/e2e/svelte-runtime.ts"), import(url),
     ]);
     document.body.replaceChildren();
     const target = document.createElement("main");
@@ -90,7 +90,7 @@ test("all button variants retain the shared gradient through interaction states"
   for (const button of await page.locator("button").all()) await expect(button).toHaveCSS("background-image", "none");
 });
 
-test("workbench and dialog buttons use gradients in both appearances", async ({ page }, testInfo) => {
+test("workbench and dialog buttons retain the flat workspace material in both appearances", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
   await expect(page.locator(".shell")).toBeVisible();
@@ -98,14 +98,18 @@ test("workbench and dialog buttons use gradients in both appearances", async ({ 
     await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
-      await expectGradients(page);
+      for (const button of await page.locator("button:visible").all()) {
+        await expect(button).toHaveCSS("background-image", "none");
+      }
       for (const name of ["download_chat", "system_prompt", "save_conversation"]) {
         await page.evaluate(async ({ url, name }) => { (await import(url)).openDrawer(name); }, { url: `/@fs${resolve("src/lib/stores.svelte.ts")}`, name });
-        await expect(page.locator(".drawer")).toBeVisible();
-        await expectGradients(page);
-        await page.locator(".drawer").screenshot({ path: testInfo.outputPath(`${name}-${theme}-${width}.png`) });
+        await expect(page.getByRole("dialog")).toBeVisible();
+        for (const button of await page.locator("button:visible").all()) {
+          await expect(button).toHaveCSS("background-image", "none");
+        }
+        await page.getByRole("dialog").screenshot({ path: testInfo.outputPath(`${name}-${theme}-${width}.png`) });
         await page.evaluate(async url => { (await import(url)).closeDrawer(); }, `/@fs${resolve("src/lib/stores.svelte.ts")}`);
-        await expect(page.locator(".drawer")).toHaveCount(0);
+        await expect(page.getByRole("dialog")).toHaveCount(0);
       }
     }
   }

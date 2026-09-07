@@ -11,7 +11,7 @@ async function mountChats(page: Page) {
   await expect(page.locator(".shell")).toBeVisible();
   await page.evaluate(async urls => {
     const [{ default: Home }, { mount }, { conversationLibrary, registerConversationAutosave }, { sessionState }, { captureConversationSnapshot }] = await Promise.all([
-      import(urls.home), import("/@id/svelte"), import(urls.saved), import(urls.stores), import(urls.workspace),
+      import(urls.home), import("/e2e/svelte-runtime.ts"), import(urls.saved), import(urls.stores), import(urls.workspace),
     ]);
     const snapshot = captureConversationSnapshot();
     for (const name of ["Marmot notes", "A much longer conversation name to check the library's shared alignment"]) {

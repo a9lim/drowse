@@ -6,7 +6,7 @@ async function home(page: Page, installed = true) {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
   await page.evaluate(async ({ moduleUrl, installed }) => {
-    const [{ default: Harness }, { mount }] = await Promise.all([import(moduleUrl), import("/@id/svelte")]);
+    const [{ default: Harness }, { mount }] = await Promise.all([import(moduleUrl), import("/e2e/svelte-runtime.ts")]);
     const models = ["Gemma 3 1B", "Gemma 3 4B", "Qwen3 0.6B", "Qwen3 1.7B", "GPT-2", "Pythia 410M", "Pythia 1.4B", "Qwen3 0.6B Base"].map((name, index) => ({
       id: `model-${index}`, modelId: name.toLowerCase().replaceAll(" ", "-"), modelType: index < 4 ? "chat" : "base",
       name, catalogAvailable: true, tier: "fastest", sourceUrl: "https://example.com", license: "Apache-2.0",

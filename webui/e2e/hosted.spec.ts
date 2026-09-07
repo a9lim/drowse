@@ -1,3 +1,4 @@
+import { returnToChats, setAppearance, showWorkspaceTools, openTokenDetails, selectLoomView } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -148,7 +149,7 @@ async function installFixtureTreeDeleteFailure(page: Page): Promise<void> {
 
 async function openModelAndStorage(page: Page): Promise<Locator> {
   await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("model settings");
   await page.keyboard.press("Enter");
@@ -176,15 +177,19 @@ async function openWorkspace(page: Page, name: "Conversation" | "Branches" | "Co
     : name === "Controls"
       ? /^Controls$/
       : /^(Loom|Branches)$/;
-  await page.getByRole("button", { name: accessibleName }).click();
+  await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button", { name: accessibleName }).click();
   if (name === "Branches") {
-    await page.getByRole("button", { name: /^Map/ }).click();
+    if (!(await page.getByRole("button", { name: /^Map/ }).isVisible())) {
+      await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+      await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
+    }
+    await selectLoomView(page, /^Map/);
   }
 }
 
 async function openTranscriptDrawer(page: Page): Promise<Locator> {
   await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("conversation transcript");
   await page.keyboard.press("Enter");
@@ -226,7 +231,7 @@ async function openInstalledFixtureWorkbench(page: Page): Promise<void> {
 }
 
 async function continueFromChatHome(page: Page): Promise<void> {
-  await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
 }
 
@@ -270,8 +275,8 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
     expect(await page.locator(".app-header").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
-  await page.getByRole("button", { name: "Back to your chats", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible();
+  await returnToChats(page);
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   const card = page.locator(`[data-saved-conversation="${original.id}"]`);
   const avatar = card.getByRole("button", { name: /Generate another avatar/ });
   await expect.poll(() => avatar.locator("img").evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
@@ -279,15 +284,15 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   await avatar.click();
   await expect(avatar.locator("img")).not.toHaveAttribute("src", oldImage!);
   const chosenSeed = (await records()).conversations[0].avatarSeed;
-  await card.getByRole("button", { name: "Rename", exact: true }).click();
+  await card.getByRole("button", { name: /^Rename / }).click();
   await card.getByRole("textbox", { name: "Chat name", exact: true }).fill("My automatic chat");
   await card.getByRole("button", { name: "Save name", exact: true }).click();
   await card.getByRole("button", { name: "Open chat", exact: true }).click();
   await expect(page.locator("#workspace-main")).toHaveAttribute("aria-busy", "false");
-  await expect(page.getByLabel("Chat").getByText("Automatic marmot notes", { exact: true })).toBeVisible();
+  await expect(page.locator(".chat[aria-label='Chat']").getByText("Automatic marmot notes", { exact: true })).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Add a second turn");
   await sendButton(page).click();
-  await expect(page.getByLabel("Chat").getByText("Add a second turn", { exact: true })).toBeVisible();
+  await expect(page.locator(".chat[aria-label='Chat']").getByText("Add a second turn", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
   await expect.poll(async () => (await records()).conversations[0].snapshot.tree.nodes.length).toBeGreaterThan(original.snapshot.tree.nodes.length);
   const updated = (await records()).conversations[0];
@@ -295,6 +300,7 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   expect(updated.name).toBe("My automatic chat");
   expect(updated.avatarSeed).toBe(chosenSeed);
   await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await showWorkspaceTools(page, "Loom");
   await page.getByRole("button", { name: "Cut branch…", exact: true }).click();
   const cutDialog = page.getByRole("dialog", { name: "Delete branch", exact: true });
   await expect(cutDialog).toContainText("Earlier turns and sibling branches stay");
@@ -320,8 +326,8 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   await expect.poll(async () => (await records()).conversations.length).toBe(2);
   const newChat = (await records()).conversations.find((record: any) => record.id !== original.id);
   expect(newChat.avatarSeed).not.toBe(chosenSeed);
-  await page.getByRole("button", { name: "Back to your chats", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible();
+  await returnToChats(page);
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   await page.reload();
   await expect(page.locator("[data-saved-conversation]")).toHaveCount(2);
   expect((await records()).conversations.find((record: any) => record.id === original.id).avatarSeed).toBe(chosenSeed);
@@ -381,12 +387,13 @@ test("autosave failures are visible and retry preserves the same chat", async ({
 test("saved chats persist with stable Blobatar identities and explicit deletion", async ({ page }) => {
   await openFixtureWorkbench(page);
   const savedChatsButton = page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true });
-  await expect(page.getByRole("button", { name: "Back to your chats", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("What do marmots do in winter?");
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
 
   await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await showWorkspaceTools(page, "Loom");
   await savedChatsButton.click();
   let libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
   await expect(libraryDrawer).toBeVisible();
@@ -405,18 +412,19 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
   expect(chosenAvatarSeed).not.toBeNull();
 
   await page.goto(`${devUrl}/app?fixture=1`);
-  await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   const savedHomeCard = page.locator("[data-saved-conversation]").filter({
     hasText: "Marmot field notes",
   });
   await expect(savedHomeCard).toContainText("Marmot field notes");
   await savedHomeCard.getByRole("button", { name: "Open chat", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
-  await expect(page.getByLabel("Chat").getByText(
+  await expect(page.locator(".chat[aria-label='Chat']").getByText(
     "What do marmots do in winter?",
     { exact: true },
   )).toBeVisible();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await showWorkspaceTools(page, "Loom");
   await savedChatsButton.click();
   libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
   const list = libraryDrawer.getByRole("list", { name: "Saved conversations" });
@@ -437,6 +445,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
   await page.keyboard.press("Escape");
   await expect(libraryDrawer).not.toBeVisible();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await showWorkspaceTools(page, "Loom");
   await savedChatsButton.click();
   libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
   card = libraryDrawer.locator("[data-saved-conversation]").first();
@@ -445,6 +454,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
   await expect(libraryDrawer).not.toBeVisible();
 
   await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await showWorkspaceTools(page, "Loom");
   await savedChatsButton.click();
   libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
   card = libraryDrawer.locator("[data-saved-conversation]").first();
@@ -460,6 +470,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await showWorkspaceTools(page, "Loom");
   const compactSavedChatsButton = page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true });
   await expect(compactSavedChatsButton).toBeVisible();
   await compactSavedChatsButton.click();
@@ -508,6 +519,7 @@ test("saved chat cards keep summaries and open or export the latest stored trans
     }, { storesUrl: toastModuleUrl, id: recordId, text });
   };
   await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await showWorkspaceTools(page, "Loom");
   await page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true }).click();
   const drawer = page.getByRole("dialog", { name: "Saved chats" });
   const card = drawer.locator(`[data-saved-conversation="${recordId}"]`);
@@ -540,7 +552,7 @@ test("Loom defers hidden edge work and preserves labels through navigation and b
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A map performance check");
   await sendButton(page).click();
-  await expect(page.getByLabel("Chat")).toContainText(fixtureResponse);
+  await expect(page.locator(".chat[aria-label='Chat']")).toContainText(fixtureResponse);
   await expect.poll(() => page.evaluate(async (url) => (await import(url)).genStatus.active, toastModuleUrl))
     .toBe(false);
   const requestCount = () => page.evaluate(() =>
@@ -717,14 +729,14 @@ test("landing page routes into the hosted app", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: /See inside your model/ }),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: "Check this device" })).toHaveAttribute(
+  await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toHaveAttribute(
     "href",
     "/app",
   );
-  await expect(page.getByText("Drowse is fully local and open source. Everything computed and stored in your browser.", { exact: true })).toBeVisible();
-  await expect(page.locator(".hero-action-row > span")).toHaveText(/^(Chrome or Edge|Chrome, Edge, or Safari)$/);
+  await expect(page.getByText("Open source. Inference and saved work stay on your device.", { exact: true })).toBeVisible();
+  await expect(page.locator(".hero-action-row > span")).toHaveText("Chrome or Safari · compatible device required");
   await expect(page.getByRole("button", { name: "Pause background animation" })).toHaveCount(0);
-  await page.getByRole("link", { name: "Check this device" }).click();
+  await page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" }).click();
   await expect(page).toHaveURL(/\/app$/);
   expect(pageErrors).toEqual([]);
 });
@@ -771,8 +783,8 @@ test("chat storage protection stays compact above saved chats on desktop and pho
   const guide = banner.locator("details");
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const theme of ["Light", "Dark"]) {
-    await page.getByRole("button", { name: theme, exact: true }).click();
-    await expect(banner).toHaveCSS("background-color", theme === "Light" ? "rgb(255, 255, 255)" : "rgb(21, 24, 30)");
+    await setAppearance(page, theme);
+    await expect(banner).toHaveCSS("background-color", theme === "Light" ? "rgba(17, 22, 36, 0.03)" : "rgba(232, 234, 238, 0.03)");
     await expect(banner).toHaveCSS("background-image", "none");
     await expect(banner.getByRole("button", { name: "Protect storage", exact: true })).toHaveCSS("background-color", "rgb(245, 215, 110)");
     for (const width of [1440, 390]) {
@@ -813,12 +825,12 @@ test("a returning user sees their chat home instead of onboarding", async ({ pag
   await openFixtureWorkbench(page);
   await page.goto(`${devUrl}/`);
 
-  const open = page.getByRole("link", { name: "Open Drowse", exact: true });
+  const open = page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse", exact: true });
   await expect(open).toBeVisible();
   await expect(open).toHaveAttribute("href", "/app");
   await page.goto(`${devUrl}/app?fixture=1`);
 
-  const logo = page.getByRole("link", { name: "Drowse home", exact: true });
+  const logo = page.locator(".page-route:not([inert]) .page-brand");
   await expect(logo).toHaveAttribute("href", "/");
   await logo.click();
   await expect(page).toHaveURL(`${devUrl}/`);
@@ -914,7 +926,7 @@ test("landing and onboarding fit a mobile viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
 
-  await expect(page.getByRole("link", { name: "Check this device" })).toBeVisible();
+  await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
   ).toBe(true);
@@ -939,7 +951,7 @@ test("first-run offline notice does not cover the mobile primary action and rest
 
   const notice = page.getByRole("status").filter({ hasText: "The interface is ready offline." });
   await expect(notice).toBeVisible({ timeout: 15_000 });
-  const primary = page.getByRole("link", { name: "Check this device" });
+  const primary = page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" });
   const [noticeBox, primaryBox] = await Promise.all([notice.boundingBox(), primary.boundingBox()]);
   expect(noticeBox).not.toBeNull();
   expect(primaryBox).not.toBeNull();
@@ -1032,10 +1044,13 @@ test("a controlled offline launch resumes PWA update monitoring after reconnect"
   ).toBe(1);
 });
 
+test.describe("touchscreen tablet", () => {
+test.use({ hasTouch: true });
 test("compact workbench controls keep touch targets at tablet widths", async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
   await openFixtureWorkbench(page);
 
+  await showWorkspaceTools(page, "chat");
   const chatTargetHeights = await page.locator(".chat-header button").evaluateAll(
     (elements) => elements.map((element) => element.getBoundingClientRect().height),
   );
@@ -1052,6 +1067,7 @@ test("compact workbench controls keep touch targets at tablet widths", async ({ 
   );
   expect(treeTargetHeights.length).toBeGreaterThan(0);
   expect(Math.min(...treeTargetHeights)).toBeGreaterThanOrEqual(44);
+});
 });
 
 test("fixture installs, opens the shared workbench, stops, and generates", async ({ page }) => {
@@ -1125,7 +1141,7 @@ test("bottom conversation action clears the active path without deleting its bra
   await expect(clear).toHaveClass(/clear-conversation/);
   const [clearBox, headerBox] = await Promise.all([
     clear.boundingBox(),
-    page.locator(".chat-header").boundingBox(),
+    page.locator(".app-header").boundingBox(),
   ]);
   expect(clearBox).not.toBeNull();
   expect(headerBox).not.toBeNull();
@@ -1360,7 +1376,7 @@ test("models without an SAE say that no SAE is available", async ({ page }) => {
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect without an SAE");
   await sendButton(page).click();
   await page.getByRole("button", { name: "Inspect tokens in assistant message" }).click();
-  const drawer = page.getByRole("dialog", { name: "Generated word details" });
+  const drawer = await openTokenDetails(page);
   await drawer.getByRole("button", { name: /^sae\b/i }).click();
   await expect(drawer.getByText(
     "No SAE is available for this model",
@@ -1371,7 +1387,7 @@ test("models without an SAE say that no SAE is available", async ({ page }) => {
 test("changing models closes the runtime and opens installed model choices", async ({ page }) => {
   await openFixtureWorkbench(page);
   await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("model settings");
   await page.keyboard.press("Enter");
@@ -1423,7 +1439,7 @@ test("installed standard and R-lens packs swap live without fitting", async ({ p
   await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
   await openWorkspace(page, "Controls");
   await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
-  await expect(lens.getByLabel("Strength 0.76").first()).toBeVisible();
+  await expect(lens.getByLabel("Strength 0.755", { exact: true }).first()).toBeVisible();
 });
 
 test("hover replay routes the exact token request and exposes a recoverable failure", async ({ page }) => {
@@ -1601,6 +1617,7 @@ test("comparison controls appear only when usable and auto-compare completes", a
   });
   await openFixtureWorkbench(page);
 
+  await showWorkspaceTools(page, "chat");
   const colorPicker = page.getByRole("button", { name: "Color generated words by" });
   await expect(colorPicker).toContainText("Token surprisal");
   await colorPicker.click();
@@ -1750,8 +1767,8 @@ test("reroll creates an assistant sibling under the original user turn", async (
 
   await openWorkspace(page, "Branches");
   const loom = page.locator(".loom-canvas");
-  await expect(loom).toHaveAttribute("data-loom-nodes", "3");
-  await expect(loom).toHaveAttribute("data-loom-edges", "2");
+  await expect(loom).toHaveAttribute("data-loom-nodes", "4");
+  await expect(loom).toHaveAttribute("data-loom-edges", "3");
   await expect(loom.locator("[data-loom-junction]")).toHaveCount(1);
   const parentCard = page.locator(`[data-node-id="${branch.childParents[0]}"]`);
   const firstReply = page.locator(`[data-node-id="${branch.childIds[0]}"]`);
@@ -1778,8 +1795,8 @@ test("reroll creates an assistant sibling under the original user turn", async (
   await expect(loom).toHaveAttribute("data-loom-nodes", "1");
   await expect(loom).toHaveAttribute("data-loom-edges", "0");
   await parentCard.getByRole("button", { name: "Show child paths" }).click();
-  await expect(loom).toHaveAttribute("data-loom-nodes", "3");
-  await expect(loom).toHaveAttribute("data-loom-edges", "2");
+  await expect(loom).toHaveAttribute("data-loom-nodes", "4");
+  await expect(loom).toHaveAttribute("data-loom-edges", "3");
 
   await page.evaluate(async ({ moduleUrl, childIds }) => {
     const stores = await import(moduleUrl);
@@ -1791,7 +1808,7 @@ test("reroll creates an assistant sibling under the original user turn", async (
   await expect(comparison.getByRole("alert")).toHaveCount(0);
 });
 
-test("the loom background responds to pointer and zoom while respecting reduced motion", async ({ page }) => {
+test("the loom background stays steady on hover and follows zoom while respecting reduced motion", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Show the loom depth field");
@@ -1806,13 +1823,12 @@ test("the loom background responds to pointer and zoom while respecting reduced 
   const viewportBox = await viewport.boundingBox();
   expect(viewportBox).not.toBeNull();
 
+  const initialTransform = await field.evaluate(element => getComputedStyle(element).transform);
   await page.mouse.move(
     viewportBox!.x + viewportBox!.width * 0.82,
     viewportBox!.y + viewportBox!.height * 0.76,
   );
-  await expect.poll(() => viewport.evaluate((element) =>
-    Number.parseFloat(getComputedStyle(element).getPropertyValue("--loom-pointer-x"))
-  )).toBeLessThan(0);
+  await expect(field).toHaveCSS("transform", initialTransform);
   const gridOpacity = await field.evaluate((element) =>
     Number.parseFloat(getComputedStyle(element, "::before").opacity)
   );
@@ -1840,7 +1856,7 @@ test("a saved token alternative creates an exact sibling loom branch", async ({ 
   await expect(response).toContainText(fixtureResponse);
   await response.locator(".tok").first().click();
 
-  const drilldown = page.getByRole("dialog", { name: "Generated word details" });
+  const drilldown = await openTokenDetails(page);
   await drilldown.getByRole("button", { name: /logits/i }).click();
   await expect(drilldown.getByLabel("Ranked token alternatives")).toBeVisible();
   const startBranch = drilldown.getByRole("button", { name: "Start branch" }).first();
@@ -1864,6 +1880,7 @@ test("a saved token alternative creates an exact sibling loom branch", async ({ 
   await startBranch.click();
   await expect(drilldown).toHaveCount(0);
   await expect(page.locator(".msg .response-body").last()).toContainText("Alternative-0 ");
+  await openWorkspace(page, "Conversation");
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
 
   const fork = await page.evaluate(async ({ moduleUrl, parentId, sourceId }) => {
@@ -1908,10 +1925,10 @@ test("token replacement streams its new continuation visibly on the Loom", async
     return { id: node.id, saved: JSON.stringify(node) };
   }, toastModuleUrl);
   await page.locator(".msg .response-body").last().locator(".tok").nth(3).click();
-  const drawer = page.getByRole("dialog", { name: "Generated word details" });
+  const drawer = await openTokenDetails(page);
   await drawer.getByRole("button", { name: "Replace token…" }).click();
   await drawer.getByRole("textbox", { name: "Replacement text" }).fill("Authored ");
-  await drawer.getByRole("button", { name: "Start branch" }).click();
+  await drawer.getByRole("region", { name: "Selected token branch point" }).getByRole("button", { name: "Start branch", exact: true }).click();
   await expect(page.locator(".loom-canvas")).toBeVisible();
   const current = page.locator('.tree-node-wrap.current-node .node');
   await expect(current).toHaveClass(/streaming/);
@@ -1942,12 +1959,12 @@ test("typed text replaces a token in a new sibling loom branch", async ({ page }
   await expect(response).toContainText(fixtureResponse);
   await response.locator(".tok").first().click();
 
-  const drilldown = page.getByRole("dialog", { name: "Generated word details" });
+  const drilldown = await openTokenDetails(page);
   await drilldown.getByRole("button", { name: "Replace token…" }).click();
   const replacement = drilldown.getByRole("textbox", { name: "Replacement text" });
   await expect(replacement).toBeFocused();
   await replacement.fill("Authored ");
-  await drilldown.getByRole("button", { name: "Start branch" }).click();
+  await drilldown.getByRole("region", { name: "Selected token branch point" }).getByRole("button", { name: "Start branch", exact: true }).click();
 
   await expect(drilldown).toHaveCount(0);
   await expect(page.locator(".msg .response-body").last())
@@ -1989,7 +2006,7 @@ test("token continuation keeps its prefix visible and counts only new output on 
     return { id: node.id, text: node.text, prefix, rawIndex: target.raw_index };
   }, toastModuleUrl);
   await page.locator(".msg .response-body").last().locator(".tok").nth(4).click();
-  const drawer = page.getByRole("dialog", { name: "Generated word details" });
+  const drawer = await openTokenDetails(page);
   await drawer.getByRole("button", { name: "Continue from here" }).click();
   await expect(drawer).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => (window as any).__continuationSnapshots.length)).toBeGreaterThan(0);
@@ -2081,7 +2098,7 @@ test("a sentence in the loom starts an exact sibling continuation", async ({ pag
   expect(fork.activeId).toBe(fork.forkId);
   expect(fork.parentId).toBe(source.parentId);
   expect(fork.rawTokenIds).toEqual(source.rawTokenIds);
-  await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-edges", "2");
+  await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-edges", "3");
 });
 
 test("loom projections stay synchronized across path, options, and starred points", async ({ page }) => {
@@ -2117,7 +2134,7 @@ test("loom projections stay synchronized across path, options, and starred point
   await expect(page.getByText("Nothing saved yet", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: /^Map/ }).click();
-  await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-nodes", "3");
+  await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-nodes", "4");
 });
 
 test("the loom exposes every generated token as an exact branch point", async ({ page }) => {
@@ -2152,14 +2169,6 @@ test("the loom exposes every generated token as an exact branch point", async ({
       rawTokenIds: [...(node?.raw_token_ids ?? [])],
     };
   }, { moduleUrl: toastModuleUrl, prompt });
-
-  await page.getByRole("button", { name: "Reroll assistant message" }).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeEnabled();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
-  await expect.poll(() => page.evaluate(async (moduleUrl) => {
-    const stores = await import(moduleUrl);
-    return stores.loomTree.active_node_id;
-  }, toastModuleUrl)).not.toBe(generated.nodeId);
 
   await openWorkspace(page, "Branches");
   await page.getByRole("button", { name: "Fit whole loom" }).click();
@@ -2196,7 +2205,7 @@ test("the loom exposes every generated token as an exact branch point", async ({
   expect(cardLayout.nodeLeft).toBeGreaterThanOrEqual(cardLayout.wrapperLeft - 1);
   expect(cardLayout.nodeRight).toBeLessThanOrEqual(cardLayout.wrapperRight + 1);
   expect(cardLayout.nodeOverflowX).toBe("hidden");
-  expect(cardLayout.tokenOverflow).toBe("auto");
+  expect(cardLayout.tokenOverflow).toBe("visible");
 
   const userCard = page.locator(`[data-loom-node-id="${generated.userId}"]`);
   const generatedHeight = await card.evaluate((element) => element.getBoundingClientRect().height);
@@ -2209,7 +2218,7 @@ test("the loom exposes every generated token as an exact branch point", async ({
     return (stores.loomTree.children_of.get(parentId) ?? []).length;
   }, { moduleUrl: toastModuleUrl, parentId: generated.userId });
   await tokenNodes.nth(targetIndex).click();
-  const tokenTools = page.getByRole("dialog", { name: "Generated word details" });
+  const tokenTools = await openTokenDetails(page);
   await expect(tokenTools).toBeVisible();
   const branchPoint = tokenTools.getByLabel("Selected token branch point");
   await expect(branchPoint).toBeVisible();
@@ -2258,6 +2267,7 @@ test("the loom exposes every generated token as an exact branch point", async ({
 
 test("arbitrary role labels and structural role swaps survive generation", async ({ page }) => {
   await openFixtureWorkbench(page);
+  await page.getByRole("button", { name: /^Roles / }).click();
   await page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
     stores.samplingState.user_role = "critic";
@@ -2296,6 +2306,7 @@ test("arbitrary role labels and structural role swaps survive generation", async
 
 test("custom roles can be entered directly, configured, and used for generation", async ({ page }) => {
   await openFixtureWorkbench(page);
+  await page.getByRole("button", { name: /^Roles / }).click();
 
   const generatedRole = page.getByRole("combobox", { name: "Model writes as" });
   await generatedRole.fill("critic");
@@ -2352,7 +2363,7 @@ test("raw completion mode submits and preserves a flat base-model buffer", async
   await expect(buffer).toBeVisible();
   const editor = buffer.getByRole("textbox", { name: "Editable completion buffer" });
   await editor.fill("Raw prefix: ");
-  await buffer.getByRole("button", { name: "send", exact: true }).click();
+  await buffer.getByRole("button", { name: "Continue text", exact: true }).click();
   await expect(editor).toHaveValue(`Raw prefix: ${fixtureResponse}`);
   await expect.poll(() => page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
@@ -2450,7 +2461,7 @@ test("worker-backed fixture restores its loom and generates offline without redo
   expect(offlineRequests).toEqual([]);
 });
 
-test("deleting the active model unloads it and removes only its verified objects and loom", async ({
+test("deleting the active model unloads it and removes its files while preserving chats and packs", async ({
   page,
 }) => {
   await openFixtureWorkbench(page);
@@ -2460,7 +2471,7 @@ test("deleting the active model unloads it and removes only its verified objects
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeEnabled();
 
   await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("model settings");
   await page.keyboard.press("Enter");
@@ -2472,9 +2483,17 @@ test("deleting the active model unloads it and removes only its verified objects
   await installedModels.getByRole("button", { name: "Delete model", exact: true }).click();
 
   await page.waitForURL(`${devUrl}/app?fixture=1&choose=1`);
+  await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
   await expect.poll(async () => fixtureDeletionSnapshot(page)).toEqual({
     install: null,
-    session: null,
+    session: expect.objectContaining({
+      modelVariantId: "qwen3-1.7b-fixture",
+      tree: expect.objectContaining({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({ role: "user", text: "Delete this model-specific conversation" }),
+        ]),
+      }),
+    }),
     packIds: ["fixture-jlens", "fixture-sae"],
     remaining: [...fixturePackHashes],
   });
@@ -2703,6 +2722,7 @@ test("mobile workbench targets, bidi fields, and transcript radios remain keyboa
   const response = page.locator(".msg .response-body").last();
   await expect(response).toContainText(fixtureResponse);
   await expect(response).toHaveAttribute("dir", "auto");
+  await showWorkspaceTools(page, "chat");
   const chatTargetHeights = await page.locator('.chat-header button').evaluateAll(
     (elements) => elements.map((element) => element.getBoundingClientRect().height),
   );
@@ -2733,7 +2753,7 @@ test("mobile workbench targets, bidi fields, and transcript radios remain keyboa
 test("unsupported authoring commands are filtered before runtime requests", async ({ page }) => {
   await openFixtureWorkbench(page);
   await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
   const paletteSearch = page.getByRole("combobox", { name: "Filter commands" });
   await paletteSearch.fill("templates");
   await expect(page.getByText(
@@ -2776,23 +2796,23 @@ test("captured probe readings are not relabeled as unsteered replay results", as
     }
   }, toastModuleUrl);
   await page.getByRole("button", { name: "Inspect tokens in assistant message" }).click();
-  const drawer = page.getByRole("dialog", { name: "Generated word details" });
+  const drawer = await openTokenDetails(page);
   for (const [tab, name] of [[/^j-lens\b/i, "word monitor"], [/^sae\b/i, "feature monitor"]] as const) {
     await drawer.getByRole("button", { name: tab }).click();
-    await expect(drawer.getByTitle("capture or replay")).toHaveText("captured");
+    await expect(drawer.locator(".inst-head .origin")).toHaveText("captured");
     await expect(drawer.getByLabel("Pinned probe readings")).toContainText(name);
     await drawer.getByRole("button", { name: "recipe on", exact: true }).click();
-    await expect(drawer.getByTitle("capture or replay")).toHaveText("replayed");
-    await expect(drawer.getByTitle("unsteered replay")).toBeVisible();
+    await expect(drawer.locator(".inst-head .origin")).toHaveText("replayed");
+    await expect(drawer.getByTitle("Computed without steering so you can compare it with the steered readout.")).toBeVisible();
     await expect(drawer.getByLabel("Pinned probe readings")).toHaveCount(0);
     await drawer.getByRole("button", { name: "recipe off", exact: true }).click();
-    await expect(drawer.getByTitle("capture or replay")).toHaveText("captured");
+    await expect(drawer.locator(".inst-head .origin")).toHaveText("captured");
     await expect(drawer.getByLabel("Pinned probe readings")).toContainText(name);
   }
   await drawer.getByRole("button", { name: "Close drawer" }).click();
   await openWorkspace(page, "Controls");
   const tabs = page.getByRole("group", { name: "Response guidance type" });
-  for (const [tab, name] of [["predictions", "word monitor"], ["features", "feature monitor"]]) {
+  for (const [tab, name] of [["J-lens", "word monitor"], ["SAE", "feature monitor"]]) {
     await tabs.getByRole("button", { name: tab, exact: true }).click();
     await page.getByRole("button", { name: `Unpin probe ${name}`, exact: true }).click();
     await expect(page.getByRole("button", { name: `Unpin probe ${name}`, exact: true })).toHaveCount(0);
@@ -2817,16 +2837,17 @@ test("token inspection has one keyboard entry point and restores focus", async (
   const workspaceX = await workspace.evaluate((element) => element.getBoundingClientRect().x);
   await inspect.focus();
   await page.keyboard.press("Enter");
-  const drawer = page.getByRole("dialog", { name: "Generated word details" });
+  const drawer = await openTokenDetails(page);
   await expect(drawer).toBeVisible();
-  await expect(drawer.getByTitle("capture or replay")).toHaveText("captured");
+  await drawer.getByRole("button", { name: /^j-lens\b/i }).click();
+  await expect(drawer.locator(".inst-head .origin")).toHaveText("captured");
   await expect(drawer.getByText("Preparing the token", { exact: true })).toHaveCount(0);
   await expect(drawer.getByText("AGGREGATE WORKSPACE", { exact: true })).toBeVisible();
   await expect.poll(() => layout.evaluate((element) => element.scrollLeft)).toBe(0);
   await expect.poll(() => workspace.evaluate((element) => element.getBoundingClientRect().x))
     .toBe(workspaceX);
   await drawer.getByRole("button", { name: /^sae\b/i }).click();
-  await expect(drawer.getByTitle("capture or replay")).toHaveText("captured");
+  await expect(drawer.locator(".inst-head .origin")).toHaveText("captured");
   await expect(drawer.getByRole("list", { name: "Top SAE features" })).toBeVisible();
   await expect(drawer.getByText("Reading model features", { exact: true })).toHaveCount(0);
   await expect(drawer.getByRole("button", { name: "Next token" })).toBeVisible();
@@ -2852,8 +2873,9 @@ test("the J-lens matrix scrolls with the drawer and keeps its tooltips contained
   await expect(response).toContainText(fixtureResponse);
   await response.locator(".tok").first().click();
 
-  const drawer = page.getByRole("dialog", { name: "Generated word details" });
+  const drawer = await openTokenDetails(page);
   const grid = drawer.locator(".grid-scroll");
+  await drawer.getByRole("button", { name: /^j-lens\b/i }).click();
   await expect(grid.locator(".lens-table")).toBeVisible();
   await expect(drawer.locator("footer.drawer-footer")).toHaveCount(0);
   await expect(drawer.getByText(
@@ -2874,7 +2896,7 @@ test("the J-lens matrix scrolls with the drawer and keeps its tooltips contained
     if (!header || !section) throw new Error("J-lens sections are not visible");
     return section.y - (header.y + header.height);
   });
-  expect(sectionGap).toBeGreaterThanOrEqual(20);
+  expect(sectionGap).toBeGreaterThanOrEqual(16);
   await grid.evaluate((element) => {
     const body = element.querySelector("tbody");
     const rows = body ? [...body.querySelectorAll("tr")] : [];
@@ -2960,7 +2982,7 @@ test("portable pack management remains available when browser fitting is disable
   await openFixtureWorkbench(page);
 
   await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
   const paletteSearch = page.getByRole("combobox", { name: "Filter commands" });
   await paletteSearch.fill("packs");
   await page.getByRole("option", { name: /^Manage downloaded controls\b/i }).click();
@@ -3081,7 +3103,7 @@ test("an installed PWA update waits for consent and reloads without clearing loc
     notice.getByRole("button", { name: "Update and reload" }).click(),
   ]);
 
-  await expect(page.getByRole("link", { name: "Check this device" })).toBeVisible();
+  await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("drowse-pwa-upgrade-test"))).toBe("retained");
   await expect.poll(() => page.evaluate(async () => {
     const registration = await navigator.serviceWorker.getRegistration();

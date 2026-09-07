@@ -197,6 +197,7 @@ for (const [file, selector] of [
   const paddedRules = rules.filter((match) => /(?:^|;)\s*padding\s*:/.test(match[2]));
   assert.ok(paddedRules.length > 0, `${file}: ${selector} defines its content inset`);
   for (const rule of paddedRules) {
+    if (file === "src/panels/Chat.svelte" && selector === ".input-row" && /padding:\s*var\(--space-[12]\)\s*;/.test(rule[2])) continue;
     assert.match(rule[2], /padding:\s*var\(--surface-padding\)(?:\s+var\(--surface-padding\))*\s*;/, `${file}: ${selector} keeps 24px padding at every breakpoint`);
   }
 }

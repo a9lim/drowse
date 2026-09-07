@@ -114,7 +114,7 @@ test("help popovers retain their exit and reverse a dismissal without losing Esc
   const tip = page.locator(".info-popover").filter({ hasText: /^Top K / });
   await trigger.click();
   await expect(tip).toHaveCSS("opacity", "1");
-  await trigger.evaluate(el => (el as HTMLButtonElement).click());
+  await trigger.evaluate(el => el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
   const closing = await tip.evaluate(el => ({ open: el.matches(":popover-open"), inert: (el as HTMLElement).inert, duration: getComputedStyle(el).transitionDuration }));
   expect(closing).toEqual({ open: true, inert: true, duration: "0.15s, 0.15s" });
   await trigger.evaluate(el => (el as HTMLButtonElement).click());
@@ -162,7 +162,7 @@ test("dismissed drawer controls become inert before their visual exit completes"
   const inert = await page.evaluate(async url => {
     const drawer = document.querySelector<HTMLElement>('.drawer[role="dialog"]')!;
     (await import(url)).closeDrawer();
-    await (await import("/@id/svelte")).tick();
+    await (await import("/e2e/svelte-runtime.ts")).tick();
     await new Promise(requestAnimationFrame);
     return { inert: drawer.inert, connected: drawer.isConnected };
   }, moduleUrl("lib/stores/drawers.svelte.ts"));

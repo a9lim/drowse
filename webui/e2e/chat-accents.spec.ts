@@ -1,9 +1,9 @@
+import { returnToChats, setAppearance } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 import { CHAT_ACCENTS } from "../src/lib/chatAccent";
 
 const savedUrl = `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`;
-const themeUrl = `/@fs${resolve("src/lib/theme.ts")}`;
 const rgb = (hex: string) => `rgb(${[1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`;
 
 test("chat accents are independent, persistent, accessible, and follow the active workspace", async ({ page }, testInfo) => {
@@ -27,27 +27,28 @@ test("chat accents are independent, persistent, accessible, and follow the activ
     const second = await conversationLibrary.create({ name: "Another chat", snapshot: first.snapshot });
     return [first.id, second.id];
   }, savedUrl);
-  await page.getByRole("button", { name: "Back to your chats", exact: true }).click();
+  await returnToChats(page);
   const card = page.locator(`[data-saved-conversation="${ids[0]}"]`);
   const other = page.locator(`[data-saved-conversation="${ids[1]}"]`);
   await expect(card).toBeVisible();
   await expect(card).toHaveAttribute("data-chat-accent", "purple");
   const timestamp = await card.locator("time").getAttribute("datetime");
   const order = await page.locator("[data-saved-conversation]").evaluateAll(els => els.map(el => el.getAttribute("data-saved-conversation")));
-  await card.locator("summary").click();
+  await card.getByRole("button", { name: /^Color ·/ }).click();
   for (const theme of ["light", "dark"] as const) {
-    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: themeUrl, theme });
+    await setAppearance(page, theme === "light" ? "Light" : "Dark");
     for (const accent of CHAT_ACCENTS) {
       await card.locator(".color-option").filter({ hasText: accent.name }).click();
       await expect(card).toHaveAttribute("data-chat-accent", accent.id);
-      await expect(card).toHaveCSS("background-image", /linear-gradient/);
+      await expect(card).toHaveCSS("background-image", "none");
       const material = await card.evaluate(el => getComputedStyle(el).backgroundImage);
       await card.locator(".chat-counts").hover();
       expect(await card.evaluate(el => getComputedStyle(el).backgroundImage)).toBe(material);
       await expect(card.getByRole("radio", { name: accent.name, exact: true })).toBeChecked();
-      await expect(card.getByRole("button", { name: "Open chat", exact: true })).toHaveCSS("background-color", rgb(accent[theme]));
+      await expect(card.getByRole("button", { name: "Open chat", exact: true })).toHaveCSS("background-color", rgb(accent.dark));
+      expect(await card.evaluate(el => getComputedStyle(el).getPropertyValue("--accent").trim())).toBe(accent[theme]);
       await expect(other).toHaveAttribute("data-chat-accent", "purple");
-      await expect(other.getByRole("button", { name: "Open chat", exact: true })).toHaveCSS("background-color", rgb(CHAT_ACCENTS[0][theme]));
+      await expect(other.getByRole("button", { name: "Open chat", exact: true })).toHaveCSS("background-color", rgb(CHAT_ACCENTS[0].dark));
     }
     for (const width of [320, 1440]) {
       await page.setViewportSize({ width, height: 1000 });
@@ -88,12 +89,12 @@ test("chat accents are independent, persistent, accessible, and follow the activ
   await page.getByRole("button", { name: "Controls", exact: true }).click();
   await page.getByRole("group", { name: "Controls section" }).getByRole("button", { name: "Chat", exact: true }).click();
   const controls = page.getByRole("tabpanel", { name: "Chat controls" });
-  await controls.locator("summary").click();
+  await controls.getByRole("button", { name: /^Color ·/ }).click();
   await expect(controls.getByRole("radio", { name: "Mint", exact: true })).toBeChecked();
   await controls.locator(".color-option").filter({ hasText: "Rose" }).click();
   await controls.getByRole("button", { name: "Update", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-chat-accent", "rose");
-  await page.getByRole("button", { name: "Back to your chats", exact: true }).click();
+  await returnToChats(page);
   await expect(card).toHaveAttribute("data-chat-accent", "rose");
   await expect(page.locator("html")).not.toHaveAttribute("data-chat-accent");
   await other.getByRole("button", { name: "Open chat", exact: true }).click();

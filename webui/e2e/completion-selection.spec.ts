@@ -94,7 +94,7 @@ test("duplicate chat UI preserves full snapshots and independent autosave identi
   await generate(page);
   await page.evaluate(async modules => {
     const [{ default: HostedHome }, { mount }, { conversationLibrary, registerConversationAutosave }, { sessionState }, { captureConversationSnapshot }] = await Promise.all([
-      import(modules.home), import("/@id/svelte"), import(modules.saved), import(modules.stores), import(modules.workspace),
+      import(modules.home), import("/e2e/svelte-runtime.ts"), import(modules.saved), import(modules.stores), import(modules.workspace),
     ]);
     await conversationLibrary.create({ name: "Moon notes", modelType: "base", snapshot: captureConversationSnapshot() });
     registerConversationAutosave(async () => {});

@@ -20,9 +20,9 @@ test("composer and dialog actions follow their container spacing", async ({ page
         overflow: element.scrollWidth > element.clientWidth,
       };
     });
-    expect(spacing.row).toBeCloseTo(spacing.inset, 0);
-    expect(spacing.buttons).toBeCloseTo(spacing.inset, 0);
-    expect(spacing.inset).toBe(24);
+    expect(spacing.row).toBe(8);
+    expect(spacing.buttons).toBe(8);
+    expect(spacing.inset).toBe(12);
     expect(spacing.overflow).toBe(false);
 
     for (const name of ["download_chat", "save_conversation", "system_prompt", "transcript"]) {

@@ -98,6 +98,16 @@ const projectLicenseAsset: Plugin = {
   },
 };
 
+const notFoundPage: Plugin = {
+  name: "drowse-hosted-not-found-page",
+  enforce: "post",
+  generateBundle(_, bundle) {
+    const index = bundle["index.html"];
+    if (!index || index.type !== "asset") throw new Error("Hosted index is missing");
+    this.emitFile({ type: "asset", fileName: "404.html", source: index.source });
+  },
+};
+
 export default defineConfig({
   root: fromRoot("./hosted"),
   publicDir: fromRoot("./public-hosted"),
@@ -115,6 +125,7 @@ export default defineConfig({
   plugins: [
     releaseMetadata,
     projectLicenseAsset,
+    notFoundPage,
     svelte({ configFile: fromRoot("./svelte.config.js") }),
     VitePWA({
       strategies: "generateSW",
@@ -170,6 +181,12 @@ export default defineConfig({
           "wasm/**",
         ],
         maximumFileSizeToCacheInBytes: 1024 * 1024,
+        manifestTransforms: [async (entries) => ({
+          manifest: entries.map((entry) => entry.url.endsWith(".js")
+            ? { ...entry, revision: artifactSourceRevision }
+            : entry),
+          warnings: [],
+        })],
         navigateFallback: "/index.html",
         runtimeCaching: [
           {

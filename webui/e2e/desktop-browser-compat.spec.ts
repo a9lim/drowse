@@ -81,12 +81,12 @@ async function expectStorageAndCoordinationCanaries(
         created = true;
         const handle = await directory.getFileHandle("canary.txt", { create: true });
         const initial = await handle.createWritable();
-        await initial.write("poly");
+        await initial.write("dro");
         await initial.close();
         const resumed = await handle.createWritable({ keepExistingData: true });
-        await resumed.seek(4);
-        await resumed.write("thetic-extra");
-        await resumed.truncate(10);
+        await resumed.seek(3);
+        await resumed.write("wse-extra");
+        await resumed.truncate(6);
         await resumed.close();
         const contents = await (await handle.getFile()).text();
         const entries = [];
@@ -144,12 +144,12 @@ test("desktop landing documents supported browsers and supplies runtime prerequi
 
   for (const viewport of desktopViewports) {
     await page.setViewportSize(viewport);
-    await expect(page.getByRole("link", { name: "Check this device" })).toBeVisible();
+    await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
   }
 
   const browserSupport = page.locator(".hero-action-row > span");
-  await expect(browserSupport).toHaveText(/^(Chrome or Edge|Chrome, Edge, or Safari)$/);
+  await expect(browserSupport).toHaveText("Chrome or Safari · compatible device required");
   expect(pageErrors).toEqual([]);
 });
 
@@ -187,7 +187,7 @@ test("fixture workbench stays usable across desktop widths and keyboard navigati
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await expect(palette).toHaveCount(0);
   await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
   const paletteInput = page.getByRole("combobox", { name: "Filter commands" });
   await expect(palette).toBeVisible();
   await expect(paletteInput).toBeFocused();

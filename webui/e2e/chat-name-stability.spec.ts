@@ -24,7 +24,7 @@ async function seed(page: Page) {
 async function mountHome(page: Page) {
   await page.evaluate(async modules => {
     const [{ default: HostedHome }, { mount }, { registerConversationAutosave }, { sessionState }] = await Promise.all([
-      import(modules.home), import("/@id/svelte"), import(modules.saved), import(modules.stores),
+      import(modules.home), import("/e2e/svelte-runtime.ts"), import(modules.saved), import(modules.stores),
     ]);
     registerConversationAutosave(async () => {});
     const modelId = sessionState.info.model_id;
@@ -125,7 +125,7 @@ test("renaming in the saved-chat drawer preserves position and activity time", a
   const target = records.at(-1);
   const card = page.locator(`[data-saved-conversation="${target.id}"]`);
   const timestamp = await card.locator("time").getAttribute("datetime");
-  await card.getByRole("button", { name: "Rename", exact: true }).click();
+  await card.getByRole("button", { name: /^Rename / }).click();
   const input = card.getByRole("textbox", { name: "Conversation name", exact: true });
   await input.fill("Alpha renamed");
   await input.press("Enter");

@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
@@ -44,7 +45,7 @@ test("Loom sentences have complete rounded borders without side shadows", async 
   await page.getByRole("button", { name: /^Map/ }).click();
   const sentence = page.locator(".sentence-node").first();
   for (const theme of ["Light", "Dark"]) {
-    await page.getByRole("button", { name: theme, exact: true }).click();
+    await setAppearance(page, theme);
     for (const width of [390, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await expect(sentence).toBeVisible();

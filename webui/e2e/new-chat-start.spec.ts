@@ -6,7 +6,7 @@ async function chats(page: Page) {
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
   await page.evaluate(async ({ rootUrl, fixtureUrl }) => {
     const [{ default: Root }, { createFixtureHostedRuntime }, { mount }] = await Promise.all([
-      import(rootUrl), import(fixtureUrl), import("/@id/svelte"),
+      import(rootUrl), import(fixtureUrl), import("/e2e/svelte-runtime.ts"),
     ]);
     const fixture = createFixtureHostedRuntime();
     const capabilities = await fixture.controller.check();

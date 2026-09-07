@@ -69,26 +69,26 @@ test("technical controls preserve full names, slider behavior, and translucent s
   await expect(page.locator(".app-sidebar")).toHaveCSS("background-color", /\/ 0\.9\)$/);
   await tabs.getByRole("button", { name: "Manifold", exact: true }).click();
   await page.getByRole("button", { name: "Add manifold", exact: true }).click();
-  await expect(page.locator(".drawer")).toHaveCSS("background-color", /\/ 0\.9\)$/);
+  await expect(page.getByRole("dialog", { name: "Add manifold", exact: true })).toHaveCSS("background-color", /\/ 0\.9\)$/);
   await page.screenshot({ path: testInfo.outputPath("translucent-drawer.png") });
   await page.emulateMedia({ forcedColors: "active" });
-  await expect(page.locator(".drawer")).toHaveCSS("backdrop-filter", "none");
+  await expect(page.getByRole("dialog", { name: "Add manifold", exact: true })).toHaveCSS("backdrop-filter", "none");
   expect(await page.locator(".drawer").evaluate(el => getComputedStyle(el).backgroundColor)).not.toContain("0.9");
   const sliderSource = await readFile(resolve("src/lib/Slider.svelte"), "utf8");
   expect(sliderSource).toMatch(/::-webkit-slider-thumb\s*\{[^}]*margin-top:\s*-8px;/);
 });
 
-test("help opens only on explicit activation and Escape keeps the parent drawer open", async ({ page }) => {
+test("help supports hover and keyboard focus while Escape keeps the parent drawer open", async ({ page }) => {
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
   await page.evaluate(async url => (await import(url)).openDrawer("advanced_sampling"), storesUrl);
   const drawer = page.getByRole("dialog", { name: "Sampling settings" });
   const help = drawer.getByRole("button", { name: "About Top K", exact: true });
   const tip = drawer.getByRole("tooltip").filter({ hasText: "Top K" });
   await help.hover();
+  await expect(tip).toBeVisible();
+  await page.mouse.move(0, 0);
   await expect(tip).toBeHidden();
   await help.focus();
-  await expect(tip).toBeHidden();
-  await help.press("Enter");
   await expect(tip).toBeVisible();
   await help.press("Escape");
   await expect(tip).toBeHidden();

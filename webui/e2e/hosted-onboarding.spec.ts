@@ -63,8 +63,8 @@ test("base models stay collapsed and explain text completion before selection", 
   await summary.focus();
   await page.keyboard.press("Enter");
   await expect(base).toBeVisible();
-  await expect(disclosure).toContainText("not chat assistants");
-  await expect(disclosure).toContainText("No fitting is needed");
+  await expect(disclosure).toContainText("They don't follow instructions reliably");
+  await expect(disclosure).toContainText("Each download includes the core pack for generation and concept steering.");
   await base.click();
   await expect(base).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".required-tool").filter({ hasText: "Feature insights" })).toContainText("(SAE)");
@@ -130,7 +130,7 @@ async function mountHostedApp(
   await page.evaluate(async ({ componentUrl, snapshot, retryResults }) => {
     const [{ default: HostedApp }, { mount }] = await Promise.all([
       import(componentUrl),
-      import("/@id/svelte"),
+      import("/e2e/svelte-runtime.ts"),
     ]);
     let current = structuredClone(snapshot);
     const listeners = new Set<(next: typeof current) => void>();
@@ -236,7 +236,7 @@ test("tab identity reflects device checks and real setup states", async ({ page 
     [{ phase: "checking" }, "checking"],
     [{ phase: "unsupported" }, "unsupported"],
     [{ phase: "failed" }, "error"],
-    [{ phase: "supported", download: { ...initialSnapshot.download, phase: "idle" } }, "ready"],
+    [{ phase: "supported", download: { ...initialSnapshot.download, phase: "idle" } }, "models"],
     [{ download: { ...initialSnapshot.download, phase: "downloading" } }, "downloading"],
     [{ download: { ...initialSnapshot.download, phase: "paused" } }, "paused"],
     [{ download: { ...initialSnapshot.download, phase: "installed" }, runtime: { ...initialSnapshot.runtime, phase: "loading" } }, "loading"],
@@ -345,8 +345,8 @@ test("hosted onboarding uses truthful download actions and semantic fit colors",
       danger: resolveColor("var(--accent-red)"),
       eligibleBackground: cardStyle("eligible").backgroundColor,
       blockedBackground: cardStyle("blocked").backgroundColor,
-      eligibleBorder: cardStyle("eligible").borderTopColor,
-      blockedBorder: cardStyle("blocked").borderTopColor,
+      eligibleBorder: cardStyle("eligible").borderTopWidth,
+      blockedBorder: cardStyle("blocked").borderTopWidth,
     };
   });
   expect(colors.recommended).toBe(colors.success);
@@ -354,7 +354,8 @@ test("hosted onboarding uses truthful download actions and semantic fit colors",
   expect(colors.uncertain).toBe(colors.warning);
   expect(colors.blocked).toBe(colors.danger);
   expect(colors.blockedBackground).not.toBe(colors.eligibleBackground);
-  expect(colors.blockedBorder).not.toBe(colors.eligibleBorder);
+  expect(colors.blockedBorder).toBe("0px");
+  expect(colors.eligibleBorder).toBe("0px");
   await expect(page.locator(".model-grid > button.blocked")).toBeDisabled();
 });
 
@@ -491,7 +492,7 @@ test("model cards show provider logos and catalog-backed SAE availability", asyn
     "One download installs the model, response controls, and word insights, plus Gemma Scope features, then opens the workbench.",
   );
   await expect(page.locator(".setup-disclosure")).toContainText(
-    "Additional feature and R-lens packs can be managed separately later.",
+    "You can add or change feature and R-lens packs later.",
   );
 
   await updateSnapshot(page, {
@@ -528,9 +529,9 @@ test("hosted onboarding keeps technical file progress hidden and formats ETA onc
 
   await expect(page.getByRole("progressbar", { name: "Local setup download" }))
     .toHaveAttribute("aria-valuenow", "50");
-  await expect(page.locator(".progress-copy")).toHaveText(
-    "50% · 18 - 27 minutes remaining",
-  );
+  await expect(page.locator(".progress-copy .sr-only")).toHaveText("50");
+  await expect(page.locator(".progress-copy .rolling-number")).toHaveAttribute("data-value", "50");
+  await expect(page.locator(".progress-copy")).toContainText("% · 18 - 27 minutes remaining");
   await expect(page.getByText(/params_shard/i)).toHaveCount(0);
   await expect(page.getByRole("list", { name: "Local setup files" })).toHaveCount(0);
 });
@@ -597,7 +598,7 @@ test("mobile warning actions keep safe choices first visually and in focus order
   await page.locator(".model-grid > button").filter({ hasText: "uncertain model" }).click();
   await page.getByRole("button", { name: "Review warning", exact: true }).click();
   const downloadWarning = page.locator(".unsafe-warning").filter({
-    hasText: "not a proven safe fit",
+    hasText: "This device may not have enough memory",
   });
   const downloadActions = downloadWarning.locator(".warning-actions button");
   await expectSafeActionFirst(page, downloadActions, [

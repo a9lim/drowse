@@ -23,7 +23,7 @@ for (const fixture of ["base", "1"]) {
             compactSidebar: sidebar.getBoundingClientRect().width < 200,
             openSurface: getComputedStyle(surface).backgroundColor === "rgba(0, 0, 0, 0)",
             squareSurface: getComputedStyle(surface).borderRadius === "0px",
-            compactButtons: getComputedStyle(document.querySelector(".workspace-parent")!).borderRadius === "8px",
+            compactButtons: getComputedStyle(document.querySelector(".workspace-parent")!).borderRadius === "4px",
             noFooterClutter: !sidebar.querySelector(".page-footer"),
             fullHeight: workspace.getBoundingClientRect().bottom === innerHeight,
             noOverflow: document.documentElement.scrollWidth <= innerWidth,

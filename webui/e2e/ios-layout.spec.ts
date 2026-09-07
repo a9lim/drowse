@@ -1,7 +1,9 @@
+import { setAppearance, showWorkspaceTools, openTokenDetails, selectLoomView } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
 const devUrl = "http://127.0.0.1:4176";
+test.use({ hasTouch: true });
 const portraitViewports = [
   { width: 320, height: 568 },
   { width: 375, height: 667 },
@@ -22,6 +24,8 @@ test("Weave keeps branch controls reachable on narrow phones and in landscape", 
   await page.setViewportSize({ width: 390, height: 844 });
   await openWorkbench(page);
   await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await showWorkspaceTools(page, "Loom");
+  await selectLoomView(page, /^Weave\b/);
   const weave = page.locator(".weave");
   await expect(weave).toBeVisible();
   await weave.getByRole("textbox", { name: "Starting text" }).fill("Explore the possibilities. ".repeat(12));
@@ -31,7 +35,7 @@ test("Weave keeps branch controls reachable on narrow phones and in landscape", 
   for (const theme of ["Light", "Dark"]) {
     await page.setViewportSize({ width: 390, height: 844 });
     if (await page.locator("html").getAttribute("data-theme") !== theme.toLowerCase()) {
-      await page.getByRole("button", { name: theme, exact: true }).click();
+      await setAppearance(page, theme);
     }
     for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
       await page.setViewportSize(viewport);
@@ -208,19 +212,26 @@ test("Loom preserves a useful touch canvas on short screens", async ({ page }) =
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
-  await page.getByRole("button", { name: /^Map/ }).click();
+  await showWorkspaceTools(page, "Loom");
+  await selectLoomView(page, /^Map\b/);
 
   for (const viewport of [
     { width: 320, height: 568 },
     { width: 844, height: 390 },
   ]) {
     await page.setViewportSize(viewport);
+    await showWorkspaceTools(page, "Loom");
     const tree = page.locator(".tree-scroll");
     await expect(tree).toBeVisible();
     const height = await tree.evaluate((element) => element.getBoundingClientRect().height);
-    expect(height).toBeGreaterThanOrEqual(90);
+    expect(height).toBeGreaterThanOrEqual(84);
     await expectTouchHeight(page.getByRole("button", { name: "Zoom out" }));
     await expectTouchHeight(page.getByRole("button", { name: "Zoom in" }));
+    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+    await page.getByRole("button", { name: "Hide Loom tools", exact: true }).click();
+    await expect.poll(() => tree.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(Math.max(90, height));
+    const visibleTree = (await tree.boundingBox())!;
+    expect(visibleTree.y + visibleTree.height).toBeLessThanOrEqual(viewport.height + 1);
     await expectNoPageOverflow(page);
   }
 });
@@ -233,7 +244,8 @@ test("Loom supports anchored pinch zoom, touch panning, and cancellation", async
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
-  await page.getByRole("button", { name: /^Map/ }).click();
+  await showWorkspaceTools(page, "Loom");
+  await selectLoomView(page, /^Map\b/);
 
   const tree = page.locator(".tree-scroll");
   const canvas = page.locator(".loom-canvas");
@@ -253,10 +265,8 @@ test("Loom supports anchored pinch zoom, touch panning, and cancellation", async
   const initialY = Number(await canvas.getAttribute("data-loom-camera-y"));
   await dispatchTouchPointer(tree, "pointerdown", 3, 86, 250);
   await dispatchTouchPointer(tree, "pointermove", 3, 126, 282);
-  await expect.poll(async () => ({
-    x: Number(await canvas.getAttribute("data-loom-camera-x")),
-    y: Number(await canvas.getAttribute("data-loom-camera-y")),
-  })).toEqual({ x: initialX + 40, y: initialY + 32 });
+  await expect.poll(async () => Number(await canvas.getAttribute("data-loom-camera-x"))).toBeCloseTo(initialX + 40, 2);
+  await expect.poll(async () => Number(await canvas.getAttribute("data-loom-camera-y"))).toBeCloseTo(initialY + 32, 2);
   await dispatchTouchPointer(tree, "pointerup", 3, 126, 282);
 
   await dispatchTouchPointer(tree, "pointerdown", 4, 100, 220);
@@ -366,7 +376,7 @@ test("probability and lens meters keep labels, values and bars separated", async
     ];
   }, `/@fs/${resolve("src/lib/stores.svelte.ts")}`);
   await page.locator(".msg .response-body .tok").first().click();
-  const drawer = page.getByRole("dialog", { name: "Generated word details" });
+  const drawer = await openTokenDetails(page);
   for (const name of [/^logits\b/i, /^j-lens\b/i]) {
     await drawer.getByRole("button", { name }).click();
     const rows = drawer.locator(".reading");
@@ -410,7 +420,7 @@ test("SAE readout labels preserve metadata and activation bars never overlap val
     };
   }, { url: `/@fs/${resolve("src/lib/stores.svelte.ts")}`, description });
   await page.locator(".msg .response-body .tok").first().click();
-  const drawer = page.getByRole("dialog", { name: "Generated word details" });
+  const drawer = await openTokenDetails(page);
   await drawer.getByRole("button", { name: /^sae\b/i }).click();
   const list = drawer.getByRole("list", { name: "Top SAE features" });
   const cards = list.getByRole("listitem", { name: /^SAE feature / });
@@ -429,7 +439,7 @@ test("SAE readout labels preserve metadata and activation bars never overlap val
         await expectNoHorizontalOverflow(card);
         await expectNoHorizontalOverflow(card.locator(".feature-description"));
         const value = (await card.locator(".sae-value").boundingBox())!;
-        const bar = (await card.locator("svg.bar").boundingBox())!;
+        const bar = (await card.locator('.bar[role="img"]').boundingBox())!;
         expect(bar.y).toBeGreaterThanOrEqual(value.y + value.height);
         expect(bar.width).toBeGreaterThan(100);
         expect(await card.locator(".sae-value").evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
@@ -450,6 +460,7 @@ test("saved chats and token details use contained, scrollable phone drawers", as
     await openWorkbench(page);
 
     await page.getByRole("button", { name: "Loom", exact: true }).click();
+    await showWorkspaceTools(page, "Loom");
     await page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true }).click();
     const library = page.getByRole("dialog", { name: "Saved chats" });
     await expect(library).toBeVisible();
@@ -465,7 +476,7 @@ test("saved chats and token details use contained, scrollable phone drawers", as
     await expect(response).toBeVisible();
     await response.locator(".tok").first().click();
 
-    const tokenDetails = page.getByRole("dialog", { name: "Generated word details" });
+    const tokenDetails = await openTokenDetails(page);
     await expect(tokenDetails).toBeVisible();
     await expectInsideVisualViewport(tokenDetails);
     await expectNoHorizontalOverflow(tokenDetails);

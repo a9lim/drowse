@@ -951,8 +951,8 @@
     background: var(--surface-card);
     box-shadow: var(--shadow-card);
   }
-  button.delete-control { color: var(--accent-red); background: color-mix(in srgb, var(--accent-red) 10%, var(--glass)); box-shadow: var(--shadow-control); }
-  button.delete-control:hover:not(:disabled) { background: color-mix(in srgb, var(--accent-red) 18%, var(--glass)); }
+  button.delete-control { color: var(--accent-red); background: var(--danger-bg); box-shadow: var(--shadow-control); }
+  button.delete-control:hover:not(:disabled) { background: var(--danger-hover); }
   .avatar, .unavailable-avatar {
     width: 62px;
     height: 62px;

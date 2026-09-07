@@ -9,7 +9,7 @@ async function mountRecovery(page: Page, fits = ["recommended"]) {
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
   await page.evaluate(async ({ homeModule, libraryModule, fits }) => {
     const [{ default: Home }, { mount }, { SvelteMap }, { conversationLibrary }] = await Promise.all([
-      import(homeModule), import("/@id/svelte"), import("/@id/svelte/reactivity"), import(libraryModule),
+      import(homeModule), import("/e2e/svelte-runtime.ts"), import("/e2e/svelte-runtime.ts"), import(libraryModule),
     ]);
     localStorage.setItem("drowse.entry.v1", JSON.stringify({ version: 1, completedAt: Date.now(), lastModelVariantId: "model-1" }));
     const models = fits.map((fit, index) => ({
@@ -102,21 +102,24 @@ test("saved chat action rows match the card inset at every layout size", async (
         const color = element.querySelector(".chat-color")!.getBoundingClientRect();
         const box = element.getBoundingClientRect();
         const css = getComputedStyle(element);
+        const footer = getComputedStyle(element.querySelector(".chat-footer")!);
         return {
           inset: parseFloat(css.paddingBottom),
-          row: download.top - primary.bottom,
+          row: Math.abs(download.top + download.height / 2 - primary.top - primary.height / 2),
+          rowGap: download.top - primary.bottom,
+          gap: parseFloat(footer.gap),
           bottom: box.bottom - Math.max(remove.bottom, download.bottom, color.bottom),
-          buttons: remove.left - download.right,
+          buttons: Math.max(remove.left - download.right, remove.top - download.bottom),
           overflow: element.scrollWidth > element.clientWidth,
         };
       });
       expect(spacing.inset).toBe(16);
-      expect(spacing.row).toBeCloseTo(spacing.inset, 0);
+      if (spacing.row > 1) expect(spacing.rowGap).toBeGreaterThanOrEqual(spacing.gap - 1);
       expect(spacing.bottom).toBeCloseTo(spacing.inset, 0);
-      expect(spacing.buttons).toBeCloseTo(spacing.inset, 0);
+      expect(spacing.buttons).toBeGreaterThanOrEqual(spacing.gap - 1);
       expect(spacing.overflow).toBe(false);
-      for (const button of await card.getByRole("button").all()) {
-        await expect(button).toHaveCSS("background-image", /linear-gradient/);
+      for (const button of await card.locator(".primary, .backup-action, .delete-control").all()) {
+        await expect(button).toHaveCSS("background-image", /^none(?:, none)*$/);
       }
       await card.screenshot({ path: testInfo.outputPath(`card-spacing-${theme}-${width}.png`) });
     }

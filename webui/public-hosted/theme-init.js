@@ -1,4 +1,5 @@
 (function () {
+  if (document.activeViewTransition) document.activeViewTransition.ready.catch(function () {});
   function handlePageTransition(event) {
     if (event.viewTransition) event.viewTransition.ready.catch(function () {});
   }

@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
+import { setAppearance } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const drawerStoreUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
@@ -46,7 +47,7 @@ async function openFixtureWorkbench(page: Page): Promise<void> {
 
 test("landing, onboarding, and workbench meet automated WCAG checks", async ({ page }) => {
   await page.goto(devUrl);
-  await expect(page.getByRole("link", { name: "Check this device" })).toBeVisible();
+  await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
   await expectAccessible(page);
 
   await page.goto(`${devUrl}/app?fixture=1`);
@@ -59,21 +60,18 @@ test("landing, onboarding, and workbench meet automated WCAG checks", async ({ p
   await expect(page.locator(".shell")).toBeVisible();
   await expectAccessible(page);
 
-  await page.getByRole("group", { name: "Appearance" })
-    .getByRole("button", { name: "Dark", exact: true }).click();
+  await setAppearance(page, "Dark");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expectAccessible(page);
 
-  await page.getByRole("group", { name: "Appearance" })
-    .getByRole("button", { name: "Light", exact: true }).click();
+  await setAppearance(page, "Light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expectAccessible(page);
-  await page.getByRole("group", { name: "Appearance" })
-    .getByRole("button", { name: "Dark", exact: true }).click();
+  await setAppearance(page, "Dark");
 
   await page.goto(devUrl);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(page.getByRole("link", { name: "Open Drowse" })).toBeVisible();
+  await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
   await expectAccessible(page);
 
   await page.goto(`${devUrl}/app?fixture=1&choose=1`);
@@ -85,7 +83,7 @@ test("landing, onboarding, and workbench meet automated WCAG checks", async ({ p
 test("every hosted command drawer meets automated WCAG checks", async ({ page }) => {
   await openFixtureWorkbench(page);
   await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await expect(palette).toBeVisible();
   await expectAccessible(page, '[role="dialog"]');
@@ -101,7 +99,7 @@ test("every hosted command drawer meets automated WCAG checks", async ({ page })
 
   for (const command of commands) {
     await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-    await page.getByRole("button", { name: "All tools", exact: true }).click();
+    await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
     const search = page.getByRole("combobox", { name: "Filter commands" });
     await search.fill(command);
     await page.getByRole("option", { name: new RegExp(`^${command}\\b`, "i") }).click();
@@ -150,12 +148,14 @@ test("a populated saved-chat library meets automated WCAG checks", async ({ page
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
   await page.getByRole("button", { name: /^(Loom|Branches)$/ }).click();
+  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+  await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
   const loom = page.locator(".loom-sidebar");
   await loom.getByRole("button", { name: "Save", exact: true }).click();
   const saveDrawer = page.getByRole("dialog", { name: "Save chat" });
   await saveDrawer.getByRole("textbox", { name: "Name" }).fill("Accessible saved chat");
   await expectAccessible(page, '[role="dialog"]');
-  await saveDrawer.getByRole("button", { name: "Save", exact: true }).click();
+  await saveDrawer.getByRole("button", { name: /^(Save|Update)$/ }).click();
   await loom.getByRole("button", { name: "Open", exact: true }).click();
   const libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
   await expect(libraryDrawer.getByText("Accessible saved chat", { exact: true })).toBeVisible();

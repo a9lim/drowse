@@ -1281,4 +1281,8 @@
     .workspace-navigation { justify-content: center; }
     .workspace-nav { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
+
+  @media (min-width: 621px) and (max-height: 600px) {
+    .chat-zone { padding: 0; }
+  }
 </style>

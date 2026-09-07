@@ -32,7 +32,7 @@ test("sampling popup stays compact and inside the viewport across themes and siz
           fieldsFit: [...element.querySelectorAll(".setting")].every(field => field.scrollWidth <= field.clientWidth),
           bodyFits: body.scrollWidth <= body.clientWidth,
         };
-      })).toEqual({ insideViewport: true, popupRadius: "12px", closeRadius: "8px", closeVisible: true, fieldsFit: true, bodyFits: true });
+      })).toEqual({ insideViewport: true, popupRadius: "16px", closeRadius: "4px", closeVisible: true, fieldsFit: true, bodyFits: true });
     }
     await page.setViewportSize({ width: 320, height: 780 });
     await page.getByText("Additional parameters", { exact: true }).click();

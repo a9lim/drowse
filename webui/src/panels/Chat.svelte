@@ -2428,7 +2428,7 @@
     }
 
     .input {
-      min-height: calc(var(--surface-padding) * 2 + var(--space-lg));
+      min-height: 64px;
     }
   }
 
@@ -2437,7 +2437,11 @@
       overflow-y: auto;
       overscroll-behavior: contain;
       scroll-padding-block-end: var(--surface-padding);
+      scrollbar-gutter: auto;
+      padding: var(--space-2);
     }
+
+    .input-row { padding: var(--space-2); }
 
     .chat > :global(*) {
       flex-shrink: 0;
@@ -2445,7 +2449,7 @@
 
     .chat > .log {
       flex: 1 1 0;
-      min-height: 8rem;
+      min-height: var(--control-target);
     }
 
     .chat-header {
@@ -2479,6 +2483,26 @@
       scroll-padding-block-end: var(--control-target);
     }
 
+  }
+
+  @media (min-width: 621px) and (max-height: 600px) {
+    .chat:not(:has(.chat-header)) {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 5.5rem;
+      grid-template-rows: minmax(24px, 1fr);
+      grid-auto-rows: max-content;
+      padding: 0;
+      scrollbar-gutter: auto;
+    }
+    .chat:not(:has(.chat-header)) > :global(*) { grid-column: 1 / -1; }
+    .chat:not(:has(.chat-header)) > .log { grid-row: 1; min-height: 24px; }
+    .chat:not(:has(.chat-header)) > .composer-resizer-shell { grid-column: 2; grid-row: 2; }
+    .chat:not(:has(.chat-header)) > :global(.status-footer) { grid-column: 1; grid-row: 2; }
+    .input-row {
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: end;
+      padding: var(--space-1);
+    }
   }
 
   @media (max-width: 760px), (max-height: 600px) {

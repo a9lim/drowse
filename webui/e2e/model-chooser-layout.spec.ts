@@ -6,7 +6,7 @@ test("new chat separates all model types without clipping and preserves setup ro
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
   await page.evaluate(async moduleUrl => {
     const [{ default: HostedHome }, { mount }] = await Promise.all([
-      import(moduleUrl), import("/@id/svelte"),
+      import(moduleUrl), import("/e2e/svelte-runtime.ts"),
     ]);
     document.body.replaceChildren();
     const target = document.createElement("div");

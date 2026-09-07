@@ -37,13 +37,21 @@ const light = { ...dark, ...colors(ruleBody(':root[data-theme="light"]')) };
 
 for (const bootstrap of [localBootstrap, hostedBootstrap]) {
   const handlers = new Map();
+  let initialTransitionHandled = false;
   runInNewContext(bootstrap, {
     window: {
       addEventListener: (name, handler) => handlers.set(name, handler),
       localStorage: { getItem: () => "dark" },
     },
-    document: { documentElement: { dataset: {}, style: {} }, querySelector: () => null },
+    document: {
+      activeViewTransition: { ready: { catch(callback) {
+        callback(new Error("Transition was skipped"));
+        initialTransitionHandled = true;
+      } } },
+      documentElement: { dataset: {}, style: {} }, querySelector: () => null,
+    },
   });
+  assert.ok(initialTransitionHandled, "An inbound transition can be skipped before pagereveal exposes it");
   for (const name of ["pageswap", "pagereveal"]) {
     const handler = handlers.get(name);
     assert.equal(typeof handler, "function");

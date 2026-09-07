@@ -9,7 +9,9 @@ test("workbench cursors describe editing, inspecting, adjusting and navigating",
   await page.goto(`${devUrl}/app?layoutFixture=instruments`);
   await expect(page.locator(".shell")).toBeVisible();
   await expect(page.locator(".page-brand")).toHaveCSS("cursor", "pointer");
+  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
   await expect(page.getByRole("button", { name: "Dark", exact: true }).locator("svg")).toHaveCSS("cursor", "pointer");
+  await page.getByRole("button", { name: "Show chat tools", exact: true }).click();
   await expect(page.getByRole("button", { name: "About word colors", exact: true })).toHaveCSS("cursor", "help");
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   await expect(composer).toHaveCSS("cursor", "text");
@@ -51,7 +53,7 @@ test("busy and unavailable states override the normal action cursor", async ({ p
   await page.goto(`${devUrl}/credits`);
   await page.evaluate(async ({ buttonUrl, sliderUrl }) => {
     const [{ mount, createRawSnippet }, { default: Button }, { default: Slider }] = await Promise.all([
-      import("/@id/svelte"), import(buttonUrl), import(sliderUrl),
+      import("/e2e/svelte-runtime.ts"), import(buttonUrl), import(sliderUrl),
     ]);
     const target = document.createElement("div");
     document.body.append(target);

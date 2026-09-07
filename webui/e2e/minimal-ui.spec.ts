@@ -32,7 +32,7 @@ test("main workspaces and dialogs keep a clean responsive layout", async ({ page
       await page.evaluate(async ({ storesUrl, name }) => { (await import(storesUrl)).openDrawer(name, name === "token_drilldown" ? { turnIdx: 1, tokenIdx: 0 } : undefined); }, { storesUrl, name });
       const dialog = page.getByRole("dialog").last();
       await expect(dialog).toBeVisible();
-      await expect(dialog).toHaveCSS("background-image", name === "token_drilldown" && theme === "dark" ? "none" : /^linear-gradient\((?:180deg, )?rgba/);
+      await expect(dialog).toHaveCSS("background-image", /^(none)(, none)*$/);
       await dialog.screenshot({ path: testInfo.outputPath(`${name}-${theme}.png`), animations: "disabled" });
       await page.evaluate(async url => { (await import(url)).closeDrawer(); }, storesUrl);
       await expect(dialog).toHaveCount(0);

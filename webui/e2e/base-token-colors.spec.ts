@@ -70,12 +70,12 @@ test("base completion colors match inspection, retain recorded readings through 
   for (const viewport of [{ width: 320, height: 780 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
     await expectAligned();
-    expect(await model.evaluate(element => {
+    await expect.poll(() => model.evaluate(element => {
       const model = element.getBoundingClientRect();
       const panel = element.closest(".chat-panel")!.getBoundingClientRect();
       return Math.abs(model.bottom - panel.bottom) < 1 && model.right <= innerWidth && model.bottom <= innerHeight;
     })).toBe(true);
-    expect(await page.locator(".generation-actions").evaluate(element => {
+    await expect.poll(() => page.locator(".generation-actions").evaluate(element => {
       const actions = element.getBoundingClientRect();
       const chat = element.closest(".chat")!.getBoundingClientRect();
       return actions.bottom <= chat.bottom + 1;

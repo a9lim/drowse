@@ -22,7 +22,6 @@
   const rows = $derived(tokenProbabilityRows(token));
   const alternativeCount = tokenAlternativeDefault(getRuntimeClient().mode);
   let panel: HTMLDivElement;
-  let position = $state("");
   let closing = false;
 
   function close(restoreFocus = true) {
@@ -51,7 +50,9 @@
     const maxHeight = Math.min(height - 16, opensBelow ? below : above);
     const panelHeight = Math.min(box.height, maxHeight);
     const y = Math.max(top + 8, Math.min(opensBelow ? rect.bottom + 6 : rect.top - panelHeight - 6, top + height - panelHeight - 8));
-    position = `left:${x}px;top:${y}px;max-width:${width - 16}px;max-height:${maxHeight}px;`;
+    panel.style.left = `${x}px`;
+    panel.style.top = `${y}px`;
+    panel.style.maxHeight = `${maxHeight}px`;
   }
 
   onMount(() => {
@@ -71,11 +72,15 @@
     const focusOutside = (event: FocusEvent) => {
       if (!closing && !panel.contains(event.target as Node) && !trigger.contains(event.target as Node)) close(false);
     };
+    const scroll = (event: Event) => {
+      if (event.target instanceof Node && panel.contains(event.target)) return;
+      place();
+    };
     document.addEventListener("keydown", escape, true);
     document.addEventListener("pointerdown", outside, true);
     document.addEventListener("focusin", focusOutside);
     window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
+    window.addEventListener("scroll", scroll, true);
     window.visualViewport?.addEventListener("resize", place);
     window.visualViewport?.addEventListener("scroll", place);
     return () => {
@@ -83,14 +88,14 @@
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("focusin", focusOutside);
       window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("scroll", scroll, true);
       window.visualViewport?.removeEventListener("resize", place);
       window.visualViewport?.removeEventListener("scroll", place);
     };
   });
 </script>
 
-<div bind:this={panel} class="token-logits-popover" popover="manual" role="dialog" tabindex="-1" aria-labelledby={`${uid}-title`} style={position}
+<div bind:this={panel} class="token-logits-popover" popover="manual" role="dialog" tabindex="-1" aria-labelledby={`${uid}-title`}
   in:fade|global={contentIn()}
   out:fade|global={contentOut()}
   onoutrostart={() => { closing = true; panel.inert = true; }}

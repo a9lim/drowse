@@ -13,9 +13,16 @@ import {
   expectedCsp,
   parseArguments,
   workboxRuntimeName,
+  precachedScripts,
+  assertJavaScriptResponse,
 } from "./verify-hosted-deployment.mjs";
 
 const revision = "a".repeat(40);
+assert.deepEqual(precachedScripts('precache([{url:"assets/app-A.js"},{url:"assets/app-A.js"},{url:"assets/app-B.css"}]);'), ["/assets/app-A.js"]);
+assert.throws(() => precachedScripts('precache([{url:"index.html"}]);'));
+assert.doesNotThrow(() => assertJavaScriptResponse(new Response("export {};", { headers: { "Content-Type": "application/javascript" } })));
+assert.throws(() => assertJavaScriptResponse(new Response("<html></html>", { headers: { "Content-Type": "text/html" } })), /MIME/);
+assert.throws(() => assertJavaScriptResponse(new Response("not found", { status: 404 })), /did not return/);
 assert.equal(workboxRuntimeName('define(["./workbox-651d168f"], function () { precache([{url:"assets/workbox-window.prod.es5-Bd17z0YL.js"}]); });'), "workbox-651d168f.js");
 assert.throws(() => workboxRuntimeName('precache([{url:"assets/workbox-window.prod.es5-Bd17z0YL.js"}]);'));
 const distributionLock = {

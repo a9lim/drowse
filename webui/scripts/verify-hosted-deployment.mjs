@@ -334,6 +334,18 @@ export function workboxRuntimeName(serviceWorker) {
   return `${module}.js`;
 }
 
+export function precachedScripts(serviceWorker) {
+  const paths = [...new Set([...serviceWorker.matchAll(/\burl:["'](assets\/[^"']+\.js)["']/g)]
+    .map((match) => `/${match[1]}`))];
+  assert.ok(paths.length > 0, "Service worker contains no precached JavaScript");
+  return paths;
+}
+
+export function assertJavaScriptResponse(response) {
+  assert.equal(response.status, 200, `${response.url} did not return JavaScript`);
+  assertMime(response, ["application/javascript", "text/javascript"]);
+}
+
 async function assertPwaAssets(origin, headers, html) {
   const manifestResponse = await fetchRoute(origin, "/manifest.webmanifest", headers);
   assertMime(manifestResponse, ["application/manifest+json", "application/json"]);
@@ -345,6 +357,19 @@ async function assertPwaAssets(origin, headers, html) {
   assertMime(serviceWorkerResponse, ["application/javascript", "text/javascript"]);
   assertCache(serviceWorkerResponse, ["no-cache"]);
   const serviceWorker = await serviceWorkerResponse.text();
+  const scripts = precachedScripts(serviceWorker);
+  for (let offset = 0; offset < scripts.length; offset += 8) {
+    await Promise.all(scripts.slice(offset, offset + 8).map(async (path) => {
+      const response = await fetchRoute(origin, path, headers);
+      assertJavaScriptResponse(response);
+      await response.body?.cancel();
+    }));
+  }
+  const missingAsset = await fetch(new URL(`/assets/missing-${crypto.randomUUID()}.js`, origin), {
+    headers, redirect: "manual", signal: AbortSignal.timeout(20_000),
+  });
+  await missingAsset.body?.cancel();
+  assert.equal(missingAsset.status, 404, "Missing JavaScript must return 404, not cached SPA HTML");
   const workboxName = workboxRuntimeName(serviceWorker);
 
   const workboxResponse = await fetchRoute(origin, `/${workboxName}`, headers);
