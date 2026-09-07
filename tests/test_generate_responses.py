@@ -10,9 +10,11 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import torch
 
 from drowse.core import capture as V
-from drowse.core.session import DrowseSession, _role_for, _system_for
+from drowse.core.generation import GenerationState
+from drowse.core.session import DrowseSession, _SessionStopCriteria, _role_for, _system_for
 from drowse.core.capture import _LENGTH_DIRECTIVE
 
 
@@ -76,6 +78,20 @@ def _small_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --- helpers --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("score_kind", ["none", "tensor", "tuple"])
+def test_corpus_stop_criteria_accepts_transformers_score_shapes(score_kind: str) -> None:
+    state = GenerationState()
+    criterion = _SessionStopCriteria(state)
+    input_ids = torch.LongTensor([[1, 2], [3, 4]])
+    score = torch.FloatTensor([[0.1, 0.9], [0.8, 0.2]])
+    scores = None if score_kind == "none" else score if score_kind == "tensor" else (score, score)
+    assert criterion(input_ids, scores).tolist() == [False, False]
+    state.request_stop()
+    assert criterion(input_ids, scores).tolist() == [True, True]
+    state.reset()
+    assert criterion(input_ids, scores).tolist() == [False, False]
 
 
 def test_system_for_abstract_vs_concrete() -> None:

@@ -310,8 +310,8 @@
     ],
     "GenState": [
       {
-        "name": "values",
-        "kind": "VAR_POSITIONAL",
+        "name": "value",
+        "kind": "POSITIONAL_OR_KEYWORD",
         "required": true,
         "default": null
       }

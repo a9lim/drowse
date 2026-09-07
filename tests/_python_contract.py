@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import enum
 import importlib
 import inspect
 import re
@@ -18,6 +19,10 @@ def python_contract(package: str = "drowse") -> dict[str, Any]:
             signature = inspect.signature(value)
         except (TypeError, ValueError):
             return
+        if inspect.isclass(value) and issubclass(value, enum.Enum):
+            # EnumMeta's introspection signature differs across Python versions.
+            signature = inspect.signature(value.__new__)
+            signature = signature.replace(parameters=list(signature.parameters.values())[1:])
         callables[name] = [
             {
                 "name": parameter.name,

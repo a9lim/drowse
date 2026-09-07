@@ -71,7 +71,8 @@ def test_browser_topology_rbf_fixture_matches_python_source_of_truth() -> None:
         expected["effectiveDegreesOfFreedom"], abs=1e-5,
     )
     assert evaluated.flatten().tolist() == pytest.approx(
-        expected["evaluatedTargets"], abs=2e-6,
+        # Spectral coordinates and the RBF solve each contribute fp32 roundoff.
+        expected["evaluatedTargets"], abs=5e-6,
     )
 
     whitener = LayerWhitener(

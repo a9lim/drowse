@@ -51,10 +51,11 @@ def test_browser_affine_fisher_fixture_matches_python_source_of_truth() -> None:
     assert neutral_cross_gram.tolist() == pytest.approx(expected["neutralCrossGram"], abs=1e-6)
     layout, _diagnostics = derive_pca_coords(gram, max_dim=2, var_threshold=0.7)
     neutral_layout = neutral_layout_coord(layout, neutral_cross_gram)
-    assert layout.flatten().tolist() == pytest.approx(expected["layoutCoordinates"], abs=1e-6)
-    assert neutral_layout.tolist() == pytest.approx(expected["neutralLayoutCoordinate"], abs=1e-6)
+    # fp32 eigensolver roundoff varies between Linux and macOS LAPACK builds.
+    assert layout.flatten().tolist() == pytest.approx(expected["layoutCoordinates"], abs=5e-6)
+    assert neutral_layout.tolist() == pytest.approx(expected["neutralLayoutCoordinate"], abs=5e-6)
     assert (layout - neutral_layout).flatten().tolist() == pytest.approx(
-        expected["anchoredLayoutCoordinates"], abs=1e-6,
+        expected["anchoredLayoutCoordinates"], abs=5e-6,
     )
     assert explained == pytest.approx(expected["explainedVariance"], abs=1e-6)
     assert subspace.affine_map is None

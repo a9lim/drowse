@@ -1569,8 +1569,10 @@ pub fn count_persistent_loops(
     let threshold = persistence_fraction * connectivity_scale;
     Ok(pairs
         .iter()
-        .filter(|(birth, death)| *death >= (1.0 + 0.5 * persistence_fraction) * connectivity_scale
-            && death.min(epsilon_max) - *birth >= threshold.max(persistence_fraction * birth))
+        .filter(|(birth, death)| {
+            *death >= (1.0 + 0.5 * persistence_fraction) * connectivity_scale
+                && death.min(epsilon_max) - *birth >= threshold.max(persistence_fraction * birth)
+        })
         .count()
         .min(max_dimensions))
 }
@@ -1619,7 +1621,9 @@ fn rips_h1_persistence(
                     continue;
                 }
                 if triangles.len() == max_triangles {
-                    return Err(invalid("persistent-homology triangle budget exceeded; topology is unresolved"));
+                    return Err(invalid(
+                        "persistent-homology triangle budget exceeded; topology is unresolved",
+                    ));
                 }
                 triangles.push(PersistenceTriangle {
                     filtration: distances[left * node_count + middle]
@@ -1943,13 +1947,17 @@ pub fn detect_periodic_topology(
 fn ascending_eigen(matrix: &[f64], size: usize) -> KernelResult<(Vec<f64>, Vec<f64>)> {
     let (mut values, vectors) = symmetric_eigen(matrix, size)?;
     values.reverse();
-    let vectors = vectors.chunks_exact(size)
-        .flat_map(|row| row.iter().rev().copied()).collect();
+    let vectors = vectors
+        .chunks_exact(size)
+        .flat_map(|row| row.iter().rev().copied())
+        .collect();
     Ok((values, vectors))
 }
 
 fn untangle_periodic_eigenspaces(
-    values: &[f64], vectors: &[f64], rows: usize,
+    values: &[f64],
+    vectors: &[f64],
+    rows: usize,
 ) -> KernelResult<Vec<f64>> {
     let columns = values.len();
     let mut result = vectors.to_vec();
@@ -1962,7 +1970,8 @@ fn untangle_periodic_eigenspaces(
         let width = end - start;
         if (4..=8).contains(&width) && width.is_multiple_of(2) {
             let pairs: Vec<(usize, usize)> = (0..width)
-                .flat_map(|i| (i..width).map(move |j| (i, j))).collect();
+                .flat_map(|i| (i..width).map(move |j| (i, j)))
+                .collect();
             let size = pairs.len();
             let mut products = vec![0.0; rows * size];
             for (index, &(i, j)) in pairs.iter().enumerate() {
@@ -1970,7 +1979,8 @@ fn untangle_periodic_eigenspaces(
                 let mut mean = 0.0;
                 for row in 0..rows {
                     let product = vectors[row * columns + start + i]
-                        * vectors[row * columns + start + j] * factor;
+                        * vectors[row * columns + start + j]
+                        * factor;
                     products[row * size + index] = product;
                     mean += product / rows as f64;
                 }
@@ -1981,9 +1991,9 @@ fn untangle_periodic_eigenspaces(
             let mut covariance = vec![0.0; size * size];
             for i in 0..size {
                 for j in 0..size {
-                    covariance[i * size + j] = (0..rows).map(|row| {
-                        products[row * size + i] * products[row * size + j]
-                    }).sum();
+                    covariance[i * size + j] = (0..rows)
+                        .map(|row| products[row * size + i] * products[row * size + j])
+                        .sum();
                 }
             }
             let (variances, forms) = ascending_eigen(&covariance, size)?;
@@ -1993,23 +2003,29 @@ fn untangle_periodic_eigenspaces(
                 }
                 let mut quadratic = vec![0.0; width * width];
                 for (index, &(i, j)) in pairs.iter().enumerate() {
-                    let value = forms[index * size + column]
-                        / if i == j { 1.0 } else { 2.0_f64.sqrt() };
+                    let value =
+                        forms[index * size + column] / if i == j { 1.0 } else { 2.0_f64.sqrt() };
                     quadratic[i * width + j] = value;
                     quadratic[j * width + i] = value;
                 }
                 let (spectrum, rotation) = ascending_eigen(&quadratic, width)?;
                 let spread = spectrum[width - 1] - spectrum[0];
-                let within = (0..width).step_by(2).map(|i| spectrum[i + 1] - spectrum[i])
+                let within = (0..width)
+                    .step_by(2)
+                    .map(|i| spectrum[i + 1] - spectrum[i])
                     .fold(0.0, f64::max);
-                let between = (1..width - 1).step_by(2).map(|i| spectrum[i + 1] - spectrum[i])
+                let between = (1..width - 1)
+                    .step_by(2)
+                    .map(|i| spectrum[i + 1] - spectrum[i])
                     .fold(f64::INFINITY, f64::min);
                 if spread >= 1e-5 && within < 0.1 * spread && between > 0.1 * spread {
                     for row in 0..rows {
                         for j in 0..width {
-                            result[row * columns + start + j] = (0..width).map(|i| {
-                                vectors[row * columns + start + i] * rotation[i * width + j]
-                            }).sum();
+                            result[row * columns + start + j] = (0..width)
+                                .map(|i| {
+                                    vectors[row * columns + start + i] * rotation[i * width + j]
+                                })
+                                .sum();
                         }
                     }
                     break;
@@ -2022,20 +2038,27 @@ fn untangle_periodic_eigenspaces(
 }
 
 fn distance_eigensystem(distances: &[f64], rows: usize) -> KernelResult<(Vec<f64>, Vec<f64>)> {
-    let means: Vec<f64> = distances.chunks_exact(rows)
-        .map(|row| row.iter().map(|value| value * value).sum::<f64>() / rows as f64).collect();
+    let means: Vec<f64> = distances
+        .chunks_exact(rows)
+        .map(|row| row.iter().map(|value| value * value).sum::<f64>() / rows as f64)
+        .collect();
     let mean = means.iter().sum::<f64>() / rows as f64;
     let mut gram = vec![0.0; rows * rows];
     for i in 0..rows {
         for j in 0..rows {
-            gram[i * rows + j] = -0.5 * (distances[i * rows + j].powi(2) - means[i] - means[j] + mean);
+            gram[i * rows + j] =
+                -0.5 * (distances[i * rows + j].powi(2) - means[i] - means[j] + mean);
         }
     }
     ascending_eigen(&gram, rows)
 }
 
 fn periodic_mds_angles(
-    distances: &[f64], rows: usize, dimensions: usize, values: &[f64], vectors: &[f64],
+    distances: &[f64],
+    rows: usize,
+    dimensions: usize,
+    values: &[f64],
+    vectors: &[f64],
 ) -> KernelResult<Option<Vec<f64>>> {
     let columns = 2 * dimensions;
     if columns >= rows {
@@ -2044,14 +2067,16 @@ fn periodic_mds_angles(
     if values[rows - columns] <= 1e-7 * values[rows - 1] {
         return Ok(None);
     }
-    let block: Vec<f64> = vectors.chunks_exact(rows)
-        .flat_map(|row| row[rows - columns..].iter().copied()).collect();
+    let block: Vec<f64> = vectors
+        .chunks_exact(rows)
+        .flat_map(|row| row[rows - columns..].iter().copied())
+        .collect();
     let block = untangle_periodic_eigenspaces(&vec![1.0; columns], &block, rows)?;
     let mut angles = vec![0.0; rows * dimensions];
     for row in 0..rows {
         for axis in 0..dimensions {
-            angles[row * dimensions + axis] = fp32(block[row * columns + 2 * axis + 1]
-                .atan2(block[row * columns + 2 * axis]));
+            angles[row * dimensions + axis] =
+                fp32(block[row * columns + 2 * axis + 1].atan2(block[row * columns + 2 * axis]));
         }
     }
     Ok(periodic_neighborhoods_preserved(distances, &angles, rows, dimensions).then_some(angles))
@@ -2073,7 +2098,10 @@ fn periodic_neighborhoods_preserved(
             .collect();
         ordered.sort_by(f64::total_cmp);
         ordered.push(ordered[0] + period);
-        if ordered.windows(2).any(|pair| pair[1] - pair[0] >= std::f64::consts::PI) {
+        if ordered
+            .windows(2)
+            .any(|pair| pair[1] - pair[0] >= std::f64::consts::PI)
+        {
             return false;
         }
     }
@@ -2092,11 +2120,13 @@ fn periodic_neighborhoods_preserved(
                 return false;
             }
             source.push(distance);
-            let squared = (0..dimensions).map(|axis| {
-                let a = angles[row * dimensions + axis];
-                let b = angles[other * dimensions + axis];
-                (a.cos() - b.cos()).powi(2) + (a.sin() - b.sin()).powi(2)
-            }).sum::<f64>();
+            let squared = (0..dimensions)
+                .map(|axis| {
+                    let a = angles[row * dimensions + axis];
+                    let b = angles[other * dimensions + axis];
+                    (a.cos() - b.cos()).powi(2) + (a.sin() - b.sin()).powi(2)
+                })
+                .sum::<f64>();
             mapped.push(squared.sqrt());
         }
         let mut source_sorted = source.clone();
@@ -2105,8 +2135,8 @@ fn periodic_neighborhoods_preserved(
         mapped_sorted.sort_by(f64::total_cmp);
         let radius = source_sorted[neighbors - 1];
         let mapped_radius = mapped_sorted[neighbors - 1];
-        let collapsed_radius = 0.2 * std::f64::consts::PI
-            / (node_count as f64).powf(1.0 / dimensions as f64);
+        let collapsed_radius =
+            0.2 * std::f64::consts::PI / (node_count as f64).powf(1.0 / dimensions as f64);
         // Include ties so row order cannot conceal a collapsed chart.
         if source.iter().zip(&mapped).any(|(original, projected)| {
             (*projected <= mapped_radius + 1e-6 && *original > 2.0 * radius)
@@ -2125,8 +2155,12 @@ fn periodic_topology_from_eigensystem(
     persistence_fraction: f64,
 ) -> KernelResult<Option<PeriodicTopology>> {
     let node_count = eigensystem.node_count;
-    let persistent_loops =
-        count_persistent_loops(distances, node_count, persistence_fraction, max_dimensions.saturating_add(1))?;
+    let persistent_loops = count_persistent_loops(
+        distances,
+        node_count,
+        persistence_fraction,
+        max_dimensions.saturating_add(1),
+    )?;
     if persistent_loops > max_dimensions {
         return Ok(None);
     }
@@ -2135,26 +2169,47 @@ fn periodic_topology_from_eigensystem(
             return Ok(None);
         };
         let (values, _) = distance_eigensystem(distances, node_count)?;
-        if values.iter().filter(|value| **value > 1e-5 * values[node_count - 1]).count() < 2 {
+        if values
+            .iter()
+            .filter(|value| **value > 1e-5 * values[node_count - 1])
+            .count()
+            < 2
+        {
             return Ok(None);
         }
         return Ok(Some(PeriodicTopology {
-            node_count, dimensions: 1, persistent_loops: 0, used_faint_cycle: true, angles,
+            node_count,
+            dimensions: 1,
+            persistent_loops: 0,
+            used_faint_cycle: true,
+            angles,
         }));
     }
     let (values, vectors) = distance_eigensystem(distances, node_count)?;
-    if values.iter().filter(|value| **value > 1e-5 * values[node_count - 1]).count() <= persistent_loops {
+    if values
+        .iter()
+        .filter(|value| **value > 1e-5 * values[node_count - 1])
+        .count()
+        <= persistent_loops
+    {
         return Ok(None);
     }
-    if let Some(angles) = periodic_mds_angles(distances, node_count, persistent_loops, &values, &vectors)? {
+    if let Some(angles) =
+        periodic_mds_angles(distances, node_count, persistent_loops, &values, &vectors)?
+    {
         return Ok(Some(PeriodicTopology {
-            node_count, dimensions: persistent_loops, persistent_loops,
-            used_faint_cycle: false, angles,
+            node_count,
+            dimensions: persistent_loops,
+            persistent_loops,
+            used_faint_cycle: false,
+            angles,
         }));
     }
     let full_columns = node_count - 1;
     let eigenvectors = untangle_periodic_eigenspaces(
-        &eigensystem.nontrivial_eigenvalues, &eigensystem.nontrivial_eigenvectors, node_count,
+        &eigensystem.nontrivial_eigenvalues,
+        &eigensystem.nontrivial_eigenvectors,
+        node_count,
     )?;
     let mut accepted: Vec<Vec<f64>> = Vec::new();
     let mut pair = 0;
@@ -2168,10 +2223,16 @@ fn periodic_topology_from_eigensystem(
             radii.push(cosine * cosine + sine * sine);
         }
         let mean_radius = radii.iter().sum::<f64>() / node_count as f64;
-        let deviation = (radii.iter().map(|radius| (radius - mean_radius).powi(2))
-            .sum::<f64>() / node_count as f64).sqrt();
-        if mean_radius <= 0.0 || radii.iter().any(|radius| *radius < 0.1 * mean_radius)
-            || deviation > 0.35 * mean_radius {
+        let deviation = (radii
+            .iter()
+            .map(|radius| (radius - mean_radius).powi(2))
+            .sum::<f64>()
+            / node_count as f64)
+            .sqrt();
+        if mean_radius <= 0.0
+            || radii.iter().any(|radius| *radius < 0.1 * mean_radius)
+            || deviation > 0.35 * mean_radius
+        {
             return Ok(None);
         }
         if !is_angular_harmonic(&angle, &accepted) {
@@ -2439,8 +2500,15 @@ pub fn select_topology_from_targets(
                     let layer = &targets[offsets[0] as usize..offsets[1] as usize];
                     let columns = layer.len() / node_count;
                     for column in 0..columns {
-                        let mean = layer.chunks_exact(columns).map(|row| row[column]).sum::<f64>() / node_count as f64;
-                        let rss = layer.chunks_exact(columns).map(|row| (row[column] - mean).powi(2)).sum::<f64>();
+                        let mean = layer
+                            .chunks_exact(columns)
+                            .map(|row| row[column])
+                            .sum::<f64>()
+                            / node_count as f64;
+                        let rss = layer
+                            .chunks_exact(columns)
+                            .map(|row| (row[column] - mean).powi(2))
+                            .sum::<f64>();
                         null_score += node_count as f64 * rss / (node_count - 1).pow(2) as f64;
                     }
                 }
@@ -2462,8 +2530,12 @@ pub fn select_topology_from_targets(
                 }
             } else if let Err(error) = attempted {
                 candidates.push(TopologyCandidate {
-                    name: "periodic-unresolved".to_string(), fit_mode: "spectral".to_string(),
-                    intrinsic_dimensions: flat.dimensions, score: f64::INFINITY, viable: false, reason: error.to_string(),
+                    name: "periodic-unresolved".to_string(),
+                    fit_mode: "spectral".to_string(),
+                    intrinsic_dimensions: flat.dimensions,
+                    score: f64::INFINITY,
+                    viable: false,
+                    reason: error.to_string(),
                 });
             }
         }

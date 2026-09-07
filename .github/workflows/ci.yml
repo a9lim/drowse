@@ -120,8 +120,8 @@ jobs:
         working-directory: webui
       - run: npm run test:hosted
         working-directory: webui
-      - name: Install the pinned Playwright browser
-        run: npx playwright install --with-deps chromium
+      - name: Install the pinned Playwright browsers
+        run: npx playwright install --with-deps chromium webkit firefox
         working-directory: webui
       - run: npm run test:e2e
         working-directory: webui

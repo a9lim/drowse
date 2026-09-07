@@ -316,7 +316,7 @@ class _SessionStopCriteria(StoppingCriteria):
     def __call__(
         self,
         input_ids: torch.LongTensor,
-        scores: torch.FloatTensor | None,
+        scores: torch.FloatTensor | tuple[torch.FloatTensor, ...] | None,
         **kwargs: Any,
     ) -> Any:
         del scores, kwargs

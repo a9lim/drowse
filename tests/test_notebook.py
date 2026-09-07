@@ -313,7 +313,7 @@ class TestPlotTraitHistory:
 class TestNotebookExtraNotInstalled:
     def test_user_message_format(self) -> None:
         e = NotebookExtraNotInstalled("plotly")
-        assert "drowse[notebook]" in str(e)
+        assert "drowse.ai[notebook]" in str(e)
         assert "plotly" in str(e)
         # DrowseError MRO surface for the server-side error mapper.
         code, msg = e.user_message()
