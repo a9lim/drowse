@@ -4,6 +4,9 @@ test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
 
 test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.addLocatorHandler(page.locator(".pwa-notice.passive"), async notice => {
+    await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
+  });
   await page.addInitScript(() => {
     localStorage.setItem("drowse.theme", "light");
     const draw = WebGL2RenderingContext.prototype.drawArrays;
