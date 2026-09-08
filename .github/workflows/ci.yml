@@ -150,7 +150,12 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: webui/contact-worker/package-lock.json
+          cache-dependency-path: |
+            webui/package-lock.json
+            webui/contact-worker/package-lock.json
+      - name: Install dependencies for shared contact validation
+        run: npm ci
+        working-directory: webui
       - run: npm ci
       - run: npm run check
       - run: npm test
