@@ -38,7 +38,7 @@
     const render = (now: number) => {
       frame = 0;
       if (!moving() || !source) return;
-      if (!lastFrame || now - lastFrame >= 1000 / 30) {
+      if (!lastFrame || now - lastFrame >= source.frameInterval) {
         const delta = lastFrame ? Math.min((now - lastFrame) / 1000, 0.1) : 1 / 30;
         lastFrame = now;
         try { if (source.update(progress, delta, lightTheme, orbBoost)) status = "ready"; }

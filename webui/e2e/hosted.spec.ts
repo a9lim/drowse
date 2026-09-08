@@ -233,6 +233,23 @@ async function openInstalledFixtureWorkbench(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "This device is ready" })).toHaveCount(0);
 }
 
+async function setFixtureTokenDelay(page: Page, delay: number): Promise<void> {
+  const worker = page.workers().find(worker => worker.url().includes("fixtureBrowser.worker"));
+  expect(worker).toBeDefined();
+  await worker!.evaluate(delay => {
+    const scope = globalThis as typeof globalThis & {
+      __drowseFixtureSetTimeout?: typeof setTimeout;
+    };
+    const original = scope.__drowseFixtureSetTimeout ?? globalThis.setTimeout;
+    scope.__drowseFixtureSetTimeout = original;
+    globalThis.setTimeout = ((handler, timeout, ...args) => Reflect.apply(
+      original,
+      globalThis,
+      [handler, timeout === 35 ? delay : timeout, ...args],
+    )) as typeof setTimeout;
+  }, delay);
+}
+
 async function continueFromChatHome(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
@@ -1110,6 +1127,7 @@ test("fixture installs, opens the shared workbench, stops, and generates", async
   await page.getByRole("button", { name: "Close drawer" }).click();
   await openWorkspace(page, "Conversation");
 
+  await setFixtureTokenDelay(page, 2_000);
   await composer.fill("Stop this response early");
   await submit.click();
   await expect(stop).toBeEnabled();
@@ -1117,6 +1135,7 @@ test("fixture installs, opens the shared workbench, stops, and generates", async
   await expect(stop).toBeDisabled();
   await expect(page.locator(".msg .response-body").last()).not.toHaveText(fixtureResponse);
 
+  await setFixtureTokenDelay(page, 35);
   await composer.fill("Finish this response");
   await submit.click();
   await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
@@ -1689,12 +1708,13 @@ test("comparison controls appear only when usable and auto-compare completes", a
 });
 
 test("fixture survives repeated generation, stop, and reload cycles", async ({ page }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(180_000);
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await openFixtureWorkbench(page);
 
   const runGeneration = async (prompt: string, stopEarly: boolean) => {
+    await setFixtureTokenDelay(page, stopEarly ? 2_000 : 35);
     const composer = page.getByRole("textbox", { name: /^Compose as / });
     const stop = page.getByRole("button", { name: /^Stop$/i });
     const responses = page.locator(".msg:has(.model-avatar) .response-body");
@@ -1745,6 +1765,7 @@ test("fixture survives repeated generation, stop, and reload cycles", async ({ p
 
 test("reload during generation restores the stable user turn without a partial assistant", async ({ page }) => {
   await openFixtureWorkbench(page);
+  await setFixtureTokenDelay(page, 2_000);
   const prompt = "Persist before interrupted decode";
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();

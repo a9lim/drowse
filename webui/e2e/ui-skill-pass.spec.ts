@@ -2998,6 +2998,17 @@ test("dark desktop orb has bright highlights and settles behind reading content"
   const visual = page.locator(".hero-visual");
   await expect(visual).toHaveAttribute("data-shader-status", "ready");
   await expect(visual.locator("canvas")).toHaveCSS("opacity", "1");
+  const renderer = await visual.locator("canvas").evaluate(element => {
+    const canvas = element as HTMLCanvasElement;
+    const gl = canvas.getContext("webgl2")!;
+    const info = gl.getExtension("WEBGL_debug_renderer_info");
+    return {
+      name: info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : "",
+      pixels: canvas.width * canvas.height,
+    };
+  });
+  const pixelBudget = /swiftshader|llvmpipe|softpipe/i.test(renderer.name) ? 48_000 : 800_000;
+  expect(renderer.pixels).toBeLessThanOrEqual(pixelBudget + 1000);
   await expect(visual).toHaveAttribute("data-orb-boost", "2.200");
   await expect.poll(() => page.locator(".visual-layer").evaluate(el => getComputedStyle(el).filter)).not.toContain("brightness(");
   const table = page.locator('#hero-dark-palette feFuncR[type="table"]');

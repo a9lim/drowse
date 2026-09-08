@@ -98,7 +98,7 @@ jobs:
           pip install dist/drowse_ai-*.whl
           python -c "import drowse; from importlib.metadata import version; assert version('drowse.ai') == drowse.__version__; print('version:', drowse.__version__)"
 
-  webui:
+  webui-build:
     runs-on: ubuntu-latest
     env:
       DROWSE_STORAGE_BROWSERS: chromium
@@ -125,8 +125,6 @@ jobs:
         working-directory: webui
       - run: npm run test:hosted
         working-directory: webui
-      - run: npm run test:e2e
-        working-directory: webui
       - run: npm run build
         working-directory: webui
       - name: Verify default and hosted builds are isolated
@@ -138,6 +136,47 @@ jobs:
         run: |
           if [ -n "$(git status --porcelain --untracked-files=all -- drowse/web/dist/)" ]; then
             git status --short --untracked-files=all -- drowse/web/dist/
+            exit 1
+          fi
+
+  webui-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci
+      - name: Install the pinned Playwright browsers
+        run: npx playwright install --with-deps chromium webkit firefox
+      - run: npm run test:e2e -- --shard=${{ matrix.shard }}/4 --workers=1
+      - name: Preserve browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-failures-${{ matrix.shard }}
+          path: /tmp/drowse-playwright-results
+          retention-days: 3
+
+  webui:
+    runs-on: ubuntu-latest
+    needs: [webui-build, webui-browser]
+    if: always()
+    steps:
+      - name: Verify the dashboard build and browser matrix succeeded
+        run: |
+          if [ "${{ needs.webui-build.result }}" != "success" ] || [ "${{ needs.webui-browser.result }}" != "success" ]; then
+            echo "webui-build=${{ needs.webui-build.result }}, webui-browser=${{ needs.webui-browser.result }}"
             exit 1
           fi
 

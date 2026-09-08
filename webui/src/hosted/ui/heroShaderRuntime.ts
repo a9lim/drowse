@@ -7,6 +7,8 @@ type Target = { texture: WebGLTexture; framebuffer: WebGLFramebuffer; width: num
 export function createHeroShaderSource(canvas: HTMLCanvasElement, video: HTMLVideoElement, poster: HTMLImageElement) {
   const gl = canvas.getContext("webgl2", { alpha: false, antialias: false, depth: false, stencil: false, powerPreference: "low-power" });
   if (!gl) throw new Error("Background rendering unavailable");
+  const rendererInfo = gl.getExtension("WEBGL_debug_renderer_info");
+  const softwareRenderer = rendererInfo && /swiftshader|llvmpipe|softpipe/i.test(String(gl.getParameter(rendererInfo.UNMASKED_RENDERER_WEBGL)));
   const programs: WebGLProgram[] = [], textures: WebGLTexture[] = [], buffers: WebGLFramebuffer[] = [], shaders: WebGLShader[] = [];
   let vao: WebGLVertexArrayObject | null = null;
   const dispose = () => {
@@ -92,8 +94,10 @@ export function createHeroShaderSource(canvas: HTMLCanvasElement, video: HTMLVid
       gl.uniform1f(u.uTouch, 0.45);
     };
     return {
+      frameInterval: 1000 / (softwareRenderer ? 15 : 30),
       resize(w: number, h: number) {
-        pixelRatio = Math.min(devicePixelRatio || 1, 1.25, Math.sqrt((w <= 760 ? 360_000 : 800_000) / Math.max(1, w * h)));
+        const pixelBudget = softwareRenderer ? 48_000 : w <= 760 ? 360_000 : 800_000;
+        pixelRatio = Math.min(devicePixelRatio || 1, 1.25, Math.sqrt(pixelBudget / Math.max(1, w * h)));
         const nextWidth = Math.max(2, Math.round(w * pixelRatio)), nextHeight = Math.max(2, Math.round(h * pixelRatio));
         if (width === nextWidth && height === nextHeight) return;
         width = canvas.width = nextWidth; height = canvas.height = nextHeight;
@@ -137,7 +141,7 @@ export function createHeroShaderSource(canvas: HTMLCanvasElement, video: HTMLVid
         u = bind(particles, scene);
         field(u); sample(u, "uVideo", videoTexture, 0);
         sample(u, "uInitial", initialTexture, 1); gl.uniform1f(u.uVideoBlend, videoBlend);
-        const grid = canvas.clientWidth <= 760 ? [112, 72] : [192, 120];
+        const grid = softwareRenderer ? [56, 36] : canvas.clientWidth <= 760 ? [112, 72] : [192, 120];
         gl.uniform2f(u.uGrid, grid[0], grid[1]); gl.uniform1f(u.uPixelRatio, pixelRatio);
         gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
         gl.drawArrays(gl.POINTS, 0, grid[0] * grid[1]); gl.disable(gl.BLEND);
