@@ -3310,7 +3310,7 @@ test("mobile hero overlays the orb without selecting the section", async ({ page
   await expect(page).toHaveURL(/\/app(?:\?|$)/);
 });
 
-test("offline notices stay dismissible without moving or overflowing the workbench", async ({ page, browserName }) => {
+test("passive offline notices stay hidden without moving or overflowing the workbench", async ({ page, browserName }) => {
   test.skip(browserName === "webkit", "Headless WebKit rejects OPFS; this reload test requires the persistent worker fixture.");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${devUrl}/app?fixture=1`);
@@ -3324,18 +3324,16 @@ test("offline notices stay dismissible without moving or overflowing the workben
   await page.reload();
   await expect(page.locator(".shell")).toBeVisible();
   const notice = page.getByRole("status").filter({ hasText: "The interface is ready offline." });
-  await expect(notice).toBeVisible();
+  await expect(notice).toHaveCount(0);
   const shell = page.locator(".shell");
-  const noticeBox = (await notice.boundingBox())!;
-  expect(noticeBox.y).toBeGreaterThanOrEqual(0);
-  expect(noticeBox.y + noticeBox.height).toBeLessThanOrEqual(844);
   await expect.poll(async () => {
     const box = (await shell.boundingBox())!;
     return box.y + box.height;
   }).toBeLessThanOrEqual(845);
   const before = (await shell.boundingBox())!.height;
-  await notice.getByRole("button", { name: "Dismiss" }).click();
-  const dismissalOverflow = await page.evaluate(async () => {
+  await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello");
+  await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click({ trial: true });
+  const layoutOverflow = await page.evaluate(async () => {
     let overflow = 0;
     for (let frame = 0; frame < 20; frame++) {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -3344,8 +3342,8 @@ test("offline notices stay dismissible without moving or overflowing the workben
     }
     return overflow;
   });
-  expect(dismissalOverflow).toBeLessThanOrEqual(1);
-  await expect(notice).not.toBeVisible();
+  expect(layoutOverflow).toBeLessThanOrEqual(1);
+  await expect(notice).toHaveCount(0);
   await expect.poll(async () => (await shell.boundingBox())!.height).toBe(before);
   await expect(page.getByRole("textbox", { name: /^Compose as / })).toBeVisible();
 });

@@ -419,7 +419,7 @@
     .countdown-remaining { animation-timing-function: steps(5, end); }
   }
 
-  @media (max-width: 42rem), (max-height: 32rem) and (pointer: coarse) {
+  @media (max-width: 42rem), (max-height: 32rem) {
     .pwa-notice {
       top: calc(var(--space-4) + env(safe-area-inset-top, 0px));
       bottom: auto;
