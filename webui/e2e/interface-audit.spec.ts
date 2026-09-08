@@ -710,9 +710,10 @@ test("the 320 px composer preserves a usable writing surface", async ({ page }) 
       width: box.width,
       height: box.height,
       fontSize: Number.parseFloat(getComputedStyle(element).fontSize),
+      availableWidth: element.closest(".shell")!.getBoundingClientRect().width,
     };
   });
-  expect(metrics.width).toBeGreaterThanOrEqual(264);
+  expect(metrics.width).toBeGreaterThanOrEqual(metrics.availableWidth - 56);
   expect(metrics.height).toBeGreaterThanOrEqual(44);
   expect(metrics.fontSize).toBeGreaterThanOrEqual(16);
   const actionHeights = await page.locator(".input-actions button").evaluateAll(

@@ -27,6 +27,9 @@ test("storage guidance has no decorative side stripe in either theme", async ({ 
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
   await page.evaluate(async moduleUrl => {
+    if (!navigator.storage) {
+      Object.defineProperty(navigator, "storage", { configurable: true, value: { persist: async () => false } });
+    }
     const [{ default: HostedHome }, { mount }] = await Promise.all([
       import(moduleUrl), import("/e2e/svelte-runtime.ts"),
     ]);

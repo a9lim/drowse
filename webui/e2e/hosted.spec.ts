@@ -4,6 +4,8 @@ import { openWorkspaceMenu } from "./workbench-navigation";
 import { returnToChats, setAppearance, showWorkspaceTools, openTokenDetails, selectLoomView } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readdir, readFile } from "node:fs/promises";
+import { text as readStreamText } from "node:stream/consumers";
+import { test as pwaTest } from "./pwa-update-fixture";
 import { resolve } from "node:path";
 
 const devUrl = "http://127.0.0.1:4176";
@@ -529,7 +531,7 @@ test("saved chat cards keep summaries and open or export the latest stored trans
   const downloading = page.waitForEvent("download");
   await card.getByRole("button", { name: "Download", exact: true }).click();
   const download = await downloading;
-  const exported = JSON.parse(await readFile((await download.path())!, "utf8"));
+  const exported = JSON.parse(await readStreamText(await download.createReadStream()));
   expect(exported.conversation.snapshot.tree.nodes.find((node: { role: string }) => node.role === "user").text)
     .toBe("Updated after opening the library");
 
@@ -1699,11 +1701,21 @@ test("fixture survives repeated generation, stop, and reload cycles", async ({ p
     const previousResponses = await responses.count();
     const response = responses.last();
     await composer.fill(prompt);
+    if (stopEarly) await page.evaluate(previousResponses => {
+      const observer = new MutationObserver(() => {
+        const responses = document.querySelectorAll(".msg:has(.model-avatar) .response-body");
+        const stop = document.querySelector<HTMLButtonElement>('button[aria-description="Escape · stop the current reply"]');
+        if (responses.length === previousResponses + 1 && responses[responses.length - 1].textContent?.includes("This") && stop && !stop.disabled) {
+          observer.disconnect();
+          stop.click();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["disabled"] });
+    }, previousResponses);
     await sendButton(page).click();
     await expect(responses).toHaveCount(previousResponses + 1);
     if (stopEarly) {
       await expect(response).toContainText("This");
-      await stop.dispatchEvent("click");
       await expect(response).not.toHaveText(fixtureResponse);
     } else {
       await expect(response).toContainText(fixtureResponse);
@@ -3064,35 +3076,12 @@ test("installed PWA shell remains available offline without preloading the model
   await expect(page.locator("#device-check")).toBeVisible();
 });
 
-test("an installed PWA update waits for consent and reloads without clearing local data", async ({
-  context,
+pwaTest("an installed PWA update waits for consent and reloads without clearing local data", async ({
   page,
 }, testInfo) => {
-  test.setTimeout(90_000);
+  pwaTest.setTimeout(90_000);
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.clock.install();
-  let serviceWorkerVersion = 1;
-  await context.route("**/sw.js", async (route) => {
-    const script = `
-      const version = ${serviceWorkerVersion};
-      self.addEventListener("install", (event) => {
-        if (version === 1) event.waitUntil(self.skipWaiting());
-      });
-      self.addEventListener("activate", (event) => {
-        event.waitUntil(self.clients.claim());
-      });
-      self.addEventListener("message", (event) => {
-        if (event.data?.type === "SKIP_WAITING") {
-          event.waitUntil(self.skipWaiting());
-          return;
-        }
-      });
-    `;
-    await route.fulfill({
-      contentType: "text/javascript; charset=utf-8",
-      headers: { "Cache-Control": "no-store" },
-      body: script,
-    });
-  });
 
   await page.goto("/");
   await page.evaluate(async () => {
@@ -3102,7 +3091,7 @@ test("an installed PWA update waits for consent and reloads without clearing loc
   await page.reload();
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
 
-  serviceWorkerVersion = 2;
+  expect((await page.request.post("/__drowse_test__/update")).status()).toBe(204);
   await page.evaluate(async () => {
     const registration = await navigator.serviceWorker.ready;
     await registration.update();
@@ -3115,6 +3104,10 @@ test("an installed PWA update waits for consent and reloads without clearing loc
   await expect(notice).toHaveCSS("transform", "none");
   for (const width of [1440, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
+    await expect.poll(() => notice.evaluate((element, width) => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.width <= 400 && bounds.x >= 15 && bounds.right <= width - 15 && bounds.bottom <= 885;
+    }, width)).toBe(true);
     const bounds = (await notice.boundingBox())!;
     expect(bounds.width).toBeLessThanOrEqual(400);
     expect(bounds.x).toBeGreaterThanOrEqual(15);

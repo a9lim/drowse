@@ -26,6 +26,7 @@ async function generate(page: Page) {
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
+  await expect(page.locator(".msg .response-body").last()).toHaveText("This is a deterministic local Drowse runtime fixture.");
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
 }
 
@@ -146,6 +147,7 @@ test("mouse dragging, interrupted gestures, editing, and reduced motion remain u
   await page.getByRole("button", { name: "Full token details", exact: true }).click();
   await handle(page).press("End");
   await expect(sheet(page)).toHaveAttribute("data-detent", "peek");
+  await handle(page).click({ trial: true });
   const box = (await handle(page).boundingBox())!;
   await page.mouse.move(box.x + 100, box.y + 20);
   await page.mouse.down();
@@ -191,12 +193,13 @@ test("native touch input scrolls content without moving the sheet until an edge"
     const r = (await target.boundingBox())!;
     const x = r.x + 8, y = r.y + r.height / 2;
     const steps = duration < 150 ? 3 : 10;
-    await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    const timestamp = Date.now() / 1000;
+    await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }], timestamp });
     for (let step = 1; step <= steps; step++) {
       await page.waitForTimeout(duration / steps);
-      await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + delta * step / steps }] });
+      await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + delta * step / steps }], timestamp: timestamp + duration * step / steps / 1000 });
     }
-    await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [], timestamp: timestamp + duration / 1000 + 0.001 });
   };
   await details.evaluate(el => el.scrollTop = 120);
   const before = await details.evaluate(el => el.scrollTop);
@@ -233,12 +236,14 @@ test("nested pickers keep their own keys and interrupted springs can reverse", a
   const positions = await handle(page).evaluate(async element => {
     const surface = element.closest(".sheet-host")!;
     const position = () => new DOMMatrixReadOnly(getComputedStyle(surface).transform).m42;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const initial = position();
     element.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
-    await new Promise(resolve => setTimeout(resolve, 65));
+    while (position() >= initial - 1) await new Promise(requestAnimationFrame);
     const before = position();
     element.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }));
     const after = position();
-    await new Promise(resolve => setTimeout(resolve, 350));
+    while (position() <= before + 1) await new Promise(requestAnimationFrame);
     return { before, after, final: position() };
   });
   expect(Math.abs(positions.before - positions.after)).toBeLessThan(1);

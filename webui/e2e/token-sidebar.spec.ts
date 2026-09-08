@@ -117,9 +117,14 @@ test("mirrored sidebar toggle pins an empty inspector and both slides share reve
     await expect(panel).toHaveCSS("opacity", "1");
     await expect(panel).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
     const sample = await toggle.evaluate(async (el, side) => {
+      const { tick } = await import("/e2e/svelte-runtime.ts");
       const panel = document.querySelector(`#workspace-${side === "left" ? "sidebar" : "token-sidebar"}`)!;
       (el as HTMLButtonElement).click();
-      await new Promise(resolve => setTimeout(resolve, 80));
+      await tick();
+      for (const animation of panel.getAnimations()) {
+        animation.pause();
+        animation.currentTime = 80;
+      }
       const style = getComputedStyle(panel);
       const result = { x: new DOMMatrixReadOnly(style.transform).m41, opacity: Number(style.opacity), inert: (panel as HTMLElement).inert };
       (el as HTMLButtonElement).click();
@@ -142,6 +147,8 @@ test("mirrored sidebar toggle pins an empty inspector and both slides share reve
   }
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(page.locator('.sheet-host[data-mobile-sheet="true"]')).toHaveCount(0);
+  await expect(right).toHaveAttribute("role", "complementary");
   for (const panel of [left, right]) await expect(panel).toHaveCSS("transition-duration", "0s");
   await rightToggle.focus();
   await rightToggle.press("Enter");

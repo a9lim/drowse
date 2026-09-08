@@ -110,18 +110,18 @@ async function expectStorageAndCoordinationCanaries(
 test("desktop landing documents supported browsers and supplies runtime prerequisites", async ({
   page,
   browserName,
-}) => {
+}, testInfo) => {
   const pageErrors = collectPageErrors(page);
   const response = await page.goto("/");
 
   expect(response).not.toBeNull();
   expect(response!.headers()["cross-origin-opener-policy"]).toBe("same-origin");
   expect(response!.headers()["cross-origin-embedder-policy"]).toBe("require-corp");
-  if (browserName !== "chromium") {
-    expect(await page.evaluate(() => navigator.userAgent)).toContain("Macintosh");
+  if (testInfo.project.use.userAgent) {
+    expect(await page.evaluate(() => navigator.userAgent)).toBe(testInfo.project.use.userAgent);
   }
 
-  expect(await page.evaluate(() => ({
+  const { opfs, ...prerequisites } = await page.evaluate(() => ({
     secureContext: globalThis.isSecureContext,
     crossOriginIsolated: globalThis.crossOriginIsolated,
     worker: typeof Worker === "function",
@@ -130,7 +130,8 @@ test("desktop landing documents supported browsers and supplies runtime prerequi
     webAssembly: typeof WebAssembly === "object",
     webLocks: typeof navigator.locks?.request === "function",
     opfs: typeof navigator.storage?.getDirectory === "function",
-  }))).toEqual({
+  }));
+  expect(prerequisites).toEqual({
     secureContext: true,
     crossOriginIsolated: true,
     worker: true,
@@ -138,10 +139,11 @@ test("desktop landing documents supported browsers and supplies runtime prerequi
     broadcastChannel: true,
     webAssembly: true,
     webLocks: true,
-    opfs: true,
   });
-  // Playwright WebKit exposes OPFS but rejects getDirectory() in its ephemeral
-  // headless context; real Safari storage remains enforced by the app's live canary.
+  if (browserName !== "webkit") expect(opfs).toBe(true);
+  testInfo.annotations.push({ type: "native-opfs-api", description: String(opfs) });
+  // Playwright WebKit either omits OPFS on Linux or rejects getDirectory() in
+  // ephemeral contexts; the app's live canary still enforces real Safari storage.
   await expectStorageAndCoordinationCanaries(page, browserName !== "webkit");
 
   for (const viewport of desktopViewports) {

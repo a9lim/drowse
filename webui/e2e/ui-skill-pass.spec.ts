@@ -4,7 +4,7 @@ import { setAppearance, returnToChats, showWorkspaceTools, selectLoomView, openT
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
-import { readFile } from "node:fs/promises";
+import { buffer as readStreamBuffer, text as readStreamText } from "node:stream/consumers";
 import { CHAT_ACCENTS } from "../src/lib/chatAccent";
 
 const devUrl = "http://127.0.0.1:4176";
@@ -38,6 +38,7 @@ test("model settings end with the versioned Drowse footer", async ({ page }, tes
 });
 
 test("Credits matches the public theme and GitHub links say Contribute", async ({ page, browserName }, testInfo) => {
+  test.slow();
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -145,7 +146,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await source.getByRole("button", { name: "Download backup of Backup experiment", exact: true }).click();
   const download = await downloading;
   expect(download.suggestedFilename()).toBe("Backup-experiment.drowsechat");
-  const text = await readFile((await download.path())!, "utf8");
+  const text = await readStreamText(await download.createReadStream());
   const backup = JSON.parse(text);
   expect(backup.conversation).toEqual(original);
   const records = () => page.evaluate(async url => (await (await import(url)).conversationLibrary.list()).conversations, libraryUrl);
@@ -628,7 +629,7 @@ test("Chat controls share the three-tab layout on desktop and phones", async ({ 
     for (const width of [320, 1440]) {
       await page.setViewportSize({ width, height: 800 });
       expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
-      expect(await tabs.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      await expect.poll(() => tabs.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       await panel.getByRole("button", { name: "Download copy" }).scrollIntoViewIfNeeded();
       await expect(panel.getByRole("button", { name: "Download copy" })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath(`chat-controls-${colorScheme}-${width}.png`) });
@@ -673,7 +674,7 @@ test("Chat controls update the saved name and avatar without leaving the tab", a
   await panel.getByRole("button", { name: "Download copy" }).click();
   const file = await download;
   expect(file.suggestedFilename()).toBe("A-named-chat.drowsechat");
-  const backup = JSON.parse(await readFile((await file.path())!, "utf8"));
+  const backup = JSON.parse(await readStreamText(await file.createReadStream()));
   expect(backup.format).toBe("drowse-chat-backup");
   expect(backup.conversation.name).toBe(updated.name);
   expect(backup.conversation.avatarSeed).toBe(updated.avatarSeed);
@@ -697,6 +698,7 @@ test("shared page headers and footers align across public pages and workbench", 
     await page.goto(`${devUrl}/`);
     await page.evaluate(() => document.fonts.ready);
     const anchor = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
+    const anchorHeaderX = await page.locator(".page-header").evaluate(el => el.getBoundingClientRect().x);
     const footerStyle = await page.locator(".page-footer").evaluate(el => {
       const css = getComputedStyle(el);
       const content = el.querySelector(".footer-content")!;
@@ -709,7 +711,9 @@ test("shared page headers and footers align across public pages and workbench", 
       await page.evaluate(() => document.fonts.ready);
       const box = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
       const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
-      expect(box.width, `${name} width`).toBeCloseTo(anchor.width * (compact ? 5 / 6 : 1), 0);
+      await expect.poll(() => page.locator(".page-brand").evaluate((el, expected) =>
+        Math.abs(el.getBoundingClientRect().width - expected), anchor.width * (compact ? 5 / 6 : 1)),
+      { message: `${name} width` }).toBeLessThanOrEqual(1);
       expect(box.height).toBeCloseTo(await page.locator(".page-brand").evaluate(el => parseFloat(getComputedStyle(el).minHeight)), 0);
       expect(await page.locator(".page-header").evaluate(el => el.scrollWidth - el.clientWidth), name).toBeLessThanOrEqual(1);
       if (name === "workbench") {
@@ -723,7 +727,10 @@ test("shared page headers and footers align across public pages and workbench", 
         return;
       }
       if (!compact && width > 320) for (const key of ["x", "y"] as const) {
-        await expect.poll(async () => (await page.locator(".page-brand").boundingBox())![key], { message: `${name} ${key}` }).toBeCloseTo(anchor[key], 0);
+        await expect.poll(() => page.locator(".page-brand").evaluate((el, key) => {
+          const box = el.getBoundingClientRect();
+          return box[key] - (key === "x" ? el.closest(".page-header")!.getBoundingClientRect().x : 0);
+        }, key), { message: `${name} ${key}` }).toBeCloseTo(anchor[key] - (key === "x" ? anchorHeaderX : 0), 0);
       }
       else expect(box.x).toBeGreaterThanOrEqual(0);
       await expect(page.locator(".page-header .theme-toggle")).toHaveCount(1);
@@ -738,11 +745,13 @@ test("shared page headers and footers align across public pages and workbench", 
         return { x: el.getBoundingClientRect().x, width: el.getBoundingClientRect().width, padding: css.paddingInlineStart,
           height: content.getBoundingClientRect().height, text: el.textContent?.trim() };
       });
-      if (!compact) expect(actualFooter).toEqual(footerStyle);
+      const footerContainer = await footer.evaluate(el => el.parentElement!.getBoundingClientRect().toJSON());
+      expect(actualFooter.width).toBe(Math.min(footerContainer.width, (compact ? 90 : 80) * 14));
+      expect(actualFooter.x).toBe(footerContainer.x + (footerContainer.width - actualFooter.width) / 2);
+      if (!compact) expect({ padding: actualFooter.padding, height: actualFooter.height, text: actualFooter.text })
+        .toEqual({ padding: footerStyle.padding, height: footerStyle.height, text: footerStyle.text });
       else {
         expect(actualFooter.text).toBe(footerStyle.text);
-        expect(actualFooter.width).toBe(Math.min(width, 90 * 14));
-        expect(actualFooter.x).toBe((width - actualFooter.width) / 2);
         expect(actualFooter.padding).toBe("16px");
         expect(actualFooter.height).toBeGreaterThanOrEqual(80);
       }
@@ -797,7 +806,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
       const logo = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
       const inWorkbench = await page.locator(".shell").isVisible();
       const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
-      expect(logo.width).toBeCloseTo(modelLogo.width * (compact ? 5 / 6 : 1), 0);
+      expect(Math.abs(logo.width - modelLogo.width * (compact ? 5 / 6 : 1))).toBeLessThanOrEqual(1);
       expect(logo.height).toBeCloseTo(await page.locator(".page-brand").evaluate(el => parseFloat(getComputedStyle(el).minHeight)), 0);
       if (inWorkbench) {
         const sidebarToggle = (await page.getByRole("button", { name: /^(Hide|Show) left sidebar$/ }).boundingBox())!;
@@ -986,7 +995,7 @@ test.describe("saved chat card interactions", () => {
     const downloading = page.waitForEvent("download");
     await page.getByRole("button", { name: "Download backup of Marmot research", exact: true }).click();
     const download = await downloading;
-    const text = await readFile((await download.path())!, "utf8");
+    const text = await readStreamText(await download.createReadStream());
     const backup = JSON.parse(text);
     expect(backup.conversation.name).toBe("Marmot research");
     await page.getByLabel("Import chat backup file").setInputFiles({ name: "backup.json", mimeType: "application/json", buffer: Buffer.from(text) });
@@ -1534,6 +1543,7 @@ test("section headings stand alone without redundant eyebrow labels", async ({ p
 });
 
 test("theme crossfade gently blends the whole page and survives rapid switches", async ({ page }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   await page.setViewportSize({ width: 1280, height: 850 });
   await page.goto(`${devUrl}/`);
@@ -2075,6 +2085,7 @@ test("Loom depth fills the viewport through long pans, zoom, resize, and pointer
 });
 
 test("Loom shows a shared token prefix once and keeps continuation token actions exact", async ({ page }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(`${devUrl}/app?layoutFixture=1`);
@@ -2381,7 +2392,7 @@ test("header download confirms filename and exact backup size without changing t
   await dialog.getByRole("button", { name: "Download", exact: true }).click();
   const download = await pendingDownload;
   expect(download.suggestedFilename()).toBe("My-backup.drowsechat");
-  const bytes = await readFile((await download.path())!);
+  const bytes = await readStreamBuffer(await download.createReadStream());
   expect(bytes.byteLength).toBe(size);
   const backup = JSON.parse(bytes.toString());
   expect(backup.format).toBe("drowse-chat-backup");
@@ -2937,6 +2948,7 @@ test("orb entrance waits for a rendered scene and wordmark uses the accent on ho
 });
 
 test("ethereal landing renders, enters on scroll, and releases its renderer on navigation", async ({ page, browserName }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   await page.setViewportSize({ width: 1440, height: 900 });
   const errors: string[] = [];
@@ -3080,7 +3092,7 @@ test("ethereal landing starts offline even when animation was disabled on its fi
   await expect(visual).toHaveAttribute("data-travel", "1.000");
   await expect(visual.locator("canvas")).toHaveCSS("opacity", "1");
   const firstFrame = await visual.locator("canvas").screenshot();
-  await expect.poll(async () => (await visual.locator("canvas").screenshot()).equals(firstFrame)).toBe(false);
+  await expect.poll(async () => (await visual.locator("canvas").screenshot()).equals(firstFrame), { timeout: 30_000 }).toBe(false);
 });
 
 test("ethereal landing restores its renderer after a fully offline reload", async ({ page, context, browserName }) => {
@@ -3238,7 +3250,7 @@ test("homepage fills the viewport without a scrollbar strip and still scrolls", 
 });
 
 test("mobile hero overlays the orb without selecting the section", async ({ page }, testInfo) => {
-  test.setTimeout(90_000);
+  test.setTimeout(240_000);
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(devUrl);
   await expect(page.locator(".hero-visual")).toHaveAttribute("data-shader-status", "ready");

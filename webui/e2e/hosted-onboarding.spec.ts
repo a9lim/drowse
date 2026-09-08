@@ -128,6 +128,9 @@ async function mountHostedApp(
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${devUrl}/outside-the-workbench`);
   await page.evaluate(async ({ componentUrl, snapshot, retryResults }) => {
+    if (!navigator.storage) {
+      Object.defineProperty(navigator, "storage", { configurable: true, value: { persist: async () => false } });
+    }
     const [{ default: HostedApp }, { mount }] = await Promise.all([
       import(componentUrl),
       import("/e2e/svelte-runtime.ts"),

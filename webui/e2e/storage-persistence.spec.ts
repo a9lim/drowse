@@ -20,7 +20,7 @@ test("native browser storage requests settle without blocking the page", async (
   await expect.poll(() => page.evaluate(() => typeof (window as any).__nativeStorageResult)).toBe("boolean");
   const result = await page.evaluate(async () => ({
     granted: (window as any).__nativeStorageResult,
-    persisted: await navigator.storage.persisted(),
+    persisted: await navigator.storage?.persisted?.() ?? null,
   }));
   if (result.granted) expect(result.persisted).toBe(true);
   testInfo.annotations.push({ type: "native-storage-decision", description: JSON.stringify(result) });
@@ -36,7 +36,8 @@ async function mountNotice(page: Page, surface: "models" | "chats", scenario: Sc
     let resolvePermission: (value: boolean) => void = () => {};
     const calls: boolean[] = [];
     // Keep WebKit's patched StorageManager wrapper alive until the click.
-    const storage = navigator.storage;
+    const storage = navigator.storage ?? {};
+    Object.defineProperty(navigator, "storage", { configurable: true, value: storage });
     Object.defineProperty(storage, "persist", {
       configurable: true,
       value: scenario === "unsupported" ? undefined : () => {
@@ -166,8 +167,10 @@ for (const [state, animation] of [["loading-pulse", "loading-breathe"], ["genera
 
 test("chats save and reload without persistent storage permission", async ({ page }) => {
   await page.addInitScript(() => {
-    Object.defineProperty(navigator.storage, "persist", { configurable: true, value: async () => false });
-    Object.defineProperty(navigator.storage, "persisted", { configurable: true, value: async () => false });
+    const storage = navigator.storage ?? {};
+    Object.defineProperty(navigator, "storage", { configurable: true, value: storage });
+    Object.defineProperty(storage, "persist", { configurable: true, value: async () => false });
+    Object.defineProperty(storage, "persisted", { configurable: true, value: async () => false });
   });
   await page.goto(`${devUrl}/app?layoutFixture=1`);
   await expect(page.locator(".shell")).toBeVisible();

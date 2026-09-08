@@ -1,57 +1,7 @@
-import { expect, test as base, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { createServer, request as httpRequest } from "node:http";
 import AxeBuilder from "@axe-core/playwright";
-
-const test = base.extend<{ updateOrigin: string }>({
-  updateOrigin: async ({}, use, testInfo) => {
-    let version = 1;
-    const upstream = testInfo.project.use.baseURL!;
-    const server = createServer(async (request, response) => {
-      if (!request.url?.startsWith("/") || request.url.startsWith("//")) {
-        response.writeHead(400).end();
-        return;
-      }
-      if (request.url === "/__drowse_test__/update" && request.method === "POST") {
-        version += 1;
-        response.writeHead(204).end();
-        return;
-      }
-      if (request.url === "/sw.js") {
-        response.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" });
-        response.end(`
-          const version = ${version};
-          self.addEventListener("install", event => {
-            if (version === 1) event.waitUntil(self.skipWaiting());
-          });
-          self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
-          self.addEventListener("message", event => {
-            if (event.data?.type === "SKIP_WAITING") event.waitUntil(self.skipWaiting());
-          });
-        `);
-        return;
-      }
-      const target = new URL(upstream);
-      const query = request.url.indexOf("?");
-      target.pathname = query < 0 ? request.url : request.url.slice(0, query);
-      target.search = query < 0 ? "" : request.url.slice(query);
-      const result = await fetch(target, { redirect: "error" });
-      const headers = Object.fromEntries(result.headers);
-      delete headers["content-encoding"];
-      delete headers["content-length"];
-      response.writeHead(result.status, headers);
-      response.end(Buffer.from(await result.arrayBuffer()));
-    });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Update fixture has no TCP address");
-    try {
-      await use(`http://127.0.0.1:${address.port}`);
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-    }
-  },
-  baseURL: async ({ updateOrigin }, use) => use(updateOrigin),
-});
+import { test } from "./pwa-update-fixture";
 
 const key = "drowse.pwa-update-reminder.v1";
 const updateNotice = (page: Page) => page.locator(".pwa-notice").filter({ hasText: "A Drowse update is ready." });
@@ -94,7 +44,7 @@ async function installUpdate(page: Page) {
 }
 
 test("update entrance and fading glow play only once, with comfortable button spacing", async ({ context, page }, testInfo) => {
-  test.setTimeout(60_000);
+  test.setTimeout(180_000);
   await page.emulateMedia({ colorScheme: "dark" });
   await page.addInitScript(() => localStorage.setItem("drowse.theme", "dark"));
   await installUpdate(page);

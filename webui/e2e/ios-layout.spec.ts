@@ -233,6 +233,8 @@ test("Loom preserves a useful touch canvas on short screens", async ({ page }) =
     await showWorkspaceTools(page, "Loom");
     const tree = page.locator(".tree-scroll");
     await expect(tree).toBeVisible();
+    await expect(page.locator(".shell")).toHaveCSS("height", `${viewport.height}px`);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const height = await tree.evaluate((element) => element.getBoundingClientRect().height);
     expect(height).toBeGreaterThanOrEqual(84);
     await expectTouchHeight(page.getByRole("button", { name: "Zoom out" }));
