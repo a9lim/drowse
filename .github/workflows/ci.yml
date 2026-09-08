@@ -100,6 +100,8 @@ jobs:
 
   webui:
     runs-on: ubuntu-latest
+    env:
+      DROWSE_STORAGE_BROWSERS: chromium
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -138,6 +140,22 @@ jobs:
             git status --short --untracked-files=all -- drowse/web/dist/
             exit 1
           fi
+
+  webkit-storage:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci
+      - run: npx playwright install chromium webkit
+      - run: node scripts/iphone-storage.test.mjs
 
   contact-worker:
     runs-on: ubuntu-latest

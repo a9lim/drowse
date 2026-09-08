@@ -13,6 +13,8 @@ const modelBytes = Buffer.alloc(8 * 1024 * 1024 + 37);
 for (let i = 0; i < modelBytes.length; i++) modelBytes[i] = i % 251;
 const coreBytes = Buffer.from("iphone-storage-core");
 const requests = [];
+const storageBrowsers = (process.env.DROWSE_STORAGE_BROWSERS ?? "webkit-iphone,chromium").split(",");
+assert.ok(storageBrowsers.length > 0 && storageBrowsers.every(name => ["webkit-iphone", "chromium"].includes(name)));
 const tlsDirectory = await mkdtemp(join(tmpdir(), "drowse-iphone-tls-"));
 const keyPath = join(tlsDirectory, "key.pem");
 const certPath = join(tlsDirectory, "cert.pem");
@@ -118,6 +120,7 @@ try {
     files: [modelFile], packs: [{ id: "iphone-core", kind: "core", required: true, bytes: coreBytes.length, files: [coreFile] }],
   }] }] } };
   for (const [name, browserType, options] of [["webkit-iphone", webkit, devices["iPhone 13"]], ["chromium", chromium, {}]]) {
+    if (!storageBrowsers.includes(name)) continue;
     requests.length = 0;
     profile = await mkdtemp(join(tmpdir(), "drowse-iphone-storage-"));
     context = await browserType.launchPersistentContext(profile, { ...options, headless: true, ignoreHTTPSErrors: true, ...(name === "chromium" ? { args: [`--ignore-certificate-errors-spki-list=${spki}`] } : {}) });

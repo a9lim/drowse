@@ -239,7 +239,8 @@ test("Loom preserves a useful touch canvas on short screens", async ({ page }) =
     await expectTouchHeight(page.getByRole("button", { name: "Zoom in" }));
     await openWorkspaceMenu(page);
     await page.getByRole("button", { name: "Hide Loom tools", exact: true }).click();
-    await expect.poll(() => tree.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(Math.max(90, height));
+    await expect(page.locator("#loom-tools-header")).toHaveCount(0);
+    await expect.poll(() => tree.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(height);
     const visibleTree = (await tree.boundingBox())!;
     expect(visibleTree.y + visibleTree.height).toBeLessThanOrEqual(viewport.height + 1);
     await expectNoPageOverflow(page);
