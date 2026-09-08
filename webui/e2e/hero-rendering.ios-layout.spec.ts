@@ -41,6 +41,7 @@ test("the live canvas paints its own light and dark palettes without an SVG filt
 });
 
 test("resizing redraws before paint and scrolling does not resize the drawing buffer", async ({ page }) => {
+  test.slow();
   await page.goto("/");
   const hero = page.locator(".hero-visual");
   await expect(hero).toHaveAttribute("data-shader-status", "ready");

@@ -28,7 +28,8 @@ test("sidebar leads with chats and compact navigation stays centered", async ({ 
         await expect(menu).toBeVisible();
         expect(await page.locator(".workspace-nav").evaluate(nav => {
           const rect = nav.getBoundingClientRect();
-          return Math.abs(rect.left + rect.width / 2 - innerWidth / 2);
+          const sidebarRect = nav.closest(".app-sidebar")!.getBoundingClientRect();
+          return Math.abs(rect.left + rect.width / 2 - sidebarRect.left - sidebarRect.width / 2);
         })).toBeLessThanOrEqual(1);
         await expect(sidebar.getByRole("button", { name: "Back to Chats", exact: true })).toBeHidden();
       } else {
