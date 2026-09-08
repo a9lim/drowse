@@ -12,7 +12,7 @@ const index = await readFile(resolve(root, "index.html"), "utf8");
 const notFound = await readFile(resolve(root, "404.html"), "utf8");
 const redirects = await readFile(resolve(root, "_redirects"), "utf8");
 assert.equal(notFound, index, "The 404 page must render Drowse without an asset SPA fallback");
-assert.equal(redirects.trim(), "/app / 200\n/app/ / 200\n/credits / 200\n/credits/ / 200\n/app/* / 200");
+assert.equal(redirects.trim(), "/app / 200\n/app/ / 200\n/credits / 200\n/credits/ / 200\n/contact / 200\n/contact/ / 200\n/app/* / 200");
 const serviceWorker = await readFile(resolve(root, "sw.js"), "utf8");
 const headers = await readFile(resolve(root, "_headers"), "utf8");
 const robots = await readFile(resolve(root, "robots.txt"), "utf8");

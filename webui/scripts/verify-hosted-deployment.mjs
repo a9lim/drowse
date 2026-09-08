@@ -502,6 +502,13 @@ async function main() {
   }
   assertChannelHtml(rootHtml, options.channel, options.revision);
   assertChannelHtml(appHtml, options.channel, options.revision);
+  for (const path of ["/credits", "/credits/", "/contact", "/contact/"]) {
+    const response = await fetchRoute(origin, path, headers);
+    assertMime(response, "text/html");
+    assertSecurityHeaders(response, distributionLock);
+    assertRobotsHeader(response, options.channel);
+    assertChannelHtml(await response.text(), options.channel, options.revision);
+  }
   assertRobotsFile(robots, options.channel);
   await assertPwaAssets(origin, headers, rootHtml);
   await assertBrowserBehavior(origin, headers, metadata(rootHtml, "drowse-source-revision"));

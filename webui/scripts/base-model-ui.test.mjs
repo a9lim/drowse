@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "vite";
 import { readFile } from "node:fs/promises";
 import postcss from "postcss";
+import { parse } from "svelte/compiler";
 
 const server = await createServer({
   appType: "custom", logLevel: "silent",
@@ -126,7 +127,10 @@ try {
   assert.match(streaming, /<button(?=[^>]*disabled)(?=[^>]*aria-description="Stop or finish generation before inspecting")[^>]*>/);
   genStatus.active = false;
   genStatus.finishReason = "cancelled";
-  const plain = html => html.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+  const textContent = node => node.type === "Text"
+    ? node.data
+    : (node.nodes ?? node.fragment?.nodes ?? []).map(textContent).join("");
+  const plain = html => textContent(parse(html, { modern: true }).fragment).replace(/\s+/g, " ").trim();
   const stopped = plain(render(StatusFooter).body);
   assert.match(render(StatusFooter).body, /morph-source/, "current text exists independently of animation");
   const statusSource = await readFile(new URL("../src/panels/StatusFooter.svelte", import.meta.url), "utf8");
