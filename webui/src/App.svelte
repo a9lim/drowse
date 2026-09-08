@@ -195,6 +195,7 @@
       const trigger = drawerTrigger;
       void tick().then(() => {
         if (trigger?.isConnected) focusWithoutScrolling(trigger);
+        else focusWithoutScrolling(document.querySelector<HTMLElement>('[aria-controls="workspace-sidebar"]'));
       });
       drawerTrigger = null;
     }

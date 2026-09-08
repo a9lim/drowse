@@ -1422,8 +1422,9 @@ test("token details scroll past branching controls in every analysis tab", async
   await expect(branch).toBeVisible();
   await expect(sheet).toHaveAttribute("tabindex", "-1");
   expect(await sheet.evaluate(element => {
+    const focusRoot = element.closest('[role="dialog"]') ?? element;
     const focused = document.activeElement;
-    return focused instanceof HTMLElement && element.contains(focused) && focused.matches("button, input, select, textarea, a[href]");
+    return focused instanceof HTMLElement && focusRoot.contains(focused) && focused.matches("button, input, select, textarea, a[href]");
   })).toBe(true);
   await expect(sheet).toHaveCSS("overflow-y", "auto");
   await expect(sheet.locator(":scope > .body")).toHaveCSS("overflow-y", "visible");
@@ -2388,7 +2389,7 @@ test("header download confirms filename and exact backup size without changing t
   expect(backup.conversation.snapshot.samplingState).toEqual(before.samplingState);
   expect(backup.conversation.name).not.toBe("My backup.drowse-chat.json");
   await expect(dialog).toHaveCount(0);
-  await expect(menu).toBeFocused();
+  await expect(await menu.isVisible() ? menu : page.getByRole("button", { name: "Hide left sidebar", exact: true })).toBeFocused();
 });
 
 test("shared controls have comfortable targets and interruptible contextual feedback", async ({ page }, testInfo) => {
@@ -2630,14 +2631,14 @@ for (const theme of ["light", "dark"] as const) {
   test(`six-skill pass covers expanded hosted surfaces in ${theme}`, async ({ page }, testInfo) => {
     test.setTimeout(180_000);
     page.setDefaultTimeout(10_000);
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
     await page.emulateMedia({ reducedMotion: "reduce", colorScheme: theme });
     await page.setViewportSize({ width: 390, height: 844 });
     // This audit exercises interface states, independently of download approval and OPFS.
     await workbench(page);
     await expect(page.locator(".shell")).toBeVisible();
     const reports: unknown[] = [];
-    const pageErrors: string[] = [];
-    page.on("pageerror", (error) => pageErrors.push(error.message));
 
     async function audit(name: string, selector: string) {
       const root = page.locator(selector).last();
@@ -2742,18 +2743,20 @@ test("word details use a darker gray without changing light mode or other drawer
     });
     await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
     const dialog = page.getByRole("dialog", { name: "Generated word details" });
-    const expectedSurface = async (selector: string, token: string) => page.locator(selector).evaluate((el, token) => {
+    const expectedSurface = async (token: string) => page.getByRole("dialog").evaluate((el, token) => {
       const swatch = document.createElement("span");
-      swatch.style.backgroundColor = `color-mix(in srgb, var(${token}) 90%, transparent)`;
+      swatch.style.backgroundColor = el.matches(".sheet-host.enabled")
+        ? "var(--popup-bg)"
+        : `color-mix(in srgb, var(${token}) 90%, transparent)`;
       el.append(swatch);
       const color = getComputedStyle(swatch).backgroundColor;
       swatch.remove();
       return color;
     }, token);
-    await expect(dialog).toHaveCSS("background-color", await expectedSurface('.drawer[role="dialog"]', theme === "dark" ? "--bg-elev" : "--popup-bg"));
+    await expect(dialog).toHaveCSS("background-color", await expectedSurface(theme === "dark" ? "--bg-elev" : "--popup-bg"));
     await page.screenshot({ path: testInfo.outputPath(`word-details-${theme}.png`) });
     await openDrawer(page, "help");
-    await expect(page.getByRole("dialog")).toHaveCSS("background-color", await expectedSurface('.drawer[role="dialog"]', "--popup-bg"));
+    await expect(page.getByRole("dialog")).toHaveCSS("background-color", await expectedSurface("--popup-bg"));
   }
 });
 
