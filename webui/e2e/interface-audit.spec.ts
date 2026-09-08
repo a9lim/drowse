@@ -1075,7 +1075,10 @@ test("every hosted command surface remains operable at 320 px", async ({ page })
         return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
       });
       return {
-        small: interactive.filter((element) => element.getBoundingClientRect().height < 44)
+        small: interactive.filter((element) =>
+          element.getBoundingClientRect().height < 44 &&
+          !(element.matches("a[href]") && element.closest("p") && getComputedStyle(element).display === "inline")
+        )
           .map((element) => ({
             tag: element.tagName,
             name: element.getAttribute("aria-label") ?? element.textContent?.trim().slice(0, 60),

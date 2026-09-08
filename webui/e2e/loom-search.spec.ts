@@ -47,12 +47,12 @@ test("long cards widen without crossing columns; search navigates all branches w
   const search = page.getByRole("searchbox", { name: "Search messages" });
   await search.pressSequentially("amber fox", { delay: 20 });
   await expect(search).toHaveValue("amber fox");
-  await expect(page.locator("#loom-search-status")).toHaveText("2 matching messages");
+  await expect(page.locator("#loom-search-status .morph-source")).toHaveText("2 matching messages");
   await search.press("Shift+Enter");
-  await expect(page.locator("#loom-search-status")).toHaveText("2 of 2 matching messages");
+  await expect(page.locator("#loom-search-status .morph-source")).toHaveText("2 of 2 matching messages");
   await search.press("Enter");
   await expect(long).toHaveClass(/search-current/);
-  await expect(page.locator("#loom-search-status")).toHaveText("1 of 2 matching messages");
+  await expect(page.locator("#loom-search-status .morph-source")).toHaveText("1 of 2 matching messages");
   await expect.poll(() => page.evaluate(async url => (await import(url)).loomTree.active_node_id, storesUrl)).toBe("short");
   const sentence = long.locator(".sentence-node").last();
   await expect.poll(async () => {
@@ -69,7 +69,7 @@ test("long cards widen without crossing columns; search navigates all branches w
   await page.getByRole("button", { name: "Next match", exact: true }).click();
   await expect(page.locator('[data-loom-node-id="child"]')).toHaveClass(/search-current/);
   await search.fill("fox, moon");
-  await expect(page.locator("#loom-search-status")).toHaveText("1 matching message");
+  await expect(page.locator("#loom-search-status .morph-source")).toHaveText("1 matching message");
   await search.fill("not present anywhere");
   await expect(page.locator("#loom-search-status")).toContainText("No messages match");
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
@@ -89,12 +89,12 @@ test("search reveals collapsed children, restores collapsed state, and filters s
   await expect(page.locator('[data-loom-node-id="child"]')).toHaveCount(0);
   await search.fill("fox, moon");
   await expect(page.locator('[data-loom-node-id="child"]')).toHaveCount(1);
-  await expect(page.locator("#loom-search-status")).toHaveText("1 matching message");
+  await expect(page.locator("#loom-search-status .morph-source")).toHaveText("1 matching message");
   await search.press("Escape");
   await expect(page.locator('[data-loom-node-id="child"]')).toHaveCount(0);
   await page.getByRole("button", { name: /^Starred/ }).click();
   await search.fill("amber fox");
-  await expect(page.locator("#loom-search-status")).toHaveText("1 matching message");
+  await expect(page.locator("#loom-search-status .morph-source")).toHaveText("1 matching message");
   await search.fill("unmatched");
   await expect(page.getByText("No starred messages match", { exact: true })).toBeVisible();
 });
@@ -107,7 +107,7 @@ test("advanced filters stay explicit and the search bar fits a narrow viewport",
   const search = page.getByRole("searchbox", { name: "Advanced filters" });
   await search.fill("starred, text:amber");
   await search.press("Enter");
-  await expect(page.locator("#loom-search-status")).toHaveText("1 matching message");
+  await expect(page.locator("#loom-search-status .morph-source")).toHaveText("1 matching message");
   await search.fill("text:");
   await search.press("Enter");
   await expect(search).toHaveAttribute("aria-invalid", "true");

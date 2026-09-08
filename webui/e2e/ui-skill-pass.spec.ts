@@ -731,7 +731,7 @@ test("shared page headers and footers align across public pages and workbench", 
       await page.screenshot({ path: testInfo.outputPath(`${name}-${width}.png`) });
       const footer = page.locator(".page-footer");
       await footer.scrollIntoViewIfNeeded();
-      await expect(footer.getByRole("link")).toHaveText(["Credits", "Contribute", "License"]);
+      await expect(footer.getByRole("link")).toHaveText(["Credits", "Contribute"]);
       const actualFooter = await footer.evaluate(el => {
         const css = getComputedStyle(el);
         const content = el.querySelector(".footer-content")!;
@@ -892,19 +892,19 @@ test.describe("saved chat card interactions", () => {
     await expect(card.getByRole("button", { name: "Save name" })).toBeDisabled();
     await input.fill("Marmot notes");
     await input.press("Enter");
-    await expect(card.locator(".chat-name")).toHaveText("Marmot notes");
+    await expect(card.locator(".chat-name .morph-source")).toHaveText("Marmot notes");
     await card.locator(".chat-name").click();
     await input.fill("Discard this too");
     await card.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(card.locator(".chat-name")).toHaveText("Marmot notes");
+    await expect(card.locator(".chat-name .morph-source")).toHaveText("Marmot notes");
     await card.locator(".chat-name").click();
     await input.fill(" ");
     await card.locator(".chat-counts").click();
-    await expect(card.locator(".chat-name")).toHaveText("Marmot notes");
+    await expect(card.locator(".chat-name .morph-source")).toHaveText("Marmot notes");
     await card.locator(".chat-name").click();
     await input.fill("Marmot research");
     await card.locator(".chat-counts").click();
-    await expect(card.locator(".chat-name")).toHaveText("Marmot research");
+    await expect(card.locator(".chat-name .morph-source")).toHaveText("Marmot research");
 
     const avatar = card.locator(".avatar");
     const image = avatar.locator("img");
@@ -982,7 +982,7 @@ test.describe("saved chat card interactions", () => {
     await page.reload();
     await expect(page.locator(".shell")).toBeVisible();
     await mountHome();
-    await expect(page.locator("[data-saved-conversation]").first().locator(".chat-name")).toHaveText("Marmot research");
+    await expect(page.locator("[data-saved-conversation]").first().locator(".chat-name .morph-source")).toHaveText("Marmot research");
     const downloading = page.waitForEvent("download");
     await page.getByRole("button", { name: "Download backup of Marmot research", exact: true }).click();
     const download = await downloading;
@@ -2287,6 +2287,9 @@ test("workspace menu returns to chats and restores the current conversation", as
   const brand = page.locator(".app-header .page-brand");
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
+    if (width > 760 && await page.getByRole("button", { name: "Collapse left sidebar", exact: true }).isVisible()) {
+      await page.getByRole("button", { name: "Collapse left sidebar", exact: true }).click();
+    }
     const iconBox = (await home.boundingBox())!;
     const brandBox = (await brand.boundingBox())!;
     expect(iconBox.x).toBeGreaterThanOrEqual(brandBox.x + brandBox.width);
@@ -2318,9 +2321,12 @@ test("workspace menu returns to chats and restores the current conversation", as
 test("workspace menu has a visible touch target after the wordmark", async ({ page }, testInfo) => {
   await page.goto(`${devUrl}/app?layoutFixture=1`);
   const home = page.getByRole("button", { name: "Workspace menu", exact: true });
-  await expect(home).toHaveAttribute("aria-haspopup", "dialog");
   for (const width of [320, 390, 768, 1440]) {
     await page.setViewportSize({ width, height: 844 });
+    if (width > 760 && await page.getByRole("button", { name: "Collapse left sidebar", exact: true }).isVisible()) {
+      await page.getByRole("button", { name: "Collapse left sidebar", exact: true }).click();
+    }
+    await expect(home).toHaveAttribute("aria-haspopup", "dialog");
     await expect(home).toBeVisible();
     const icon = (await home.boundingBox())!;
     const brand = (await page.locator(".app-header .page-brand").boundingBox())!;
@@ -2347,14 +2353,14 @@ test("header download confirms filename and exact backup size without changing t
   const menu = page.getByRole("button", { name: "Workspace menu", exact: true });
   const button = page.getByRole("button", { name: "Download chat", exact: true });
   const before = await page.evaluate(async url => (await import(url)).captureConversationSnapshot(), `/@fs/${resolve("src/lib/conversationWorkspace.ts")}`);
-  await menu.click();
+  await openWorkspaceMenu(page);
   await button.click();
   const dialog = page.getByRole("dialog", { name: "Download chat", exact: true });
   await expect(dialog.getByLabel("File name", { exact: true })).toBeEnabled();
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(menu).toBeFocused();
-  await menu.click();
+  await openWorkspaceMenu(page);
   await button.click();
   const filename = dialog.getByLabel("File name", { exact: true });
   await filename.fill("   ");

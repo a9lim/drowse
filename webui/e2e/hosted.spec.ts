@@ -1104,7 +1104,7 @@ test("fixture installs, opens the shared workbench, stops, and generates", async
   });
   await expect(alternatives).toBeEnabled();
   await expect(alternatives).toHaveAttribute("max", String(Number.MAX_SAFE_INTEGER));
-  await expect(alternatives).toHaveValue("5");
+  await expect(alternatives).toHaveValue("8");
   await page.getByRole("button", { name: "Close drawer" }).click();
   await openWorkspace(page, "Conversation");
 
@@ -1511,7 +1511,8 @@ test("hover replay routes the exact token request and exposes a recoverable fail
       "lens",
       expected.nodeId,
       expected.rawIndex,
-      { topK: 5, steered: true, raw: false, layers: "all" },
+      { topK: 8, steered: true, raw: false, layers: "all" },
+      undefined,
     ],
   });
   await expect(lens.getByRole("alert")).toHaveText(
