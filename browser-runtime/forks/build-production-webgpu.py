@@ -24,7 +24,7 @@ RESULT_DIGESTS = {
     "python/mlc_llm/model/llama/llama_model.py": "2a34402c81074ce0a773f9a73dc95aea20a7a0533b2561708d32ceeb72aec7dc",
     "python/mlc_llm/model/qwen3/qwen3_model.py": "0621190a80fc12ec58ca3fd5d439411135815c4f4f6596a5a0d258475b5c7291",
     "python/mlc_llm/model/gemma3/gemma3_model.py": "fd219c4779b1a7497fa533b264d5c77a973c5a1f46f41ed29923c312d6220f18",
-    "python/mlc_llm/model/drowse_hooks.py": "bc1763ba32ef304b4c45be05bcbd2f2eb1240fc5fd7f95f48e025d96dce76c9e",
+    "python/mlc_llm/model/drowse_hooks.py": "4fadef9db1c875c81ca9cde76dfdbc477a3755f4d982ba9d097ccc730f6778b1",
 }
 TVM_RESULT_DIGESTS = {
     "python/tvm/relax/frontend/nn/llm/_decode_kernels.py": "4cfba82db3cd92e0b02081bd9679f24663fdca327de767966ae50c135c92e3ce",
@@ -65,8 +65,8 @@ GEOMETRY_SHADER_PREFIX = b"// Function: drowse_geometry_measurements"
 TOPK_TILE_SHADER_PREFIX = b"// Function: drowse_exact_top8_tiles"
 TOPK_MERGE_SHADER_PREFIX = b"// Function: drowse_exact_top8_merge"
 JLENS_TRANSPORT_SHADER_PREFIX = b"// Function: drowse_jlens_transport"
-TOPK_WORKGROUP_LINE = b"@compute @workgroup_size(1, 1, 1)"
-JLENS_TRANSPORT_WORKGROUP_LINE = b"@compute @workgroup_size(1, 1, 1)"
+TOPK_WORKGROUP_LINE = b"@compute @workgroup_size(64, 1, 1)"
+JLENS_TRANSPORT_WORKGROUP_LINE = b"@compute @workgroup_size(128, 1, 1)"
 MAX_WEBGPU_STORAGE_BINDINGS_PER_STAGE = 8
 TOKENIZER_SOURCE_FILES = [
     "tokenizer.model",
@@ -213,7 +213,9 @@ def verify_portable_topk_source(repository: Path) -> None:
         '"drowse_exact_top8_tiles"',
         '"drowse_exact_top8_merge"',
         '"drowse_jlens_transport"',
-        "_exact_readout_not_selected",
+        "_exact_readout_is_better",
+        "while candidate_count > 1:",
+        'for thread in T.thread_binding(0, 64, "threadIdx.x"):',
         "T.And(",
         "T.Or(",
     ):
@@ -222,8 +224,8 @@ def verify_portable_topk_source(repository: Path) -> None:
     exact_source = hooks.split("def exact_readout_topk", 1)[-1].split(
         "def structured_geometry_payload_layout", 1
     )[0]
-    if 'scope="shared"' in exact_source or "tvm_storage_sync" in exact_source:
-        raise SystemExit("Drowse exact tiled top-8 must not use workgroup storage or barriers")
+    if 'scope="shared"' not in exact_source or "tvm_storage_sync" not in exact_source:
+        raise SystemExit("Drowse exact tiled top-8 requires bounded cooperative reduction")
     for relative_path in (
         "python/mlc_llm/model/llama/llama_model.py",
         "python/mlc_llm/model/qwen3/qwen3_model.py",
@@ -278,6 +280,8 @@ def convert(args, mlc_repository: Path, tvm_repository: Path) -> None:
 
         generate_config(args, source, stage, model, quantization)
         complete_config(stage, source)
+        if args.architecture == "gemma3_text":
+            validate_gemma_attention_config(source, stage)
         copy_notices(source, stage, args.source_repository)
         write_build_manifest(args, source, stage)
         stage.rename(output)
@@ -301,7 +305,12 @@ def validate_source(source: Path, expected_revision: str, architecture: str) -> 
         if revision != expected_revision:
             raise SystemExit(f"{filename} came from {revision}, expected {expected_revision}")
     config = json.loads((source / "config.json").read_text(encoding="utf-8"))
-    if config.get("model_type") != architecture:
+    gemma_text_backbone = (
+        architecture == "gemma3_text"
+        and config.get("model_type") == "gemma3"
+        and config.get("text_config", {}).get("model_type") == "gemma3_text"
+    )
+    if config.get("model_type") != architecture and not gemma_text_backbone:
         raise SystemExit(
             f"source model type is {config.get('model_type')!r}, expected {architecture!r}"
         )
@@ -493,6 +502,22 @@ def complete_config(output: Path, source: Path) -> None:
     config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def validate_gemma_attention_config(source: Path, output: Path) -> None:
+    source_config = json.loads((source / "config.json").read_text(encoding="utf-8"))
+    source_text = source_config.get("text_config", source_config)
+    compiled = json.loads((output / "mlc-chat-config.json").read_text(encoding="utf-8"))
+    compiled_text = compiled["model_config"]["text_config"]
+    for source_key, compiled_key in (
+        ("rope_theta", "position_embedding_base"),
+        ("rope_local_base_freq", "rope_local_base_freq"),
+        ("rope_scaling", "rope_scaling"),
+        ("sliding_window", "sliding_window_size"),
+        ("sliding_window_pattern", "sliding_window_pattern"),
+    ):
+        if source_key in source_text and compiled_text.get(compiled_key) != source_text[source_key]:
+            raise SystemExit(f"Gemma conversion changed source attention setting {source_key}")
+
+
 def base_special_token_config(tokenizer, eos_ids):
     return {
         "bos_token_id": tokenizer.bos_token_id,
@@ -503,7 +528,7 @@ def base_special_token_config(tokenizer, eos_ids):
 
 def source_eos_ids(source: Path) -> list[int]:
     config = json.loads((source / "config.json").read_text(encoding="utf-8"))
-    if config.get("model_type") == "qwen3_5":
+    if config.get("model_type") in {"qwen3_5", "gemma3"}:
         config = dict(config["text_config"])
     generation = source / "generation_config.json"
     if generation.is_file():
@@ -521,8 +546,8 @@ def validate_completion_policy(args, source: Path) -> None:
     if args.architecture in BASE_MODEL_SOURCE_DIGESTS and args.model_type != "base":
         raise SystemExit("candidate base architectures require explicit base classification")
     config = json.loads((source / "config.json").read_text(encoding="utf-8"))
-    if args.architecture == "qwen3_5":
-        config = config["text_config"]
+    if args.architecture in {"qwen3_5", "gemma3_text"}:
+        config = config.get("text_config", config)
     limit = config.get("n_positions") if args.architecture == "gpt2" else config.get("max_position_embeddings")
     if type(limit) is not int or limit <= 0 or args.context_window_size > limit:
         raise SystemExit("requested context exceeds the source model's verified position limit")
@@ -723,10 +748,9 @@ def verify_topk_shader_workgroups(wasm: bytes) -> None:
             TOPK_TILE_SHADER_PREFIX,
             3,
             (
-                b"var local_values : array<f32, 8>;",
-                b"var local_indices : array<i32, 8>;",
+                b"var<workgroup> best_values : array<f32, 64>;",
+                b"var<workgroup> best_indices : array<i32, 64>;",
                 b"rank < 8i",
-                b"step < 256i",
             ),
         ),
         (
@@ -734,10 +758,9 @@ def verify_topk_shader_workgroups(wasm: bytes) -> None:
             TOPK_MERGE_SHADER_PREFIX,
             4,
             (
-                b"var local_values : array<f32, 8>;",
-                b"var local_indices : array<i32, 8>;",
+                b"var<workgroup> best_values : array<f32, 64>;",
+                b"var<workgroup> best_indices : array<i32, 64>;",
                 b"rank < 8i",
-                b"candidate < podArgs.candidates_per_row",
             ),
         ),
     ):
@@ -756,19 +779,19 @@ def verify_topk_shader_workgroups(wasm: bytes) -> None:
             workgroup = shader.find(b"@compute @workgroup_size(", 0, 2048)
             line_end = shader.find(b"\n", workgroup, 2048)
             if workgroup < 0 or line_end < 0 or shader[workgroup:line_end] != TOPK_WORKGROUP_LINE:
-                raise SystemExit(f"compiled exact top-8 {label} shader is not single-thread tiled")
+                raise SystemExit(f"compiled exact top-8 {label} shader does not use 64-thread tiles")
             bindings = shader[:workgroup].count(b"var<storage")
             if (
                 bindings != expected_bindings
-                or b"var<workgroup>" in shader
-                or b"workgroupBarrier();" in shader
+                or b"var<workgroup>" not in shader
+                or b"workgroupBarrier();" not in shader
                 or b"candidate_thread" in shader
                 or b"array<f32, 2048>" in shader
                 or b"array<i32, 2048>" in shader
                 or any(fragment not in shader for fragment in required_fragments)
             ):
                 raise SystemExit(
-                    f"compiled exact top-8 {label} shader violates the barrier-free tiled schedule: "
+                    f"compiled exact top-8 {label} shader violates the bounded cooperative tiled schedule: "
                     f"bindings={bindings}"
                 )
             kernels += 1
@@ -798,13 +821,13 @@ def verify_jlens_transport_shader(wasm: bytes) -> None:
             or line_end < 0
             or shader[workgroup:line_end] != JLENS_TRANSPORT_WORKGROUP_LINE
             or bindings != 3
-            or b"var<workgroup>" in shader
-            or b"workgroupBarrier();" in shader
+            or b"var<workgroup>" not in shader
+            or b"workgroupBarrier();" not in shader
             or b"fma(" not in shader
-            or b"source_coordinate" not in shader
+            or b"var<workgroup> partial : array<f32, 128>;" not in shader
         ):
             raise SystemExit(
-                "compiled J-lens transport shader violates the barrier-free fp32 schedule: "
+                "compiled J-lens transport shader violates the bounded cooperative fp32 schedule: "
                 f"bindings={bindings}"
             )
         kernels += 1

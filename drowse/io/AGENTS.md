@@ -14,6 +14,13 @@ Three artifact families: the **manifold** (per-concept, the steering artifact),
 the **template** (slot + values + contexts), and the **per-model sources**
 (neutral/alignment caches, Jacobian lens, SAEs).
 
+Metadata-only operations never execute model-repository Python. Lens fetch,
+model shape/source probes, and offline fit-cache checks use
+`trust_remote_code=False`; unsupported custom metadata fails closed. The actual
+model-loading path is a separate, explicitly trusted operation. `HFError`
+retains wrapped diagnostics in its exception chain, but `user_message()` hides
+transport details that can contain signed URLs or credentials.
+
 ## Shared primitives
 
 ### paths.py
@@ -70,17 +77,25 @@ is and what to re-run, not which field the exact-set schema missed first.
 
 ### atomic.py / staging.py / shards.py
 
-`atomic.py` — `write_bytes_atomic` / `write_json_atomic` stage to a
-same-directory tempfile, `fsync`, then `os.replace` (same-dir staging is
-required: `os.replace` is atomic only within a filesystem). `fsync_directory`
-makes a directory entry durable. `artifact_lock` is the cross-process lock;
+`atomic.py` — `write_bytes_atomic` / `write_json_atomic` stage to a unique,
+owner-only same-directory tempfile (0600 on POSIX), `fsync`, then `os.replace`
+and sync the parent directory. Exclusive temporary creation avoids predictable
+staging symlinks and collisions between writers; failure cleanup removes only
+that write's staging file. Existing files acquire the private mode when rewritten.
+Same-directory staging keeps replacement on one filesystem. `fsync_directory`
+is a best-effort durability barrier where directory syncing is supported.
+`artifact_lock` is the cross-process lock;
 `ReleasableArtifactLock` lets a short cache transaction run inside a longer fit,
 and `artifact_process_lease` / `artifact_has_live_lease` protect mapped immutable
 shards after that lock is released (stale PID markers are reaped).
+The in-process lock registry holds weak references; active owners and waiters
+retain their lock. On-disk lock files stay stable for cross-process exclusion.
 
 `staging.py` — `stage_verify_swap`: recover a `.bak` when the destination is
 missing, wipe stale staging, build a fully validated `.staging/` tree, then
 promote (`target → .bak`, `.staging → target`) with best-effort restore.
+Failed initial backup recovery stops before cleanup or building, preserving the
+only good copy. A recovered installation still requires `force=True` to replace.
 
 `shards.py` — the immutable-generation primitive three per-model families share
 (the neutral and alignment caches in `alignment.py`, the local J-lens in
@@ -620,8 +635,13 @@ is applied, `load_active_sae` the one place a selection resolves to
 `(release, provider_metadata)`. Under `models/<safe>/sae/bindings` it stores the
 release/layer runtime binding plus the lazily fetched per-feature Neuronpedia
 metadata (`<release>-features.json`, `{id: {label, max_act}}`, where `max_act` is
-`maxActApprox` — the unit that normalizes the SAE strength channel to 0..1), both
-at `SAE_RUNTIME_FORMAT_VERSION = 3`. Provider weights stay in the SAELens/Hugging
+`maxActApprox` — the reference maximum for the SAE strength channel). Runtime
+bindings use `SAE_RUNTIME_FORMAT_VERSION = 3`; feature metadata uses
+`SAE_FEATURE_META_FORMAT_VERSION = 4` and records the exact layer, width,
+revision, fingerprint, SAE id, repository and Neuronpedia source. A cache from
+a different binding or an older unbound format is ignored. Prepared source
+rows expose `description_source` when the provider supplies that identity.
+Provider weights stay in the SAELens/Hugging
 Face cache. `sae_artifacts.py` owns Drowse-trained fp32 weights under
 `sae/local/<name>/` with their own manifest (`LOCAL_SAE_FORMAT_VERSION = 1`), and
 never writes into a provider cache.

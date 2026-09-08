@@ -791,6 +791,19 @@ try {
     );
   });
 
+  test("generic worker failures preserve actionable stale-sampler recovery", () => {
+    for (const code of [undefined, "WORKER_OPERATION_FAILED", "WORKER_REQUEST_FAILED"]) {
+      assert.equal(userErrors.userFacingError({
+        code,
+        message: "Make sure 0 < top_logprobs <= 5. Got 8",
+      }), "Drowse is using an older model runtime that cannot accept these sampling settings. Reload Drowse, then reopen the model. Your downloaded models and saved chats do not need to be removed.");
+    }
+    assert.equal(userErrors.userFacingError({
+      code: "WORKER_OPERATION_FAILED",
+      message: "TypeError: failure at worker.ts:12",
+    }), "Drowse could not complete that action. Try again or reopen the model.");
+  });
+
   test("persistent storage requests protection while the user gesture is active", async () => {
     let requests = 0;
     const order = [];
@@ -827,6 +840,42 @@ try {
       async persisted() { return false; },
     }, 20), false);
     assert.ok(Date.now() - startedAt < 500);
+  });
+
+  test("late storage approval is delivered after the bounded wait", async () => {
+    let answer;
+    let grants = 0;
+    assert.equal(await browserCapabilities.requestPersistentStorage({
+      persist: () => new Promise(resolve => { answer = resolve; }),
+      persisted: async () => false,
+    }, 20, () => { grants++; }), false);
+    assert.equal(grants, 0);
+    answer(true);
+    await waitFor(() => grants === 1);
+  });
+
+  test("unsupported and rejected storage requests stay nonblocking", async () => {
+    for (const storage of [
+      {},
+      { persisted: async () => true },
+      { persist() { throw new TypeError("Storage disabled"); } },
+      { persist: async () => { throw new Error("Private browsing"); } },
+    ]) {
+      assert.equal(await browserCapabilities.requestPersistentStorage(storage), Boolean(storage.persisted));
+    }
+  });
+
+  test("immediate approval and late denial do not emit late approval", async () => {
+    let grants = 0;
+    const granted = () => { grants++; };
+    assert.equal(await browserCapabilities.requestPersistentStorage({ persist: async () => true }, 20, granted), true);
+    let answer;
+    assert.equal(await browserCapabilities.requestPersistentStorage({
+      persist: () => new Promise(resolve => { answer = resolve; }),
+    }, 20, granted), false);
+    answer(false);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(grants, 0);
   });
 
   test("compatibility checks do not require secure-context UUID support", async () => {

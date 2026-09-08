@@ -7,8 +7,9 @@ import logging
 import threading
 import warnings
 from enum import IntEnum
+from contextlib import contextmanager
 from typing import Any, Callable, cast
-from weakref import WeakKeyDictionary
+from weakref import ReferenceType, WeakKeyDictionary, ref
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -73,7 +74,33 @@ def _get_eos_ids(model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> 
 
 
 _TOKEN_TABLE_CACHE_MAX = 2
-_token_table_cache: dict[tuple[str, int, int], list[str | None]] = {}
+_generation_cache_lock = threading.RLock()
+_token_table_cache: dict[
+    tuple[Any, ...], tuple[ReferenceType[Any], list[str | None]]
+] = {}
+
+
+def _forget_tokenizer_cache(reference: ReferenceType[Any]) -> None:
+    with _generation_cache_lock:
+        for cache in (_token_table_cache, _chat_input_cache):
+            for key, entry in list(cache.items()):
+                if entry[0] is reference:
+                    del cache[key]
+
+
+def clear_generation_caches(tokenizer: PreTrainedTokenizerBase) -> None:
+    with _generation_cache_lock:
+        for cache in (_token_table_cache, _chat_input_cache):
+            for key, entry in list(cache.items()):
+                if entry[0]() is tokenizer:
+                    del cache[key]
+
+
+def _tokenizer_cache_ref(tokenizer: PreTrainedTokenizerBase) -> ReferenceType[Any] | None:
+    try:
+        return ref(tokenizer, _forget_tokenizer_cache)
+    except TypeError:
+        return None
 
 
 def _get_token_table(tokenizer: PreTrainedTokenizerBase, vocab_size: int) -> list[str | None]:
@@ -85,11 +112,15 @@ def _get_token_table(tokenizer: PreTrainedTokenizerBase, vocab_size: int) -> lis
     (replacement char U+FFFD) — these must be buffered and decoded together
     with subsequent tokens (e.g. multi-token emoji).
     """
-    tok_key = (*_tok_key(tokenizer), int(vocab_size))
-    cached = _token_table_cache.pop(tok_key, None)
-    if cached is not None:
-        _token_table_cache[tok_key] = cached
-        return cached
+    tok_key = (
+        *_tok_key(tokenizer), int(vocab_size), id(tokenizer),
+        len(getattr(tokenizer, "added_tokens_encoder", {})),
+    )
+    with _generation_cache_lock:
+        cached = _token_table_cache.pop(tok_key, None)
+        if cached is not None and cached[0]() is tokenizer:
+            _token_table_cache[tok_key] = cached
+            return cached[1]
     # batch_decode is orders of magnitude faster than per-id decode()
     # for large vocabs (150k+ tokens in modern models) — Rust-side loop
     # instead of a Python round-trip per entry.  Chunked so that a single
@@ -113,9 +144,13 @@ def _get_token_table(tokenizer: PreTrainedTokenizerBase, vocab_size: int) -> lis
                     table[i] = s if '\ufffd' not in s else None
                 except Exception:
                     table[i] = ''
-    while len(_token_table_cache) >= _TOKEN_TABLE_CACHE_MAX:
-        _token_table_cache.pop(next(iter(_token_table_cache)))
-    _token_table_cache[tok_key] = table
+    reference = _tokenizer_cache_ref(tokenizer)
+    if reference is not None:
+        with _generation_cache_lock:
+            _token_table_cache.pop(tok_key, None)
+            while len(_token_table_cache) >= _TOKEN_TABLE_CACHE_MAX:
+                _token_table_cache.pop(next(iter(_token_table_cache)))
+            _token_table_cache[tok_key] = (reference, table)
     return table
 
 
@@ -579,6 +614,7 @@ class GenerationState:
 
     def __init__(self):
         self.stop_requested = threading.Event()
+        self._cancellation = threading.local()
         self.token_queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
         self.thinking_end_idx: int = 0
         self.finish_reason: str = "stop"
@@ -599,6 +635,19 @@ class GenerationState:
 
     def request_stop(self):
         self.stop_requested.set()
+
+    def is_stop_requested(self) -> bool:
+        owned = getattr(self._cancellation, "event", None)
+        return self.stop_requested.is_set() or (owned is not None and owned.is_set())
+
+    @contextmanager
+    def cancellation_scope(self, event: threading.Event):
+        previous = getattr(self._cancellation, "event", None)
+        self._cancellation.event = event
+        try:
+            yield
+        finally:
+            self._cancellation.event = previous
 
     def reset(self):
         self.stop_requested.clear()
@@ -647,18 +696,41 @@ class _PenaltyState:
         self.counts[pos].add_(1.0)
 
 
-# Hand-rolled LRU for build_chat_input results.  functools.lru_cache won't
-# work cleanly because (a) we'd need every kwarg hashable (the tokenizer
-# isn't reliably so across HF versions), and (b) the cached value is a
-# torch.Tensor we want to ``.clone()`` on hit so callers can't mutate the
-# cached buffer.  Keyed on (id(tokenizer), system_prompt, frozen-tuple of
-# chat, thinking, add_generation_prompt) — id(tokenizer) implicitly
-# invalidates when a fresh tokenizer instance is loaded into a session.
-# Sized to comfortably absorb the stateless prefill workload (one identical
-# prefix repeated 800×) without bloating; small chat lists serialize
-# cheaply to tuples so the per-lookup hash cost is negligible.
+# Bound both prompt text and tensors, and release them with their tokenizer.
+# Returned tensors are cloned so callers cannot mutate cached input ids.
 _CHAT_INPUT_CACHE_MAX = 128
-_chat_input_cache: dict[tuple[Any, ...], torch.Tensor] = {}
+_CHAT_INPUT_CACHE_MAX_BYTES = 8 * 1024 * 1024
+_chat_input_cache: dict[
+    tuple[Any, ...], tuple[ReferenceType[Any], torch.Tensor, int]
+] = {}
+
+
+def _chat_cache_key_bytes(value: Any) -> int:
+    if isinstance(value, str):
+        return 64 + 4 * len(value)
+    if isinstance(value, tuple):
+        return 64 + 8 * len(value) + sum(_chat_cache_key_bytes(v) for v in value)
+    return 64
+
+
+def _remember_chat_input(
+    tokenizer: PreTrainedTokenizerBase, key: tuple[Any, ...], tensor: torch.Tensor,
+) -> None:
+    cost = _chat_cache_key_bytes(key) + tensor.numel() * tensor.element_size() + 128
+    if cost > _CHAT_INPUT_CACHE_MAX_BYTES:
+        return
+    reference = _tokenizer_cache_ref(tokenizer)
+    if reference is None:
+        return
+    with _generation_cache_lock:
+        _chat_input_cache.pop(key, None)
+        total = sum(entry[2] for entry in _chat_input_cache.values())
+        while _chat_input_cache and (
+            len(_chat_input_cache) >= _CHAT_INPUT_CACHE_MAX
+            or total + cost > _CHAT_INPUT_CACHE_MAX_BYTES
+        ):
+            total -= _chat_input_cache.pop(next(iter(_chat_input_cache)))[2]
+        _chat_input_cache[key] = (reference, tensor, cost)
 
 
 def _chat_input_cache_key(
@@ -669,8 +741,12 @@ def _chat_input_cache_key(
     add_generation_prompt: bool,
     gen_role: str | None = None,
     gen_seat: str = "assistant",
-    scene_mode: bool = False,
+    scene: "TurnGrammar | None" = None,
+    model_type: str | None = None,
 ) -> tuple[Any, ...]:
+    template = tokenizer.chat_template
+    if isinstance(template, dict):
+        template = tuple(sorted(template.items()))
     return (
         id(tokenizer),
         system_prompt,
@@ -682,7 +758,14 @@ def _chat_input_cache_key(
         add_generation_prompt,
         gen_role,
         gen_seat,
-        scene_mode,
+        repr(scene),
+        model_type,
+        template,
+        tuple(
+            (name, tuple(value) if isinstance(value, list) else value)
+            for name, value in sorted(getattr(tokenizer, "special_tokens_map", {}).items())
+        ),
+        len(getattr(tokenizer, "added_tokens_encoder", {})),
     )
 
 
@@ -775,22 +858,16 @@ def build_chat_input(
     chat.extend(messages)
     has_labels = gen_role is not None or any(m.get("label") for m in chat)
     if getattr(tokenizer, "chat_template", None) is not None:
-        # Cache lookup: see _chat_input_cache docstring for invalidation
-        # semantics.  Only the chat-template branch is cached — the
-        # base-model fallback is sub-ms and not worth complicating.
-        # Per-turn labels + ``gen_role`` participate in the key so role-
-        # tagged renders never collide with plain renders of the same chat.
         key = _chat_input_cache_key(
             tokenizer, chat, system_prompt, thinking,
             add_generation_prompt, gen_role, gen_seat,
-            scene is not None,
+            scene, model_type,
         )
-        cached = _chat_input_cache.pop(key, None)
-        if cached is not None:
-            _chat_input_cache[key] = cached
-            # Return a clone — callers (notably ``_prepare_input``) ``.to``
-            # device-move the tensor and would otherwise alias the cache.
-            return cached.clone()
+        with _generation_cache_lock:
+            cached = _chat_input_cache.pop(key, None)
+            if cached is not None and cached[0]() is tokenizer:
+                _chat_input_cache[key] = cached
+                return cached[1].clone()
         scene_result = _try_scene_render(
             tokenizer, chat, scene,
             thinking=thinking,
@@ -799,9 +876,7 @@ def build_chat_input(
             gen_seat=gen_seat,
         )
         if scene_result is not None:
-            if len(_chat_input_cache) >= _CHAT_INPUT_CACHE_MAX:
-                _chat_input_cache.pop(next(iter(_chat_input_cache)))
-            _chat_input_cache[key] = scene_result
+            _remember_chat_input(tokenizer, key, scene_result)
             return scene_result.clone()
         if gen_seat != "assistant":
             raise SceneRenderError(
@@ -840,11 +915,7 @@ def build_chat_input(
             if isinstance(result, torch.Tensor)
             else cast(torch.Tensor, result["input_ids"])  # pyright: ignore[reportArgumentType, reportCallIssue]  # transformers BatchEncoding stub lacks str-key subscript
         )
-        # Insert into the LRU cache. Hits above move the entry to the end;
-        # popping the first key removes the least recently used render.
-        if len(_chat_input_cache) >= _CHAT_INPUT_CACHE_MAX:
-            _chat_input_cache.pop(next(iter(_chat_input_cache)))
-        _chat_input_cache[key] = tensor
+        _remember_chat_input(tokenizer, key, tensor)
         return tensor.clone()
     # Base model without chat template — the cast model's raw-marker
     # fallback (``render_scene_raw``): ``Label: text`` lines, seats free,
@@ -1259,7 +1330,7 @@ def generate_steered(
     try:
         with torch.inference_mode():
             for _ in range(config.max_new_tokens):
-                if state.stop_requested.is_set():
+                if state.is_stop_requested():
                     state.finish_reason = "stop"
                     # Stop fired while still inside a thinking phase:
                     # anchor ``thinking_end_idx`` at the current position
@@ -1449,60 +1520,54 @@ def generate_steered(
                             [[forced_id]], device=device, dtype=cand_ids.dtype,
                         )
 
-                # ``cand_logp`` backs both the logprobs capture and the
-                # perplexity entropy.  Compute it only when one of them needs
-                # it, and pay the entropy ``.item()`` host sync (one sync per
-                # token) only when a consumer actually wants perplexity —
-                # ``want_perplexity=False`` (e.g. stateless server streaming,
-                # which never surfaces per-token ppl) skips it entirely.
                 want_ppl = want_perplexity and capture_sampler_stats
+                float_parts = []
+                id_parts = [next_token.reshape(-1)]
                 if logprobs is not None or want_ppl:
                     cand_logp = cand_probs.clamp_min(
                         torch.finfo(torch.float32).tiny,
                     ).log()
-                else:
-                    cand_logp = None
-                if want_ppl:
-                    assert cand_logp is not None  # set above when want_ppl
-                    entropy_nats = float((-(cand_probs * cand_logp)).sum().item())
-                    current_perplexity = math.exp(entropy_nats)
-                else:
-                    # Not computed this step.  ``None`` is the contract every
-                    # consumer types (``TokenEvent.perplexity: float | None``,
-                    # the loom token row, the WS frame) and the value the
-                    # degenerate no-forward case already carries; a NaN would
-                    # read as a real measurement and is not valid JSON.
-                    current_perplexity = None
-
-                token_id = int(next_token.item())
-
-                if logprobs is not None:
-                    assert cand_logp is not None
-                    if forced_in_pool:
-                        chosen_logprob = float(cand_logp[int(chosen_pos.item())].item())
+                    if want_ppl:
+                        float_parts.append((-(cand_probs * cand_logp)).sum().reshape(1))
+                    if logprobs is not None:
+                        selected_logp = (
+                            cand_logp.index_select(0, chosen_pos)
+                            if forced_in_pool else torch.log_softmax(
+                                logits.float(), dim=-1,
+                            )[0].index_select(0, next_token.reshape(-1))
+                        )
+                        float_parts.append(selected_logp)
+                        if logprobs > 0:
+                            masked = cand_logp.masked_fill(cand_probs <= 0, float("-inf"))
+                            tlv, tpos = masked.topk(min(logprobs, cand_logp.numel()))
+                            id_parts.append(cand_ids.index_select(0, tpos))
+                            float_parts.append(tlv)
+                if float_parts:
+                    # Preserve integer IDs and fp32 bits in one host transfer.
+                    ids = torch.cat(id_parts)
+                    values = torch.cat(float_parts).float()
+                    packed = torch.cat((ids, values.view(torch.int32).to(ids.dtype))).cpu()
+                    host_ids = packed[:ids.numel()].tolist()
+                    host_values = packed[ids.numel():].to(torch.int32).view(torch.float32).tolist()
+                    token_id = int(host_ids[0])
+                    offset = 0
+                    if want_ppl:
+                        current_perplexity = math.exp(host_values[offset])
+                        offset += 1
                     else:
-                        chosen_logprob = float(torch.log_softmax(
-                            logits.float(), dim=-1,
-                        )[0, token_id].item())
-                    if logprobs > 0:
-                        # Only surface in-support alternatives.  Sub-top-p tail
-                        # entries were zeroed in ``cand_probs`` and clamped to
-                        # ``log(tiny)`` in ``cand_logp``; without this mask a
-                        # request for more alts than the nucleus holds pads the
-                        # list with tokens the sampler had zero probability of
-                        # drawing (reported at ~-87 nats).  Mask them to -inf,
-                        # take the top-k, then drop any -inf the topk had to
-                        # pad with — so a peaked step returns fewer than
-                        # ``logprobs`` alts rather than out-of-support ones.
-                        masked = cand_logp.masked_fill(cand_probs <= 0, float("-inf"))
-                        tlv, tpos = masked.topk(min(logprobs, cand_logp.numel()))
-                        keep = torch.isfinite(tlv)
-                        tlv, tpos = tlv[keep], tpos[keep]
-                        tli = cand_ids.index_select(0, tpos)
-                        top_alts = [
-                            TokenAlt(id=int(i), text=_decode_alt(int(i)), logprob=float(v))
-                            for i, v in zip(tli.tolist(), tlv.tolist(), strict=True)
-                        ]
+                        current_perplexity = None
+                    if logprobs is not None:
+                        chosen_logprob = float(host_values[offset])
+                        offset += 1
+                        if logprobs > 0:
+                            top_alts = [
+                                TokenAlt(id=int(i), text=_decode_alt(int(i)), logprob=float(v))
+                                for i, v in zip(host_ids[1:], host_values[offset:], strict=True)
+                                if math.isfinite(v)
+                            ]
+                else:
+                    token_id = int(next_token.item())
+                    current_perplexity = None
 
                 if token_id in eos_ids:
                     # Channel-based models (gpt-oss) use EOS tokens as

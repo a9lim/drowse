@@ -213,6 +213,21 @@ try {
     assert.equal(store.rows.get("fastest").metadata.runtimeIdentitySha256, currentIdentity);
   });
 
+  test("compatible runtime upgrades preserve sessions with a different context binding", async () => {
+    const store = memoryStore();
+    const persistence = new BrowserSessionPersistence({ store, runExclusive: serialRunner() });
+    await persistence.save(sessionInput("fastest", "session-a", 3), "owner-a");
+    const previous = structuredClone(store.rows.get("fastest"));
+    const claimed = await persistence.claim({
+      ...binding("fastest", "owner-b"),
+      runtimeIdentitySha256: "b".repeat(64),
+      contextTokens: previous.metadata.contextTokens * 2,
+    }, "restore", ["a".repeat(64)]);
+    assert.equal(claimed.status, "incompatible");
+    assert.equal(claimed.reason, "context_tokens");
+    assert.deepEqual(store.rows.get("fastest"), previous);
+  });
+
   test("rejects malformed topology, non-JSON settings, and metadata mismatches", () => {
     const valid = persistedRecord("fastest", "session-a", 1);
     validatePersistedHostedSession(valid);
@@ -256,6 +271,32 @@ try {
       (error) => error.code === "INVALID_SESSION_STATE" &&
         /system role/.test(error.message),
     );
+  });
+
+  test("round-trips vocabulary-sized alternatives without the old per-token cap", async () => {
+    const store = memoryStore();
+    const persistence = new BrowserSessionPersistence({ store, runExclusive: serialRunner() });
+    const input = sessionInput("fastest", "session-a", 1);
+    const count = 262144;
+    input.tree.nodes[1].recipe = {
+      steering: null, thinking: null, seed: null, probes: [], probe_hashes: {},
+      sampling: {
+        temperature: 3, top_p: 1, top_k: count, max_tokens: 32768, seed: null,
+        stop: null, logit_bias: null, presence_penalty: 0, frequency_penalty: 0,
+        logprobs: null, return_hidden: false, return_top_k: count,
+        user_role: null, assistant_role: null, persist_per_layer_scores: false,
+        persist_subspace_coords: false, return_probe_readings: true,
+      },
+    };
+    input.tree.nodes[1].tokens = [{
+      token_id: 7, text: "Hello", logprob: -Math.log(count),
+      top_alts: Array.from({ length: count }, (_, id) => ({ id, text: "token", logprob: -Math.log(count) })),
+    }];
+    await persistence.save(input, "owner-a");
+    const restored = await persistence.claim(binding("fastest", "owner-a"));
+    assert.equal(restored.status, "compatible");
+    assert.equal(restored.record.tree.nodes[1].recipe.sampling.return_top_k, count);
+    assert.equal(restored.record.tree.nodes[1].tokens[0].top_alts.length, count);
   });
 
   test("accepts open current token rows while validating their known fields", () => {

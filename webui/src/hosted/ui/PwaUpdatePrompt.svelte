@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import { onDestroy, onMount } from "svelte";
   import { fly } from "svelte/transition";
   import { registerSW } from "virtual:pwa-register";
@@ -256,7 +257,7 @@
     <div class="pwa-actions">
       {#if updateAvailable}
         <button type="button" class="primary" disabled={applying} aria-busy={applying} onclick={() => void applyUpdate()}>
-          {applying ? "Saving local work…" : "Update and reload"}
+          <MorphText text={applying ? "Saving local work…" : "Update and reload"} numbers={false} />
         </button>
         <button type="button" disabled={applying} onclick={remindLater}>
           Update later

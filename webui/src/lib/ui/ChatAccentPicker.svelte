@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "./MorphText.svelte";
   import { onMount, tick } from "svelte";
   import FluentIcon from "./FluentIcon.svelte";
   import { CHAT_ACCENTS, chatAccentPalette, type ChatAccent } from "../chatAccent";
@@ -114,7 +115,7 @@
 <div class="accent-picker">
   <button bind:this={trigger} type="button" {disabled} aria-haspopup="dialog" aria-expanded={open} aria-controls={presence.mounted ? `${id}-colors` : undefined} onclick={(event) => open ? close() : void show(event.detail === 0)}>
     <span class="current-swatch" style:background={selected.dark} aria-hidden="true"></span>
-    <span>Color <span class="color-name">· {selected.name}</span></span>
+    <span>Color <span class="color-name">· <MorphText text={selected.name} numbers={false} /></span></span>
     <span class="chevron"><FluentIcon name="down" size={16} /></span>
   </button>
   {#if presence.mounted}
@@ -141,8 +142,7 @@
   .accent-picker { min-width: 0; max-width: 27rem; }
   button { display: flex; align-items: center; gap: var(--control-label-gap); width: fit-content; max-width: 100%; box-sizing: border-box; min-height: var(--control-compact); padding: var(--space-3) var(--space-4); border: 0; border-radius: var(--radius); cursor: pointer; color: var(--fg); background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control); font-size: var(--text-sm); }
   button:hover { background: var(--control-sheen), var(--glass-bright); box-shadow: var(--shadow-control-hover); }
-  button { transition: background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out); }
-  button:active:not(:disabled) { scale: var(--press-scale); }
+  button { transition: background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out); }
   .color-name { color: var(--fg-muted); }
   .accent-surface { --popup-radius: calc(var(--radius) + var(--space-2)); }
   .swatch-check { display: grid; place-items: center; opacity: 0; scale: 0.25; filter: blur(4px); transition: opacity var(--dur-slow) cubic-bezier(0.2, 0, 0, 1), scale var(--dur-slow) cubic-bezier(0.2, 0, 0, 1), filter var(--dur-slow) cubic-bezier(0.2, 0, 0, 1); }

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { siteDescription } from "./site-metadata.mjs";
+import { siteDescription, siteAccent, socialImagePath, socialImageAlt } from "./site-metadata.mjs";
 
 const root = resolve("dist-hosted");
 const release = process.argv.includes("--release");
@@ -36,13 +36,12 @@ const fittingManifest = JSON.parse(await readFile(
   "utf8",
 ));
 const metadata = (name) => {
-  const match = new RegExp(`<meta name="${name}" content="([^"]+)" \\/>`).exec(index);
+  const match = new RegExp(`<meta\\s+(?:name|property)="${name}"\\s+content="([^"]+)"\\s*\\/>`).exec(index);
   assert.ok(match, `hosted index is missing ${name}`);
   return match[1];
 };
 const pageDescription = siteDescription;
-const manifestDescription =
-  "Run, inspect, and steer language models entirely on your device.";
+const manifestDescription = siteDescription;
 const sourceRevision = metadata("drowse-source-revision");
 const sourceUrl = metadata("drowse-source-url");
 const entryScript = /<script[^>]+src="\/assets\/([^"]+\.js)"/.exec(index)?.[1];
@@ -52,6 +51,15 @@ assert.equal(manifest.id, "/app");
 assert.equal(manifest.start_url, "/app");
 assert.equal(manifest.scope, "/");
 assert.equal(manifest.display, "standalone");
+assert.equal(manifest.theme_color, siteAccent);
+assert.equal(metadata("theme-color"), siteAccent);
+assert.equal(metadata("description"), siteDescription);
+assert.equal(metadata("og:description"), siteDescription);
+assert.equal(metadata("twitter:description"), siteDescription);
+assert.equal(metadata("og:image:alt"), socialImageAlt);
+assert.equal(metadata("twitter:image:alt"), socialImageAlt);
+assert.ok(metadata("og:image").endsWith(socialImagePath));
+assert.ok(metadata("twitter:image").endsWith(socialImagePath));
 assert.equal(
   manifest.description,
   manifestDescription,
@@ -242,7 +250,7 @@ for (const identity of [
 }
 assert.equal(hasUpdatePrompt, true, "hosted build is missing its prompt-style update UI");
 assert.ok(bundledSource.includes(sourceUrl), "hosted UI does not expose the exact source URL");
-assert.ok(bundledSource.includes("/LICENSE"), "hosted UI does not expose the local AGPL license");
+assert.ok(bundledSource.includes("GNU AGPL v3 or later"), "hosted UI is missing its license notice");
 assert.ok(
   bundledSource.includes("Open source. Inference and saved work stay on your device."),
   "hosted landing page is missing its local-compute promise",

@@ -1,3 +1,4 @@
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 
 test("toolbar shadows and focus rings stay outside their control bounds", async ({ page }, testInfo) => {
@@ -6,7 +7,7 @@ test("toolbar shadows and focus rings stay outside their control bounds", async 
   await page.getByRole("textbox", { name: "Editable completion buffer" }).fill("A field note: ");
   await page.getByRole("button", { name: "Continue text", exact: true }).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+  await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Show chat tools", exact: true }).click();
   const control = page.getByRole("button", { name: "Color completion tokens by", exact: true });
   await control.click();

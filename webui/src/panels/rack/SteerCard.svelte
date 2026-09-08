@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import { slidingSelection } from "../../lib/slidingSelection";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
@@ -66,7 +67,7 @@
   const accent = $derived(subspace ? "--accent" : "--pillar-manifold");
 
   /** Display name — bare name with the namespace prefix stripped
-   *  (``default/personas`` → ``personas``).  Full name stays in the tooltip. */
+   *  (``default/personas`` → ``personas``).  Full name stays in the accessible description. */
   const displayName = $derived(name.split("/").pop() ?? name);
 
   /** Catalog row — drives the node list, the XYPad bounds, and the
@@ -119,6 +120,10 @@
   });
 
   const activeLabel = $derived(s?.label ?? m?.label ?? null);
+  const orderedNodes = $derived.by(() => {
+    if (!info || info.intrinsic_dim !== 1 || info.is_discover || info.node_coords.length !== info.node_labels.length) return [];
+    return info.node_labels.map((label, index) => ({ label, position: info.node_coords[index]?.[0] })).filter(node => Number.isFinite(node.position)).sort((a, b) => a.position - b.position);
+  });
   const activeCoords = $derived(s?.coords ?? m?.coords ?? []);
 
   // ---------- manifold-only controls ----------
@@ -147,16 +152,16 @@
       />
     </button>
 
-    <span class="name" class:struck={!entry.enabled} title={subspace ? `subspace ${name}` : `manifold ${name}`}>
+    <span class="name" class:struck={!entry.enabled} {...{ "aria-description": (subspace ? `subspace ${name}` : `manifold ${name}`) }}>
       {displayName}
     </span>
 
     {#if !fitted && info}
-      <span class="warn" title="fit required">
+      <span class="warn" {...{ "aria-description": "fit required" }}>
         unfitted
       </span>
     {:else if stale}
-      <span class="warn" title="refit required">
+      <span class="warn" {...{ "aria-description": "refit required" }}>
         stale
       </span>
     {/if}
@@ -175,8 +180,8 @@
     <div class="trigger-row">
       <span class="ctl-label">Trigger</span>
       <button type="button" class="trigger-pill" onclick={cycleTrigger}
-        aria-label="trigger for {name}: {entry.trigger}" title={TRIGGER_LABEL[entry.trigger]}>
-        {TRIGGER_WORD[entry.trigger]}
+        aria-label="trigger for {name}: {entry.trigger}" {...{ "aria-description": (TRIGGER_LABEL[entry.trigger]) }}>
+        <MorphText text={TRIGGER_WORD[entry.trigger]} numbers={false} />
       </button>
     </div>
     {#if info}
@@ -208,6 +213,12 @@
             />
           </span>
         </label>
+      {/if}
+      {#if !s?.ablate && orderedNodes.length > 1}
+        <details class="node-scrubber"><summary>Scrub named nodes</summary>
+          <Slider value={Math.max(0, orderedNodes.findIndex(node => node.label === activeLabel))} min={0} max={orderedNodes.length - 1} step={1} displayValue={activeLabel ?? "Choose a node"} ariaLabel="Ordered manifold node" oninput={index => onSnapToNode(orderedNodes[index].label)} />
+          <span><MorphText text={activeLabel ?? "Free position"} numbers={false} /></span>
+        </details>
       {/if}
       {#if !s?.ablate}
         <XYPad
@@ -256,6 +267,7 @@
 </RackCard>
 
 <style>
+  .node-scrubber summary { min-height: 44px; align-content: center; cursor: pointer; color: var(--fg-dim); font-size: var(--text-xs); }
   /* ----- statline pieces ----- */
   .enable {
     display: inline-grid;

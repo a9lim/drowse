@@ -15,6 +15,8 @@ const {
   FittingWorkerClientError,
 } = await server.ssrLoadModule("/src/hosted/fitting/fittingWorkerClient.ts");
 
+const { BrowserFittingWorkerPool, fittingJobWorkingBytes } = await server.ssrLoadModule("/src/hosted/fitting/fittingWorkerPool.ts");
+
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
 const centerJob = {
@@ -32,6 +34,54 @@ const centerResult = () => ({
   columns: 2,
   mean: new Float64Array([2, 3]),
   centered: new Float64Array([-1, -1, 1, 1]),
+});
+
+test("pool runs two independent jobs and preserves queued cancellation", async () => {
+  const started = [];
+  const pool = new BrowserFittingWorkerPool({
+    workerFactory: () => new FakeWorker((request, port) => started.push({ request, port })),
+  });
+  const first = pool.run(centerJob);
+  const second = pool.run(centerJob);
+  const abort = new AbortController();
+  const cancelled = pool.run(centerJob, { signal: abort.signal });
+  const cancelledCheck = assert.rejects(cancelled, (error) => error.name === "AbortError");
+  await Promise.resolve();
+  assert.equal(started.length, 2);
+  abort.abort();
+  await cancelledCheck;
+  for (const { request, port } of started) port.emit({ protocolVersion: 1, requestId: request.requestId, kind: "result", result: centerResult() });
+  await Promise.all([first, second]);
+  assert.equal(started.length, 2);
+  pool.dispose();
+});
+
+test("pool serializes large spool jobs within the memory budget", async () => {
+  const started = [];
+  const pool = new BrowserFittingWorkerPool({
+    workerFactory: () => new FakeWorker((request, port) => started.push({ request, port })),
+  });
+  const job = { ...centerJob, source: { kind: "activation_spool", identity: {}, layer: 0 } };
+  const first = pool.run(job);
+  const second = pool.run(job);
+  await Promise.resolve();
+  assert.equal(started.length, 1);
+  started[0].port.emit({ protocolVersion: 1, requestId: started[0].request.requestId, kind: "result", result: centerResult() });
+  await first;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(started.length, 2);
+  started[1].port.emit({ protocolVersion: 1, requestId: started[1].request.requestId, kind: "result", result: centerResult() });
+  await second;
+  pool.dispose();
+});
+
+test("pool admission includes quadratic outputs for tall and wide matrices", () => {
+  for (const operation of ["pairwise", "correlations"]) {
+    const rows = operation === "pairwise" ? 4096 : 2;
+    const columns = operation === "correlations" ? 4096 : 2;
+    assert.ok(fittingJobWorkingBytes({operation, source: {kind: "inline", rows, columns,
+      values: new Float64Array(rows * columns)}}) >= 256 * 1024 * 1024);
+  }
 });
 
 test("forwards progress and resolves a validated result", async () => {

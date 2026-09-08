@@ -34,7 +34,7 @@ async function targets(root: Locator) {
   }));
 }
 
-test("public headers stay in one row with reachable scrollable links", async ({ page }, testInfo) => {
+test("public headers keep visible branding aligned and navigation reachable", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const path of ["/", "/credits", "/not-a-page", "/app?layoutFixture=setup"]) {
     await page.goto(`${dev}${path}`);
@@ -49,17 +49,18 @@ test("public headers stay in one row with reachable scrollable links", async ({ 
         const nav = el.querySelector("nav")!;
         const theme = el.querySelector(".appearance")!.getBoundingClientRect();
         const links = [...nav.querySelectorAll("a")].map(a => a.getBoundingClientRect().toJSON());
-        return { brand: brand.toJSON(), theme: theme.toJSON(), links, scrollable: nav.scrollWidth > nav.clientWidth, overflow: document.documentElement.scrollWidth - innerWidth };
+        return { brand: brand.toJSON(), brandVisible: getComputedStyle(el.querySelector(".page-brand")!).visibility !== "hidden", theme: theme.toJSON(), links, scrollable: nav.scrollWidth > nav.clientWidth, overflow: document.documentElement.scrollWidth - innerWidth };
       });
       expect(result.overflow).toBeLessThanOrEqual(1);
       for (const link of result.links) {
         expect(link.height).toBeGreaterThanOrEqual(40);
         expect(link.width).toBeGreaterThanOrEqual(40);
-        expect(link.y + link.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
+        if (result.brandVisible) expect(link.y + link.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
       }
-      expect(result.theme.y + result.theme.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
+      if (result.brandVisible) expect(result.theme.y + result.theme.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
       if (width === 320) {
-        expect(result.scrollable).toBe(true);
+        expect(result.brandVisible).toBe(false);
+        expect(result.scrollable).toBe(false);
         for (const name of ["Contribute", "Chats"]) {
           const link = header.getByRole("link", { name, exact: true });
           await link.focus();
@@ -87,7 +88,7 @@ test("workbench and drawer controls retain minimum targets at desktop and phone 
     await layoutFrame(page);
     expect(await targets(page.locator(".shell"))).toEqual([]);
     expect(await page.getByRole("button", { name: "Generate reply", exact: true }).evaluate(el => {
-      const text = [...el.childNodes].find(node => node.nodeType === Node.TEXT_NODE && node.textContent?.includes("Generate"))!;
+      const text = el.querySelector(".morph-source")!.firstChild!;
       const range = document.createRange();
       const start = text.textContent!.indexOf("Generate");
       range.setStart(text, start);
@@ -110,6 +111,7 @@ test("help popovers retain their exit and reverse a dismissal without losing Esc
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await workbench(page);
   await openDrawer(page, "advanced_sampling");
+  await expect.poll(() => page.locator('.drawer[role="dialog"]').evaluate(el => el.getAnimations({ subtree: true }).filter(animation => animation.playState === "running").length)).toBe(0);
   const trigger = page.getByRole("button", { name: "About Top K", exact: true });
   const tip = page.locator(".info-popover").filter({ hasText: /^Top K / });
   await trigger.click();
@@ -124,7 +126,7 @@ test("help popovers retain their exit and reverse a dismissal without losing Esc
     await tick();
     return closing;
   });
-  expect(closing).toEqual({ open: true, inert: true, duration: "0.15s, 0.15s" });
+  expect(closing).toEqual({ open: true, inert: true, duration: "0.1s" });
   await expect(tip).toHaveCSS("opacity", "1");
   await expect(tip).toHaveJSProperty("inert", false);
   await trigger.press("Escape");
@@ -214,9 +216,9 @@ test("token probability popovers fade out through their parent conditional and r
   const ribbon = page.getByRole("group", { name: "Token context sequence", exact: true });
   await ribbon.focus();
   await expect(ribbon).toBeFocused();
-  const current = await ribbon.locator('[aria-current="true"]').getAttribute("title");
+  const current = await ribbon.locator('[aria-current="true"]').getAttribute("aria-description");
   await ribbon.press("ArrowRight");
-  await expect(ribbon.locator('[aria-current="true"]')).not.toHaveAttribute("title", current!);
+  await expect(ribbon.locator('[aria-current="true"]')).not.toHaveAttribute("aria-description", current!);
   expect(errors).toEqual([]);
 });
 
@@ -234,10 +236,10 @@ test("page entrances stagger semantic groups only after initial load and survive
   const groups = await home.locator("[data-page-group]").evaluateAll(elements => elements.map(el => ({ group: el.getAttribute("data-page-group"), delay: getComputedStyle(el).animationDelay, name: getComputedStyle(el).animationName })));
   expect(groups).toEqual([
     { group: "0", delay: "0s", name: "page-group-enter" },
-    { group: "2", delay: "0.2s", name: "page-group-enter" },
+    { group: "2", delay: "0.08s", name: "page-group-enter" },
   ]);
   await home.getByRole("link", { name: "Models", exact: true }).evaluate(el => (el as HTMLAnchorElement).click());
-  await expect(models.locator('[data-page-group="1"]')).toHaveCSS("animation-delay", "0.1s");
+  await expect(models.locator('[data-page-group="1"]')).toHaveCSS("animation-delay", "0.04s");
   await expect(page.locator(".page-route")).toHaveCount(1);
   await expect(models).not.toHaveClass(/page-entering/);
   await expect(models).toHaveJSProperty("inert", false);

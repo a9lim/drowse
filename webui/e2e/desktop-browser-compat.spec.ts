@@ -1,3 +1,5 @@
+import { clickWorkspaceAction } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const devUrl = "http://127.0.0.1:4176";
@@ -186,8 +188,7 @@ test("fixture workbench stays usable across desktop widths and keyboard navigati
   await page.keyboard.press("Meta+K");
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await expect(palette).toHaveCount(0);
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const paletteInput = page.getByRole("combobox", { name: "Filter commands" });
   await expect(palette).toBeVisible();
   await expect(paletteInput).toBeFocused();

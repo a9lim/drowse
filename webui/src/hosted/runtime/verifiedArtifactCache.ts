@@ -465,12 +465,6 @@ function configuredSpecialTokenIds(config: Record<string, unknown>): number[] {
   return ids;
 }
 
-function sameNumberArray(left: readonly number[], right: readonly number[]): boolean {
-  return left.length > 0 &&
-    left.length === right.length &&
-    left.every((value, index) => value === right[index]);
-}
-
 function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every((value) => right.has(value));
 }

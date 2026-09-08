@@ -30,12 +30,12 @@ import re
 import threading
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
 from drowse.core.errors import DrowseError
+from drowse.server.streaming import finish_worker
 
 JobBody = Callable[[], Awaitable[None]]
 ErrorHandler = Callable[[BaseException], None]
@@ -148,7 +148,7 @@ class BackgroundJob:
 
         async def _runner() -> None:
             try:
-                await body()
+                await finish_worker(asyncio.ensure_future(body()))
             except Exception as exc:  # noqa: BLE001 - routed to the per-job scrubber
                 on_error(exc)
             finally:
@@ -171,19 +171,14 @@ class BackgroundJob:
         return self.status()
 
     async def stop(self) -> None:
-        """Shutdown-time stop: signal the event and await a cancellable job;
-        asyncio-cancel and drain an uncancellable one."""
+        """Signal cooperative cancellation and join the actual job lifetime."""
         task = self.task
         if self.cancellable:
             event = self.cancel_event
             if event is not None:
                 event.set()
-            if task is not None and not task.done():
-                await task
-        elif task is not None and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+        if task is not None and not task.done():
+            await finish_worker(task)
 
 
 def make_progress_hook(

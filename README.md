@@ -250,6 +250,11 @@ uv pip install -e ".[dev]"
 drowse serve MODEL [options]
 ```
 
+Repository Python is disabled by default. For a trusted model that requires custom
+code, use `DROWSE_TRUST_REMOTE_CODE=1 drowse serve MODEL`; Python callers can
+pass `trust_remote_code=True` to `DrowseSession.from_pretrained`. This grants
+the model repository permission to execute Python locally.
+
 Common options:
 
 | Option | Default | Purpose |
@@ -257,7 +262,7 @@ Common options:
 | `-d`, `--device` | `auto` | `cuda`, `mps`, `cpu`, or automatic selection |
 | `-q`, `--quantize` | none | `4bit` or `8bit` bitsandbytes quantization on CUDA |
 | `-p`, `--probes` | `all` | Bundled probe categories, `all`, or `none` |
-| `-H`, `--host` | `0.0.0.0` | Bind address |
+| `-H`, `--host` | `127.0.0.1` | Bind address; non-loopback requires an API key |
 | `-P`, `--port` | `8000` | Bind port |
 | `-S`, `--steer` | none | Default steering expression |
 | `--top-k-alts` | `0` | Alternative tokens captured at each decode step |
@@ -538,7 +543,11 @@ the verbalizable-workspace method of
 If you use Drowse in published research, please cite the relevant upstream methods
 alongside the Drowse version and exact model checkpoint you used.
 
-## Issues and security
+## Contact, issues, and security
+
+For questions, feedback, or research inquiries, email
+[contact@drowse.ai](mailto:contact@drowse.ai) or use the
+[contact form](https://drowse.ai/contact).
 
 Please update to the latest Drowse release before filing a bug. Include the model
 ID, device, dtype or quantization mode, Drowse version, and a minimal reproduction

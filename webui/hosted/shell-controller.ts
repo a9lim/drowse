@@ -183,6 +183,12 @@ export function createShellController(
     for (const listener of listeners) listener(snapshot);
   };
 
+  const markStorageProtected = () => publish({
+    ...snapshot,
+    download: { ...snapshot.download, persistenceDenied: false },
+    storage: { ...snapshot.storage, persisted: true },
+  });
+
   const confirmBusyTakeover = (state: RuntimeSnapshot): Promise<boolean> => {
     if (disposed || pendingTakeover !== null) return Promise.resolve(false);
     const pending = createPendingTakeover();
@@ -512,7 +518,11 @@ export function createShellController(
       );
       const remainingBytes = model.remainingDownloadBytes;
       downloadCancellationRequested = false;
-      const persistence = runtime.requestPersistence();
+      let persistenceGranted = false;
+      const persistence = runtime.requestPersistence(() => {
+        persistenceGranted = true;
+        markStorageProtected();
+      });
       publish({
         ...snapshot,
         download: {
@@ -522,9 +532,8 @@ export function createShellController(
           progress: undefined,
         },
       });
-      let persistenceGranted: boolean;
       try {
-        persistenceGranted = await persistence;
+        persistenceGranted = await persistence || persistenceGranted;
       } catch (error) {
         publish({
           ...snapshot,
@@ -697,7 +706,11 @@ export function createShellController(
       }
     },
     async retryPersistence() {
-      const persisted = await runtime.requestPersistence();
+      let grantedLate = false;
+      const persisted = await runtime.requestPersistence(() => {
+        grantedLate = true;
+        markStorageProtected();
+      }) || grantedLate;
       publish({
         ...snapshot,
         download: {
@@ -1027,7 +1040,7 @@ function modelFromRecommendation(
     modelType: model.modelType ?? "chat",
     modelId: model.id,
     tier: variant.tier,
-    name: model.displayName,
+    name: model.id === "gpt2-base" ? "GPT-2 Base (124M)" : model.displayName,
     sourceUrl: model.sourceUrl,
     license: model.license,
     size: formatModelBytes(modelDownloadBytes),

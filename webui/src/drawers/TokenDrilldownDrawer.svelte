@@ -1,6 +1,8 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   import SidebarIcon from "../lib/ui/SidebarIcon.svelte";
+  import PopoutIcon from "../lib/ui/PopoutIcon.svelte";
   import { dockTokenDetails, hideTokenDetails, undockTokenDetails } from "../lib/stores/drawers.svelte";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { fly } from "svelte/transition";
@@ -89,12 +91,13 @@
 
   // ---- params → anchor cursor -------------------------------------------
 
-  let { params: inputParams, docked = false, active = true }: { params?: unknown; docked?: boolean; active?: boolean } = $props();
+  let { params: inputParams, docked = false, active = true, mobile = false, onclose }: { params?: unknown; docked?: boolean; active?: boolean; mobile?: boolean; onclose?: () => void } = $props();
   let inspectorEl: HTMLElement | null = $state(null);
   const params = $derived(inputParams as DrawerParams | null);
 
   function closeDetails(): void {
-    if (docked) hideTokenDetails();
+    if (onclose) onclose();
+    else if (docked) hideTokenDetails();
     else closeDrawer();
   }
 
@@ -263,7 +266,7 @@
     replacingToken = true;
     try {
       await sendTextFork(loomNodeId, token.rawIndex, replacementText);
-      if (!docked) closeDrawer();
+      if (!docked || mobile) closeDetails();
       loomUiState.view = "map";
       window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: "branches" }));
     } catch (error) {
@@ -284,7 +287,7 @@
     continuingFromToken = true;
     try {
       await sendFork(loomNodeId, token.rawIndex, token.tokenId, true);
-      if (!docked) closeDrawer();
+      if (!docked || mobile) closeDetails();
       loomUiState.view = "map";
       window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: "branches" }));
     } catch (error) {
@@ -397,10 +400,11 @@
 
   function onKeydown(ev: KeyboardEvent): void {
     if (ev.defaultPrevented || !active) return;
+    if (mobile && !inspectorEl?.contains(ev.target as Node)) return;
     if (docked && !inspectorEl?.contains(ev.target as Node)) return;
     if (ev.key === "Escape") {
       ev.preventDefault();
-      if (!docked) closeDrawer();
+      if (!docked || mobile) closeDetails();
       return;
     }
     // Never steal keys from a focusable field or the layer-strip
@@ -781,20 +785,23 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<aside
+<aside data-morph-snapshot={effCursor ? `${effCursor.turnIdx}:${effCursor.seg}:${effCursor.tokenIdx}` : "none"}
   bind:this={inspectorEl}
   class="drawer"
-  class:docked
+  class:docked={docked || mobile}
+  class:mobile
   data-token-details-scroll
   aria-label="Token drilldown"
   tabindex="-1"
 >
   <header class="drawer-header">
     <div class="heading-row">
+      {#if !mobile}
       <button type="button" class="dock-toggle" aria-pressed={docked}
         aria-label={docked ? "Undock token details" : "Dock token details"}
-        title={docked ? "Show token details in a window" : "Keep token details in a sidebar"}
-        onclick={toggleDock}><SidebarIcon side="right" /></button>
+        {...{ "aria-description": (docked ? "Show token details in a window" : "Keep token details in a sidebar") }}
+        onclick={toggleDock}>{#if docked}<PopoutIcon />{:else}<SidebarIcon side="right" />{/if}</button>
+      {/if}
       <h2 class="eyebrow">Generated word details</h2>
       <DrawerCloseButton onclick={closeDetails} />
     </div>
@@ -802,30 +809,30 @@
       {#if token && effCursor}
         <div class="name-row">
           <code class="tok-text">
-            {JSON.stringify(token.text)}
+            <MorphText text={JSON.stringify(token.text)} numbers={false} identity={`${effCursor.turnIdx}:${effCursor.seg}:${effCursor.tokenIdx}`} />
           </code>
           <button
             type="button"
             class="kv-chip seg-chip"
             disabled={!otherSeg}
             onclick={toggleSeg}
-            title={otherSeg
+            {...{ "aria-description": (otherSeg
               ? `Show the ${otherSeg} tokens from this same turn.`
-              : undefined}
+              : undefined) }}
           >
             {#if sessionState.info?.is_base_model}Completion {effCursor.turnIdx}{:else}turn {effCursor.turnIdx} · {roleLabel} · {effCursor.seg}{/if}
           </button>
           {#if token.tokenId != null}
-            <span class="kv-chip" title="This token’s ID in the model’s vocabulary.">id {token.tokenId}</span>
+            <span class="kv-chip" {...{ "aria-description": "This token’s ID in the model’s vocabulary." }}>id {token.tokenId}</span>
           {/if}
           {#if token.rawIndex != null}
-            <span class="kv-chip" title="Position in the recorded generation, used to replay or branch from this token.">
+            <span class="kv-chip" {...{ "aria-description": "Position in the recorded generation, used to replay or branch from this token." }}>
               raw {token.rawIndex}
             </span>
           {:else}
             <span
               class="kv-chip warn"
-              title="The generation record is missing, so this token cannot be replayed or branched."
+              {...{ "aria-description": "The generation record is missing, so this token cannot be replayed or branched." }}
             >
               no replay
             </span>
@@ -833,9 +840,9 @@
           {#if token.logprob != null}
             <span
               class="kv-chip"
-              title="Probability after temperature and Top K / Top P filtering, not the model’s unmodified probability."
+              {...{ "aria-description": "Probability after temperature and Top K / Top P filtering, not the model’s unmodified probability." }}
             >
-              p {fmtP(Math.exp(token.logprob))} · logp {token.logprob.toFixed(3)}{chosenRank !== null
+              p <MorphText text={fmtP(Math.exp(token.logprob))} identity={`${effCursor.turnIdx}:${effCursor.seg}:${effCursor.tokenIdx}`} /> · logp <MorphText text={token.logprob.toFixed(3)} identity={`${effCursor.turnIdx}:${effCursor.seg}:${effCursor.tokenIdx}`} />{chosenRank !== null
                 ? ` · rank ${chosenRank}/${token.topAlts?.length ?? 0}`
                 : ""}
             </span>
@@ -849,16 +856,16 @@
               disabled={!canStepBack}
               onclick={() => step(-1)}
               aria-label="Previous token"
-              title="Inspect the previous token"
+              {...{ "aria-description": "Inspect the previous token" }}
             ><FluentIcon name="back" /></button>
-            <span class="scrub-pos">{effCursor.tokenIdx + 1} / {tokenList.length}</span>
+            <span class="scrub-pos"><MorphText text={`${effCursor.tokenIdx + 1} / ${tokenList.length}`} /></span>
             <button
               type="button"
               class="scrub-btn"
               disabled={!canStepFwd}
               onclick={() => step(1)}
               aria-label="Next token"
-              title="Inspect the next token"
+              {...{ "aria-description": "Inspect the next token" }}
             ><FluentIcon name="next" /></button>
           </span>
           <span class="scrub">
@@ -868,16 +875,16 @@
               disabled={!canPrevTurn}
               onclick={() => turnHop(-1)}
               aria-label="Previous turn"
-              title="Inspect the previous turn"
+              {...{ "aria-description": "Inspect the previous turn" }}
             ><FluentIcon name="up" /></button>
-            <span class="scrub-pos">turn {effCursor.turnIdx}</span>
+            <span class="scrub-pos"><MorphText text={`turn ${effCursor.turnIdx}`} /></span>
             <button
               type="button"
               class="scrub-btn"
               disabled={!canNextTurn}
               onclick={() => turnHop(1)}
               aria-label="Next turn"
-              title="Inspect the next turn"
+              {...{ "aria-description": "Inspect the next turn" }}
             ><FluentIcon name="down" /></button>
           </span>
           {#if !atAnchor}
@@ -886,14 +893,14 @@
               class="scrub-btn scrub-home"
               onclick={resetToAnchor}
               aria-label="Return to the token you opened"
-              title="Return to the token you opened"
+
             ><FluentIcon name="return" /></button>
           {/if}
         </div>
         <div class="generation-context">
           <div class="recipe">
             <span class="recipe-label">generation recipe</span>
-            <code class="recipe-steering" title={recipeSteering ?? "no steering"}>
+            <code class="recipe-steering" {...{ "aria-description": (recipeSteering ?? "no steering") }}>
               {recipeSteering ?? "unsteered"}
             </code>
             {#each recipeChips as chip (chip)}
@@ -930,11 +937,11 @@
           type="button"
           class="secondary-action"
           disabled={!canReplaceToken || replacingToken}
-          title={canReplaceToken
+          {...{ "aria-description": (canReplaceToken
             ? undefined
             : genStatus.active
               ? "Finish or stop the current generation first"
-              : "This saved token does not have an exact replay boundary"}
+              : "This saved token does not have an exact replay boundary") }}
           onclick={() => {
             if (replacementOpen) {
               replacementOpen = false;
@@ -948,13 +955,13 @@
           type="button"
           class="primary-action"
           disabled={!canContinueFromToken || continuingFromToken}
-          title={canContinueFromToken
+          {...{ "aria-description": (canContinueFromToken
             ? undefined
             : genStatus.active
               ? "Finish or stop the current generation first"
-              : "This saved token does not have an exact replay boundary"}
+              : "This saved token does not have an exact replay boundary") }}
           onclick={() => void continueFromToken()}
-        >{continuingFromToken ? "Starting…" : "Continue from here"}</button>
+        ><MorphText text={continuingFromToken ? "Starting…" : "Continue from here"} numbers={false} /></button>
       </div>
       {#if replacementOpen}
         <form class="replacement-form" onsubmit={(event) => {
@@ -975,7 +982,7 @@
               type="submit"
               class="primary-action"
               disabled={!canReplaceToken || replacingToken || replacementText.length === 0}
-            >{replacingToken ? "Starting…" : "Start branch"}</button>
+            ><MorphText text={replacingToken ? "Starting…" : "Start branch"} numbers={false} /></button>
           </div>
           <span id="token-replacement-help">
             Edit this token or replace it with a longer phrase. Spacing is preserved.
@@ -1100,6 +1107,8 @@
   .dock-toggle:hover { background: var(--glass); color: var(--fg); }
   .dock-toggle[aria-pressed="true"] { background: var(--glass-strong); color: var(--accent); }
   .docked .eyebrow { font-size: var(--text); }
+  .mobile .drawer-header { padding-top: 0; }
+  .mobile :global(.drawer-close) { min-width: 44px; min-height: 44px; }
   .docked .branch-point { grid-template-columns: minmax(0, 1fr); }
   .docked .branch-point-actions { align-items: stretch; flex-direction: column; }
   .docked .replacement-controls { grid-template-columns: minmax(0, 1fr); }

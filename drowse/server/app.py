@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hmac
+import ipaddress
 import json
+import logging
 import os
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, cast
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 if TYPE_CHECKING:
     from drowse.core.results import GenerationResult
@@ -17,11 +22,12 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel, model_validator
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from drowse.core.errors import DrowseError
 from drowse.core.session import ConcurrentGenerationError, GenerationStream, DrowseSession
@@ -36,6 +42,9 @@ from drowse.server.request_helpers import (
     strict_model_enabled,
 )
 from drowse.server.streaming import (
+    ClosingStreamingResponse,
+    run_in_thread,
+    stream_events,
     probe_reading_aggregate,
     stream_finalizer,
     usage_dict,
@@ -43,6 +52,7 @@ from drowse.server.streaming import (
 
 
 SESSION_LOCK_TIMEOUT_SECONDS = 300
+DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024
 
 #: Route-prefix discriminators for the three protocols served on one port.
 #: Each owns an error envelope: OpenAI ``{"error": {message, type, param,
@@ -242,13 +252,59 @@ def _protocol_error(path: str, status: int, message: str) -> JSONResponse:
 _bearer = HTTPBearer(auto_error=False)
 
 
+def is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        return address.is_loopback
+    except ValueError:
+        return False
+
+
+def _origin(value: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path or parsed.query or parsed.fragment
+            or any(char.isspace() for char in value) or "\\" in value
+        ):
+            return None
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme, parsed.hostname.lower(), port
+    except ValueError:
+        return None
+
+
+def _local_host_ok(conn: Request | WebSocket) -> bool:
+    client = conn.scope.get("client")
+    if client:
+        try:
+            ipaddress.ip_address(client[0])
+        except ValueError:
+            pass  # In-process ASGI transports can use non-IP client labels.
+        else:
+            if not is_loopback_host(client[0]):
+                return False
+    hosts = conn.headers.getlist("host")
+    target = _origin("http://" + hosts[0]) if len(hosts) == 1 else None
+    if target is None:
+        return False
+    server = conn.scope.get("server")
+    return is_loopback_host(target[1]) or bool(server and target[1] == server[0].lower())
+
+
 def _check_bearer(headers: Headers, expected: str) -> bool:
     """Return True iff a correct ``Authorization: Bearer <expected>`` header is present."""
     auth = headers.get("authorization") or headers.get("Authorization")
     if not auth:
         return False
     scheme, _, token = auth.partition(" ")
-    return scheme.lower() == "bearer" and token == expected
+    return scheme.lower() == "bearer" and hmac.compare_digest(token.encode(), expected.encode())
 
 
 def _require_auth(request: Request = None,  # pyright: ignore[reportArgumentType]  # FastAPI injects Request/WebSocket by type; None default is a sentinel, not a real argument
@@ -266,6 +322,8 @@ def _require_auth(request: Request = None,  # pyright: ignore[reportArgumentType
         return
     expected = getattr(conn.app.state, "api_key", None)
     if not expected:
+        if request is not None and not _local_host_ok(request):
+            raise HTTPException(403, "Untrusted host; configure an API key for remote access")
         return
     if request is None:
         # WS path: handler calls ws_auth_ok() before websocket.accept().
@@ -279,20 +337,107 @@ def _require_auth(request: Request = None,  # pyright: ignore[reportArgumentType
     return
 
 
-def ws_auth_ok(websocket: WebSocket) -> bool:
-    """Return True iff the WebSocket handshake carries valid bearer auth.
+def _browser_origin_ok(conn: Request | WebSocket) -> bool:
+    origins = conn.headers.getlist("origin")
+    if origins:
+        origin = _origin(origins[0]) if len(origins) == 1 else None
+        hosts = conn.headers.getlist("host")
+        scheme = "https" if conn.scope["scheme"] in {"https", "wss"} else "http"
+        target = _origin(scheme + "://" + hosts[0]) if len(hosts) == 1 else None
+        allowed = conn.app.state.ws_origins
+        if origin is None or (origin != target and origin not in allowed):
+            return False
+    return True
 
-    Call this BEFORE ``websocket.accept()``. If it returns False, close the
-    handshake with ``await websocket.close(code=1008)``.
-    """
+
+def ws_auth_ok(websocket: WebSocket) -> bool:
+    """Validate browser Origin and bearer auth before accepting a WebSocket."""
+    query = parse_qsl(websocket.scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True)
+    tokens = [value for name, value in query if name == "token"]
+    if tokens:
+        websocket.scope["query_string"] = urlencode([(name, value) for name, value in query if name != "token"]).encode()
     expected = getattr(websocket.app.state, "api_key", None)
+    if not expected and not _local_host_ok(websocket):
+        return False
+    if not _browser_origin_ok(websocket):
+        return False
     if not expected:
         return True
     if _check_bearer(websocket.headers, expected):
         return True
-    # Browser WebSocket constructors cannot attach Authorization headers.
-    # The bundled dashboard sends the same bearer value as ?token=... .
-    return websocket.query_params.get("token") == expected
+    credentials = [protocol.removeprefix("drowse.auth.") for protocol in websocket.scope.get("subprotocols", [])
+                   if protocol.startswith("drowse.auth.")]
+    if credentials:
+        encoded = base64.urlsafe_b64encode(expected.encode()).rstrip(b"=")
+        return len(credentials) == 1 and hmac.compare_digest(credentials[0].encode(), encoded)
+    return len(tokens) == 1 and hmac.compare_digest(tokens[0].encode(), expected.encode())
+
+
+class _HttpSecurityMiddleware:
+    def __init__(self, app: ASGIApp, *, max_request_bytes: int) -> None:
+        self.app = app
+        self.max_request_bytes = max_request_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        path = scope["path"]
+        private = path.startswith((NATIVE_PREFIX, OLLAMA_PREFIX, "/v1/"))
+
+        async def secure_send(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["X-Frame-Options"] = "DENY"
+                headers["Referrer-Policy"] = "no-referrer"
+                headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+                headers["Content-Security-Policy"] = (
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                    "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://www.neuronpedia.org https://drowse.ai/api/contact; "
+                    "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'"
+                )
+                if private:
+                    headers["Cache-Control"] = "no-store"
+            await send(message)
+
+        if private:
+            try:
+                _require_auth(request)
+            except HTTPException as exc:
+                handler = request.app.exception_handlers[StarletteHTTPException]
+                response = await handler(request, exc)
+                await response(scope, receive, secure_send)
+                return
+        try:
+            check_origin = private or scope["method"] not in {"GET", "HEAD", "OPTIONS"}
+            if check_origin and scope["method"] != "OPTIONS" and not _browser_origin_ok(request):
+                raise HTTPException(403, "Untrusted request origin")
+            lengths = request.headers.getlist("content-length")
+            if lengths:
+                if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit():
+                    raise HTTPException(400, "Invalid Content-Length")
+                length = lengths[0].lstrip("0") or "0"
+                if len(length) > len(str(self.max_request_bytes)) or int(length) > self.max_request_bytes:
+                    raise HTTPException(413, "Request body too large")
+        except HTTPException as exc:
+            response = _protocol_error(path, exc.status_code, _detail_text(exc.detail))
+            await response(scope, receive, secure_send)
+            return
+
+        received = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_request_bytes:
+                    raise HTTPException(413, "Request body too large")
+            return message
+
+        await self.app(scope, limited_receive, secure_send)
 
 
 def _sampling_kwargs(
@@ -407,7 +552,7 @@ def _render_logprobs_completions(result: GenerationResult, session: DrowseSessio
 
 async def _stream_generation(
     session: DrowseSession,
-    stream_iter: GenerationStream, rid: str, model_id: str, object_type: str,
+    stream_factory: Callable[[], GenerationStream], rid: str, model_id: str, object_type: str,
     format_delta: Callable[[Any], dict[str, Any]], empty_delta: dict[str, Any],
     include_usage: bool = False, role_delta: bool = False,
     request: Request | None = None,
@@ -458,8 +603,10 @@ async def _stream_generation(
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
             yield f"data: {json.dumps(chunk)}\n\n"
+        stream_iter = None
         try:
-            for event in stream_iter:
+            stream_iter = stream_factory()
+            async for event in stream_events(stream_iter):
                 # Bail out if the client has hung up — close the inner
                 # generator (handled in ``finally``) and stop spending the
                 # GPU on tokens nobody is reading.
@@ -498,8 +645,10 @@ async def _stream_generation(
             # + join) on every exit — normal completion (no-op on an exhausted
             # generator), an in-band error, or an early client-disconnect
             # ``return`` — rather than leaving it to GC.
-            stream_iter.close()
+            if stream_iter is not None:
+                await run_in_thread(stream_iter.close)
 
+        assert stream_iter is not None
         last_result = stream_iter.result
         finish_reason, usage, mf_agg = stream_finalizer(session, last_result)
         final_choice: dict[str, Any] = {
@@ -536,7 +685,12 @@ def create_app(session: DrowseSession,
                cors_origins: list[str] | None = None,
                api_key: str | None = None,
                *,
-               web: bool = False) -> FastAPI:
+               web: bool = False,
+               max_request_bytes: int | None = None) -> FastAPI:
+    if max_request_bytes is None:
+        max_request_bytes = int(os.environ.get("DROWSE_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES))
+    if type(max_request_bytes) is not int or max_request_bytes <= 0:
+        raise ValueError("max_request_bytes must be a positive integer")
     app = FastAPI(
         title="drowse",
         description="OpenAI-compatible API with activation steering",
@@ -546,6 +700,8 @@ def create_app(session: DrowseSession,
     app.state.default_steering = default_steering
     app.state.created_ts = int(time.time())
     app.state.api_key = api_key if api_key is not None else os.environ.get("DROWSE_API_KEY")
+    app.state.ws_origins = {origin for value in (cors_origins or []) if (origin := _origin(value)) is not None}
+    app.add_middleware(_HttpSecurityMiddleware, max_request_bytes=max_request_bytes)
     # Generation serialization lives on ``session.lock`` (asyncio.Lock)
     # so both the OpenAI and Ollama route families share a single FIFO
     # queue.  Requests wait rather than 409 on contention.
@@ -560,6 +716,8 @@ def create_app(session: DrowseSession,
 
     @app.exception_handler(DrowseError)
     async def _on_drowse_error(request: Request, exc: DrowseError):
+        if exc.__cause__ is not None:
+            logging.getLogger("drowse.api").error("Request failed", exc_info=exc)
         status, msg = exc.user_message()
         return _protocol_error(request.url.path, status, msg)
 
@@ -590,6 +748,17 @@ def create_app(session: DrowseSession,
         so a client had to guess.  On ``/drowse/v1/*`` it is always a string;
         every other prefix keeps FastAPI's default rendering.
         """
+        if isinstance(exc.__cause__, DrowseError):
+            _status, detail = exc.__cause__.user_message()
+            if exc.__cause__.__cause__ is not None:
+                logging.getLogger("drowse.api").error("Request failed", exc_info=exc.__cause__)
+            return _protocol_error(request.url.path, exc.status_code, detail)
+        if isinstance(exc.__cause__, OSError):
+            logging.getLogger("drowse.api").error("Filesystem request failed", exc_info=exc.__cause__)
+            detail = {404: "Requested artifact not found", 409: "An artifact already exists at the destination"}.get(
+                exc.status_code, "Filesystem operation failed. Check the server log for details.",
+            )
+            return _protocol_error(request.url.path, exc.status_code, detail)
         response = await http_exception_handler(request, exc)
         detail = cast(object, exc.detail)
         if (
@@ -705,7 +874,7 @@ def _register_routes(app: FastAPI) -> None:
         async with acquire_session_lock(session) as acquired:
             if not acquired:
                 return _error(503, "Server busy", "server_error")
-            return session.generate(prompt_or_messages, raw=raw, **gen_kwargs).first
+            return (await run_in_thread(session.generate, prompt_or_messages, raw=raw, **gen_kwargs)).first
 
     @app.post("/v1/chat/completions")
     async def chat_completions(req: ChatCompletionRequest, request: Request):
@@ -724,13 +893,14 @@ def _register_routes(app: FastAPI) -> None:
                     d["content"] = event.text
                 return {"delta": d}
 
-            stream_iter = session.generate_stream(
-                messages, live_scores=False, live_readouts=False, **gen_kwargs,
-            )
+            def stream_factory() -> GenerationStream:
+                return session.generate_stream(
+                    messages, live_scores=False, live_readouts=False, **gen_kwargs,
+                )
             include_usage = bool(req.stream_options and req.stream_options.include_usage)
-            return StreamingResponse(
+            return ClosingStreamingResponse(
                 _stream_generation(session,
-                                   stream_iter, rid, model_id,
+                                   stream_factory, rid, model_id,
                                    "chat.completion.chunk", _chat_delta, {"delta": {}},
                                    include_usage=include_usage, role_delta=True,
                                    request=request),
@@ -774,14 +944,15 @@ def _register_routes(app: FastAPI) -> None:
         gen_kwargs = _sampling_kwargs(req, app.state.default_steering)
 
         if req.stream:
-            stream_iter = session.generate_stream(
-                req.prompt, raw=True, live_scores=False, live_readouts=False,
-                **gen_kwargs,
-            )
+            def stream_factory() -> GenerationStream:
+                return session.generate_stream(
+                    req.prompt, raw=True, live_scores=False, live_readouts=False,
+                    **gen_kwargs,
+                )
             include_usage = bool(req.stream_options and req.stream_options.include_usage)
-            return StreamingResponse(
+            return ClosingStreamingResponse(
                 _stream_generation(session,
-                                   stream_iter, rid, model_id,
+                                   stream_factory, rid, model_id,
                                    "text_completion", lambda e: {"text": e.text}, {"text": ""},
                                    include_usage=include_usage, role_delta=False,
                                    request=request),

@@ -51,12 +51,12 @@ def _add_logit_args(p: argparse.ArgumentParser) -> None:
     distributional surfaces (drilldown logits tab, inline surprise tint,
     NodeCompareDrawer logit columns); ~60 KB/turn on the wire at K=8.
     Per-call ``SamplingConfig.return_top_k > 0`` overrides; K=0 inherits.
-    YAML equivalent: ``return_top_k:`` int in ``[0, 256]``.
+    YAML equivalent: ``return_top_k:`` nonnegative int.
     """
     p.add_argument(
-        "--top-k-alts", dest="top_k_alts", type=_bounded_int(0, 256),
+        "--top-k-alts", dest="top_k_alts", type=_nonnegative_int,
         default=None, metavar="N",
-        help="Session default for top-K alternatives capture (0–256). "
+        help="Session default for top-K alternatives capture. "
              "0 (default) = chosen-token logprob only; N>0 ships top-N "
              "decoded alternatives per token for distributional surfaces. "
              "Unset = inherit YAML ``return_top_k:`` / session default.",
@@ -212,7 +212,7 @@ def _build_serve_parser(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Probe categories: all, none, epistemic, alignment, register, cultural (default: all)",
     )
-    parser.add_argument("-H", "--host", default="0.0.0.0", help="Bind address")
+    parser.add_argument("-H", "--host", default="127.0.0.1", help="Bind address (non-loopback requires an API key)")
     parser.add_argument(
         "-P", "--port", type=_bounded_int(1, 65535), default=8000,
         help="Bind port",

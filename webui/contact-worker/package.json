@@ -1,0 +1,19 @@
+{
+  "name": "drowse-contact-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "types": "wrangler types --strict-vars false",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.1.5",
+    "typescript": "7.0.2",
+    "vitest": "^4.1.0",
+    "wrangler": "4.129.1"
+  }
+}

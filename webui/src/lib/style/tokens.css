@@ -28,6 +28,9 @@
 
 :root {
   color-scheme: dark;
+  --brand-claude: #c96442;
+  --brand-openai: #10a37f;
+  --brand-logo-ink: #fff;
   --loading-accent: var(--accent);
   --verification-blue: #1e9cf1;
   --verification-gold: #c9a227;
@@ -46,6 +49,7 @@
   --control-target: 40px;
   --control-compact: 40px;
   --control-field: 40px;
+  --control-option: 40px;
   --control-label-gap: 8px;
   --control-neutral-bg: var(--glass-strong);
   --control-neutral-hover: var(--bg-hover);
@@ -257,6 +261,7 @@
   --text-hero-compact: clamp(4.285714286rem, 18vw, 6.571428571rem);
   --text-hero-lede: clamp(1.285714286rem, 2vw, 1.571428571rem);
   --text-section-display: clamp(3.428571429rem, 7vw, 6.571428571rem);
+  --text-section-display-compact: clamp(3.428571429rem, 5.4vw, 5.428571429rem);
   --text-section-lede: clamp(1.214285714rem, 1.8vw, 1.428571429rem);
   --text-feature-title: clamp(1.714285714rem, 3vw, 2.428571429rem);
   --text-model-title: clamp(1.714285714rem, 3vw, 2.571428571rem);
@@ -410,7 +415,7 @@
   --glass-strong: #edf0f5;
   --glass-bright: #ccd2da;
   --glass-line: #adb5c1;
-  --input-well: #dde1e7;
+  --input-well: #f8f9fc;
   --scrim-soft: rgba(17, 22, 36, 0.18);
   --scrim: rgba(17, 22, 36, 0.3);
   --scrim-strong: rgba(17, 22, 36, 0.42);
@@ -523,7 +528,7 @@
   --landing-panel-muted: #1b2130;
   --landing-panel-text-shadow: none;
   --workspace-panel-bg: rgb(17 22 36 / 3%);
-  --workspace-field-bg: rgb(17 22 36 / 5%);
+  --workspace-field-bg: var(--input-well);
   --workspace-neutral-bg: rgb(17 22 36 / 7%);
   --workspace-neutral-hover: rgb(17 22 36 / 11%);
   --workspace-overlay-shadow: 0 12px 40px rgb(17 22 36 / 16%);
@@ -594,4 +599,8 @@
   :root {
     --section-space: var(--space-2xl);
   }
+}
+
+@media (pointer: coarse) {
+  :root { --control-option: 44px; }
 }

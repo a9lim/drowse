@@ -15,7 +15,7 @@ interface CaptureRequest {
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
   thinkingProfile: ModelVariant["thinkingProfile"];
-  quantization: "q4f16_1" | "q4f32_1";
+  quantization: "q4f16_1" | "q4f32_1" | "q0f32";
   requiredFeatures: GPUFeatureName[];
   inputIds: number[];
   positions: number[];

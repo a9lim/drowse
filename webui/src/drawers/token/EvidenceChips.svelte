@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Compact supporting facts shared by token-drilldown cards. These are
   // evidence below the main meter, not a second headline, so the treatment
   // stays quiet and identical for geometry distances and SAE metadata.
@@ -22,9 +23,9 @@
 {#if items.length > 0}
   <div class="chips" role="list" aria-label={ariaLabel}>
     {#each items as item}
-      <span class="chip" class:soft={item.soft} title={item.title} role="listitem">
+      <span class="chip" class:soft={item.soft} {...{ "aria-description": (item.title) }} role="listitem">
         {item.label}
-        {#if item.value}<span class="value">{item.value}</span>{/if}
+        {#if item.value}<span class="value"><MorphText text={item.value} identity={item.label} /></span>{/if}
       </span>
     {/each}
   </div>

@@ -1,6 +1,8 @@
 export const siteName = "Drowse";
-export const siteDescription = "Run language models in your browser. Inspect their predictions and test how changing internal activity affects their replies with Drowse.";
-export const socialImageAlt = "Drowse: See inside your model. Inspect predictions and compare alternate replies in your browser.";
+export const siteDescription = "Drowse is an open-source and fully local AI mechanistic interpretability workbench that works fully in your browser. Use Drowse to research large language models, inspect predictions and change an LLMs internal activity.";
+export const siteAccent = "#c5b3ff";
+export const socialImagePath = "/social/drowse.png?v=shader-orb-workbench";
+export const socialImageAlt = "Drowse in white with Interpretability Workbench underneath, beside a large glowing shader orb.";
 
 export function publicOrigin(value = "") {
   if (!value) return "";
@@ -19,7 +21,7 @@ export function discoveryMetadata(origin) {
       { "@type": "WebSite", "@id": `${origin}/#website`, url: `${origin}/`, name: siteName, description: siteDescription, inLanguage: "en" },
       { "@type": "WebApplication", "@id": `${origin}/#app`, name: siteName, url: `${origin}/app`, description: siteDescription,
         applicationCategory: "DeveloperApplication", operatingSystem: "Web browser", browserRequirements: "WebGPU and a compatible device are required for local model inference.",
-        image: `${origin}/social/drowse.png`, isAccessibleForFree: true },
+        image: `${origin}${socialImagePath}`, isAccessibleForFree: true },
     ],
   };
   return `<link rel="canonical" href="${origin}/" />\n<meta property="og:url" content="${origin}/" />\n<script type="application/ld+json">${JSON.stringify(schema).replaceAll("<", "\\u003c")}</script>`;

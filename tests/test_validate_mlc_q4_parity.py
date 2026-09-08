@@ -8,6 +8,7 @@ import types
 from typing import Any
 
 import numpy as np
+import pytest
 import torch
 
 
@@ -97,6 +98,30 @@ def test_smol_named_role_is_required_only_for_release_evidence(tmp_path: Path) -
         assert "release evidence requires" in str(error)
     else:
         raise AssertionError("release evidence accepted a missing named-role row")
+
+
+@pytest.mark.parametrize("model_id", ["gemma3-1b-instruct", "gemma3-4b-instruct"])
+def test_gemma_parity_does_not_masquerade_as_270m_release_evidence(tmp_path: Path, model_id: str) -> None:
+    metadata = capture_metadata(model_id)
+    (tmp_path / "capture.json").write_text(json.dumps(metadata))
+    assert _VALIDATOR.load_capture_metadata(tmp_path) == metadata
+    try:
+        _VALIDATOR.release_evidence_receipt(
+            {"modelId": model_id}, metadata,
+            "gemmaProductionQ4Parity", "candidate/capture.json",
+        )
+    except ValueError as error:
+        assert "requires gemma3-270m-instruct" in str(error)
+    else:
+        raise AssertionError(f"{model_id} parity was accepted as 270M release evidence")
+
+
+def test_cosine_stays_in_range_despite_float32_reduction_rounding() -> None:
+    values = np.random.default_rng(7).normal(size=4096).astype(np.float32)
+    assert 1 - 1e-12 <= _VALIDATOR.cosine(values, values) <= 1
+    assert -1 <= _VALIDATOR.cosine(values, -values) <= -1 + 1e-12
+    with pytest.raises(ValueError, match="no measurable residual delta"):
+        _VALIDATOR.cosine(values, np.zeros_like(values))
 
 
 def test_greedy_token_ids_honors_multi_eos_ids() -> None:

@@ -363,20 +363,20 @@ try {
     "desktop-gecko",
   );
   assert.equal(
-    outputTokenPolicy.outputTokenLimitForRuntime("apple-mobile-webkit"),
-    256,
+    outputTokenPolicy.outputTokenLimitForRuntime("apple-mobile-webkit", 4096),
+    4096,
   );
   assert.equal(
-    outputTokenPolicy.outputTokenLimitForRuntime("desktop-webkit"),
-    1_024,
+    outputTokenPolicy.outputTokenLimitForRuntime("desktop-webkit", 16384),
+    16384,
   );
   assert.equal(
-    outputTokenPolicy.outputTokenLimitForRuntime("desktop-gecko"),
-    1_024,
+    outputTokenPolicy.outputTokenLimitForRuntime("desktop-gecko", 32768),
+    32768,
   );
   assert.equal(
     outputTokenPolicy.outputTokenLimitForRuntime("desktop-chromium"),
-    8_192,
+    Number.MAX_SAFE_INTEGER,
   );
 
   const opfs = memoryOpfs();
@@ -422,6 +422,29 @@ try {
     }),
   ];
   try {
+    const originalStorage = globalThis.navigator.storage;
+    try {
+      for (const persisted of [
+        () => new Promise(() => {}),
+        () => { throw new Error("Protection status unavailable"); },
+        async () => { throw new Error("Protection status rejected"); },
+      ]) {
+        globalThis.navigator.storage = { ...originalStorage, persisted };
+        const estimate = await capabilityModule.storageEstimate(20);
+        assert.equal(estimate.availableBytes, 4_000_000_000);
+        assert.equal(estimate.persisted, null);
+      }
+      globalThis.navigator.storage = {
+        ...originalStorage,
+        estimate: () => new Promise(() => {}),
+        persisted: async () => true,
+      };
+      const unavailable = await capabilityModule.storageEstimate(20);
+      assert.equal(unavailable.availableBytes, null);
+      assert.equal(unavailable.persisted, true);
+    } finally {
+      globalThis.navigator.storage = originalStorage;
+    }
     const checker = new capabilityModule.BrowserCapabilityChecker();
     const checked = await checker.check();
     assert.equal(checked.supported, true);
@@ -780,7 +803,7 @@ try {
   console.log("ok - Apple mobile model policy requires evidence and blocks 4B models");
   console.log("ok - Apple mobile setup filters 270M, prefers speed, and defers SAE packs");
   console.log("ok - Safari and Firefox previews require exact-browser load evidence");
-  console.log("ok - preview browsers use conservative output limits");
+  console.log("ok - output limits follow context capacity across browsers");
   console.log("ok - Firefox 155 remains blocked when its adapter reports 9 of 10 buffers");
 } finally {
   await server.close();

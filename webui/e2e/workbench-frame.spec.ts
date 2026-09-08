@@ -1,3 +1,5 @@
+import { selectWorkspaceView } from "./workbench-navigation";
+import { setAppearance } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 
 const devUrl = "http://127.0.0.1:4176";
@@ -9,9 +11,7 @@ for (const fixture of ["base", "1"]) {
     const model = page.getByLabel("Active model", { exact: true });
     await expect(model).toBeVisible();
     for (const theme of ["Light", "Dark"]) {
-      await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-      await page.getByRole("button", { name: theme, exact: true }).click();
-      await page.keyboard.press("Escape");
+      await setAppearance(page, theme);
       for (const width of [1440, 900]) {
         await page.setViewportSize({ width, height: 900 });
         expect(await page.evaluate(() => {
@@ -36,7 +36,7 @@ for (const fixture of ["base", "1"]) {
     await expect(model).toBeVisible();
     expect(await model.evaluate(element => element.getBoundingClientRect().bottom <= innerHeight)).toBe(true);
     expect(await page.locator(".app-sidebar").evaluate(element => element.getBoundingClientRect().height < 130)).toBe(true);
-    await page.getByRole("button", { name: "Controls", exact: true }).click();
+    await selectWorkspaceView(page, "Controls");
     await expect(page.getByRole("heading", { name: "Generation settings", exact: true })).toBeVisible();
     expect(await page.locator(".sampling-strip .control").evaluateAll(elements => elements.every(element => getComputedStyle(element).backgroundColor === "rgba(0, 0, 0, 0)"))).toBe(true);
     await expect(page.getByRole("button", { name: "Loom", exact: true })).toBeVisible();

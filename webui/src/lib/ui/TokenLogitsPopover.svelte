@@ -111,7 +111,7 @@
       <tbody>{#each rows as row, index (index)}
         <tr class:chosen={row.chosen}>
           <td><code>{visibleTokenText(row.text)}</code>{#if row.chosen}<span class="chosen-label">this token</span>{/if}</td>
-          <td title={`log probability ${row.logprob.toFixed(4)}`}>{Math.exp(row.logprob) >= 0.001 ? Math.exp(row.logprob).toFixed(3) : Math.exp(row.logprob).toExponential(2)}</td>
+          <td {...{ "aria-description": (`log probability ${row.logprob.toFixed(4)}`) }}>{Math.exp(row.logprob) >= 0.001 ? Math.exp(row.logprob).toFixed(3) : Math.exp(row.logprob).toExponential(2)}</td>
         </tr>
       {/each}</tbody>
     </table>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Logits tab — the ranked top-K alternatives captured at this
   // position, each with a probability bar (absolute unit: a flat bar row
   // means genuine uncertainty), and the logit fork that regenerates the
@@ -157,7 +158,7 @@
       </p>
     {/if}
     <div class="logit-grid" aria-label="Ranked token alternatives">
-      {#each rankRows as row (row.rank)}
+      {#each rankRows as row (row.id)}
         <RackCard accent="--pillar-lens" disabled={false} active={row.chosen}>
           {#snippet statline()}
             <DetailCardHeader
@@ -175,12 +176,12 @@
                 <Bar percentage value={row.p} max={1} color="var(--pillar-lens)" />
               {/snippet}
               {#snippet middle()}
-                <span class="row-context">logp {fmtLogprob(row.logprob)}</span>
+                <span class="row-context">logp <MorphText text={fmtLogprob(row.logprob)} /></span>
               {/snippet}
-              {#snippet right()}<span class="row-value">{fmtProb(row.p)}</span>{/snippet}
+              {#snippet right()}<span class="row-value"><MorphText text={fmtProb(row.p)} /></span>{/snippet}
             </ProbeReadingRow>
             <div class="row-meta">
-              <span>Δ top <b>{fmtDelta(row.delta, row.rank)}</b></span>
+              <span>Δ top <b><MorphText text={fmtDelta(row.delta, row.rank)} /></b></span>
               <span>token id <b>{row.id}</b></span>
               <span class="spacer"></span>
               <Button
@@ -191,11 +192,11 @@
                   ? undefined
                   : "Token branching is not available in the browser runtime yet"}
               >
-                {branchingRank === row.rank
+                <MorphText text={branchingRank === row.rank
                   ? "Starting…"
                   : row.chosen
                     ? "Used"
-                    : tokenForkAvailable ? "Start branch" : "View only"}
+                    : tokenForkAvailable ? "Start branch" : "View only"} numbers={false} />
               </Button>
             </div>
           {/snippet}

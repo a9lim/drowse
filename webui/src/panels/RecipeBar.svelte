@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   // The steering bar — the composed steering expression made permanently
   // visible.  Every racked term renders as a pillar-colored chip regardless
@@ -96,11 +97,14 @@
   const expression = $derived(currentSteeringExpression());
   const custom = $derived(steerRack.customExpression !== null);
 
+  let copied = $state(false);
+  $effect(() => { if (!copied) return; const timer = setTimeout(() => copied = false, 1800); return () => clearTimeout(timer); });
+
   async function copyExpression(): Promise<void> {
     if (!expression) return;
     try {
       await navigator.clipboard.writeText(expression);
-      pushToast("Response recipe copied", { kind: "info" });
+      copied = true;
     } catch {
       pushToast("Could not copy the recipe. Select its text and copy it manually.", { kind: "error" });
     }
@@ -126,7 +130,7 @@
           onremove={chip.remove}
           removeLabel={`Remove ${chip.name} from steering recipe`}
         >
-          {chip.text}
+          <MorphText text={chip.text} numbers={false} />
         </Chip>
       {/each}
     </div>
@@ -136,10 +140,10 @@
       type="button"
       class="copy"
       data-cursor="copy"
-      title="Copy the technical response recipe"
+      {...{ "aria-description": "Copy the technical response recipe" }}
       aria-label="Copy response recipe"
       onclick={copyExpression}
-    ><FluentIcon name="copy" /></button>
+    ><FluentIcon name="copy" /><span role="status"><MorphText text={copied ? "Copied" : "Copy"} numbers={false} /></span></button>
   {/if}
 </div>
 {/if}

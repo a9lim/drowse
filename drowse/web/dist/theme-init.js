@@ -16,7 +16,7 @@
     }
   } catch (_) {}
   if (theme !== "light" && theme !== "dark") {
-    theme = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    theme = "dark";
   }
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;

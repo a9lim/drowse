@@ -1,3 +1,6 @@
+import { selectWorkspaceView } from "./workbench-navigation";
+import { clickWorkspaceAction } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { returnToChats, setAppearance, showWorkspaceTools, openTokenDetails, selectLoomView } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readdir, readFile } from "node:fs/promises";
@@ -148,8 +151,7 @@ async function installFixtureTreeDeleteFailure(page: Page): Promise<void> {
 }
 
 async function openModelAndStorage(page: Page): Promise<Locator> {
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("model settings");
   await page.keyboard.press("Enter");
@@ -177,10 +179,10 @@ async function openWorkspace(page: Page, name: "Conversation" | "Branches" | "Co
     : name === "Controls"
       ? /^Controls$/
       : /^(Loom|Branches)$/;
-  await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button", { name: accessibleName }).click();
+  await selectWorkspaceView(page, accessibleName);
   if (name === "Branches") {
     if (!(await page.getByRole("button", { name: /^Map/ }).isVisible())) {
-      await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+      await openWorkspaceMenu(page);
       await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
     }
     await selectLoomView(page, /^Map/);
@@ -188,8 +190,7 @@ async function openWorkspace(page: Page, name: "Conversation" | "Branches" | "Co
 }
 
 async function openTranscriptDrawer(page: Page): Promise<Locator> {
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("conversation transcript");
   await page.keyboard.press("Enter");
@@ -299,7 +300,7 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   expect(updated.id).toBe(original.id);
   expect(updated.name).toBe("My automatic chat");
   expect(updated.avatarSeed).toBe(chosenSeed);
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await page.getByRole("button", { name: "Cut branch…", exact: true }).click();
   const cutDialog = page.getByRole("dialog", { name: "Delete branch", exact: true });
@@ -319,7 +320,7 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   await expect(clearDialog).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Clear loom…", exact: true })).toBeDisabled();
   expect((await records()).conversations).toHaveLength(1);
-  await page.getByRole("button", { name: "Conversation", exact: true }).click();
+  await selectWorkspaceView(page, "Conversation");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A separate chat");
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
@@ -387,12 +388,12 @@ test("autosave failures are visible and retry preserves the same chat", async ({
 test("saved chats persist with stable Blobatar identities and explicit deletion", async ({ page }) => {
   await openFixtureWorkbench(page);
   const savedChatsButton = page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true });
-  await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Back to Chats", exact: true })).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("What do marmots do in winter?");
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
 
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await savedChatsButton.click();
   let libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
@@ -423,7 +424,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
     "What do marmots do in winter?",
     { exact: true },
   )).toBeVisible();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await savedChatsButton.click();
   libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
@@ -444,7 +445,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
 
   await page.keyboard.press("Escape");
   await expect(libraryDrawer).not.toBeVisible();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await savedChatsButton.click();
   libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
@@ -453,7 +454,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
   await card.getByRole("button", { name: "Open", exact: true }).click();
   await expect(libraryDrawer).not.toBeVisible();
 
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await savedChatsButton.click();
   libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
@@ -469,7 +470,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
 
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   const compactSavedChatsButton = page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true });
   await expect(compactSavedChatsButton).toBeVisible();
@@ -518,7 +519,7 @@ test("saved chat cards keep summaries and open or export the latest stored trans
       await conversationLibrary.update(id, { snapshot: record.snapshot });
     }, { storesUrl: toastModuleUrl, id: recordId, text });
   };
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true }).click();
   const drawer = page.getByRole("dialog", { name: "Saved chats" });
@@ -757,7 +758,7 @@ test("model storage notice retries protection without repeating instructions or 
   await expect(notice).toHaveCount(1);
   await notice.getByRole("button", { name: "Protect storage", exact: true }).click();
   await expect(notice.getByRole("button", { name: "Protect storage", exact: true })).toBeEnabled();
-  await expect(notice).toContainText("Your browser didn't grant storage protection.");
+  await expect(notice).toContainText("Downloads and chats still save on this device.");
   await expect(notice.locator("p")).toHaveCount(1);
   await expect(notice).not.toContainText("Select Protect storage");
   for (const width of [1440, 320]) {
@@ -884,9 +885,11 @@ test("a stale hosted bootstrap module reloads once instead of leaving a broken p
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
 });
 
-test("persistent missing workbench assets stop after one automatic reload", async ({ page }) => {
+test("persistent missing workbench assets stop after one automatic reload and allow manual recovery", async ({ page }) => {
   let failedImports = 0;
+  let missing = true;
   await page.route("**/src/App.svelte*", async (route) => {
+    if (!missing) return route.continue();
     failedImports += 1;
     await route.abort("failed");
   });
@@ -896,12 +899,19 @@ test("persistent missing workbench assets stop after one automatic reload", asyn
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
 
   await expect(page.getByText(
-    "Drowse updated while this tab was open. Reload the page to open the current version.",
+    "Some app files could not load. This can happen after an update or a connection problem. Reload Drowse to refresh its app files.",
   )).toBeVisible();
   await expect(page.getByRole("button", { name: "Reload Drowse" })).toBeVisible();
   expect(failedImports).toBe(2);
   await page.waitForTimeout(750);
   expect(failedImports).toBe(2);
+
+  missing = false;
+  await page.getByRole("button", { name: "Reload Drowse", exact: true }).click();
+  await expect(page.locator(".shell")).toBeVisible();
+  expect(failedImports).toBe(2);
+  expect(await fixtureInstallIds(page)).toContain("qwen3-1.7b-fixture");
+  expect(new URL(page.url()).searchParams.has("app-recovery")).toBe(false);
 });
 
 test("hosted navigation is cross-origin isolated", async ({ page }) => {
@@ -1093,7 +1103,7 @@ test("fixture installs, opens the shared workbench, stops, and generates", async
     name: "Return top K",
   });
   await expect(alternatives).toBeEnabled();
-  await expect(alternatives).toHaveAttribute("max", "5");
+  await expect(alternatives).toHaveAttribute("max", String(Number.MAX_SAFE_INTEGER));
   await expect(alternatives).toHaveValue("5");
   await page.getByRole("button", { name: "Close drawer" }).click();
   await openWorkspace(page, "Conversation");
@@ -1256,11 +1266,11 @@ test("installed J-lens and SAE packs are usable without preparation errors", asy
   await expect(lens.getByText("Create on this device", { exact: true })).toHaveCount(0);
   await expect(lens.getByLabel("J-lens corpus prompts")).toHaveCount(0);
   await expect(lens.getByRole("button", { name: /^(confirm )?fit$/i })).toHaveCount(0);
-  await expect(lens.getByTitle("turn live readout off")).toBeVisible();
-  await lens.getByTitle("turn live readout off").click();
-  await expect(lens.getByTitle("turn live readout on")).toBeVisible();
-  await lens.getByTitle("turn live readout on").click();
-  await expect(lens.getByTitle("turn live readout off")).toBeVisible();
+  await expect(lens.locator('[aria-description="turn live readout off"]')).toBeVisible();
+  await lens.locator('[aria-description="turn live readout off"]').click();
+  await expect(lens.locator('[aria-description="turn live readout on"]')).toBeVisible();
+  await lens.locator('[aria-description="turn live readout on"]').click();
+  await expect(lens.locator('[aria-description="turn live readout off"]')).toBeVisible();
   await lens.getByRole("textbox", { name: "Add a word prediction direction" }).fill("fixture");
   await lens.getByRole("button", { name: "Add word", exact: true }).click();
   await expect(lens.locator(".steer-cards")).toContainText("fixture");
@@ -1288,11 +1298,11 @@ test("installed J-lens and SAE packs are usable without preparation errors", asy
   await expect(sae.getByText("Create on this device", { exact: true })).toHaveCount(0);
   await expect(sae.getByLabel("SAE training tokens")).toHaveCount(0);
   await expect(sae.getByRole("button", { name: /^(confirm )?train$/i })).toHaveCount(0);
-  await expect(sae.getByTitle("turn live readout off")).toBeVisible();
-  await sae.getByTitle("turn live readout off").click();
-  await expect(sae.getByTitle("turn live readout on")).toBeVisible();
-  await sae.getByTitle("turn live readout on").click();
-  await expect(sae.getByTitle("turn live readout off")).toBeVisible();
+  await expect(sae.locator('[aria-description="turn live readout off"]')).toBeVisible();
+  await sae.locator('[aria-description="turn live readout off"]').click();
+  await expect(sae.locator('[aria-description="turn live readout on"]')).toBeVisible();
+  await sae.locator('[aria-description="turn live readout on"]').click();
+  await expect(sae.locator('[aria-description="turn live readout off"]')).toBeVisible();
   await sae.getByRole("textbox", { name: "Add a model feature direction" }).fill("7");
   await sae.getByRole("button", { name: "Add feature", exact: true }).click();
   await expect(sae.locator(".steer-cards")).toContainText("7");
@@ -1386,8 +1396,7 @@ test("models without an SAE say that no SAE is available", async ({ page }) => {
 
 test("changing models closes the runtime and opens installed model choices", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("model settings");
   await page.keyboard.press("Enter");
@@ -1427,7 +1436,7 @@ test("installed standard and R-lens packs swap live without fitting", async ({ p
   await expect(source).toContainText("fixture-rlens");
   await expect(lens.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
 
-  await expect(lens.getByTitle("turn live readout off")).toBeVisible();
+  await expect(lens.locator('[aria-description="turn live readout off"]')).toBeVisible();
   await lens.getByRole("textbox", { name: "Add a word prediction direction" }).fill("fixture");
   await lens.getByRole("button", { name: "Add word", exact: true }).click();
   await lens.getByRole("textbox", { name: "Watch a prediction word" }).fill("fixture");
@@ -1450,7 +1459,7 @@ test("hover replay routes the exact token request and exposes a recoverable fail
   const instrumentTabs = page.getByRole("group", { name: "Response guidance type" });
   await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
   const lens = page.getByLabel("Layer prediction controls");
-  await lens.getByTitle("turn live readout off").click();
+  await lens.locator('[aria-description="turn live readout off"]').click();
   await openWorkspace(page, "Conversation");
 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create a replayable token");
@@ -1685,9 +1694,12 @@ test("fixture survives repeated generation, stop, and reload cycles", async ({ p
   const runGeneration = async (prompt: string, stopEarly: boolean) => {
     const composer = page.getByRole("textbox", { name: /^Compose as / });
     const stop = page.getByRole("button", { name: /^Stop$/i });
-    const response = page.locator(".msg .response-body").last();
+    const responses = page.locator(".msg:has(.model-avatar) .response-body");
+    const previousResponses = await responses.count();
+    const response = responses.last();
     await composer.fill(prompt);
     await sendButton(page).click();
+    await expect(responses).toHaveCount(previousResponses + 1);
     if (stopEarly) {
       await expect(response).toContainText("This");
       await stop.dispatchEvent("click");
@@ -2470,8 +2482,7 @@ test("deleting the active model unloads it and removes its files while preservin
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeEnabled();
 
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("model settings");
   await page.keyboard.press("Enter");
@@ -2752,8 +2763,7 @@ test("mobile workbench targets, bidi fields, and transcript radios remain keyboa
 
 test("unsupported authoring commands are filtered before runtime requests", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const paletteSearch = page.getByRole("combobox", { name: "Filter commands" });
   await paletteSearch.fill("templates");
   await expect(page.getByText(
@@ -2768,6 +2778,30 @@ test("unsupported authoring commands are filtered before runtime requests", asyn
     { exact: true },
   )).toBeVisible();
   await expect(page.locator('section[aria-label="Manifold builder"]')).toHaveCount(0);
+});
+
+test("browser Top K controls support the full vocabulary", async ({ page }) => {
+  await openFixtureWorkbench(page);
+  const maxTokens = page.getByRole("spinbutton", { name: "Max tokens", exact: true });
+  if (!await maxTokens.isVisible()) await page.getByRole("button", { name: /^Controls/ }).click();
+  await expect(maxTokens).toHaveAttribute("max", "2048");
+  await maxTokens.fill("2048");
+  await maxTokens.press("Tab");
+  await expect(maxTokens).toHaveValue("2048");
+  await page.evaluate(async (url) => (await import(url)).openDrawer("advanced_sampling"), toastModuleUrl);
+  const drawer = page.getByRole("dialog", { name: "Sampling settings", exact: true });
+  const topK = drawer.getByRole("spinbutton", { name: "Top K", exact: true });
+  await expect(topK).toHaveAttribute("max", String(Number.MAX_SAFE_INTEGER));
+  await expect(topK).toHaveAttribute("placeholder", "Default (1024)");
+  await topK.fill("262144");
+  await topK.press("Tab");
+  await expect(topK).toHaveValue("262144");
+  const alternatives = drawer.getByRole("spinbutton", { name: "Return top K", exact: true });
+  await alternatives.fill("262144");
+  await alternatives.press("Tab");
+  await expect(alternatives).toHaveValue("262144");
+  await drawer.getByRole("button", { name: "About Top K", exact: true }).click();
+  await expect(drawer.getByRole("tooltip").filter({ hasText: /^Top K / })).toContainText("full model vocabulary");
 });
 
 test("captured probe readings are not relabeled as unsteered replay results", async ({ page }) => {
@@ -2801,11 +2835,11 @@ test("captured probe readings are not relabeled as unsteered replay results", as
     await drawer.getByRole("button", { name: tab }).click();
     await expect(drawer.locator(".inst-head .origin")).toHaveText("captured");
     await expect(drawer.getByLabel("Pinned probe readings")).toContainText(name);
-    await drawer.getByRole("button", { name: "recipe on", exact: true }).click();
+    await drawer.getByRole("button", { name: "Steering on", exact: true }).click();
     await expect(drawer.locator(".inst-head .origin")).toHaveText("replayed");
-    await expect(drawer.getByTitle("Computed without steering so you can compare it with the steered readout.")).toBeVisible();
+    await expect(drawer.locator('[aria-description="Computed without steering so you can compare it with the steered readout."]')).toBeVisible();
     await expect(drawer.getByLabel("Pinned probe readings")).toHaveCount(0);
-    await drawer.getByRole("button", { name: "recipe off", exact: true }).click();
+    await drawer.getByRole("button", { name: "Steering off", exact: true }).click();
     await expect(drawer.locator(".inst-head .origin")).toHaveText("captured");
     await expect(drawer.getByLabel("Pinned probe readings")).toContainText(name);
   }
@@ -2865,7 +2899,7 @@ test("token inspection has one keyboard entry point and restores focus", async (
     .toBe(workspaceX);
 });
 
-test("the J-lens matrix scrolls with the drawer and keeps its tooltips contained", async ({ page }) => {
+test("the J-lens matrix scrolls with the drawer and shows cell readings without hover tips", async ({ page }) => {
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create a tall J-lens matrix");
   await sendButton(page).click();
@@ -2930,23 +2964,10 @@ test("the J-lens matrix scrolls with the drawer and keeps its tooltips contained
   await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBe(0);
 
   await grid.locator(".lens-cell").last().hover();
-  const tooltip = page.locator("#drowse-tooltip");
-  await expect(tooltip).toHaveAttribute("aria-hidden", "false");
-  const tooltipBounds = await tooltip.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    return {
-      top: rect.top,
-      right: rect.right,
-      bottom: rect.bottom,
-      left: rect.left,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-    };
-  });
-  expect(tooltipBounds.top).toBeGreaterThanOrEqual(7);
-  expect(tooltipBounds.left).toBeGreaterThanOrEqual(7);
-  expect(tooltipBounds.right).toBeLessThanOrEqual(tooltipBounds.viewportWidth - 7);
-  expect(tooltipBounds.bottom).toBeLessThanOrEqual(tooltipBounds.viewportHeight - 7);
+  await expect(page.locator("#drowse-tooltip")).toHaveCount(0);
+  await expect(grid.locator(".lens-cell[title]")).toHaveCount(0);
+  const description = await grid.locator(".lens-cell").last().getAttribute("aria-description");
+  await expect(page.locator(".focused-readout")).toHaveText(description!);
 });
 
 test("error notifications are sticky and timed notifications pause while inspected", async ({
@@ -2968,7 +2989,7 @@ test("error notifications are sticky and timed notifications pause while inspect
       const header = (await page.locator(".app-header").boundingBox())!;
       return toast.y >= header.y + header.height;
     }).toBe(true);
-    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+    await openWorkspaceMenu(page);
     await expect(page.getByRole("dialog", { name: "Workspace menu", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
   }
@@ -2992,8 +3013,7 @@ test("portable pack management remains available when browser fitting is disable
   await page.setViewportSize({ width: 390, height: 844 });
   await openFixtureWorkbench(page);
 
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const paletteSearch = page.getByRole("combobox", { name: "Filter commands" });
   await paletteSearch.fill("packs");
   await page.getByRole("option", { name: /^Manage downloaded controls\b/i }).click();

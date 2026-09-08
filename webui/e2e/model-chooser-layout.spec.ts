@@ -20,7 +20,7 @@ test("new chat separates all model types without clipping and keeps downloads in
       ["qwen-large", "Qwen3 4B", "chat", false],
       ["gemma-base", "Gemma 3 1B PT", "base", true],
       ["pythia-base", "Pythia 70M Deduped Base", "base", true],
-      ["gpt-base", "GPT-2 Base", "base", true],
+      ["gpt-base", "GPT-2 Base (124M)", "base", true],
       ["qwen-base", "Qwen 3.5 2B Base", "base", true],
     ].map(([id, name, modelType, setupComplete]) => ({ id, modelId: id, name, modelType, setupComplete, fit: "supported" }));
     mount(HostedHome, { target, props: {

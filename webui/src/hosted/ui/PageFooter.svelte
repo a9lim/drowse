@@ -1,5 +1,6 @@
 <script lang="ts">
-  let { current, hosted = true, compact = false }: { current?: "credits"; hosted?: boolean; compact?: boolean } = $props();
+  import { CONTACT_ADDRESS } from "../../lib/contact";
+  let { current, hosted = true, compact = false }: { current?: "credits" | "contact"; hosted?: boolean; compact?: boolean } = $props();
 
   const releaseBuild = typeof __DROWSE_HOSTED_RELEASE__ !== "undefined" && __DROWSE_HOSTED_RELEASE__;
   const sourceRevision = typeof __DROWSE_SOURCE_REVISION__ === "string" ? __DROWSE_SOURCE_REVISION__ : "preview";
@@ -9,13 +10,14 @@
 <footer class="page-footer" class:compact>
   <div class="footer-content">
     <div class="project-info">
-      <span>Open source · AGPL-3.0-or-later</span>
-      {#if releaseBuild}<span class="build" title={sourceRevision}>Build {sourceRevision.slice(0, 12)}</span>{/if}
+      <span>Open source · GNU AGPL v3 or later</span>
+      {#if releaseBuild}<span class="build" {...{ "aria-description": (sourceRevision) }}>Build {sourceRevision.slice(0, 12)}</span>{/if}
     </div>
     <nav aria-label="Footer">
       {#if hosted}<a href="/credits" aria-current={current === "credits" ? "page" : undefined}>Credits</a>{/if}
+      <a href={hosted ? "/contact" : "https://drowse.ai/contact"} aria-current={current === "contact" ? "page" : undefined}>Contact us</a>
+      <a href={`mailto:${CONTACT_ADDRESS}`}>{CONTACT_ADDRESS}</a>
       <a href={sourceUrl} rel="noreferrer">Contribute</a>
-      <a href={hosted ? "/LICENSE" : `${sourceUrl}/blob/main/LICENSE`}>License</a>
     </nav>
   </div>
 </footer>

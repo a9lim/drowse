@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   // The steering rack — the STEER section of one instrument tab.  Since the
   // four-pillar restructure the geometry family comes in as a prop (the tab
   // IS the group), so the rack renders exactly one family's terms:
@@ -65,7 +66,7 @@
             oninput={onAlongInput}
             ariaLabel="Subspace steering strength"
           />
-          <span class="along-val">{steerRack.subspaceAlong.toFixed(2)}</span>
+          <span class="along-val"><MorphText text={steerRack.subspaceAlong.toFixed(2)} /></span>
         </div>
       {/if}
       {#each terms as [name, entry] (name)}

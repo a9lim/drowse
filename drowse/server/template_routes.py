@@ -10,7 +10,6 @@ template itself + its scoring.
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException
@@ -26,6 +25,7 @@ from drowse.io.templates import (
     resolve_template,
     template_dir,
 )
+from drowse.server.streaming import run_in_thread
 from drowse.server.app import acquire_session_lock
 from drowse.server.native_common import NativeRequest
 from drowse.server.response_models import (
@@ -145,7 +145,7 @@ def register_template_routes(app: FastAPI) -> None:
             if not acquired:
                 raise HTTPException(503, "session locked")
             try:
-                per_ctx = await asyncio.to_thread(
+                per_ctx = await run_in_thread(
                     session.score_template, tmpl, steering=req.steering,
                 )
             except Exception as e:  # steering-expr / scoring failure → 400

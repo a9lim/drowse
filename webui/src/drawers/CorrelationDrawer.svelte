@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Correlation overlay — N×N magnitude-weighted cosine matrix across the
   // profiles the runtime can represent as one residual direction. Readout,
@@ -77,6 +78,7 @@
   /** Cell pixel size — wider than the click-drilldown's grid because
    * we want to read the printed cosine value inside each cell, and
    * narrow column count (typical N=20-40) leaves room. */
+  let focusedCell = $state("Select a cell to inspect its value");
   const CELL_SIZE = 26;
 </script>
 
@@ -111,7 +113,7 @@
       <span>Omitted unsupported probes:</span>
       {#each omissions as omission, index (omission.name)}
         {#if index > 0}<span aria-hidden="true">, </span>{/if}
-        <code title={omission.reason}>{omission.name}</code>
+        <code {...{ "aria-description": (omission.reason) }}>{omission.name}</code>
         <span class="omission-reason"> ({omission.reason})</span>
       {/each}
     </div>
@@ -125,13 +127,14 @@
     {:else if !data || names.length === 0}
       <div class="empty">No single-direction profiles are available for correlation.</div>
     {:else}
+      <p class="focused-cell" role="status"><MorphText text={focusedCell} numbers={false} /></p>
       <div class="grid-scroll">
         <table class="grid" style="--cell: {CELL_SIZE}px;">
           <thead>
             <tr>
               <th class="corner" scope="col">name</th>
               {#each names as col (col)}
-                <th class="col-label" scope="col" title={col}>
+                <th class="col-label" scope="col" {...{ "aria-description": (col) }}>
                   <span>{col}</span>
                 </th>
               {/each}
@@ -140,15 +143,17 @@
           <tbody>
             {#each names as a (a)}
               <tr>
-                <th class="row-label" scope="row" title={a}>{a}</th>
+                <th class="row-label" scope="row" {...{ "aria-description": (a) }}>{a}</th>
                 {#each names as b (b)}
                   {@const v = data.matrix[a]?.[b] ?? null}
                   <td class="cell-td">
+                    <button class="matrix-pick" type="button" onpointerenter={() => focusedCell = cellTitle(a, b, v)} onfocus={() => focusedCell = cellTitle(a, b, v)} onclick={() => focusedCell = cellTitle(a, b, v)} aria-label={cellTitle(a, b, v)}>
                     <HeatmapCell
                       value={v}
                       size={CELL_SIZE}
                       title={cellTitle(a, b, v)}
                     />
+                    </button>
                   </td>
                 {/each}
               </tr>
@@ -162,6 +167,8 @@
 </aside>
 
 <style>
+  .matrix-pick { display: grid; place-items: center; min-width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; cursor: crosshair; }
+  .focused-cell { min-height: 2em; font: var(--text-sm)/1.5 var(--font-mono); overflow-wrap: anywhere; }
   /* v2 sheet interior — the host paints the sheet surface (glass hairline,
    * radius, --bg-alt fill), so the root is transparent; chrome speaks sans
    * and every value/identifier/expression sits in mono. */

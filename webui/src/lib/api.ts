@@ -1046,21 +1046,17 @@ function parseSseFrame(frame: string): SseEvent | null {
 
 // ================================================================ WS ===
 
-/** Open a WebSocket to the per-session token+probe co-stream.  Auth tokens
- * can't ride a custom header on the browser WS API; the server's
- * ``ws_auth_ok`` accepts a query-string ``?token=...`` fallback for
- * Origin checks but the bearer is enforced on the HTTP side too — for
- * now we send the token as a query param when present.  When the API key
- * is unset the connection is open. */
+/** Open the session stream with credentials in the handshake header. */
 export function connectWs(id: string = SESSION): WebSocket {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  let url = `${proto}://${location.host}${SESSION_BASE(id)}/stream`;
+  const url = `${proto}://${location.host}${SESSION_BASE(id)}/stream`;
+  const protocols = ["drowse.v1"];
   const apiKey = getApiKey();
   if (apiKey) {
-    // Token-as-query-param is the standard fallback for browser WS auth
-    // since the constructor can't set Authorization.  Server-side
-    // middleware must accept it via ``ws_auth_ok``.
-    url += `?token=${encodeURIComponent(apiKey)}`;
+    const bytes = new TextEncoder().encode(apiKey);
+    const encoded = btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(""))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    protocols.push(`drowse.auth.${encoded}`);
   }
-  return new WebSocket(url);
+  return new WebSocket(url, protocols);
 }

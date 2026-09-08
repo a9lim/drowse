@@ -134,6 +134,7 @@ include = [
     "examples",
 ]
 exclude = ["**/__pycache__", "**/node_modules"]
+extraPaths = ["browser-runtime"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = false

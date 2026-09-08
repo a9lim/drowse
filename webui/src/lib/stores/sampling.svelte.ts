@@ -84,6 +84,10 @@ export function setSampling<K extends keyof SamplingState>(
   key: K,
   value: SamplingState[K],
 ): void {
+  if (key === "max_tokens") {
+    samplingState.max_tokens = clampOutputTokenCount(value as number, outputTokenLimit());
+    return;
+  }
   samplingState[key] = value;
 }
 
@@ -100,7 +104,10 @@ let _roleDefaultsSignature: string | null = null;
 export const modelDefaultsState: { info: SessionInfo | null } = $state({ info: null });
 
 function outputTokenLimit(): number {
-  return outputTokenLimitForSignals(getRuntimeCapabilities()?.signals);
+  return outputTokenLimitForSignals(
+    getRuntimeCapabilities()?.signals,
+    getHostedController()?.snapshot.contextTokens ?? undefined,
+  );
 }
 
 export function hydrateSamplingFromInfo(): void {

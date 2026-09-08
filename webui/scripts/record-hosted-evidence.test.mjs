@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promise
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
+import { parse as parseYaml } from "yaml";
 import runtimeLock from "../../browser-runtime/runtime-lock.json" with { type: "json" };
 import {
   createBenchmarkRunRecord,
@@ -637,29 +638,16 @@ test("attestation verifier accepts only this repository's CI signer", () => {
   );
 });
 
-test("CI attests producer output and verifies every referenced evidence subject", async () => {
-  const workflow = await readFile(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
-  assert.match(workflow, /release-evidence-trust:/);
-  assert.match(
-    workflow,
-    /release-evidence-trust:[\s\S]*?permissions:\s+attestations: read\s+contents: read/,
-  );
-  assert.match(workflow, /verify-hosted-evidence-attestations\.mjs/);
-  assert.match(workflow, /--signer-workflow \"\$DROWSE_ATTESTATION_SIGNER\"/);
-  assert.match(workflow, /attest-local-release-evidence:/);
-  assert.match(workflow, /environment: release-evidence/);
-  assert.match(workflow, /attestations: write/);
-  assert.match(workflow, /id-token: write/);
-  assert.match(
-    workflow,
-    /actions\/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d/,
-  );
-  assert.match(
-    workflow,
-    /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/,
-  );
-  assert.match(workflow, /subject-path: \$\{\{ steps\.evidence\.outputs\.path \}\}/);
-  assert.match(workflow, /\$\{\{ steps\.attest\.outputs\.bundle-path \}\}/);
+test("ordinary CI validates evidence tools without requiring release signing", async () => {
+  const workflow = parseYaml(await readFile(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8"));
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  for (const job of Object.values(workflow.jobs)) {
+    assert.notEqual(job.environment, "release-evidence");
+    assert.notEqual(job.permissions?.attestations, "write");
+    assert.notEqual(job.permissions?.["id-token"], "write");
+  }
+  const manifest = JSON.parse(await readFile(resolve(repositoryRoot, "webui/package.json"), "utf8"));
+  assert.match(manifest.scripts["check:hosted"], /npm run test:evidence-tools/);
 });
 
 test("durable evidence verification covers referenced gates and canonical benchmark rows", async () => {
@@ -702,7 +690,7 @@ test("durable evidence verification covers referenced gates and canonical benchm
       assert.deepEqual(call.args.slice(0, 2), ["attestation", "verify"]);
       assert.ok(call.args.includes("a9lim/drowse/.github/workflows/ci.yml"));
       assert.ok(call.args.includes(revision));
-      assert.ok(call.args.includes("https://slsa.dev/provenance/v1"));
+      assert.ok(call.args.some((argument) => argument === "https://slsa.dev/provenance/v1"));
     }
   } finally {
     await root.remove();

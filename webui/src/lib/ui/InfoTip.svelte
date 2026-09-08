@@ -18,6 +18,7 @@
   let disposed = false;
   let hovered = false;
   let touchInteraction = false;
+  let hoverOpenTimer: ReturnType<typeof setTimeout> | undefined;
   let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
   const id = $props.id();
   const presence = dropdownMotion();
@@ -26,12 +27,14 @@
     if (event.pointerType === "touch") return;
     clearTimeout(hoverCloseTimer);
     hovered = true;
-    open = true;
+    clearTimeout(hoverOpenTimer);
+    hoverOpenTimer = setTimeout(() => { open = true; }, 300);
   }
 
   function leave(event: PointerEvent): void {
     if (event.pointerType === "touch") return;
     hovered = false;
+    clearTimeout(hoverOpenTimer);
     clearTimeout(hoverCloseTimer);
     hoverCloseTimer = setTimeout(() => {
       if (document.activeElement !== trigger || !trigger.matches(":focus-visible")) open = false;
@@ -76,7 +79,10 @@
 
   onMount(() => {
     const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !trigger.contains(event.target) && !tip.contains(event.target)) open = false;
+      if (event.target instanceof Node && !trigger.contains(event.target) && !tip.contains(event.target)) {
+        clearTimeout(hoverOpenTimer);
+        open = false;
+      }
     };
     document.addEventListener("pointerdown", outside, true);
     document.addEventListener("keydown", closeOnEscape, true);
@@ -86,6 +92,7 @@
     window.visualViewport?.addEventListener("scroll", place);
     return () => {
       disposed = true;
+      clearTimeout(hoverOpenTimer);
       clearTimeout(hoverCloseTimer);
       presence.destroy();
       document.removeEventListener("pointerdown", outside, true);
@@ -99,6 +106,7 @@
 
   function closeOnEscape(event: KeyboardEvent): void {
     if (event.key !== "Escape") return;
+    clearTimeout(hoverOpenTimer);
     if (!open) return;
     open = false;
     event.preventDefault();
@@ -125,9 +133,9 @@
     aria-label={label}
     aria-describedby={id}
     aria-expanded={open}
-    onfocus={() => { if (trigger.matches(":focus-visible")) open = true; }}
+    onfocus={() => { if (trigger.matches(":focus-visible")) { clearTimeout(hoverOpenTimer); open = true; } }}
     onpointerdown={(event) => { touchInteraction = event.pointerType === "touch"; }}
-    onclick={(event) => { open = event.detail > 0 && touchInteraction ? !open : true; }}
+    onclick={(event) => { clearTimeout(hoverOpenTimer); clearTimeout(hoverCloseTimer); open = event.detail > 0 && touchInteraction ? !open : true; }}
   ><FluentIcon name="help" size={20} /></button>
   <span bind:this={tip} id={id} class="info-popover t-dropdown" role="tooltip" popover="manual" style={position}>{text}</span>
 </span>
@@ -185,11 +193,11 @@
     margin: 0;
     width: max-content;
     max-width: min(18rem, calc(100vw - 2rem));
-    padding: var(--surface-padding) var(--surface-padding);
-    border: 1px solid var(--popup-border);
+    padding: calc(var(--space-sm) / 2) var(--space-sm);
+    border: 0;
     border-radius: var(--popup-radius);
     background: var(--surface-sheen), var(--popup-bg);
-    box-shadow: var(--popup-shadow);
+    box-shadow: 0 0 0 1px var(--popup-border), var(--popup-shadow);
     color: var(--fg-strong);
     font-family: var(--font-reading);
     font-size: var(--text-sm);

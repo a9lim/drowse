@@ -28,6 +28,7 @@ from drowse.io.paths import decode_release_id, encode_release_id, model_dir
 from drowse.io.source_registry import ActiveSourceRegistry
 
 SAE_RUNTIME_FORMAT_VERSION = 3
+SAE_FEATURE_META_FORMAT_VERSION = 4
 SAE_SOURCE_FORMAT_VERSION = 1
 _RUNTIME_FIELDS = {
     "layer", "width", "revision", "fingerprint", "sae_id", "repo_id",
@@ -229,7 +230,16 @@ def _validate_feature_entry(value: Any) -> dict[str, Any] | None:
     return {"label": label, "max_act": None if max_act is None else float(max_act)}
 
 
-def load_sae_feature_meta(model_id: str, release: str) -> dict[str, dict[str, Any]]:
+def _feature_source(
+    model_id: str, release: str, source: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    source = source if source is not None else load_sae_metadata(model_id, release)
+    return {key: source[key] for key in sorted(_RUNTIME_FIELDS)} if source is not None else None
+
+
+def load_sae_feature_meta(
+    model_id: str, release: str, *, source: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Load the current ``{feature_id: {label, max_act}}`` metadata cache."""
     path = sae_features_path(model_id, release)
     if not path.exists():
@@ -240,10 +250,11 @@ def load_sae_feature_meta(model_id: str, release: str) -> dict[str, dict[str, An
         return {}
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"format_version", "model_id", "release", "features"}
-        or payload["format_version"] != SAE_RUNTIME_FORMAT_VERSION
+        or set(payload) != {"format_version", "model_id", "release", "source", "features"}
+        or payload["format_version"] != SAE_FEATURE_META_FORMAT_VERSION
         or payload["model_id"] != model_id
         or payload["release"] != release
+        or payload["source"] != _feature_source(model_id, release, source)
     ):
         return {}
     features = payload["features"]
@@ -263,6 +274,7 @@ def load_sae_feature_meta(model_id: str, release: str) -> dict[str, dict[str, An
 
 def save_sae_feature_meta(
     model_id: str, release: str, features: dict[str, dict[str, Any]],
+    *, source: dict[str, Any] | None = None,
 ) -> Path:
     normalized: dict[str, dict[str, Any]] = {}
     for key, value in features.items():
@@ -282,9 +294,10 @@ def save_sae_feature_meta(
     path = sae_features_path(model_id, release)
     with artifact_lock(path):
         write_json_atomic(path, {
-            "format_version": SAE_RUNTIME_FORMAT_VERSION,
+            "format_version": SAE_FEATURE_META_FORMAT_VERSION,
             "model_id": model_id,
             "release": release,
+            "source": _feature_source(model_id, release, source),
             "features": normalized,
         })
     return path
@@ -344,6 +357,14 @@ def list_sae_sources(model_id: str) -> list[dict[str, Any]]:
         metadata = load_sae_metadata(model_id, release)
         if metadata is None:
             continue
+        neuronpedia_id = metadata["neuronpedia_id"]
+        description_source = None
+        if isinstance(neuronpedia_id, str) and "/" in neuronpedia_id and metadata["repo_id"] and metadata["sae_id"]:
+            model, dictionary = neuronpedia_id.split("/", 1)
+            description_source = {
+                "model": model, "source": dictionary,
+                "repository": metadata["repo_id"], "saeId": metadata["sae_id"],
+            }
         rows.append({
             "source": f"saelens:{release}",
             "kind": "saelens",
@@ -356,5 +377,6 @@ def list_sae_sources(model_id: str) -> list[dict[str, Any]]:
             "path": str(path),
             "layer": metadata["layer"],
             "features": metadata["width"],
+            "description_source": description_source,
         })
     return rows

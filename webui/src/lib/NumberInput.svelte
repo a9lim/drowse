@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "./ui/MorphText.svelte";
   import FluentIcon from "./ui/FluentIcon.svelte";
   // Themed numeric input — strips the OS spinner buttons, exposes a
   // hover-revealed ▴/▾ pair on the right edge.  Keyboard ↑/↓ still
@@ -55,6 +56,7 @@
     onkeydown,
   }: Props = $props();
 
+  let editing = $state(false);
   let inputEl: HTMLInputElement | null = $state(null);
 
   /** Imperative focus — bound parents can call ``ref.focus()`` to drop
@@ -79,12 +81,14 @@
 
   function emitInput(v: number | null): void {
     const next = clamp(v);
+    if (inputEl && next !== v) inputEl.value = next === null ? "" : String(next);
     value = next;
     oninput?.(next);
   }
 
   function emitChange(v: number | null): void {
     const next = clamp(v);
+    if (inputEl && next !== v) inputEl.value = next === null ? "" : String(next);
     value = next;
     onchange?.(next);
   }
@@ -149,9 +153,11 @@
   }
 </script>
 
-<span class="sk-number" class:is-disabled={disabled} class:is-invalid={invalid}>
+<span class="sk-number" class:is-disabled={disabled} class:is-invalid={invalid} class:resting={!editing && value !== null}>
   <input
     bind:this={inputEl}
+    onfocus={() => editing = true}
+    onblur={() => editing = false}
     type="number"
     class="sk-number-input"
     value={value === null ? "" : value}
@@ -160,7 +166,7 @@
     {step}
     {placeholder}
     {disabled}
-    {title}
+    {...{ "aria-description": (title) }}
     aria-label={ariaLabel}
     aria-invalid={invalid}
     aria-describedby={ariaDescribedby}
@@ -168,6 +174,9 @@
     onchange={onChange}
     onkeydown={handleKeydown}
   />
+  {#if !editing && value !== null}
+    <span class="number-rest" aria-hidden="true"><MorphText text={String(value)} /></span>
+  {/if}
   {#if !disabled}
     <span class="sk-number-steppers" aria-hidden="true">
       <button
@@ -187,6 +196,9 @@
 </span>
 
 <style>
+  .resting .sk-number-input { color: transparent; }
+  .number-rest { position: absolute; inset-inline: calc(var(--space-3) + 1px) var(--space-6); top: 50%; transform: translateY(-50%); pointer-events: none; font: var(--text-sm)/normal var(--font-mono); color: var(--fg); overflow: hidden; }
+  .is-disabled .number-rest { opacity: .5; }
   .sk-number {
     position: relative;
     display: inline-flex;

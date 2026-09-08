@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import { onMount } from "svelte";
   import Bar from "../lib/charts/Bar.svelte";
   import Button from "../lib/ui/Button.svelte";
@@ -104,7 +105,7 @@
         bind:value={fitPrompts}
         placeholder="100"
         aria-label="J-lens corpus prompts"
-        title="1–5000"
+        {...{ "aria-description": "1–5000" }}
       />
     </label>
     <label class="setup-field setup-field-wide">
@@ -114,7 +115,7 @@
         bind:value={fitLayers}
         placeholder="workspace | all | 13,14,…"
         aria-label="J-lens source layers"
-        title="workspace | all | layer ids"
+        {...{ "aria-description": "workspace | all | layer ids" }}
       />
     </label>
     <label class="setup-field setup-field-medium">
@@ -125,21 +126,21 @@
         class:relp-on={fitRelp}
         onclick={() => (fitRelp = !fitRelp)}
         aria-pressed={fitRelp}
-        title="RelP (default) · saves as local:relp"
+        {...{ "aria-description": "RelP (default) · saves as local:relp" }}
       >{fitRelp ? "relp (R-lens)" : "standard"}</button>
     </label>
   {/snippet}
   {#snippet progress()}
     {#if lensFetch.state.running}
       <p class="work-status loading-pulse loading-placeholder" role="status" aria-live="polite">
-        {lensFetch.state.message ?? "fetching official lens…"}
+        <MorphText text={lensFetch.state.message ?? "fetching official lens…"} />
       </p>
     {:else}
       <div class="fit-progress loading-pulse loading-placeholder" role="status" aria-live="polite" aria-label="Lens fit progress">
         <div class="fit-line">
-          <span class="fit-msg">{lensFit.state.message ?? "fitting…"}</span>
+          <span class="fit-msg"><MorphText text={lensFit.state.message ?? "fitting…"} /></span>
           {#if lensFit.state.total > 0}
-            <span class="fit-count">{lensFit.state.current}/{lensFit.state.total}</span>
+            <span class="fit-count"><MorphText text={`${lensFit.state.current}/${lensFit.state.total}`} /></span>
           {/if}
         </div>
         <div
@@ -173,7 +174,7 @@
           disabled={lensFit.state.cancelling}
           onclick={() => void lensFit.cancel()}
         >
-          {lensFit.state.cancelling ? "cancelling…" : "cancel"}
+          <MorphText text={lensFit.state.cancelling ? "cancelling…" : "cancel"} />
         </Button>
       </div>
     {/if}

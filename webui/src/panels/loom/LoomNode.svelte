@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   // A completion node in the loom canvas. Generated completions expose their
   // actual model-token rows directly; authored text remains one editable
@@ -243,7 +244,7 @@
   <span class="node-head">
     <span class="identity">
       <span class="glyph" aria-hidden="true">{roleGlyph(node)}</span>
-      <span class="role-name">{sharedCount ? "shared prefix" : roleName}</span>
+      <span class="role-name"><MorphText text={sharedCount ? "shared prefix" : roleName} numbers={false} /></span>
       {#if ringColor}
         <span class="ring" style="border-color: {ringColor}" aria-hidden="true"></span>
       {/if}
@@ -253,12 +254,12 @@
       {#if sharedCount}<span class="current-label">{sharedCount} paths</span>{/if}
       {#if current}<span class="current-label">current</span>{/if}
       {#if !sharedCount}
-      {#if node.starred}<span class="star" title="Saved branch" aria-hidden="true"><FluentIcon name="star" /></span>{/if}
+      {#if node.starred}<span class="star" {...{ "aria-description": "Saved branch" }} aria-hidden="true"><FluentIcon name="star" /></span>{/if}
       <button
         type="button"
         class="node-actions"
         aria-label={`Actions for ${roleName}: ${preview}`}
-        title="Message actions"
+        {...{ "aria-description": "Message actions" }}
         onclick={(ev) => {
           ev.stopPropagation();
           onactions?.(ev);
@@ -290,7 +291,7 @@
                 data-loom-token-node={node.id}
                       data-token-index={tokenIndex}
                 data-raw-index={token.raw_index ?? undefined}
-                title={`${tokenTitle(tokenIndex, token.text, sharedCount ? null : token.logprob)} · Open branch-point tools`}
+                {...{ "aria-description": (`${tokenTitle(tokenIndex, token.text, sharedCount ? null : token.logprob)} · Open branch-point tools`) }}
                 aria-label={`Open token ${tokenIndex + 1}: ${tokenName(token.text)}`}
                 aria-haspopup="dialog"
                 onclick={(ev) => {
@@ -304,9 +305,9 @@
             type="button"
             class="sentence-branch"
             disabled={!canBranch}
-            title={canBranch
+            {...{ "aria-description": (canBranch
               ? "Keep this sentence and generate a different continuation"
-              : "This saved reply does not have an exact replay boundary"}
+              : "This saved reply does not have an exact replay boundary") }}
             aria-label={`Branch after sentence ${sentenceIndex + 1}: ${sentence.text.trim()}`}
             onclick={(ev) => {
               ev.stopPropagation();
@@ -317,41 +318,41 @@
       {/each}
     </div>
   {:else}
-    <span class="preview">{streaming ? "Preparing continuation…" : tokenStart > 0 ? "End of reply" : preview}</span>
+    <span class="preview"><MorphText text={streaming ? "Preparing continuation…" : tokenStart > 0 ? "End of reply" : preview} /></span>
   {/if}
   {#if sharedCount}
     <span class="shared-hint">Token tools use {sharedUsesActivePath ? "the current" : "the first listed"} path’s readings.</span>
   {/if}
   {#if !sharedCount && (forkLabel || steerLabel || weightBadge != null || node.notes)}
     <span class="node-meta">
-      {#if forkLabel}<span class="fork" title="Where this reply diverged">{forkLabel}</span>{/if}
-      {#if steerLabel}<span class="steer" title="Guidance changed on this branch">{steerLabel}</span>{/if}
+      {#if forkLabel}<span class="fork" {...{ "aria-description": "Where this reply diverged" }}>{forkLabel}</span>{/if}
+      {#if steerLabel}<span class="steer" {...{ "aria-description": "Guidance changed on this branch" }}>{steerLabel}</span>{/if}
       {#if weightBadge != null}
-        <span class="weight" title="Average token log probability">
-          <span aria-hidden="true">log p</span> {weightBadge.toFixed(2)}
+        <span class="weight" {...{ "aria-description": "Average token log probability" }}>
+          <span aria-hidden="true">log p</span> <MorphText text={weightBadge.toFixed(2)} />
         </span>
       {/if}
-      {#if node.notes}<span class="note-mark" title={node.notes} aria-label="Has a note">●</span>{/if}
+      {#if node.notes}<span class="note-mark" {...{ "aria-description": (node.notes) }} aria-label="Has a note">●</span>{/if}
     </span>
   {/if}
   {#if !sharedCount}
   <span class="node-tools" aria-label="Branch actions">
     <button
       type="button"
-      title="Generate another path from here"
+      {...{ "aria-description": "Generate another path from here" }}
       aria-label={`Generate another path from ${roleName}`}
       onclick={(ev) => { ev.stopPropagation(); ongrow?.(ev); }}
     >Generate</button>
     <button
       type="button"
-      title="Write an alternative at this point"
+      {...{ "aria-description": "Write an alternative at this point" }}
       aria-label={`Write an alternative to ${roleName}`}
       onclick={(ev) => { ev.stopPropagation(); onbranch?.(ev); }}
     >Write</button>
     {#if hasChildren}
       <button
         type="button"
-        title={collapsed ? "Show paths after this point" : "Hide paths after this point"}
+        {...{ "aria-description": (collapsed ? "Show paths after this point" : "Hide paths after this point") }}
         aria-label={collapsed ? "Show child paths" : "Hide child paths"}
         aria-pressed={collapsed}
         onclick={(ev) => { ev.stopPropagation(); ontogglechildren?.(ev); }}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // One identity-row grammar for every token-drilldown evidence card.
   // The fixed leading slot and centrally owned type scale keep ranks and
   // family markers on the same baseline across logits, geometry, SAE, and
@@ -39,21 +40,21 @@
 
 <div class="header">
   <span class="lead">{@render lead()}</span>
-  <code class="primary" title={primaryTitle}>{primary}</code>
+  <code class="primary" {...{ "aria-description": (primaryTitle) }}>{primary}</code>
   {#if secondary}
-    <span class="secondary" class:accent={secondaryAccent} title={secondaryTitle}>
+    <span class="secondary" class:accent={secondaryAccent} {...{ "aria-description": (secondaryTitle) }}>
       {secondary}
     </span>
   {/if}
   {#if meta}
-    <span class="meta" title={metaTitle}>{meta}</span>
+    <span class="meta" {...{ "aria-description": (metaTitle) }}><MorphText text={meta} identity={primary} /></span>
   {/if}
   {#if badge}
-    <span class="badge" title={badgeTitle}>{badge}</span>
+    <span class="badge" {...{ "aria-description": (badgeTitle) }}>{badge}</span>
   {/if}
   <span class="spacer"></span>
   {#if tail}
-    <span class="tail" class:accent={tailAccent} title={tailTitle}>{tail}</span>
+    <span class="tail" class:accent={tailAccent} {...{ "aria-description": (tailTitle) }}>{tail}</span>
   {/if}
 </div>
 

@@ -24,6 +24,12 @@ const PRODUCTION_APP_MODEL_METADATA = Object.freeze({
     languages: Object.freeze(["en"]),
     license: "Gemma",
   }),
+  "gemma3-1b-instruct": Object.freeze({
+    displayName: "Gemma 3 1B",
+    tier: "balanced",
+    languages: Object.freeze(["en"]),
+    license: "Gemma",
+  }),
   "qwen3-1.7b": Object.freeze({
     displayName: "Qwen3 1.7B",
     tier: "balanced",
@@ -84,6 +90,18 @@ export function isExpectedOfflineCatalogFailure(
   return request?.phase === "offline" &&
     (request.url === catalogUrl || request.url === signatureUrl) &&
     /^net::ERR_(?:INTERNET_DISCONNECTED|ABORTED)$/u.test(request.errorText ?? "");
+}
+
+export function isPublishedSaeDescriptionUrl(url, modelId) {
+  const dictionary = {
+    "gemma3-270m-instruct": "gemma-3-270m-it/12-gemmascope-2-res-16k",
+    "gemma3-1b-instruct": "gemma-3-1b-it/13-gemmascope-2-res-16k",
+  }[modelId];
+  if (!dictionary || typeof url !== "string") return false;
+  const prefix = `https://www.neuronpedia.org/api/feature/${dictionary}/`;
+  if (!url.startsWith(prefix)) return false;
+  const id = url.slice(prefix.length);
+  return /^(?:0|[1-9]\d*)$/u.test(id) && Number(id) < 16384;
 }
 
 export function createProductionAppFailureReport({ stage, error, measurements = {} }) {
@@ -362,6 +380,16 @@ export function digestCanonical(value) {
 }
 
 export function stripHostedDevelopmentFixture(source) {
+  const currentStart = source.indexOf("  const searchParams = new URLSearchParams(window.location.search);");
+  const currentEndMarker = '\n  } else if (path === "/") {';
+  const currentEnd = source.indexOf(currentEndMarker, currentStart);
+  if (currentStart >= 0 && currentEnd > currentStart) {
+    const fixtureBlock = source.slice(currentStart, currentEnd);
+    for (const marker of ["import.meta.env.DEV", "createWorkerFixtureRuntime", "createFixtureHostedRuntime", "if (layoutFixture)"]) {
+      if (!fixtureBlock.includes(marker)) throw new Error(`hosted entry fixture block is missing ${marker}`);
+    }
+    return `${source.slice(0, currentStart)}  if (path === "/") {${source.slice(currentEnd + currentEndMarker.length)}`;
+  }
   const start = source.indexOf("let controller:");
   const end = source.indexOf("\n\nlet component;");
   if (start < 0 || end <= start) throw new Error("hosted entry fixture boundary changed");

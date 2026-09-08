@@ -1,3 +1,5 @@
+import { selectWorkspaceView } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { setAppearance, showWorkspaceTools, openTokenDetails, selectLoomView } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { resolve } from "node:path";
@@ -23,7 +25,7 @@ test.beforeEach(async ({ page }) => {
 test("Weave keeps branch controls reachable on narrow phones and in landscape", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openWorkbench(page);
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await selectLoomView(page, /^Weave\b/);
   const weave = page.locator(".weave");
@@ -170,6 +172,15 @@ test("hosted setup reflows across representative iPhone viewports", async ({ pag
 });
 
 test("conversation composer remains reachable in portrait and landscape", async ({ page }) => {
+  const resizeErrors: string[] = [];
+  await page.addInitScript(() => {
+    window.addEventListener("error", event => {
+      if (event.message.includes("ResizeObserver")) console.error(`composer resize: ${event.message}`);
+    });
+  });
+  page.on("console", message => {
+    if (message.text().startsWith("composer resize:")) resizeErrors.push(message.text());
+  });
   await page.setViewportSize(portraitViewports[2]);
   await openWorkbench(page);
 
@@ -182,6 +193,7 @@ test("conversation composer remains reachable in portrait and landscape", async 
     await page.setViewportSize(viewport);
     await expectConversationUsable(page, 24);
   }
+  expect(resizeErrors).toEqual([]);
 });
 
 test("keyboard-short visual viewports keep the composer actions reachable", async ({ page }) => {
@@ -209,7 +221,7 @@ test("Loom preserves a useful touch canvas on short screens", async ({ page }) =
   await composer.fill("Show the mobile loom layout.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await selectLoomView(page, /^Map\b/);
 
@@ -225,7 +237,7 @@ test("Loom preserves a useful touch canvas on short screens", async ({ page }) =
     expect(height).toBeGreaterThanOrEqual(84);
     await expectTouchHeight(page.getByRole("button", { name: "Zoom out" }));
     await expectTouchHeight(page.getByRole("button", { name: "Zoom in" }));
-    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+    await openWorkspaceMenu(page);
     await page.getByRole("button", { name: "Hide Loom tools", exact: true }).click();
     await expect.poll(() => tree.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(Math.max(90, height));
     const visibleTree = (await tree.boundingBox())!;
@@ -241,7 +253,7 @@ test("Loom supports anchored pinch zoom, touch panning, and cancellation", async
   await composer.fill("Build a touch gesture test branch.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await selectLoomView(page, /^Map\b/);
 
@@ -277,7 +289,7 @@ test("Loom supports anchored pinch zoom, touch panning, and cancellation", async
 test("3D reading details pinch-zoom and reflow without clipping", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await openWorkbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const guidanceTabs = page.getByRole("group", { name: "Response guidance type" });
   await guidanceTabs.getByRole("button", { name: "Subspace", exact: true }).click();
   await page.getByRole("button", { name: "Add subspace probe", exact: true }).click();
@@ -313,7 +325,7 @@ test("3D reading details pinch-zoom and reflow without clipping", async ({ page 
 test("response, model, J-lens, and SAE controls remain reachable on a phone", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await openWorkbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
 
   const controlsTabs = page.getByRole("group", { name: "Controls section" });
   await expectTouchHeight(controlsTabs.getByRole("button", { name: "Response" }));
@@ -341,7 +353,7 @@ test("unmeasured reading cards fit narrow phone screens", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto(`${devUrl}/app?layoutFixture=instruments`);
   await expect(page.locator(".shell")).toBeVisible();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const tabs = page.getByRole("group", { name: "Response guidance type" });
   await tabs.getByRole("button", { name: "J-lens", exact: true }).click();
   const lens = page.getByLabel("Layer prediction controls");
@@ -457,7 +469,7 @@ test("saved chats and token details use contained, scrollable phone drawers", as
     await page.setViewportSize(viewport);
     await openWorkbench(page);
 
-    await page.getByRole("button", { name: "Loom", exact: true }).click();
+    await selectWorkspaceView(page, "Loom");
     await showWorkspaceTools(page, "Loom");
     await page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true }).click();
     const library = page.getByRole("dialog", { name: "Saved chats" });

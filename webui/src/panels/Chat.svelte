@@ -1,4 +1,13 @@
 <script lang="ts">
+  import { createTokenArrival } from "../lib/tokenArrival";
+  const arrivals = createTokenArrival();
+  $effect.pre(() => {
+    const pending = chatLog.pendingIndex === null ? null : chatLog.turns[chatLog.pendingIndex];
+    arrivals.track(pending?.tokens ?? [], genStatus.active, "response");
+    arrivals.track(pending?.thinkingTokens ?? [], genStatus.active, "thinking");
+  });
+  import MorphText from "../lib/ui/MorphText.svelte";
+  import { createTokenViewCache } from "../lib/runtime/tokenViews";
   import { tokenInspectorUi } from "../lib/stores/drawers.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   import StateIcon from "../lib/ui/StateIcon.svelte";
@@ -175,6 +184,7 @@
 
   function updateComposerBounds(): void {
     if (!chatRef) return;
+    chatRef.style.setProperty("--chat-scrollbar-width", `${chatRef.offsetWidth - chatRef.clientWidth}px`);
     const compact = chatRef.clientHeight < 560 || chatRef.clientWidth <= 620 ||
       (window.visualViewport?.height ?? window.innerHeight) < 600;
     composerMinHeight = compact ? COMPACT_COMPOSER_MIN_HEIGHT : COMPOSER_MIN_HEIGHT;
@@ -908,12 +918,11 @@
     el.scrollTop = el.scrollHeight;
   }
 
-  let _scrollScheduled = false;
+  let _scrollFrame = 0;
   function queueScrollToBottom(): void {
-    if (_scrollScheduled) return;
-    _scrollScheduled = true;
-    queueMicrotask(() => {
-      _scrollScheduled = false;
+    if (_scrollFrame) return;
+    _scrollFrame = requestAnimationFrame(() => {
+      _scrollFrame = 0;
       if (!scrolledUp) scrollToBottom();
     });
   }
@@ -936,14 +945,25 @@
     scrollToBottom();
     if (!window.matchMedia("(pointer: coarse)").matches) textareaRef?.focus();
     updateComposerBounds();
+    let resizeFrame = 0;
+    const scheduleComposerBounds = () => {
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        updateComposerBounds();
+      });
+    };
     const observer = typeof ResizeObserver === "undefined"
       ? null
-      : new ResizeObserver(updateComposerBounds);
+      : new ResizeObserver(scheduleComposerBounds);
     if (chatRef) observer?.observe(chatRef);
-    window.visualViewport?.addEventListener("resize", updateComposerBounds);
+    window.visualViewport?.addEventListener("resize", scheduleComposerBounds);
     return () => {
       observer?.disconnect();
-      window.visualViewport?.removeEventListener("resize", updateComposerBounds);
+      cancelAnimationFrame(resizeFrame);
+      cancelAnimationFrame(_scrollFrame);
+      _scrollFrame = 0;
+      window.visualViewport?.removeEventListener("resize", scheduleComposerBounds);
       rolePlanAnimation?.cancel();
     };
   });
@@ -953,19 +973,7 @@
   /** Drop whitespace-only tokens from the head of the response so the gap below ``</think>``
    * goes away in plain-text mode too.  Returns the surviving slice
    * starting at the first non-whitespace token. */
-  interface VisibleToken {
-    tok: TokenScore;
-    originalIdx: number;
-  }
-
-  function visibleResponseTokens(tokens: TokenScore[]): VisibleToken[] {
-    let i = 0;
-    while (i < tokens.length && !tokens[i].text.trim()) i++;
-    return tokens.slice(i).map((tok, offset) => ({
-      tok,
-      originalIdx: i + offset,
-    }));
-  }
+  const visibleResponseTokens = createTokenViewCache<TokenScore>();
 
   let tokenPopup = $state<{
     token: TokenScore; anchor: HTMLElement; turnIdx: number; tokenIdx: number; isThinking: boolean;
@@ -1195,7 +1203,7 @@
                 type="button"
                 class="pin-unpin"
                 onclick={unpinComparison}
-                title="Unpin"
+                {...{ "aria-description": "Unpin" }}
               >unpin</button>
             </header>
             {#each pinnedPath as turn, idx (idx)}
@@ -1336,7 +1344,7 @@
       in:fly={contentIn(2)}
     >
       <span class="summary-label">Roles</span>
-      <span class="summary-value">{rolePlanSummary}</span>
+      <span class="summary-value"><MorphText text={rolePlanSummary} numbers={false} /></span>
       <span class="summary-action">Edit roles</span>
     </button>
   {/if}
@@ -1399,7 +1407,7 @@
         variant="solid"
         disabled={primaryDisabled}
         title={appendSelected ? "Enter · add your message only" : "Enter · send and generate a reply"}
-      ><StateIcon icons={["add", "send", "conversation"]} name={appendSelected ? "add" : hasText ? "send" : "conversation"} />{sendLabel}</Button>
+      ><StateIcon icons={["add", "send", "conversation"]} name={appendSelected ? "add" : hasText ? "send" : "conversation"} /><MorphText text={sendLabel} numbers={false} /></Button>
       <Button
         variant="danger"
         onclick={sendStop}
@@ -1416,9 +1424,9 @@
           onkeydown={(event) => {
             if (event.key === "Escape") clearConversationArmed = false;
           }}
-          title={clearConversationArmed
+          {...{ "aria-description": (clearConversationArmed
             ? "Clear the current view and start a new path"
-            : "Start a blank conversation; existing branches remain available"}
+            : "Start a blank conversation; existing branches remain available") }}
           aria-label={clearConversationArmed ? "Confirm clear conversation" : "Clear conversation"}
         >
           {clearConversationArmed ? "Confirm clear" : "Clear conversation"}
@@ -1429,7 +1437,7 @@
   {/if}
 </div>
   {#if sessionState.info?.model_id}
-    <div class="active-model" aria-label="Active model" title={sessionState.info.model_id}>
+    <div class="active-model" aria-label="Active model" {...{ "aria-description": (sessionState.info.model_id) }}>
       <span>Model</span>
       <span class="active-model-name">{sessionState.info.model_id.split("/").at(-1)}</span>
     </div>
@@ -1450,17 +1458,17 @@
   <span class="role-chip">
     {#if turn.role === "assistant"}
       {#if interactive}
-        <button type="button" class="model-avatar" aria-label="Open model settings" title="Model settings"
-          onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "model" } }))}>
-          <Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={32} background="circle" alt="" />
+        <button type="button" class="model-avatar" aria-label="Edit name and avatar"
+          onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "chat" } }))}>
+          <Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={40} background="circle" alt="" />
         </button>
       {:else}
-        <span class="speaker-marker" aria-hidden="true"><Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={32} background="circle" alt="" /></span>
+        <span class="speaker-marker" aria-hidden="true"><Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={40} background="circle" alt="" /></span>
       {/if}
     {:else}
       <span class="speaker-marker" aria-hidden="true"><span class="user-avatar"></span></span>
     {/if}
-    <span class="role-label">{roleDisplayLabel(turn.role, turn.roleLabel)}</span>
+    <span class="role-label"><MorphText text={roleDisplayLabel(turn.role, turn.roleLabel)} numbers={false} /></span>
   </span>
 {/snippet}
 
@@ -1471,13 +1479,14 @@
       class="stage"
       class:shadow={isShadow}
       dir="auto"
-      title="system prompt"
+      {...{ "aria-description": "system prompt" }}
       in:fly={contentIn()}
     >{turn.text}</div>
   {:else}
   <div
     class="msg"
     class:shadow={isShadow}
+    class:historical={turnIdx < chatLog.turns.length - 8}
     class:generation-active={genStatus.active && (isShadow ? abState.pendingTurnIdx === turnIdx : !abState.processingAb && chatLog.pendingIndex === turnIdx)}
     in:fly={contentIn()}
   >
@@ -1502,13 +1511,13 @@
       {/if}
       {#if isShadow && !pinnedActive}<span class="who-meta">(unsteered)</span>{/if}
       {#if genStatus.active && (isShadow ? abState.pendingTurnIdx === turnIdx : !abState.processingAb && chatLog.pendingIndex === turnIdx)}
-        <span class="who-meta generation-label" role="status">{(turn.tokens?.length ?? 0) > 0 ? "Writing…" : (turn.thinkingTokens?.length ?? 0) > 0 ? "Thinking…" : "Preparing reply…"}</span>
+        <span class="who-meta generation-label" role="status"><MorphText text={(turn.tokens?.length ?? 0) > 0 ? "Writing…" : (turn.thinkingTokens?.length ?? 0) > 0 ? "Thinking…" : "Preparing reply…"} numbers={false} /></span>
       {/if}
       {#if turn.meanLogprob != null && Number.isFinite(turn.meanLogprob)}
         <span
           class="prov"
-          title="sequence perplexity"
-        >seq ppl {Math.exp(-turn.meanLogprob).toFixed(1)}</span>
+          {...{ "aria-description": "sequence perplexity" }}
+        >seq ppl <MorphText text={Math.exp(-turn.meanLogprob).toFixed(1)} /></span>
       {/if}
     </div>
 
@@ -1533,6 +1542,7 @@
             {#each turn.thinkingTokens ?? [] as tok, tokenIdx (tokenIdx)}
               <span
                 class="tok"
+                use:arrivals.reveal={genStatus.active ? tok : null}
                 data-cursor="inspect"
                 class:tinted={highlightState.target !== null}
                 style={highlightStyleString(tok)}
@@ -1558,6 +1568,7 @@
         {#each visibleResponseTokens(turn.tokens ?? []) as { tok, originalIdx }, visibleIdx (originalIdx)}
           <span
             class="tok"
+                use:arrivals.reveal={genStatus.active ? tok : null}
             data-cursor="inspect"
             class:tinted={highlightState.target !== null}
             style={highlightStyleString(tok)}
@@ -1606,6 +1617,10 @@
   }
   .active-model-name { min-width: 0; overflow-wrap: anywhere; text-align: end; }
   .chat {
+    --chat-scrollbar-width: 0px;
+    --chat-base-inset: var(--surface-padding);
+    --chat-inset: max(var(--chat-base-inset), var(--chat-scrollbar-width, 0px));
+    --chat-radius: calc(var(--radius-lg) + var(--chat-inset));
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -1613,13 +1628,14 @@
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    scrollbar-gutter: stable both-edges;
+    scrollbar-gutter: auto;
     gap: var(--space-2);
     font-family: var(--font-reading);
     font-size: var(--text);
     color: var(--fg);
-    padding: var(--surface-padding);
-    border-radius: var(--radius-lg);
+    padding: var(--chat-inset);
+    padding-inline-end: calc(var(--chat-inset) - var(--chat-scrollbar-width, 0px));
+    border-radius: var(--chat-radius);
     background: var(--workspace-panel-bg);
   }
 
@@ -1737,7 +1753,6 @@
     flex-direction: column;
     gap: var(--space-md);
     min-height: 0;
-    padding-inline-end: var(--space-2);
   }
 
   .conversation-empty {
@@ -1821,6 +1836,10 @@
     min-width: 0;
     word-break: break-word;
   }
+  .msg.historical {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 160px;
+  }
   .msg.shadow {
     border-color: color-mix(in srgb, var(--pillar-manifold) 26%, transparent);
   }
@@ -1851,15 +1870,15 @@
     max-width: 40%;
     white-space: nowrap;
   }
-  .role-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .model-avatar, .speaker-marker { display: inline-grid; place-items: center; width: var(--control-target); height: var(--control-target); flex: none; }
+  .role-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-structure); font-weight: var(--weight-display); }
+  .model-avatar, .speaker-marker { display: inline-grid; align-items: center; justify-items: start; width: max(40px, var(--control-target)); height: max(40px, var(--control-target)); flex: none; }
   .model-avatar { padding: 0; border: 0; border-radius: var(--radius-pill); background: transparent; cursor: pointer; }
   .model-avatar:hover { background: var(--bg-hover); }
   .model-avatar:active { transform: scale(0.96); }
   .model-avatar:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-  .model-avatar :global(img), .speaker-marker :global(img) { display: block; width: 32px; height: 32px; border-radius: var(--radius-pill); outline: 1px solid oklch(1 0 0 / 0.1); outline-offset: -1px; }
+  .model-avatar :global(img), .speaker-marker :global(img) { display: block; width: 40px; height: 40px; border-radius: var(--radius-pill); outline: 1px solid oklch(1 0 0 / 0.1); outline-offset: -1px; }
   :global(:root[data-theme="light"]) .model-avatar :global(img), :global(:root[data-theme="light"]) .speaker-marker :global(img) { outline-color: oklch(0 0 0 / 0.1); }
-  .user-avatar { width: 24px; height: 24px; border-radius: var(--radius-pill); background: var(--accent); }
+  .user-avatar { width: 32px; height: 32px; border-radius: var(--radius-pill); background: var(--accent); }
   @media (forced-colors: active) { .msg { border-color: CanvasText; } .user-avatar { background: Highlight; forced-color-adjust: none; } }
   .who-meta {
     color: var(--fg-muted);
@@ -2226,7 +2245,7 @@
     grid-template-columns: minmax(0, 1fr);
     gap: var(--composer-space, var(--space-6));
     padding: var(--surface-padding);
-    border-radius: var(--popup-radius);
+    border-radius: var(--radius-lg);
     background: var(--workspace-field-bg);
     -webkit-backdrop-filter: blur(1px);
     backdrop-filter: blur(1px);
@@ -2434,11 +2453,11 @@
 
   @media (max-width: 620px) {
     .chat {
+      --chat-base-inset: var(--space-2);
       overflow-y: auto;
       overscroll-behavior: contain;
       scroll-padding-block-end: var(--surface-padding);
       scrollbar-gutter: auto;
-      padding: var(--space-2);
     }
 
     .input-row { padding: var(--space-2); }
@@ -2487,11 +2506,11 @@
 
   @media (min-width: 621px) and (max-height: 600px) {
     .chat:not(:has(.chat-header)) {
+      --chat-base-inset: var(--space-2);
       display: grid;
       grid-template-columns: minmax(0, 1fr) 5.5rem;
       grid-template-rows: minmax(24px, 1fr);
       grid-auto-rows: max-content;
-      padding: 0;
       scrollbar-gutter: auto;
     }
     .chat:not(:has(.chat-header)) > :global(*) { grid-column: 1 / -1; }

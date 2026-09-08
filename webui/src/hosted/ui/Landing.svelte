@@ -1,6 +1,7 @@
 <script lang="ts">
   import TabIdentity from "../../lib/ui/TabIdentity.svelte";
   import { onMount } from "svelte";
+  import CapabilityDemo from "./CapabilityDemo.svelte";
   import HeroShader from "./HeroShader.svelte";
   import PageHeader from "./PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
@@ -109,6 +110,7 @@
             </li>
           {/each}
         </ol>
+        <CapabilityDemo />
       </section>
 
       <section class="models" id="models" aria-labelledby="models-title">

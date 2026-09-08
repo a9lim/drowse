@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import InfoTip from "../../lib/ui/InfoTip.svelte";
   import ModelProviderLogo from "./ModelProviderLogo.svelte";
   import { formatEtaRange } from "../../lib/runtime/eta";
@@ -98,7 +99,7 @@
                 <ModelProviderLogo modelId={model.modelId} size={28} />
                 <span class="model-choice-copy">
                   <span class="model-name">{model.name}</span>
-                  <span class="model-status" aria-live="polite">{model.fit === "blocked" ? "Not supported on this device"
+                  <span class="model-status" aria-live="polite"><MorphText text={model.fit === "blocked" ? "Not supported on this device"
                     : model.setupComplete ? "Ready to use"
                     : active ? "Download in progress"
                     : model.catalogAvailable === false || !snapshot.download.available ? "Download unavailable"
@@ -106,7 +107,7 @@
                     : paused ? "Download paused. Click to resume"
                     : failed ? "Download failed. Click to retry"
                     : model.installed ? "Model downloaded. Download remaining tools"
-                    : "Click to download"}</span>
+                    : "Click to download"} /></span>
                 </span>
               </button>
               {#if armed && (model.fit === "uncertain" || model.requiresOomRetry)}
@@ -120,7 +121,7 @@
                     <span class:indeterminate={!determinate} style:width={`${determinate ? percent : 18}%`}></span>
                   </div>
                   <div class="download-detail">
-                    <span>{paused ? "Downloaded files kept" : status}{determinate ? ` · ${percent}%` : ""}</span>
+                    <span><MorphText text={paused ? "Downloaded files kept" : status} numbers={false} />{#if determinate} · <MorphText text={`${percent}%`} />{/if}</span>
                     {#if active}<button type="button" class="pause-download" disabled={pausing || download?.phase !== "downloading"} onclick={() => void pause(model.id)}>Pause</button>{/if}
                   </div>
                 </div>

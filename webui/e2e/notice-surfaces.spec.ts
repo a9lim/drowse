@@ -68,7 +68,7 @@ test("storage guidance has no decorative side stripe in either theme", async ({ 
   }
   await notice.getByRole("button", { name: "Protect storage", exact: true }).click();
   await expect(notice.getByRole("button", { name: "Protect storage", exact: true })).toBeEnabled();
-  await expect(notice).toContainText("Your browser didn't grant storage protection");
+  await expect(notice).toContainText("Storage protection isn't confirmed");
   await expect(notice).toContainText("Your existing chats and models won't transfer to it");
   await expect(notice.getByRole("link", { name: "Chrome site data settings", exact: true }))
     .toHaveAttribute("href", "https://support.google.com/chrome/answer/14114868?hl=en");

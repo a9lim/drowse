@@ -1,4 +1,5 @@
 <script lang="ts" generics="T extends string | number">
+  import MorphText from "./ui/MorphText.svelte";
   import FluentIcon from "./ui/FluentIcon.svelte";
   // Themed single-select dropdown — replacement for native `<select>`
   // across the webui.  Built to match the flat-dark aesthetic in
@@ -242,7 +243,7 @@
 
   function placeListbox(): void {
     if (!trigger || !listbox) return;
-    const tr = trigger.getBoundingClientRect();
+    const tr = trigger.parentElement!.getBoundingClientRect();
     const gutter = 8;
     const gap = 2;
     const viewport = window.visualViewport;
@@ -252,10 +253,10 @@
     const viewportBottom = viewportTop + (viewport?.height ?? window.innerHeight);
     const below = Math.max(0, viewportBottom - tr.bottom - gutter - gap);
     const above = Math.max(0, tr.top - viewportTop - gutter - gap);
-    const desired = Math.min(280, Math.max(40, listbox.scrollHeight));
+    const desired = Math.min(320, Math.max(40, listbox.scrollHeight));
     const flipUp = below < Math.min(desired, 200) && above > below;
     const available = flipUp ? above : below;
-    const maxHeight = Math.max(40, Math.min(280, available));
+    const maxHeight = Math.max(40, Math.min(320, available));
     const renderedHeight = Math.min(desired, maxHeight);
     const popoverWidth = Math.min(tr.width, viewportWidth - gutter * 2);
     const left = Math.max(
@@ -304,7 +305,7 @@
     type="button"
     class="sk-select-trigger field-focus"
     {disabled}
-    {title}
+    {...{ "aria-description": (title) }}
     aria-haspopup="listbox"
     aria-expanded={open}
     aria-controls={open ? `${uid}-listbox` : undefined}
@@ -315,7 +316,7 @@
     onkeydown={onTriggerKeydown}
   >
     <span class="sk-select-label" class:is-placeholder={currentIndex < 0}>
-      {currentLabel || placeholder}
+      <MorphText text={currentLabel || placeholder} numbers={false} />
     </span>
     <span class="sk-select-caret" aria-hidden="true"><FluentIcon name="down" /></span>
   </button>
@@ -396,14 +397,12 @@
     transition:
       background var(--dur-fast) var(--ease-out),
       border-color var(--dur-fast) var(--ease-out),
-      box-shadow var(--dur-fast) var(--ease-out),
-      scale var(--dur-fast) var(--ease-out);
+      box-shadow var(--dur-fast) var(--ease-out);
   }
   .sk-select-trigger:hover:not(:disabled) {
     background: var(--control-sheen), var(--surface-hi);
     box-shadow: var(--shadow-control-hover);
   }
-  .sk-select-trigger:active:not(:disabled) { scale: var(--press-scale); }
   .sk-select.is-open .sk-select-trigger {
     background: var(--control-sheen), var(--surface-hi);
   }
@@ -435,10 +434,11 @@
   }
 
   .sk-select-popover {
+    --popup-radius: var(--radius-lg);
     position: fixed;
     inset: auto;
     margin: 0;
-    padding: var(--surface-padding);
+    padding: var(--space-2);
     list-style: none;
     background: var(--surface-sheen), var(--popup-bg);
     border: 1px solid var(--popup-border);
@@ -452,9 +452,9 @@
   .sk-select-opt {
     display: flex;
     align-items: center;
-    min-height: var(--control-target);
+    min-height: var(--control-option);
     padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     color: var(--fg-strong);
     cursor: pointer;
     font-size: var(--text-sm);

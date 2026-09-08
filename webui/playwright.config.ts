@@ -37,21 +37,21 @@ export default defineConfig({
     },
     {
       name: "webkit-ios-layout",
-      testMatch: /(ios-layout|ui-skill-pass|technical-controls|completion-selection|chat-name-stability|loom-search|workspace-consistency|interface-polish|token-sidebar|header-layout|notice-surfaces|model-downloads|message-identity|new-chat-start)\.spec\.ts/,
+      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|ios-layout|hosted-onboarding|ui-skill-pass|sae-descriptions|technical-controls|completion-selection|chat-name-stability|loom-search|workspace-consistency|interface-polish|token-sidebar|mobile-sheet|header-layout|notice-surfaces|model-downloads|message-identity|new-chat-start|storage-persistence|theme-default|public-header|saved-chat-menu|contact)\.spec\.ts/,
       use: {
         ...devices["iPhone 13"],
       },
     },
     {
       name: "webkit-macos",
-      testMatch: /desktop-browser-compat\.spec\.ts/,
+      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|desktop-browser-compat|storage-persistence|header-layout|theme-default|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
       use: {
         ...devices["Desktop Safari"],
       },
     },
     {
       name: "firefox-macos",
-      testMatch: /desktop-browser-compat\.spec\.ts/,
+      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|desktop-browser-compat|storage-persistence|header-layout|theme-default|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
       use: {
         ...desktopFirefox,
       },

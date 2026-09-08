@@ -29,7 +29,7 @@
   class:baseline={showBaseline}
   style:--bar-width={`${width}px`}
   style:height={`${height}px`}
-  title={tip}
+
   role="img"
   aria-label={tip}
 >

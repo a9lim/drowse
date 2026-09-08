@@ -475,6 +475,20 @@ try {
     assert.equal(snapshot.download.available, true);
   });
 
+  test("GPT-2 Base includes its parameter count in the model label", async () => {
+    const { bundle } = createBundle({
+      recommend(verified) {
+        const entry = recommendation(verified.document);
+        entry.model.id = "gpt2-base";
+        entry.model.displayName = "GPT-2 Base";
+        return [entry];
+      },
+    });
+    const shell = createShellController(bundle);
+    await shell.check();
+    assert.equal(shell.current().models.find(model => model.modelId === "gpt2-base").name, "GPT-2 Base (124M)");
+  });
+
   test("Gemma 3 270M stays hidden when an older signed catalog still includes it", async () => {
     const { bundle } = createBundle({
       recommend(verified) {
@@ -1076,6 +1090,50 @@ try {
       fixture.calls.filter((call) => call === "download:smollm2-360m-q4f16").length,
       1,
     );
+  });
+
+  test("late storage approval clears the notice without repeating the download", async () => {
+    let grant;
+    const fixture = createBundle({
+      async requestPersistence(onLateGranted) { grant = onLateGranted; return false; },
+      async refreshStorage() { return { ...capabilities().storage, persisted: false }; },
+    });
+    const shell = createShellController(fixture.bundle);
+    await shell.check();
+    await shell.download("smollm2-360m-q4f16");
+    assert.equal(shell.current().storage.persisted, false);
+    grant();
+    assert.equal(shell.current().storage.persisted, true);
+    assert.equal(shell.current().download.persistenceDenied, false);
+    assert.equal(shell.current().download.phase, "installed");
+    assert.equal(fixture.calls.filter(call => call === "download:smollm2-360m-q4f16").length, 1);
+    await shell.retryPersistence();
+    assert.equal(shell.current().storage.persisted, false);
+    grant();
+    assert.equal(shell.current().storage.persisted, true);
+    shell.dispose();
+    const snapshot = shell.current();
+    grant();
+    assert.equal(shell.current(), snapshot);
+  });
+
+  test("a stale quota check cannot overwrite late storage approval", async () => {
+    let grant;
+    let finishStorage;
+    const fixture = createBundle({
+      async requestPersistence(onLateGranted) { grant = onLateGranted; return false; },
+      refreshStorage() { return new Promise(resolve => { finishStorage = resolve; }); },
+    });
+    const shell = createShellController(fixture.bundle);
+    await shell.check();
+    const download = shell.download("smollm2-360m-q4f16");
+    await waitFor(() => finishStorage);
+    grant();
+    finishStorage({ ...capabilities().storage, persisted: false });
+    await download;
+    assert.equal(shell.current().storage.persisted, true);
+    assert.equal(shell.current().download.persistenceDenied, false);
+    shell.dispose();
   });
 
   test("optional pack admission types SAE buffer and concurrent resident-budget failures", () => {

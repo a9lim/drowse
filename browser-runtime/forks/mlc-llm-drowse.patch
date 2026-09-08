@@ -66,10 +66,10 @@ index c5f33250..5f8096e5 100644
      allowed_lora_source_formats = {"huggingface-safetensor", "huggingface-torch"}
 diff --git a/python/mlc_llm/model/drowse_hooks.py b/python/mlc_llm/model/drowse_hooks.py
 new file mode 100644
-index 00000000..6c9e0e66
+index 00000000..f51368cf
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_hooks.py
-@@ -0,0 +1,4527 @@
+@@ -0,0 +1,4535 @@
 +"""Drowse post-block residual hooks for browser model libraries."""
 +
 +from tvm import te
@@ -162,19 +162,6 @@ index 00000000..6c9e0e66
 +    )
 +
 +
-+def _exact_readout_init(values, indices):
-+    for slot in range(READOUT_TOP_K):
-+        T.buffer_store(values, T.min_value("float32"), indices=[slot])
-+        T.buffer_store(indices, -1, indices=[slot])
-+
-+
-+def _exact_readout_not_selected(index, indices):
-+    result = index != indices[0]
-+    for slot in range(1, READOUT_TOP_K):
-+        result = T.And(result, index != indices[slot])
-+    return result
-+
-+
 +def exact_readout_topk(scores: Tensor, k: int = READOUT_TOP_K) -> tuple[Tensor, Tensor]:
 +    if k != READOUT_TOP_K:
 +        raise ValueError(f"Drowse exact readout supports top-{READOUT_TOP_K} only")
@@ -182,143 +169,167 @@ index 00000000..6c9e0e66
 +        raise ValueError("Drowse exact readout requires a rank-2 float32 tensor")
 +    row_count, column_count = scores.shape
 +    candidate_count = T.ceildiv(column_count, EXACT_READOUT_TOPK_BLOCK_SIZE)
++    symbolic_columns = not isinstance(getattr(column_count, "value", column_count), int)
++    merge_lane_candidates = 8 if symbolic_columns else 4
 +
 +    @T.prim_func(private=True, s_tir=True)
-+    def _tile_top8(
-+        var_scores: T.handle,
-+        var_candidate_values: T.handle,
-+        var_candidate_indices: T.handle,
-+    ) -> None:
++    def _tile_top8(var_scores: T.handle, var_values: T.handle, var_indices: T.handle) -> None:
 +        T.func_attr({"tirx.noalias": True, "tirx.is_scheduled": True})
 +        rows = T.int64()
 +        source = T.match_buffer(var_scores, (rows, column_count), "float32")
-+        candidate_values = T.match_buffer(
-+            var_candidate_values,
-+            (rows, candidate_count, READOUT_TOP_K),
-+            "float32",
-+        )
-+        candidate_indices = T.match_buffer(
-+            var_candidate_indices,
-+            (rows, candidate_count, READOUT_TOP_K),
-+            "int32",
-+        )
-+        local_values = T.sblock_alloc_buffer(
-+            (READOUT_TOP_K,), dtype="float32", scope="local"
-+        )
-+        local_indices = T.sblock_alloc_buffer(
-+            (READOUT_TOP_K,), dtype="int32", scope="local"
-+        )
-+        for block in T.thread_binding(0, rows * candidate_count, "blockIdx.x"):
-+            for _thread in T.thread_binding(0, 1, "threadIdx.x"):
-+                with T.sblock("drowse_exact_top8_tile"):
-+                    row = T.axis.spatial(rows, T.floordiv(block, candidate_count))
-+                    candidate = T.axis.spatial(
-+                        candidate_count, T.floormod(block, candidate_count)
-+                    )
-+                    _exact_readout_init(local_values, local_indices)
++        blocks = T.meta_var(candidate_count)
++        output_values = T.match_buffer(var_values, (rows, blocks, READOUT_TOP_K), "float32")
++        output_indices = T.match_buffer(var_indices, (rows, blocks, READOUT_TOP_K), "int32")
++        local_values = T.sblock_alloc_buffer((4,), "float32", scope="local")
++        local_indices = T.sblock_alloc_buffer((4,), "int32", scope="local")
++        local_best_values = T.sblock_alloc_buffer((2,), "float32", scope="local")
++        local_best_indices = T.sblock_alloc_buffer((2,), "int32", scope="local")
++        winner = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        best_values = T.sblock_alloc_buffer((64,), "float32", scope="shared")
++        best_indices = T.sblock_alloc_buffer((64,), "int32", scope="shared")
++        for block in T.thread_binding(0, rows * blocks, "blockIdx.x"):
++            for thread in T.thread_binding(0, 64, "threadIdx.x"):
++                with T.sblock("drowse_exact_top8_select"):
++                    lane = T.axis.spatial(64, thread)
++                    row = T.axis.spatial(rows, T.floordiv(block, blocks))
++                    tile = T.axis.spatial(blocks, T.floormod(block, blocks))
++                    for step in T.unroll(4):
++                        local_values[step] = T.min_value("float32")
++                        local_indices[step] = -1
++                        column = T.meta_var(tile * EXACT_READOUT_TOPK_BLOCK_SIZE + step * 64 + lane)
++                        if column < column_count:
++                            local_values[step] = source[row, column]
++                            local_indices[step] = T.cast(column, "int32")
 +                    for rank in T.serial(READOUT_TOP_K):
-+                        for step in T.serial(EXACT_READOUT_TOPK_BLOCK_SIZE):
-+                            column = T.meta_var(
-+                                candidate * EXACT_READOUT_TOPK_BLOCK_SIZE + step
-+                            )
-+                            if T.And(
-+                                column < column_count,
-+                                T.And(
-+                                    _exact_readout_not_selected(column, local_indices),
-+                                    _exact_readout_is_better(
-+                                        source[row, column],
-+                                        column,
-+                                        local_values[rank],
-+                                        local_indices[rank],
-+                                    ),
-+                                ),
-+                            ):
-+                                local_values[rank] = source[row, column]
-+                                local_indices[rank] = column
-+                    for slot in T.unroll(0, READOUT_TOP_K):
-+                        candidate_values[row, candidate, slot] = local_values[slot]
-+                        candidate_indices[row, candidate, slot] = local_indices[slot]
-+
-+    candidates = op.tensor_ir_op(
-+        _tile_top8,
-+        "drowse_exact_top8_tiles",
-+        args=[scores],
-+        out=(
-+            Tensor.placeholder(
-+                [row_count, candidate_count, READOUT_TOP_K], "float32"
-+            ),
-+            Tensor.placeholder(
-+                [row_count, candidate_count, READOUT_TOP_K], "int32"
-+            ),
-+        ),
-+    )
++                        local_best_values[0] = T.min_value("float32")
++                        local_best_indices[0] = -1
++                        for step in T.unroll(4):
++                            if _exact_readout_is_better(local_values[step], local_indices[step], local_best_values[0], local_best_indices[0]):
++                                local_best_values[0] = local_values[step]
++                                local_best_indices[0] = local_indices[step]
++                        best_values[lane] = local_best_values[0]
++                        best_indices[lane] = local_best_indices[0]
++                        T.tvm_storage_sync("shared")
++                        for stage in T.unroll(6):
++                            offset = T.meta_var(32 >> stage)
++                            local_best_values[0] = best_values[lane]
++                            local_best_indices[0] = best_indices[lane]
++                            local_best_values[1] = best_values[T.floormod(lane + offset, 64)]
++                            local_best_indices[1] = best_indices[T.floormod(lane + offset, 64)]
++                            T.tvm_storage_sync("shared")
++                            if lane < offset:
++                                if _exact_readout_is_better(local_best_values[1], local_best_indices[1], local_best_values[0], local_best_indices[0]):
++                                    best_values[lane] = local_best_values[1]
++                                    best_indices[lane] = local_best_indices[1]
++                            T.tvm_storage_sync("shared")
++                        winner[0] = best_indices[0]
++                        if lane == 0:
++                            output_values[row, tile, rank] = best_values[0]
++                            output_indices[row, tile, rank] = best_indices[0]
++                        for step in T.unroll(4):
++                            if local_indices[step] == winner[0]:
++                                local_indices[step] = -1
++                        T.tvm_storage_sync("shared")
 +
 +    @T.prim_func(private=True, s_tir=True)
-+    def _merge_top8(
-+        var_candidate_values: T.handle,
-+        var_candidate_indices: T.handle,
-+        var_values: T.handle,
-+        var_indices: T.handle,
-+    ) -> None:
++    def _merge_top8(var_input_values: T.handle, var_input_indices: T.handle, var_values: T.handle, var_indices: T.handle) -> None:
 +        T.func_attr({"tirx.noalias": True, "tirx.is_scheduled": True})
 +        rows = T.int64()
 +        candidates_per_row = T.int64()
-+        candidate_values = T.match_buffer(
-+            var_candidate_values,
-+            (rows, candidates_per_row, READOUT_TOP_K),
-+            "float32",
-+        )
-+        candidate_indices = T.match_buffer(
-+            var_candidate_indices,
-+            (rows, candidates_per_row, READOUT_TOP_K),
-+            "int32",
-+        )
-+        output_values = T.match_buffer(var_values, (rows, READOUT_TOP_K), "float32")
-+        output_indices = T.match_buffer(var_indices, (rows, READOUT_TOP_K), "int32")
-+        local_values = T.sblock_alloc_buffer(
-+            (READOUT_TOP_K,), dtype="float32", scope="local"
-+        )
-+        local_indices = T.sblock_alloc_buffer(
-+            (READOUT_TOP_K,), dtype="int32", scope="local"
-+        )
-+        for row_block in T.thread_binding(0, rows, "blockIdx.x"):
-+            for _thread in T.thread_binding(0, 1, "threadIdx.x"):
-+                with T.sblock("drowse_exact_top8_merge"):
-+                    row = T.axis.spatial(rows, row_block)
-+                    _exact_readout_init(local_values, local_indices)
++        source_values = T.match_buffer(var_input_values, (rows, candidates_per_row, READOUT_TOP_K), "float32")
++        source_indices = T.match_buffer(var_input_indices, (rows, candidates_per_row, READOUT_TOP_K), "int32")
++        blocks = T.meta_var(1 if symbolic_columns else T.ceildiv(candidates_per_row * READOUT_TOP_K, EXACT_READOUT_TOPK_BLOCK_SIZE))
++        output_values = T.match_buffer(var_values, (rows, blocks, READOUT_TOP_K), "float32")
++        output_indices = T.match_buffer(var_indices, (rows, blocks, READOUT_TOP_K), "int32")
++        local_values = T.sblock_alloc_buffer((merge_lane_candidates,), "float32", scope="local")
++        local_indices = T.sblock_alloc_buffer((merge_lane_candidates,), "int32", scope="local")
++        local_best_values = T.sblock_alloc_buffer((2,), "float32", scope="local")
++        local_best_indices = T.sblock_alloc_buffer((2,), "int32", scope="local")
++        winner = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        best_values = T.sblock_alloc_buffer((64,), "float32", scope="shared")
++        best_indices = T.sblock_alloc_buffer((64,), "int32", scope="shared")
++        for block in T.thread_binding(0, rows * blocks, "blockIdx.x"):
++            for thread in T.thread_binding(0, 64, "threadIdx.x"):
++                with T.sblock("drowse_exact_top8_select"):
++                    lane = T.axis.spatial(64, thread)
++                    row = T.axis.spatial(rows, T.floordiv(block, blocks))
++                    tile = T.axis.spatial(blocks, T.floormod(block, blocks))
++                    if symbolic_columns:
++                        for step in T.unroll(READOUT_TOP_K):
++                            local_values[step] = T.min_value("float32")
++                            local_indices[step] = -1
++                        for chunk in T.serial(T.ceildiv(candidates_per_row * READOUT_TOP_K, 64)):
++                            column = T.meta_var(chunk * 64 + lane)
++                            if column < candidates_per_row * READOUT_TOP_K:
++                                local_best_values[0] = source_values[row, T.floordiv(column, READOUT_TOP_K), T.floormod(column, READOUT_TOP_K)]
++                                local_best_indices[0] = source_indices[row, T.floordiv(column, READOUT_TOP_K), T.floormod(column, READOUT_TOP_K)]
++                                for slot in T.unroll(READOUT_TOP_K):
++                                    if _exact_readout_is_better(local_best_values[0], local_best_indices[0], local_values[slot], local_indices[slot]):
++                                        local_best_values[1] = local_values[slot]
++                                        local_best_indices[1] = local_indices[slot]
++                                        local_values[slot] = local_best_values[0]
++                                        local_indices[slot] = local_best_indices[0]
++                                        local_best_values[0] = local_best_values[1]
++                                        local_best_indices[0] = local_best_indices[1]
++                    else:
++                        for step in T.unroll(merge_lane_candidates):
++                            local_values[step] = T.min_value("float32")
++                            local_indices[step] = -1
++                            column = T.meta_var(tile * EXACT_READOUT_TOPK_BLOCK_SIZE + step * 64 + lane)
++                            if column < candidates_per_row * READOUT_TOP_K:
++                                local_values[step] = source_values[row, T.floordiv(column, READOUT_TOP_K), T.floormod(column, READOUT_TOP_K)]
++                                local_indices[step] = source_indices[row, T.floordiv(column, READOUT_TOP_K), T.floormod(column, READOUT_TOP_K)]
 +                    for rank in T.serial(READOUT_TOP_K):
-+                        for candidate in T.serial(candidates_per_row):
-+                            for slot in T.serial(READOUT_TOP_K):
-+                                index = T.meta_var(
-+                                    candidate_indices[row, candidate, slot]
-+                                )
-+                                value = T.meta_var(
-+                                    candidate_values[row, candidate, slot]
-+                                )
-+                                if T.And(
-+                                    _exact_readout_not_selected(index, local_indices),
-+                                    _exact_readout_is_better(
-+                                        value,
-+                                        index,
-+                                        local_values[rank],
-+                                        local_indices[rank],
-+                                    ),
-+                                ):
-+                                    local_values[rank] = value
-+                                    local_indices[rank] = index
-+                    for slot in T.unroll(0, READOUT_TOP_K):
-+                        output_values[row, slot] = local_values[slot]
-+                        output_indices[row, slot] = local_indices[slot]
++                        local_best_values[0] = T.min_value("float32")
++                        local_best_indices[0] = -1
++                        for step in T.unroll(merge_lane_candidates):
++                            if _exact_readout_is_better(local_values[step], local_indices[step], local_best_values[0], local_best_indices[0]):
++                                local_best_values[0] = local_values[step]
++                                local_best_indices[0] = local_indices[step]
++                        best_values[lane] = local_best_values[0]
++                        best_indices[lane] = local_best_indices[0]
++                        T.tvm_storage_sync("shared")
++                        for stage in T.unroll(6):
++                            offset = T.meta_var(32 >> stage)
++                            local_best_values[0] = best_values[lane]
++                            local_best_indices[0] = best_indices[lane]
++                            local_best_values[1] = best_values[T.floormod(lane + offset, 64)]
++                            local_best_indices[1] = best_indices[T.floormod(lane + offset, 64)]
++                            T.tvm_storage_sync("shared")
++                            if lane < offset:
++                                if _exact_readout_is_better(local_best_values[1], local_best_indices[1], local_best_values[0], local_best_indices[0]):
++                                    best_values[lane] = local_best_values[1]
++                                    best_indices[lane] = local_best_indices[1]
++                            T.tvm_storage_sync("shared")
++                        winner[0] = best_indices[0]
++                        if lane == 0:
++                            output_values[row, tile, rank] = best_values[0]
++                            output_indices[row, tile, rank] = best_indices[0]
++                        for step in T.unroll(merge_lane_candidates):
++                            if local_indices[step] == winner[0]:
++                                local_indices[step] = -1
++                        T.tvm_storage_sync("shared")
 +
-+    return op.tensor_ir_op(
-+        _merge_top8,
-+        "drowse_exact_top8_merge",
-+        args=list(candidates),
-+        out=(
-+            Tensor.placeholder([row_count, READOUT_TOP_K], "float32"),
-+            Tensor.placeholder([row_count, READOUT_TOP_K], "int32"),
-+        ),
++    candidates = op.tensor_ir_op(
++        _tile_top8, "drowse_exact_top8_tiles", args=[scores],
++        out=(Tensor.placeholder([row_count, candidate_count, READOUT_TOP_K], "float32"),
++             Tensor.placeholder([row_count, candidate_count, READOUT_TOP_K], "int32")),
 +    )
++    if symbolic_columns:
++        candidates = op.tensor_ir_op(
++            _merge_top8, "drowse_exact_top8_merge", args=list(candidates),
++            out=(Tensor.placeholder([row_count, 1, READOUT_TOP_K], "float32"),
++                 Tensor.placeholder([row_count, 1, READOUT_TOP_K], "int32")),
++        )
++    else:
++        while candidate_count > 1:
++            candidate_count = T.ceildiv(candidate_count * READOUT_TOP_K, EXACT_READOUT_TOPK_BLOCK_SIZE)
++            candidates = op.tensor_ir_op(
++                _merge_top8, "drowse_exact_top8_merge", args=list(candidates),
++                out=(Tensor.placeholder([row_count, candidate_count, READOUT_TOP_K], "float32"),
++                     Tensor.placeholder([row_count, candidate_count, READOUT_TOP_K], "int32")),
++            )
++    return op.reshape(candidates[0], [row_count, READOUT_TOP_K]), op.reshape(candidates[1], [row_count, READOUT_TOP_K])
 +
 +
 +def transport_jlens_hidden(hidden_states: Tensor, jacobians: Tensor) -> Tensor:
@@ -345,24 +356,29 @@ index 00000000..6c9e0e66
 +        output = T.match_buffer(
 +            var_output, (layers, 1, hidden_size), "float32"
 +        )
-+        for block in T.thread_binding(
-+            0, layers * hidden_size, "blockIdx.x"
-+        ):
-+            for _thread in T.thread_binding(0, 1, "threadIdx.x"):
++        partial = T.sblock_alloc_buffer((128,), "float32", scope="shared")
++        for block in T.thread_binding(0, layers * T.ceildiv(hidden_size, 4), "blockIdx.x"):
++            for thread in T.thread_binding(0, 128, "threadIdx.x"):
 +                with T.sblock("drowse_jlens_transport"):
-+                    layer = T.axis.spatial(
-+                        layers, T.floordiv(block, hidden_size)
-+                    )
-+                    coordinate = T.axis.spatial(
-+                        hidden_size, T.floormod(block, hidden_size)
-+                    )
-+                    output[layer, 0, coordinate] = T.float32(0)
-+                    for source_coordinate in T.serial(0, hidden_size):
-+                        output[layer, 0, coordinate] = (
-+                            output[layer, 0, coordinate]
-+                            + source[layer, source_coordinate]
-+                            * matrices[layer, coordinate, source_coordinate]
-+                        )
++                    lane = T.axis.spatial(128, thread)
++                    layer = T.axis.spatial(layers, T.floordiv(block, T.ceildiv(hidden_size, 4)))
++                    tile = T.axis.spatial(T.ceildiv(hidden_size, 4), T.floormod(block, T.ceildiv(hidden_size, 4)))
++                    coordinate = T.meta_var(tile * 4 + T.floordiv(lane, 32))
++                    source_lane = T.meta_var(T.floormod(lane, 32))
++                    partial[lane] = 0.0
++                    if coordinate < hidden_size:
++                        for step in T.serial(T.ceildiv(hidden_size, 32)):
++                            source_coordinate = T.meta_var(step * 32 + source_lane)
++                            if source_coordinate < hidden_size:
++                                partial[lane] = partial[lane] + source[layer, source_coordinate] * matrices[layer, coordinate, source_coordinate]
++                    T.tvm_storage_sync("shared")
++                    for stage in T.unroll(5):
++                        offset = T.meta_var(16 >> stage)
++                        if source_lane < offset:
++                            partial[lane] = partial[lane] + partial[lane + offset]
++                        T.tvm_storage_sync("shared")
++                    if T.And(source_lane == 0, coordinate < hidden_size):
++                        output[layer, 0, coordinate] = partial[lane]
 +
 +    return op.tensor_ir_op(
 +        _transport,
@@ -1020,55 +1036,56 @@ index 00000000..6c9e0e66
 +            (batch_size, sequence_length, hidden_size),
 +            residual_dtype,
 +        )
-+        current = T.sblock_alloc_buffer((hidden_size,), "float32", scope="local")
-+        coordinate = T.sblock_alloc_buffer(
-+            (STRUCTURED_MAX_RANK,), "float32", scope="local"
-+        )
-+        delta = T.sblock_alloc_buffer(
-+            (STRUCTURED_MAX_RANK,), "float32", scope="local"
-+        )
++        current = T.sblock_alloc_buffer((T.ceildiv(hidden_size, 64),), "float32", scope="local")
++        partial = T.sblock_alloc_buffer((64,), "float32", scope="shared")
++        delta = T.sblock_alloc_buffer((STRUCTURED_MAX_RANK,), "float32", scope="shared")
 +        scratch = T.sblock_alloc_buffer((1,), "float32", scope="local")
-+
-+        for block in T.thread_binding(
-+            batch_size * sequence_length, thread="blockIdx.x"
-+        ):
-+            for _thread in T.thread_binding(1, thread="threadIdx.x"):
++        for block in T.thread_binding(batch_size * sequence_length, thread="blockIdx.x"):
++            for thread in T.thread_binding(64, thread="threadIdx.x"):
 +                with T.sblock("structured_affine"):
-+                    batch = T.axis.spatial(
-+                        batch_size, T.floordiv(block, sequence_length)
-+                    )
-+                    sequence = T.axis.spatial(
-+                        sequence_length, T.floormod(block, sequence_length)
-+                    )
-+                    for hidden in T.serial(hidden_size):
-+                        current[hidden] = T.cast(
-+                            residual[batch, sequence, hidden], "float32"
-+                        )
++                    lane = T.axis.spatial(64, thread)
++                    batch = T.axis.spatial(batch_size, T.floordiv(block, sequence_length))
++                    sequence = T.axis.spatial(sequence_length, T.floormod(block, sequence_length))
++                    for chunk in T.serial(T.ceildiv(hidden_size, 64)):
++                        hidden = T.meta_var(chunk * 64 + lane)
++                        if hidden < hidden_size:
++                            current[chunk] = T.cast(residual[batch, sequence, hidden], "float32")
 +                    for group in T.serial(STRUCTURED_MAX_AFFINE_GROUPS):
-+                        for row in T.serial(STRUCTURED_MAX_RANK):
-+                            coordinate[row] = 0.0
-+                            for hidden in T.serial(hidden_size):
-+                                coordinate[row] = coordinate[row] + (
-+                                    current[hidden] - neutral[layer_id, group, hidden]
-+                                ) * basis[layer_id, group, row, hidden]
-+                            delta[row] = target[layer_id, group, row] - (
-+                                kappa[layer_id, group, row] * coordinate[row]
-+                            )
-+                        for hidden in T.serial(hidden_size):
-+                            scratch[0] = 0.0
++                        if T.And(active[layer_id, group] != 0, along[layer_id, group] != 0):
 +                            for row in T.serial(STRUCTURED_MAX_RANK):
-+                                scratch[0] = scratch[0] + (
-+                                    delta[row] * basis[layer_id, group, row, hidden]
-+                                )
-+                            current[hidden] = current[hidden] + (
-+                                active[layer_id, group]
-+                                * along[layer_id, group]
-+                                * scratch[0]
-+                            )
-+                    for hidden in T.serial(hidden_size):
-+                        output[batch, sequence, hidden] = T.cast(
-+                            current[hidden], residual_dtype
-+                        )
++                                if kappa[layer_id, group, row] != 0:
++                                    partial[lane] = 0.0
++                                    for chunk in T.serial(T.ceildiv(hidden_size, 64)):
++                                        hidden = T.meta_var(chunk * 64 + lane)
++                                        if hidden < hidden_size:
++                                            partial[lane] = partial[lane] + (
++                                                current[chunk] - neutral[layer_id, group, hidden]
++                                            ) * basis[layer_id, group, row, hidden]
++                                    T.tvm_storage_sync("shared")
++                                    for stage in T.unroll(6):
++                                        offset = T.meta_var(32 >> stage)
++                                        if lane < offset:
++                                            partial[lane] = partial[lane] + partial[lane + offset]
++                                        T.tvm_storage_sync("shared")
++                                    if lane == 0:
++                                        delta[row] = target[layer_id, group, row] - kappa[layer_id, group, row] * partial[0]
++                                    T.tvm_storage_sync("shared")
++                                else:
++                                    if lane == 0:
++                                        delta[row] = target[layer_id, group, row]
++                            T.tvm_storage_sync("shared")
++                            for chunk in T.serial(T.ceildiv(hidden_size, 64)):
++                                hidden = T.meta_var(chunk * 64 + lane)
++                                if hidden < hidden_size:
++                                    scratch[0] = 0.0
++                                    for row in T.serial(STRUCTURED_MAX_RANK):
++                                        scratch[0] = scratch[0] + delta[row] * basis[layer_id, group, row, hidden]
++                                    current[chunk] = current[chunk] + active[layer_id, group] * along[layer_id, group] * scratch[0]
++                            T.tvm_storage_sync("shared")
++                    for chunk in T.serial(T.ceildiv(hidden_size, 64)):
++                        hidden = T.meta_var(chunk * 64 + lane)
++                        if hidden < hidden_size:
++                            output[batch, sequence, hidden] = T.cast(current[chunk], residual_dtype)
 +
 +    steered = op.tensor_ir_op(
 +        _affine,
@@ -2527,63 +2544,54 @@ index 00000000..6c9e0e66
 +            (batch_size, sequence_length, hidden_size),
 +            "float32",
 +        )
-+        curved = T.sblock_alloc_buffer((hidden_size,), "float32", scope="local")
-+        scratch = T.sblock_alloc_buffer((4,), "float32", scope="local")
++        curved = T.sblock_alloc_buffer((T.ceildiv(hidden_size, 64),), "float32", scope="local")
++        scratch = T.sblock_alloc_buffer((2,), "float32", scope="local")
++        original_norm = T.sblock_alloc_buffer((64,), "float32", scope="shared")
++        curved_norm = T.sblock_alloc_buffer((64,), "float32", scope="shared")
++        sums = T.sblock_alloc_buffer((2,), "float32", scope="local")
++        scale = T.sblock_alloc_buffer((1,), "float32", scope="shared")
 +
-+        for block in T.thread_binding(
-+            batch_size * sequence_length, thread="blockIdx.x"
-+        ):
-+            for _thread in T.thread_binding(1, thread="threadIdx.x"):
++        for block in T.thread_binding(batch_size * sequence_length, thread="blockIdx.x"):
++            for thread in T.thread_binding(64, thread="threadIdx.x"):
 +                with T.sblock("reconstruct_curve"):
-+                    batch = T.axis.spatial(
-+                        batch_size, T.floordiv(block, sequence_length)
-+                    )
-+                    sequence = T.axis.spatial(
-+                        sequence_length, T.floormod(block, sequence_length)
-+                    )
-+                    scratch[0] = 0.0
-+                    scratch[1] = 0.0
-+                    for hidden in T.serial(hidden_size):
-+                        scratch[2] = 0.0
-+                        scratch[3] = 0.0
-+                        for row in T.serial(STRUCTURED_MAX_RANK):
-+                            scratch[2] = scratch[2] + (
-+                                q_buffer[batch, sequence, row]
-+                                * basis_buffer[layer_id, curve_id, row, hidden]
-+                            )
-+                            scratch[3] = scratch[3] + (
-+                                coordinate_buffer[batch, sequence, row]
-+                                * basis_buffer[layer_id, curve_id, row, hidden]
-+                            )
-+                        curved[hidden] = (
-+                            residual_buffer[batch, sequence, hidden]
-+                            - scratch[2]
-+                            + scratch[3]
-+                        )
-+                        scratch[0] = scratch[0] + (
-+                            residual_buffer[batch, sequence, hidden]
-+                            * residual_buffer[batch, sequence, hidden]
-+                        )
-+                        scratch[1] = scratch[1] + curved[hidden] * curved[hidden]
-+                    scratch[0] = T.min(
-+                        3.0
-+                        * T.sqrt(scratch[0])
-+                        / T.max(T.sqrt(scratch[1]), 1e-6),
-+                        1.0,
-+                    )
-+                    for hidden in T.serial(hidden_size):
-+                        output[batch, sequence, hidden] = (
-+                            parameter_buffer[layer_id, curve_id, CURVE_ACTIVE_OFFSET]
-+                            * curved[hidden]
-+                            * scratch[0]
-+                            + (
-+                                1.0
-+                                - parameter_buffer[
-+                                    layer_id, curve_id, CURVE_ACTIVE_OFFSET
-+                                ]
-+                            )
-+                            * residual_buffer[batch, sequence, hidden]
-+                        )
++                    lane = T.axis.spatial(64, thread)
++                    batch = T.axis.spatial(batch_size, T.floordiv(block, sequence_length))
++                    sequence = T.axis.spatial(sequence_length, T.floormod(block, sequence_length))
++                    if parameter_buffer[layer_id, curve_id, CURVE_ACTIVE_OFFSET] != 0.0:
++                        sums[0] = 0.0
++                        sums[1] = 0.0
++                        for chunk in T.serial(T.ceildiv(hidden_size, 64)):
++                            hidden = T.meta_var(chunk * 64 + lane)
++                            if hidden < hidden_size:
++                                scratch[0] = 0.0
++                                scratch[1] = 0.0
++                                for row in T.serial(STRUCTURED_MAX_RANK):
++                                    scratch[0] = scratch[0] + q_buffer[batch, sequence, row] * basis_buffer[layer_id, curve_id, row, hidden]
++                                    scratch[1] = scratch[1] + coordinate_buffer[batch, sequence, row] * basis_buffer[layer_id, curve_id, row, hidden]
++                                curved[chunk] = residual_buffer[batch, sequence, hidden] - scratch[0] + scratch[1]
++                                sums[0] = sums[0] + residual_buffer[batch, sequence, hidden] * residual_buffer[batch, sequence, hidden]
++                                sums[1] = sums[1] + curved[chunk] * curved[chunk]
++                        original_norm[lane] = sums[0]
++                        curved_norm[lane] = sums[1]
++                        T.tvm_storage_sync("shared")
++                        for step in T.unroll(6):
++                            stride = T.meta_var(32 >> step)
++                            if lane < stride:
++                                original_norm[lane] = original_norm[lane] + original_norm[lane + stride]
++                                curved_norm[lane] = curved_norm[lane] + curved_norm[lane + stride]
++                            T.tvm_storage_sync("shared")
++                        if lane == 0:
++                            scale[0] = T.min(3.0 * T.sqrt(original_norm[0]) / T.max(T.sqrt(curved_norm[0]), 1e-6), 1.0)
++                        T.tvm_storage_sync("shared")
++                        for chunk in T.serial(T.ceildiv(hidden_size, 64)):
++                            hidden = T.meta_var(chunk * 64 + lane)
++                            if hidden < hidden_size:
++                                output[batch, sequence, hidden] = parameter_buffer[layer_id, curve_id, CURVE_ACTIVE_OFFSET] * curved[chunk] * scale[0] + (1.0 - parameter_buffer[layer_id, curve_id, CURVE_ACTIVE_OFFSET]) * residual_buffer[batch, sequence, hidden]
++                    else:
++                        for chunk in T.serial(T.ceildiv(hidden_size, 64)):
++                            hidden = T.meta_var(chunk * 64 + lane)
++                            if hidden < hidden_size:
++                                output[batch, sequence, hidden] = residual_buffer[batch, sequence, hidden]
 +
 +    return op.tensor_ir_op(
 +        _reconstruct,

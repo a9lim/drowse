@@ -50,7 +50,7 @@
   style:--btn-solid-fill={accent ?? "var(--action-bg)"}
   style:--btn-solid-ink={accent ? "var(--text-on-accent)" : "var(--action-ink)"}
   {disabled}
-  {title}
+  {...{ "aria-description": (title) }}
   aria-label={ariaLabel}
   aria-busy={busy || undefined}
   {type}

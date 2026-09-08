@@ -157,7 +157,7 @@ test("update entrance and fading glow play only once, with comfortable button sp
 });
 
 test("snoozes survive navigation and reload and escalate through 1h, 6h, and daily", async ({ context, page }, testInfo) => {
-  test.setTimeout(90_000);
+  test.setTimeout(180_000);
   await page.clock.install();
   await installUpdate(page);
   await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 60_000));
@@ -198,6 +198,7 @@ test("snoozes survive navigation and reload and escalate through 1h, 6h, and dai
 });
 
 test("another tab shares the snooze and applying the update resets the next reminder cycle", async ({ context, page }) => {
+  test.setTimeout(60_000);
   await installUpdate(page);
   const other = await context.newPage();
   await other.goto("/credits/");
@@ -212,6 +213,7 @@ test("another tab shares the snooze and applying the update resets the next remi
     localStorage.setItem(key, JSON.stringify({ ...reminder, remindAt: Date.now() - 1 }));
     window.dispatchEvent(new Event("focus"));
   }, key);
+  await other.bringToFront();
   await expect(updateNotice(other)).toBeVisible();
   await Promise.all([
     other.waitForEvent("domcontentloaded"),

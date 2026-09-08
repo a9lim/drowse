@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Manifold position picker.  One slider per intrinsic dimension,
   // uniformly: dim 1 -> one slider, dim 2 -> two sliders, dim N -> N
   // sliders.  (The old 2D draggable xy-pad special case was retired in
@@ -121,6 +122,7 @@
         </span>
         <Slider
           value={coords[i] ?? axis.lo}
+          displayValue={fmt(coords[i] ?? axis.lo)}
           min={axis.lo}
           max={axis.hi}
           step={(axis.hi - axis.lo) / 100 || 0.01}
@@ -128,7 +130,7 @@
           ariaLabel="{axis.name} coordinate"
           disabled={locked}
         />
-        <span class="axis-val">{fmt(coords[i] ?? axis.lo)}</span>
+        <span class="axis-val"><MorphText text={fmt(coords[i] ?? axis.lo)} /></span>
       </label>
     {/each}
   </div>

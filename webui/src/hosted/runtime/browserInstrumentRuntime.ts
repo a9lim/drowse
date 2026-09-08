@@ -596,9 +596,13 @@ export class BrowserInstrumentRuntime {
       const ids = Object.keys(features).filter(id => !features[id].label?.trim());
       const signal = AbortSignal.timeout(20_000);
       for (let start = 0; start < ids.length; start += 4) {
-        await Promise.all(ids.slice(start, start + 4).map(async id => {
-          features[id].label = (await loadSaeDescription(binding, Number(id), signal)).label;
-        }));
+        const batch = ids.slice(start, start + 4);
+        const results = await Promise.allSettled(batch.map(id => loadSaeDescription(binding, Number(id), signal)));
+        results.forEach((result, index) => {
+          const id = batch[index];
+          if (result.status === "fulfilled") features[id].label = result.value.label;
+          else delete features[id];
+        });
       }
     }
     return { features };

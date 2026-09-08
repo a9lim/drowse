@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   import { animatedDetails } from "../lib/animatedDetails";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
@@ -362,11 +363,11 @@
       <div class="name-row">
         {#if probeName}
           <span class="family-dot" aria-hidden="true"></span>
-          <code class="name" title={probeName}>{displayName}</code>
+          <code class="name" {...{ "aria-description": (probeName) }}>{displayName}</code>
           {#if geom}
             <span class="meta">{rankLabel} · {intrinsicLabel}</span>
             {#if !geom.rank_uniform}
-              <span class="warn" title="rank varies by layer">
+              <span class="warn" {...{ "aria-description": "rank varies by layer" }}>
                 rank varies by layer
               </span>
             {/if}
@@ -398,7 +399,7 @@
               class="row"
               class:active={l.layer === selectedLayer}
               aria-pressed={l.layer === selectedLayer}
-              title={`L${l.layer} · share ${chartValue(l.mahalanobis_share)} · ${chartValue(maxShare > 0 ? Math.abs(l.mahalanobis_share) / maxShare : 0, true)} of largest layer`}
+              {...{ "aria-description": (`L${l.layer} · share ${chartValue(l.mahalanobis_share)} · ${chartValue(maxShare > 0 ? Math.abs(l.mahalanobis_share) / maxShare : 0, true)} of largest layer`) }}
               onclick={() => (selectedLayer = l.layer)}
             >
               <span class="lyr">L{l.layer}</span>
@@ -421,7 +422,7 @@
           <canvas
             bind:this={canvasEl}
             class="plot"
-            title={plotTitle}
+            {...{ "aria-description": (plotTitle) }}
             aria-label={`Whitened geometry for ${displayName}, layer ${selectedLayer}`}
             aria-describedby="probe-geometry-summary"
             data-orbit-zoom={orbit.zoom.toFixed(2)}
@@ -432,7 +433,7 @@
             onlostpointercapture={onPointerUp}
             onwheel={onWheel}
           >Whitened geometry for {displayName}, layer {selectedLayer}.</canvas>
-          <span class="layer-chip">L{selectedLayer}</span>
+          <span class="layer-chip"><MorphText text={`L${selectedLayer} · share ${activeGeom.mahalanobis_share.toFixed(3)}`} /></span>
           {#if canOrbit}
             <span class="orbit-hint">drag · scroll or pinch</span>
             <div class="plot-controls" aria-label="Geometry view controls">
@@ -446,9 +447,9 @@
             </div>
           {/if}
           {#if trailPoints.length > 0}
-            <span class="trail-hint">{trailPoints.length} trail pts</span>
+            <span class="trail-hint"><MorphText text={`${trailPoints.length} trail pts`} /></span>
           {:else if !liveTrailAvailability.available}
-            <span class="live-hint" title={liveTrailAvailability.reason ?? undefined}>
+            <span class="live-hint" {...{ "aria-description": (liveTrailAvailability.reason ?? undefined) }}>
               live trail unavailable here
             </span>
           {:else}
@@ -456,14 +457,14 @@
           {/if}
         </div>
         <p class="coordinate-summary" id="probe-geometry-summary">
-          Neutral [{formatPoint(activeGeom.neutral_white)}]; live point [{formatPoint(livePoint)}];
+          Neutral [{formatPoint(activeGeom.neutral_white)}]; live point [<MorphText text={formatPoint(livePoint)} identity={selectedLayer} />];
           {activeGeom.node_white.length} node {activeGeom.node_white.length === 1 ? "centroid" : "centroids"}.
         </p>
         <details use:animatedDetails class="geometry-summary">
           <summary>Geometry coordinates</summary>
           <p>
             Layer {selectedLayer}; rank {activeGeom.rank}; neutral [{formatPoint(activeGeom.neutral_white)}];
-            live point [{formatPoint(livePoint)}]. Coordinates show the first three whitened dimensions.
+            live point [<MorphText text={formatPoint(livePoint)} identity={selectedLayer} />]. Coordinates show the first three whitened dimensions.
           </p>
           <ul>
             {#each activeGeom.node_white as point, index (index)}

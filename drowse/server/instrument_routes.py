@@ -33,7 +33,6 @@ per-family routes this file supersedes (``acquire_session_lock``, the typed
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 import re
@@ -47,6 +46,7 @@ from drowse.core.errors import DrowseError
 from drowse.core.jlens import LensNotFittedError, resolve_word_token
 from drowse.core.loom import InvalidNodeOperationError, UnknownNodeError
 from drowse.core.measurements import MeasurementsEnvelope
+from drowse.server.streaming import run_in_thread
 from drowse.server.app import acquire_session_lock
 from drowse.server.background_job import (
     BackgroundJob,
@@ -392,6 +392,7 @@ def register_instrument_routes(app: FastAPI) -> None:
 
     async def _stop_sae_train() -> None:
         await sae_train_job.stop()
+        await sae_load_job.stop()
 
     app.router.on_shutdown.append(_stop_lens_fit)
     app.router.on_shutdown.append(_stop_sae_train)
@@ -495,8 +496,8 @@ def register_instrument_routes(app: FastAPI) -> None:
             if not acquired:
                 raise RuntimeError("session locked")
             session.lens.set_live(False)
-            await asyncio.to_thread(session.select_jlens_source, source)
-            state = await asyncio.to_thread(session.lens.set_live, True)
+            await run_in_thread(session.select_jlens_source, source)
+            state = await run_in_thread(session.lens.set_live, True)
             return list(state.layers or ())
 
     # =====================================================================
@@ -542,7 +543,7 @@ def register_instrument_routes(app: FastAPI) -> None:
             if not acquired:
                 raise HTTPException(503, "session locked")
             try:
-                state = await asyncio.to_thread(
+                state = await run_in_thread(
                     instrument.set_live, body.enabled, **extras,
                 )
             except LensNotFittedError as e:
@@ -576,7 +577,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         from drowse.core.sae import list_sae_releases
         from drowse.io.sae import list_sae_sources
 
-        rows = await asyncio.to_thread(list_sae_sources, session.model_id)
+        rows = await run_in_thread(list_sae_sources, session.model_id)
         sources = [
             cast(InstrumentSourceJSON, {
                 k: v for k, v in row.items() if k != "path"
@@ -584,7 +585,7 @@ def register_instrument_routes(app: FastAPI) -> None:
             for row in rows
         ]
         try:
-            releases = await asyncio.to_thread(
+            releases = await run_in_thread(
                 list_sae_releases, session.model_id,
             )
         except DrowseError as exc:
@@ -666,7 +667,7 @@ def register_instrument_routes(app: FastAPI) -> None:
                 + ", ".join([NEURONPEDIA_BINDING, *sorted(WORKSPACE_ARMS)])
             )
         st["message"] = "fetching external lens into the Hugging Face cache…"
-        binding = await asyncio.to_thread(
+        binding = await run_in_thread(
             fetch_lens_source,
             session.model_id,
             body.source,
@@ -700,7 +701,7 @@ def register_instrument_routes(app: FastAPI) -> None:
 
         st = lens_fit_job.state
         st["message"] = f"streaming {body.prompts} corpus documents…"
-        docs, spec = await asyncio.to_thread(
+        docs, spec = await run_in_thread(
             stream_default_lens_corpus,
             body.prompts,
             cancel_event=lens_fit_job.cancel_event,
@@ -710,7 +711,7 @@ def register_instrument_routes(app: FastAPI) -> None:
             done_field="prompts_done", total_field="prompts_total",
         )
         st["message"] = "fitting…"
-        await asyncio.to_thread(
+        await run_in_thread(
             session.fit_jlens,
             docs,
             corpus_spec=spec,
@@ -726,7 +727,7 @@ def register_instrument_routes(app: FastAPI) -> None:
             if acquired:
                 st["live_layers"] = list(
                     (
-                        await asyncio.to_thread(session.lens.set_live, True)
+                        await run_in_thread(session.lens.set_live, True)
                     ).layers or ()
                 )
         st["message"] = "done"
@@ -737,10 +738,10 @@ def register_instrument_routes(app: FastAPI) -> None:
         async with acquire_session_lock(session) as acquired:
             if not acquired:
                 raise RuntimeError("session locked")
-            info = await asyncio.to_thread(
+            info = await run_in_thread(
                 session.load_sae, release, layer=body.layer,
             )
-            await asyncio.to_thread(session.sae.set_live, True)
+            await run_in_thread(session.sae.set_live, True)
         st["info"] = info
         st["message"] = (
             f"loaded {source} · live at L{info.get('layer')} "
@@ -762,12 +763,12 @@ def register_instrument_routes(app: FastAPI) -> None:
         st = sae_train_job.state
         n_docs = max(1, math.ceil(body.tokens / body.seq_len))
         st["message"] = f"streaming {n_docs:,} corpus documents…"
-        docs, spec = await asyncio.to_thread(stream_default_lens_corpus, n_docs)
+        docs, spec = await run_in_thread(stream_default_lens_corpus, n_docs)
         on_progress = make_progress_hook(
             st, _TRAIN_PROGRESS_RE,
             done_field="tokens_done", total_field="tokens_total",
         )
-        result = await asyncio.to_thread(
+        result = await run_in_thread(
             session.train_sae,
             body.name,
             docs,
@@ -793,7 +794,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         try:
             async with acquire_session_lock(session) as acquired:
                 if acquired:
-                    await asyncio.to_thread(session.sae.set_live, True)
+                    await run_in_thread(session.sae.set_live, True)
         except Exception:
             log.exception("could not auto-enable live SAE after training")
 
@@ -1009,7 +1010,7 @@ def register_instrument_routes(app: FastAPI) -> None:
             if not acquired:
                 raise HTTPException(503, "session locked")
             try:
-                return await asyncio.to_thread(
+                return await run_in_thread(
                     instrument.token_readout,
                     node_id,
                     raw_index,
@@ -1077,7 +1078,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         if any(feature_id < 0 for feature_id in body.ids):
             raise HTTPException(400, "feature ids must be non-negative")
         try:
-            features = await asyncio.to_thread(
+            features = await run_in_thread(
                 session.fetch_sae_feature_meta, body.ids,
             )
         except DrowseError as exc:

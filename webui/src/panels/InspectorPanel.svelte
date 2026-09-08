@@ -107,7 +107,7 @@
           <div class="token-readout" role="status" aria-live="off">
             <span class="readout-dot"></span>
             <span class="readout-label">Selected word</span>
-            <code title={tokenHoverState.tokenText}>{hoverToken}</code>
+            <code {...{ "aria-description": (tokenHoverState.tokenText) }}>{hoverToken}</code>
             <span class="readout-channels">
               {hoverProbeCount} readings
               · {tokenHoverState.lensLoading ? "predictions…" : `${hoverLensCount} predictions`}

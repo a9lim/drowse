@@ -97,8 +97,9 @@ const server = createServer(async (request, response) => {
     response.setHeader("Content-Length", (await stat(path)).size);
     await pipeline(createReadStream(path), response);
   } catch (error) {
-    if (!response.headersSent) response.writeHead(500);
-    response.end(String(error));
+    console.error(error);
+    if (response.headersSent) response.destroy(error);
+    else response.writeHead(500, { "Content-Type": "text/plain" }).end("Internal server error");
   }
 });
 server.listen(Number(portText), "127.0.0.1", () => {

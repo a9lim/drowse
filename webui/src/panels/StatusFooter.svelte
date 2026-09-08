@@ -1,10 +1,12 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   // Single-line generation footer:
   //   ● gen 47/512 [████░░░░░░] · 23 t/s · 2.1s · ppl 8.3
   //
   // Idle state collapses to "○ idle" before the first generation lands,
   // hiding stats until they have something real to report.
 
+  import { savedConversationState } from "../lib/stores/savedConversations.svelte";
   import Bar from "../lib/charts/Bar.svelte";
   import InfoTip from "../lib/ui/InfoTip.svelte";
   import {
@@ -29,12 +31,14 @@
 
   // Live elapsed counter — ticks while gen is active, freezes on done so
   // the user can still read the final timing after the generation lands.
+  let speedView = $state(0);
   let nowMs = $state(performance.now());
   $effect(() => {
     if (!genStatus.active) return;
     const id = setInterval(() => {
       nowMs = performance.now();
-    }, 100);
+      speedView = genStatus.tokPerSec;
+    }, 200);
     return () => clearInterval(id);
   });
 
@@ -46,7 +50,7 @@
     return Math.max(0, (end - genStatus.startedAt) / 1000);
   });
 
-  const tokPerSec = $derived(genStatus.tokPerSec);
+  const tokPerSec = $derived(genStatus.active ? speedView : genStatus.tokPerSec);
   const preparingContinuation = $derived(genStatus.active && genStatus.replay != null &&
     genStatus.replay.completed < genStatus.replay.total);
 
@@ -66,48 +70,26 @@
 
 <footer class="status-footer" aria-label="Generation status">
   <div class="status-details">
-    {#if savedEdit}
-      <span class="text done-label">Edit saved</span>
-    {:else if !hasRun && !genStatus.active}
-      <span class="dot idle" aria-hidden="true">○</span>
-      <span class="text">Ready</span>
-    {:else}
-      {#if preparingContinuation}
-        <span class="text" role="status">Preparing continuation…</span>
-        <span class="bar-wrap" aria-label="Preparing saved context">
-          <Bar value={genStatus.replay!.completed} max={genStatus.replay!.total}
-            width={120} height={6} color="var(--accent)" />
+    <span class="text lifecycle" class:done-label={!genStatus.active} role="status"><MorphText text={savedEdit ? "Edit saved" : !hasRun && !genStatus.active ? "Ready" : preparingContinuation ? "Preparing continuation…" : genStatus.active ? genStatus.replay ? "Continuing" : "Writing" : finishLabel ?? (genStatus.finishReason === "stop" ? "Complete" : "Ended")} numbers={false} /></span>
+    {#if !savedEdit && (hasRun || genStatus.active)}
+      <span class="text token-count"><MorphText text={genStatus.tokensSoFar} />{#if genStatus.active} / {genStatus.maxTokens || "?"}{/if} tokens</span>
+      {#if genStatus.active}
+        <span class="bar-wrap" aria-label={preparingContinuation ? "Preparing saved context" : "progress"}>
+          <Bar value={preparingContinuation ? genStatus.replay!.completed : genStatus.tokensSoFar} max={preparingContinuation ? genStatus.replay!.total : genStatus.maxTokens || Math.max(genStatus.tokensSoFar, 1)} width={120} height={6} color="var(--accent)" />
         </span>
-      {:else if genStatus.active}
-        <span class="text">{genStatus.replay ? "Continuing" : "Writing"} {genStatus.tokensSoFar}/{genStatus.maxTokens || "?"} tokens</span>
-        <span class="bar-wrap" aria-label="progress">
-          <Bar
-            value={genStatus.tokensSoFar}
-            max={genStatus.maxTokens || Math.max(genStatus.tokensSoFar, 1)}
-            width={120}
-            height={6}
-            color="var(--accent-green)"
-          />
-        </span>
-      {:else}
-        <span class="text done-label">{finishLabel ?? (genStatus.finishReason === "stop" ? "Complete" : "Ended")} · {genStatus.tokensSoFar} tokens</span>
       {/if}
-      {#if !preparingContinuation}
-        <span class="text speed">{tokPerSec.toFixed(1)} tokens/s</span>
-      {/if}
-      <span class="text elapsed">{elapsedSec.toFixed(1)}s</span>
-      {#if ppl !== null && Number.isFinite(ppl)}
-        <span
-          class="text uncertainty"
-          title="entropy perplexity"
-        >uncertainty {ppl.toFixed(2)}</span>
-      {/if}
+      {#if !preparingContinuation}<span class="text speed"><MorphText text={tokPerSec.toFixed(1)} /> tokens/s</span>{/if}
+      <span class="text elapsed"><MorphText text={elapsedSec.toFixed(1)} />s</span>
+      {#if ppl !== null && Number.isFinite(ppl)}<span class="text uncertainty" {...{ "aria-description": "entropy perplexity" }}>uncertainty <MorphText text={ppl.toFixed(2)} /></span>{/if}
     {/if}
 
     {#if pendingCount > 0}
-      <span class="pending-badge" title={pendingTitle}>
-        {pendingCount} queued
+      <span class="pending-badge" {...{ "aria-description": (pendingTitle) }}>
+        <MorphText text={pendingTitle} />
       </span>
+    {/if}
+    {#if savedConversationState.status === "saving" || savedConversationState.status === "saved"}
+      <span class="autosave-status" role="status"><MorphText text={savedConversationState.status === "saving" ? "Saving…" : "Saved"} numbers={false} /></span>
     {/if}
   </div>
 
@@ -118,6 +100,7 @@
 </footer>
 
 <style>
+  .autosave-status { margin-inline-start: auto; color: var(--fg-muted); font: var(--text-2xs)/1.5 var(--font-ui); min-width: 6ch; }
   /* Embedded in the chat column, directly above the input row — a thin
    * status line.  Horizontal padding is zero so it aligns with the log
    * and input box; borderless — the gap above already separates it from
@@ -142,9 +125,10 @@
     align-items: center;
     gap: var(--space-2) var(--space-4);
   }
-  .dot.idle {
-    color: var(--fg-muted);
-  }
+  .lifecycle { min-width: 8ch; }
+  .token-count { min-width: 13ch; }
+  .speed { min-width: 13ch; }
+  .elapsed { min-width: 6ch; }
   .text { white-space: nowrap; }
   .done-label {
     color: var(--fg-strong);

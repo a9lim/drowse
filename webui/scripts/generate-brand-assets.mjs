@@ -2,8 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { chromium } from "@playwright/test";
 import { icon as tabIcon, states, animatedStates, frameCount } from "./tab-icon-artwork.mjs";
-
-const icon = (state) => tabIcon(state, 0, "dark");
+import { socialImageArtwork } from "./social-image-artwork.mjs";
 
 const browser = await chromium.launch({ headless: true });
 try {
@@ -25,7 +24,7 @@ try {
     rasters.set(key, png);
     return png;
   };
-  for (const directory of ["public-hosted", "public"]) {
+  for (const directory of process.argv.includes("--social-only") ? [] : ["public-hosted", "public"]) {
     const root = resolve(directory);
     await mkdir(resolve(root, "icons"), { recursive: true });
     for (const state of states) {
@@ -64,25 +63,10 @@ try {
     ]) await writeFile(resolve(root, "icons", `${name}.png`), await raster(tabIcon("home", 0, "light", maskable), size));
   }
   if (!process.argv.includes("--icons-only")) {
-  const social = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
-  <rect width="1200" height="630" fill="#0b0e17"/>
-  <g transform="translate(76 72) scale(1.25)" style="--tile:#c5b3ff;--ink:#141822">${icon("home").replace(/<svg[^>]*>|<\/svg>/g, "")}</g>
-  <g font-family="Arial, sans-serif" fill="#f4f1ff">
-  <text x="184" y="127" font-size="48" font-weight="700" letter-spacing="-2">Drowse</text>
-  <text x="76" y="287" font-size="76" font-weight="700" letter-spacing="-3">See inside</text>
-  <text x="76" y="371" font-size="76" font-weight="700" letter-spacing="-3">your model.</text>
-  <text x="80" y="459" font-size="27" fill="#c9c2dd">Run, inspect, steer, and branch language models.</text>
-  <text x="80" y="504" font-size="27" fill="#c9c2dd">On your device. In your browser.</text></g>
-  <g fill="none" stroke="#a48be9" stroke-width="3">
-  <path d="M858 308h66c35 0 22-100 59-100h95M924 308h154M924 308c35 0 22 100 59 100h95"/>
-  </g><g fill="#211738" stroke="#a48be9" stroke-width="3">
-  <rect x="794" y="276" width="84" height="64" rx="18"/>
-  <rect x="1044" y="180" width="84" height="56" rx="16"/>
-  <rect x="1044" y="280" width="84" height="56" rx="16"/>
-  <rect x="1044" y="380" width="84" height="56" rx="16"/>
-  </g><g fill="#c1adff"><circle cx="816" cy="308" r="4"/><circle cx="834" cy="308" r="4"/><circle cx="852" cy="308" r="4"/></g></svg>`;
+  const social = await socialImageArtwork(page);
   await page.setViewportSize({ width: 1200, height: 630 });
   await page.setContent(`<style>body{margin:0}</style>${social}`);
+  await page.evaluate(() => document.fonts.ready);
   const image = await page.screenshot();
   for (const directory of ["public-hosted", "public"]) {
     await mkdir(resolve(directory, "social"), { recursive: true });

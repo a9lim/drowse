@@ -134,6 +134,7 @@ async function mountHostedApp(
     ]);
     let current = structuredClone(snapshot);
     const listeners = new Set<(next: typeof current) => void>();
+    const downloads: Array<{ id: string; options: unknown }> = [];
     const controller = {
       current: () => current,
       subscribe(listener: (next: typeof current) => void) {
@@ -143,7 +144,12 @@ async function mountHostedApp(
       },
       async check() {},
       capabilities: () => ({ signals: { appleMobile: false } }),
-      async download() {},
+      async download(id: string, options: unknown) {
+        downloads.push({ id, options });
+        current = { ...current, download: { ...current.download, phase: "requesting_persistence", modelVariantId: id } };
+        for (const listener of listeners) listener(current);
+        await new Promise(() => {});
+      },
       async retryPersistence() {
         const protectedStorage = retryResults.shift() ?? false;
         if (protectedStorage) {
@@ -174,9 +180,11 @@ async function mountHostedApp(
     mount(HostedApp, { target, props: { controller } });
     (globalThis as typeof globalThis & {
       __hostedOnboardingHarness: {
+        downloads: typeof downloads;
         update(patch: Partial<typeof current>): void;
       };
     }).__hostedOnboardingHarness = {
+      downloads,
       update(patch) {
         current = {
           ...current,
@@ -225,7 +233,7 @@ async function expectSafeActionFirst(
   );
   expect(boxes[0].y).toBeLessThan(boxes[1].y);
   await actions.nth(0).focus();
-  await page.keyboard.press("Tab");
+  await page.keyboard.press(page.context().browser()?.browserType().name() === "webkit" ? "Alt+Tab" : "Tab");
   await expect(actions.nth(1)).toBeFocused();
 }
 
@@ -481,7 +489,7 @@ test("model cards show provider logos and catalog-backed SAE availability", asyn
   await expect(gemma.locator('[data-provider="gemma"]')).toHaveAttribute("aria-hidden", "true");
   await expect(qwen.getByText("SAE", { exact: true })).toHaveCount(0);
   await expect(gemma.getByText("SAE", { exact: true })).toHaveAttribute(
-    "title",
+    "aria-description",
     "Sparse autoencoder available",
   );
 
@@ -529,11 +537,33 @@ test("hosted onboarding keeps technical file progress hidden and formats ETA onc
 
   await expect(page.getByRole("progressbar", { name: "Local setup download" }))
     .toHaveAttribute("aria-valuenow", "50");
-  await expect(page.locator(".progress-copy .sr-only")).toHaveText("50");
+  await expect(page.locator(".progress-copy .rolling-number .morph-source")).toHaveText("50");
   await expect(page.locator(".progress-copy .rolling-number")).toHaveAttribute("data-value", "50");
   await expect(page.locator(".progress-copy")).toContainText("% · 18 - 27 minutes remaining");
   await expect(page.getByText(/params_shard/i)).toHaveCount(0);
   await expect(page.getByRole("list", { name: "Local setup files" })).toHaveCount(0);
+});
+
+test("an unverified iPhone model starts one download with storage protection declined", async ({ page }) => {
+  await mountHostedApp(page);
+  await updateSnapshot(page, {
+    models: [model("uncertain", { reason: "This model has not yet completed a successful load on this iPhone or iPad" })],
+    download: { ...initialSnapshot.download, phase: "idle" },
+    storage: { ...initialSnapshot.storage, persisted: false },
+  });
+  await page.getByRole("button", { name: "Review warning", exact: true }).click();
+  await expect(page.locator(".unsafe-warning")).toContainText("Check this model on your device");
+  await expect(page.locator(".unsafe-warning")).not.toContainText("may not have enough memory");
+  await page.getByRole("button", { name: "Download anyway", exact: true }).click();
+  await expect(page.locator(".unsafe-warning")).toHaveCount(0);
+  await expect(page.locator(".download-gate")).toContainText("Preparing download");
+  await expect(page.locator(".model-grid > button")).toBeDisabled();
+  await expect(page.getByRole("status", { name: "Storage protection", exact: true })).toContainText("Downloads and chats save on this device");
+  await updateSnapshot(page, { download: { ...initialSnapshot.download, phase: "downloading" } });
+  await expect(page.locator(".download-gate")).toContainText("Downloading model files");
+  expect(await page.evaluate(() => (globalThis as any).__hostedOnboardingHarness.downloads)).toEqual([
+    { id: "model-uncertain", options: { explicitUnsafeOverride: true } },
+  ]);
 });
 
 test("hosted onboarding explains and retries storage protection without repeating the download", async ({ page }) => {
@@ -553,11 +583,11 @@ test("hosted onboarding explains and retries storage protection without repeatin
   });
 
   const notice = page.getByRole("status", { name: "Storage protection", exact: true });
-  await expect(notice.getByText("Storage protection is off", { exact: true })).toBeVisible();
-  await expect(notice).toContainText("Ask your browser to protect local chats and models from automatic cleanup.");
+  await expect(notice.getByText("Local storage is available", { exact: true })).toBeVisible();
+  await expect(notice).toContainText("Storage protection is optional and helps prevent automatic cleanup.");
   await page.getByRole("button", { name: "Protect storage" }).click();
-  await expect(notice).toContainText("Your browser didn't grant storage protection.");
-  await expect(notice).toContainText("Back up your chats and don't clear this site's data.");
+  await expect(notice).toContainText("Downloads and chats still save on this device.");
+  await expect(notice).toContainText("so back up your chats.");
   expect(await notice.innerText()).not.toContain("\u2014");
   await page.getByRole("button", { name: "Protect storage" }).click();
   await expect(page.getByRole("button", { name: "Protect storage" })).toHaveCount(0);
@@ -598,7 +628,7 @@ test("mobile warning actions keep safe choices first visually and in focus order
   await page.locator(".model-grid > button").filter({ hasText: "uncertain model" }).click();
   await page.getByRole("button", { name: "Review warning", exact: true }).click();
   const downloadWarning = page.locator(".unsafe-warning").filter({
-    hasText: "This device may not have enough memory",
+    hasText: "Check this model on your device",
   });
   const downloadActions = downloadWarning.locator(".warning-actions button");
   await expectSafeActionFirst(page, downloadActions, [

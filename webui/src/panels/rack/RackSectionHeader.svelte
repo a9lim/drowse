@@ -1,4 +1,5 @@
 <script lang="ts" generics="T extends string">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Canonical STEER/PROBE header used by all four inspector pillars. This
   // owns the title/live/count/sort rhythm so future tabs cannot drift by a
   // pixel or silently omit one of the shared controls.
@@ -58,18 +59,18 @@
           class:on={live}
           disabled={liveBusy}
           onclick={onLiveToggle}
-          title={liveTitle}
+          {...{ "aria-description": (liveTitle) }}
           aria-label={`${live ? "Turn off" : "Turn on"} ${contextualLiveLabel}`}
           aria-pressed={live}
         >
-          {live ? "Live on" : "Live off"}
+          <MorphText text={live ? "Live on" : "Live off"} numbers={false} />
         </button>
         {#if liveHelp}
           <InfoTip text={liveHelp} label={`About ${contextualLiveLabel}`} />
         {/if}
       </span>
     {/if}
-    {#if count}<span class="count" aria-live="polite">{count}</span>{/if}
+    {#if count}<span class="count" aria-live="polite"><MorphText text={count} /></span>{/if}
   </div>
 
   {#if hasSort}

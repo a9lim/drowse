@@ -29,15 +29,17 @@ def stage_verify_swap(
     ``target -> .bak`` and ``.staging -> target`` with best-effort restore on
     failure.
     """
-    if target_folder.exists() and not force:
-        raise make_error(f"{target_folder} exists; pass force=True to overwrite")
-
     staging = target_folder.with_name(target_folder.name + ".staging")
     backup = target_folder.with_name(target_folder.name + ".bak")
 
     if not target_folder.exists() and backup.exists():
-        with suppress(OSError):
+        try:
             backup.rename(target_folder)
+        except OSError as error:
+            raise make_error(f"{label}: could not recover the previous install ({error})") from error
+
+    if target_folder.exists() and not force:
+        raise make_error(f"{target_folder} exists; pass force=True to overwrite")
 
     if staging.exists():
         shutil.rmtree(staging)

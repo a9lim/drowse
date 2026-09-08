@@ -1,29 +1,58 @@
 import { expect, type Page } from "@playwright/test";
 
+export async function openWorkspaceMenu(page: Page): Promise<void> {
+  const menu = page.getByRole("button", { name: "Workspace menu", exact: true });
+  const collapse = page.getByRole("button", { name: "Hide left sidebar", exact: true });
+  await expect.poll(async () => await menu.isVisible() || await collapse.isVisible()).toBe(true);
+  if (!await menu.isVisible()) await collapse.click();
+  await menu.click();
+}
+
+export async function clickWorkspaceAction(page: Page, name: string): Promise<void> {
+  const action = page.getByRole("button", { name, exact: true });
+  await expect.poll(async () => await action.isVisible()
+    || await page.getByRole("button", { name: "Workspace menu", exact: true }).isVisible()).toBe(true);
+  if (!await action.isVisible()) await openWorkspaceMenu(page);
+  await action.click();
+}
+
+export async function selectWorkspaceView(page: Page, name: string | RegExp): Promise<void> {
+  const navigation = page.getByRole("navigation", { name: "Workspace", exact: true });
+  const expand = page.getByRole("button", { name: "Show left sidebar", exact: true });
+  const collapsed = await expand.isVisible();
+  if (collapsed) await expand.click();
+  await navigation.getByRole("button", { name, exact: typeof name === "string" }).click();
+  if (collapsed) await page.getByRole("button", { name: "Hide left sidebar", exact: true }).click();
+}
+
 export async function setAppearance(page: Page, name: string): Promise<void> {
+  const sidebarWasOpen = await page.getByRole("button", { name: "Hide left sidebar", exact: true }).isVisible();
   const appearance = page.getByRole("group", { name: "Appearance", exact: true });
   await expect.poll(async () => await appearance.isVisible()
-    || await page.getByRole("button", { name: "Workspace menu", exact: true }).isVisible()).toBe(true);
+    || await page.getByRole("button", { name: "Workspace menu", exact: true }).isVisible()
+    || await page.getByRole("button", { name: "Hide left sidebar", exact: true }).isVisible()).toBe(true);
   const openMenu = !(await appearance.isVisible());
   if (openMenu) {
-    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+    await openWorkspaceMenu(page);
   }
   await appearance.getByRole("button", { name, exact: true }).click();
   if (openMenu) await page.keyboard.press("Escape");
+  if (sidebarWasOpen && await page.getByRole("button", { name: "Show left sidebar", exact: true }).isVisible()) {
+    await page.getByRole("button", { name: "Show left sidebar", exact: true }).click();
+  }
   await expect(page.locator("html")).toHaveAttribute("data-theme", name.toLowerCase());
 }
 
 export async function returnToChats(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("dialog", { name: "Workspace menu", exact: true })
-    .getByRole("button", { name: "Your chats", exact: true }).click();
+  await clickWorkspaceAction(page, "Back to Chats");
 }
 
 export async function showWorkspaceTools(page: Page, name: "chat" | "Loom"): Promise<void> {
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+  const visibleHeader = page.locator(name === "chat" ? ".chat-header" : ".loom-header");
+  if (await visibleHeader.isVisible()) return;
   const show = page.getByRole("button", { name: `Show ${name} tools`, exact: true });
-  if (await show.isVisible()) await show.click();
-  else await page.keyboard.press("Escape");
+  if (!await show.isVisible()) await openWorkspaceMenu(page);
+  await show.click();
 }
 
 export async function openTokenDetails(page: Page) {

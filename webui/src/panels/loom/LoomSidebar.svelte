@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import { slidingSelection } from "../../lib/slidingSelection";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
@@ -1250,6 +1251,7 @@
   }
 
   let modalBusy = $state(false);
+  let createdBranchId = $state<string | null>(null);
   async function commitModal(): Promise<void> {
     if (modalBusy) return;
     modalBusy = true;
@@ -1286,7 +1288,7 @@
         break;
       case "branch": {
         const newId = await loomBranch(m.nodeId, m.text);
-        if (newId) await loomNavigate(newId);
+        if (newId) { await loomNavigate(newId); createdBranchId = newId; }
         break;
       }
       case "delete":
@@ -1845,16 +1847,16 @@
       type="button"
       class="action-btn"
       onclick={clearChat}
-      title="Start a new path from the root; keep all existing branches"
+      {...{ "aria-description": "Start a new path from the root; keep all existing branches" }}
     >
       Start over
     </button>
     <button type="button" class="action-btn" disabled={genStatus.active || !loomTree.loaded || loomTree.nodes.size <= 1}
-      title="Save this conversation and start with an empty loom"
+      {...{ "aria-description": "Save this conversation and start with an empty loom" }}
       onclick={() => void openModal("clear", loomTree.root_id)}>Clear loom…</button>
     <button type="button" class="action-btn"
       disabled={!loomTree.active_node_id || loomTree.active_node_id === loomTree.root_id || loomNodeIntersectsGeneration(loomTree.active_node_id)}
-      title="Remove the current turn and all branches that follow it"
+      {...{ "aria-description": "Remove the current turn and all branches that follow it" }}
       onclick={() => void openModal("delete", loomTree.active_node_id)}>Cut branch…</button>
     <button
       type="button"
@@ -1875,7 +1877,7 @@
       class="action-btn"
       onclick={compareBranch}
       disabled={comparableNodes.length < 2}
-      title="Compare alternate replies to the same message"
+      {...{ "aria-description": "Compare alternate replies to the same message" }}
     >
       {comparableNodes.length >= 2 ? `Compare ${comparableNodes.length}` : "Compare"}
     </button>
@@ -1883,7 +1885,7 @@
       type="button"
       class="icon-btn"
       onclick={fullRefresh}
-      title="refresh"
+      {...{ "aria-description": "refresh" }}
       aria-label="Refresh"
     ><FluentIcon name="refresh" /></button>
   </header>
@@ -1963,7 +1965,7 @@
       class="icon-btn help-btn"
       class:on={loomUiState.filterHelpOpen}
       onclick={() => (loomUiState.filterHelpOpen = !loomUiState.filterHelpOpen)}
-      title="How advanced filters work"
+
       aria-label="How advanced filters work"
       aria-expanded={loomUiState.filterHelpOpen}
     ><FluentIcon name="help" /></button>
@@ -1973,17 +1975,17 @@
         type="button"
         class="icon-btn"
         onclick={() => { clearTreeFilter(); searchInput?.focus(); }}
-        title="Clear search"
+
         aria-label="Clear search"
       ><FluentIcon name="dismiss" /></button>
     {/if}
     </div>
     <div class="search-feedback">
       <p id="loom-search-status" class:err={filterState.error !== null} role="status">
-        {filterState.loading ? "Searching…" : filterState.error ?? (filterState.matchingIds !== null
+        <MorphText text={filterState.loading ? "Searching…" : filterState.error ?? (filterState.matchingIds !== null
           ? searchResults.length === 0 ? "No messages match. Try different words or clear the search."
             : `${searchIndex >= 0 ? `${searchIndex + 1} of ` : ""}${searchResults.length} matching ${searchResults.length === 1 ? "message" : "messages"}`
-          : filterState.mode === "advanced" ? "Press Enter or Apply to run the filters." : "Search all branches. Enter moves to the next match; Shift+Enter moves back.")}
+          : filterState.mode === "advanced" ? "Press Enter or Apply to run the filters." : "Search all branches. Enter moves to the next match; Shift+Enter moves back.")} />
       </p>
       {#if searchResult && searchExcerpt}
         <div class="search-result">
@@ -2025,7 +2027,7 @@
        when a ``sort:`` filter directive is active. -->
   {#if loomUiState.siblingSort !== "default"}
     <div class="weight-bar">
-      <span class="weight-label" title="sibling sort">
+      <span class="weight-label" {...{ "aria-description": "sibling sort" }}>
         sort:{loomUiState.siblingSort}
       </span>
     </div>
@@ -2033,7 +2035,7 @@
 
   {#if nodeSelection.ids.length > 0}
     <div class="selection-bar">
-      <span>{nodeSelection.ids.length} selected</span>
+      <span><MorphText text={`${nodeSelection.ids.length} selected`} /></span>
       <button
         type="button"
         class="action-btn"
@@ -2048,6 +2050,14 @@
     </div>
   {/if}
 
+  {#if cursorNode}
+    <div class="focused-branch" aria-label="Focused branch summary">
+      {#if cursorNode.id === createdBranchId}<span role="status">Branch created</span>{/if}
+      <span><MorphText text={cursorNode.role_label || cursorNode.role} numbers={false} /></span>
+      <span><MorphText text={`Depth ${rowById.get(cursorNode.id)?.depth ?? 0}`} /></span>
+      <span><MorphText text={`${cursorNode.tokens?.length ?? 0} recorded tokens`} /></span>
+    </div>
+  {/if}
   <div class="weave-host" hidden={loomUiState.view !== "weave" || !!loomTree.error}>
     {#key loomTree.root_id}
       <LoomWeave
@@ -2073,12 +2083,12 @@
     <div class="loom-map-bar">
       <div class="loom-map-summary">
         <strong>Conversation map</strong>
-        <span>{rows.length} {rows.length === 1 ? "turn" : "turns"}</span>
+        <span><MorphText text={rows.length} /> {rows.length === 1 ? "turn" : "turns"}</span>
         <span class="map-separator" aria-hidden="true">·</span>
-        <span>{branchPointCount} {branchPointCount === 1 ? "fork" : "forks"}</span>
+        <span><MorphText text={branchPointCount} /> {branchPointCount === 1 ? "fork" : "forks"}</span>
         {#if visibleTokenCount > 0}
           <span class="map-separator" aria-hidden="true">·</span>
-          <span>{visibleTokenCount} {visibleTokenCount === 1 ? "token" : "tokens"}</span>
+          <span><MorphText text={visibleTokenCount} /> {visibleTokenCount === 1 ? "token" : "tokens"}</span>
         {/if}
         <span class="path-key"><i aria-hidden="true"></i> current path</span>
       </div>
@@ -2089,7 +2099,7 @@
           data-cursor="zoom-out"
           disabled={camera.zoom <= LOOM_MIN_ZOOM}
           aria-label="Zoom out"
-          title="Zoom out"
+
         ><FluentIcon name="subtract" /></button>
         <output aria-label="Loom zoom"><RollingNumber value={Math.round(camera.zoom * 100)} />%</output>
         <button
@@ -2098,12 +2108,12 @@
           data-cursor="zoom-in"
           disabled={camera.zoom >= LOOM_MAX_ZOOM}
           aria-label="Zoom in"
-          title="Zoom in"
+
         ><FluentIcon name="add" /></button>
-        <button type="button" onclick={fitView} aria-label="Fit whole loom" title="Fit whole loom">
+        <button type="button" onclick={fitView} aria-label="Fit whole loom" >
           Fit
         </button>
-        <button type="button" onclick={centerCurrent} aria-label="Center current path" title="Center current path">
+        <button type="button" onclick={centerCurrent} aria-label="Center current path" >
           Current
         </button>
       </div>
@@ -2289,7 +2299,7 @@
                       data-cursor="inspect"
                       data-loom-token-node={snippet.node.id}
                       data-token-index={tokenIndex}
-                      title="Open branch-point tools"
+                      {...{ "aria-description": "Open branch-point tools" }}
                       aria-label={`Open token ${tokenIndex + 1}: ${token.text.trim() || "whitespace"}`}
                       aria-haspopup="dialog"
                       onclick={() => void inspectLoomToken(snippet.node, tokenIndex)}
@@ -2310,9 +2320,9 @@
                     type="button"
                     class="branch-action"
                     disabled={!canBranch}
-                    title={canBranch
+                    {...{ "aria-description": (canBranch
                       ? "Keep everything through this sentence and generate a new continuation"
-                      : "Exact sentence replay is unavailable while the model is busy"}
+                      : "Exact sentence replay is unavailable while the model is busy") }}
                     onclick={() => void branchAfterToken(snippet.node, snippet.end)}
                   >Branch after sentence</button>
                 {/if}
@@ -2332,7 +2342,7 @@
         {#if cursorNode}
           <div class="projection-actions">
             <button type="button" class="primary-action" disabled={genStatus.active} onclick={() => void growFromNode(cursorNode)}>
-              {genStatus.active ? "Generating…" : "Generate another"}
+              <MorphText text={genStatus.active ? "Generating…" : "Generate another"} />
             </button>
             {#if cursorNode.parent_id}
               <button type="button" class="secondary-action" onclick={(ev) => branchFromNode(cursorNode, ev.currentTarget as HTMLElement)}>
@@ -2369,7 +2379,7 @@
               <footer>
                 <button type="button" class="primary-action" onclick={() => void usePath(node)}>Use this path</button>
                 <button type="button" class="quiet-action" onclick={() => void loomStar(node.id, !node.starred)}>
-                  {node.starred ? "Remove saved" : "Save for later"}
+                  <MorphText text={node.starred ? "Remove saved" : "Save for later"} />
                 </button>
               </footer>
             </article>
@@ -2387,7 +2397,7 @@
       </header>
       {#if savedRows.length === 0}
         <div class="projection-empty">
-          <strong>{filterState.matchingIds !== null ? "No starred messages match" : "Nothing saved yet"}</strong>
+          <strong><MorphText text={filterState.matchingIds !== null ? "No starred messages match" : "Nothing saved yet"} /></strong>
           <p>{filterState.matchingIds !== null ? "Try different words or clear the search." : "Use a node’s menu and choose “Save this branch.”"}</p>
         </div>
       {:else}
@@ -2455,14 +2465,14 @@
         <button
           type="button"
           role="menuitem"
-          title="Swap the speaker and create a branch"
+          {...{ "aria-description": "Swap the speaker and create a branch" }}
           onclick={menuSwapSeat}
         >Swap speaker on a new branch</button>
       {/if}
     </div>
     <div class="loom-menu-section" role="presentation">
       <button type="button" role="menuitem" onclick={menuStar}>
-        {menuNode?.starred ? "Remove saved marker" : "Save this branch"}
+        <MorphText text={menuNode?.starred ? "Remove saved marker" : "Save this branch"} />
       </button>
       <button type="button" role="menuitem" onclick={menuNote}>Add a note…</button>
     </div>
@@ -2484,7 +2494,7 @@
         role="menuitem"
         onclick={menuCompareBranch}
         disabled={cmpCount < 2}
-        title={cmpCount < 2 ? "Create at least two replies first" : ""}
+        {...{ "aria-description": (cmpCount < 2 ? "Create at least two replies first" : "") }}
       >Compare replies…</button>
       <button type="button" role="menuitem" onclick={menuFanOut}>Create guided variations…</button>
     </div>
@@ -2495,9 +2505,9 @@
         onclick={menuDelete}
         class="danger"
         disabled={menu.nodeId !== null && loomNodeIntersectsGeneration(menu.nodeId)}
-        title={menu.nodeId !== null && loomNodeIntersectsGeneration(menu.nodeId)
+        {...{ "aria-description": (menu.nodeId !== null && loomNodeIntersectsGeneration(menu.nodeId)
           ? LOOM_DELETE_DURING_GENERATION_MESSAGE
-          : ""}
+          : "") }}
       >Delete this branch…</button>
     </div>
   </div>
@@ -2657,24 +2667,25 @@
         onclick={() => void commitModal()}
         disabled={modalBusy || (modal.kind === "clear" && genStatus.active) || (modal.kind === "delete" && modal.nodeId !== null &&
           loomNodeIntersectsGeneration(modal.nodeId))}
-        title={modal.kind === "delete" && modal.nodeId !== null &&
+        {...{ "aria-description": (modal.kind === "delete" && modal.nodeId !== null &&
           loomNodeIntersectsGeneration(modal.nodeId)
           ? LOOM_DELETE_DURING_GENERATION_MESSAGE
-          : ""}
+          : "") }}
       >
-        {#if modal.kind === "delete"}Delete branch
-        {:else if modal.kind === "clear"}Save and clear loom
-        {:else if modal.kind === "edit" || modal.kind === "note"}Save
-        {:else if modal.kind === "branch"}Create branch
-        {:else if modal.kind === "navpicker"}Go
-        {:else if modal.kind === "search"}Search
-        {:else}Generate{/if}
+        <MorphText text={modalBusy ? (modal.kind === "branch" ? "Creating branch…" : "Applying…")
+          : modal.kind === "delete" ? "Delete branch"
+          : modal.kind === "clear" ? "Save and clear loom"
+          : modal.kind === "edit" || modal.kind === "note" ? "Save"
+          : modal.kind === "branch" ? "Create branch"
+          : modal.kind === "navpicker" ? "Go"
+          : modal.kind === "search" ? "Search" : "Generate"} numbers={false} />
       </button>
     </footer>
   </div>
 {/if}
 
 <style>
+  .focused-branch { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: var(--space-1) var(--surface-padding); color: var(--fg-dim); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
   .weave-host { display: flex; flex: 1; min-height: 0; min-width: 0; }
   .weave-host[hidden] { display: none; }
   .loom-sidebar {
@@ -3839,14 +3850,6 @@
   .loom-menu.positioned {
     opacity: 1;
     pointer-events: auto;
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    .loom-menu {
-      transform: scale(0.97);
-      transform-origin: top left;
-      transition: opacity 250ms var(--ease-out), transform 250ms var(--ease-out);
-    }
-    .loom-menu.positioned { transform: scale(1); }
   }
   .loom-menu-context {
     display: flex;

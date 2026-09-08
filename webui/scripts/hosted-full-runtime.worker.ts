@@ -27,6 +27,7 @@ import {
   type DrowseWebLlmModule,
 } from "../src/hosted/runtime/webLlmEngine";
 import type { StructuredHookProgramBuffers } from "../src/hosted/runtime/structuredHookProgram";
+import { validatePairedSteeringControls } from "./browser-full-runtime-contract.mjs";
 
 type FileEntry = CatalogFile;
 
@@ -36,7 +37,7 @@ interface RunRequest {
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
   thinkingProfile: ModelVariant["thinkingProfile"];
-  quantization: "q4f16_1" | "q4f32_1";
+  quantization: "q4f16_1" | "q4f32_1" | "q0f32";
   requiredFeatures: GPUFeatureName[];
   contextTokens: number;
   contextProfiles: number[];
@@ -341,7 +342,7 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
       const result = await runtime!.streamGeneration(
         {
           input: { kind: "raw", prompt: "The sky looks blue because" },
-          sampling: deterministicSampling(event.data.maxTokens),
+          sampling: { ...deterministicSampling(event.data.maxTokens), return_top_k: 8 },
           thinking: false,
           steeringExpression: null,
           hookProgram: null,
@@ -372,8 +373,31 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
           "ordinary generation returned no measured prefill/decode speed",
         );
       }
+      const chatChecks: Array<{ prompt: string; response: string; passed: boolean; promptTokens: number; tokenIds: number[]; finishReason: string }> = [];
+      if (runtime!.runtimeCapabilities().baseModel !== true) {
+        for (const [prompt, expected] of [
+          ["What is 2 + 2? Answer with only the number.", /^\s*4[.!]?\s*$/u],
+          ["What is the capital of France? Answer with only the city.", /^\s*Paris[.!]?\s*$/iu],
+        ] as const) {
+          const tokenIds: number[] = [];
+          const answer = await runtime!.streamGeneration({
+            input: { kind: "chat", messages: [{ role: "user", content: prompt }] },
+            sampling: { ...deterministicSampling(24), return_top_k: 8 },
+            thinking: false,
+            steeringExpression: null,
+            hookProgram: null,
+            onRawToken(token) { if (token.tokenId !== null) tokenIds.push(token.tokenId); },
+          }, () => undefined);
+          chatChecks.push({ prompt, response: answer.text, passed: expected.test(answer.text), promptTokens: answer.usage.promptTokens, tokenIds, finishReason: answer.finishReason });
+        }
+        if (chatChecks.some(({ passed }) => !passed)) {
+          throw new Error(`unsteered chat sanity checks failed: ${JSON.stringify(chatChecks)}`);
+        }
+      }
       return {
         tokens: result.tokens,
+        text: result.text,
+        chatChecks,
         finishReason: result.finishReason,
         prefillTokensPerSecond: result.prefillTokensPerSecond,
         decodeTokensPerSecond: result.decodeTokensPerSecond,
@@ -570,6 +594,26 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
       const flat = await firstGeometry(instruments!, true, "browser_e2e_flat");
       flatSelector = flat.selector;
       flatLabel = flat.label;
+      const controlLogprobs: Record<string, number> = {};
+      const controlOutcomes: Array<{ name: string; tokens: number; finishReason: string; logprob: string }> = [];
+      for (const [name, coefficient] of [["baseline", null], ["zero", 0], ["positive", 0.5], ["negative", -0.5]] as const) {
+        const controlExpression = coefficient === null
+          ? null : `${coefficient} ${flat.selector}%${flat.label}@both`;
+        const control = await runtime!.streamGeneration({
+          input: { kind: "raw", prompt: "The sky looks blue because" },
+          sampling: { ...deterministicSampling(1), temperature: 1 },
+          thinking: false,
+          replay: { forcedPrefixTokenIds: ordinaryRawTokens.slice(0, 1), scoreTokenIds: ordinaryRawTokens.slice(0, 1) },
+          steeringExpression: controlExpression,
+          hookProgram: controlExpression === null ? null : compiler!.compile(controlExpression),
+          onRawToken(token) {
+            const score = token.replayScore?.requestedLogprobs.find(row => row.tokenId === ordinaryRawTokens[0]);
+            if (score) controlLogprobs[name] = score.logprob;
+          },
+        }, () => undefined);
+        controlOutcomes.push({ name, tokens: control.tokens, finishReason: control.finishReason, logprob: String(controlLogprobs[name]) });
+      }
+      const controlMeasurements = validatePairedSteeringControls(controlLogprobs);
       await instruments!.request(
         {
           service: "probes",
@@ -714,6 +758,9 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
       }
       return {
         flatSelector,
+        controlTokenId: ordinaryRawTokens[0],
+        ...controlMeasurements,
+        controlOutcomes,
         gateUpdates: gateTransitions.length,
         gatedTerms: gatedSlots.length,
         activatedGatedTerms: activatedGateSlots.length,
@@ -993,6 +1040,7 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
             thinking: false,
             generationSeat: "assistant",
             generationRoleName: program.activeRole,
+            replay: { forcedPrefixTokenIds: ordinaryRawTokens.slice(0, 2) },
             steeringExpression: expression,
             hookProgram: program,
             onRawToken(token) {
@@ -1025,6 +1073,7 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
         tokens: result.tokens,
         finishReason: result.finishReason,
         reading,
+        forcedPrefixTokenIds: ordinaryRawTokens.slice(0, 2),
         activeCurveSlots: program.curveRank.filter((rank) => rank > 0).length,
         activeGeometrySlots: activeGeometrySlots.length,
         finiteGeometryRows,

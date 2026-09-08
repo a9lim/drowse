@@ -4,7 +4,7 @@ import { fileURLToPath, URL } from "node:url";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig, type Plugin } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
-import { siteName, siteDescription, socialImageAlt, publicOrigin, discoveryMetadata } from "./scripts/site-metadata.mjs";
+import { siteName, siteDescription, siteAccent, socialImagePath, socialImageAlt, publicOrigin, discoveryMetadata } from "./scripts/site-metadata.mjs";
 
 const fromRoot = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 const releaseBuild = process.env.npm_lifecycle_event === "build:hosted:release";
@@ -33,8 +33,7 @@ const sourceUrl = releaseBuild
   ? `${sourceRepositoryUrl}/tree/${artifactSourceRevision}`
   : sourceRepositoryUrl;
 const pageDescription = siteDescription;
-const manifestDescription =
-  "Run, inspect, and steer language models entirely on your device.";
+const manifestDescription = siteDescription;
 const pageTitle = siteName;
 const siteOrigin = publicOrigin(process.env.DROWSE_PUBLIC_ORIGIN);
 const projectLicense = await readFile(fromRoot("../LICENSE"), "utf8");
@@ -65,7 +64,8 @@ const releaseMetadata: Plugin = {
       __DROWSE_HOSTED_CHANNEL__: releaseBuild ? "release" : "preview",
       __DROWSE_HOSTED_DESCRIPTION__: pageDescription,
       __DROWSE_HOSTED_TITLE__: pageTitle,
-      __DROWSE_SOCIAL_IMAGE__: `${siteOrigin}/social/drowse.png`,
+      __DROWSE_SOCIAL_IMAGE__: `${siteOrigin}${socialImagePath}`,
+      __DROWSE_ACCENT__: siteAccent,
       __DROWSE_SOCIAL_ALT__: socialImageAlt,
       __DROWSE_DISCOVERY_METADATA__: discoveryMetadata(siteOrigin),
       __DROWSE_SOURCE_REVISION__: releaseRevision,
@@ -144,7 +144,7 @@ export default defineConfig({
         scope: "/",
         display: "standalone",
         background_color: "#0b0e17",
-        theme_color: "#0b0e17",
+        theme_color: siteAccent,
         categories: ["developer", "productivity", "utilities"],
         icons: [
           {
@@ -168,6 +168,7 @@ export default defineConfig({
       workbox: {
         cacheId: "drowse-hosted",
         cleanupOutdatedCaches: true,
+        ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^v$/],
         globPatterns: ["**/*.{css,html,js,json,mp4,png,svg,wasm,woff2}", "images/ethereal-orb.jpg", "LICENSE"],
         globIgnores: [
           "assets/App-*.css",
@@ -177,6 +178,7 @@ export default defineConfig({
           "assets/registry-*.js",
           "assets/drowse-web-llm-*.js",
           "assets/typescript-*.js",
+          "social/**",
           "video/**",
           "wasm/**",
         ],
@@ -188,6 +190,7 @@ export default defineConfig({
           warnings: [],
         })],
         navigateFallback: "/index.html",
+        navigateFallbackDenylist: [/[?&]app-recovery=/],
         runtimeCaching: [
           {
             urlPattern:
@@ -238,8 +241,9 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
+    // This vendored ESM bundle must not outlive an inference-runtime update in Vite's cache.
+    exclude: ["@drowse/web-llm"],
     include: [
-      "@drowse/web-llm",
       "@noble/hashes/blake2.js",
       "@noble/hashes/sha2.js",
       "@noble/hashes/utils.js",
@@ -266,5 +270,7 @@ export default defineConfig({
     outDir: fromRoot("./dist-hosted"),
     emptyOutDir: true,
     sourcemap: false,
+    // Safari can retain failed modulepreloads across reloads (WebKit 270357).
+    modulePreload: false,
   },
 });

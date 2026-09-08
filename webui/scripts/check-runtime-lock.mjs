@@ -794,85 +794,6 @@ export async function validateBenchmarkProducerBindings(
   }
 }
 
-async function validateRuntimeFeasibilityEvidence(
-  value,
-  runtime,
-  benchmarks,
-  runtimeLockIdentitySha256,
-) {
-  exactKeys(
-    value,
-    ["$schema", "schemaVersion", "status", "drowseRevision", "gates"],
-    "runtime feasibility evidence",
-  );
-  if (value.schemaVersion !== 3)
-    throw new Error("unsupported runtime feasibility evidence schema");
-  if (!["feasibility-required", "verified"].includes(value.status))
-    throw new Error("invalid runtime feasibility evidence status");
-  const gateNames = [
-    "gemmaTinyFp32Parity",
-    "llamaTinyFp32Parity",
-    "qwenTinyFp32Parity",
-    "gemmaProductionQ4Parity",
-    "smolProductionQ4Parity",
-    "qwenProductionQ4Parity",
-    "gemmaLongPrefill",
-    "runtimeLifecycle",
-  ];
-  exactKeys(value.gates, gateNames, "runtime feasibility gates");
-  const incomplete = gateNames.some((name) => value.gates[name] === null);
-  validateEvidenceSetRevision(
-    value.drowseRevision,
-    gateNames.some((name) => value.gates[name] !== null),
-    value.status,
-    "runtime feasibility evidence",
-  );
-  if (value.status === "verified" && incomplete) {
-    throw new Error(
-      "verified runtime feasibility evidence contains unresolved gates",
-    );
-  }
-  if (value.status !== "verified" && !incomplete) {
-    throw new Error(
-      "complete runtime feasibility evidence must be marked verified",
-    );
-  }
-  for (const name of gateNames) {
-    const reference = value.gates[name];
-    if (reference === null) continue;
-    const record = await readEvidenceRecord(
-      reference,
-      name,
-      runtime,
-      runtimeLockIdentitySha256,
-      value.drowseRevision,
-    );
-    if (record.drowseRevision !== value.drowseRevision) {
-      throw new Error(
-        `${name} evidence revision does not match its feasibility evidence set`,
-      );
-    }
-    await validateRuntimeGateResults(name, record.results, repositoryRoot, runtime);
-  }
-  if (value.status !== "verified") return;
-  for (const modelId of runtime.models.map((model) => model.id)) {
-    const runs = benchmarks.runs.filter(
-      (run) =>
-        run.modelId === modelId &&
-        run.browser === "chrome" &&
-        run.loadSucceeded,
-    );
-    if (!runs.some((run) => run.platform === "android")) {
-      throw new Error(`${modelId} has no verified Chrome Android run`);
-    }
-    if (
-      !runs.some((run) => ["macos", "windows", "linux"].includes(run.platform))
-    ) {
-      throw new Error(`${modelId} has no verified Chrome desktop run`);
-    }
-  }
-}
-
 export async function validateRuntimeGateResults(
   name,
   results,
@@ -1045,67 +966,6 @@ export async function validateRuntimeGateResults(
     ].some((field) => results[field] !== true)
   )
     throw new Error("browser runtime lifecycle evidence is incomplete");
-}
-
-async function validateAuthoringEvidence(
-  value,
-  runtime,
-  runtimeLockIdentitySha256,
-) {
-  exactKeys(
-    value,
-    ["$schema", "schemaVersion", "status", "drowseRevision", "evidence"],
-    "authoring evidence",
-  );
-  if (value.schemaVersion !== 3)
-    throw new Error("unsupported authoring evidence schema");
-  if (
-    !["feasibility-required", "integrated-unverified", "verified"].includes(
-      value.status,
-    )
-  ) {
-    throw new Error("invalid authoring evidence status");
-  }
-  const names = [
-    "activationCapture",
-    "fittingKernelParity",
-    "topologyOrchestration",
-    "manifoldSerialization",
-    "instrumentIntegration",
-    "sharedGoldenResults",
-    "physicalBrowserFitting",
-  ];
-  exactKeys(value.evidence, names, "authoring evidence references");
-  const incomplete = names.some((name) => value.evidence[name] === null);
-  validateEvidenceSetRevision(
-    value.drowseRevision,
-    names.some((name) => value.evidence[name] !== null),
-    value.status,
-    "authoring evidence",
-  );
-  if (value.status === "verified" && incomplete) {
-    throw new Error("verified authoring evidence contains unresolved gates");
-  }
-  if (value.status !== "verified" && !incomplete) {
-    throw new Error("complete authoring evidence must be marked verified");
-  }
-  for (const name of names) {
-    const reference = value.evidence[name];
-    if (reference === null) continue;
-    const record = await readEvidenceRecord(
-      reference,
-      name,
-      runtime,
-      runtimeLockIdentitySha256,
-      value.drowseRevision,
-    );
-    if (record.drowseRevision !== value.drowseRevision) {
-      throw new Error(
-        `${name} evidence revision does not match its authoring evidence set`,
-      );
-    }
-    await validateAuthoringResults(name, record.results, repositoryRoot, runtime);
-  }
 }
 
 export async function validateAuthoringResults(
@@ -1398,111 +1258,6 @@ function validateObservedArtifactResults(results, runtime, name) {
   }
 }
 
-async function readEvidenceRecord(
-  reference,
-  evidenceType,
-  runtime,
-  runtimeLockIdentitySha256,
-  testedDrowseRevision,
-) {
-  requireReleaseEvidenceProducer(evidenceType);
-  exactKeys(
-    reference,
-    ["path", "sha256"],
-    `${evidenceType} evidence reference`,
-  );
-  if (
-    typeof reference.path !== "string" ||
-    !/^evidence\/[a-z0-9][a-z0-9._/-]*\.json$/.test(reference.path) ||
-    reference.path.split("/").includes("..") ||
-    !SHA256.test(reference.sha256)
-  )
-    throw new Error(`${evidenceType} evidence reference is invalid`);
-  const evidenceRoot = new URL(
-    "../../browser-runtime/evidence/",
-    import.meta.url,
-  );
-  const file = new URL(reference.path.slice("evidence/".length), evidenceRoot);
-  if (!file.href.startsWith(evidenceRoot.href)) {
-    throw new Error(
-      `${evidenceType} evidence path escapes the evidence directory`,
-    );
-  }
-  let bytes;
-  try {
-    bytes = await readFile(file);
-  } catch (error) {
-    throw new Error(`${evidenceType} evidence file is unavailable`, {
-      cause: error,
-    });
-  }
-  if (createHash("sha256").update(bytes).digest("hex") !== reference.sha256) {
-    throw new Error(
-      `${evidenceType} evidence file digest does not match its reference`,
-    );
-  }
-  let record;
-  try {
-    record = JSON.parse(bytes.toString("utf8"));
-  } catch (error) {
-    throw new Error(`${evidenceType} evidence file is not valid JSON`, {
-      cause: error,
-    });
-  }
-  exactKeys(
-    record,
-    [
-      "$schema",
-      "schemaVersion",
-      "evidenceType",
-      "producerId",
-      "producerConfigPath",
-      "producerConfigSha256",
-      "runtimeAbi",
-      "hookAbi",
-      "runtimeLockIdentitySha256",
-      "drowseRevision",
-      "producedAt",
-      "toolVersion",
-      "passed",
-      "results",
-    ],
-    `${evidenceType} evidence record`,
-  );
-  const expectedBinding = await releaseEvidenceProducerBinding(
-    evidenceType,
-    repositoryRoot,
-    record.producerConfigPath,
-  );
-  if (
-    record.$schema !== "../release-evidence-record.schema.json" ||
-    record.schemaVersion !== 4 ||
-    record.evidenceType !== evidenceType ||
-    record.producerId !== expectedBinding.producerId ||
-    record.producerConfigPath !== expectedBinding.configPath ||
-    record.producerConfigSha256 !== expectedBinding.configSha256 ||
-    record.runtimeAbi !== runtime.runtimeAbi ||
-    record.hookAbi !== runtime.hookAbi ||
-    record.runtimeLockIdentitySha256 !== runtimeLockIdentitySha256 ||
-    record.drowseRevision !== testedDrowseRevision ||
-    record.toolVersion !== expectedBinding.toolVersion ||
-    record.passed !== true
-  )
-    throw new Error(
-      `${evidenceType} evidence record has invalid runtime or source binding`,
-    );
-  const producedAt = Date.parse(record.producedAt);
-  if (
-    !Number.isFinite(producedAt) ||
-    producedAt > Date.now() + 5 * 60 * 1000 ||
-    producedAt < Date.now() - 180 * 24 * 60 * 60 * 1000
-  )
-    throw new Error(
-      `${evidenceType} evidence record is stale or has an invalid date`,
-    );
-  return record;
-}
-
 function validateDistribution(value) {
   exactKeys(
     value,
@@ -1567,7 +1322,7 @@ function validateDistribution(value) {
       );
     }
     if (
-      !value.allowedCatalogRedirectOrigins.includes("https://huggingface.co")
+      !value.allowedCatalogRedirectOrigins.some((origin) => origin === "https://huggingface.co")
     ) {
       throw new Error("verified distribution must allow the catalog origin");
     }

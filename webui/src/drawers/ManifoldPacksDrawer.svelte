@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import { slidingSelection } from "../lib/slidingSelection";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // ManifoldPacksDrawer — local manifold catalog and HF search/install.
@@ -227,6 +228,8 @@
     }
   }
 
+  let exportedPack = $state<string | null>(null);
+  $effect(() => { if (!exportedPack) return; const timer = setTimeout(() => exportedPack = null, 1800); return () => clearTimeout(timer); });
   async function exportArchive(pack: HostedManifoldPackInfo): Promise<void> {
     archiveBusy = `export:${pack.id}`;
     archiveError = null;
@@ -237,6 +240,7 @@
       link.href = url;
       link.download = `${pack.name}.drowse`;
       link.click();
+      exportedPack = pack.id;
       setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (error) {
       archiveError = describe(error);
@@ -357,6 +361,7 @@
     role="tabpanel"
     aria-labelledby={tab === "installed" ? "packs-tab-installed" : "packs-tab-search"}
   >
+    <p class="catalog-count"><MorphText text={tab === "installed" ? `${steerRack.catalog.length} installed manifolds` : searchResults === null ? "Search compatible manifolds" : `${searchResults.length} found`} /></p>
     {#if tab === "installed"}
       {#if browserMode}
         <section class="archive-tools" aria-labelledby="archive-tools-title">
@@ -367,7 +372,7 @@
             </div>
             {#if artifactAvailability.available}
               <label class="file-action" class:disabled={archiveBusy !== null}>
-                <span>{archiveBusy === "import" ? "verifying…" : "import pack"}</span>
+                <span><MorphText text={archiveBusy === "import" ? "verifying…" : "import pack"} /></span>
                 <input
                   type="file"
                   accept=".drowse,application/zip"
@@ -385,7 +390,7 @@
           {#if !artifactAvailability.available}
             <p class="muted">{artifactAvailability.reason}</p>
           {:else if archiveProgress}
-            <p class="install-stage" aria-live="polite">{archiveProgress}</p>
+            <p class="install-stage" aria-live="polite"><MorphText text={archiveProgress.split(": ")[0]} numbers={false} />{#if archiveProgress.includes(": ")} · {archiveProgress.slice(archiveProgress.indexOf(": ") + 2)}{/if}</p>
           {/if}
           {#if artifactAvailability.available && archiveError}<p class="error" role="alert">{archiveError}</p>{/if}
           {#if artifactAvailability.available && pendingReplacement}
@@ -407,7 +412,7 @@
                     <span>Publisher unverified</span>
                   </div>
                   <div class="actions">
-                    <button type="button" disabled={archiveBusy !== null} onclick={() => void exportArchive(pack)}>export</button>
+                    <button type="button" disabled={archiveBusy !== null} onclick={() => void exportArchive(pack)}><MorphText text={archiveBusy === `export:${pack.id}` ? "Preparing…" : exportedPack === pack.id ? "Download started" : "export"} numbers={false} /></button>
                     {#if confirmLocalDelete === pack.id}
                       <span>Delete {pack.namespace}/{pack.name} from this device? Export a backup first if you want to keep it.</span>
                       <button type="button" class="danger" disabled={archiveBusy !== null} onclick={() => void deleteArchive(pack)}>Delete pack</button>
@@ -437,7 +442,7 @@
           {#each steerRack.catalog as m (selectorOf(m))}
             {@const key = selectorOf(m)}
             {@const badge = fitBadge(m)}
-            <li class="row" title={m.description || key}>
+            <li class="row" {...{ "aria-description": (m.description || key) }}>
               <div class="meta">
                 <span class="row-name">{key}</span>
                 <span class="row-sub">
@@ -483,7 +488,7 @@
               {@const target = selectorOf(row)}
               {@const inFlight = installing === target}
               {@const badge = fitBadge(row)}
-              <li class="row" title={row.description || target}>
+              <li class="row" {...{ "aria-description": (row.description || target) }}>
                 <div class="meta">
                   <span class="row-name">{target}</span>
                   <span class="row-sub">
@@ -498,7 +503,7 @@
                     {/if}
                   </span>
                   {#if inFlight && installStage}
-                    <span class="install-stage" aria-live="polite">{installStage}</span>
+                    <span class="install-stage" aria-live="polite"><MorphText text={installStage} /></span>
                   {/if}
                 </div>
                 <div class="actions">
@@ -507,8 +512,8 @@
                     class="act install"
                     disabled={inFlight}
                     onclick={() => void installRow(row)}
-                    title={`install ${target}`}
-                  >{inFlight ? "…" : "install"}</button>
+                    {...{ "aria-description": (`install ${target}`) }}
+                  ><MorphText text={inFlight ? "…" : "install"} /></button>
                 </div>
               </li>
             {/each}

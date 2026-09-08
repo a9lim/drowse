@@ -17,7 +17,7 @@ try {
     const html = render(VerificationBadge, { props: { status } }).body;
     assert.ok(html.includes(`data-status="${status}"`));
     assert.ok(html.includes(`aria-label="${label}"`));
-    assert.ok(html.includes(`title="${label}"`));
+    assert.ok(!html.includes(`title="${label}"`));
   }
   assert.doesNotMatch(render(VerificationBadge, { props: { status: null } }).body, /<svg|verification-badge/,
     "unverified accounts have no badge, not a gray government badge");

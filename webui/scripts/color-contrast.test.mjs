@@ -36,6 +36,30 @@ const dark = colors(ruleBody(":root {"));
 const light = { ...dark, ...colors(ruleBody(':root[data-theme="light"]')) };
 
 for (const bootstrap of [localBootstrap, hostedBootstrap]) {
+  for (const [saved, expected] of [[null, "dark"], ["invalid", "dark"], ["light", "light"], ["dark", "dark"]]) {
+    const root = { dataset: {}, style: {} };
+    const meta = {};
+    runInNewContext(bootstrap, {
+      window: {
+        addEventListener() {},
+        localStorage: { getItem: key => key === "drowse.theme" ? saved : null },
+      },
+      document: { documentElement: root, querySelector: () => meta },
+    });
+    assert.equal(root.dataset.theme, expected);
+    assert.equal(root.style.colorScheme, expected);
+    assert.equal(meta.content, expected === "dark" ? "#0b0e17" : "#f2f4f8");
+  }
+  const root = { dataset: {}, style: {} };
+  runInNewContext(bootstrap, {
+    window: {
+      addEventListener() {},
+      localStorage: { getItem() { throw new Error("Storage unavailable"); } },
+    },
+    document: { documentElement: root, querySelector: () => null },
+  });
+  assert.equal(root.dataset.theme, "dark", "blocked storage still opens in dark mode");
+
   const handlers = new Map();
   let initialTransitionHandled = false;
   runInNewContext(bootstrap, {
@@ -212,6 +236,7 @@ for (const [name, theme] of Object.entries({ dark, light })) {
     "--glass-strong",
     "--glass-bright",
     "--input-well",
+    "--workspace-field-bg",
   ]) {
     reports.push(expectPair(theme, `${name} primary on ${surface}`, "--fg", surface, 7, 75));
     reports.push(expectPair(theme, `${name} body on ${surface}`, "--fg-strong", surface, 7, 75));
@@ -220,7 +245,7 @@ for (const [name, theme] of Object.entries({ dark, light })) {
   for (const surface of ["--bg", "--bg-alt", "--surface-hi"]) {
     reports.push(expectPair(theme, `${name} preferred primary on ${surface}`, "--fg", surface, 7, 90));
   }
-  for (const surface of ["--bg", "--bg-alt", "--bg-elev", "--surface-hi", "--glass", "--input-well"]) {
+  for (const surface of ["--bg", "--bg-alt", "--bg-elev", "--surface-hi", "--glass", "--input-well", "--workspace-field-bg"]) {
     reports.push(expectPair(theme, `${name} muted on ${surface}`, "--fg-muted", surface, 4.5, 60));
   }
   reports.push(expectPair(theme, `${name} disabled`, "--fg-muted", "--glass-strong", 3, 30));
@@ -260,7 +285,10 @@ assert.equal(light["--glass"], light["--bg-alt"], "Light cards share the white p
 assert.ok(ruleBody(':root[data-theme="light"]').includes('--shadow-rack: var(--shadow-card)'), "Light cards share the borderless panel shadow");
 reports.push(expectSurface(light, "light raised controls on cards", "--glass-strong", "--glass", 1.1, 0));
 reports.push(expectSurface(light, "light selected hierarchy", "--glass-bright", "--bg", 1.35, 15));
-reports.push(expectSurface(light, "light input hierarchy", "--input-well", "--bg", 1.15, 7));
+for (const surface of ["--input-well", "--workspace-field-bg"]) {
+  assert.ok(wcagLuminance(rendered(light, surface)) >= 0.9, "Light text fields stay near white");
+  reports.push(expectPair(light, `light input focus on ${surface}`, "--focus-ring", surface, 3, 60));
+}
 reports.push(expectSurface(light, "light separator", "--glass-line", "--bg", 1.7, 30));
 reports.push(expectSurface(light, "light grid", "--grid-line", "--bg", 1.45, 20));
 
@@ -314,6 +342,6 @@ for (const [name, theme] of Object.entries({ dark, light })) {
     }
   }
   assert.equal(parseColor(theme["--workspace-panel-bg"]).alpha, 0.03);
-  assert.equal(parseColor(theme["--workspace-field-bg"]).alpha, 0.05);
+  if (name === "dark") assert.equal(parseColor(theme["--workspace-field-bg"]).alpha, 0.05);
 }
 console.log(`color contrast passed (${reports.join(", ")})`);

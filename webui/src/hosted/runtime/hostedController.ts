@@ -228,8 +228,8 @@ export class HostedControllerImpl implements HostedController {
     });
   }
 
-  requestPersistence(): Promise<boolean> {
-    return requestPersistentStorage();
+  requestPersistence(onLateGranted?: () => void): Promise<boolean> {
+    return requestPersistentStorage(undefined, undefined, onLateGranted);
   }
 
   refreshStorage(): Promise<RuntimeCapabilities["storage"]> {
@@ -487,16 +487,6 @@ function toFailure(
     recoverable,
     error instanceof ApiError ? error.status : 500,
   );
-}
-
-export function createHostedController(
-  options: HostedControllerOptions = {},
-): HostedControllerImpl {
-  const worker = new Worker(new URL("./browser.worker.ts", import.meta.url), {
-    type: "module",
-    name: "drowse-runtime",
-  });
-  return new HostedControllerImpl(worker, platformTransportOptions(options));
 }
 
 export interface HostedRuntimeBundle {

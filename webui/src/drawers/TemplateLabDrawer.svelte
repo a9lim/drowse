@@ -1,4 +1,6 @@
 <script lang="ts">
+  import TemplatePreview from "../lib/ui/TemplatePreview.svelte";
+  import MorphText from "../lib/ui/MorphText.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   import Select from "../lib/Select.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
@@ -30,6 +32,7 @@
     ChoiceScores,
     TemplateContextSpec,
     TemplateSummary,
+    TemplateDetail,
     TemplateTurn,
   } from "../lib/types";
 
@@ -85,6 +88,20 @@
   const selectedTemplate = $derived(
     templates.find((t) => `${t.namespace}/${t.name}` === selectedKey) ?? null,
   );
+
+  let previewTemplate = $state<TemplateDetail | null>(null);
+  let previewError = $state("");
+  $effect(() => {
+    const template = selectedTemplate;
+    previewTemplate = null;
+    previewError = "";
+    if (!template) return;
+    let current = true;
+    void apiTemplates.get(template.namespace, template.name).then(detail => {
+      if (current) previewTemplate = detail;
+    }).catch(() => { if (current) previewError = "Preview unavailable. Scoring is still available."; });
+    return () => { current = false; };
+  });
 
   function probOf(c: { prob_sum: number; prob_mean: number }): number {
     return scoreBy === "sum" ? c.prob_sum : c.prob_mean;
@@ -291,6 +308,11 @@
             }))]} />
         </label>
 
+        {#if previewTemplate}
+          {#each previewTemplate.contexts as context, index (index)}
+            <TemplatePreview sentence={context.assistant} slot={previewTemplate.slot} values={previewTemplate.values} />
+          {/each}
+        {:else if previewError}<p class="hint">{previewError}</p>{/if}
         <label class="field">
           <span class="label">steering</span>
           <input type="text" placeholder="0.5 patient.hurried" bind:value={steerExpr}
@@ -304,21 +326,23 @@
           </label>
           {#if hostedController && scoring}
             <Button variant="ghost" disabled={cancellingScore} onclick={cancelScore}>
-              {cancellingScore ? "cancelling…" : "cancel"}
+              <MorphText text={cancellingScore ? "cancelling…" : "cancel"} />
             </Button>
           {/if}
           <Button variant="solid" busy={scoring} disabled={!selectedTemplate || scoring} onclick={runScore}>
-            {scoring ? "scoring…" : "score"}
+            <MorphText text={scoring ? "scoring…" : "score"} />
           </Button>
         </div>
 
-        {#if baseline && scoredKey === selectedKey}
+        {#if baseline && scoredKey === selectedKey && !scoring}
           {#each baseline as _ctx, ci (ci)}
             <div class="ctx-card">
               <div class="ctx-head">context {ci + 1}{steered ? " · base → steered" : ""}</div>
+              <div class="mass-row"><span>Baseline mass</span><div class="mass-bar" role="img" aria-label={rows(ci).map(r => `${r.label}: ${(r.base * 100).toFixed(1)}%`).join(", ")}>{#each rows(ci) as r, index (r.label)}<span style:width={`${r.base * 100}%`} style:opacity={.35 + (index % 4) * .2} {...{ "aria-description": (`${r.label}: ${(r.base * 100).toFixed(1)}%`) }}></span>{/each}</div></div>
+              {#if steered}<div class="mass-row"><span>Steered mass</span><div class="mass-bar" role="img" aria-label={rows(ci).map(r => `${r.label}: ${((r.steer ?? 0) * 100).toFixed(1)}%`).join(", ")}>{#each rows(ci) as r, index (r.label)}<span style:width={`${(r.steer ?? 0) * 100}%`} style:opacity={.35 + (index % 4) * .2} {...{ "aria-description": (`${r.label}: ${((r.steer ?? 0) * 100).toFixed(1)}%`) }}></span>{/each}</div></div>{/if}
               {#each rows(ci) as r (r.label)}
                 <div class="bar-row">
-                  <span class="bar-label" title={r.label}>{r.label}</span>
+                  <span class="bar-label" {...{ "aria-description": (r.label) }}>{r.label}</span>
                   <div class="bars">
                     <div class="bar base" style={`width:${(r.base * 100).toFixed(1)}%`}></div>
                     {#if r.steer !== null}
@@ -326,7 +350,7 @@
                     {/if}
                   </div>
                   <span class="bar-num">
-                    {(r.base * 100).toFixed(0)}%{#if r.steer !== null}<span class="arrow">→</span>{(r.steer * 100).toFixed(0)}%{/if}
+                    <MorphText text={`${(r.base * 100).toFixed(0)}%`} />{#if r.steer !== null}<span class="arrow">→</span><MorphText text={`${(r.steer * 100).toFixed(0)}%`} />{/if}
                   </span>
                 </div>
               {/each}
@@ -412,6 +436,7 @@
                   aria-invalid={buildSubmitted && contextInvalid(ci)}
                   aria-describedby={validationDescription(contextInvalid(ci))} />
               </label>
+              <TemplatePreview sentence={ctx.assistant} slot={bSlot} values={bValuesText.split("\n").map(value => value.trim()).filter(Boolean)} />
             </div>
           {/each}
           <button type="button" class="mini add" onclick={addContext}>+ context</button>
@@ -431,7 +456,7 @@
             busy={building}
             disabled={building}
           >
-            {building ? "creating…" : "create template"}
+            <MorphText text={building ? "creating…" : "create template"} />
           </Button>
         </footer>
       </form>
@@ -448,7 +473,7 @@
               <div class="delete-confirmation">
                 <p>Delete {t.namespace}/{t.name}? This removes the saved template and cannot be undone.</p>
                 <Button variant="ghost" size="sm" disabled={deleting} onclick={() => (deleteCandidate = null)}>Cancel</Button>
-                <Button variant="danger" size="sm" disabled={deleting} onclick={() => deleteTemplate(t)}>{deleting ? "Deleting…" : "Delete template"}</Button>
+                <Button variant="danger" size="sm" disabled={deleting} onclick={() => deleteTemplate(t)}><MorphText text={deleting ? "Deleting…" : "Delete template"} /></Button>
               </div>
             {:else}
               <Button
@@ -467,6 +492,9 @@
 </section>
 
 <style>
+  .mass-row { display: grid; grid-template-columns: 8em 1fr; align-items: center; gap: var(--space-2); font-size: var(--text-xs); margin-block: var(--space-2); }
+  .mass-bar { display: flex; height: 12px; overflow: hidden; border-radius: var(--radius-pill); }
+  .mass-bar span { background: var(--accent); }
   .delete-confirmation { grid-column: 1 / -1; }
   .delete-confirmation p { margin: 0 0 var(--space-3); line-height: 1.5; overflow-wrap: anywhere; }
   /* v2 sheet interior — the host paints the sheet surface, so the root

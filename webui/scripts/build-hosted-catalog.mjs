@@ -112,6 +112,12 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
     lock.id,
     modelManifest.structuredHookProfile,
   );
+  const weightManifest = modelManifest.files.find((file) => file.role === "converted_manifest");
+  validateWeightBufferRequirements(
+    requirements,
+    JSON.parse(await readFile(resolve(modelDirectory, weightManifest.path), "utf8")),
+    lock.id,
+  );
   const baseUrl = `https://huggingface.co/${lock.convertedRepository}/resolve/${lock.convertedRevision}/`;
   const hostedManifestPath = resolve(modelDirectory, "hosted-artifacts.json");
   const hostedManifestInfo = await lstat(hostedManifestPath);
@@ -385,6 +391,37 @@ export function prepareRequirements(value, modelId, structuredHookProfile) {
     }
   }
   return { features: [...value.features], limits: { ...value.limits } };
+}
+
+
+export function validateWeightBufferRequirements(requirements, cache, modelId) {
+  if (!Array.isArray(cache.records) || cache.records.length === 0) {
+    throw new Error(`${modelId} has no weight tensor records`);
+  }
+  const dtypeBytes = { float16: 2, float32: 4, int32: 4, uint32: 4 };
+  let minimum = 0;
+  for (const shard of cache.records) {
+    if (!Array.isArray(shard.records) || shard.records.length === 0) {
+      throw new Error(`${modelId} has no weight tensor records`);
+    }
+    for (const tensor of shard.records) {
+      if (!Object.hasOwn(dtypeBytes, tensor.dtype) || !Array.isArray(tensor.shape) ||
+          tensor.shape.some((dimension) => !Number.isSafeInteger(dimension) || dimension < 1)) {
+        throw new Error(`${modelId} has invalid weight tensor dimensions or dtype`);
+      }
+      const bytes = tensor.shape.reduce((size, dimension) => size * dimension, dtypeBytes[tensor.dtype]);
+      if (!Number.isSafeInteger(bytes)) {
+        throw new Error(`${modelId} weight tensor size exceeds safe buffer arithmetic`);
+      }
+      minimum = Math.max(minimum, bytes);
+    }
+  }
+  for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"]) {
+    if (!Number.isSafeInteger(requirements.limits[name]) || requirements.limits[name] < minimum) {
+      throw new Error(`${modelId} ${name} must declare at least ${minimum} bytes for its largest weight tensor`);
+    }
+  }
+  return minimum;
 }
 
 async function validateDocument(document) {

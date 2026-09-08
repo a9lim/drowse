@@ -320,7 +320,7 @@ class _SessionStopCriteria(StoppingCriteria):
         **kwargs: Any,
     ) -> Any:
         del scores, kwargs
-        stop = 1 if self._state.stop_requested.is_set() else 0
+        stop = 1 if self._state.is_stop_requested() else 0
         return input_ids.new_full((int(input_ids.shape[0]),), stop).bool()
 
 
@@ -361,7 +361,7 @@ def _run_serial_generation_jobs(
         grid_rows.append(row)
         if on_result is not None:
             on_result(idx, result, row)
-        if stop_between_jobs and session._gen_state.stop_requested.is_set():
+        if stop_between_jobs and session._gen_state.is_stop_requested():
             break
     return RunSet(results, node_ids=node_ids, grid=grid_rows, kind=kind)
 
@@ -866,6 +866,7 @@ class DrowseSession:
         compile: bool = False,
         compile_mode: str | None = None,
         cuda_graphs: bool = False,
+        trust_remote_code: bool | None = None,
         return_top_k: int = 0,
         on_progress: Callable[[str], None] | None = None,
     ) -> "DrowseSession":
@@ -912,6 +913,10 @@ class DrowseSession:
         bundled concept fit the default probe roster still needs.  Unset (the
         library default) constructs silently; the CLI passes a printing
         callback so a first ``drowse serve`` narrates instead of hanging.
+
+        ``trust_remote_code`` defaults off unless DROWSE_TRUST_REMOTE_CODE is
+        enabled. Explicit True permits repository Python; explicit False
+        overrides the environment. Only opt in for code you trust.
         """
         # Load WITHOUT compile so the StaticCache probe runs against the
         # bare nn.Module (probing through the OptimizedModule wrapper
@@ -929,6 +934,7 @@ class DrowseSession:
             device=device,
             dtype=dtype,
             compile=False,
+            trust_remote_code=trust_remote_code,
             on_progress=on_progress,
         )
 
@@ -1094,13 +1100,10 @@ class DrowseSession:
         # Session-level default for SamplingConfig.return_top_k.
         # Per-call value > 0 wins; per-call K=0 (the
         # SamplingConfig default) inherits this stored value via the
-        # composition in ``_generate_core``.  Clamped on entry mirroring
-        # SamplingConfig.__post_init__ so out-of-range values from
-        # ``--top-k-alts`` or YAML don't reach the engine slice.
+        # composition in ``_generate_core``. The sampler bounds this by
+        # the actual candidate pool when capturing alternatives.
         if return_top_k < 0:
             return_top_k = 0
-        elif return_top_k > 256:
-            return_top_k = 256
         self._default_return_top_k: int = int(return_top_k)
         self._steering = SteeringManager()
         # CUDA-graphs / StaticCache routing.  Probe
@@ -3787,9 +3790,16 @@ class DrowseSession:
             validate_residual_width(
                 backend, selected, int(self._model_info["hidden_dim"]),
             )
+            source_info = {
+                "layer": selected, "width": width,
+                "revision": backend.revision, "fingerprint": backend.fingerprint,
+                "sae_id": backend.sae_ids_by_layer.get(str(selected)),
+                "repo_id": backend.repo_id,
+                "neuronpedia_id": backend.neuronpedia_ids_by_layer.get(str(selected)),
+            }
             feature_meta = (
                 {} if isinstance(backend, LocalSaeBackend)
-                else load_sae_feature_meta(self.model_id, release)
+                else load_sae_feature_meta(self.model_id, release, source=source_info)
             )
             # Publish/validate the source binding before replacing the
             # session's resident runtime.  A metadata failure must leave the
@@ -3801,29 +3811,19 @@ class DrowseSession:
                     self.model_id, "local", normalize_local_sae_name(release),
                 )
             else:
-                save_sae_metadata(self.model_id, release, {
-                    "layer": selected,
-                    "width": width,
-                    "revision": backend.revision,
-                    "fingerprint": backend.fingerprint,
-                    "sae_id": backend.sae_ids_by_layer.get(str(selected)),
-                    "repo_id": backend.repo_id,
-                    "neuronpedia_id": backend.neuronpedia_ids_by_layer.get(
-                        str(selected)
-                    ),
-                })
-            self._sae_backend = backend
-            self._sae_layer = selected
-            self._sae_width = width
-            self._sae_feature_meta = feature_meta
-            self._sae_instrument.live = None
-            self._sae_instrument.step_stash = None
-            self._sae_instrument.last_step_readings = None
+                save_sae_metadata(self.model_id, release, source_info)
             # Feature ids belong to the resident release; changing it evicts
             # stale directions and pinned probes rather than silently reusing ids.
             for name in [key for key in self._profiles if key.startswith("sae/")]:
                 del self._profiles[name]
             with self._sae_instrument.state_lock:
+                self._sae_backend = backend
+                self._sae_layer = selected
+                self._sae_width = width
+                self._sae_feature_meta = feature_meta
+                self._sae_instrument.live = None
+                self._sae_instrument.step_stash = None
+                self._sae_instrument.last_step_readings = None
                 for name in list(self._sae_instrument.probes):
                     self._probe_hash_cache.pop(name, None)
                 self._sae_instrument.probes.clear()
@@ -3836,16 +3836,16 @@ class DrowseSession:
         with self._model_exclusive(
             "unload_sae called while another model operation is in flight; retry shortly"
         ):
-            self._sae_backend = None
-            self._sae_layer = None
-            self._sae_width = None
-            self._sae_feature_meta = {}
-            self._sae_instrument.live = None
-            self._sae_instrument.step_stash = None
-            self._sae_instrument.last_step_readings = None
             for name in [key for key in self._profiles if key.startswith("sae/")]:
                 del self._profiles[name]
             with self._sae_instrument.state_lock:
+                self._sae_backend = None
+                self._sae_layer = None
+                self._sae_width = None
+                self._sae_feature_meta = {}
+                self._sae_instrument.live = None
+                self._sae_instrument.step_stash = None
+                self._sae_instrument.last_step_readings = None
                 for name in list(self._sae_instrument.probes):
                     self._probe_hash_cache.pop(name, None)
                 self._sae_instrument.probes.clear()
@@ -3891,20 +3891,21 @@ class DrowseSession:
             idx = int(feature_id)
         except (TypeError, ValueError) as exc:
             raise SaeFeatureError(f"SAE feature id must be an integer: {feature_id!r}") from exc
-        _backend, layer, width = self._require_sae()
+        with self._sae_instrument.state_lock:
+            backend, layer, width = self._require_sae()
+            meta = self._sae_feature_meta.get(str(idx))
         if not 0 <= idx < width:
             raise SaeFeatureError(
                 f"SAE feature {idx} out of range [0, {width}) for layer {layer}"
             )
-        meta = self._sae_feature_meta.get(str(idx))
-        if meta is None or (meta.get("max_act") is None and not meta.get("checked")):
+        if meta is None or (
+            (meta.get("max_act") is None or not meta.get("label")) and not meta.get("checked")
+        ):
             meta = self._fetch_sae_feature_meta(idx) or meta or {}
-        return {
-            "id": idx,
-            "label": meta.get("label"),
-            "layer": layer,
-            "max_act": meta.get("max_act"),
-        }
+        with self._sae_instrument.state_lock:
+            if self._sae_backend is not backend or self._sae_layer != layer:
+                raise SaeFeatureError("SAE source changed while loading feature metadata; try again")
+            return {"id": idx, "label": meta.get("label"), "layer": layer, "max_act": meta.get("max_act")}
 
     def _sae_label(self, feature_id: int) -> str | None:
         entry = self._sae_feature_meta.get(str(feature_id))
@@ -3930,11 +3931,13 @@ class DrowseSession:
         response always yields an entry — ``checked`` marks "we asked", so a
         feature with no Neuronpedia data isn't re-fetched on every validate.
         """
-        info = self.sae_info or {}
+        with self._sae_instrument.state_lock:
+            info = self.sae_info or {}
         neuronpedia_id = info.get("neuronpedia_id")
         if not isinstance(neuronpedia_id, str) or "/" not in neuronpedia_id:
             return None
         import json
+        import math
         from urllib.parse import quote
         from huggingface_hub import get_session
 
@@ -3946,14 +3949,26 @@ class DrowseSession:
         try:
             response = get_session().get(
                 url,
-                timeout=2.0,
+                timeout=10.0,
                 headers={"User-Agent": "drowse-sae-meta/1"},
             )
             response.raise_for_status()
             payload = json.loads(response.content)
         except Exception:
             return None
-        if not isinstance(payload, dict):
+        if (
+            not isinstance(payload, dict)
+            or payload.get("modelId") != model
+            or payload.get("layer") != source
+            or str(payload.get("index")) != str(feature_id)
+            or not isinstance(payload.get("explanations"), list)
+        ):
+            return None
+        dictionary = payload.get("source")
+        if not isinstance(dictionary, dict) or any(
+            info.get(expected) is not None and dictionary.get(actual) != info[expected]
+            for expected, actual in (("repo_id", "hfRepoId"), ("sae_id", "saelensSaeId"))
+        ):
             return None
         label = None
         for row in payload.get("explanations", []) or []:
@@ -3964,7 +3979,10 @@ class DrowseSession:
                 label = description.strip()
                 break
         max_act = payload.get("maxActApprox")
-        if not (isinstance(max_act, (int, float)) and float(max_act) > 0):
+        if not (
+            isinstance(max_act, (int, float)) and not isinstance(max_act, bool)
+            and math.isfinite(max_act) and float(max_act) > 0
+        ):
             max_act = None
         return {
             "label": label,
@@ -3980,16 +3998,20 @@ class DrowseSession:
         renders raw activations until metadata is cached (the dashboard
         backfills via :meth:`fetch_sae_feature_meta` between generations).
         """
+        with self._sae_instrument.state_lock:
+            backend, layer, _width = self._require_sae()
+            metadata = self._sae_feature_meta
+            source = self.sae_info
         entry = self._fetch_neuronpedia_feature(feature_id)
         if entry is None:
             return None
         from drowse.io.sae import save_sae_feature_meta
 
-        self._sae_feature_meta[str(feature_id)] = entry
-        backend, _layer, _width = self._require_sae()
-        save_sae_feature_meta(
-            self.model_id, backend.release, self._sae_feature_meta,
-        )
+        with self._sae_instrument.state_lock:
+            if self._sae_backend is not backend or self._sae_layer != layer or self._sae_feature_meta is not metadata:
+                return None
+            metadata[str(feature_id)] = entry
+            save_sae_feature_meta(self.model_id, backend.release, metadata, source=source)
         return entry
 
     def fetch_sae_feature_meta(
@@ -4005,7 +4027,10 @@ class DrowseSession:
         silently dropped — the top-k can't produce one, so there is nothing
         to report).
         """
-        backend, _layer, width = self._require_sae()
+        with self._sae_instrument.state_lock:
+            backend, layer, width = self._require_sae()
+            metadata = self._sae_feature_meta
+            source = self.sae_info
         seen: set[int] = set()
         wanted: list[int] = []
         for raw in feature_ids:
@@ -4013,9 +4038,10 @@ class DrowseSession:
             if not 0 <= idx < width or idx in seen:
                 continue
             seen.add(idx)
-            entry = self._sae_feature_meta.get(str(idx))
+            entry = metadata.get(str(idx))
             if entry is None or (
-                entry.get("max_act") is None and not entry.get("checked")
+                (entry.get("max_act") is None or not entry.get("label"))
+                and not entry.get("checked")
             ):
                 wanted.append(idx)
         if wanted:
@@ -4031,19 +4057,20 @@ class DrowseSession:
             if fetched:
                 from drowse.io.sae import save_sae_feature_meta
 
-                self._sae_feature_meta.update(fetched)
-                save_sae_feature_meta(
-                    self.model_id, backend.release, self._sae_feature_meta,
-                )
-                self._refresh_sae_probe_meta(fetched)
-        return {
-            str(idx): {
-                "label": entry.get("label"),
-                "max_act": entry.get("max_act"),
+                with self._sae_instrument.state_lock:
+                    if self._sae_backend is not backend or self._sae_layer != layer or self._sae_feature_meta is not metadata:
+                        return {}
+                    metadata.update(fetched)
+                    save_sae_feature_meta(self.model_id, backend.release, metadata, source=source)
+                    self._refresh_sae_probe_meta(fetched)
+        with self._sae_instrument.state_lock:
+            if self._sae_backend is not backend or self._sae_layer != layer or self._sae_feature_meta is not metadata:
+                return {}
+            return {
+                str(idx): {"label": entry.get("label"), "max_act": entry.get("max_act")}
+                for idx in sorted(seen)
+                if (entry := metadata.get(str(idx))) is not None
             }
-            for idx in sorted(seen)
-            if (entry := self._sae_feature_meta.get(str(idx))) is not None
-        }
 
     def _refresh_sae_probe_meta(self, fetched: dict[str, dict[str, Any]]) -> None:
         """Reflect newly fetched metadata onto attached feature probes.
@@ -9815,6 +9842,7 @@ class DrowseSession:
         result_holder: list[GenerationResult] = []
         exc_holder: list[BaseException] = []
         idx_counter = [0]
+        cancelled = threading.Event()
 
         def _push(
             text: str, is_thinking: bool, tid: int | None, lp: float | None,
@@ -9861,19 +9889,20 @@ class DrowseSession:
 
         def _worker():
             try:
-                result = self._generate_core(
-                    input,
-                    steering=steering,
-                    sampling=sampling,
-                    stateless=stateless,
-                    raw=raw,
-                    thinking=thinking,
-                    on_token=consumer,
-                    parent_node_id=parent_node_id,
-                    recipe_override=recipe_override,
-                    gen_seat=gen_seat,
-                    append_same_role=append_same_role,
-                )
+                with self._gen_state.cancellation_scope(cancelled):
+                    result = self._generate_core(
+                        input,
+                        steering=steering,
+                        sampling=sampling,
+                        stateless=stateless,
+                        raw=raw,
+                        thinking=thinking,
+                        on_token=consumer,
+                        parent_node_id=parent_node_id,
+                        recipe_override=recipe_override,
+                        gen_seat=gen_seat,
+                        append_same_role=append_same_role,
+                    )
                 result_holder.append(result)
             except BaseException as e:
                 exc_holder.append(e)
@@ -9882,6 +9911,19 @@ class DrowseSession:
 
         worker = threading.Thread(target=_worker, daemon=True)
         worker.start()
+        finished = False
+
+        def _finish() -> None:
+            nonlocal finished
+            if finished:
+                return
+            cancelled.set()
+            worker.join()
+            while not q.empty():
+                q.get_nowait()
+            finished = True
+            if exc_holder and not result_holder:
+                raise exc_holder[0]
 
         def _events() -> Iterator[TokenEvent]:
             try:
@@ -9891,10 +9933,7 @@ class DrowseSession:
                         break
                     yield item
             finally:
-                self._gen_state.stop_requested.set()
-                worker.join()
-                if exc_holder and not result_holder:
-                    raise exc_holder[0]
+                _finish()
 
         class _GenerationStream:
             def __init__(self, iterator: Iterator[TokenEvent]) -> None:
@@ -9908,8 +9947,11 @@ class DrowseSession:
 
             def close(self) -> None:
                 close = getattr(self._iterator, "close", None)
-                if callable(close):
-                    close()
+                try:
+                    if callable(close):
+                        close()
+                finally:
+                    _finish()
 
             @property
             def result(self) -> GenerationResult | None:
@@ -10842,6 +10884,11 @@ class DrowseSession:
         alongside the transient steering hooks, releasing their
         ``2 x n_layers x hidden_size`` of device buffers with them.
         """
+        from drowse.core.generation import clear_generation_caches
+
+        tokenizer = getattr(self, "_tokenizer", None)
+        if tokenizer is not None:
+            clear_generation_caches(tokenizer)
         self._steering.clear_all()
         self._steering.detach_compiled_offsets()
         self.detach_persistent_capture()
@@ -10888,6 +10935,8 @@ class DrowseSession:
             if cache is not None:
                 cache.clear()
         self._prefix_cache = None
+        self._generation_static_cache = None
+        self._generation_static_cache_len = 0
         self._whitener = None
         self._jlens = None
         self._jlens_identity = None

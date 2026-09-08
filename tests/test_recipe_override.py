@@ -137,11 +137,11 @@ def test_compose_unknown_raises():
 
 
 def test_compose_custom_string_recipe():
-    mod = Recipe().compose_modifier("seed=42, temperature=1.5, thinking=false")
+    mod = Recipe().compose_modifier("seed=42, temperature=3, thinking=false")
     assert mod.seed == 42
     assert mod.thinking is False
     assert mod.sampling is not None
-    assert mod.sampling.temperature == pytest.approx(1.5)
+    assert mod.sampling.temperature == pytest.approx(3)
 
 
 def test_compose_custom_string_preserves_steering_commas():
@@ -157,7 +157,7 @@ def test_compose_custom_string_preserves_steering_commas():
     "modifier",
     [
         "temperature=fast",
-        "temperature=3",
+        "temperature=-1",
         "thinking=yes",
         "seed=1, seed=2",
         "unknown=1",

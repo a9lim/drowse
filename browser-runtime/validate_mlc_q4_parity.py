@@ -17,6 +17,7 @@ EVIDENCE_MODEL_IDS = {
     "smolProductionQ4Parity": "smollm2-360m-instruct",
     "qwenProductionQ4Parity": "qwen3-1.7b",
 }
+PARITY_MODEL_IDS = {*EVIDENCE_MODEL_IDS.values(), "gemma3-1b-instruct", "gemma3-4b-instruct"}
 SMOL_NAMED_ROLE_INPUT_IDS = [
     1,
     9690,
@@ -261,7 +262,7 @@ def load_capture_metadata(
     if set(metadata) - allowed or not required.issubset(metadata) or metadata["schema_version"] != 3:
         raise ValueError("browser residual fixture has an invalid schema")
     if (
-        metadata["model_id"] not in set(EVIDENCE_MODEL_IDS.values())
+        metadata["model_id"] not in PARITY_MODEL_IDS
         or not valid_sha256(metadata["runtime_identity_sha256"])
         or not valid_sha256(metadata["residual_sha256"])
         or not valid_sha256(metadata["rank_one_control_residual_sha256"])
@@ -532,10 +533,12 @@ def steering_delta_cosine(
 
 
 def cosine(left: np.ndarray, right: np.ndarray) -> float:
+    left = np.asarray(left, dtype=np.float64).reshape(-1)
+    right = np.asarray(right, dtype=np.float64).reshape(-1)
     denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
     if denominator <= 1e-12:
         raise ValueError("rank-one steering produced no measurable residual delta")
-    return float(np.dot(left.reshape(-1), right.reshape(-1)) / denominator)
+    return float(np.clip(np.dot(left, right) / denominator, -1.0, 1.0))
 
 
 def select_device(model_directory: Path, requested: str) -> str:

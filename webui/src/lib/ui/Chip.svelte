@@ -40,7 +40,7 @@
   class:muted
   class:clickable={!!onclick}
   style:--chip-c={color}
-  {title}
+  {...{ "aria-description": (title) }}
   role={onremove ? "group" : undefined}
 >
   {#if onclick}

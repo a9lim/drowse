@@ -206,6 +206,7 @@ export interface StructuredHookProgramBuffers {
   geometryDomainKind?: Uint32Array;
   jLensBindingId?: string;
   jLensLayerIndices?: Int32Array;
+  jLensReadoutLayerIndices?: Int32Array;
   jLensTokenIds?: Int32Array;
   saeBindingId?: string;
   measurementSchema?: StructuredMeasurementSchema;
@@ -535,6 +536,31 @@ export function structuredHookControlsFor(
   context: StructuredHookControlContext,
 ): StructuredHookControlState {
   validateStructuredHookProgram(program);
+  return evaluateStructuredHookControls(program, context);
+}
+
+export function createStructuredHookControlEvaluator(
+  program: StructuredHookProgramBuffers,
+): (context: StructuredHookControlContext) => StructuredHookControlState {
+  validateStructuredHookProgram(program);
+  const snapshot = {
+    layerCount: program.layerCount,
+    profile: { maxProbes: program.profile.maxProbes },
+    affineActive: new Uint32Array(program.affineActive),
+    curveActive: new Uint32Array(program.curveActive),
+    controls: program.controls === undefined ? undefined : structuredClone(program.controls),
+  };
+  return (context) => evaluateStructuredHookControls(snapshot, context);
+}
+
+type StructuredControlProgram = Pick<
+  StructuredHookProgramBuffers, "layerCount" | "affineActive" | "curveActive" | "controls"
+> & { profile: Pick<StructuredHookCapacityProfile, "maxProbes"> };
+
+function evaluateStructuredHookControls(
+  program: StructuredControlProgram,
+  context: StructuredHookControlContext,
+): StructuredHookControlState {
   const affineActive = new Uint32Array(program.affineActive);
   const curveActive = new Uint32Array(program.curveActive);
   const controls = program.controls;
@@ -555,7 +581,7 @@ export function structuredHookControlsFor(
 }
 
 function controlActive(
-  program: StructuredHookProgramBuffers,
+  program: StructuredControlProgram,
   control: StructuredHookControl,
   context: StructuredHookControlContext,
 ): boolean {
@@ -744,6 +770,14 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
   for (const value of program.probeKind) {
     if (value > 4) throw new TypeError("Hook probe kind is invalid");
   }
+  if (program.jLensReadoutLayerIndices !== undefined && (
+    !(program.jLensReadoutLayerIndices instanceof Int32Array) ||
+    program.jLensLayerIndices === undefined ||
+    program.jLensReadoutLayerIndices.some((layer, index) =>
+      !program.jLensLayerIndices!.includes(layer) ||
+      index > 0 && layer <= program.jLensReadoutLayerIndices![index - 1]
+    )
+  )) throw new TypeError("J-lens readout layers must be an ordered subset of probability layers");
   const hasJlensProbe = program.probeKind.some((value) => value === 3);
   const hasJlensProgram = program.jLensBindingId !== undefined;
   if (

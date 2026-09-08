@@ -1072,6 +1072,7 @@ export type DrawerName =
   | "session_admin"
   | "local_runtime"
   | "help"
+  | "feedback"
   /** Cross-branch diff drawer — phase 5.  ``params`` carries the
    * selected node ids (1 user node → compare its children, 2+
    * assistant nodes → compare those). */

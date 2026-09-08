@@ -15,6 +15,32 @@
 
   const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string"
     ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
+  let brandCollapsed = $state(false);
+
+  function fitNavigation(header: HTMLElement) {
+    const nav = header.querySelector("nav");
+    if (!nav || !siteNavigation) return;
+    const leading = header.querySelector<HTMLElement>(".page-leading")!;
+    const appearance = header.querySelector<HTMLElement>(".appearance")!;
+    const links = Array.from(nav.querySelectorAll("a"));
+    let frame = 0;
+    const measure = () => {
+      const style = getComputedStyle(header);
+      const available = header.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const navigationWidth = links.reduce((width, link) => width + link.getBoundingClientRect().width, 0)
+        + parseFloat(getComputedStyle(nav).columnGap) * Math.max(0, links.length - 1);
+      const required = leading.getBoundingClientRect().width + navigationWidth
+        + appearance.getBoundingClientRect().width + 2 * parseFloat(style.columnGap);
+      brandCollapsed = required > available + 1;
+    };
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    });
+    for (const element of [header, leading, appearance, ...links]) observer.observe(element);
+    measure();
+    return { destroy() { observer.disconnect(); cancelAnimationFrame(frame); } };
+  }
 
   function navigate(event: MouseEvent, action?: () => void) {
     if (!action || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -23,10 +49,10 @@
   }
 </script>
 
-<header class="page-header" class:compact class:workbench={current === "workbench"}>
-  <div class="page-leading">
+<header class="page-header" class:compact class:workbench={current === "workbench"} class:brand-collapsed={brandCollapsed} use:fitNavigation>
+  <div class="page-leading" aria-hidden={brandCollapsed ? "true" : undefined}>
     {@render leading?.()}
-    <a class="page-brand" href={homeHref} aria-label="Drowse home" aria-current={current === "home" ? "page" : undefined} translate="no">Drowse</a>
+    <a class="page-brand" href={homeHref} aria-label="Drowse home" aria-current={current === "home" ? "page" : undefined} tabindex={brandCollapsed ? -1 : undefined} translate="no">Drowse</a>
   </div>
   {#if current === "workbench"}
     <div class="workbench-actions">{@render actions?.()}</div>
@@ -104,9 +130,12 @@
       gap: var(--space-xs);
       padding-inline: max(var(--space-xs), env(safe-area-inset-left)) max(var(--space-xs), env(safe-area-inset-right));
     }
-    .page-header:not(.workbench) nav { justify-content: start; gap: var(--space-xs); overscroll-behavior-inline: contain; }
-    nav a { font-size: var(--text-sm); padding-inline: var(--space-xs); }
+    .page-header:not(.workbench) nav { justify-content: start; gap: 0; overscroll-behavior-inline: contain; }
+    nav a { font-size: var(--text-sm); padding-inline: calc(var(--space-xs) / 2); }
   }
+  .page-header.brand-collapsed { grid-template-columns: minmax(0, 1fr) auto; }
+  .brand-collapsed .page-leading { position: absolute; visibility: hidden; pointer-events: none; width: max-content; }
+  .brand-collapsed nav { flex-wrap: wrap; overflow: visible; justify-content: start; }
   .page-header.workbench { grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-height: var(--workbench-header-height, 56px); }
   .workbench-actions { display: flex; justify-content: end; align-items: center; }
 </style>

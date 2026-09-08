@@ -1,6 +1,5 @@
 /// <reference types="vite/client" />
 import { mount } from "svelte";
-import { installTooltipLayer } from "./lib/tooltips";
 import { HttpRuntimeClient } from "./lib/runtime/http-client";
 import { installRuntimeClient } from "./lib/runtime/registry";
 import { initializeTheme } from "./lib/theme";
@@ -22,9 +21,6 @@ if (!target) throw new Error("drowse web: #app element missing in index.html");
 
 initializeTheme();
 
-// Installed once so every current/future `title` authoring surface uses
-// Drowse tooltip chrome, including drawers, portals, and the command palette.
-installTooltipLayer();
 installRuntimeClient(new HttpRuntimeClient());
 const { default: App } = await import("./App.svelte");
 const app = mount(App, { target });

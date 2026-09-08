@@ -4,6 +4,7 @@
   import ThemeToggle from "./ThemeToggle.svelte";
   import FluentIcon from "./FluentIcon.svelte";
   import { openDrawer } from "../stores/drawers.svelte";
+  import { CONTACT_ADDRESS } from "../contact";
 
   let { hosted, busy, hasChat, generating, toolsLabel, toolsVisible, onToggleTools, onChats, onModels, onDownload, onAllTools, onHelp }: {
     hosted: boolean;
@@ -105,13 +106,14 @@
       if (open && event.relatedTarget instanceof Node && !panel?.contains(event.relatedTarget) && event.relatedTarget !== trigger) close();
     }}>
     <div class="menu-group">
-      <button type="button" disabled={busy} onclick={() => run(onChats)}><FluentIcon name="chats" size={18} />Your chats</button>
+      <button type="button" disabled={busy} onclick={() => run(onChats)}><FluentIcon name="chats" size={18} />Back to Chats</button>
+      <hr class="menu-divider" />
       {#if hosted}<button type="button" disabled={busy} onclick={() => run(onModels)}><FluentIcon name="models" size={18} />Models</button>{/if}
     </div>
     <div class="menu-group">
       {#if toolsLabel}
         <button type="button" class="view-tools" aria-pressed={toolsVisible}
-          aria-controls="chat-tools-header loom-tools-header" onclick={() => run(onToggleTools)}>
+          onclick={() => run(onToggleTools)}>
           <FluentIcon name="controls" size={18} />{toolsVisible ? "Hide" : "Show"} {toolsLabel}
         </button>
       {/if}
@@ -119,11 +121,12 @@
       <button type="button" onclick={() => run(onAllTools)}><FluentIcon name="search" size={18} />All tools</button>
       <button type="button" onclick={() => run(() => openDrawer("appearance"))}><FluentIcon name="appearance" size={16} />Appearance</button>
       <button type="button" onclick={() => run(onHelp)}><FluentIcon name="help" size={18} />Help</button>
+      <button type="button" onclick={() => run(() => openDrawer("feedback"))}><FluentIcon name="conversation" size={18} />Submit Feedback</button>
     </div>
     <div class="appearance-row"><span>Appearance</span><ThemeToggle /></div>
     {#if hosted}
       <nav class="menu-links" aria-label="About Drowse">
-        <a href="/credits">Credits</a><a href={sourceUrl} rel="noreferrer">Contribute</a>
+        <a href="/credits">Credits</a><a href="/contact">Contact us</a><a href={`mailto:${CONTACT_ADDRESS}`}>{CONTACT_ADDRESS}</a><a href={sourceUrl} rel="noreferrer">Contribute</a>
       </nav>
     {/if}
   </div>
@@ -142,10 +145,9 @@
     background: transparent;
     color: var(--fg-dim);
     font: inherit;
-    transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+    transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
   }
   .menu-trigger:hover, .menu-trigger[aria-expanded="true"] { background: var(--bg-hover); color: var(--fg); }
-  .menu-trigger:active { transform: scale(var(--press-scale)); }
   .workbench-menu {
     position: fixed;
     inset: auto;
@@ -162,6 +164,7 @@
     font-size: var(--text-sm);
   }
   .menu-group { display: grid; gap: var(--space-1); }
+  .menu-divider { margin: var(--space-2) var(--space-3); border: 0; border-block-start: 1px solid var(--glass-line); }
   .menu-group + .menu-group { margin-top: var(--space-3); }
   .menu-group button, .menu-links a {
     display: flex;

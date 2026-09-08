@@ -91,13 +91,6 @@ export async function prepareBrowserInstrumentDictionaries(
   }
 }
 
-export function createBrowserModelBackend(
-  module: DrowseWebLlmModule,
-  artifacts: BrowserManifoldArtifactPort,
-): BrowserModelBackend {
-  return createDrowseBrowserModelBackend(module, artifacts);
-}
-
 export function createLazyBrowserModelBackend(
   loadModule: () => Promise<DrowseWebLlmModule>,
   artifacts: BrowserManifoldArtifactPort,
@@ -265,7 +258,7 @@ export function createDrowseBrowserModelBackend(
         });
         await compiler.prepareJlensWords(words, runtime);
       }
-      return compiler.compile(expression, probeRequests);
+      return compiler.compileForGeneration(expression, probeRequests);
     },
     steeringDelta({ parent, child, loadRequest }) {
       const cached = loadRequest === activeLoadRequest ? activeCompiler : compilers.get(loadRequest);

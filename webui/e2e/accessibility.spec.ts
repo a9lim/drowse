@@ -1,3 +1,5 @@
+import { clickWorkspaceAction } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
@@ -82,8 +84,7 @@ test("landing, onboarding, and workbench meet automated WCAG checks", async ({ p
 
 test("every hosted command drawer meets automated WCAG checks", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await expect(palette).toBeVisible();
   await expectAccessible(page, '[role="dialog"]');
@@ -98,8 +99,7 @@ test("every hosted command drawer meets automated WCAG checks", async ({ page })
   await page.keyboard.press("Escape");
 
   for (const command of commands) {
-    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-    await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "All tools", exact: true }).click();
+    await clickWorkspaceAction(page, "All tools");
     const search = page.getByRole("combobox", { name: "Filter commands" });
     await search.fill(command);
     await page.getByRole("option", { name: new RegExp(`^${command}\\b`, "i") }).click();
@@ -148,7 +148,7 @@ test("a populated saved-chat library meets automated WCAG checks", async ({ page
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
   await page.getByRole("button", { name: /^(Loom|Branches)$/ }).click();
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+  await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
   const loom = page.locator(".loom-sidebar");
   await loom.getByRole("button", { name: "Save", exact: true }).click();

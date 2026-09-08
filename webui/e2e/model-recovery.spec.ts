@@ -98,7 +98,6 @@ test("saved chat action rows match the card inset at every layout size", async (
       const spacing = await card.evaluate(element => {
         const primary = element.querySelector(".chat-footer > .primary")!.getBoundingClientRect();
         const download = element.querySelector(".backup-action")!.getBoundingClientRect();
-        const remove = element.querySelector(".delete-control")!.getBoundingClientRect();
         const color = element.querySelector(".chat-color")!.getBoundingClientRect();
         const box = element.getBoundingClientRect();
         const css = getComputedStyle(element);
@@ -108,8 +107,8 @@ test("saved chat action rows match the card inset at every layout size", async (
           row: Math.abs(download.top + download.height / 2 - primary.top - primary.height / 2),
           rowGap: download.top - primary.bottom,
           gap: parseFloat(footer.gap),
-          bottom: box.bottom - Math.max(remove.bottom, download.bottom, color.bottom),
-          buttons: Math.max(remove.left - download.right, remove.top - download.bottom),
+          bottom: box.bottom - Math.max(primary.bottom, download.bottom, color.bottom),
+          buttons: Math.max(download.left - color.right, download.top - color.bottom),
           overflow: element.scrollWidth > element.clientWidth,
         };
       });
@@ -118,13 +117,14 @@ test("saved chat action rows match the card inset at every layout size", async (
       expect(spacing.bottom).toBeCloseTo(spacing.inset, 0);
       expect(spacing.buttons).toBeGreaterThanOrEqual(spacing.gap - 1);
       expect(spacing.overflow).toBe(false);
-      for (const button of await card.locator(".primary, .backup-action, .delete-control").all()) {
+      for (const button of await card.locator(".primary, .backup-action").all()) {
         await expect(button).toHaveCSS("background-image", /^none(?:, none)*$/);
       }
       await card.screenshot({ path: testInfo.outputPath(`card-spacing-${theme}-${width}.png`) });
     }
   }
-  await card.getByRole("button", { name: "Delete", exact: true }).click();
+  await card.getByRole("button", { name: "More options for Saved chat 1", exact: true }).click();
+  await card.getByRole("menuitem", { name: "Delete", exact: true }).click();
   await expect(card.locator(".chat-actions")).toHaveCSS("gap", "16px");
   expect(await card.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
 });

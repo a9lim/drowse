@@ -1,3 +1,5 @@
+import { selectWorkspaceView } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { setAppearance, returnToChats, showWorkspaceTools, selectLoomView, openTokenDetails } from "./workbench-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
@@ -18,7 +20,8 @@ test("model settings end with the versioned Drowse footer", async ({ page }, tes
   await expect(footer.locator(".wordmark")).toHaveText("Drowse");
   await expect(footer.locator(".version")).toHaveText("v 0.1");
   await expect(footer).toContainText("© 2026 Drowse Contributors");
-  await expect(footer.getByRole("link", { name: "AGPL-3.0-or-later" })).toHaveAttribute("href", "/LICENSE");
+  await expect(footer).toContainText("GNU AGPL v3 or later");
+  await expect(footer.locator('a[href="/LICENSE"]')).toHaveCount(0);
   await expect(footer.getByRole("link", { name: "Contribute" })).toHaveAttribute("href", /github.com\/a9lim\/drowse/);
   await expect(footer.getByRole("link", { name: "Credits" })).toHaveAttribute("href", "/credits");
   for (const theme of ["light", "dark"]) {
@@ -60,7 +63,7 @@ test("Credits matches the public theme and GitHub links say Contribute", async (
   await expect.poll(() => page.locator(".portrait, .thanks-portrait").evaluateAll(
     images => images.every(image => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0),
   )).toBe(true);
-  await expect(page.getByRole("link", { name: "Drowse home", exact: true })).toHaveAttribute("href", "/");
+  await expect(page.locator(".page-brand")).toHaveAttribute("href", "/");
   await expect(nav.getByRole("link", { name: "Chats", exact: true })).toHaveAttribute("href", "/app");
   if (browserName === "webkit") {
     // WebKit's default keyboard mode skips links.
@@ -226,7 +229,9 @@ test("dropdown and disclosure motion is reversible and respects reduced motion",
       const list = page.locator("#motion-test .t-dropdown");
       await expect(list).toHaveClass(/is-open/);
       await expect(list).toHaveAttribute("data-origin", "bottom-left");
-      await expect(list).toHaveCSS("transition-duration", "0.25s, 0.25s");
+      await expect(list).toHaveCSS("transition-duration", "0.14s");
+      await expect(list).toHaveCSS("transition-property", "opacity");
+      await expect(list).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
       await expect(list).toHaveCSS("opacity", "1");
       const box = (await list.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
@@ -236,7 +241,7 @@ test("dropdown and disclosure motion is reversible and respects reduced motion",
         const popup = document.querySelector<HTMLElement>("#motion-test .t-dropdown")!;
         return { closing: popup.classList.contains("is-closing"), inert: popup.inert, duration: getComputedStyle(popup).transitionDuration };
       });
-      expect(closing).toEqual({ closing: true, inert: true, duration: "0.15s, 0.15s" });
+      expect(closing).toEqual({ closing: true, inert: true, duration: "0.1s" });
       await trigger.evaluate(el => (el as HTMLButtonElement).click());
       await expect(list).toHaveCount(1);
       await expect(list).toHaveClass(/is-open/);
@@ -337,7 +342,7 @@ for (const theme of ["dark", "light"] as const) {
       await page.setViewportSize({ width, height: 900 });
       await page.screenshot({ path: testInfo.outputPath(`conversation-${theme}-${width}.png`) });
     }
-    await page.getByRole("button", { name: "Loom", exact: true }).click();
+    await selectWorkspaceView(page, "Loom");
     await showWorkspaceTools(page, "Loom");
     await selectLoomView(page, /^Map\b/);
     const loomToken = page.locator("[data-loom-token-node]").first();
@@ -372,7 +377,7 @@ for (const theme of ["dark", "light"] as const) {
     }
     await page.screenshot({ path: testInfo.outputPath(`token-details-${theme}.png`) });
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Controls", exact: true }).click();
+    await selectWorkspaceView(page, "Controls");
     await expect(page.locator(".controls-page")).toHaveAttribute("aria-hidden", "false");
     await page.locator(".controls-page").screenshot({ path: testInfo.outputPath(`controls-${theme}.png`) });
     const result = await new AxeBuilder({ page }).include(".controls-page").withRules(["color-contrast"]).analyze();
@@ -502,7 +507,7 @@ test("geometry setup attaches a probe and hides unsupported training", async ({ 
 
 test("sampling sliders accept full-height drags and reset to original", async ({ page }, testInfo) => {
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const slider = page.getByRole("slider", { name: "Temperature", exact: true });
   const original = await slider.inputValue();
   for (const width of [320, 1440]) {
@@ -535,7 +540,7 @@ test("model reset preserves chats and restores defaults after reopening", async 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Keep this conversation after reset.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.getByRole("status").filter({ hasText: "Response complete." })).toBeVisible();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const slider = page.getByRole("slider", { name: "Temperature", exact: true });
   const original = await slider.inputValue();
   await slider.focus();
@@ -546,7 +551,7 @@ test("model reset preserves chats and restores defaults after reopening", async 
   await page.locator(".drawer-shell").getByRole("button", { name: "Save system prompt", exact: true }).click();
   await page.reload();
   await expect(page.locator(".shell")).toBeVisible();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   await expect(slider).toHaveValue("2");
   const tabs = page.getByRole("group", { name: "Controls section", exact: true });
   await tabs.getByRole("button", { name: "Model", exact: true }).click();
@@ -561,14 +566,14 @@ test("model reset preserves chats and restores defaults after reopening", async 
   await page.getByRole("button", { name: "System prompt", exact: true }).click();
   await expect(page.locator(".drawer-shell textarea")).toHaveValue("");
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Conversation", exact: true }).click();
+  await selectWorkspaceView(page, "Conversation");
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("Keep this conversation after reset.");
 });
 
 test("steering summary only appears for configured directions", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const recipe = page.locator(".inspector .recipe");
   const setState = (state: "empty" | "custom-empty" | "custom" | "disabled") => page.evaluate(async ({ url, state }) => {
     const { steerRack } = await import(url);
@@ -609,7 +614,7 @@ test("steering summary only appears for configured directions", async ({ page },
 test("Chat controls share the three-tab layout on desktop and phones", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const tabs = page.getByRole("group", { name: "Controls section", exact: true });
   await expect(tabs.getByRole("button")).toHaveText(["Response", "Model", "Chat"]);
   await tabs.getByRole("button", { name: "Chat", exact: true }).click();
@@ -643,7 +648,7 @@ test("Chat controls update the saved name and avatar without leaving the tab", a
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Save this chat from its controls.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.getByRole("status").filter({ hasText: "Response complete." })).toBeVisible();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const tabs = page.getByRole("group", { name: "Controls section", exact: true });
   await tabs.getByRole("button", { name: "Chat", exact: true }).click();
   const panel = page.getByRole("tabpanel", { name: "Chat controls" });
@@ -691,7 +696,7 @@ test("shared page headers and footers align across public pages and workbench", 
     await page.emulateMedia({ colorScheme: width === 1000 ? "light" : "dark" });
     await page.goto(`${devUrl}/`);
     await page.evaluate(() => document.fonts.ready);
-    const anchor = (await page.locator(".page-brand").boundingBox())!;
+    const anchor = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
     const footerStyle = await page.locator(".page-footer").evaluate(el => {
       const css = getComputedStyle(el);
       const content = el.querySelector(".footer-content")!;
@@ -699,15 +704,17 @@ test("shared page headers and footers align across public pages and workbench", 
         height: content.getBoundingClientRect().height, text: el.textContent?.trim() };
     });
     const check = async (name: string) => {
-      await expect(page.locator(".page-brand")).toBeVisible();
+      if (width === 320 && name !== "workbench") await expect(page.locator(".page-brand")).toBeHidden();
+      else await expect(page.locator(".page-brand")).toBeVisible();
       await page.evaluate(() => document.fonts.ready);
-      const box = (await page.locator(".page-brand").boundingBox())!;
+      const box = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
       const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
       expect(box.width, `${name} width`).toBeCloseTo(anchor.width * (compact ? 5 / 6 : 1), 0);
       expect(box.height).toBeCloseTo(await page.locator(".page-brand").evaluate(el => parseFloat(getComputedStyle(el).minHeight)), 0);
       expect(await page.locator(".page-header").evaluate(el => el.scrollWidth - el.clientWidth), name).toBeLessThanOrEqual(1);
       if (name === "workbench") {
-        await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toBeVisible();
+        if (width <= 760) await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toBeVisible();
+        else await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toHaveCount(0);
         await expect(page.locator(".page-header .theme-toggle, .page-header nav")).toHaveCount(0);
         const sidebarToggle = (await page.getByRole("button", { name: /^(Hide|Show) left sidebar$/ }).boundingBox())!;
         const leadingGap = await page.locator(".page-leading").evaluate(el => parseFloat(getComputedStyle(el).columnGap));
@@ -715,7 +722,7 @@ test("shared page headers and footers align across public pages and workbench", 
         await page.screenshot({ path: testInfo.outputPath(`${name}-${width}.png`) });
         return;
       }
-      if (!compact) for (const key of ["x", "y"] as const) {
+      if (!compact && width > 320) for (const key of ["x", "y"] as const) {
         await expect.poll(async () => (await page.locator(".page-brand").boundingBox())![key], { message: `${name} ${key}` }).toBeCloseTo(anchor[key], 0);
       }
       else expect(box.x).toBeGreaterThanOrEqual(0);
@@ -785,9 +792,9 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await expect(openModel).toBeEnabled();
     await settled();
     await page.evaluate(() => document.fonts.ready);
-    const modelLogo = (await page.locator(".page-brand").boundingBox())!;
+    const modelLogo = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
     const assertHeader = async () => {
-      const logo = (await page.locator(".page-brand").boundingBox())!;
+      const logo = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
       const inWorkbench = await page.locator(".shell").isVisible();
       const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
       expect(logo.width).toBeCloseTo(modelLogo.width * (compact ? 5 / 6 : 1), 0);
@@ -797,7 +804,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
         const leadingGap = await page.locator(".page-leading").evaluate(el => parseFloat(getComputedStyle(el).columnGap));
         expect(logo.x).toBeCloseTo(sidebarToggle.x + sidebarToggle.width + leadingGap, 0);
       }
-      else if (!compact) for (const key of ["x", "y"] as const) expect(logo[key]).toBeCloseTo(modelLogo[key], 0);
+      else if (!compact && width > 320) for (const key of ["x", "y"] as const) expect(logo[key]).toBeCloseTo(modelLogo[key], 0);
       expect(await page.locator(".page-header").evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
       await expect(page.getByText("Local workbench", { exact: true })).toHaveCount(0);
@@ -807,7 +814,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await settled();
     await assertHeader();
     await page.screenshot({ path: testInfo.outputPath(`unified-workbench-${width}.png`) });
-    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+    await openWorkspaceMenu(page);
     await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "Models", exact: true }).click();
     await expect(page.locator(".app-shell")).toBeVisible();
     await settled();
@@ -923,7 +930,7 @@ test.describe("saved chat card interactions", () => {
     await expect(card.locator(".chat-name")).toBeEnabled();
     await expect(card.getByRole("button", { name: "Download backup of Marmot research", exact: true })).toBeEnabled();
     await expect(card.getByRole("button", { name: "Download backup of Marmot research", exact: true })).toHaveText("Download");
-    await expect(card.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+    await expect(card.getByRole("button", { name: "More options for Marmot research", exact: true })).toBeEnabled();
     expect(await card.locator(".chat-actions").boundingBox()).toEqual(actionsBefore);
     await page.evaluate(() => (window as any).releaseAvatarUpdate());
     await expect(avatar).toHaveAttribute("aria-busy", "false");
@@ -931,7 +938,9 @@ test.describe("saved chat card interactions", () => {
     await expect(card.locator("time")).toHaveAttribute("datetime", timestamp!);
     await expect(avatar.locator(".avatar-image")).toHaveCSS("filter", "none");
     await expect(avatar.locator(".avatar-shuffle")).toHaveCSS("opacity", "0");
-    await expect(card.getByRole("button", { name: "Delete", exact: true })).toHaveClass(/\bdelete-control\b/);
+    await card.getByRole("button", { name: "More options for Marmot research", exact: true }).click();
+    await expect(card.getByRole("menuitem", { name: "Delete", exact: true })).toHaveClass(/\bdelete-option\b/);
+    await page.keyboard.press("Escape");
 
     for (const theme of ["light", "dark"]) {
       await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
@@ -941,7 +950,8 @@ test.describe("saved chat card interactions", () => {
         const aligned = await card.evaluate(el => {
           const time = el.querySelector("time")!.getBoundingClientRect();
           const row = el.querySelector(".chat-title-row")!.getBoundingClientRect();
-          return innerWidth <= 760 ? Math.abs(row.left - time.left) < 2 : Math.abs(row.right - time.right) < 2;
+          const menu = el.querySelector(".chat-menu-trigger")!.getBoundingClientRect();
+          return time.right <= menu.left && Math.abs(row.right - menu.right) < 2;
         });
         expect(aligned).toBe(true);
         const picker = card.locator(".chat-color .accent-picker > button");
@@ -1002,7 +1012,7 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: /^Loom\b/ }).click();
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+  await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
   await page.getByRole("button", { name: /^Map\b/ }).click();
   let compactHeight = 0;
@@ -1041,7 +1051,7 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
 
 test("Thinking is shown only for supported models and follows model changes", async ({ page }) => {
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const thinking = page.getByRole("checkbox", { name: "Thinking", exact: true });
   for (const [supported, optional] of [[false, false], [true, true], [true, false], [false, false]]) {
     await page.evaluate(async ({ url, supported, optional }) => {
@@ -1065,7 +1075,7 @@ test("Thinking is shown only for supported models and follows model changes", as
 test("controls tabs have balanced padding and unclipped keyboard focus", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const nav = page.locator(".controls-nav");
   const tabs = page.getByRole("group", { name: "Controls section", exact: true });
   for (const width of [320, 390, 1280]) {
@@ -1248,6 +1258,7 @@ test("SAE stays on its recorded layer and automatically loads source-matched des
   await page.setViewportSize({ width: 1280, height: 1000 });
   const requests: string[] = [];
   let failDescriptionOnce = true;
+  await page.route("**/sae-descriptions/*.json", route => route.fulfill({ status: 503 }));
   await page.route("https://www.neuronpedia.org/api/feature/**", async route => {
     const request = route.request();
     requests.push(request.url());
@@ -1341,7 +1352,7 @@ test.describe("token detail tooltip copy", () => {
       await expect(control).not.toHaveAttribute("title");
       await control.hover();
       await page.waitForTimeout(350);
-      await expect(tooltip).not.toHaveClass(/visible/);
+      await expect(tooltip).toHaveCount(0);
     }
     const composer = page.getByRole("textbox", { name: /^Compose as / });
     const before = (await composer.boundingBox())!.height;
@@ -1356,7 +1367,7 @@ test.describe("token detail tooltip copy", () => {
     await page.locator(".workspace-nav").getByRole("button", { name: "Loom", exact: true }).click();
     await showWorkspaceTools(page, "Loom");
     await expect(page.locator(".loom-views button[title]")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Cut branch…", exact: true })).toHaveAttribute("title", "Remove the current turn and all branches that follow it");
+    await expect(page.getByRole("button", { name: "Cut branch…", exact: true })).toHaveAttribute("aria-description", "Remove the current turn and all branches that follow it");
   });
 
   test("readout hints explain provenance without repeating source IDs", async ({ page }, testInfo) => {
@@ -1369,24 +1380,26 @@ test.describe("token detail tooltip copy", () => {
     await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
     const sheet = page.locator('aside[aria-label="Token drilldown"]');
     await expect(sheet.locator('.scrub[title]')).toHaveCount(0);
-    await expect(sheet.getByRole("button", { name: "Next token", exact: true })).toHaveAttribute("title", "Inspect the next token");
+    await expect(sheet.getByRole("button", { name: "Next token", exact: true })).toHaveAttribute("aria-description", "Inspect the next token");
     for (const tab of [/sae/, /j-lens/]) {
       await sheet.getByRole("group", { name: "Token detail view", exact: true }).getByRole("button", { name: tab }).click();
       const source = sheet.locator(".inst-head .source");
       await expect(source).toBeVisible();
       await expect(source).not.toHaveAttribute("title");
       await source.hover();
-      await expect(page.locator("#drowse-tooltip")).not.toHaveClass(/visible/);
+      await expect(page.locator("#drowse-tooltip")).toHaveCount(0);
       const origin = sheet.locator(".inst-head .origin");
       await expect(origin).toHaveText("captured");
       await origin.hover();
-      await expect(page.getByRole("tooltip")).toHaveText("Recorded when this token was generated. No new model run was needed.");
+      await expect(page.locator("#drowse-tooltip")).toHaveCount(0);
+      await sheet.getByRole("button", { name: "About readout provenance", exact: true }).click();
+      await expect(sheet.locator(".info-popover:popover-open")).toHaveText("Recorded when this token was generated. No new model run was needed.");
       await page.keyboard.press("Escape");
-      await expect(page.locator("#drowse-tooltip")).not.toHaveClass(/visible/);
+      await expect(page.locator("#drowse-tooltip")).toHaveCount(0);
       for (const width of [320, 1280]) {
         await page.setViewportSize({ width, height: 900 });
         expect(await source.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-        await expect.poll(() => sheet.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+        await expect.poll(() => sheet.evaluate(el => el.scrollWidth <= Math.ceil(el.getBoundingClientRect().width))).toBe(true);
       }
     }
     await sheet.screenshot({ path: testInfo.outputPath("readout-tooltip-cleanup.png") });
@@ -1496,7 +1509,7 @@ test("section headings stand alone without redundant eyebrow labels", async ({ p
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain how language models work.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   await expect(page.getByRole("heading", { name: "Generation settings", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Instruments", exact: true })).toBeVisible();
   await expect(page.locator(".inspector .section-heading p")).toHaveCount(0);
@@ -1508,7 +1521,7 @@ test("section headings stand alone without redundant eyebrow labels", async ({ p
   await expect(page.getByRole("heading", { name: "What each area does", exact: true })).toBeVisible();
   await expect(page.getByText("The workbench", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Close drawer", exact: true }).click();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   for (const [button, heading] of [[/^Current path/, "Current path"], [/^Next options/, "Next options"], [/^Starred/, "Starred points"]] as const) {
     await selectLoomView(page, button);
@@ -1748,28 +1761,28 @@ test("tab identity follows generation and Loom navigation", async ({ page, brows
   await expect(page).toHaveTitle("Drowse");
   const icon = page.locator('link[rel="icon"]');
   await expect(icon).toHaveAttribute("data-state", "conversation");
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   await expect(icon).toHaveAttribute("data-state", "controls");
   const sections = page.getByRole("group", { name: "Controls section", exact: true });
   await sections.getByRole("button", { name: "Model", exact: true }).click();
   await expect(icon).toHaveAttribute("data-state", "models");
   await sections.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(icon).toHaveAttribute("data-state", "chat-settings");
-  await page.getByRole("button", { name: "Conversation", exact: true }).click();
+  await selectWorkspaceView(page, "Conversation");
   await expect(icon).toHaveAttribute("data-state", "conversation");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Describe a loom.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page).toHaveTitle("Generating reply · Drowse");
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("data-state", "working");
   await expect(page.locator(".msg .tok").first()).toBeVisible();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await expect(page).toHaveTitle("Loom · Generating reply · Drowse");
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("data-state", "loom-working");
   await page.getByRole("button", { name: /^Weave Text/ }).click();
   await page.locator(".weave").getByRole("button", { name: "Stop", exact: true }).click();
   await expect(page).toHaveTitle("Loom · Drowse");
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("data-state", "loom");
-    await page.getByRole("button", { name: "Conversation", exact: true }).click();
+    await selectWorkspaceView(page, "Conversation");
   await page.locator(".msg .tok").first().click();
   await openTokenDetails(page);
   await expect(icon).toHaveAttribute("data-state", "tokens");
@@ -1915,7 +1928,7 @@ test("generation uses a stationary card glow and follows the active reply until 
     await reply.screenshot({ path: testInfo.outputPath(`loading-reply-${width}.png`) });
   }
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
   await expect(page.locator(".node.generation-active .generation-label")).toHaveCount(1);
   expect(await page.locator(".node.generation-active").evaluate(element => getComputedStyle(element, "::before").animationName)).toBe("generation-breathe");
@@ -1963,7 +1976,7 @@ test("Loom depth fills the viewport through long pans, zoom, resize, and pointer
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
   const viewport = page.locator(".loom-viewport");
   const field = viewport.locator(".loom-depth-field");
@@ -2079,7 +2092,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
     const stores = await import(url);
     return !stores.genStatus.active && (stores.loomTree.children_of.get(parent)?.length ?? 0) === 2;
   }, { url: storesUrl, parent: original.parent })).toBe(true);
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
   const shared = page.locator('[data-loom-shared="2"]');
   await expect(shared).toHaveCount(1);
@@ -2238,7 +2251,7 @@ test("Loom stays accessible while a reply streams", async ({ page, browserName }
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".conversation-page").getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
   await page.evaluate(() => { (window as any).__loomReads.length = 0; });
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await selectLoomView(page, /^Weave/);
   await expect(page.locator(".weave")).toBeVisible();
@@ -2450,20 +2463,20 @@ test("Rolling numbers interrupt cleanly, preserve precision, and honor reduced m
     };
   }, { storesUrl, componentUrl: `/@fs/${resolve("src/lib/ui/RollingNumber.svelte")}` });
   const number = page.locator("#rolling-test .rolling-number");
-  await expect(number.locator(".rn-value")).toHaveText("9.99");
-  await expect(number).toHaveAttribute("data-rn-ready", "");
+  await expect(number.locator(".morph-source")).toHaveText("9.99");
+  await expect(number.locator(".morph-text")).toHaveAttribute("data-morph-active", "");
   for (const value of [10, 1234.56, -0.25, 0]) {
     await page.evaluate(async ({ url, value }) => { (await import(url)).genStatus.tokPerSec = value; }, { url: storesUrl, value });
-    await expect(number.locator(".rn-value")).toHaveText(value.toFixed(2));
+    await expect(number.locator(".morph-source")).toHaveText(value.toFixed(2));
   }
   await expect.poll(() => page.evaluate(() => (window as any).rollingAnimations)).toBeGreaterThan(0);
   await expect.poll(() => number.evaluate(el => el.getAnimations({ subtree: true }).length)).toBe(0);
-  expect(await number.locator(".rn-visual").getAttribute("aria-hidden")).toBe("true");
-  expect(await number.locator(".rn-value").count()).toBe(1);
+  expect(await number.locator(".morph-paint").getAttribute("aria-hidden")).toBe("true");
+  expect(await number.locator(".morph-source").count()).toBe(1);
   await page.screenshot({ path: testInfo.outputPath("rolling-number-settled.png") });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.evaluate(async url => { (await import(url)).genStatus.tokPerSec = 98.76; }, storesUrl);
-  await expect(number.locator(".rn-value")).toHaveText("98.76");
+  await expect(number.locator(".morph-source")).toHaveText("98.76");
   await expect.poll(() => number.evaluate(el => el.getAnimations({ subtree: true }).length)).toBe(0);
   await page.evaluate(() => (window as any).disposeRolling());
   await expect(number).toHaveCount(0);
@@ -2478,7 +2491,7 @@ test("generation statistics and Loom zoom remain readable in both themes", async
   }, storesUrl);
   const footer = page.locator(".status-footer");
   await expect(footer.locator(".speed")).toHaveText("12.5 tokens/s");
-  await expect(footer.locator(".done-label")).toContainText("128 tokens");
+  await expect(footer.locator(".token-count")).toContainText("128 tokens");
   for (const theme of ["Light", "Dark"]) {
     await page.setViewportSize({ width: 1440, height: 900 });
     await setAppearance(page, theme);
@@ -2490,13 +2503,13 @@ test("generation statistics and Loom zoom remain readable in both themes", async
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Show a path in the Loom.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await selectLoomView(page, /^Map/);
   const zoom = page.getByLabel("Loom zoom");
-  const previous = await zoom.locator(".rn-value").innerText();
+  const previous = await zoom.locator(".morph-source").innerText();
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-  await expect(zoom.locator(".rn-value")).not.toHaveText(previous);
+  await expect(zoom.locator(".morph-source")).not.toHaveText(previous);
 });
 
 async function openDrawer(page: Page, name: string, params?: unknown) {
@@ -2822,7 +2835,7 @@ test("smooth scrolling is limited to the homepage and respects reduced motion", 
   await expect(page).toHaveURL(/\/app$/);
   await expect(page.locator(".landing-shell")).toHaveCount(0);
   await expect(page.locator("html")).toHaveCSS("scroll-behavior", "auto");
-  await expect(page.getByRole("link", { name: "Drowse home", exact: true })).toBeVisible();
+  await expect(page.locator(".page-header")).toBeVisible();
   await page.goBack();
   await expect(page.locator("html")).toHaveCSS("scroll-behavior", "smooth");
 });
@@ -2879,6 +2892,7 @@ test("landing animation follows a changed motion preference without a pause butt
 });
 
 test("orb entrance waits for a rendered scene and wordmark uses the accent on hover", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   let releaseArtwork!: () => void;
   const artworkGate = new Promise<void>(resolve => { releaseArtwork = resolve; });
@@ -3138,7 +3152,7 @@ test("landing has no gradient scrims and adapts its ink without panel background
         return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
       }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
       // Bound the mobile backdrop; desktop orb highlights are independently boosted.
-      const filter = await page.locator(".visual-layer").evaluate(element => getComputedStyle(element).filter);
+      const filter = await page.locator(".visual-layer .fallback").evaluate(element => getComputedStyle(element).filter);
       let darkestBackdrop: number[];
       if (theme === "Light") {
         expect(filter).toContain("#hero-light-palette");
@@ -3225,7 +3239,9 @@ test("mobile hero overlays the orb without selecting the section", async ({ page
       await page.evaluate(() => scrollTo({ top: 0, behavior: "instant" }));
       const heading = page.locator("#hero-title");
       const box = (await heading.boundingBox())!;
-      expect(box.y).toBeLessThan(190);
+      const header = (await page.locator(".page-header").boundingBox())!;
+      expect(box.y).toBeGreaterThanOrEqual(header.y + header.height);
+      expect(box.y).toBeLessThan(page.viewportSize()!.height * 0.3);
       expect(await heading.evaluate(element => {
         const style = getComputedStyle(element);
         return style.getPropertyValue("user-select") || style.getPropertyValue("-webkit-user-select");

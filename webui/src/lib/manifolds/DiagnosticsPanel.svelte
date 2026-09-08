@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Slider from "../Slider.svelte";
+  import MorphText from "../ui/MorphText.svelte";
   // Render a discover-mode manifold's PCA variance bars or spectral
   // eigenvalue spectrum, with the picked-k cut highlighted.  Used by
   // ManifoldDrawer's per-row inspector; safe to drop into any other
@@ -19,6 +21,7 @@
 
   let { manifold }: { manifold: ManifoldInfo } = $props();
 
+  let selectedComponent = $state(0);
   const fit = $derived(pickDiscoverFit(manifold.fitted));
   const diag = $derived(fit ? classifyDiagnostics(fit) : null);
   const bars: DiagnosticsBar[] = $derived(
@@ -28,6 +31,7 @@
         ? pcaBars(diag)
         : spectralBars(diag),
   );
+  const selectedBar = $derived(bars[Math.min(selectedComponent, bars.length - 1)]);
 </script>
 
 {#if quotientDescription(manifold.domain)}
@@ -39,12 +43,16 @@
 {#if diag !== null}
   <div class="diag" data-kind={diag.kind}>
     <p class="summary">{diagnosticsSummary(diag)}</p>
+    {#if selectedBar}
+      <p class="summary"><MorphText text={`Component ${selectedBar.index} · ${diag.kind === "pca" ? `${chartValue(selectedBar.value, true)} variance` : `eigenvalue ${chartValue(selectedBar.value)}`} · ${selectedBar.picked ? "kept" : "not kept"}`} identity={diag.kind} /></p>
+      <Slider value={Math.min(selectedComponent, bars.length - 1)} min={0} max={Math.max(0, bars.length - 1)} step={1} ariaLabel="Diagnostic component" displayValue={`Component ${selectedBar.index}`} oninput={value => selectedComponent = value} />
+    {/if}
     <ol class="bars" aria-label={`${diag.kind} diagnostics`}>
       {#each bars as bar (bar.index)}
         <li
           class="bar"
           class:picked={bar.picked}
-          title={`#${bar.index} · ${diag.kind === "pca" ? `${chartValue(bar.value, true)} variance` : `eigenvalue ${chartValue(bar.value)}`} · ${chartValue(bar.frac, true)} of largest component${bar.picked ? " (kept)" : ""}`}
+          {...{ "aria-description": (`#${bar.index} · ${diag.kind === "pca" ? `${chartValue(bar.value, true)} variance` : `eigenvalue ${chartValue(bar.value)}`} · ${chartValue(bar.frac, true)} of largest component${bar.picked ? " (kept)" : ""}`) }}
         >
           <span class="bar-fill" style="height: {Math.max(2, bar.frac * 100)}%"
           ></span>

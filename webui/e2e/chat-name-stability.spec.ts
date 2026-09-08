@@ -106,14 +106,14 @@ test("chat names stay transparent and neutral, and renaming preserves order thro
   const input = card.getByRole("textbox", { name: "Chat name", exact: true });
   await input.fill("Alpha renamed");
   await input.press("Enter");
-  await expect(card.locator(".chat-name")).toHaveText("Alpha renamed");
+  await expect(card.locator(".chat-name .morph-source")).toHaveText("Alpha renamed");
   expect(await order(page)).toEqual(before);
   await expect(card.locator("time")).toHaveAttribute("datetime", timestamp!);
   await seed(page);
   await mountHome(page);
   await expect(page.locator("[data-saved-conversation]")).toHaveCount(3);
   expect(await order(page)).toEqual(before);
-  await expect(card.locator(".chat-name")).toHaveText("Alpha renamed");
+  await expect(card.locator(".chat-name .morph-source")).toHaveText("Alpha renamed");
 });
 
 test("renaming in the saved-chat drawer preserves position and activity time", async ({ page }) => {

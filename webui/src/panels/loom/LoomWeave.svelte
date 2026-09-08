@@ -141,7 +141,7 @@
               <Disclosure summary="Token branch points" flush bind:expanded={() => expandedTokens.has(node.id), (open) => { if (open) expandedTokens.add(node.id); else expandedTokens.delete(node.id); }}>
                 <div class="tokens">
                   {#each node.tokens as token, tokenIndex}
-                    <button type="button" data-cursor="inspect" disabled={busy} title="Inspect or branch from this token"
+                    <button type="button" data-cursor="inspect" disabled={busy} {...{ "aria-description": "Inspect or branch from this token" }}
                       aria-label={`Inspect token ${tokenIndex + 1}: ${token.text.trim() || "whitespace"}`}
                       onclick={() => oninspect(node, tokenIndex)}>{token.text || "∅"}</button>
                   {/each}
@@ -182,7 +182,7 @@
           <Select bind:value={count} disabled={busy} ariaLabel="Alternatives" options={[1, 2, 3, 4, 6, 8].map(value => ({ value, label: String(value) }))} />
         </label>
         <button type="submit" class="primary" disabled={busy || !loomTree.loaded}
-          title="Create sibling turns using the current model and response controls">Generate {count}</button>
+          {...{ "aria-description": "Create sibling turns using the current model and response controls" }}>Generate {count}</button>
         <button type="button" disabled={!genStatus.active} onclick={sendStop}>Stop</button>
       </div>
     </form>
@@ -206,11 +206,11 @@
             <button type="button" disabled={busy || chosen?.id === node.id}
               onclick={() => void choose(node)}>{chosen?.id === node.id ? "Chosen" : "Choose"}</button>
             <button type="button" disabled={busy} onclick={async () => { await choose(node); if (loomTree.active_node_id === node.id) await explore(node); }}
-              title="Choose this path and explore its next turns">Explore next</button>
+              {...{ "aria-description": "Choose this path and explore its next turns" }}>Explore next</button>
             <button type="button" disabled={busy || lastBoundary(node) < 0}
-              title={lastBoundary(node) < 0
+              {...{ "aria-description": (lastBoundary(node) < 0
                 ? "This turn has no saved token boundary to continue from"
-                : "Keep every existing token and sample more text with this turn’s saved settings; the original stays intact"}
+                : "Keep every existing token and sample more text with this turn’s saved settings; the original stays intact") }}
               onclick={() => void extend(node)}>Continue text</button>
             <button type="button" disabled={busy || !node.parent_id} onclick={(event) => onwrite(node, event.currentTarget)}>Write alternative</button>
           </footer>
@@ -250,7 +250,7 @@
   :is(button, textarea, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .generation-controls label { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); }
   .prompt-label { display: block; margin-block-end: var(--space-2); }
-  textarea { box-sizing: border-box; width: 100%; resize: vertical; min-height: 100px; padding: var(--space-3); margin-block-end: var(--space-3); background: var(--bg); }
+  textarea { box-sizing: border-box; width: 100%; resize: vertical; min-height: 100px; padding: var(--space-3); margin-block-end: var(--space-3); background: var(--input-well); }
   summary { cursor: pointer; min-height: var(--control-target); align-content: center; font-size: var(--text-xs); overflow-wrap: anywhere; }
   details { color: var(--fg-muted); }
   .context { margin-block-end: var(--space-3); }

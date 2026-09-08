@@ -1,3 +1,5 @@
+import { selectWorkspaceView } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
@@ -97,7 +99,7 @@ test("mirrored sidebar toggle pins an empty inspector and both slides share reve
   expect(await right.evaluate(el => getComputedStyle(el).transitionDuration)).toBe(await left.evaluate(el => getComputedStyle(el).transitionDuration));
   expect(await right.evaluate(el => getComputedStyle(el).transitionTimingFunction)).toBe(await left.evaluate(el => getComputedStyle(el).transitionTimingFunction));
   expect(await right.evaluate(el => getComputedStyle(el).transitionDuration)).toBe("0.3s, 0.3s, 0.3s");
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+  await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Help", exact: true }).click();
   const help = page.getByRole("dialog", { name: "Help and shortcuts", exact: true });
   await expect(help).toBeVisible();
@@ -135,6 +137,7 @@ test("mirrored sidebar toggle pins an empty inspector and both slides share reve
     })).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`pinned-sidebar-${width}.png`) });
   }
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const panel of [left, right]) await expect(panel).toHaveCSS("transition-duration", "0s");
   await rightToggle.focus();
@@ -166,6 +169,7 @@ test("token details dock, follow selection, and leave the workspace interactive"
   await page.getByRole("button", { name: "Dock token details", exact: true }).click();
   const sidebar = page.getByRole("complementary", { name: "Generated word details", exact: true });
   await expect(sidebar).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Undock token details", exact: true }).locator('[data-icon="popout"]')).toBeVisible();
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(".drawer-backdrop")).toHaveCount(0);
   await expect(page.locator("#workbench-header")).not.toHaveAttribute("inert");
@@ -196,9 +200,9 @@ test("token details dock, follow selection, and leave the workspace interactive"
     await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
     for (const width of [1440, 900, 760, 320]) {
       await page.setViewportSize({ width, height: 900 });
-      await expect(sidebar).toBeVisible();
+      await expect(page.locator("#workspace-token-sidebar")).toBeVisible();
       expect(await sheet.evaluate(element => element.scrollWidth <= element.clientWidth + 1), `${theme} ${width}`).toBe(true);
-      expect(await sidebar.evaluate(element => {
+      expect(await page.locator("#workspace-token-sidebar").evaluate(element => {
         const box = element.getBoundingClientRect();
         return box.left >= 0 && box.right <= innerWidth + 1 && box.bottom <= innerHeight + 1;
       })).toBe(true);
@@ -211,6 +215,8 @@ test("token details dock, follow selection, and leave the workspace interactive"
   await sheet.evaluate(element => element.scrollTop = 0);
   await page.getByRole("button", { name: "Undock token details", exact: true }).click();
   await expect(dialog).toBeVisible();
+  await expect(dialog.locator('[data-icon="popout"]')).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Dock token details", exact: true }).locator('svg:has(path[d="M15 4v16"])')).toBeVisible();
   await expect(page.locator("#workbench-header")).toHaveAttribute("inert", "");
   await expect(sheet.locator(".tok-text")).toHaveText(selectedText!);
   await expect(page.getByRole("button", { name: "Dock token details", exact: true })).toBeFocused();
@@ -230,11 +236,22 @@ test("token details dock, follow selection, and leave the workspace interactive"
 });
 
 test("chat selection and all analysis views fit the docked inspector", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
+  await selectWorkspaceView(page, "Controls");
+  await page.getByRole("group", { name: "Response guidance type" }).getByRole("button", { name: "Subspace", exact: true }).click();
+  await page.getByRole("button", { name: "Add subspace probe", exact: true }).click();
+  const picker = page.getByRole("dialog");
+  await picker.getByText("attach selector", { exact: true }).click();
+  await picker.getByRole("textbox", { name: "Selector" }).fill("fixture/calm.focused");
+  await picker.getByRole("button", { name: "+ attach", exact: true }).click();
+  await expect(page.getByText("probe fixture/calm.focused", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await selectWorkspaceView(page, "Conversation");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
@@ -251,19 +268,28 @@ test("chat selection and all analysis views fit the docked inspector", async ({ 
     await page.setViewportSize({ width, height: 900 });
     for (const tab of ["geometry", "logits", "sae", "j-lens"]) {
       await sheet.getByRole("group", { name: "Token detail view", exact: true }).getByRole("button", { name: tab, exact: true }).click();
+      if (tab === "geometry") {
+        const guide = sheet.locator(".geometry-guide");
+        await guide.locator("summary").click();
+        await expect(guide).toHaveAttribute("open", "");
+        await expect(guide).toContainText("not the probability that a trait is true");
+        await expect(sheet.locator('[role="listitem"][title*="typical label spacings away"]').first()).toBeVisible();
+        await expect(sheet.locator('[role="listitem"]').filter({ hasText: "membership" })).toHaveCount(0);
+      }
       expect(await sheet.evaluate(element => element.scrollWidth <= element.clientWidth + 1), `${tab} ${width}`).toBe(true);
       await sheet.locator(":scope > .body").scrollIntoViewIfNeeded();
       await page.screenshot({ path: testInfo.outputPath(`chat-sidebar-${tab}-${width}.png`) });
     }
-    await page.getByRole("button", { name: "Hide left sidebar", exact: true }).click();
-    await expect(page.locator("#workspace-sidebar")).toBeHidden();
-    await page.getByRole("button", { name: "Show left sidebar", exact: true }).click();
-    await expect(page.locator("#workspace-sidebar")).toBeVisible();
+    if (width > 760) {
+      await page.getByRole("button", { name: "Hide left sidebar", exact: true }).click();
+      await expect(page.locator("#workspace-sidebar")).toBeHidden();
+      await page.getByRole("button", { name: "Show left sidebar", exact: true }).click();
+      await expect(page.locator("#workspace-sidebar")).toBeVisible();
+    }
   }
   await page.setViewportSize({ width: 1440, height: 900 });
   expect((await new AxeBuilder({ page }).include(".drawer.docked").analyze()).violations).toEqual([]);
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "Help", exact: true }).click();
+  await page.getByRole("button", { name: "Help and shortcuts", exact: true }).click();
   const help = page.getByRole("dialog", { name: "Help and shortcuts", exact: true });
   await expect(help).toBeVisible();
   await expect(page.locator("#workbench-header")).toHaveAttribute("inert", "");

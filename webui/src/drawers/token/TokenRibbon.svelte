@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Context ribbon — a windowed strip of the current segment's tokens
   // around the inspected position.  Orientation + navigation in one:
   // tokens tint with the active highlight probe (through the shared
@@ -8,6 +9,7 @@
   // token moves the cursor there.  Ribbon tokens are mouse targets only
   // (tabindex -1) so the drawer's focus order stays walkable.
 
+  import Slider from "../../lib/Slider.svelte";
   import { highlightStyleString } from "../../lib/highlight";
   import type { TokenScore } from "../../lib/types";
 
@@ -51,8 +53,11 @@
 <section class="context-shell" aria-label="Token context">
   <header>
     <span>sequence context</span>
-    <span class="position">token {index + 1} / {tokens.length}</span>
+    <span class="position"><MorphText text={`token ${index + 1} / ${tokens.length}`} /></span>
   </header>
+  {#if tokens.length > 1}
+    <div class="sequence-slider"><Slider value={index} min={0} max={tokens.length - 1} step={1} displayValue={`Token ${index + 1}`} ariaLabel="Sequence token position" oninput={onjump} /></div>
+  {/if}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scrollable token sequence is a single keyboard navigation stop.) -->
   <div class="ribbon" bind:this={box} role="group" aria-label="Token context sequence" tabindex="0">
     {#if start > 0}
@@ -66,7 +71,7 @@
         style={highlightStyleString(tok)}
         tabindex="-1"
         aria-current={i === index}
-        title={`token ${i + 1} / ${tokens.length}`}
+        {...{ "aria-description": (`token ${i + 1} / ${tokens.length}`) }}
         onclick={() => onjump(i)}
       >{label(tok.text)}</button>
     {/each}
@@ -77,6 +82,7 @@
 </section>
 
 <style>
+  .sequence-slider { padding-inline: var(--space-3); }
   .context-shell {
     margin: var(--space-2) var(--space-6) 0;
     border-radius: var(--radius);

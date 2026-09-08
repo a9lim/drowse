@@ -500,6 +500,30 @@ try {
   });
 
   const namedEngine = generation();
+  const renamedEngine = generation();
+  const renamedRuntime = new BrowserLoomRuntime({
+    session: session(), generation: renamedEngine, createId: ids("renamed"),
+  });
+  for (const name of [null, "pirate", "forest_guide", null]) {
+    await renamedRuntime.generate({
+      type: "submit", text: "Arrgh", authored_role: "user", generated_role: "assistant",
+      sampling: name === null ? {} : { assistant_role: name },
+    }, () => {});
+    assert.equal(renamedEngine.plans.at(-1).generationRoleName, name);
+    const node = renamedRuntime.snapshot().tree.nodes.at(-1);
+    assert.equal(node.role, "assistant");
+    assert.equal(node.role_label, name);
+    assert.equal(node.recipe.sampling.assistant_role, name);
+  }
+  assert.deepEqual(
+    renamedEngine.plans.at(-1).input.messages.filter(message => message.role === "assistant")
+      .map(message => message.name ?? null),
+    [null, "pirate", "forest_guide"],
+    "Changing the next speaker must preserve the actual names of historical turns",
+  );
+  const renamedTranscript = await renamedRuntime.request({ service: "tree", method: "transcriptExport", args: [null] });
+  assert.match(renamedTranscript.yaml, /speaker: pirate/);
+  assert.match(renamedTranscript.yaml, /speaker: forest_guide/);
   const namedRuntime = new BrowserLoomRuntime({
     session: session(),
     generation: namedEngine,
@@ -2046,10 +2070,10 @@ try {
   const patched = await serviceRuntime.request({
     service: "sessions",
     method: "patch",
-    args: [{ temperature: 0.5, max_tokens: 32 }],
+    args: [{ temperature: 3, max_tokens: 32768 }],
   });
-  assert.equal(patched.config.temperature, 0.5);
-  assert.equal(patched.config.max_tokens, 32);
+  assert.equal(patched.config.temperature, 3);
+  assert.equal(patched.config.max_tokens, 32768);
   assert.deepEqual(await serviceRuntime.request({
     service: "profiles", method: "list", args: [],
   }), { profiles: [] });

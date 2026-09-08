@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { flip } from "svelte/animate";
+  import { motionDuration } from "../lib/motion";
   // J-LENS — the inspector column's Jacobian-lens tab: two sections,
   // card-based and symmetric with the CAA tab (every row wears RackCard;
   // the j-lens family accent is blue, marker ■/□).
@@ -270,7 +272,7 @@
       {#if steerCards.length > 0}
         <div class="cards steer-cards" role="list">
           {#each steerCards as [name, entry] (name)}
-            <div role="listitem">
+            <div role="listitem" animate:flip={{ duration: motionDuration(160) }}>
               <AtomSteerCard mode="jlens" {name} {entry} />
             </div>
           {/each}
@@ -328,7 +330,7 @@
         {#if workspaceCards.length > 0}
           <div class="cards" role="list" aria-label="J-lens probe tokens">
             {#each workspaceCards as card (card.key)}
-              <div role="listitem">
+              <div role="listitem" animate:flip={{ duration: motionDuration(160) }}>
                 <JLensProbeCard
                   token={card.token}
                   probeName={card.pinned ? card.key : undefined}

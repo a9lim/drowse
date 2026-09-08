@@ -104,7 +104,7 @@ def test_failed_provider_binding_does_not_half_adopt_runtime(
     session._model_exclusive = lambda *_args, **_kwargs: nullcontext()
 
     monkeypatch.setattr(sae_module, "load_sae_backend", lambda *_a, **_kw: replacement)
-    monkeypatch.setattr(sae_io, "load_sae_feature_meta", lambda *_a: {})
+    monkeypatch.setattr(sae_io, "load_sae_feature_meta", lambda *_a, **_k: {})
     monkeypatch.setattr(
         sae_io, "save_sae_metadata",
         lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("disk full")),
@@ -454,7 +454,7 @@ def test_sae_feature_meta_rejects_non_current_shapes(
     import json
 
     from drowse.io.sae import (
-        SAE_RUNTIME_FORMAT_VERSION,
+        SAE_FEATURE_META_FORMAT_VERSION,
         load_sae_feature_meta,
         sae_features_path,
     )
@@ -462,9 +462,10 @@ def test_sae_feature_meta_rejects_non_current_shapes(
     path = sae_features_path("org/model", "rel")
     path.parent.mkdir(parents=True)
     payload = {
-        "format_version": SAE_RUNTIME_FORMAT_VERSION,
+        "format_version": SAE_FEATURE_META_FORMAT_VERSION,
         "model_id": "org/model",
         "release": "rel",
+        "source": None,
         "features": {"7": {"label": "weekdays", "max_act": 3.0}},
     }
     mutation(payload)
@@ -529,7 +530,7 @@ def test_fetch_sae_feature_meta_batch_caches_and_updates_probes(
     # Persisted — a fresh load sees the merged cache.
     from drowse.io.sae import load_sae_feature_meta
 
-    on_disk = load_sae_feature_meta("org/model", "mock-release")
+    on_disk = load_sae_feature_meta("org/model", "mock-release", source=session.sae_info)
     assert on_disk["1"]["max_act"] == 4.0
 
 

@@ -25,7 +25,7 @@
   aria-label={active
     ? `Deselect ${name} as transcript highlight target`
     : `Select ${name} as transcript highlight target`}
-  title="highlight"
+  {...{ "aria-description": "highlight" }}
   onclick={toggle}
 >{active ? "highlighted" : "highlight"}</button>
 

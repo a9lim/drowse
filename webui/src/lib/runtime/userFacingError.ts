@@ -1,6 +1,8 @@
 type ErrorMessage = string | ((raw: string) => string);
 
 const MESSAGES: Array<[RegExp, ErrorMessage]> = [
+  [/SAMPLING_RUNTIME_OUTDATED/u,
+    "Drowse is using an older model runtime that cannot accept these sampling settings. Reload Drowse, then reopen the model. Your downloaded models and saved chats do not need to be removed."],
   [/WEBGPU_LIMIT_TOO_LOW/u, webGpuLimitMessage],
   [/WEBGPU_FEATURE_(?:MISSING|UNAVAILABLE)/u,
     "This browser’s graphics support is missing a feature this model needs. Update your browser and graphics driver, then run the device check again. If it still fails, use another supported browser."],
@@ -77,7 +79,9 @@ export function userFacingError(
   fallback = "Drowse could not complete that action. Try again or reopen the model.",
 ): string {
   const raw = errorMessage(error).replace(/^Error:\s*/u, "").trim();
-  const code = errorCode(error) || inferredCode(raw);
+  const suppliedCode = errorCode(error);
+  const genericCode = /^(?:WORKER_OPERATION_FAILED|WORKER_REQUEST_FAILED)$/u.test(suppliedCode);
+  const code = (!suppliedCode || genericCode ? inferredCode(raw) : "") || suppliedCode;
   for (const [pattern, message] of MESSAGES) {
     if (pattern.test(code)) return typeof message === "function" ? message(raw) : message;
   }
@@ -86,6 +90,9 @@ export function userFacingError(
 }
 
 function inferredCode(raw: string): string {
+  if (/Make sure 0 < top_logprobs <= 5\. Got (?:[6-9]|[1-9]\d+)(?:\.|$)/u.test(raw)) {
+    return "SAMPLING_RUNTIME_OUTDATED";
+  }
   if (/^[A-Z][A-Z0-9_]{2,}$/u.test(raw)) return raw;
   if (/maxStorageBuffersPerShaderStage|graphics buffers?/iu.test(raw)) {
     return "WEBGPU_LIMIT_TOO_LOW";

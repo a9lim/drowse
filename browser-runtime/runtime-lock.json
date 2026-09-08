@@ -6,7 +6,7 @@
   "hookAbi": "post-block-residual-v4",
   "exactReadoutAbi": "exact-readout-v1",
   "toolchain": {
-    "forkManifestSha256": "8f87f73b71c531a2d5cef027ea258a550d4d4aff114ece21c69dc6a97accab97",
+    "forkManifestSha256": "bde6e0c55472760b90d43d2fdc985b5c0df8c11ca508c5b1dbeafc78150c10f3",
     "mlcLlmFork": {
       "repository": "https://github.com/a9lim/mlc-llm-polythetic",
       "commit": null
@@ -16,10 +16,10 @@
       "commit": null
     },
     "webLlmPackage": {
-      "path": "browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.34.tgz",
-      "sha256": "4ba44a095d021ae46351594efcd317e248ab47f443a1bf102abd86cd8dbfd03d",
+      "path": "browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.36.tgz",
+      "sha256": "91e86099733ebadc39312b12a84dc5d51aeff88b301c1d6388eb647dacd3e91a",
       "name": "@drowse/web-llm",
-      "version": "0.2.84-drowse.34",
+      "version": "0.2.84-drowse.36",
       "repository": "https://github.com/a9lim/web-llm-polythetic",
       "sourceCommit": null
     },

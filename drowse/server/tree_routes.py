@@ -4,12 +4,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
+from drowse.server.streaming import run_in_thread
 from drowse.server.app import acquire_session_lock
 from drowse.server.native_common import resolve_session_id
 from drowse.server.response_models import (
@@ -328,7 +328,7 @@ def register_tree_routes(app: FastAPI) -> None:
             with warnings.catch_warnings():
                 warnings.showwarning = _on_warning
                 try:
-                    leaf_id = await asyncio.to_thread(
+                    leaf_id = await run_in_thread(
                         transcript.import_into,
                         session,
                         mode=mode,
@@ -540,7 +540,7 @@ def register_tree_routes(app: FastAPI) -> None:
                 # populated the cache while we waited.
                 hit = _cached_joint_logprobs(cache, key)
                 if hit is None:
-                    hit = await asyncio.to_thread(
+                    hit = await run_in_thread(
                         compute_joint_logprobs, session, req.a_id, req.b_id,
                     )
                     _remember_joint_logprobs(cache, key, hit)

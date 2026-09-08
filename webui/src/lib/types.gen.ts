@@ -177,6 +177,7 @@ export interface InstrumentSourceJSON {
   checkpoint?: string;
   layer?: number;
   features?: number;
+  description_source?: SaeDescriptionSourceJSON | null;
   /** Open shape — the producer may carry more than the
    *  contract names; unknown keys ride through. */
   [key: string]: unknown;
@@ -611,6 +612,17 @@ export interface RemoteManifoldInfo {
   domain_label: string;
   fit_mode: string;
   tensor_models: string[];
+  /** Open shape — the producer may carry more than the
+   *  contract names; unknown keys ride through. */
+  [key: string]: unknown;
+}
+
+export interface SaeDescriptionSourceJSON {
+  model: string;
+  source: string;
+  repository: string;
+  folder?: string;
+  saeId?: string;
   /** Open shape — the producer may carry more than the
    *  contract names; unknown keys ride through. */
   [key: string]: unknown;

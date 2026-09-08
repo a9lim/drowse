@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import RollingNumber from "../lib/ui/RollingNumber.svelte";
   import ResetSettings from "../lib/ui/ResetSettings.svelte";
   import { onMount } from "svelte";
@@ -390,20 +391,20 @@
         <div class="model-copy">
           <h3>{selectedModelName ?? "No model open"}</h3>
           <p>
-            {lifecycleLabel}{snapshot.contextTokens
+            {lifecycleLabel}<MorphText text={snapshot.contextTokens
               ? ` · ${snapshot.contextTokens.toLocaleString()}-token conversation memory`
-              : ""}
+              : ""} />
           </p>
         </div>
         <span class="status" class:ready={snapshot.lifecycle === "ready"}>{lifecycleLabel}</span>
       </div>
       <div class="actions">
         <button class="primary" class:loading-pulse={busy === "switch"} aria-busy={busy === "switch"} type="button" disabled={busy !== null} onclick={() => void chooseModel()}>
-          {busy === "switch"
+          <MorphText text={busy === "switch"
             ? "Closing model…"
             : snapshot.modelVariantId === null
               ? "Choose a model"
-              : "Change model"}
+              : "Change model"} />
         </button>
         <button
           type="button"
@@ -411,7 +412,7 @@
           class:loading-pulse={busy === "unload"}
           aria-busy={busy === "unload"}
           onclick={() => void unloadModel()}
-        >{busy === "unload" ? "Closing…" : "Close model"}</button>
+        ><MorphText text={busy === "unload" ? "Closing…" : "Close model"} /></button>
       </div>
       {#if busy === "switch"}
         <p class="action-status" role="status">Saving this conversation and releasing graphics memory. Model choices will open automatically.</p>
@@ -426,7 +427,7 @@
           <h3>Included files and additions</h3>
         </div>
         <button class="quiet" class:loading-pulse={catalogLoading} aria-busy={catalogLoading} type="button" disabled={busy !== null || catalogLoading} onclick={() => void loadCatalog()}>
-          {catalogLoading ? "Checking…" : "Check again"}
+          <MorphText text={catalogLoading ? "Checking…" : "Check again"} />
         </button>
       </div>
       {#if persistenceWarning}<p class="warning" role="status">{persistenceWarning}</p>{/if}
@@ -465,7 +466,7 @@
                       max={packProgress.bytesTotal}
                       aria-label={`${pack.displayName} download progress`}
                     ></progress>
-                    <span><RollingNumber value={formatPercent(packProgress)} />% · {formatEta(packProgress)}</span>
+                    <span><RollingNumber value={formatPercent(packProgress)} />% · <MorphText text={formatEta(packProgress)} /></span>
                   {:else}
                     <span>Preparing verified download…</span>
                   {/if}
@@ -473,7 +474,7 @@
                     type="button"
                     disabled={cancellingPack}
                     onclick={() => void cancelPackDownload()}
-                  >{cancellingPack ? "Cancelling…" : "Pause download"}</button>
+                  ><MorphText text={cancellingPack ? "Cancelling…" : "Pause download"} /></button>
                 </div>
               {:else if installed}
                 <span class="installed">Ready</span>
@@ -481,9 +482,9 @@
                 <button
                   type="button"
                   disabled={busy !== null || unavailableReason !== null || !verifiedCatalog?.allowDownloads}
-                  title={!verifiedCatalog?.allowDownloads
+                  {...{ "aria-description": (!verifiedCatalog?.allowDownloads
                     ? "Reconnect to download this tool"
-                    : unavailableReason ?? `Install ${pack.displayName}`}
+                    : unavailableReason ?? `Install ${pack.displayName}`) }}
                   onclick={() => void installPack(pack)}
                 >Download</button>
               {/if}
@@ -571,7 +572,7 @@
           <p>Remove every Drowse model, tool, conversation, response control, and preference stored by this site.</p>
           {#if confirmClear}
             <div class="actions">
-              <button type="button" class="danger" disabled={busy !== null} onclick={() => void clearAll()}>{busy === "clear" ? "Clearing…" : "Clear all local data"}</button>
+              <button type="button" class="danger" disabled={busy !== null} onclick={() => void clearAll()}><MorphText text={busy === "clear" ? "Clearing…" : "Clear all local data"} /></button>
               <button type="button" disabled={busy !== null} onclick={() => (confirmClear = false)}>Cancel</button>
             </div>
           {:else}
@@ -601,7 +602,7 @@
     <footer class="product-footer" aria-label="About Drowse">
       <div class="product-identity"><span class="wordmark" translate="no">Drowse</span><span class="version">v 0.1</span></div>
       <nav aria-label="Project links">
-        <a href="/LICENSE" target="_blank" rel="noreferrer">AGPL-3.0-or-later</a>
+        <span>GNU AGPL v3 or later</span>
         <span aria-hidden="true">-</span>
         <a href={contributeUrl} target="_blank" rel="noreferrer">Contribute</a>
         <span aria-hidden="true">-</span>

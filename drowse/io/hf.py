@@ -18,6 +18,8 @@ from drowse.core.errors import DrowseError
 
 class HFError(RuntimeError, DrowseError):
     def user_message(self) -> tuple[int, str]:
+        if self.__cause__ is not None:
+            return (502, "Hugging Face operation failed")
         return (502, str(self) or self.__class__.__name__)
 
 

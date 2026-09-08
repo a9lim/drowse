@@ -8,6 +8,12 @@ import { spawnSync } from "node:child_process";
 
 const manifestPath = resolve(import.meta.dirname, "manifest.json");
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+const selectedIds = new Set(process.argv.slice(2));
+for (const id of selectedIds) {
+  if (!manifest.overlays.some((overlay) => overlay.id === id)) {
+    throw new Error(`Unknown overlay: ${id}`);
+  }
+}
 const repositories = new Map([
   ["tvm-webgpu-readonly", process.env.DROWSE_TVM_REPOSITORY],
   ["mlc-llm-drowse", process.env.DROWSE_MLC_REPOSITORY ??
@@ -17,6 +23,7 @@ const repositories = new Map([
 ]);
 
 for (const overlay of manifest.overlays) {
+  if (selectedIds.size > 0 && !selectedIds.has(overlay.id)) continue;
   const repository = repositories.get(overlay.id);
   if (repository === undefined) continue;
   requireOutput(repository, ["rev-parse", "HEAD"], overlay.baseCommit);

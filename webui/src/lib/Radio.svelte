@@ -83,7 +83,7 @@
   tabindex={selected && !disabled ? 0 : -1}
   data-name={name}
   {disabled}
-  {title}
+  {...{ "aria-description": (title) }}
   onclick={pick}
   onkeydown={onKeydown}
 >

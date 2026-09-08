@@ -1727,7 +1727,6 @@ export class HostedRuntimeWorker {
         "The done event does not match the started sibling position",
       );
     }
-    if (!protocol.stateless) await this.persistSession();
     this.event("done", message, requestId, protocol.activeGenerationId);
     protocol.completedGenerations += 1;
     protocol.phase = "awaiting_started";
@@ -2204,6 +2203,7 @@ export class HostedRuntimeWorker {
       {
         maxOutputTokens: outputTokenLimitForSignals(
           this.checkedCapabilities?.signals,
+          selection.contextTokens,
         ),
       },
     );

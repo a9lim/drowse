@@ -146,17 +146,13 @@ pub fn symmetric_eigen(matrix: &[f64], size: usize) -> KernelResult<(Vec<f64>, V
         vectors[index * size + index] = 1.0;
     }
 
-    for _ in 0..(100 * size.max(2) * size.max(2)) {
-        let mut pivot_row = 0;
-        let mut pivot_column = 0;
+    for _ in 0..100 {
         let mut largest = 0.0_f64;
         for row in 0..size {
             for column in (row + 1)..size {
                 let candidate = values[row * size + column].abs();
                 if candidate > largest {
                     largest = candidate;
-                    pivot_row = row;
-                    pivot_column = column;
                 }
             }
         }
@@ -185,39 +181,44 @@ pub fn symmetric_eigen(matrix: &[f64], size: usize) -> KernelResult<(Vec<f64>, V
             return Ok((eigenvalues, eigenvectors));
         }
 
-        let p = pivot_row;
-        let q = pivot_column;
-        let app = values[p * size + p];
-        let aqq = values[q * size + q];
-        let apq = values[p * size + q];
-        let tau = (aqq - app) / (2.0 * apq);
-        let tangent = if tau >= 0.0 {
-            1.0 / (tau + (1.0 + tau * tau).sqrt())
-        } else {
-            -1.0 / (-tau + (1.0 + tau * tau).sqrt())
-        };
-        let cosine = 1.0 / (1.0 + tangent * tangent).sqrt();
-        let sine = tangent * cosine;
+        for p in 0..size {
+            for q in (p + 1)..size {
+                if values[p * size + q].abs() <= EIGEN_TOLERANCE * diagonal_scale {
+                    continue;
+                }
+                let app = values[p * size + p];
+                let aqq = values[q * size + q];
+                let apq = values[p * size + q];
+                let tau = (aqq - app) / (2.0 * apq);
+                let tangent = if tau >= 0.0 {
+                    1.0 / (tau + tau.hypot(1.0))
+                } else {
+                    -1.0 / (-tau + tau.hypot(1.0))
+                };
+                let cosine = 1.0 / (1.0 + tangent * tangent).sqrt();
+                let sine = tangent * cosine;
 
-        values[p * size + p] = app - tangent * apq;
-        values[q * size + q] = aqq + tangent * apq;
-        values[p * size + q] = 0.0;
-        values[q * size + p] = 0.0;
-        for index in 0..size {
-            if index != p && index != q {
-                let aip = values[index * size + p];
-                let aiq = values[index * size + q];
-                let next_ip = cosine * aip - sine * aiq;
-                let next_iq = sine * aip + cosine * aiq;
-                values[index * size + p] = next_ip;
-                values[p * size + index] = next_ip;
-                values[index * size + q] = next_iq;
-                values[q * size + index] = next_iq;
+                values[p * size + p] = app - tangent * apq;
+                values[q * size + q] = aqq + tangent * apq;
+                values[p * size + q] = 0.0;
+                values[q * size + p] = 0.0;
+                for index in 0..size {
+                    if index != p && index != q {
+                        let aip = values[index * size + p];
+                        let aiq = values[index * size + q];
+                        let next_ip = cosine * aip - sine * aiq;
+                        let next_iq = sine * aip + cosine * aiq;
+                        values[index * size + p] = next_ip;
+                        values[p * size + index] = next_ip;
+                        values[index * size + q] = next_iq;
+                        values[q * size + index] = next_iq;
+                    }
+                    let vip = vectors[index * size + p];
+                    let viq = vectors[index * size + q];
+                    vectors[index * size + p] = cosine * vip - sine * viq;
+                    vectors[index * size + q] = sine * vip + cosine * viq;
+                }
             }
-            let vip = vectors[index * size + p];
-            let viq = vectors[index * size + q];
-            vectors[index * size + p] = cosine * vip - sine * viq;
-            vectors[index * size + q] = sine * vip + cosine * viq;
         }
     }
 
@@ -493,6 +494,33 @@ mod tests {
                     })
                     .sum::<f64>();
                 assert!((reconstructed - matrix[row * 2 + column]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn cyclic_eigen_preserves_residual_and_orthogonality_with_repeated_spectrum() {
+        for size in [3, 16, 64] {
+            let mut matrix = vec![0.0; size * size];
+            for row in 0..size {
+                for column in 0..size {
+                    let u = ((row + 1) as f64).sin();
+                    let v = ((column + 1) as f64).sin();
+                    matrix[row * size + column] = u * v + if row == column { 2.0 } else { 0.0 };
+                }
+            }
+            let (values, vectors) = symmetric_eigen(&matrix, size).unwrap();
+            for row in 0..size {
+                for column in 0..size {
+                    let av = (0..size)
+                        .map(|k| matrix[row * size + k] * vectors[k * size + column])
+                        .sum::<f64>();
+                    assert!((av - vectors[row * size + column] * values[column]).abs() < 1e-10);
+                    let dot = (0..size)
+                        .map(|k| vectors[k * size + row] * vectors[k * size + column])
+                        .sum::<f64>();
+                    assert!((dot - if row == column { 1.0 } else { 0.0 }).abs() < 1e-12);
+                }
             }
         }
     }

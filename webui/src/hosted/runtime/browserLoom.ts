@@ -1,9 +1,10 @@
 import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../lib/runtime/contracts";
 import {
   clampOutputTokenCount,
-  DESKTOP_MAX_OUTPUT_TOKENS,
+  MAX_OUTPUT_TOKEN_COUNT,
 } from "../../lib/runtime/outputTokenPolicy";
 import { blake2b } from "@noble/hashes/blake2.js";
+import { SAMPLING_TEMPERATURE_MAX } from "../../lib/runtime/samplingCapabilities";
 import type {
   ChatRole,
   LoomNodeJSON,
@@ -113,7 +114,7 @@ export class BrowserLoomRuntime {
   private generationReservation: GenerationReservation | null = null;
 
   constructor(options: BrowserLoomOptions) {
-    this.maxOutputTokens = options.maxOutputTokens ?? DESKTOP_MAX_OUTPUT_TOKENS;
+    this.maxOutputTokens = options.maxOutputTokens ?? MAX_OUTPUT_TOKEN_COUNT;
     if (!Number.isSafeInteger(this.maxOutputTokens) || this.maxOutputTokens < 1) {
       throw loomError(
         "INVALID_OUTPUT_TOKEN_LIMIT",
@@ -3107,7 +3108,7 @@ function validateResolvedSamplingCapabilities(
 }
 
 function validateSessionConfig(value: SessionInfo["config"]): void {
-  finiteRange(value.temperature, "temperature", 0, 2);
+  finiteRange(value.temperature, "temperature", 0, SAMPLING_TEMPERATURE_MAX);
   finiteRange(value.top_p, "top_p", 0, 1);
   nullableInteger(value.top_k, "top_k", 0);
   nullableInteger(value.max_tokens, "max_tokens", 1);

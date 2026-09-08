@@ -12,7 +12,7 @@ drowse/web/
   routes.py          # mount logic + SPA fallback
   dist/              # COMMITTED build artifact, ships in the wheel
     index.html  favicon.ico  theme-init.js  LICENSE-{Martian-Mono,Wix-Madefor}.txt
-    assets/{*.css,*.js,*.woff2}
+    assets/{*.css,*.js,*.woff2,*.json}
     icons/  social/  # public image assets
 ```
 
@@ -23,6 +23,14 @@ drowse/web/dist/`, so a source change that isn't accompanied by a rebuilt bundle
 fails. `npm run check` is `svelte-check` plus `scripts/check-theme.mjs`, which
 fails when a referenced CSS custom property has no declaration in the style
 tokens.
+
+Shared changing labels use `webui/src/lib/ui/MorphText.svelte`; formatted
+numeric callers keep `RollingNumber.svelte`. Torph paints an aria-hidden
+overlay while Svelte owns the exact selectable source text. Preserve the
+offscreen, reduced-motion, selection, wrapping, identity-reset, and finished
+animation cleanup policies in `lib/textMotion.ts`. Do not replace interactive
+token spans or matrix cells with whole-string morphs. `e2e/torph-motion.spec.ts`
+checks the shared controls across desktop browsers and iPhone-sized WebKit.
 
 Package data includes the entire default `dist/` tree. The package-isolation
 check compares wheel and sdist contents with that tree, so a file omitted from
@@ -46,6 +54,12 @@ duplicate routes that the first ones shadow — harmless, not rejected.
 `dist_path()` resolves through `importlib.resources` (editable + wheel).
 `WebUINotBuilt` raises on mount when the dist directory is empty — only in source
 installs that haven't run `npm run build`.
+
+The server's HTTP security middleware supplies the default dashboard CSP and
+anti-framing headers. API data is `no-store`; static assets retain their normal
+revalidation. Browser WS auth uses the `drowse.auth.<base64url-utf8-key>`
+subprotocol alongside `drowse.v1`, never a credential in the URL. Keep the key
+in memory. Local-data deletion must report storage failures and allow retry.
 
 ## Wire protocol
 
@@ -349,6 +363,16 @@ actions, never shape or position. `mergeInstrumentProbeRows(pinned, discovered,
 sortMode)` in `rack/probeRows.ts` is the one merge + sort for both panels
 (`strength` / `name` / `depth`, with natural-number name collation for SAE
 feature ids so `sae/9` precedes `sae/10`; rows with no depth CoM sort last).
+
+SAE descriptions appear as wrapping text in both the live cards and token
+inspector. `lib/saeDescriptions.ts` checks the exact dictionary before loading
+the published Neuronpedia indexes in `lib/data/sae-descriptions/`; these cover
+the three verified Gemma Scope 2 browser packs and ship in both builds. Missing
+IDs fall back to the feature API with source validation. Each inspector card
+links to the original feature and identifies the explanation model. Published
+interpretations are distinct from activation measurements; description lookup
+never changes a browser pack's activation calibration. Failed batch entries
+remain retryable, and one failure cannot discard the other returned labels.
 
 `LayerStrip` is the one per-layer view across every pillar: `HeatmapCell` marks
 with no outlines, a one-pixel gap between layers, endpoints at least 3:1 from

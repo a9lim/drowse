@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import { chartValue } from "../../lib/charts/chartValues";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // J-lens tab — pinned ``jlens/<word>`` probe readings (when captured
@@ -72,8 +73,8 @@
 
   function cellStyle(logprob: number): string {
     const p = Math.min(1, Math.exp(logprob));
-    const pct = Math.round(p * 60);
-    return `background: color-mix(in srgb, var(--pillar-lens) ${pct}%, transparent);`;
+    const pct = Math.round(p * 30);
+    return `background: color-mix(in srgb, var(--pillar-lens) ${pct}%, var(--bg));`;
   }
 
   function cellTitle(layer: number, t: { token: string; logprob: number }): string {
@@ -111,6 +112,24 @@
     });
   }
 
+  let focusedCell = $state("Select a vocabulary cell to inspect it");
+  let focusedPosition = $state(0);
+  $effect(() => { void readout.data; focusedPosition = 0; focusedCell = "Select a vocabulary cell to inspect it"; });
+  function inspectCell(event: KeyboardEvent) {
+    const cells = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>(".lens-cell")];
+    if (!cells.length) return;
+    if (event.key === "ArrowRight") focusedPosition = Math.min(cells.length - 1, focusedPosition + 1);
+    else if (event.key === "ArrowLeft") focusedPosition = Math.max(0, focusedPosition - 1);
+    else if (event.key === "ArrowDown") focusedPosition = Math.min(cells.length - 1, focusedPosition + columnCount);
+    else if (event.key === "ArrowUp") focusedPosition = Math.max(0, focusedPosition - columnCount);
+    else if (event.key === "Home") focusedPosition = 0;
+    else if (event.key === "End") focusedPosition = cells.length - 1;
+    else return;
+    event.preventDefault();
+    focusedCell = cells[focusedPosition].getAttribute('aria-description') ?? '';
+    cells[focusedPosition].scrollIntoView({block: "nearest", inline: "nearest"});
+  }
+
   function aggregateScale(cells: AggregateCell[]): number {
     return Math.max(...cells.map((cell) => cell.value ?? 0), 1e-12);
   }
@@ -138,7 +157,7 @@
 {#if readout.loading}
   <div class="readout-progress loading-pulse" role="status" aria-live="polite">
     <div class="progress-heading">
-      <span>{progressTitle}</span>
+      <span><MorphText text={progressTitle} numbers={false} /></span>
       <code>{#if determinateProgress}<RollingNumber value={progressPercent} />%{:else}starting{/if}</code>
     </div>
     <div
@@ -203,7 +222,7 @@
                     <Bar percentage value={chip.strength} max={1} color="var(--pillar-lens)" />
                   {/snippet}
                   {#snippet middle()}<span class="row-context">{hitCount}/{layerCount} layers</span>{/snippet}
-                  {#snippet right()}<span class="row-value">{chip.strength.toFixed(3)}</span>{/snippet}
+                  {#snippet right()}<span class="row-value"><MorphText text={chip.strength.toFixed(3)} /></span>{/snippet}
                 </ProbeReadingRow>
                 <LayerStrip
                   {cells}
@@ -223,7 +242,10 @@
     count={`${readout.data.layers.length} layers × ${columnCount} ranks`}
     accent="var(--pillar-lens)"
   >
-    <div class="grid-scroll" onwheel={handVerticalWheelToDrawer}>
+    <p class="focused-readout"><MorphText text={focusedCell} numbers={false} /></p>
+    <div class="grid-scroll" role="slider" aria-label="Vocabulary matrix cell" aria-valuemin={0} aria-valuemax={Math.max(0, readout.data.layers.reduce((sum, row) => sum + row.tokens.length, 0) - 1)} aria-valuenow={focusedPosition} aria-valuetext={focusedCell} tabindex="0" onkeydown={inspectCell} onwheel={handVerticalWheelToDrawer}
+      onpointermove={(event) => { const cell = (event.target as Element).closest<HTMLElement>(".lens-cell"); if (cell) { focusedCell = cell.getAttribute('aria-description') ?? ''; focusedPosition = [...event.currentTarget.querySelectorAll(".lens-cell")].indexOf(cell); } }}
+      onpointerdown={(event) => { const cell = (event.target as Element).closest<HTMLElement>(".lens-cell"); if (cell) focusedCell = cell.getAttribute('aria-description') ?? ''; }}>
       <table class="lens-table">
         <thead>
           <tr>
@@ -244,7 +266,7 @@
                   class="lens-cell"
                   class:hit={cell.id === readout.data.token_id}
                   style={cellStyle(cell.logprob)}
-                  title={cellTitle(row.layer, cell)}
+                  {...{ "aria-description": (cellTitle(row.layer, cell)) }}
                 >
                   <span class="cell-token">{cellText(cell)}</span>
                   <span class="cell-prob">p {visibleProbability(cell.logprob)}</span>
@@ -268,6 +290,7 @@
 {/if}
 
 <style>
+  .focused-readout { min-height: 3em; margin: 0; color: var(--fg-dim); font: var(--text-xs)/1.5 var(--font-mono); }
   .readout-progress {
     max-width: 62ch;
     padding: var(--surface-padding);

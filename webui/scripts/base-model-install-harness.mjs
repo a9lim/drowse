@@ -126,8 +126,9 @@ status.textContent=response.ok?report.status:'Report save failed';output.textCon
     }
     vite.middlewares(request, response);
   } catch (error) {
+    console.error(error);
     if (response.headersSent) response.destroy(error);
-    else send(String(error.stack ?? error), "text/plain", 500);
+    else send("Internal server error", "text/plain", 500);
   }
 });
 await new Promise((accept, reject) => {

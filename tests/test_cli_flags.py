@@ -15,7 +15,6 @@ from drowse.core.instruments.types import LensLiveState, SaeLiveState
     "argv",
     [
         ["serve", "model", "--top-k-alts", "-1"],
-        ["serve", "model", "--top-k-alts", "257"],
         ["serve", "model", "--port", "70000"],
         ["manifold", "fit", "m", "--max-dim", "0"],
         ["manifold", "fit", "m", "--k-nn", "-2"],
@@ -25,6 +24,12 @@ from drowse.core.instruments.types import LensLiveState, SaeLiveState
 def test_numeric_flags_reject_out_of_range_values(argv: list[str]) -> None:
     with pytest.raises(SystemExit):
         cli.parse_args(argv)
+
+
+@pytest.mark.parametrize("count", [257, 4096, 262144])
+def test_top_k_alternatives_accepts_vocabulary_sized_counts(count: int) -> None:
+    args = cli.parse_args(["serve", "model", "--top-k-alts", str(count)])
+    assert args.top_k_alts == count
 
 
 # ---------------------------------------------------------------------------

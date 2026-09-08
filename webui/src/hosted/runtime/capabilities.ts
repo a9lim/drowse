@@ -456,21 +456,22 @@ export async function storageEstimate(
   if (!navigator.storage?.estimate) {
     return unknown;
   }
-  let estimate: StorageEstimate;
-  let persisted: boolean | null;
-  try {
-    [estimate, persisted] = await withTimeout(
-      Promise.all([
-        navigator.storage.estimate(),
-        navigator.storage.persisted?.().catch(() => null) ?? Promise.resolve(null),
-      ]),
-      positiveTimeout(timeoutMs, 5_000),
+  const timeout = positiveTimeout(timeoutMs, 5_000);
+  const [estimate, persisted] = await Promise.all([
+    withTimeout(
+      Promise.resolve().then(() => navigator.storage.estimate()),
+      timeout,
       "STORAGE_ESTIMATE_TIMEOUT",
       "The browser storage estimate timed out",
-    );
-  } catch {
-    return unknown;
-  }
+    ).catch(() => null),
+    withTimeout(
+      Promise.resolve().then(() => navigator.storage.persisted?.() ?? null),
+      timeout,
+      "STORAGE_PERSISTENCE_TIMEOUT",
+      "The browser storage protection check timed out",
+    ).catch(() => null),
+  ]);
+  if (estimate === null) return { ...unknown, persisted };
   const quotaBytes = finiteOrNull(estimate.quota);
   const usageBytes = finiteOrNull(estimate.usage);
   return {
@@ -487,8 +488,9 @@ export async function storageEstimate(
 export async function requestPersistentStorage(
   storage: PersistentStorageManager | undefined = navigator.storage,
   timeoutMs = 5_000,
+  onLateGranted?: () => void,
 ): Promise<boolean> {
-  return requestBrowserPersistentStorage(storage, timeoutMs);
+  return requestBrowserPersistentStorage(storage, timeoutMs, onLateGranted);
 }
 
 async function verifyOpfsLifecycle(

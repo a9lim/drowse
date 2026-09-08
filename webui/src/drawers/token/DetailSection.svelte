@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Canonical detailed-evidence section. It mirrors the main rack's compact
   // STEER / PROBE section headers.
 
@@ -21,7 +22,7 @@
   <header>
     <div class="title-row">
       <h3>{title}</h3>
-      {#if count}<span class="count">{count}</span>{/if}
+      {#if count}<span class="count"><MorphText text={count} /></span>{/if}
     </div>
   </header>
   <div class="content">{@render children()}</div>

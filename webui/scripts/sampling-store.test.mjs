@@ -14,6 +14,7 @@ async function samplingFor(
     defaultAssistantRole = "assistant",
     assistantRoleOverride,
     runtimeSignals,
+    contextTokens,
     sessionMaxTokens = 64,
   } = {},
 ) {
@@ -27,10 +28,14 @@ async function samplingFor(
     const {
       installRuntimeCapabilities,
       installRuntimeClient,
+      installHostedController,
     } = await server.ssrLoadModule(
       "/src/lib/runtime/registry.ts",
     );
     installRuntimeClient({ mode });
+    if (contextTokens !== undefined) {
+      installHostedController({ snapshot: { contextTokens } });
+    }
     if (probeSubspaceTrails !== undefined || runtimeSignals !== undefined) {
       installRuntimeCapabilities({
         ...(runtimeSignals === undefined ? {} : { signals: runtimeSignals }),
@@ -134,8 +139,8 @@ async function refreshedGemmaRoles() {
 }
 
 const browser = await samplingFor("browser", 8);
-assert.equal(browser.retained, 5);
-assert.equal(browser.payload.return_top_k, 5);
+assert.equal(browser.retained, 8);
+assert.equal(browser.payload.return_top_k, 8);
 
 const http = await samplingFor("http", 8);
 assert.equal(http.retained, 8);
@@ -151,9 +156,10 @@ const appleMobile = await samplingFor("browser", 8, {
     appleMobile: true,
   },
   sessionMaxTokens: 8_192,
+  contextTokens: 2048,
 });
-assert.equal(appleMobile.maxTokens, 256);
-assert.equal(appleMobile.payload.max_tokens, 256);
+assert.equal(appleMobile.maxTokens, 2048);
+assert.equal(appleMobile.payload.max_tokens, 2048);
 
 const desktop = await samplingFor("browser", 8, {
   runtimeSignals: {

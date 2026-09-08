@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import StateIcon from "../../lib/ui/StateIcon.svelte";
   import BaseModelTag from "../../lib/ui/BaseModelTag.svelte";
@@ -22,6 +23,7 @@
   import type { BrowserRuntimeClass } from "../../lib/runtime/contracts";
   import { contentIn, contentOut } from "../../lib/motion";
   import { userFacingError } from "../../lib/runtime/userFacingError";
+  import { reloadInstructions, appRefreshSafetyMessage } from "../runtime/chunkRecovery";
   import { clearConversationOpen } from "../runtime/entryExperience";
   import { defaultModelSelection, downloadUnavailableReason, modelsBySize } from "./modelSelection";
 
@@ -31,6 +33,7 @@
     onBack,
     workbenchError = null,
     workbenchNeedsReload = false,
+    workbenchReloading = false,
     onRetryWorkbench,
   }: {
     controller: HostedShellController;
@@ -38,6 +41,7 @@
     onBack?: () => void;
     workbenchError?: string | null;
     workbenchNeedsReload?: boolean;
+    workbenchReloading?: boolean;
     onRetryWorkbench?: () => void;
   } = $props();
   let snapshot = $state<HostedShellSnapshot>({
@@ -86,7 +90,7 @@
   let persistenceRetrying = $state(false);
   let persistenceRetryAttempted = $state(false);
   const persistenceRequestAvailable = typeof navigator.storage?.persist === "function";
-  const storageUnprotected = $derived(snapshot.storage?.persisted === false || snapshot.download.persistenceDenied === true);
+  const storageUnprotected = $derived((snapshot.storage !== undefined && snapshot.storage.persisted !== true) || snapshot.download.persistenceDenied === true);
   let appleMobile = $state(false);
   let runtimeClass = $state<BrowserRuntimeClass | null>(null);
   let automaticOpenStarted = false;
@@ -308,22 +312,23 @@
       : 0;
 
   const startDownload = async (explicitUnsafeOverride = false) => {
-    if (!selectedModel) return;
+    if (!selectedModel || modelOperationBusy) return;
     if (selectedOption?.fit === "uncertain" && !explicitUnsafeOverride) {
       unsafeConfirmation = selectedModel;
       return;
     }
+    const modelId = selectedModel;
+    unsafeConfirmation = null;
     try {
-      await controller.download(selectedModel, { explicitUnsafeOverride });
-      unsafeConfirmation = null;
+      await controller.download(modelId, { explicitUnsafeOverride });
       const next = controller.current();
-      const installed = next.models.find((model) => model.id === selectedModel);
+      const installed = next.models.find((model) => model.id === modelId);
       if (
         installed?.installed && next.download.phase === "installed" &&
         next.runtime.available &&
         next.runtime.phase !== "ready"
       ) {
-        await controller.open(selectedModel);
+        await controller.open(modelId);
         clearModelChoiceRequest();
       }
     } catch {}
@@ -367,20 +372,19 @@
 {#snippet storageProtectionNotice()}
   <div class="persistence-notice" role="status" aria-label="Storage protection">
     <div>
-      <strong>Storage protection is off</strong>
+      <strong>Local storage is available</strong>
       <p class="persistence-help">
         {persistenceRetryAttempted
-          ? "Your browser didn't grant storage protection. Back up your chats and don't clear this site's data."
+          ? "Downloads and chats still save on this device. Your browser may remove them during automatic cleanup, so back up your chats."
           : persistenceRequestAvailable
-            ? "Ask your browser to protect local chats and models from automatic cleanup."
-            : "This browser doesn't support storage protection. Back up your chats and don't clear this site's data."}
+            ? "Downloads and chats save on this device. Storage protection is optional and helps prevent automatic cleanup."
+            : "Downloads and chats save on this device, but the browser may remove them during automatic cleanup. Back up your chats."}
       </p>
       {#if appleMobile}<p class="persistence-help">{appleStorageHelp}</p>{/if}
     </div>
     {#if persistenceRequestAvailable}
       <button
         class="quiet-action"
-        class:loading-pulse={persistenceRetrying}
         type="button"
         disabled={persistenceRetrying}
         aria-busy={persistenceRetrying}
@@ -399,13 +403,13 @@
 
   <main id="device-check">
     <div class="intro" data-page-group="0">
-      <h1>{displayHeadline}</h1>
+      <h1><MorphText text={displayHeadline} numbers={false} /></h1>
       <p>{displayDetail}</p>
       {#if firefoxIncompatible}<p>{firefoxSwitchGuidance}</p>{/if}
     </div>
 
     <div class="status-region" role="status" aria-live="polite" aria-atomic="true">
-      {snapshot.download.phase === "downloading"
+      <MorphText text={snapshot.download.phase === "downloading"
         ? "Local setup download in progress."
         : snapshot.download.phase === "cancelling"
           ? "Pausing local setup download."
@@ -426,7 +430,7 @@
             : "Check complete. Review model compatibility below."
           : snapshot.phase === "unsupported"
             ? "Check failed. Review the items below."
-            : ""}
+            : ""} />
     </div>
     <div class="alert-region" role="alert" aria-live="assertive" aria-atomic="true">
       {snapshot.phase === "failed"
@@ -448,13 +452,16 @@
         <div>
           <strong>The workbench could not open.</strong>
           <p>{workbenchError}</p>
+          {#if workbenchNeedsReload}
+            <p>{appRefreshSafetyMessage}</p>
+            <p>{reloadInstructions()}</p>
+          {/if}
         </div>
         <button
           type="button"
-          onclick={workbenchNeedsReload
-            ? () => window.location.reload()
-            : onRetryWorkbench}
-        >{workbenchNeedsReload ? "Reload Drowse" : "Retry workbench"}</button>
+          disabled={workbenchReloading}
+          onclick={onRetryWorkbench}
+        ><MorphText text={workbenchReloading ? "Refreshing app…" : workbenchNeedsReload ? "Reload Drowse" : "Retry workbench"} /></button>
       </section>
     {/if}
 
@@ -463,8 +470,8 @@
       <details use:animatedDetails class="device-details" open={snapshot.phase === "unsupported" || snapshot.phase === "failed"}>
         <summary>
           <span class="check-summary-copy">
-            <strong>{checkSummaryLabel}</strong>
-            {#if snapshot.checks.length > 0}<small>{passedChecks} checks complete</small>{/if}
+            <strong><MorphText text={checkSummaryLabel} numbers={false} /></strong>
+            {#if snapshot.checks.length > 0}<small><MorphText text={`${passedChecks} checks complete`} /></small>{/if}
           </span>
           <span>View details</span>
         </summary>
@@ -543,22 +550,22 @@
                 <ModelProviderLogo modelId={model.id} />
                 <strong><span>{model.name}</span>{#if model.modelType === "base"}<BaseModelTag plain />{/if}</strong>
                 {#if model.firstRunPacks.some((pack) => pack.kind === "sae")}
-                  <span class="sae-available" title="Sparse autoencoder available">SAE</span>
+                  <span class="sae-available" {...{ "aria-description": "Sparse autoencoder available" }}>SAE</span>
                 {/if}
               </span>
               {#if selectedModel === model.id}
                 <span class="model-meta">{model.context} · {model.language}</span>
                 {#if model.expectedSpeed}
-                  <span class="model-detail" title={`Measured estimate: ${model.expectedSpeed}. A token is a short piece of text.`}>
+                  <span class="model-detail" {...{ "aria-description": (`Measured estimate: ${model.expectedSpeed}. A token is a short piece of text.`) }}>
                     Expected response speed: {speedClass(model.expectedSpeed)}
                   </span>
                 {/if}
                 {#if model.estimatedDownloadSeconds}
-                  <span class="model-detail">Estimated download: {formatEtaRange(model.estimatedDownloadSeconds)}</span>
+                  <span class="model-detail">Estimated download: <MorphText text={formatEtaRange(model.estimatedDownloadSeconds)} /></span>
                 {/if}
                 {#if model.catalogAvailable !== false}
                 <span class="model-detail">
-                  Setup download: {formatByteCount(model.modelDownloadBytes + model.firstRunPacks.filter((pack) => pack.requiredForSetup).reduce((total, pack) => total + pack.bytes, 0))}
+                  Setup download: <MorphText text={formatByteCount(model.modelDownloadBytes + model.firstRunPacks.filter((pack) => pack.requiredForSetup).reduce((total, pack) => total + pack.bytes, 0))} />
                 </span>
                 {/if}
                 {#if model.firstRunPacks.some((pack) => pack.selected && !pack.requiredForSetup)}
@@ -640,7 +647,7 @@
                   <strong>{pack.kind === "jlens" ? "Word insights" : "Feature insights"} <span>({pack.kind === "jlens" ? "J-lens" : "SAE"})</span></strong>
                   <p>{pack.kind === "jlens" ? `${pack.name}. Read word predictions across layers and steer toward a word.` : packDescription(pack)}</p>
                 </div>
-                <span>{pack.installed ? "Already downloaded" : formatByteCount(pack.bytes)}</span>
+                <span><MorphText text={pack.installed ? "Already downloaded" : formatByteCount(pack.bytes)} /></span>
               </div>
             {/each}
             {#if selectedOption.setupIssue}
@@ -662,7 +669,7 @@
                       <strong>{pack.kind === "jlens" ? selectedOption.modelType === "base" ? pack.name : "Alternative R-lens" : packTitle(pack)} <span>({pack.kind === "jlens" ? "optional readout" : "optional SAE"})</span></strong>
                       <p>{packDescription(pack)}</p>
                     </div>
-                    <span>{pack.installed ? "Already downloaded" : formatByteCount(pack.bytes)}</span>
+                    <span><MorphText text={pack.installed ? "Already downloaded" : formatByteCount(pack.bytes)} /></span>
                   </label>
                 {/each}
               {:else if !selectedOption.toolNotice}
@@ -671,7 +678,7 @@
             {/if}
             <div class="tool-total">
               <span>{selectedOption.installed ? "Download remaining" : "First download"}</span>
-              <strong>{formatByteCount(selectedOption.remainingDownloadBytes)}</strong>
+              <strong><MorphText text={formatByteCount(selectedOption.remainingDownloadBytes)} /></strong>
             </div>
             {#if packSelectionError}
               <p class="tool-error" role="alert">{packSelectionError}</p>
@@ -693,7 +700,7 @@
                 <p>Delete {selectedOption.name} from this device? You will need to download it again to continue its chats.</p>
                 <div class="warning-actions">
                   <button type="button" class="secondary" disabled={deletingModel} onclick={() => deleteConfirmation = null}>Cancel</button>
-                  <button type="button" class="delete-model" disabled={modelOperationBusy} onclick={() => void deleteSelectedModel()}>{deletingModel ? "Deleting…" : "Delete model"}</button>
+                  <button type="button" class="delete-model" disabled={modelOperationBusy} onclick={() => void deleteSelectedModel()}><MorphText text={deletingModel ? "Deleting…" : "Delete model"} /></button>
                 </div>
               </div>
             {:else}
@@ -707,7 +714,7 @@
         {#if selectedOption?.installed && !showDownloadAction}
           <div class="release-gate runtime-gate" class:loading-pulse={snapshot.runtime.phase === "loading"}>
             <div>
-              <strong>{runtimeGateTitle}</strong>
+              <strong><MorphText text={runtimeGateTitle} /></strong>
               <p>{snapshot.runtime.reason}</p>
               {#if storageUnprotected}
                 {@render storageProtectionNotice()}
@@ -721,7 +728,7 @@
                 else void openModel();
               }}
             >
-              {!selectedOption.setupComplete ? "Add selected tools first" : snapshot.runtime.phase === "loading" ? "Loading…" : snapshot.download.phase === "requesting_persistence" || snapshot.download.phase === "downloading" || snapshot.download.phase === "cancelling" ? "Finishing setup…" : snapshot.runtime.resetSessionAvailable ? "Conversation needs attention" : selectedOption.fit === "uncertain" ? "Review warning" : runtimeGateAction}
+              <MorphText text={!selectedOption.setupComplete ? "Add selected tools first" : snapshot.runtime.phase === "loading" ? "Loading…" : snapshot.download.phase === "requesting_persistence" || snapshot.download.phase === "downloading" || snapshot.download.phase === "cancelling" ? "Finishing setup…" : snapshot.runtime.resetSessionAvailable ? "Conversation needs attention" : selectedOption.fit === "uncertain" ? "Review warning" : runtimeGateAction} />
             </button>
           </div>
           {#if selectedOption.fit === "uncertain" && unsafeConfirmation === selectedModel}
@@ -732,7 +739,7 @@
               out:fly={contentOut()}
             >
               <div>
-                <strong>{selectedOption.requiresOomRetry ? "This model ran out of memory with these settings." : "This device may not have enough memory for these settings."}</strong>
+                <strong>{selectedOption.requiresOomRetry ? "This model ran out of memory with these settings." : "Check this model on your device"}</strong>
                 <p>{selectedOption.reason} The model may run out of memory or lose its graphics connection.</p>
               </div>
               <div class="warning-actions">
@@ -768,7 +775,7 @@
         {#if showDownloadAction}
           <div class="release-gate download-gate" class:loading-pulse={snapshot.download.phase === "requesting_persistence" || snapshot.download.phase === "cancelling" || (snapshot.download.phase === "downloading" && !snapshot.download.progress?.offline && !snapshot.download.progress?.stalled)}>
             <div>
-              <strong>{snapshot.download.phase === "installed" ? "Setup complete" : "Ready to download"}</strong>
+              <strong><MorphText text={snapshot.download.phase === "installed" ? "Setup complete" : snapshot.download.phase === "requesting_persistence" ? "Preparing download" : snapshot.download.phase === "downloading" ? "Downloading model files" : snapshot.download.phase === "cancelling" ? "Pausing download" : snapshot.download.phase === "paused" ? "Download paused" : snapshot.download.phase === "failed" ? "Download interrupted" : "Ready to download"} /></strong>
               <p>{snapshot.download.reason}</p>
               {#if selectedOption}
                 <p class="setup-disclosure">
@@ -796,7 +803,7 @@
                   <span style={`width: ${progressPercent()}%`}></span>
                 </div>
                 <p class="progress-copy">
-                  <RollingNumber value={Math.round(progressPercent())} />% · {etaLabel()}
+                  <RollingNumber value={Math.round(progressPercent())} />% · <MorphText text={etaLabel()} />
                 </p>
               {/if}
             </div>
@@ -806,7 +813,7 @@
                 disabled={snapshot.download.phase === "cancelling"}
                 onclick={() => void controller.cancelDownload()}
               >
-                {snapshot.download.phase === "cancelling" ? "Pausing…" : "Pause download"}
+                <MorphText text={snapshot.download.phase === "cancelling" ? "Pausing…" : "Pause download"} />
               </button>
             {:else}
               <button
@@ -814,7 +821,7 @@
                 disabled={modelOperationBusy || !selectedModel || selectedOption?.setupComplete || (snapshot.download.phase === "installed" && snapshot.download.modelVariantId === selectedModel)}
                 onclick={() => void startDownload(false)}
               >
-                {selectedOption?.setupComplete ? "Installed" : snapshot.download.phase === "paused" ? "Resume download" : snapshot.download.phase === "failed" ? "Retry download" : selectedOption?.fit === "uncertain" ? "Review warning" : snapshot.download.phase === "requesting_persistence" ? "Preparing…" : selectedOption?.installed ? "Add tools and open" : "Download and open"}
+                <MorphText text={selectedOption?.setupComplete ? "Installed" : snapshot.download.phase === "paused" ? "Resume download" : snapshot.download.phase === "failed" ? "Retry download" : selectedOption?.fit === "uncertain" ? "Review warning" : snapshot.download.phase === "requesting_persistence" ? "Preparing…" : selectedOption?.installed ? "Add tools and open" : "Download and open"} />
               </button>
             {/if}
           </div>
@@ -826,7 +833,7 @@
               out:fly={contentOut()}
             >
               <div>
-                <strong>{selectedOption.requiresOomRetry ? "This model ran out of memory with these settings." : "This device may not have enough memory for these settings."}</strong>
+                <strong>{selectedOption.requiresOomRetry ? "This model ran out of memory with these settings." : "Check this model on your device"}</strong>
                 <p>{selectedOption.reason} The model may run out of memory or lose its graphics connection.</p>
               </div>
               <div class="warning-actions">
@@ -920,6 +927,7 @@
   }
   .workbench-error {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-md);
@@ -929,6 +937,8 @@
     border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--accent-red) 8%, var(--input-well));
   }
+  .workbench-error > div { flex: 1 1 24rem; min-width: 0; }
+  .workbench-error > button { flex: 0 0 auto; max-width: 100%; padding: var(--space-4) var(--space-6); }
   .workbench-error strong { color: var(--accent-red); }
   .workbench-error p { margin: var(--space-xs) 0 0; color: var(--fg-dim); }
 
@@ -1026,10 +1036,10 @@
     transition:
       color var(--dur-fast) var(--ease-out),
       background var(--dur-fast) var(--ease-out),
-      transform var(--dur) var(--ease-spring);
+      transform var(--dur) var(--ease-out);
   }
   .check-mark.pending,
-  .check-mark.running { transform: scale(0.9); }
+  .check-mark.running { transform: scale(0.97); }
   .check-mark.pass { background: color-mix(in srgb, var(--live) 17%, transparent); color: var(--live); }
   .check-mark.fail { background: color-mix(in srgb, var(--accent-red) 17%, transparent); color: var(--accent-red); }
   .check-mark.warn { background: color-mix(in srgb, var(--accent-yellow) 17%, transparent); color: var(--accent-yellow); }

@@ -15,6 +15,8 @@
   import Disclosure from "../lib/Disclosure.svelte";
   import { getRuntimeClient } from "../lib/runtime/registry";
   import {
+    BROWSER_SAMPLING_TOP_K_MAX,
+    SAMPLING_TEMPERATURE_MAX,
     clampTokenAlternativeCount,
     tokenAlternativeLimit,
   } from "../lib/runtime/samplingCapabilities";
@@ -37,18 +39,17 @@
   const alternativesMax = tokenAlternativeLimit(runtimeMode);
   const alternativesAvailable = alternativesMax > 0;
   const TOP_K_MIN = 1;
-  const TOP_K_MAX = 4096;
+  const TOP_K_MAX = BROWSER_SAMPLING_TOP_K_MAX;
   const PENALTY_MIN = -2;
   const PENALTY_MAX = 2;
   let technicalOpen = $state(false);
 
   const HELP = {
-    topK: "Top K limits sampling to the K most likely next tokens. Leave it blank to use the model's default.",
+    temperature: "Temperature controls randomness. Enter a value above the slider's usual range here. Zero selects the most likely token.",
+    topK: "Top K limits sampling to the K most likely next tokens, up to the full model vocabulary. Larger pools can be slower. Leave it blank to use Drowse's default of 1,024.",
     frequencyPenalty: "Frequency penalty reduces the probability of tokens in proportion to how often they have already appeared.",
     presencePenalty: "Presence penalty reduces the probability of any token that has already appeared, regardless of frequency.",
-    returnTopK: runtimeMode === "browser"
-      ? "Return top K retains up to five alternative tokens so you can inspect or branch from them later."
-      : "Return top K retains alternative tokens so you can inspect or branch from them later.",
+    returnTopK: "Return top K retains alternative tokens from the sampling pool so you can inspect or branch from them later. Large counts increase memory use and saved-chat size. Browser instrument readouts remain limited to eight entries.",
     seed: "Seed fixes the random-number sequence so repeated runs are easier to compare.",
   } as const;
 
@@ -112,7 +113,22 @@
           <h3>Sampling filters and penalties</h3>
         </div>
       </div>
-      <div class="setting-grid">
+      <div class="setting-grid two">
+        <div class="setting">
+          <span class="setting-label">Temperature <InfoTip text={HELP.temperature} label="About Temperature" /></span>
+          <NumberInput
+            value={samplingState.temperature}
+            min={0}
+            max={SAMPLING_TEMPERATURE_MAX}
+            step={0.05}
+            onchange={(value) => {
+              if (value === null) return;
+              setSampling("temperature", value);
+              void patchSessionDefaults({ temperature: value });
+            }}
+            ariaLabel="Temperature value"
+          />
+        </div>
         <div class="setting">
           <span class="setting-label">Top K <InfoTip text={HELP.topK} label="About Top K" /></span>
           <NumberInput
@@ -120,7 +136,7 @@
             min={TOP_K_MIN}
             max={TOP_K_MAX}
             step={1}
-            placeholder="Model default"
+            placeholder="Default (1024)"
             allowEmpty
             onchange={onTopK}
             ariaLabel="Top K"
@@ -174,7 +190,8 @@
           <span class="setting-label">Seed <InfoTip text={HELP.seed} label="About Seed" /></span>
           <NumberInput
             value={samplingState.seed}
-            min={0}
+            min={runtimeMode === "http" ? Number.MIN_SAFE_INTEGER : 0}
+            max={Number.MAX_SAFE_INTEGER}
             step={1}
             placeholder="Not fixed"
             allowEmpty

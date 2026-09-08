@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Canonical per-layer strip for every rack card. The cells deliberately
   // have no outlines: a small physical gap separates layers, while a visible
   // neutral fill keeps zero/near-zero readings legible against the card.
@@ -59,6 +60,13 @@
     onfocus={() => (focused = true)}
     onblur={() => (focused = false)}
     onkeydown={onKeydown}
+    onpointermove={(event) => {
+      if (event.pointerType === "touch" && event.buttons === 0) return;
+      const marks = [...event.currentTarget.querySelectorAll<HTMLElement>(".cell")];
+      const index = marks.findIndex(mark => { const rect = mark.getBoundingClientRect(); return event.clientX >= rect.left && event.clientX <= rect.right; });
+      if (index >= 0) { activeIndex = index; focused = true; }
+    }}
+    onpointerdown={(event) => { event.currentTarget.focus(); focused = true; }}
   >
     {#if cells.length === 0}
       <div class="layers-status">{emptyMessage}</div>
@@ -80,9 +88,9 @@
       <span class="endcap" aria-hidden="true">L{cells[cells.length - 1].layer}</span>
     {/if}
   </div>
-  {#if focused && cells[activeIndex]}
-    <div class="keyboard-readout" aria-live="polite">
-      {cells[activeIndex].title}
+  {#if cells[activeIndex]}
+    <div class="keyboard-readout" class:visible={focused} aria-hidden={!focused} {...{ "aria-description": (cells[activeIndex].title) }}>
+      <MorphText text={cells[activeIndex].title} />
     </div>
   {/if}
 </div>
@@ -119,7 +127,14 @@
     font-variant-numeric: tabular-nums;
     flex: 0 0 auto;
   }
+  .keyboard-readout.visible { visibility: visible; }
   .keyboard-readout {
+    visibility: hidden;
+    height: 1.5em;
+    line-height: 1.5;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     color: var(--fg-dim);
     font-family: var(--font-mono);
     font-size: var(--text-2xs);

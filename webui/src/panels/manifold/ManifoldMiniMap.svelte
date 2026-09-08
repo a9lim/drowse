@@ -1,4 +1,6 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
+  import Select from "../../lib/Select.svelte";
   // Small SVG mini-map for a 2D box-domain manifold probe.  Lays out the
   // probe's node coords inside the domain bounds, draws labels at their
   // authoring positions, then overlays a per-token trajectory polyline
@@ -114,6 +116,8 @@
     return { cx: nx(row[0]) * size, cy: ny(row[1]) * size };
   });
 
+  let focusedNode = $state("");
+  const focusedTip = $derived(nodes.find(node => node.label === focusedNode)?.tip ?? "");
   function fmt(v: number): string {
     return Number.isFinite(v) ? v.toFixed(2) : "0.00";
   }
@@ -121,6 +125,7 @@
 
 <figure class="map" style:--map-size="{size}px">
   <svg
+    onpointermove={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const x = (event.clientX - rect.left) / rect.width * size; const y = (event.clientY - rect.top) / rect.height * size; focusedNode = nodes.reduce((best, node) => Math.hypot(node.cx - x, node.cy - y) < Math.hypot(best.cx - x, best.cy - y) ? node : best, nodes[0])?.label ?? ""; }}
     class="canvas"
     width={size}
     height={size}
@@ -153,9 +158,9 @@
     <!-- Node markers + labels. -->
     {#each nodes as n (n.label)}
       <g class="node">
-        <title>{n.tip}</title>
+        <desc>{n.tip}</desc>
         <circle cx={n.cx} cy={n.cy} r="3" />
-        <text x={n.cx + 5} y={n.cy - 4}>{n.label}</text>
+        <text x={n.cx > size * .7 ? n.cx - 5 : n.cx + 5} y={Math.max(12, n.cy - 4)} text-anchor={n.cx > size * .7 ? "end" : "start"}>{n.label}</text>
       </g>
     {/each}
 
@@ -166,7 +171,7 @@
         cx={cursorPx.cx}
         cy={cursorPx.cy}
         r="3"
-      ><title>Live coordinates [{trajectory[trajectory.length - 1].map((v) => chartValue(v)).join(", ")}]</title></circle>
+      ><desc>Live coordinates [{trajectory[trajectory.length - 1].map((v) => chartValue(v)).join(", ")}]</desc></circle>
     {/if}
 
     <!-- Settled aggregate dot — bold, lands at the coords from the final
@@ -177,13 +182,17 @@
         cx={settledPx.cx}
         cy={settledPx.cy}
         r="5"
-      ><title>Final coordinates [{settled?.map((v) => chartValue(v)).join(", ")}]</title></circle>
+      ><desc>Final coordinates [{settled?.map((v) => chartValue(v)).join(", ")}]</desc></circle>
     {/if}
   </svg>
 
+  {#if nodes.length}
+    <Select value={focusedNode} options={nodes.map(node => ({ value: node.label, label: node.label }))} placeholder="Inspect node" ariaLabel="Inspect manifold node" onchange={(value) => focusedNode = value} />
+  {/if}
   <figcaption class="axes">
     <span class="axis">{axes[0].name} {fmt(axes[0].lo)}…{fmt(axes[0].hi)}</span>
     <span class="axis">{axes[1].name} {fmt(axes[1].lo)}…{fmt(axes[1].hi)}</span>
+    <span class="node-readout"><MorphText text={focusedTip} numbers={false} /></span>
   </figcaption>
 </figure>
 
@@ -241,10 +250,12 @@
   }
   .axes {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     gap: var(--space-3);
     color: var(--fg-muted);
     font-size: var(--text-2xs);
     font-family: var(--font-mono);
   }
+  .node-readout { flex-basis: 100%; min-height: 1.5em; }
 </style>

@@ -26,7 +26,7 @@ import type { WebLlmCaptureRuntimePort } from "./webLlmActivationCapture";
 import type { BrowserInstrumentRuntime } from "./browserInstrumentRuntime";
 import type { WebLlmRuntimeCapabilities } from "./webLlmGeneration";
 import type { WebLlmThinkingProfile } from "./webLlmGeneration";
-import { outputTokenLimitForRuntime } from "../../lib/runtime/outputTokenPolicy";
+import { defaultOutputTokenCount, outputTokenLimitForRuntime } from "../../lib/runtime/outputTokenPolicy";
 
 interface DrowseWebLlmRuntimePort extends BrowserGenerationPort, WebLlmCaptureRuntimePort {
   load(request: BrowserModelLoadRequest): Promise<BrowserModelLoadResult>;
@@ -131,7 +131,7 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
         drowseVersion: this.options.drowseVersion,
         now: this.options.now,
         createId: this.options.createId,
-        maxOutputTokens: outputTokenLimitForRuntime(request.runtimeClass),
+        maxOutputTokens: outputTokenLimitForRuntime(request.runtimeClass, request.contextTokens),
         ...(instruments ? { instruments } : {}),
         ...(instruments ? { probeHashes: () => instruments.probeHashes() } : {}),
         ...(this.options.compileSteering
@@ -285,8 +285,8 @@ function browserSession(
       top_p: 0.9,
       top_k: null,
       max_tokens: Math.min(
-        1024,
-        outputTokenLimitForRuntime(request.runtimeClass),
+        defaultOutputTokenCount(request.runtimeClass),
+        outputTokenLimitForRuntime(request.runtimeClass, request.contextTokens),
       ),
       system_prompt: null,
       thinking: null,

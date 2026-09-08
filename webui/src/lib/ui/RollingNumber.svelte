@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { createRollingNumber, type RollingNumberOptions } from "@kitlangton/rolling-number";
-  import "@kitlangton/rolling-number/styles.css";
+  import MorphText from "./MorphText.svelte";
 
   let { value, digits = 0, format, signed = false }: {
     value: number;
@@ -9,36 +8,20 @@
     signed?: boolean;
   } = $props();
 
-  const options = $derived<RollingNumberOptions>({
-    value,
-    locales: "en-US",
-    format: format ?? {
-      useGrouping: false,
-      minimumFractionDigits: digits,
-      maximumFractionDigits: digits,
-      signDisplay: signed ? "always" : "auto",
-    },
-    duration: 280,
-    stagger: "none",
-    motionBlur: false,
-    pauseOffscreen: true,
+  const numberFormat: Intl.NumberFormatOptions = $derived(format ?? {
+    useGrouping: false,
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+    signDisplay: signed ? "always" : "auto",
   });
-  const accessibleValue = $derived(new Intl.NumberFormat("en-US", options.format).format(value));
-
-  function rolling(node: HTMLElement, initial: RollingNumberOptions) {
-    const counter = createRollingNumber(node, initial);
-    return {
-      update: (next: RollingNumberOptions) => counter.update(next),
-      destroy: () => counter.destroy(),
-    };
-  }
+  const accessibleValue = $derived(Number.isFinite(value) ? new Intl.NumberFormat("en-US", numberFormat).format(value) : "-");
 </script>
 
-<span class="sr-only">{accessibleValue}</span><span aria-hidden="true" class="rolling-number" data-value={value} use:rolling={options}></span>
+<span class="rolling-number" data-value={value}><MorphText text={accessibleValue} /></span>
 
 <style>
   .rolling-number {
     font-variant-numeric: tabular-nums;
-    --rn-edge-fade: 0.08em;
+    display: inline-block;
   }
 </style>

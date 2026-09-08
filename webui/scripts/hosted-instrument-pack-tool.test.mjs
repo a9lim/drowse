@@ -76,6 +76,8 @@ try {
   assert.ok(runtimeWorker.code.includes("maxComputeInvocationsPerWorkgroup"));
   assert.ok(runtimeWorker.code.includes("diagnosticJlensLayerLimit"));
   assert.ok(runtimeWorker.code.includes("limitJlensLayers"));
+  assert.ok(runtimeWorker.code.includes("referenceCapture"));
+  assert.ok(runtimeWorker.code.includes("inputIds.length !== generation.usage.promptTokens"));
   ({ encodeFp32Safetensors } = await vite.ssrLoadModule(
     "/src/hosted/artifacts/safetensors.ts",
   ));
@@ -88,6 +90,21 @@ try {
 }
 
 const root = await mkdtemp(join(tmpdir(), "drowse-instrument-validator-"));
+const invalidRuntimeLock = join(root, "invalid-runtime-lock.json");
+await writeFile(invalidRuntimeLock, JSON.stringify({ ...runtimeLock, runtimeAbi: "unsupported" }));
+await assert.rejects(
+  exec(process.execPath, [runtimeScript,
+    "--model-id", lock.id,
+    "--model-directory", root,
+    "--model-library", join(root, "model.wasm"),
+    "--webllm", join(root, "webllm.js"),
+    "--core-directory", root,
+    "--jlens-directory", root,
+    "--sae-directory", root,
+    "--runtime-lock", invalidRuntimeLock,
+  ]),
+  /runtime lock has an unsupported schema or ABI/,
+);
 const integrityFixture = join(root, "integrity.bin");
 const integrityBytes = Buffer.from("verified instrument artifact");
 await writeFile(integrityFixture, integrityBytes);

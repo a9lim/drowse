@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   import ThemeToggle from "../lib/ui/ThemeToggle.svelte";
   import Button from "../lib/ui/Button.svelte";
@@ -36,7 +37,7 @@
         <p>The image stays dim so text and token colors remain readable. The effect is static and does not animate during generation.</p>
       {/if}
       {#if appearanceState.error}<p class="error" role="alert">{appearanceState.error}</p>{/if}
-      <p class="save-state" role="status">{appearanceState.busy ? "Saving on this device…" : appearanceState.url ? "Background saved on this device." : "Using the plain workspace background."}</p>
+      <p class="save-state" role="status"><MorphText text={appearanceState.busy ? "Saving on this device…" : appearanceState.url ? "Background saved on this device." : "Using the plain workspace background."} /></p>
     </section>
   </div>
 </section>

@@ -203,12 +203,12 @@ class ConfigFile:
             # certainly meant a number).
             if isinstance(return_top_k_v, bool) or not isinstance(return_top_k_v, int):
                 raise ConfigFileError(
-                    f"{path}: return_top_k must be an integer in [0, 256] "
+                    f"{path}: return_top_k must be a nonnegative integer "
                     f"(got {type(return_top_k_v).__name__} {return_top_k_v!r})"
                 )
-            if return_top_k_v < 0 or return_top_k_v > 256:
+            if return_top_k_v < 0:
                 raise ConfigFileError(
-                    f"{path}: return_top_k out of range [0, 256] "
+                    f"{path}: return_top_k must be nonnegative "
                     f"(got {return_top_k_v!r})"
                 )
 

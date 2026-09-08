@@ -153,6 +153,8 @@ export const compositeFragment = `#version 300 es
 precision highp float;
 uniform sampler2D uScene;
 uniform sampler2D uGlow;
+uniform float uLightTheme;
+uniform float uOrbBoost;
 in vec2 uv;
 out vec4 fragColor;
 ${field}
@@ -190,5 +192,16 @@ void main() {
   float grain = (hash(floor(gl_FragCoord.xy)) - 0.5) * 0.012;
   color += grain * (0.22 + 0.78 * smoothstep(0.02, 0.6, y));
   color = color / (1.0 + color * 0.24);
+  color = clamp(color, 0.0, 1.0);
+  if (uLightTheme > 0.5) {
+    color = vec3(0.94902, 0.95686, 0.97255) + vec3(
+      dot(color, vec3(-0.07087, -0.23840, -0.02407)),
+      dot(color, vec3(-0.10255, -0.34497, -0.03483)),
+      dot(color, vec3(-0.02418, -0.08134, -0.00821))
+    );
+  } else {
+    color = 0.43 * pow(color, vec3(0.55));
+    color *= 1.0 + (uOrbBoost - 1.0) * smoothstep(vec3(0.12), vec3(0.30), color);
+  }
   fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }`

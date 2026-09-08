@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   classifyInstalledAppState,
@@ -7,6 +8,7 @@ import {
   isExpectedOfflineCatalogFailure,
   digestCanonical,
   isOfflineServiceWorkerMaintenanceRequest,
+  isPublishedSaeDescriptionUrl,
   isVerifiedLocalArtifactAbort,
   legacyWebLlmPersistentState,
   LEGACY_WEBLLM_CACHE_STORAGE_NAMES,
@@ -17,6 +19,15 @@ import {
   stripHostedDevelopmentFixture,
   validatorRuntimeLockArguments,
 } from "./browser-production-app-runtime-contract.mjs";
+
+test("provider metadata access is limited to the selected model's exact public SAE dictionary", () => {
+  const url = "https://www.neuronpedia.org/api/feature/gemma-3-1b-it/13-gemmascope-2-res-16k/396";
+  assert.equal(isPublishedSaeDescriptionUrl(url, "gemma3-1b-instruct"), true);
+  for (const invalid of [url + "?prompt=hello", url + "/extra", url.replace("/396", "/16384"), url.replace("/396", "/-1"), url.replace("www.neuronpedia.org", "example.com")]) {
+    assert.equal(isPublishedSaeDescriptionUrl(invalid, "gemma3-1b-instruct"), false);
+  }
+  assert.equal(isPublishedSaeDescriptionUrl(url, "gemma3-270m-instruct"), false);
+});
 
 test("authoritative installed app state accepts verified onboarding or the exact loaded model", () => {
   assert.equal(classifyInstalledAppState({
@@ -289,6 +300,15 @@ const app = mount(HostedRoot, { props: { controller } });
     () => stripHostedDevelopmentFixture("const app = mount(HostedRoot);"),
     /fixture boundary changed/u,
   );
+});
+
+test("production entry strips current fixtures without removing bootstrap recovery or routing", async () => {
+  const source = await readFile(new URL("../hosted/main.ts", import.meta.url), "utf8");
+  const stripped = stripHostedDevelopmentFixture(source);
+  assert.doesNotMatch(stripped, /fixtureHostedRuntime|workerFixtureRuntime|layoutFixture|searchParams/u);
+  assert.match(stripped, /recoverFromChunkLoadError\(error, "bootstrap"\)/u);
+  assert.match(stripped, /component = HostedRoot/u);
+  assert.match(stripped, /component = \(await import\("\.\.\/src\/hosted\/ui\/LandingRoot\.svelte"\)\)\.default/u);
 });
 
 test("failure reports can never be mistaken for release evidence", () => {
