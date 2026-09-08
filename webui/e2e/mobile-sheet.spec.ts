@@ -4,21 +4,23 @@ const sheet = (page: Page) => page.locator('.sheet-host[data-mobile-sheet="true"
 const handle = (page: Page) => sheet(page).getByRole("button", { name: /^Resize word details:/ });
 
 async function drag(target: Locator, delta: number, duration: number, cancel = false) {
+  await target.click({ trial: true });
   await target.evaluate(async (element, { delta, duration, cancel }) => {
     const rect = element.getBoundingClientRect();
     const x = rect.x + Math.min(rect.width / 2, 100), y = rect.y + Math.min(rect.height / 2, 24);
-    const send = (type: string, at: number, active = true) => {
+    const started = performance.now();
+    const send = (type: string, at: number, elapsed: number, active = true) => {
       const touch = { identifier: 1, target: element, clientX: x, clientY: at };
       const event = new Event(type, { bubbles: true, cancelable: true });
-      Object.defineProperties(event, { touches: { value: active ? [touch] : [] }, targetTouches: { value: active ? [touch] : [] }, changedTouches: { value: [touch] } });
+      Object.defineProperties(event, { timeStamp: { value: started + elapsed }, touches: { value: active ? [touch] : [] }, targetTouches: { value: active ? [touch] : [] }, changedTouches: { value: [touch] } });
       element.dispatchEvent(event);
     };
-    send("touchstart", y);
+    send("touchstart", y, 0);
     for (let step = 1; step <= 10; step++) {
       await new Promise(resolve => setTimeout(resolve, duration / 10));
-      send("touchmove", y + delta * step / 10);
+      send("touchmove", y + delta * step / 10, duration * step / 10);
     }
-    send(cancel ? "touchcancel" : "touchend", y + delta, false);
+    send(cancel ? "touchcancel" : "touchend", y + delta, duration + 1, false);
   }, { delta, duration, cancel });
 }
 
@@ -31,6 +33,7 @@ async function generate(page: Page) {
 }
 
 test("sheet overlays the unchanged workspace with stepped swipes, focus containment, and dismissal", async ({ page }, info) => {
+  test.slow();
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.setViewportSize({ width: 390, height: 844 });
@@ -41,22 +44,24 @@ test("sheet overlays the unchanged workspace with stepped swipes, focus containm
   await page.getByRole("button", { name: "Show right sidebar", exact: true }).click();
   await expect(sheet(page)).toHaveAttribute("data-detent", "half");
   await expect(handle(page)).toBeFocused();
-  await page.waitForTimeout(350);
+  await handle(page).click({ trial: true });
   expect(await workspace.boundingBox()).toEqual(before);
   await expect(page.locator("#workbench-header")).toHaveAttribute("inert", "");
   await expect(sheet(page).getByRole("button", { name: /Dock token|Undock token/ })).toHaveCount(0);
   await handle(page).press("End");
-  await page.waitForTimeout(350);
+  await expect(sheet(page)).toHaveAttribute("data-detent", "peek");
+  await handle(page).click({ trial: true });
   await drag(handle(page), -100, 650);
   await expect(sheet(page)).toHaveAttribute("data-detent", "half");
-  await page.waitForTimeout(350);
+  await handle(page).click({ trial: true });
   await drag(handle(page), -100, 650);
   await expect(sheet(page)).toHaveAttribute("data-detent", "full");
   await handle(page).press("End");
-  await page.waitForTimeout(350);
+  await expect(sheet(page)).toHaveAttribute("data-detent", "peek");
+  await handle(page).click({ trial: true });
   await drag(handle(page), -100, 70);
   await expect(sheet(page)).toHaveAttribute("data-detent", "full");
-  await page.waitForTimeout(350);
+  await handle(page).click({ trial: true });
   await drag(handle(page), 40, 120, true);
   await expect(sheet(page)).toHaveAttribute("data-detent", "full");
   for (const width of [320, 430, 760]) {
@@ -66,7 +71,7 @@ test("sheet overlays the unchanged workspace with stepped swipes, focus containm
   }
   await handle(page).press("ArrowDown");
   await expect(sheet(page)).toHaveAttribute("data-detent", "half");
-  await page.waitForTimeout(350);
+  await handle(page).click({ trial: true });
   await page.screenshot({ path: info.outputPath("sheet-middle.png") });
   expect((await new AxeBuilder({ page }).include('.sheet-host.present').analyze()).violations).toEqual([]);
   await handle(page).press("Shift+Tab");
@@ -80,7 +85,7 @@ test("sheet overlays the unchanged workspace with stepped swipes, focus containm
   await expect(sheet(page)).toHaveCount(0);
   await page.getByRole("button", { name: "Show right sidebar", exact: true }).click();
   await expect(sheet(page)).toBeVisible();
-  await page.waitForTimeout(350);
+  await handle(page).click({ trial: true });
   await sheet(page).getByRole("button", { name: "Close drawer", exact: true }).evaluate(el => (el as HTMLButtonElement).click());
   await page.setViewportSize({ width: 320, height: 640 });
   await expect(sheet(page)).toHaveCount(0);
@@ -136,6 +141,7 @@ test("touch scrolling yields at content edges; landscape and downward dismissal 
   await expect(sheet(page)).toHaveAttribute("data-detent", "full");
   await expect.poll(() => sheet(page).evaluate(el => el.getBoundingClientRect().bottom <= innerHeight + 1)).toBe(true);
   await handle(page).press("End");
+  await expect(sheet(page)).toHaveAttribute("data-detent", "peek");
   await drag(handle(page), 110, 200);
   await expect(sheet(page)).toHaveCount(0);
 });

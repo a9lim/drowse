@@ -1460,8 +1460,12 @@ test("token details scroll past branching controls in every analysis tab", async
     }
   }
   await page.setViewportSize({ width: 390, height: 600 });
+  const resizeHandle = page.getByRole("button", { name: /^Resize word details:/ });
+  await expect(resizeHandle).toBeFocused();
+  await resizeHandle.click({ trial: true });
   await sheet.evaluate(element => { element.scrollTop = 0; });
   await sheet.focus();
+  await expect(sheet).toBeFocused();
   await expect(sheet).toHaveCSS("outline-style", "none");
   await page.keyboard.press("PageDown");
   await expect.poll(() => sheet.evaluate(element => element.scrollTop)).toBeGreaterThan(0);

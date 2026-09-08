@@ -17,8 +17,9 @@ export default defineConfig({
   outputDir: resolve(tmpdir(), "drowse-playwright-results"),
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
+  timeout: 60_000,
   retries: process.env.CI ? 2 : 0,
-  workers: 1,
+  workers: process.env.CI ? 2 : 1,
   reporter: process.env.CI ? [["github"], ["line"]] : "line",
   expect: { timeout: 10_000 },
   use: {
