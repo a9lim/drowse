@@ -73,11 +73,11 @@ for (const [zone, instant, expected] of [
       }, { modules, id: original.id });
       expect(updated.name).toBe(expected);
       await mountHome(page);
-      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name`)).toHaveText(expected);
+      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name .morph-source`)).toHaveText(expected);
       await page.reload();
       await expect(page.getByRole("textbox", { name: "Editable completion buffer" })).toBeVisible();
       await mountHome(page);
-      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name`)).toHaveText(expected);
+      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name .morph-source`)).toHaveText(expected);
     });
   });
 }

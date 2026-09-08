@@ -55,6 +55,11 @@ test("resizing redraws before paint and scrolling does not resize the drawing bu
   for (const height of [780, 900, 844]) {
     await page.setViewportSize({ width: 390, height });
     await expect.poll(() => hero.evaluate(el => el.clientHeight)).toBe(height);
+    await expect.poll(() => hero.evaluate(el => {
+      const canvas = el.querySelector("canvas")!;
+      return Math.abs(canvas.width * el.clientHeight - canvas.height * el.clientWidth)
+        <= Math.max(el.clientWidth, el.clientHeight);
+    })).toBe(true);
     await expect(hero.locator("canvas")).not.toHaveAttribute("data-blank-resize");
   }
   const size = await hero.locator("canvas").getAttribute("data-drawn-size");
