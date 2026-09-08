@@ -145,6 +145,7 @@ test("mouse dragging, interrupted gestures, editing, and reduced motion remain u
   await page.locator(".msg .tok").first().click();
   await page.getByRole("button", { name: "Full token details", exact: true }).click();
   await handle(page).press("End");
+  await expect(sheet(page)).toHaveAttribute("data-detent", "peek");
   const box = (await handle(page).boundingBox())!;
   await page.mouse.move(box.x + 100, box.y + 20);
   await page.mouse.down();

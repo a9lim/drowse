@@ -878,8 +878,8 @@ test.describe("saved chat card interactions", () => {
     await mountHome();
     const card = page.locator("[data-saved-conversation]").first();
     await expect(card).toBeVisible();
-    await expect(card.locator("time")).toHaveText("just now");
-    await expect(card.locator(".chat-counts")).toHaveText("2 messages · 1 Loom thread");
+    await expect(card.locator("time .morph-source")).toHaveText("just now");
+    await expect(card.locator(".chat-counts .morph-source")).toHaveText("2 messages · 1 Loom thread");
     await card.locator(".chat-name").click();
     const input = card.getByRole("textbox", { name: "Chat name" });
     await expect(input).toBeFocused();

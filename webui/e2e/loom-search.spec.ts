@@ -96,7 +96,7 @@ test("search reveals collapsed children, restores collapsed state, and filters s
   await search.fill("amber fox");
   await expect(page.locator("#loom-search-status .morph-source")).toHaveText("1 matching message");
   await search.fill("unmatched");
-  await expect(page.getByText("No starred messages match", { exact: true })).toBeVisible();
+  await expect(page.locator(".morph-source").filter({ hasText: /^No starred messages match$/ })).toBeVisible();
 });
 
 test("advanced filters stay explicit and the search bar fits a narrow viewport", async ({ page }) => {
