@@ -108,8 +108,9 @@ test("mirrored sidebar toggle pins an empty inspector and both slides share reve
   await expect(help).toHaveCount(0);
   await expect(right).toBeVisible();
   await expect(right).not.toHaveAttribute("inert");
-  await page.getByRole("button", { name: /^Controls\b/ }).click();
+  await selectWorkspaceView(page, /^Controls\b/);
   await expect(right).toBeVisible();
+  await page.getByRole("button", { name: "Show left sidebar", exact: true }).click();
   for (const side of ["left", "right"]) {
     const panel = side === "left" ? left : right;
     const toggle = side === "left" ? leftToggle : rightToggle;
@@ -273,7 +274,7 @@ test("chat selection and all analysis views fit the docked inspector", async ({ 
         await guide.locator("summary").click();
         await expect(guide).toHaveAttribute("open", "");
         await expect(guide).toContainText("not the probability that a trait is true");
-        await expect(sheet.locator('[role="listitem"][title*="typical label spacings away"]').first()).toBeVisible();
+        await expect(sheet.locator('[role="listitem"][aria-description*="typical label spacings away"]').first()).toBeVisible();
         await expect(sheet.locator('[role="listitem"]').filter({ hasText: "membership" })).toHaveCount(0);
       }
       expect(await sheet.evaluate(element => element.scrollWidth <= element.clientWidth + 1), `${tab} ${width}`).toBe(true);

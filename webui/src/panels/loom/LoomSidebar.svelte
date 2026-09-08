@@ -3743,6 +3743,18 @@
     }
   }
 
+  @media (max-height: 450px) {
+    .compact-loom-view,
+    .focused-branch,
+    .loom-map-bar {
+      padding-block: 0;
+    }
+
+    .search-feedback {
+      padding-bottom: 0;
+    }
+  }
+
   @media (pointer: coarse) {
     .touch-gesture-hint {
       position: absolute;

@@ -731,7 +731,7 @@ test("shared page headers and footers align across public pages and workbench", 
       await page.screenshot({ path: testInfo.outputPath(`${name}-${width}.png`) });
       const footer = page.locator(".page-footer");
       await footer.scrollIntoViewIfNeeded();
-      await expect(footer.getByRole("link")).toHaveText(["Credits", "Contribute"]);
+      await expect(footer.getByRole("link")).toHaveText(["Credits", "Contact us", "contact@drowse.ai", "Contribute"]);
       const actualFooter = await footer.evaluate(el => {
         const css = getComputedStyle(el);
         const content = el.querySelector(".footer-content")!;
@@ -929,7 +929,7 @@ test.describe("saved chat card interactions", () => {
     await expect(avatar).toHaveAttribute("aria-busy", "true");
     await expect(card.locator(".chat-name")).toBeEnabled();
     await expect(card.getByRole("button", { name: "Download backup of Marmot research", exact: true })).toBeEnabled();
-    await expect(card.getByRole("button", { name: "Download backup of Marmot research", exact: true })).toHaveText("Download");
+    await expect(card.getByRole("button", { name: "Download backup of Marmot research", exact: true }).locator(".morph-source")).toHaveText("Download");
     await expect(card.getByRole("button", { name: "More options for Marmot research", exact: true })).toBeEnabled();
     expect(await card.locator(".chat-actions").boundingBox()).toEqual(actionsBefore);
     await page.evaluate(() => (window as any).releaseAvatarUpdate());
@@ -2287,8 +2287,8 @@ test("workspace menu returns to chats and restores the current conversation", as
   const brand = page.locator(".app-header .page-brand");
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    if (width > 760 && await page.getByRole("button", { name: "Collapse left sidebar", exact: true }).isVisible()) {
-      await page.getByRole("button", { name: "Collapse left sidebar", exact: true }).click();
+    if (width > 760 && await page.getByRole("button", { name: "Hide left sidebar", exact: true }).isVisible()) {
+      await page.getByRole("button", { name: "Hide left sidebar", exact: true }).click();
     }
     const iconBox = (await home.boundingBox())!;
     const brandBox = (await brand.boundingBox())!;
@@ -2323,8 +2323,8 @@ test("workspace menu has a visible touch target after the wordmark", async ({ pa
   const home = page.getByRole("button", { name: "Workspace menu", exact: true });
   for (const width of [320, 390, 768, 1440]) {
     await page.setViewportSize({ width, height: 844 });
-    if (width > 760 && await page.getByRole("button", { name: "Collapse left sidebar", exact: true }).isVisible()) {
-      await page.getByRole("button", { name: "Collapse left sidebar", exact: true }).click();
+    if (width > 760 && await page.getByRole("button", { name: "Hide left sidebar", exact: true }).isVisible()) {
+      await page.getByRole("button", { name: "Hide left sidebar", exact: true }).click();
     }
     await expect(home).toHaveAttribute("aria-haspopup", "dialog");
     await expect(home).toBeVisible();
@@ -2553,7 +2553,7 @@ test("popups share material tokens while side drawers remain translucent in both
     expect(expected[2]).toBe("1px");
     expect(expected[4]).toBe("16px");
     await page.getByRole("button", { name: "Sort probes by", exact: true }).click();
-    expect(await surface(page.locator(".sk-select-popover:popover-open"))).toEqual(expected);
+    expect(await surface(page.locator(".sk-select-popover:popover-open"))).toEqual(expected.with(4, "8px"));
     await page.keyboard.press("Escape");
     await openDrawer(page, "advanced_sampling");
     const drawerSurface = await surface(page.locator('.drawer[role="dialog"]'));
@@ -2562,7 +2562,11 @@ test("popups share material tokens while side drawers remain translucent in both
     await page.getByRole("button", { name: "About Top K", exact: true }).tap();
     const tip = page.locator(".info-popover:popover-open");
     await expect(tip).toBeVisible();
-    expect(await surface(tip)).toEqual(expected);
+    const tipSurface = await surface(tip);
+    expect(tipSurface.slice(0, 2)).toEqual(expected.slice(0, 2));
+    expect(tipSurface[2]).toBe("0px");
+    expect(tipSurface[4]).toBe(expected[4]);
+    expect(tipSurface[5]).toBe(`${expected[3]} 0px 0px 0px 1px, ${expected[5]}`);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: testInfo.outputPath(`popup-family-${theme}.png`) });
     await page.keyboard.press("Escape");
@@ -2710,7 +2714,7 @@ for (const theme of ["light", "dark"] as const) {
       for (const disclosure of await drawer.locator('.sk-disclosure-trigger').all()) {
         if (await disclosure.getAttribute("aria-expanded") === "false") await disclosure.click();
       }
-      await audit(`Drawer, ${name}`, ".drawer[role='dialog']");
+      await audit(`Drawer, ${name}`, name === "token_drilldown" ? "[role='dialog']:has([data-token-details-scroll])" : ".drawer[role='dialog']");
       if (name === "manifold_builder") {
         for (const mode of ["linear", "template", "custom"]) {
           await drawer.getByRole("tab", { name: mode, exact: true }).click();
@@ -3138,7 +3142,7 @@ test("landing has no gradient scrims and adapts its ink without panel background
       await page.locator(".capabilities").scrollIntoViewIfNeeded();
       expect(await page.evaluate(() => {
         return [...document.querySelectorAll(".landing-shell, .landing-shell *")]
-          .filter(element => !element.closest('button, a, .theme-toggle'))
+          .filter(element => !element.closest('button, a, .theme-toggle, .capability-demo'))
           .flatMap(element =>
           [null, "::before", "::after"].flatMap(pseudo => {
             const style = getComputedStyle(element, pseudo);

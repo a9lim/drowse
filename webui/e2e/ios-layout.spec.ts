@@ -240,7 +240,7 @@ test("Loom preserves a useful touch canvas on short screens", async ({ page }) =
     await openWorkspaceMenu(page);
     await page.getByRole("button", { name: "Hide Loom tools", exact: true }).click();
     await expect(page.locator("#loom-tools-header")).toHaveCount(0);
-    await expect.poll(() => tree.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(height);
+    await expect.poll(() => tree.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(Math.max(90, height));
     const visibleTree = (await tree.boundingBox())!;
     expect(visibleTree.y + visibleTree.height).toBeLessThanOrEqual(viewport.height + 1);
     await expectNoPageOverflow(page);
@@ -449,8 +449,10 @@ test("SAE readout labels preserve metadata and activation bars never overlap val
       for (const card of await cards.all()) {
         await expectNoHorizontalOverflow(card);
         await expectNoHorizontalOverflow(card.locator(".feature-description"));
-        const value = (await card.locator(".sae-value").boundingBox())!;
-        const bar = (await card.locator('.bar[role="img"]').boundingBox())!;
+        const { value, bar } = await card.evaluate(element => ({
+          value: element.querySelector(".sae-value")!.getBoundingClientRect().toJSON(),
+          bar: element.querySelector('.bar[role="img"]')!.getBoundingClientRect().toJSON(),
+        }));
         expect(bar.y).toBeGreaterThanOrEqual(value.y + value.height);
         expect(bar.width).toBeGreaterThan(100);
         expect(await card.locator(".sae-value").evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
