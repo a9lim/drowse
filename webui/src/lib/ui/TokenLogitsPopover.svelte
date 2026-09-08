@@ -9,9 +9,10 @@
   import { getRuntimeClient } from "../runtime/registry";
   import { tokenAlternativeDefault } from "../runtime/samplingCapabilities";
 
-  let { token, anchor, source = "Model token", contextChanged = false, onclose, ondetails }: {
+  let { token, anchor, isCurrent, source = "Model token", contextChanged = false, onclose, ondetails }: {
     token: TokenScore;
     anchor: HTMLElement;
+    isCurrent: (anchor: HTMLElement) => boolean;
     source?: string;
     contextChanged?: boolean;
     onclose: () => void;
@@ -25,7 +26,7 @@
   let closing = false;
 
   function close(restoreFocus = true) {
-    if (closing) return;
+    if (closing || !isCurrent(trigger)) return;
     closing = true;
     panel.inert = true;
     if (restoreFocus && trigger.isConnected) trigger.focus({ preventScroll: true });
@@ -60,7 +61,7 @@
     place();
     panel.focus({ preventScroll: true });
     const escape = (event: KeyboardEvent) => {
-      if (closing) return;
+      if (closing || !isCurrent(trigger)) return;
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
@@ -99,6 +100,7 @@
   in:fade|global={contentIn()}
   out:fade|global={contentOut()}
   onintrostart={() => {
+    if (!isCurrent(trigger)) return;
     closing = false;
     panel.inert = false;
     place();

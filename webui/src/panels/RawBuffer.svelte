@@ -654,6 +654,7 @@
     {@const view = tokenPopup.view}
     {#key tokenPopup.anchor}
       <TokenLogitsPopover token={tokenPopup.view.tok} anchor={tokenPopup.anchor}
+        isCurrent={anchor => tokenPopup?.anchor === anchor}
         source={inspectionSource !== "current" ? "Original recorded token" : tokenPopup.view.source === "user" ? "User text · recorded" : "Model token"}
         contextChanged={tokenPopup.view.contextChanged}
         onclose={() => tokenPopup = null}

@@ -185,6 +185,7 @@ test("dismissed drawer controls become inert before their visual exit completes"
 });
 
 test("token probability popovers fade out through their parent conditional and release focus", async ({ page }) => {
+  test.slow();
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: "no-preference" });
@@ -210,9 +211,12 @@ test("token probability popovers fade out through their parent conditional and r
   await token.click();
   await expect(popup).toHaveCSS("opacity", "1");
   const next = page.locator(".inspect .tok").nth(1);
-  await next.click();
-  await expect(popup).toHaveCount(1);
-  await expect(popup).toHaveCSS("opacity", "1");
+  for (const selected of [next, token, next]) {
+    await selected.click();
+    await expect(popup).toHaveCount(1);
+    await expect(popup).toHaveCSS("opacity", "1");
+    await expect(popup).toHaveJSProperty("inert", false);
+  }
   await page.keyboard.press("Escape");
   await expect(popup).toHaveCount(0);
   await expect(next).toBeFocused();

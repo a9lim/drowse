@@ -1447,6 +1447,7 @@
   {@const popup = tokenPopup}
   {#key popup.anchor}
     <TokenLogitsPopover token={popup.token} anchor={popup.anchor}
+      isCurrent={anchor => tokenPopup?.anchor === anchor}
       source={chatLog.turns[popup.turnIdx]?.generated ? "Model token" : "User text · recorded"}
       onclose={() => tokenPopup = null}
       ondetails={() => openDrawer("token_drilldown", { turnIdx: popup.turnIdx, tokenIdx: popup.tokenIdx, isThinking: popup.isThinking, initialTab: "logits" })} />
