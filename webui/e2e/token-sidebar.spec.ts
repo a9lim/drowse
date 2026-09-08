@@ -57,6 +57,7 @@ test("help icons still toggle with touch and close on an outside tap", async ({ 
 });
 
 test("chat text has no hover tooltip and remains inspectable", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("What do marmots eat?");
   await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -70,9 +71,25 @@ test("chat text has no hover tooltip and remains inspectable", async ({ page }) 
   await expect(page.locator(".token-logits-popover")).toHaveCount(0);
   await token.click();
   await expect(page.getByRole("button", { name: "Full token details", exact: true })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await token.focus();
-  await token.press("Enter");
+  const popup = page.locator(".token-logits-popover");
+  for (let reversal = 0; reversal < 3; reversal++) {
+    await expect(popup).toHaveCSS("opacity", "1");
+    const state = await token.evaluate(async el => {
+      const { tick } = await import("/e2e/svelte-runtime.ts");
+      const panel = document.querySelector<HTMLElement>(".token-logits-popover")!;
+      panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await tick();
+      const closingInert = panel.inert;
+      (el as HTMLElement).focus();
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      await tick();
+      return { closingInert, reused: document.querySelector(".token-logits-popover") === panel };
+    });
+    expect(state).toEqual({ closingInert: true, reused: true });
+    await expect(popup).toHaveJSProperty("inert", false);
+    await popup.getByRole("button", { name: "Full token details", exact: true }).focus();
+    await expect(popup.getByRole("button", { name: "Full token details", exact: true })).toBeFocused();
+  }
   await page.getByRole("button", { name: "Full token details", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Generated word details", exact: true })).toBeVisible();
 });

@@ -98,6 +98,12 @@
 <div bind:this={panel} class="token-logits-popover" popover="manual" role="dialog" tabindex="-1" aria-labelledby={`${uid}-title`}
   in:fade|global={contentIn()}
   out:fade|global={contentOut()}
+  onintrostart={() => {
+    closing = false;
+    panel.inert = false;
+    place();
+    if (!panel.contains(document.activeElement)) panel.focus({ preventScroll: true });
+  }}
   onoutrostart={() => { closing = true; panel.inert = true; }}
 >
   <header>

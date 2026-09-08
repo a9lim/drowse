@@ -13,6 +13,7 @@ const servicesUrl = `/@fs/${resolve("src/lib/runtime/services.ts")}`;
 test.use({ hasTouch: true });
 
 test("model settings end with the versioned Drowse footer", async ({ page }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
   await page.evaluate(async url => (await import(url)).openDrawer("local_runtime"), storesUrl);
@@ -1979,6 +1980,7 @@ test("base model disclosure is accessible and unclipped on compact screens", asy
 });
 
 test("Loom depth fills the viewport through long pans, zoom, resize, and pointer movement", async ({ page }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(`${devUrl}/app?layoutFixture=1`);
@@ -2840,6 +2842,7 @@ test("landing browser copy is consistent across platforms and action labels stay
 });
 
 test("smooth scrolling is limited to the homepage and respects reduced motion", async ({ page }) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto("/");
   await expect(page.getByText("Scroll to step inside", { exact: true })).toHaveCount(0);

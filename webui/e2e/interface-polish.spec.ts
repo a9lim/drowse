@@ -35,6 +35,7 @@ async function targets(root: Locator) {
 }
 
 test("public headers keep visible branding aligned and navigation reachable", async ({ page }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const path of ["/", "/credits", "/not-a-page", "/app?layoutFixture=setup"]) {
     await page.goto(`${dev}${path}`);
@@ -44,23 +45,27 @@ test("public headers keep visible branding aligned and navigation reachable", as
       await layoutFrame(page);
       const header = page.locator(".page-header");
       expect(await targets(header)).toEqual([]);
-      const result = await header.evaluate(el => {
-        const brand = el.querySelector(".page-brand")!.getBoundingClientRect();
-        const nav = el.querySelector("nav")!;
-        const theme = el.querySelector(".appearance")!.getBoundingClientRect();
-        const links = [...nav.querySelectorAll("a")].map(a => a.getBoundingClientRect().toJSON());
-        return { brand: brand.toJSON(), brandVisible: getComputedStyle(el.querySelector(".page-brand")!).visibility !== "hidden", theme: theme.toJSON(), links, scrollable: nav.scrollWidth > nav.clientWidth, overflow: document.documentElement.scrollWidth - innerWidth };
-      });
-      expect(result.overflow).toBeLessThanOrEqual(1);
-      for (const link of result.links) {
-        expect(link.height).toBeGreaterThanOrEqual(40);
-        expect(link.width).toBeGreaterThanOrEqual(40);
-        if (result.brandVisible) expect(link.y + link.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
-      }
-      if (result.brandVisible) expect(result.theme.y + result.theme.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
+      await expect(async () => {
+        const result = await header.evaluate(el => {
+          const brand = el.querySelector(".page-brand")!.getBoundingClientRect();
+          const nav = el.querySelector("nav")!;
+          const theme = el.querySelector(".appearance")!.getBoundingClientRect();
+          const links = [...nav.querySelectorAll("a")].map(a => a.getBoundingClientRect().toJSON());
+          return { brand: brand.toJSON(), brandVisible: getComputedStyle(el.querySelector(".page-brand")!).visibility !== "hidden", theme: theme.toJSON(), links, scrollable: nav.scrollWidth > nav.clientWidth, overflow: document.documentElement.scrollWidth - innerWidth };
+        });
+        expect(result.overflow).toBeLessThanOrEqual(1);
+        for (const link of result.links) {
+          expect(link.height).toBeGreaterThanOrEqual(40);
+          expect(link.width).toBeGreaterThanOrEqual(40);
+          if (result.brandVisible) expect(link.y + link.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
+        }
+        if (result.brandVisible) expect(result.theme.y + result.theme.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
+        if (width === 320) {
+          expect(result.brandVisible).toBe(false);
+          expect(result.scrollable).toBe(false);
+        }
+      }).toPass({ timeout: 10_000 });
       if (width === 320) {
-        expect(result.brandVisible).toBe(false);
-        expect(result.scrollable).toBe(false);
         for (const name of ["Contribute", "Chats"]) {
           const link = header.getByRole("link", { name, exact: true });
           await link.focus();

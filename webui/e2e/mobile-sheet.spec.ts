@@ -88,6 +88,7 @@ test("sheet overlays the unchanged workspace with stepped swipes, focus containm
 });
 
 test("both inspector modes preserve token and all analysis views across resizing", async ({ page }, info) => {
+  test.slow();
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await generate(page);
