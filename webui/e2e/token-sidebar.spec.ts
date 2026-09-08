@@ -114,6 +114,8 @@ test("mirrored sidebar toggle pins an empty inspector and both slides share reve
   for (const side of ["left", "right"]) {
     const panel = side === "left" ? left : right;
     const toggle = side === "left" ? leftToggle : rightToggle;
+    await expect(panel).toHaveCSS("opacity", "1");
+    await expect(panel).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
     const sample = await toggle.evaluate(async (el, side) => {
       const panel = document.querySelector(`#workspace-${side === "left" ? "sidebar" : "token-sidebar"}`)!;
       (el as HTMLButtonElement).click();

@@ -413,7 +413,7 @@ async function assertPwaAssets(origin, headers, html) {
   assert.equal(deployedLicense, sourceLicense, "Deployed AGPL license differs from source");
 }
 
-async function assertBrowserBehavior(origin, headers) {
+async function assertBrowserBehavior(origin, headers, expectedRevision) {
   const browser = await chromium.launch({ headless: true });
   let context;
   try {
@@ -438,6 +438,7 @@ async function assertBrowserBehavior(origin, headers) {
 
     await page.goto(`${origin}/app`, { waitUntil: "domcontentloaded" });
     await page.locator("#device-check").waitFor({ state: "visible" });
+    assert.equal(await page.locator('meta[name="drowse-source-revision"]').getAttribute("content"), expectedRevision, "The browser opened a stale app build");
     assert.equal(await page.evaluate(() => globalThis.crossOriginIsolated), true, "/app is not cross-origin isolated");
 
     await page.evaluate(async () => {
@@ -458,6 +459,7 @@ async function assertBrowserBehavior(origin, headers) {
     await context.setOffline(true);
     await page.goto(offlineProbe, { waitUntil: "domcontentloaded" });
     await page.locator("#device-check").waitFor({ state: "visible" });
+    assert.equal(await page.locator('meta[name="drowse-source-revision"]').getAttribute("content"), expectedRevision, "The offline app cached a stale build");
     assert.equal(
       await page.evaluate(() => globalThis.crossOriginIsolated),
       true,
@@ -502,7 +504,7 @@ async function main() {
   assertChannelHtml(appHtml, options.channel, options.revision);
   assertRobotsFile(robots, options.channel);
   await assertPwaAssets(origin, headers, rootHtml);
-  await assertBrowserBehavior(origin, headers);
+  await assertBrowserBehavior(origin, headers, metadata(rootHtml, "drowse-source-revision"));
 
   console.log(`Hosted ${options.channel} deployment passed at ${origin}`);
 }
