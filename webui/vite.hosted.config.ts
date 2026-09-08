@@ -108,6 +108,22 @@ const notFoundPage: Plugin = {
   },
 };
 
+const offlineRuntimeAssets: Plugin = {
+  name: "drowse-offline-runtime-assets",
+  apply: "build",
+  enforce: "post",
+  generateBundle(_, bundle) {
+    const assets = Object.keys(bundle).filter(name =>
+      /^assets\/(?:App|browser\.worker|registry|drowse-web-llm)-[^/]+\.(?:css|js)$/u.test(name)
+    ).sort();
+    this.emitFile({
+      type: "asset",
+      fileName: "runtime-assets.json",
+      source: JSON.stringify({ assets: assets.map(name => `/${name}`) }),
+    });
+  },
+};
+
 export default defineConfig({
   root: fromRoot("./hosted"),
   publicDir: fromRoot("./public-hosted"),
@@ -126,6 +142,7 @@ export default defineConfig({
     releaseMetadata,
     projectLicenseAsset,
     notFoundPage,
+    offlineRuntimeAssets,
     svelte({ configFile: fromRoot("./svelte.config.js") }),
     VitePWA({
       strategies: "generateSW",
@@ -167,6 +184,7 @@ export default defineConfig({
       },
       workbox: {
         cacheId: "drowse-hosted",
+        clientsClaim: true,
         cleanupOutdatedCaches: true,
         ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^v$/],
         globPatterns: ["**/*.{css,html,js,json,mp4,png,svg,wasm,woff2}", "images/ethereal-orb.jpg", "LICENSE"],
@@ -198,6 +216,8 @@ export default defineConfig({
             handler: "CacheFirst",
             options: {
               cacheName: "drowse-hosted-on-demand-assets-v1",
+              // Content-hashed app files do not vary between module and ordinary fetch requests.
+              matchOptions: { ignoreVary: true },
               cacheableResponse: { statuses: [200] },
             },
           },

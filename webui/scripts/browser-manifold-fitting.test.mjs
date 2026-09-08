@@ -100,6 +100,37 @@ try {
     "jlens_dictionary_uploading",
     "jlens_dictionary_ready",
   ]);
+  const mobileDictionaryCalls = [];
+  await prepareBrowserInstrumentDictionaries({
+    ...loadRequest(), runtimeClass: "apple-mobile-webkit",
+  }, {
+    saeGpuDictionary() { return saeDictionary; },
+    jlensGpuDictionary() { return jlensDictionary; },
+  }, {
+    async setSaeDictionary(dictionary) {
+      assert.equal(dictionary, saeDictionary);
+      mobileDictionaryCalls.push("stage-sae");
+    },
+    async setJlensDictionary(dictionary) {
+      assert.equal(dictionary, jlensDictionary);
+      mobileDictionaryCalls.push("stage-jlens");
+    },
+    async warmSaeDictionary() { assert.fail("Do not warm unused SAE data on iOS"); },
+    async warmJlensDictionary() { assert.fail("Do not warm unused J-lens data on iOS"); },
+  });
+  assert.deepEqual(mobileDictionaryCalls, ["stage-sae", "stage-jlens"]);
+  const mobileAbort = new AbortController();
+  await assert.rejects(prepareBrowserInstrumentDictionaries({
+    ...loadRequest(), runtimeClass: "apple-mobile-webkit", signal: mobileAbort.signal,
+  }, {
+    saeGpuDictionary() { return saeDictionary; },
+    jlensGpuDictionary() { return jlensDictionary; },
+  }, {
+    async setSaeDictionary() { mobileAbort.abort(); },
+    async setJlensDictionary() { assert.fail("Stop staging after cancellation"); },
+    async warmSaeDictionary() { assert.fail("Cancelled"); },
+    async warmJlensDictionary() { assert.fail("Cancelled"); },
+  }), { name: "AbortError" });
   const {
     defaultTuning,
     maxDimensionValidationMessage,

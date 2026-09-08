@@ -81,7 +81,7 @@
   "dependencies": {
     "@basementstudio/shader-lab": "3.0.2",
     "@blobatar/svelte": "2.7.0",
-    "@drowse/web-llm": "file:../browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.36.tgz",
+    "@drowse/web-llm": "file:../browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.37.tgz",
     "@noble/hashes": "2.3.0",
     "blobatar": "2.7.0",
     "fflate": "0.8.3",

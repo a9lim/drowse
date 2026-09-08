@@ -1,6 +1,13 @@
+import { WINDOWS_GPU_GUIDANCE, WINDOWS_INTEL_GEN9_BLOCK } from "./gpuRecovery";
+
 type ErrorMessage = string | ((raw: string) => string);
 
 const MESSAGES: Array<[RegExp, ErrorMessage]> = [
+  [/APP_MODULE_UNAVAILABLE/u,
+    "Some app files could not load. Reconnect, reload Drowse, then reopen the model. Your downloaded models and saved chats are kept."],
+  [/WEBGPU_WINDOWS_INTEL_GEN9_BLOCKED/u, WINDOWS_INTEL_GEN9_BLOCK],
+  [/REPEATED_DEVICE_LOSS/u,
+    `Model loading is blocked because this browser and GPU repeatedly stopped responding. Update the graphics driver or switch graphics hardware before checking again. On Windows: ${WINDOWS_GPU_GUIDANCE}`],
   [/SAMPLING_RUNTIME_OUTDATED/u,
     "Drowse is using an older model runtime that cannot accept these sampling settings. Reload Drowse, then reopen the model. Your downloaded models and saved chats do not need to be removed."],
   [/WEBGPU_LIMIT_TOO_LOW/u, webGpuLimitMessage],
@@ -9,7 +16,7 @@ const MESSAGES: Array<[RegExp, ErrorMessage]> = [
   [/WEBGPU_(?:UNAVAILABLE|ADAPTER_|CALIBRATION_|LIMIT_UNAVAILABLE)|SOFTWARE_ADAPTER|ADAPTER_KIND_UNKNOWN/u,
     "Drowse could not confirm compatible hardware-accelerated graphics. Update your browser and graphics driver, then run the device check again."],
   [/WEBGPU_(?:DEVICE|OUT_OF_MEMORY)|GPU_DEVICE|DEVICE_LOST/u,
-    "The graphics device stopped responding. Reopen the model and try again. If it happens again, choose a smaller model or shorter context."],
+    `The graphics device stopped responding. Choose a smaller model or shorter context, and update your browser and graphics driver before reopening it. On Windows: ${WINDOWS_GPU_GUIDANCE}`],
   [/INSECURE_CONTEXT|CROSS_ORIGIN_ISOLATION_REQUIRED/u,
     "Drowse needs a secure browser connection. Open it over HTTPS or on localhost, then run the device check again."],
   [/WORKER_UNAVAILABLE|WASM_UNAVAILABLE|BROADCAST_CHANNEL_UNAVAILABLE|WEB_LOCKS_UNAVAILABLE/u,
@@ -90,6 +97,12 @@ export function userFacingError(
 }
 
 function inferredCode(raw: string): string {
+  if (/importing a module script failed|failed to (?:fetch dynamically imported module|load module script)|error loading dynamically imported module|unable to preload css|load failed for module/iu.test(raw)) {
+    return "APP_MODULE_UNAVAILABLE";
+  }
+  if (/\b(?:WEBGPU_DEVICE_LOST|GPU_DEVICE_LOST)\b|(?:WebGPU|GPU|graphics) device (?:was |is |has been )?lost|DeviceLostError/iu.test(raw)) {
+    return "WEBGPU_DEVICE_LOST";
+  }
   if (/Make sure 0 < top_logprobs <= 5\. Got (?:[6-9]|[1-9]\d+)(?:\.|$)/u.test(raw)) {
     return "SAMPLING_RUNTIME_OUTDATED";
   }

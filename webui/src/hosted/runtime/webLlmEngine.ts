@@ -339,8 +339,10 @@ export class DrowseWebLlmRuntime {
       );
     }
     let ownedEngine: DrowseWebLlmEngineInstance | null = null;
+    let initializationPhase: string | null = "Starting model initialization";
     const engine = new this.module.MLCEngine({
       initProgressCallback: (report: WebLlmInitProgressReport) => {
+        initializationPhase = report.text;
         request.onProgress?.({
           event: "progress",
           data: {
@@ -363,7 +365,8 @@ export class DrowseWebLlmRuntime {
           const detail = deviceLossDetail(info);
           request.onDeviceLost({
             code: "WEBGPU_DEVICE_LOST",
-            message: detail ? `The WebGPU device was lost: ${detail}` : "The WebGPU device was lost",
+            message: (detail ? `The WebGPU device was lost: ${detail}` : "The WebGPU device was lost") +
+              (initializationPhase ? ` Last initialization phase: ${initializationPhase}` : ""),
             confirmedOom: false,
           });
         },
@@ -517,6 +520,7 @@ export class DrowseWebLlmRuntime {
         );
       }
       this.captureSpecialTokenIds = [...prepared.captureSpecialTokenIds];
+      initializationPhase = null;
       return { prefillTokensPerSecond: null, decodeTokensPerSecond: null };
     } catch (error) {
       this.captureSpecialTokenIds = null;

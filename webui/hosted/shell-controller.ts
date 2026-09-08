@@ -291,17 +291,8 @@ export function createShellController(
               offline,
               preferCached: offline,
             });
-            const visibleCatalog = {
-              ...catalog,
-              document: {
-                ...catalog.document,
-                models: catalog.document.models.filter((model) =>
-                  model.id !== "gemma3-270m-instruct"
-                ),
-              },
-            };
             const recommendations = runtime.recommend(
-              visibleCatalog,
+              catalog,
               capabilities.signals.appleMobile === true ? "speed" : "balanced",
               2048,
             );
@@ -318,7 +309,6 @@ export function createShellController(
             );
             recommendedModels = groupModelsByFamily(
               recommendations
-                .filter(({ model }) => model.id !== "gemma3-270m-instruct")
                 .map((recommendation) =>
                   modelFromRecommendation(
                     recommendation,
@@ -1223,6 +1213,9 @@ function isSessionResetError(error: unknown): boolean {
 }
 
 function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckItem[] {
+  const adapter = capabilities.webGpu.adapterInfo;
+  const adapterLabel = [adapter?.vendor, adapter?.architecture].filter(Boolean).join(" / ");
+  const gpuHint = capabilities.issues.find((issue) => issue.code === "WINDOWS_INTEL_GPU");
   const graphicsFailure = capabilities.issues.find((issue) =>
     issue.severity === "hard" && (
       issue.code.startsWith("WEBGPU_") ||
@@ -1255,8 +1248,8 @@ function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckI
     {
       id: "webgpu",
       label: "Graphics support",
-      state: webGpuState,
-      detail: graphicsFailure
+      state: webGpuState === "pass" && gpuHint ? "warn" : webGpuState,
+      detail: (adapterLabel ? `Selected GPU: ${adapterLabel}. ` : "") + (graphicsFailure
         ? userFacingError(
             graphicsFailure,
             "This browser could not provide the graphics support Drowse needs. Update it and run the device check again.",
@@ -1269,7 +1262,8 @@ function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckI
             ? capabilities.signals.calibrationScore === null
               ? "The browser did not identify its graphics adapter, and the compute check could not finish."
               : "The browser did not name its graphics adapter, but the WebGPU compute check passed."
-            : "Compatible hardware-accelerated graphics are available.",
+            : "The basic graphics check passed. This does not guarantee stability under model load.") +
+          (gpuHint ? ` ${gpuHint.message}` : ""),
     },
     {
       id: "storage",

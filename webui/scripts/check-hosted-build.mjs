@@ -14,6 +14,12 @@ const redirects = await readFile(resolve(root, "_redirects"), "utf8");
 assert.equal(notFound, index, "The 404 page must render Drowse without an asset SPA fallback");
 assert.equal(redirects.trim(), "/app / 200\n/app/ / 200\n/credits / 200\n/credits/ / 200\n/contact / 200\n/contact/ / 200\n/app/* / 200");
 const serviceWorker = await readFile(resolve(root, "sw.js"), "utf8");
+assert.match(serviceWorker, /\.clientsClaim\(\)/u, "first-visit model code must be controlled and cached without a reload");
+const offlineRuntimeManifest = JSON.parse(await readFile(resolve(root, "runtime-assets.json"), "utf8"));
+const offlineRuntimeFiles = (await readdir(resolve(root, "assets"))).filter(name =>
+  /^(?:App|browser\.worker|registry|drowse-web-llm)-[^/]+\.(?:css|js)$/u.test(name)
+).map(name => `/assets/${name}`).sort();
+assert.deepEqual(offlineRuntimeManifest.assets, offlineRuntimeFiles, "offline model setup must include its exact app-code closure");
 const headers = await readFile(resolve(root, "_headers"), "utf8");
 const robots = await readFile(resolve(root, "robots.txt"), "utf8");
 const [builtLicense, sourceLicense] = await Promise.all([

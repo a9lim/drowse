@@ -20,6 +20,7 @@ import {
   BROWSER_AUTHORING_RUNTIME_INTEGRATED,
 } from "./browserAuthoring";
 import { CATALOG_WEBGPU_LIMIT_NAMES } from "../../lib/runtime/catalog";
+import { windowsIntelGpuHint, windowsIntelGen9Blocked, WINDOWS_INTEL_GEN9_BLOCK } from "../../lib/runtime/gpuRecovery";
 
 interface GpuAdapterInfoLike {
   vendor?: string;
@@ -231,6 +232,12 @@ export class BrowserCapabilityChecker {
         const info = await adapterInformation(this.adapter, this.adapterInfoTimeoutMs);
         if (info) {
           adapterInfo = adapterInfoSnapshot(info);
+          const gpuHint = windowsIntelGpuHint(adapterInfo.vendor, navigator.userAgent);
+          if (windowsIntelGen9Blocked(adapterInfo.vendor, adapterInfo.architecture, navigator.userAgent)) {
+            issues.push(hard("WEBGPU_WINDOWS_INTEL_GEN9_BLOCKED", WINDOWS_INTEL_GEN9_BLOCK));
+          } else if (gpuHint) {
+            issues.push(advisory("WINDOWS_INTEL_GPU", gpuHint));
+          }
           if (typeof info.isFallbackAdapter === "boolean") {
             fallback = info.isFallbackAdapter ? "fallback" : "hardware";
           }

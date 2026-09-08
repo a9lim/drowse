@@ -5814,12 +5814,29 @@ try {
       modelVariantId: variant.id,
       contextTokens: 2048,
     }));
-    assert.equal((await response(scope, "load-loss")).ok, false);
+    const loadFailure = await response(scope, "load-loss");
+    assert.equal(loadFailure.ok, false);
+    assert.equal(loadFailure.error.code, "GPU_DEVICE_LOST");
     await waitFor(() => scope.messages.find(
       (message) => message.kind === "event" && message.event === "device_lost",
     ));
     assert.deepEqual(scope.loadRecords.map((record) => record.result), ["device_lost"]);
     assert.equal(unloads, 1);
+    scope.send(request("load-loss-second", "load", {
+      modelVariantId: variant.id,
+      contextTokens: 2048,
+    }));
+    assert.equal((await response(scope, "load-loss-second")).error.code, "GPU_DEVICE_LOST");
+    await waitFor(() => scope.messages.filter(
+      (message) => message.kind === "event" && message.event === "device_lost",
+    ).length === 2);
+    scope.send(request("load-loss-blocked", "load", {
+      modelVariantId: variant.id,
+      contextTokens: 2048,
+      explicitUnsafeOverride: true,
+    }));
+    assert.equal((await response(scope, "load-loss-blocked")).error.code, "REPEATED_DEVICE_LOSS");
+    assert.equal(unloads, 2);
   });
 
   test("worker joins an in-flight load before publishing terminal device loss", async () => {

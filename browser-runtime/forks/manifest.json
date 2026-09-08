@@ -69,11 +69,12 @@
       "baseCommit": "90f67096b68d3b77509c938f2221e4cef03b7d76",
       "baseTree": "ac223f95dc7ea27acaba299fe6b780ccb5d67b6f",
       "patch": "web-llm-drowse.patch",
-      "patchBytes": 410442,
-      "patchSha256": "fbc6c5fe9bd500897d8f1f979dbb7ff2c076c5bf10cb8c2f7a103423c17883e4",
+      "patchBytes": 417159,
+      "patchSha256": "cf378428d9b2c40efa177e165432b4ea040f2cda183114cb096af656c3b720d7",
       "resultFiles": {
-        "package-lock.json": "779386bb8f254bcbe4be16db5242e1a03772c04e35d61b86f15fa5b1fe1d6061",
-        "package.json": "34c4ed25808ab63e6b084d59152452acb11049b4b951a1afee598edcf5a40442",
+        "package-lock.json": "9d5a9f0283c0e0a525efdd1c8c95744952fc84c034497b1a24e3e37b1c0f6bf4",
+        "package.json": "cc4ba3194beb8fcc488e7ce6c36682df9f3be05a043235cc55f0d48db0a8c367",
+        "rollup.config.js": "509d7ae65c5f1d3a9844f317854c191c2e4ea0978880b1e9cb4abb9216209273",
         "src/cache_util.ts": "22068a3108e0df16d9bd6c1397283cdb0f33aafa5f22eb2c26678cc30342ec08",
         "src/config.ts": "2d30bcc6ffd8ce39cea8207a1313e76469fdc83cbb2436532db72854cdee6492",
         "src/conversation.ts": "2a078e8a777689a8ebb885916d68823e674c4e5c56b0834dfd3be0496e9ff63c",
@@ -100,7 +101,9 @@
         "tests/gpu.test.ts": "d6e798cf62547d2835569d9e59636fc578d9a2d43db09e603e26bcd13a783edf",
         "tests/llm_chat_abi.test.ts": "11e39a16bbd4015f6db94f9499f77ee60f43d90549d5bc548adc72ec4835328b",
         "tests/llm_chat_pipeline.test.ts": "bac77f51a471158f1f4c4753e4d1bab8df39ce5d6f73b45c0cf627ef225cfc28",
-        "tests/web_worker_handler.test.ts": "726f53f4e38496c6d00ac5ccca0087d37345f6544f5f038abb073118851d405a"
+        "tests/web_worker_handler.test.ts": "726f53f4e38496c6d00ac5ccca0087d37345f6544f5f038abb073118851d405a",
+        "tvm-direct-upload.mjs": "d9bb0ff1cc8402d00f5483446fc84dead774fb5f8a9efc91f9cfb8928f7f3973",
+        "tvm-direct-upload.test.mjs": "f39680d8817baf4eb7563f8411d5be32e3321c34cc8a73ce695f7e458ed0b895"
       }
     }
   ],

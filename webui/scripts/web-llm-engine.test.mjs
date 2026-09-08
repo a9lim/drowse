@@ -803,7 +803,24 @@ try {
   FixtureEngine.instances.at(-1).config.appConfig.onDeviceLost({ reason: "unknown" });
   assert.equal(deviceLoss.code, "WEBGPU_DEVICE_LOST");
   assert.equal(deviceLoss.confirmedOom, false);
+  assert.doesNotMatch(deviceLoss.message, /Last initialization phase/u);
   await runtime.unload();
+
+  class LostDuringInitEngine extends FixtureEngine {
+    async reload() {
+      this.config.initProgressCallback({ progress: 0.4, timeElapsed: 2, text: "Loading GPU shader modules" });
+      this.config.appConfig.onDeviceLost({ reason: "unknown" });
+      throw new Error("initialization interrupted");
+    }
+  }
+  const lostDuringInit = new DrowseWebLlmRuntime({
+    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    MLCEngine: LostDuringInitEngine,
+  });
+  await assert.rejects(lostDuringInit.load(loadRequest({
+    onDeviceLost: (failure) => { deviceLoss = failure; },
+  })), /initialization interrupted/u);
+  assert.match(deviceLoss.message, /Last initialization phase: Loading GPU shader modules/u);
 
   const badAbi = new DrowseWebLlmRuntime({
     DROWSE_HOOK_ABI: "different",

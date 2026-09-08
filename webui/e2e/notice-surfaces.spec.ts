@@ -1,6 +1,45 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
+test("offline notices leave phone generation actions reachable and hide in the workbench", async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=1");
+  await expect(page.locator(".shell")).toBeVisible();
+  await page.evaluate(async moduleUrl => {
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: Object.assign(new EventTarget(), {
+      controller: {}, getRegistration: async () => ({ active: {} }),
+    }) });
+    const [{ default: Prompt }, { mount, unmount }] = await Promise.all([
+      import(moduleUrl), import("/e2e/svelte-runtime.ts"),
+    ]);
+    const target = document.createElement("div");
+    document.body.append(target);
+    let instance = mount(Prompt, { target });
+    Object.assign(window, { hideOfflineNotice: async () => {
+      await unmount(instance);
+      instance = mount(Prompt, { target, props: { showOfflineReady: false } });
+    } });
+  }, `/@fs/${resolve("src/hosted/ui/PwaUpdatePrompt.svelte")}`);
+  const notice = page.locator(".pwa-notice.passive");
+  await expect(notice).toBeVisible();
+  for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(viewport);
+    await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello");
+    const send = page.getByRole("button", { name: /^(Send|Generate reply)$/ });
+    await send.click({ trial: true });
+    const noticeBox = (await notice.boundingBox())!;
+    const sendBox = (await send.boundingBox())!;
+    expect(noticeBox.y + noticeBox.height).toBeLessThan(sendBox.y);
+    await page.screenshot({ path: testInfo.outputPath(`offline-notice-${viewport.width}.png`) });
+  }
+  await page.evaluate(async () => {
+    await (window as unknown as { hideOfflineNotice(): Promise<void> }).hideOfflineNotice();
+  });
+  await expect(notice).toHaveCount(0);
+});
+
 test("humanized public copy stays readable without em dashes", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");

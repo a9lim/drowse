@@ -17,9 +17,11 @@
   let {
     onPrepareReload,
     onApplyingChange,
+    showOfflineReady = true,
   }: {
     onPrepareReload?: () => Promise<void>;
     onApplyingChange?: (applying: boolean) => void;
+    showOfflineReady?: boolean;
   } = $props();
 
   let updateAvailable = $state(false);
@@ -228,7 +230,7 @@
   }
 </script>
 
-{#if updateAvailable || offlineReady || registrationError}
+{#if updateAvailable || (offlineReady && showOfflineReady) || registrationError}
   <div
     bind:this={noticeEl}
     class="pwa-notice"
@@ -246,7 +248,7 @@
       {#if updateAvailable}
         <strong>A Drowse update is ready.</strong>
         <span>Your installed models and conversations will stay on this device.</span>
-      {:else if offlineReady}
+      {:else if offlineReady && !registrationError}
         <strong>The interface is ready offline.</strong>
         <span>Once a model is installed, Drowse can reopen and generate offline.</span>
       {:else}
@@ -417,7 +419,12 @@
     .countdown-remaining { animation-timing-function: steps(5, end); }
   }
 
-  @media (max-width: 42rem) {
+  @media (max-width: 42rem), (max-height: 32rem) and (pointer: coarse) {
+    .pwa-notice {
+      top: calc(var(--space-4) + env(safe-area-inset-top, 0px));
+      bottom: auto;
+    }
+
     .pwa-actions button {
       flex: 1 1 auto;
     }

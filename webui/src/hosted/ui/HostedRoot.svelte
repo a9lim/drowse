@@ -382,6 +382,7 @@
 
 <div class="hosted-background" inert={dialogOpen}>
   <PwaUpdatePrompt
+    showOfflineReady={!Workbench}
     onPrepareReload={prepareForPwaUpdate}
     onApplyingChange={onPwaApplyingChange}
   />

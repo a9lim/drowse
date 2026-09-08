@@ -69,6 +69,7 @@ export async function prepareBrowserInstrumentDictionaries(
       "Insight data prepared",
     );
   }
+  if (request.runtimeClass === "apple-mobile-webkit") return;
   if (saeDictionary !== null) {
     reportLoadProgress(
       request,

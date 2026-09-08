@@ -22,6 +22,10 @@ try {
   assert.doesNotMatch(render(VerificationBadge, { props: { status: null } }).body, /<svg|verification-badge/,
     "unverified accounts have no badge, not a gray government badge");
   const credits = await readFile("src/hosted/ui/Credits.svelte", "utf8");
+  assert.match(credits, /name: "GPT-5\.6 Sol", provider: "openai"/);
+  assert.doesNotMatch(credits, /GPT-6 Sol/);
+  assert.match(credits, /name: "GPT-6 Astra", provider: "openai"/);
+  assert.match(await readFile("src/lib/style/tokens.css", "utf8"), /--brand-openai:\s*#000;/);
   for (const [handle, status] of [["_a9lim", "blue"], ["treetowntree", "blue"], ["transkatgirl", "blue"], ["voooooogel", "blue"], ["motion_so", "gold"]]) {
     assert.match(credits, new RegExp(`handle: "@${handle}"[^\\n]+verification: "${status}"`));
   }

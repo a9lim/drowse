@@ -715,6 +715,67 @@ try {
   );
   const localData = await server.ssrLoadModule("/src/lib/runtime/localData.ts");
   const userErrors = await server.ssrLoadModule("/src/lib/runtime/userFacingError.ts");
+  const { cacheOfflineRuntimeAssets } = await server.ssrLoadModule("/src/hosted/runtime/offlineRuntimeAssets.ts");
+  test("model setup caches only missing app modules and rejects unsafe or unavailable files", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalCaches = Object.getOwnPropertyDescriptor(globalThis, "caches");
+    const files = new Map();
+    const fetched = [];
+    let manifest = { assets: ["/assets/browser.worker-abc.js", "/assets/drowse-web-llm-def.js", "/assets/App-ghi.css"] };
+    let missing = false;
+    let wrongMime = false;
+    let networkFailed = false;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: {
+      async open(name) {
+        assert.equal(name, "drowse-hosted-on-demand-assets-v1");
+        return {
+          async match(path) { return files.get(path); },
+          async put(path, response) { files.set(path, await response.text()); },
+        };
+      },
+    } });
+    globalThis.fetch = async path => {
+      fetched.push(path);
+      if (networkFailed) throw new TypeError("Load failed");
+      if (path === "/runtime-assets.json") return Response.json(manifest);
+      return new Response("module", { status: missing ? 404 : 200, headers: {
+        "Content-Type": wrongMime ? "text/html" : path.endsWith(".css") ? "text/css" : "text/javascript",
+      } });
+    };
+    try {
+      await cacheOfflineRuntimeAssets();
+      assert.deepEqual([...files.keys()], manifest.assets);
+      fetched.length = 0;
+      await cacheOfflineRuntimeAssets();
+      assert.deepEqual(fetched, ["/runtime-assets.json"]);
+      for (const path of ["https://outside.test/assets/App-abc.js", "/assets/App-%2fsecret.js", "/assets/App-abc.js?other=1", "/models/weights.bin"]) {
+        manifest = { assets: [path] };
+        await assert.rejects(cacheOfflineRuntimeAssets(), { code: "APP_MODULE_UNAVAILABLE" });
+      }
+      manifest = { assets: ["/assets/App-new.js"] };
+      missing = true;
+      await assert.rejects(cacheOfflineRuntimeAssets(), { code: "APP_MODULE_UNAVAILABLE" });
+      missing = false;
+      wrongMime = true;
+      await assert.rejects(cacheOfflineRuntimeAssets(), { code: "APP_MODULE_UNAVAILABLE" });
+      wrongMime = false;
+      networkFailed = true;
+      await assert.rejects(cacheOfflineRuntimeAssets(), { code: "APP_MODULE_UNAVAILABLE" });
+      assert.equal(files.has("/assets/App-new.js"), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalCaches) Object.defineProperty(globalThis, "caches", originalCaches);
+      else delete globalThis.caches;
+    }
+  });
+  for (const message of [
+    "Importing a module script failed.",
+    "Failed to fetch dynamically imported module: https://example.test/assets/engine.js",
+    "error loading dynamically imported module",
+  ]) {
+    assert.equal(userErrors.userFacingError({ code: "WORKER_OPERATION_FAILED", message }),
+      "Some app files could not load. Reconnect, reload Drowse, then reopen the model. Your downloaded models and saved chats are kept.");
+  }
 
   test("turns runtime failures into actionable interface copy", () => {
     assert.equal(
@@ -802,6 +863,15 @@ try {
       code: "WORKER_OPERATION_FAILED",
       message: "TypeError: failure at worker.ts:12",
     }), "Drowse could not complete that action. Try again or reopen the model.");
+  });
+
+  test("device loss survives generic worker error wrappers without retry advice", () => {
+    for (const code of [undefined, "WORKER_OPERATION_FAILED", "WEBGPU_DEVICE_LOST", "MODEL_DEVICE_LOST_DURING_LOAD"]) {
+      const message = userErrors.userFacingError({ code, message: "The WebGPU device was lost while loading" });
+      assert.match(message, /graphics device stopped responding/u);
+      assert.match(message, /High performance/u);
+      assert.doesNotMatch(message, /try again/iu);
+    }
   });
 
   test("persistent storage requests protection while the user gesture is active", async () => {
@@ -1166,8 +1236,19 @@ try {
     });
     assert.equal(unstable.proven, false);
     assert.ok(
-      unstable.advisories.some((issue) => issue.code === "REPEATED_DEVICE_LOSS"),
+      unstable.hardFailures.some((issue) => issue.code === "REPEATED_DEVICE_LOSS"),
     );
+    assert.equal(unstable.eligible, false);
+    assert.equal(recommendation.assessModelVariant(model, variant, {
+      ...base,
+      contextTokens: 4096,
+      explicitOomRetry: true,
+      loadRecords: lossesAfterSuccess,
+    }).hardFailures.some((issue) => issue.code === "REPEATED_DEVICE_LOSS"), true);
+    assert.equal(recommendation.assessModelVariant(model, variant, {
+      ...base,
+      loadRecords: lossesAfterSuccess.map(record => ({ ...record, deviceSignature: "other-gpu" })),
+    }).hardFailures.some((issue) => issue.code === "REPEATED_DEVICE_LOSS"), false);
 
     const gatedCapabilities = capabilities();
     gatedCapabilities.operations.generation = {

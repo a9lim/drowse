@@ -16,6 +16,7 @@ import type {
 } from "../../lib/runtime/contracts";
 import { rankCatalogModels } from "../../lib/runtime/recommendation";
 import { ApiError } from "../../lib/runtime/errors";
+import { cacheOfflineRuntimeAssets } from "./offlineRuntimeAssets";
 import { clearDrowseLocalData } from "../../lib/runtime/localData";
 import { initialRuntimeSnapshot, runtimeFailure } from "../../lib/runtime/state";
 import {
@@ -247,6 +248,7 @@ export class HostedControllerImpl implements HostedController {
       throw new Error("Another tab owns the Drowse GPU runtime. Close it or request takeover there.");
     }
     try {
+      if (import.meta.env.PROD) await cacheOfflineRuntimeAssets();
       await this.transport.call("load", {
         modelVariantId,
         contextTokens,

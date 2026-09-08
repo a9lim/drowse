@@ -1187,6 +1187,7 @@ export class HostedRuntimeWorker {
     this.deviceLossRetryUsed = false;
     const backendEpoch = ++this.backendEpoch;
     let deviceLossReported = false;
+    let loadDeviceFailure: RuntimeFailure | null = null;
     const assertLoadDevice = (): void => {
       if (deviceLossReported || backendEpoch !== this.backendEpoch) {
         throw runtimeFailure(
@@ -1220,6 +1221,7 @@ export class HostedRuntimeWorker {
         onDeviceLost: (failure) => {
           if (backendEpoch !== this.backendEpoch || deviceLossReported) return;
           deviceLossReported = true;
+          loadDeviceFailure = runtimeFailure(failure.code, failure.message, false, 503);
           this.scheduleDeviceLost(
             backendEpoch,
             loadedSelection,
@@ -1293,7 +1295,7 @@ export class HostedRuntimeWorker {
           }
         }
       }
-      throw error;
+      throw loadDeviceFailure ?? error;
     }
   }
 
@@ -1759,7 +1761,7 @@ export class HostedRuntimeWorker {
     this.patchSnapshot({ lifecycle: "loading", error: null }, null);
 
     const backendLoadSettled = this.activeBackendLoadSettled;
-    this.activeBackendLoadController?.abort();
+    this.activeBackendLoadController?.abort(runtime);
     const backendRequestSettled = this.activeBackendRequestSettled;
     this.activeBackendRequestController?.abort();
     const fittingSettled = this.beginFittingCancellation(null);

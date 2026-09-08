@@ -32,7 +32,7 @@
     { name: "Opus 4.8", provider: "claude" },
     { name: "Opus 5", provider: "claude" },
     { name: "Fable 5", provider: "claude" },
-    { name: "GPT-6 Sol", provider: "openai" },
+    { name: "GPT-5.6 Sol", provider: "openai" },
     { name: "GPT-6 Astra", provider: "openai" },
   ] as const;
 </script>

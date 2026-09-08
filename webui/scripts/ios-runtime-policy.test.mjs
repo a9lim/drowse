@@ -586,6 +586,30 @@ try {
       globalThis.navigator.maxTouchPoints = mobileTouchPoints;
     }
 
+    globalThis.navigator.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0";
+    globalThis.navigator.gpu.requestAdapter = async () => ({
+      ...adapter({ fallback: false }),
+      info: { vendor: "intel", architecture: "gen-9" },
+    });
+    const windowsChecker = new capabilityModule.BrowserCapabilityChecker();
+    const windowsIntel = await windowsChecker.check();
+    assert.ok(windowsIntel.issues.some(({ code, severity, message }) =>
+      code === "WEBGPU_WINDOWS_INTEL_GEN9_BLOCKED" && severity === "hard" && /force-high-performance-gpu/u.test(message)
+    ));
+    assert.equal(windowsIntel.supported, false);
+    assert.equal(windowsIntel.operations.generation.available, false);
+    await assert.rejects(windowsChecker.adapterForLoad());
+    assert.equal(windowsIntel.webGpu.adapterInfo.architecture, "gen-9");
+    globalThis.navigator.gpu.requestAdapter = async () => ({
+      ...adapter({ fallback: false }),
+      info: { vendor: "nvidia", architecture: "pascal" },
+    });
+    const switchedGpu = await windowsChecker.check();
+    assert.equal(switchedGpu.supported, true);
+    assert.notEqual(switchedGpu.deviceSignature, windowsIntel.deviceSignature);
+    assert.equal((await windowsChecker.adapterForLoad()).info.vendor, "nvidia");
+    globalThis.navigator.userAgent = mobileUserAgent;
+
     globalThis.navigator.gpu.requestAdapter = async () => adapter({ fallback: true });
     const fallback = await new capabilityModule.BrowserCapabilityChecker().check();
     assert.equal(fallback.supported, false);
@@ -789,7 +813,7 @@ try {
   await shell.check();
   assert.deepEqual(
     recommendedCatalog.document.models.map(({ id }) => id),
-    ["gemma3-1b-instruct"],
+    ["gemma3-270m-instruct", "gemma3-1b-instruct"],
   );
   assert.equal(recommendedPreference, "speed");
   const shellModel = shell.current().models[0];
@@ -801,7 +825,7 @@ try {
   console.log("ok - Safari admission uses capabilities and a real OPFS canary");
   console.log("ok - Apple mobile calibration repeats compute submissions and mapped readbacks");
   console.log("ok - Apple mobile model policy requires evidence and blocks 4B models");
-  console.log("ok - Apple mobile setup filters 270M, prefers speed, and defers SAE packs");
+  console.log("ok - Apple mobile setup retains 270M, prefers speed, and defers SAE packs");
   console.log("ok - Safari and Firefox previews require exact-browser load evidence");
   console.log("ok - output limits follow context capacity across browsers");
   console.log("ok - Firefox 155 remains blocked when its adapter reports 9 of 10 buffers");

@@ -1,5 +1,5 @@
 diff --git a/package-lock.json b/package-lock.json
-index 0070bde..ab3a040 100644
+index 0070bde..fb369c5 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,21 +1,21 @@
@@ -7,7 +7,7 @@ index 0070bde..ab3a040 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.36",
++  "version": "0.2.84-drowse.37",
    "lockfileVersion": 3,
    "requires": true,
    "packages": {
@@ -15,7 +15,7 @@ index 0070bde..ab3a040 100644
 -      "name": "@mlc-ai/web-llm",
 -      "version": "0.2.84",
 +      "name": "@drowse/web-llm",
-+      "version": "0.2.84-drowse.36",
++      "version": "0.2.84-drowse.37",
        "license": "Apache-2.0",
        "dependencies": {
 -        "loglevel": "^1.9.1"
@@ -170,18 +170,25 @@ index 0070bde..ab3a040 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..58c1c00 100644
+index cabfc3d..7d06db9 100644
 --- a/package.json
 +++ b/package.json
-@@ -1,6 +1,6 @@
+@@ -1,12 +1,12 @@
  {
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.36",
++  "version": "0.2.84-drowse.37",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
+   "type": "module",
+   "scripts": {
+-    "build": "rollup -c && ./cleanup-index-js.sh",
++    "build": "node --test tvm-direct-upload.test.mjs && rollup -c && ./cleanup-index-js.sh",
+     "lint": "npx eslint ./src/ ./tests/ ./examples/ && npx prettier ./src/ ./tests/ ./examples/ --check",
+     "test": "jest --coverage",
+     "format": "prettier --write \"./src/\" \"./examples/\" \"./tests/\"",
 @@ -17,7 +17,7 @@
    ],
    "repository": {
@@ -224,6 +231,26 @@ index cabfc3d..58c1c00 100644
 +    }
    }
  }
+diff --git a/rollup.config.js b/rollup.config.js
+index 60fbfe9..abc1c0b 100644
+--- a/rollup.config.js
++++ b/rollup.config.js
+@@ -2,6 +2,7 @@ import { nodeResolve } from "@rollup/plugin-node-resolve";
+ import ignore from "rollup-plugin-ignore";
+ import commonjs from "@rollup/plugin-commonjs";
+ import typescript from "@rollup/plugin-typescript";
++import { directUploadPlugin } from "./tvm-direct-upload.mjs";
+ 
+ export default {
+   input: "src/index.ts",
+@@ -15,6 +16,7 @@ export default {
+     },
+   ],
+   plugins: [
++    directUploadPlugin(),
+     ignore(["fs", "path", "crypto", "node:fs", "node:path", "node:crypto"]),
+     nodeResolve({ browser: true }),
+     commonjs({
 diff --git a/src/cache_util.ts b/src/cache_util.ts
 index 6bf8d4f..69bf5db 100644
 --- a/src/cache_util.ts
@@ -11910,4 +11937,144 @@ index 9b04efa..1482f3b 100644
 +    "tokenizeDrowseText",
 +    "decodeDrowseTokens",
 +  ]);
++});
+diff --git a/tvm-direct-upload.mjs b/tvm-direct-upload.mjs
+new file mode 100644
+index 0000000..3316eab
+--- /dev/null
++++ b/tvm-direct-upload.mjs
+@@ -0,0 +1,45 @@
++import { createHash } from "node:crypto";
++
++const runtimeSha256 = "71cc97f20b962c9f88a3c29ca684504df2f69af72f49ad7a089d9e2136b90d16";
++const recordLine = "const rec = shardRecords[j];";
++
++export function canDirectUploadTensor(rec) {
++  return rec.format === "raw" ||
++    (rec.format === "f32-to-bf16" && rec.dtype !== "float32");
++}
++
++export async function uploadRawTensor(tvm, rec, buffer, device) {
++  const array = tvm.withNewScope(() =>
++    tvm.detachFromCurrentScope(tvm.empty(rec.shape, rec.dtype, device)),
++  );
++  try {
++    array.copyFromRawBytes(new Uint8Array(buffer, rec.byteOffset, rec.nbytes));
++    await device.sync();
++    tvm.tensorCacheUpdate(rec.name, array, false);
++  } finally {
++    array.dispose();
++  }
++}
++
++export function patchTensorCacheLoader(code) {
++  if (createHash("sha256").update(code).digest("hex") !== runtimeSha256 ||
++      code.split(recordLine).length !== 2) {
++    throw new Error("The pinned TVM runtime changed; review the direct-upload patch before building.");
++  }
++  const branch = `${recordLine}
++                            if (device.deviceType === DeviceStrToEnum.webgpu && canDirectUploadTensor(rec)) {
++                                yield uploadRawTensor(this, rec, buffer, device);
++                                continue;
++                            }`;
++  return `${canDirectUploadTensor.toString()}\n${uploadRawTensor.toString()}\n${code.replace(recordLine, branch)}`;
++}
++
++export function directUploadPlugin() {
++  return {
++    name: "drowse-tvm-direct-upload",
++    transform(code, id) {
++      if (!id.replaceAll("\\", "/").endsWith("/@mlc-ai/web-runtime/lib/index.js")) return null;
++      return { code: patchTensorCacheLoader(code), map: null };
++    },
++  };
++}
+diff --git a/tvm-direct-upload.test.mjs b/tvm-direct-upload.test.mjs
+new file mode 100644
+index 0000000..5b9375a
+--- /dev/null
++++ b/tvm-direct-upload.test.mjs
+@@ -0,0 +1,83 @@
++import assert from "node:assert/strict";
++import { readFile } from "node:fs/promises";
++import test from "node:test";
++import { canDirectUploadTensor, uploadRawTensor, patchTensorCacheLoader, directUploadPlugin } from "./tvm-direct-upload.mjs";
++
++for (const [format, dtype, expected] of [
++  ["raw", "float32", true],
++  ["raw", "uint32", true],
++  ["f32-to-bf16", "uint32", true],
++  ["f32-to-bf16", "float16", true],
++  ["f32-to-bf16", "float32", false],
++  ["unknown", "float16", false],
++]) {
++  test(`${format}/${dtype} retains the storage decoder when needed`, () => {
++    assert.equal(canDirectUploadTensor({ format, dtype }), expected);
++  });
++}
++
++function fixture(failAt) {
++  const calls = [];
++  const buffer = Uint8Array.from([9, 8, 7, 6, 1, 2, 3, 4, 5, 6, 7, 8]).buffer;
++  const rec = { name: "weight", shape: [2], dtype: "uint32", format: "raw", byteOffset: 4, nbytes: 8 };
++  const step = (name) => {
++    calls.push(name);
++    if (failAt === name) throw new Error(name);
++  };
++  const device = { async sync() { step("sync"); } };
++  const array = {
++    copyFromRawBytes(bytes) {
++      step("copy");
++      assert.equal(bytes.buffer, buffer);
++      assert.equal(bytes.byteOffset, 4);
++      assert.deepEqual([...bytes], [1, 2, 3, 4, 5, 6, 7, 8]);
++    },
++    dispose() { step("dispose"); },
++  };
++  const tvm = {
++    withNewScope(fn) { return fn(); },
++    detachFromCurrentScope(value) { return value; },
++    empty(shape, dtype, target) {
++      step("allocate");
++      assert.deepEqual(shape, rec.shape);
++      assert.equal(dtype, rec.dtype);
++      assert.equal(target, device);
++      return array;
++    },
++    tensorCacheUpdate(name, value, override) {
++      step("cache");
++      assert.equal(name, "weight");
++      assert.equal(value, array);
++      assert.equal(override, false);
++    },
++  };
++  return { tvm, rec, buffer, device, calls };
++}
++
++test("uploads the original shard view and synchronizes before cache ownership transfer", async () => {
++  const f = fixture();
++  await uploadRawTensor(f.tvm, f.rec, f.buffer, f.device);
++  assert.deepEqual(f.calls, ["allocate", "copy", "sync", "cache", "dispose"]);
++});
++
++for (const failAt of ["copy", "sync", "cache"]) {
++  test(`disposes the detached tensor after ${failAt} failure`, async () => {
++    const f = fixture(failAt);
++    await assert.rejects(uploadRawTensor(f.tvm, f.rec, f.buffer, f.device), new RegExp(failAt));
++    assert.equal(f.calls.at(-1), "dispose");
++    assert.equal(f.calls.filter((call) => call === "dispose").length, 1);
++    if (failAt !== "cache") assert.ok(!f.calls.includes("cache"));
++  });
++}
++
++test("patches only the pinned dependency and keeps CPU/conversion fallback intact", async () => {
++  const source = await readFile(new URL("./node_modules/@mlc-ai/web-runtime/lib/index.js", import.meta.url), "utf8");
++  const result = patchTensorCacheLoader(source);
++  assert.match(result, /device\.deviceType === DeviceStrToEnum\.webgpu && canDirectUploadTensor\(rec\)/);
++  const originalTail = source.slice(source.indexOf("const rec = shardRecords[j];") + "const rec = shardRecords[j];".length);
++  assert.ok(result.endsWith(originalTail));
++  assert.throws(() => patchTensorCacheLoader(source + "\n"), /pinned TVM runtime changed/);
++  assert.throws(() => patchTensorCacheLoader(result), /pinned TVM runtime changed/);
++  assert.equal(directUploadPlugin().transform(source, "/unrelated/index.js"), null);
++  assert.equal(directUploadPlugin().transform(source, "/node_modules/@mlc-ai/web-runtime/lib/index.js").code, result);
 +});

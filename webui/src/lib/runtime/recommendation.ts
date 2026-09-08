@@ -168,8 +168,13 @@ export function assessModelVariant(
   const lastOom = orderedRecords.findLastIndex(
     ({ record }) => record.result === "oom",
   );
-  const deviceLossesAfterSuccess = orderedRecords
-    .slice(lastSuccess + 1)
+  const deviceRecords = (options.loadRecords ?? [])
+    .filter((record) => record.deviceSignature === capabilities.deviceSignature)
+    .map((record, index) => ({ record, index }))
+    .sort((a, b) => a.record.recordedAt - b.record.recordedAt || a.index - b.index);
+  const lastDeviceSuccess = deviceRecords.findLastIndex(({ record }) => record.result === "success");
+  const deviceLossesAfterSuccess = deviceRecords
+    .slice(lastDeviceSuccess + 1)
     .filter(({ record }) => record.result === "device_lost").length;
   const confirmedOom = lastOom >= 0 && lastOom > lastSuccess;
   const repeatedDeviceLoss = deviceLossesAfterSuccess >= 2;
@@ -186,11 +191,11 @@ export function assessModelVariant(
     );
   }
   if (repeatedDeviceLoss) {
-    advisories.push(
+    hardFailures.push(
       issue(
         "REPEATED_DEVICE_LOSS",
-        "This configuration repeatedly lost the WebGPU device",
-        "advisory",
+        userFacingError({ code: "REPEATED_DEVICE_LOSS" }),
+        "hard",
       ),
     );
   }

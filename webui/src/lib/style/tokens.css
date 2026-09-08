@@ -29,7 +29,7 @@
 :root {
   color-scheme: dark;
   --brand-claude: #c96442;
-  --brand-openai: #10a37f;
+  --brand-openai: #000;
   --brand-logo-ink: #fff;
   --loading-accent: var(--accent);
   --verification-blue: #1e9cf1;
