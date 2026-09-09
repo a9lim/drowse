@@ -111,6 +111,7 @@ export class BrowserLoomRuntime {
   private readonly maxOutputTokens: number;
   private generating = false;
   private stopRequested = false;
+  private generationController: AbortController | null = null;
   private generationReservation: GenerationReservation | null = null;
 
   constructor(options: BrowserLoomOptions) {
@@ -233,10 +234,12 @@ export class BrowserLoomRuntime {
     }
     this.stopRequested = false;
     this.generating = true;
+    this.generationController = new AbortController();
     try {
       await this.runGeneration(request, emit);
     } finally {
       this.generationReservation = null;
+      this.generationController = null;
       this.stopRequested = false;
       this.generating = false;
     }
@@ -244,6 +247,7 @@ export class BrowserLoomRuntime {
 
   stop(userInitiated = true): Promise<void> {
     if (userInitiated && this.generating) this.stopRequested = true;
+    this.generationController?.abort();
     return this.generation.stop();
   }
 
@@ -552,6 +556,7 @@ export class BrowserLoomRuntime {
       let result: WebLlmGenerationResult;
       try {
         const plan: WebLlmGenerationPlan = {
+          signal: this.generationController!.signal,
           input: generationInput(
             request,
             this.tree,

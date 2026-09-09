@@ -478,7 +478,7 @@ try {
     },
   };
   const generated = await runtime.streamGeneration(
-    { input: { kind: "chat", messages: [{ role: "user", content: "hello" }] } },
+    { input: { kind: "chat", messages: [{ role: "user", content: "hello" }] }, thinking: false },
     () => {},
   );
   assert.equal(generated.text, "answer");
@@ -499,7 +499,8 @@ try {
     return successfulGenerationStream();
   };
   assert.equal((await runtime.streamGeneration(
-    { input: { kind: "chat", messages: followupMessages } }, () => {},
+    { input: { kind: "chat", messages: followupMessages }, thinking: false,
+      generationSeat: "assistant", generationRoleName: null, hookProgram: null }, () => {},
   )).text, "answer");
   engine.chat.completions.create = async () => {
     assert.equal(engine.chatResets, 2, "steering invalidates plain conversation prefix reuse");
@@ -512,6 +513,13 @@ try {
     return successfulGenerationStream();
   };
   await runtime.streamGeneration({input: {kind: "chat", messages: followupMessages}}, () => {});
+  engine.chat.completions.create = async () => successfulGenerationStream("length");
+  await runtime.streamGeneration({ input: { kind: "chat", messages: followupMessages }, thinking: false }, () => {});
+  engine.chat.completions.create = async () => {
+    assert.equal(engine.chatResets, 4, "a capped response cannot leave a reusable prefix");
+    return successfulGenerationStream();
+  };
+  await runtime.streamGeneration({ input: { kind: "chat", messages: followupMessages }, thinking: false }, () => {});
   engine.chat.completions.create = async () => {
     throw new Error("fixture generation failed");
   };
@@ -1522,7 +1530,7 @@ try {
   await server.close();
 }
 
-async function* successfulGenerationStream() {
+async function* successfulGenerationStream(terminalReason = "eos") {
   yield {
     choices: [{
       index: 0,
@@ -1544,8 +1552,8 @@ async function* successfulGenerationStream() {
     choices: [{
       index: 0,
       delta: {},
-      finish_reason: "stop",
-      drowse_finish_reason: "eos",
+      finish_reason: terminalReason === "length" ? "length" : "stop",
+      drowse_finish_reason: terminalReason,
       logprobs: null,
     }],
   };

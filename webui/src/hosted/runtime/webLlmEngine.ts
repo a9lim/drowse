@@ -595,7 +595,7 @@ export class DrowseWebLlmRuntime {
       throw runtimeError("BASE_MODEL_RAW_INPUT_REQUIRED", "This base model requires a plain text completion prompt");
     }
     const plainChat = plan.input.kind === "chat" && !plan.hookProgram &&
-      !plan.steeringExpression?.trim() && !plan.replay && plan.thinking == null &&
+      !plan.steeringExpression?.trim() && !plan.replay && !plan.thinking &&
       !plan.generationRoleName && (!plan.generationSeat || plan.generationSeat === "assistant");
     const reusePrefix = plainChat && this.reusablePlainChatPrefix;
     this.reusablePlainChatPrefix = false;
@@ -630,7 +630,7 @@ export class DrowseWebLlmRuntime {
         },
         onToken,
       );
-      this.reusablePlainChatPrefix = plainChat && !plan.signal?.aborted;
+      this.reusablePlainChatPrefix = plainChat && result.terminalReason === "eos" && !plan.signal?.aborted;
       this.performance = {
         prefillTokensPerSecond: result.prefillTokensPerSecond,
         decodeTokensPerSecond: result.decodeTokensPerSecond,

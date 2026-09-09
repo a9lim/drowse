@@ -336,9 +336,7 @@ export async function streamWebLlmGeneration(
     );
     let processingError: unknown = null;
     for await (const value of stream) {
-      if (processingError !== null) continue;
       try {
-        throwIfAborted(plan.signal);
         const chunk = requireRecord(value, "generation chunk");
         const chunkUsage = readUsage(chunk.usage);
         if (chunkUsage) {
@@ -346,6 +344,8 @@ export async function streamWebLlmGeneration(
           prefillTokensPerSecond = chunkUsage.prefillTokensPerSecond;
           decodeTokensPerSecond = chunkUsage.decodeTokensPerSecond;
         }
+        if (processingError !== null) continue;
+        throwIfAborted(plan.signal);
         const choices = requireArray(chunk.choices, "generation chunk choices");
         if (choices.length === 0) {
           if (!chunkUsage) {
@@ -460,6 +460,7 @@ export async function streamWebLlmGeneration(
             );
           }
           for (const row of rows) {
+            throwIfAborted(plan.signal);
             const rawIndex = tokenCount;
             if (plan.onRawTokenStart) await plan.onRawTokenStart(rawIndex);
             const preservingPrefix = rawIndex < (plan.measurementStartRawIndex ?? 0);
@@ -470,6 +471,7 @@ export async function streamWebLlmGeneration(
               !preservingPrefix && (plan.measurementTargetRawIndex === undefined ||
                 rawIndex === plan.measurementTargetRawIndex),
             );
+            throwIfAborted(plan.signal);
             tokenCount += 1;
             const capturedEnvelope = measurementEnvelope(
               plan.hookProgram,
@@ -508,6 +510,7 @@ export async function streamWebLlmGeneration(
             for (const piece of classified.flatMap((item) =>
               stopBuffer.consume(item)
             )) {
+              throwIfAborted(plan.signal);
               const token = emittedToken(
                 piece.text,
                 piece.thinking,
@@ -559,7 +562,7 @@ export async function streamWebLlmGeneration(
           );
         }
       } catch (error) {
-        processingError = error;
+        processingError ??= error;
         await hooks.interrupt();
       }
     }

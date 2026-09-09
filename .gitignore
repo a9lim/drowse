@@ -26,6 +26,7 @@ browser-runtime/vendor/*.tgz
 !browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.34.tgz
 !browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.36.tgz
 !browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.37.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.38.tgz
 
 # Virtual environments
 .venv/

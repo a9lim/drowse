@@ -3,11 +3,13 @@ import { WINDOWS_GPU_GUIDANCE, WINDOWS_INTEL_GEN9_BLOCK } from "./gpuRecovery";
 type ErrorMessage = string | ((raw: string) => string);
 
 const MESSAGES: Array<[RegExp, ErrorMessage]> = [
+  [/MODEL_LOAD_TIMEOUT/u,
+    "The model took too long to load. Reload this page and try a smaller model. Your saved chats and downloads have not been removed."],
   [/APP_MODULE_UNAVAILABLE/u,
     "Some app files could not load. Reconnect, reload Drowse, then reopen the model. Your downloaded models and saved chats are kept."],
   [/WEBGPU_WINDOWS_INTEL_GEN9_BLOCKED/u, WINDOWS_INTEL_GEN9_BLOCK],
   [/REPEATED_DEVICE_LOSS/u,
-    `Model loading is blocked because this browser and GPU repeatedly stopped responding. Update the graphics driver or switch graphics hardware before checking again. On Windows: ${WINDOWS_GPU_GUIDANCE}`],
+    () => gpuRecoveryMessage("Model loading is blocked because the graphics device repeatedly stopped responding. Update your browser and operating system, or use another device.")],
   [/SAMPLING_RUNTIME_OUTDATED/u,
     "Drowse is using an older model runtime that cannot accept these sampling settings. Reload Drowse, then reopen the model. Your downloaded models and saved chats do not need to be removed."],
   [/WEBGPU_LIMIT_TOO_LOW/u, webGpuLimitMessage],
@@ -16,7 +18,7 @@ const MESSAGES: Array<[RegExp, ErrorMessage]> = [
   [/WEBGPU_(?:UNAVAILABLE|ADAPTER_|CALIBRATION_|LIMIT_UNAVAILABLE)|SOFTWARE_ADAPTER|ADAPTER_KIND_UNKNOWN/u,
     "Drowse could not confirm compatible hardware-accelerated graphics. Update your browser and graphics driver, then run the device check again."],
   [/WEBGPU_(?:DEVICE|OUT_OF_MEMORY)|GPU_DEVICE|DEVICE_LOST/u,
-    `The graphics device stopped responding. Choose a smaller model or shorter context, and update your browser and graphics driver before reopening it. On Windows: ${WINDOWS_GPU_GUIDANCE}`],
+    () => gpuRecoveryMessage("The graphics device stopped responding. Close other tabs, then reopen Drowse with a smaller model. If it happens again, update your browser and operating system.")],
   [/INSECURE_CONTEXT|CROSS_ORIGIN_ISOLATION_REQUIRED/u,
     "Drowse needs a secure browser connection. Open it over HTTPS or on localhost, then run the device check again."],
   [/WORKER_UNAVAILABLE|WASM_UNAVAILABLE|BROADCAST_CHANNEL_UNAVAILABLE|WEB_LOCKS_UNAVAILABLE/u,
@@ -94,6 +96,12 @@ export function userFacingError(
   }
   if (code || !raw || raw.includes("\n") || looksInternal(raw)) return fallback;
   return raw;
+}
+
+function gpuRecoveryMessage(message: string): string {
+  return typeof navigator !== "undefined" && /windows/iu.test(navigator.userAgent)
+    ? `${message} On Windows: ${WINDOWS_GPU_GUIDANCE}`
+    : message;
 }
 
 function inferredCode(raw: string): string {

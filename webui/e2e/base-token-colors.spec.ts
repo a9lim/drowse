@@ -10,8 +10,8 @@ test("base completion colors match inspection, retain recorded readings through 
   await page.getByRole("button", { name: "Show chat tools", exact: true }).click();
   const editor = page.getByRole("textbox", { name: "Editable completion buffer" });
   const mirror = page.locator(".color-mirror");
-  const model = page.getByLabel("Active model", { exact: true });
-  await expect(model).toContainText("pythia-70m-base");
+  await expect(page.locator(".model-summary")).toBeAttached();
+  await expect(page.getByLabel("Active model", { exact: true })).toHaveCount(0);
   await editor.fill("A field note: ");
   await page.getByRole("button", { name: "Continue text", exact: true }).click();
   await expect(mirror.locator("span[style*='background-color']").first()).toBeAttached();
@@ -71,11 +71,6 @@ test("base completion colors match inspection, retain recorded readings through 
   for (const viewport of [{ width: 320, height: 780 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
     await expectAligned();
-    await expect.poll(() => model.evaluate(element => {
-      const model = element.getBoundingClientRect();
-      const panel = element.closest(".chat-panel")!.getBoundingClientRect();
-      return Math.abs(model.bottom - panel.bottom) < 1 && model.right <= innerWidth && model.bottom <= innerHeight;
-    })).toBe(true);
     await expect.poll(() => page.locator(".generation-actions").evaluate(element => {
       const actions = element.getBoundingClientRect();
       const chat = element.closest(".chat")!.getBoundingClientRect();

@@ -1920,10 +1920,11 @@ try {
     assert.equal(compiler.compile("").measurementSchema.lensReadout, false);
   });
 
-  test("Apple mobile starts optional live readouts off but keeps them available", async () => {
+  test("optional live readouts can stay off without disabling their tools", async () => {
     const { request } = await fixture({
       withWhitener: true,
       withJlens: true,
+      withSae: true,
       structuredHookProfile: "standard-v3",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
@@ -1939,6 +1940,8 @@ try {
       layers: null,
     });
     assert.equal(compiler.compile("").measurementSchema.lensReadout, false);
+    assert.equal(compiler.compile("").measurementSchema.saeReadout, false);
+    assert.equal(runtime.blocks()[2].live.enabled, false);
     assert.deepEqual(runtime.request({
       service: "instruments",
       method: "setLive",

@@ -1466,48 +1466,49 @@
       rows="3"
       aria-label={`Compose as ${authoredLabel}`}
     ></textarea>
-    <div class="input-actions">
-      <Button
-        type="submit"
-        variant="solid"
-        disabled={primaryDisabled}
-        title={appendSelected ? "Enter · add your message only" : "Enter · send and generate a reply"}
-      ><StateIcon icons={["add", "send", "conversation"]} name={appendSelected ? "add" : hasText ? "send" : "conversation"} /><MorphText text={sendLabel} numbers={false} /></Button>
-      <Button
-        variant="danger"
-        onclick={sendStop}
-        disabled={!genStatus.active}
-        title="Escape · stop the current reply"
-      ><FluentIcon name="stop" />Stop</Button>
-      {#if canClearConversation}
-        <button
-          type="button"
-          class="clear-conversation"
-          class:confirm-clear={clearConversationArmed}
-          onclick={requestClearConversation}
-          onblur={() => (clearConversationArmed = false)}
-          onkeydown={(event) => {
-            if (event.key === "Escape") clearConversationArmed = false;
-          }}
-          {...{ "aria-description": (clearConversationArmed
-            ? "Clear the current view and start a new path"
-            : "Start a blank conversation; existing branches remain available") }}
-          aria-label={clearConversationArmed ? "Confirm clear conversation" : "Clear conversation"}
-        >
-          <span class="clear-icon"><FluentIcon name={clearConversationArmed ? "check" : "refresh"} /></span>
-          <span class="clear-label">{clearConversationArmed ? "Confirm clear" : "Clear conversation"}</span>
-        </button>
-      {/if}
+    <div class="input-actions-reveal">
+      <div class="input-actions">
+        <Button
+          type="submit"
+          variant="solid"
+          disabled={primaryDisabled}
+          title={appendSelected ? "Enter · add your message only" : "Enter · send and generate a reply"}
+        ><StateIcon icons={["add", "send", "conversation"]} name={appendSelected ? "add" : hasText ? "send" : "conversation"} /><MorphText text={sendLabel} numbers={false} /></Button>
+        <Button
+          variant="danger"
+          onclick={sendStop}
+          disabled={!genStatus.active}
+          title="Escape · stop the current reply"
+        ><FluentIcon name="stop" />Stop</Button>
+        {#if canClearConversation}
+          <button
+            type="button"
+            class="clear-conversation"
+            class:confirm-clear={clearConversationArmed}
+            onmousedown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.currentTarget.focus({ preventScroll: true });
+            }}
+            onclick={requestClearConversation}
+            onblur={() => (clearConversationArmed = false)}
+            onkeydown={(event) => {
+              if (event.key === "Escape") clearConversationArmed = false;
+            }}
+            {...{ "aria-description": (clearConversationArmed
+              ? "Clear the current view and start a new path"
+              : "Start a blank conversation; existing branches remain available") }}
+            aria-label={clearConversationArmed ? "Confirm clear conversation" : "Clear conversation"}
+          >
+            <span class="clear-icon"><FluentIcon name={clearConversationArmed ? "check" : "refresh"} /></span>
+            <span class="clear-label">{clearConversationArmed ? "Confirm clear" : "Clear conversation"}</span>
+          </button>
+        {/if}
+      </div>
     </div>
   </form>
   {/if}
 </div>
-  {#if sessionState.info?.model_id}
-    <div class="active-model" aria-label="Active model" {...{ "aria-description": (sessionState.info.model_id) }}>
-      <span>Model</span>
-      <span class="active-model-name">{sessionState.info.model_id.split("/").at(-1)}</span>
-    </div>
-  {/if}
 
 {#if tokenPopup}
   {@const popup = tokenPopup}
@@ -1669,20 +1670,6 @@
     min-width: 0;
     min-height: 0;
   }
-  .active-model {
-    display: flex;
-    flex: 0 0 auto;
-    align-self: flex-end;
-    align-items: baseline;
-    justify-content: flex-end;
-    gap: var(--space-2);
-    max-width: 100%;
-    color: var(--fg-muted);
-    font-family: var(--font-ui);
-    font-size: var(--text-sm);
-    line-height: 1.5;
-  }
-  .active-model-name { min-width: 0; overflow-wrap: anywhere; text-align: end; }
   .chat {
     --chat-scrollbar-width: 0px;
     --chat-base-inset: var(--surface-padding);
@@ -2314,7 +2301,7 @@
   .input-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: var(--composer-space, var(--space-6));
+    gap: 0;
     padding: var(--surface-padding);
     border-radius: var(--radius-lg);
     background: var(--workspace-field-bg);
@@ -2347,19 +2334,41 @@
   .input:focus {
     outline: none;
   }
+  .input-actions-reveal {
+    display: grid;
+    grid-template-rows: 1fr;
+    margin-top: var(--composer-space, var(--space-6));
+    opacity: 1;
+    visibility: visible;
+    transition:
+      grid-template-rows var(--dur-slow) var(--ease-move),
+      margin-top var(--dur-slow) var(--ease-move),
+      opacity var(--dur-slow) var(--ease-move),
+      visibility 0s;
+  }
   .input-actions {
     display: flex;
+    min-height: 0;
+    overflow: hidden;
     gap: var(--composer-space, var(--space-6));
     align-items: stretch;
     justify-content: flex-end;
     flex-wrap: nowrap;
   }
   .input-actions :global(button) { white-space: nowrap; }
-  .input-row:not(:focus-within):not(.has-draft):not(.generating) .input-actions {
-    display: none;
+  .input-actions :global(button:focus-visible) { outline-offset: -2px; }
+  .input-row:not(:focus-within):not(.has-draft):not(.generating) .input-actions-reveal {
+    grid-template-rows: 0fr;
+    margin-top: 0;
+    opacity: 0;
+    visibility: hidden;
+    transition-delay: 0s, 0s, 0s, var(--dur-slow);
   }
   .input-row.generating:not(:focus-within):not(.has-draft) .input-actions > :global(:not(.danger)) {
-    display: none;
+    visibility: hidden;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .input-actions-reveal { transition: none; }
   }
   .clear-icon { display: none; }
   .clear-conversation {

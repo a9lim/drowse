@@ -12,14 +12,19 @@ export async function cacheOfflineRuntimeAssets(): Promise<void> {
     !manifest.assets.every(path => typeof path === "string" && MODULE_PATH.test(path))
   ) throw unavailable();
   const cache = await caches.open(CACHE_NAME);
-  for (const path of manifest.assets) {
-    if (await cache.match(path, { ignoreVary: true })) continue;
-    const asset = await fetchAppFile(path);
-    const mime = asset.headers.get("content-type") ?? "";
-    if (!asset.ok || !/^(?:text\/css|(?:text|application)\/javascript)\b/iu.test(mime)) {
-      throw unavailable();
+  for (let offset = 0; offset < manifest.assets.length; offset += 3) {
+    const results = await Promise.allSettled(manifest.assets.slice(offset, offset + 3).map(async path => {
+      if (await cache.match(path, { ignoreVary: true })) return;
+      const asset = await fetchAppFile(path);
+      const mime = asset.headers.get("content-type") ?? "";
+      if (!asset.ok || !/^(?:text\/css|(?:text|application)\/javascript)\b/iu.test(mime)) {
+        throw unavailable();
+      }
+      await cache.put(path, asset);
+    }));
+    for (const result of results) {
+      if (result.status === "rejected") throw result.reason;
     }
-    await cache.put(path, asset);
   }
 }
 

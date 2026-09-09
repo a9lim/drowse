@@ -215,10 +215,10 @@ try {
   highlightState.compareTarget = null;
   highlightState.smoothBlend = false;
   const { default: Chat } = await server.ssrLoadModule("/src/panels/Chat.svelte");
-  assert.match(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model" aria-description="fixture\/base"/);
+  assert.doesNotMatch(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model"/);
   sessionState.info = { model_id: "fixture/instruct", is_base_model: false };
   setGenUiMode("chat");
-  assert.match(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model" aria-description="fixture\/instruct"/);
+  assert.doesNotMatch(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model"/);
   sessionState.info = { model_id: "fixture/base", is_base_model: true };
   console.log("Base token colors: edit and live mirrors, surprise, entropy, compare, zero/missing readings, text alignment, and model identity passed");
 

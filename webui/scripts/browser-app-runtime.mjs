@@ -191,6 +191,7 @@ self.onmessage = async (event) => {
     if (!adapter) throw new Error("no WebGPU load adapter");
     stage = "load";
     postMessage({ type: "stage", stage });
+    const loadStarted = performance.now();
     await runtime.load({
       model: { id: ${JSON.stringify(options.id)} },
       variant: {
@@ -215,6 +216,22 @@ self.onmessage = async (event) => {
       onDeviceLost() {},
     });
     const loadedEngine = runtime.requireEngine();
+    if (${options.benchmark}) {
+      stage = "benchmark";
+      self.postMessage({ type: "stage", stage });
+      const { benchmarkGeneration } = await import("/scripts/browser-generation-benchmark.ts");
+      const result = await benchmarkGeneration(runtime, ${options.maxTokens});
+      await runtime.unload();
+      postMessage({ type: "done", result: {
+        ...result, loadMs: result.startedAt - loadStarted,
+        model: manifest.source, quantization: manifest.quantization,
+        userAgent: navigator.userAgent, adapter: {
+          vendor: adapter.info?.vendor, architecture: adapter.info?.architecture,
+          device: adapter.info?.device, description: adapter.info?.description,
+        },
+      } });
+      return;
+    }
     const originalClear = loadedEngine.clearDrowseRankOneProgram.bind(loadedEngine);
     loadedEngine.clearDrowseRankOneProgram = async (...args) => {
       postMessage({ type: "trace", stage: "hook-clear-start" });
@@ -333,6 +350,7 @@ function createThinkingHookProgram(manifest) {
 
 function parseArguments(args) {
   const result = {
+    benchmark: false,
     browserChannel: "chrome",
     contextTokens: 4096,
     id: null,
@@ -346,6 +364,10 @@ function parseArguments(args) {
   };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
+    if (argument === "--benchmark") {
+      result.benchmark = true;
+      continue;
+    }
     if (argument === "--thinking" || argument === "--thinking-controls") {
       result[argument === "--thinking" ? "thinking" : "thinkingControls"] = true;
       continue;

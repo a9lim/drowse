@@ -232,9 +232,7 @@ export function createDrowseBrowserModelBackend(
         loadRequest.variant.contextProfiles.find(
           (profile) => profile.contextTokens === loadRequest.contextTokens,
         )?.bindingSha256 ?? null,
-        loadRequest.runtimeClass !== "apple-mobile-webkit" &&
-          loadRequest.runtimeClass !== "desktop-webkit" &&
-          loadRequest.runtimeClass !== "desktop-gecko",
+        false,
       );
       activeLoadRequest = loadRequest;
       activeCompiler = entry;

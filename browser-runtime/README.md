@@ -49,6 +49,12 @@ log/parallel-transport/exp translation, and nearest-foot solve as the Python
 domain. These TypeScript and compiled-kernel contracts are implemented but do
 not by themselves constitute production-model or physical-device verification.
 
+Hosted browsers start optional live J-lens and SAE readouts off on every device.
+Users enable them through the instrument Live controls. Explicit probes, steering
+gates, and token replay still request their required computations. Plain chat
+therefore avoids full-vocabulary and full-dictionary analysis on every token,
+including when the instrument sidebar is hidden; model sampling is unchanged.
+
 Optional instrument packs are executable inputs rather than capability
 placeholders. A local SAE v1 fp32 artifact provides `W_dec[id]` steering and the
 exact `relu((h - b_dec) @ W_enc + b_enc)` probe used by `sae/<id>` gates. A

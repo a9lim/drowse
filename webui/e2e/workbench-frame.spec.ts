@@ -5,11 +5,12 @@ import { expect, test } from "@playwright/test";
 const devUrl = "http://127.0.0.1:4176";
 
 for (const fixture of ["base", "1"]) {
-  test(`flat workbench retains its sidebar and active model: ${fixture}`, async ({ page }) => {
+  test(`flat workbench keeps model identity in the sidebar: ${fixture}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`${devUrl}/app?layoutFixture=${fixture}`);
-    const model = page.getByLabel("Active model", { exact: true });
-    await expect(model).toBeVisible();
+    const model = page.locator(".model-summary");
+    await expect(model).toBeAttached();
+    await expect(page.getByLabel("Active model", { exact: true })).toHaveCount(0);
     for (const theme of ["Light", "Dark"]) {
       await setAppearance(page, theme);
       for (const width of [1440, 900]) {
@@ -33,8 +34,7 @@ for (const fixture of ["base", "1"]) {
     }
     await page.setViewportSize({ width: 320, height: 780 });
     await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toBeVisible();
-    await expect(model).toBeVisible();
-    expect(await model.evaluate(element => element.getBoundingClientRect().bottom <= innerHeight)).toBe(true);
+    await expect(model).toBeAttached();
     expect(await page.locator(".app-sidebar").evaluate(element => element.getBoundingClientRect().height < 130)).toBe(true);
     await selectWorkspaceView(page, "Controls");
     await expect(page.getByRole("heading", { name: "Generation settings", exact: true })).toBeVisible();

@@ -721,6 +721,8 @@ try {
     const originalCaches = Object.getOwnPropertyDescriptor(globalThis, "caches");
     const files = new Map();
     const fetched = [];
+    let activeFetches = 0;
+    let peakFetches = 0;
     let manifest = { assets: ["/assets/browser.worker-abc.js", "/assets/drowse-web-llm-def.js", "/assets/App-ghi.css"] };
     let missing = false;
     let wrongMime = false;
@@ -738,12 +740,18 @@ try {
       fetched.push(path);
       if (networkFailed) throw new TypeError("Load failed");
       if (path === "/runtime-assets.json") return Response.json(manifest);
+      activeFetches += 1;
+      peakFetches = Math.max(peakFetches, activeFetches);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      activeFetches -= 1;
       return new Response("module", { status: missing ? 404 : 200, headers: {
         "Content-Type": wrongMime ? "text/html" : path.endsWith(".css") ? "text/css" : "text/javascript",
       } });
     };
     try {
       await cacheOfflineRuntimeAssets();
+      assert.equal(peakFetches, 3, "independent app files should load concurrently");
+      assert.equal(activeFetches, 0);
       assert.deepEqual([...files.keys()], manifest.assets);
       fetched.length = 0;
       await cacheOfflineRuntimeAssets();
@@ -869,8 +877,25 @@ try {
     for (const code of [undefined, "WORKER_OPERATION_FAILED", "WEBGPU_DEVICE_LOST", "MODEL_DEVICE_LOST_DURING_LOAD"]) {
       const message = userErrors.userFacingError({ code, message: "The WebGPU device was lost while loading" });
       assert.match(message, /graphics device stopped responding/u);
-      assert.match(message, /High performance/u);
+      assert.match(message, /smaller model/u);
       assert.doesNotMatch(message, /try again/iu);
+    }
+  });
+
+  test("graphics recovery only includes Windows settings on Windows", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    try {
+      for (const userAgent of ["Macintosh Safari/605.1.15", "iPhone", "Android", "Windows NT 10.0 Chrome/150.0"]) {
+        Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent } });
+        for (const code of ["WEBGPU_DEVICE_LOST", "REPEATED_DEVICE_LOSS"]) {
+          const message = userErrors.userFacingError({ code });
+          assert.equal(message.includes("chrome://flags"), userAgent.includes("Windows"));
+          assert.equal(message.includes("Windows Settings"), userAgent.includes("Windows"));
+        }
+      }
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor);
+      else delete globalThis.navigator;
     }
   });
 
@@ -1230,6 +1255,18 @@ try {
       { ...loadRecord(variant, "device_lost"), recordedAt: 3 },
       { ...loadRecord(variant, "device_lost"), recordedAt: 4 },
     ];
+    const singleLoss = recommendation.assessModelVariant(model, variant, {
+      ...base,
+      loadRecords: lossesAfterSuccess.slice(0, -1),
+    });
+    assert.equal(singleLoss.proven, false);
+    assert.equal(singleLoss.eligible, true);
+    assert.match(singleLoss.advisories.find(({ code }) => code === "PROFILE_UNMEASURED").message,
+      /stopped responding on the last attempt/);
+    assert.equal(recommendation.assessModelVariant(model, variant, {
+      ...base,
+      loadRecords: [...lossesAfterSuccess, { ...loadRecord(variant, "success"), recordedAt: 5 }],
+    }).proven, true);
     const unstable = recommendation.assessModelVariant(model, variant, {
       ...base,
       loadRecords: lossesAfterSuccess,
@@ -3578,6 +3615,114 @@ try {
     assert.equal(controller.snapshot.modelVariantId, "fixture-variant");
     assert.equal(ownership.isOwner, true);
     assert.equal(releases, 0);
+    transport.dispose();
+  });
+
+  for (const phase of ["ownership", "worker"]) {
+    test(`model load deadline covers stalled ${phase} even with worker progress`, async () => {
+      const worker = new FakeWorker();
+      let closed = false;
+      const ownership = {
+        isOwner: false,
+        acquire() {
+          if (phase === "ownership") return new Promise(() => {});
+          this.isOwner = true;
+          return Promise.resolve(true);
+        },
+        release() { this.isOwner = false; },
+        close() {
+          assert.equal(worker.terminated, true, "terminate GPU work before releasing ownership");
+          closed = true;
+        },
+      };
+      const controller = new hostedController.HostedControllerImpl(worker, {
+        ownershipFactory: () => ownership,
+        requestTimeoutMs: 0,
+        longOperationIdleTimeoutMs: 50,
+        modelLoadTimeoutMs: 80,
+      });
+      const loading = controller.load("fixture-variant", 2048);
+      const rejected = assert.rejects(loading, /model took too long to load/);
+      let progress;
+      if (phase === "worker") {
+        const request = await waitFor(() => worker.posted[0]);
+        let sequence = 0;
+        progress = setInterval(() => worker.emit({
+          protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+          kind: "event", requestId: request.requestId, sequence: ++sequence,
+          generationId: null, event: "progress",
+          payload: { kind: "model_load", phase: "webllm_initialization", progress: 0.5 },
+        }), 10);
+      }
+      try {
+        await rejected;
+      } finally {
+        clearInterval(progress);
+      }
+      assert.equal(worker.terminated, true);
+      assert.equal(closed, true);
+      assert.equal(controller.snapshot.lifecycle, "failed");
+      assert.equal(ownership.isOwner, false);
+      assert.equal(controller.snapshot.error.code, "MODEL_LOAD_TIMEOUT");
+      assert.match(controller.snapshot.error.message, /saved chats and downloads have not been removed/);
+      assert.match(userErrors.userFacingError(controller.snapshot.error), /Reload this page and try a smaller model/);
+    });
+  }
+
+  test("Safari runtime factory enables both load and idle deadlines", async () => {
+    const worker = new FakeWorker();
+    const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    const workerDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Worker");
+    const setTimer = globalThis.setTimeout;
+    const delays = [];
+    let bundle;
+    try {
+      Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+        platform: "MacIntel", maxTouchPoints: 0,
+      } });
+      Object.defineProperty(globalThis, "Worker", { configurable: true, value: function () { return worker; } });
+      globalThis.setTimeout = (callback, delay, ...args) => {
+        delays.push(delay);
+        return setTimer(callback, delay, ...args);
+      };
+      bundle = hostedController.createHostedRuntime({
+        ownershipFactory: () => ({ isOwner: true, acquire: async () => true, release() {}, close() {} }),
+      });
+      const loading = bundle.controller.load("fixture-variant", 2048);
+      const rejected = assert.rejects(loading, /fixture worker stopped/);
+      await waitFor(() => worker.posted[0]);
+      assert.ok(delays.includes(600_000), "Safari has an overall model-load deadline");
+      assert.ok(delays.includes(180_000), "Safari retains its no-progress watchdog");
+      worker.emitError("fixture worker stopped");
+      await rejected;
+    } finally {
+      globalThis.setTimeout = setTimer;
+      if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+      else delete globalThis.navigator;
+      if (workerDescriptor) Object.defineProperty(globalThis, "Worker", workerDescriptor);
+      else delete globalThis.Worker;
+      if (bundle) await bundle.dispose();
+    }
+  });
+
+  test("successful model load cancels its deadline", async () => {
+    const worker = new FakeWorker();
+    const transport = new browser.WorkerRpcTransport(worker, { requestTimeoutMs: 0 });
+    const controller = new hostedController.HostedControllerImpl(transport, {
+      requestTimeoutMs: 0,
+      modelLoadTimeoutMs: 40,
+      ownershipFactory: () => ({
+        isOwner: true, acquire: async () => true, release() {}, close() {},
+      }),
+    });
+    const loading = controller.load("fixture-variant", 2048);
+    const request = await waitFor(() => worker.posted[0]);
+    worker.emit({ protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+      kind: "response", requestId: request.requestId, ok: true, result: undefined });
+    await loading;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(worker.terminated, false);
     transport.dispose();
   });
 

@@ -481,9 +481,11 @@ try {
         }
     }
     for (const capacity of [1, 8, 64, 1024])
-      for (const columns of [17, 257, 50003, 262144]) {
+      for (const columns of [17, 257, 50003, 262144])
+      for (const pattern of ["ties", "tail", "random"]) {
         const count = Math.min(capacity, columns),
-          scores = data(columns, (i) => (i % 7 === 0 ? 1 : Math.sin(i * 0.21)));
+          scores = data(columns, (i) => pattern === "ties" ? (i % 7 === 0 ? 1 : Math.sin(i * 0.21))
+            : pattern === "tail" ? (i === columns - 1 ? 2 : -1) : Math.sin(i * 0.21));
         let lists = Math.ceil(columns / Math.max(256, capacity));
         const tile = manifest.find(
           (e) => e.family === "sampling" && e.capacity === capacity && !e.merge,
@@ -502,7 +504,7 @@ try {
           (e) => e.family === "sampling" && e.capacity === capacity && e.merge,
         );
         while (lists > 1) {
-          const nextLists = Math.ceil(lists / 2);
+          const nextLists = Math.ceil(lists / (capacity === 1 ? 256 : 2));
           output = await dispatch(
             merge,
             {
@@ -538,6 +540,7 @@ try {
             );
         report.push({
           family: "sampling",
+          pattern,
           columns,
           capacity,
           count,

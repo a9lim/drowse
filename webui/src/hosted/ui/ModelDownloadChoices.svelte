@@ -93,6 +93,7 @@
               : determinate && progress.bytesReceived >= progress.bytesTotal ? "Verifying files…"
               : progress?.etaSeconds ? `${formatEtaRange(progress.etaSeconds)} remaining` : "Downloading…"}
             <div class="model-choice" class:installed={model.installed} class:armed class:active data-model-id={model.id}>
+              <span class="model-download-size"><span class="sr-only">Total download: </span>{model.size}</span>
               <button type="button" class="model-choice-button" disabled={unavailable(model)}
                 onclick={() => void choose(model)} onkeydown={(event) => { if (event.key === "Escape") armedId = null; }}
                 aria-describedby={armed && (model.fit === "uncertain" || model.requiresOomRetry) ? `model-warning-${model.id}` : undefined}>
@@ -141,11 +142,13 @@
   .model-group-heading { display: flex; align-items: center; gap: var(--space-xs); }
   h3 { margin: 0; font-size: var(--text-sm); color: var(--fg-muted); }
   .model-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-7); align-items: start; }
-  .model-choice { min-width: 0; border-radius: var(--radius); background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control); }
+  .model-choice { position: relative; min-width: 0; border-radius: var(--radius); background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control); }
+  .model-download-size { position: absolute; inset-block-start: var(--space-sm); inset-inline-end: var(--space-sm); z-index: 1; pointer-events: none; color: var(--fg-muted); font-size: var(--text-xs); line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .installed .model-download-size { color: var(--action-ink); }
   .model-choice.installed { --fg: var(--action-ink); color: var(--action-ink); background: var(--action-sheen), var(--action-bg); }
   .model-choice.armed { box-shadow: inset 0 0 0 2px var(--accent), var(--shadow-control); }
   button { font: inherit; color: inherit; border: 0; border-radius: var(--radius); background: transparent; cursor: pointer; }
-  .model-choice-button { display: flex; align-items: center; gap: var(--space-7); width: 100%; min-height: 7.25rem; padding: var(--model-card-padding); text-align: start; }
+  .model-choice-button { display: flex; align-items: center; gap: var(--space-7); width: 100%; min-height: 7.25rem; padding: var(--model-card-padding); padding-block-start: calc(var(--model-card-padding) + var(--space-xs)); text-align: start; }
   .model-choice-button:hover:not(:disabled) { background: var(--bg-hover); }
   .installed .model-choice-button:hover:not(:disabled) { background: var(--action-hover); }
   .model-choice-button:disabled { cursor: default; }

@@ -38,6 +38,7 @@
   } from "./lib/motion";
   import { userFacingError } from "./lib/runtime/userFacingError";
   import { restoreConversationSnapshot } from "./lib/conversationWorkspace";
+  import { resetSettings } from "./lib/stores/settingsReset.svelte";
   import {
     conversationLibrary,
     savedConversationState,
@@ -292,6 +293,8 @@
           savedConversationState.activeId = record.id;
           savedConversationState.avatarSeed = record.avatarSeed;
           savedConversationState.accent = record.accent ?? "purple";
+        } else if (tree?.nodes.length === 1 && tree.active_node_id === tree.root_id) {
+          await resetSettings(true);
         }
       }
       // Open the WS eagerly so the first generate doesn't pay connect

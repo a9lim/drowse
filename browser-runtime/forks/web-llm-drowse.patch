@@ -1,5 +1,5 @@
 diff --git a/package-lock.json b/package-lock.json
-index 0070bde..fb369c5 100644
+index 0070bde..ec5b039 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,21 +1,21 @@
@@ -7,7 +7,7 @@ index 0070bde..fb369c5 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.37",
++  "version": "0.2.84-drowse.38",
    "lockfileVersion": 3,
    "requires": true,
    "packages": {
@@ -15,7 +15,7 @@ index 0070bde..fb369c5 100644
 -      "name": "@mlc-ai/web-llm",
 -      "version": "0.2.84",
 +      "name": "@drowse/web-llm",
-+      "version": "0.2.84-drowse.37",
++      "version": "0.2.84-drowse.38",
        "license": "Apache-2.0",
        "dependencies": {
 -        "loglevel": "^1.9.1"
@@ -170,7 +170,7 @@ index 0070bde..fb369c5 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..7d06db9 100644
+index cabfc3d..c64c3c4 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,12 +1,12 @@
@@ -178,7 +178,7 @@ index cabfc3d..7d06db9 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.37",
++  "version": "0.2.84-drowse.38",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
@@ -682,16 +682,17 @@ index 0000000..156b4b9
 +}
 diff --git a/src/drowse_gpu_topk.ts b/src/drowse_gpu_topk.ts
 new file mode 100644
-index 0000000..371f356
+index 0000000..74d754a
 --- /dev/null
 +++ b/src/drowse_gpu_topk.ts
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,218 @@
 +import type * as tvmjs from "@mlc-ai/web-runtime";
 +
 +export function drowseSamplingTopKShader(
 +  capacity: number,
 +  merge: boolean,
 +): string {
++  if (capacity === 1) return drowseSamplingArgmaxShader(merge);
 +  const width = merge ? capacity * 2 : Math.max(256, capacity);
 +  return `
 +@group(0) @binding(0) var<storage, read_write> output_values: array<f32>;
@@ -736,7 +737,7 @@ index 0000000..371f356
 +  for (var size = 2u; size <= ${width}u; size *= 2u) {
 +    for (var distance = size / 2u; distance > 0u; distance /= 2u) {`
 +  }
-+      for (var i = local.x; i < ${width}u; i += 128u) {
++      for (var i = local.x; i < ${merge ? capacity : width}u; i += 128u) {
 +        let peer = i ^ distance;
 +        if (i < peer) {
 +          let av = values[i]; let ai = indices[i];
@@ -754,6 +755,54 @@ index 0000000..371f356
 +  for (var i = local.x; i < ${capacity}u; i += 128u) {
 +    output_values[group.x * ${capacity}u + i] = values[i];
 +    output_indices[group.x * ${capacity}u + i] = indices[i];
++  }
++}`;
++}
++
++function drowseSamplingArgmaxShader(merge: boolean): string {
++  return `
++@group(0) @binding(0) var<storage, read_write> output_values: array<f32>;
++@group(0) @binding(1) var<storage, read_write> output_indices: array<i32>;
++@group(0) @binding(2) var<storage, read> source_values: array<f32>;
++${merge ? "@group(0) @binding(3) var<storage, read> source_indices: array<i32>;" : ""}
++struct PODArgs { columns: u32, lists: u32, packGridDimX: u32 }
++@group(0) @binding(${merge ? 4 : 3}) var<uniform> args: PODArgs;
++var<workgroup> values: array<f32, 128>;
++var<workgroup> indices: array<i32, 128>;
++fn better(av: f32, ai: i32, bv: f32, bi: i32) -> bool {
++  return ai >= 0 && (bi < 0 || av > bv || (av == bv && ai < bi));
++}
++@compute @workgroup_size(128, 1, 1)
++fn main_kernel(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
++  var value = -3.402823e38;
++  var index = -1;
++  for (var offset = local.x; offset < 256u; offset += 128u) {
++    let source = group.x * 256u + offset;
++    if (source < args.${merge ? "lists" : "columns"}) {
++      let candidate = ${merge ? "source_indices[source]" : "i32(source)"};
++      let score = source_values[source];
++      if (better(score, candidate, value, index)) {
++        value = score;
++        index = candidate;
++      }
++    }
++  }
++  values[local.x] = value;
++  indices[local.x] = index;
++  workgroupBarrier();
++  for (var distance = 64u; distance > 0u; distance /= 2u) {
++    if (local.x < distance) {
++      let peer = local.x + distance;
++      if (better(values[peer], indices[peer], values[local.x], indices[local.x])) {
++        values[local.x] = values[peer];
++        indices[local.x] = indices[peer];
++      }
++    }
++    workgroupBarrier();
++  }
++  if (local.x == 0u) {
++    output_values[group.x] = values[0];
++    output_indices[group.x] = indices[0];
 +  }
 +}`;
 +}
@@ -822,7 +871,7 @@ index 0000000..371f356
 +      lists,
 +    );
 +    while (lists > 1) {
-+      const nextLists = Math.ceil(lists / 2);
++      const nextLists = Math.ceil(lists / (capacity === 1 ? 256 : 2));
 +      const nextValues = this.tvm.empty(
 +        [nextLists * capacity],
 +        "float32",
@@ -3249,7 +3298,7 @@ index d583419..146eb24 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..33073b2 100644
+index 616cff4..34a2209 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
 @@ -1,4 +1,6 @@
@@ -3778,7 +3827,7 @@ index 616cff4..33073b2 100644
    private resolvedModelABI!: ResolvedModelABI;
    private kvStateKind: KVStateKind = "kv_cache";
    private image_embed: tvmjs.PackedFunc | undefined;
-@@ -94,6 +574,32 @@ export class LLMChatPipeline {
+@@ -94,7 +574,34 @@ export class LLMChatPipeline {
    private prefillLogitPositionHost = new Int32Array(1);
    private maxHistorySize = 1;
    private logitsOnCPU?: tvmjs.Tensor = undefined;
@@ -3809,9 +3858,11 @@ index 616cff4..33073b2 100644
 +  private drowseExactReadoutAttested = false;
 +  private drowseProbeKindHost?: Uint32Array;
    private filledKVCacheLength = 0;
++  private drowseCachedInputIds: number[] | null = [];
  
    // meta data
-@@ -109,8 +615,12 @@ export class LLMChatPipeline {
+   private bosTokenId = 1;
+@@ -109,8 +616,12 @@ export class LLMChatPipeline {
    // states
    private outputMessage = "";
    private outputIds: Array<number> = [];
@@ -3824,7 +3875,7 @@ index 616cff4..33073b2 100644
    // frequency of appeared token ids till now (refresh after PrefillStep); token_id mapped to freq
    private appearedTokensFreq = new Map<number, number>();
    private imageDataCache = new Map<string, ImageData>();
-@@ -130,6 +640,10 @@ export class LLMChatPipeline {
+@@ -130,6 +641,10 @@ export class LLMChatPipeline {
    private curRoundPrefillTotalTokens = 0;
    private curRoundDecodingTotalTime = 0;
    private curRoundPrefillTotalTime = 0;
@@ -3835,7 +3886,7 @@ index 616cff4..33073b2 100644
  
    // additional stats, reset at every prefillStep()
    public curRoundLatencyBreakdown: LatencyBreakdown = {
-@@ -181,12 +695,14 @@ export class LLMChatPipeline {
+@@ -181,12 +696,14 @@ export class LLMChatPipeline {
      tokenizer: Tokenizer,
      config: ChatConfig,
      logitProcessor?: LogitProcessor,
@@ -3850,7 +3901,7 @@ index 616cff4..33073b2 100644
      this.fullVocabSize = this.config.vocab_size;
      this.bitmaskSize = Math.ceil(this.fullVocabSize / 32);
  
-@@ -233,6 +749,31 @@ export class LLMChatPipeline {
+@@ -233,6 +750,31 @@ export class LLMChatPipeline {
        "batch_prefill",
        "decode",
        "batch_decode",
@@ -3882,7 +3933,7 @@ index 616cff4..33073b2 100644
        "create_tir_paged_kv_cache",
        "create_rnn_state",
        "sample_with_top_p",
-@@ -244,6 +785,7 @@ export class LLMChatPipeline {
+@@ -244,6 +786,7 @@ export class LLMChatPipeline {
        "apply_logit_bias_inplace",
        "softmax_with_temperature",
      ]);
@@ -3890,7 +3941,7 @@ index 616cff4..33073b2 100644
  
      const fgetMetadata = this.vm.getFunction("_metadata");
      const ret_value = fgetMetadata();
-@@ -253,9 +795,15 @@ export class LLMChatPipeline {
+@@ -253,9 +796,15 @@ export class LLMChatPipeline {
  
      const vmFunctionAvailability =
        LLMChatPipeline.getVMFunctionAvailability(vmFunctionRegistry);
@@ -3906,7 +3957,7 @@ index 616cff4..33073b2 100644
      );
      const stateKinds: string[] = [];
      if (this.resolvedModelABI.needsKVCache) {
-@@ -287,6 +835,132 @@ export class LLMChatPipeline {
+@@ -287,6 +836,132 @@ export class LLMChatPipeline {
          vmFunctionRegistry,
        ),
      );
@@ -4039,7 +4090,7 @@ index 616cff4..33073b2 100644
      if (this.resolvedModelABI.prefillABI === "batch") {
        log.info("Using batch_prefill kernel.");
      }
-@@ -489,6 +1163,32 @@ export class LLMChatPipeline {
+@@ -489,6 +1164,32 @@ export class LLMChatPipeline {
      this.params.dispose();
      this.decoding.dispose();
      this.prefill.dispose();
@@ -4072,7 +4123,7 @@ index 616cff4..33073b2 100644
      this.embed.dispose();
      this.image_embed?.dispose();
      this.prefillLogitPositions?.dispose();
-@@ -507,6 +1207,1761 @@ export class LLMChatPipeline {
+@@ -507,6 +1208,1761 @@ export class LLMChatPipeline {
      this.grammarCompiler?.dispose();
    }
  
@@ -5834,7 +5885,7 @@ index 616cff4..33073b2 100644
    /**
     * Get the current message.
     */
-@@ -514,6 +2969,11 @@ export class LLMChatPipeline {
+@@ -514,6 +2970,11 @@ export class LLMChatPipeline {
      return this.outputMessage;
    }
  
@@ -5846,7 +5897,7 @@ index 616cff4..33073b2 100644
    /**
     * Reset the runtime statistics
     */
-@@ -535,6 +2995,7 @@ export class LLMChatPipeline {
+@@ -535,6 +2996,7 @@ export class LLMChatPipeline {
      }
      this.resetKVCache();
      this.filledKVCacheLength = 0;
@@ -5854,7 +5905,15 @@ index 616cff4..33073b2 100644
      this.logitProcessor?.resetState();
      this.tvm.endScope();
    }
-@@ -572,6 +3033,10 @@ export class LLMChatPipeline {
+@@ -543,6 +3005,7 @@ export class LLMChatPipeline {
+    * Reset KV Cache
+    */
+   resetKVCache() {
++    this.drowseCachedInputIds = [];
+     const states = this.getActiveKVStates();
+     for (const state of states) {
+       this.fclearKVCaches(state);
+@@ -572,6 +3035,10 @@ export class LLMChatPipeline {
      return this.finishReason;
    }
  
@@ -5865,7 +5924,7 @@ index 616cff4..33073b2 100644
    /**
     * @returns tokenLogprobArray for this current round of autoregressive generation.
     * Updated upon each sampled token, cleared upon each prefillStep().
-@@ -587,6 +3052,10 @@ export class LLMChatPipeline {
+@@ -587,6 +3054,10 @@ export class LLMChatPipeline {
      return this.curRoundDecodingTotalTokens;
    }
  
@@ -5876,7 +5935,7 @@ index 616cff4..33073b2 100644
    /**
     * @returns the number of tokens decoded for a single request or a single choice in the request.
     */
-@@ -721,13 +3190,17 @@ export class LLMChatPipeline {
+@@ -721,13 +3192,17 @@ export class LLMChatPipeline {
     */
    async prefillStep(
      inp: string,
@@ -5897,7 +5956,7 @@ index 616cff4..33073b2 100644
        );
      }
      if (this.resetStatsPerPrefill) {
-@@ -738,8 +3211,10 @@ export class LLMChatPipeline {
+@@ -738,8 +3213,10 @@ export class LLMChatPipeline {
  
      // cleanup the per convo states
      this.outputIds = [];
@@ -5908,7 +5967,7 @@ index 616cff4..33073b2 100644
      this.tokenLogprobArray = [];
      this.curRoundDecodingTotalTokens = 0;
      this.curRoundPrefillTotalTokens = 0;
-@@ -747,6 +3222,10 @@ export class LLMChatPipeline {
+@@ -747,6 +3224,10 @@ export class LLMChatPipeline {
      this.curRoundDecodingTotalTime = 0;
      this.curRoundGrammarInitTotalTime = 0;
      this.curRoundGrammarPerTokenTotalTime = 0;
@@ -5919,7 +5978,7 @@ index 616cff4..33073b2 100644
  
      this.curRoundLatencyBreakdown = {
        logitProcessorTime: [],
-@@ -758,6 +3237,8 @@ export class LLMChatPipeline {
+@@ -758,6 +3239,8 @@ export class LLMChatPipeline {
      };
  
      this.stopTriggered = false;
@@ -5928,7 +5987,7 @@ index 616cff4..33073b2 100644
      const conversation = this.conversation;
  
      // -1. Instantiate grammar matcher according to generation config. This step is overlapped
-@@ -835,17 +3316,28 @@ export class LLMChatPipeline {
+@@ -835,17 +3318,28 @@ export class LLMChatPipeline {
        conversation.prompt = inp;
      } else {
        conversation.appendMessage(msgRole, inp, inp_role_str);
@@ -5961,7 +6020,7 @@ index 616cff4..33073b2 100644
        }
      }
      const [inputData, promptLen, getEmbedSize] = await this.getInputData();
-@@ -944,8 +3436,9 @@ export class LLMChatPipeline {
+@@ -944,8 +3438,9 @@ export class LLMChatPipeline {
      }
      this.stopTriggered = true;
      this.finishReason = "abort";
@@ -5972,7 +6031,7 @@ index 616cff4..33073b2 100644
      }
    }
  
-@@ -999,9 +3492,11 @@ export class LLMChatPipeline {
+@@ -999,9 +3494,11 @@ export class LLMChatPipeline {
      if (stopTokens.includes(nextToken)) {
        this.stopTriggered = true;
        this.finishReason = "stop";
@@ -5984,7 +6043,7 @@ index 616cff4..33073b2 100644
        // Update token appearance frequency
        const curFreq = this.appearedTokensFreq.get(nextToken);
        if (curFreq !== undefined) {
-@@ -1013,6 +3508,7 @@ export class LLMChatPipeline {
+@@ -1013,6 +3510,7 @@ export class LLMChatPipeline {
  
      // Stop condition 2: stop string; update `this.outputMessage` subsequently
      let outputMessage = this.tokenizer.decode(new Int32Array(this.outputIds));
@@ -5992,7 +6051,7 @@ index 616cff4..33073b2 100644
      let stopPos = -1;
      for (const stopStr of stopStrs) {
        // Stop at the first stopStr we find
-@@ -1021,32 +3517,36 @@ export class LLMChatPipeline {
+@@ -1021,32 +3519,36 @@ export class LLMChatPipeline {
          outputMessage = outputMessage.substring(0, stopPos);
          this.stopTriggered = true;
          this.finishReason = "stop";
@@ -6031,7 +6090,7 @@ index 616cff4..33073b2 100644
        }
      }
    }
-@@ -1227,7 +3727,15 @@ export class LLMChatPipeline {
+@@ -1227,7 +3729,15 @@ export class LLMChatPipeline {
    private async embedAndForward(
      inputData: Array<Array<number> | ImageURL>,
      inputDataLen: number,
@@ -6047,7 +6106,7 @@ index 616cff4..33073b2 100644
      if (inputDataLen > this.prefillChunkSize) {
        throw new Error(
          "InternalError: expect inputDataLen <= this.prefillChunkSize.",
-@@ -1238,51 +3746,120 @@ export class LLMChatPipeline {
+@@ -1238,51 +3748,129 @@ export class LLMChatPipeline {
  
      // 1. Embed all inputData
      this.tvm.beginScope();
@@ -6192,6 +6251,15 @@ index 616cff4..33073b2 100644
 +      while (forwardBegun > 0) {
 +        this.fKVCacheEndForward!(forwardStates[--forwardBegun]);
 +      }
++      if (this.drowseCachedInputIds?.length === this.filledKVCacheLength) {
++        for (const input of inputData) {
++          if (!Array.isArray(input)) {
++            this.drowseCachedInputIds = null;
++            break;
++          }
++          for (const token of input) this.drowseCachedInputIds.push(token);
++        }
++      }
 +      this.filledKVCacheLength += inputDataLen;
 +      logits = this.tvm.detachFromCurrentScope(retValue.get(0));
 +    } finally {
@@ -6209,7 +6277,7 @@ index 616cff4..33073b2 100644
      this.tvm.attachToCurrentScope(logits);
      return logits;
    }
-@@ -1292,7 +3869,14 @@ export class LLMChatPipeline {
+@@ -1292,7 +3880,14 @@ export class LLMChatPipeline {
      names: string[],
    ): VMFunctionRegistry {
      const registry: VMFunctionRegistry = {};
@@ -6225,7 +6293,7 @@ index 616cff4..33073b2 100644
        try {
          const func = vm.getFunction(name) as unknown;
          if (typeof func === "function") {
-@@ -1305,6 +3889,17 @@ export class LLMChatPipeline {
+@@ -1305,6 +3900,17 @@ export class LLMChatPipeline {
      return registry;
    }
  
@@ -6243,7 +6311,7 @@ index 616cff4..33073b2 100644
    private static getRequiredVMFunctionByName(
      name: string,
      registry: VMFunctionRegistry,
-@@ -1365,6 +3960,7 @@ export class LLMChatPipeline {
+@@ -1365,6 +3971,7 @@ export class LLMChatPipeline {
    private static resolveModelABI(
      kvStateKind: KVStateKind,
      availability: VMFunctionAvailability,
@@ -6251,7 +6319,7 @@ index 616cff4..33073b2 100644
    ): ResolvedModelABI {
      const hasSingleKernelPair = availability.prefill && availability.decode;
      const hasBatchKernelPair =
-@@ -1450,6 +4046,17 @@ export class LLMChatPipeline {
+@@ -1450,6 +4057,17 @@ export class LLMChatPipeline {
      }
  
      // kv_cache
@@ -6269,7 +6337,7 @@ index 616cff4..33073b2 100644
      if (hasSingleKernelPair) {
        return {
          kvStateKind,
-@@ -1525,14 +4132,267 @@ export class LLMChatPipeline {
+@@ -1525,14 +4143,267 @@ export class LLMChatPipeline {
      return states;
    }
  
@@ -6538,7 +6606,7 @@ index 616cff4..33073b2 100644
          this.params,
        );
      }
-@@ -1549,27 +4409,42 @@ export class LLMChatPipeline {
+@@ -1549,27 +4420,42 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -6585,7 +6653,7 @@ index 616cff4..33073b2 100644
          this.params,
        );
      }
-@@ -1577,20 +4452,73 @@ export class LLMChatPipeline {
+@@ -1577,20 +4463,73 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -6661,7 +6729,7 @@ index 616cff4..33073b2 100644
    // NOTE: caller must call device.sync()
    private updateLogitsOnCPU(logits: tvmjs.Tensor): tvmjs.Tensor {
      if (this.logitsOnCPU == undefined) {
-@@ -1610,7 +4538,7 @@ export class LLMChatPipeline {
+@@ -1610,7 +4549,7 @@ export class LLMChatPipeline {
      logitsOnGPU: tvmjs.Tensor,
      genConfig?: GenerationConfig,
    ) {
@@ -6670,7 +6738,7 @@ index 616cff4..33073b2 100644
      // Also load other genConfig items like logit_bias. Consume all fields of `genConfig` here.
      function _hasValue(value: any): boolean {
        // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
-@@ -1618,6 +4546,7 @@ export class LLMChatPipeline {
+@@ -1618,6 +4557,7 @@ export class LLMChatPipeline {
      }
      let temperature: number = this.config.temperature;
      let top_p: number = this.config.top_p;
@@ -6678,7 +6746,7 @@ index 616cff4..33073b2 100644
      let repetition_penalty: number = this.config.repetition_penalty;
      let frequency_penalty: number = this.config.frequency_penalty;
      let presence_penalty: number = this.config.presence_penalty;
-@@ -1633,6 +4562,9 @@ export class LLMChatPipeline {
+@@ -1633,6 +4573,9 @@ export class LLMChatPipeline {
        if (_hasValue(genConfig.top_p)) {
          top_p = genConfig.top_p!;
        }
@@ -6688,7 +6756,7 @@ index 616cff4..33073b2 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,11 +4607,14 @@ export class LLMChatPipeline {
+@@ -1675,11 +4618,14 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -6706,7 +6774,7 @@ index 616cff4..33073b2 100644
      }
      if (repetition_penalty <= 0) {
        throw new MinValueError("repetition_penalty", 0);
-@@ -1894,13 +4829,38 @@ export class LLMChatPipeline {
+@@ -1894,13 +4840,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -6749,7 +6817,7 @@ index 616cff4..33073b2 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +4873,131 @@ export class LLMChatPipeline {
+@@ -1913,79 +4884,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
@@ -6931,7 +6999,7 @@ index 616cff4..33073b2 100644
    }
  
    /**
-@@ -2028,6 +5040,32 @@ export class LLMChatPipeline {
+@@ -2028,20 +5051,37 @@ export class LLMChatPipeline {
        if (this.filledKVCacheLength !== 0) {
          throw new TextCompletionExpectsKVEmptyError();
        }
@@ -6964,7 +7032,23 @@ index 616cff4..33073b2 100644
        prompts = this.conversation.getPromptArrayTextCompletion();
      } else {
        // 1.2. Conversation style
-@@ -2082,7 +5120,7 @@ export class LLMChatPipeline {
+-      if (this.filledKVCacheLength === 0) {
+-        if (
+-          this.conversation.config.system_prefix_token_ids !== undefined &&
+-          this.conversation.config.system_prefix_token_ids !== null
+-        ) {
+-          curTokens = [...this.conversation.config.system_prefix_token_ids];
+-        }
+-        prompts = this.conversation.getPromptArray(this.config);
+-      } else {
+-        prompts = this.conversation.getPromptArrayLastRound(this.config);
+-      }
++      curTokens = [...(this.conversation.config.system_prefix_token_ids ?? [])];
++      prompts = this.conversation.getPromptArray(this.config);
+     }
+ 
+     // 1.5. Preload image dimensions to compute per-image embed sizes
+@@ -2082,7 +5122,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -6973,7 +7057,31 @@ index 616cff4..33073b2 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2186,50 +5224,51 @@ export class LLMChatPipeline {
+@@ -2116,6 +5156,23 @@ export class LLMChatPipeline {
+         }
+       }
+     }
++    if (!this.conversation.isTextCompletion && this.filledKVCacheLength > 0) {
++      const cached = this.drowseCachedInputIds;
++      if (ret.length === 0 && cached?.length === this.filledKVCacheLength &&
++          cached.length < curTokens.length &&
++          cached.every((token, index) => curTokens[index] === token)) {
++        curTokens = curTokens.slice(cached.length);
++        numPromptTokens = curTokens.length;
++      } else {
++        this.tvm.beginScope();
++        try {
++          this.resetKVCache();
++          this.filledKVCacheLength = 0;
++        } finally {
++          this.tvm.endScope();
++        }
++      }
++    }
+     // Deal with last curTokens
+     if (curTokens.length !== 0) {
+       ret.push([...curTokens]);
+@@ -2186,50 +5243,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -7041,7 +7149,7 @@ index 616cff4..33073b2 100644
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +5323,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +5342,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }
@@ -11052,7 +11160,7 @@ index a7cf3ed..ef9c512 100644
 +  expect(retValue.get).not.toHaveBeenCalledWith(3);
 +});
 diff --git a/tests/llm_chat_pipeline.test.ts b/tests/llm_chat_pipeline.test.ts
-index 5138c4e..e72a18c 100644
+index 5138c4e..9a17c13 100644
 --- a/tests/llm_chat_pipeline.test.ts
 +++ b/tests/llm_chat_pipeline.test.ts
 @@ -1,4 +1,15 @@
@@ -11178,7 +11286,16 @@ index 5138c4e..e72a18c 100644
    pipeline["appearedTokensFreq"] = new Map<number, number>();
    pipeline["stopTokens"] = [];
    pipeline["stopStr"] = [];
-@@ -167,12 +270,16 @@ test("processNextToken appends tokens until stop string reached", () => {
+@@ -101,6 +204,8 @@ function createPipeline(): PipelineLike {
+   pipeline["contextWindowSize"] = 16;
+   pipeline["slidingWindowSize"] = -1;
+   pipeline["filledKVCacheLength"] = 0;
++  pipeline["drowseCachedInputIds"] = [];
++  pipeline["resetKVCache"] = jest.fn(() => { pipeline["drowseCachedInputIds"] = []; });
+   pipeline["outputMessage"] = "";
+   pipeline["curRoundLatencyBreakdown"] = {
+     logitProcessorTime: [],
+@@ -167,12 +272,16 @@ test("processNextToken appends tokens until stop string reached", () => {
      max_tokens: 5,
    });
    expect(pipeline["stopTriggered"]).toBe(false);
@@ -11195,7 +11312,7 @@ index 5138c4e..e72a18c 100644
  });
  
  test("processNextToken respects max_tokens and updates token frequency", () => {
-@@ -215,15 +322,45 @@ test("prefillStep adds thinking reply header when thinking disabled", async () =
+@@ -215,15 +324,45 @@ test("prefillStep adds thinking reply header when thinking disabled", async () =
    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([9, 9]));
    await pipeline.prefillStep("hello", Role.user, undefined, {
      enable_thinking: false,
@@ -11242,7 +11359,7 @@ index 5138c4e..e72a18c 100644
  test("prefillStep appends standard reply header when thinking enabled", async () => {
    const pipeline = preparePrefillPipeline();
    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([2]));
-@@ -236,6 +373,121 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
+@@ -236,6 +375,121 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
    ).not.toHaveBeenCalled();
  });
  
@@ -11364,10 +11481,50 @@ index 5138c4e..e72a18c 100644
  test("prefillStep reuses grammar matcher when schema unchanged", async () => {
    const pipeline = preparePrefillPipeline();
    const matcher = { reset: jest.fn(), dispose: jest.fn() };
-@@ -285,6 +537,39 @@ test("getInputData uses cached prompts when KV cache filled", async () => {
-   expect(pipeline["conversation"].getPromptArrayLastRound).toHaveBeenCalled();
+@@ -273,16 +527,68 @@ test("prefillStep compiles custom grammar when response type is grammar", async
+   expect(compileGrammarMock).toHaveBeenCalledWith("root ::= WORD");
  });
  
+-test("getInputData uses cached prompts when KV cache filled", async () => {
++test("chat reuse includes every uncached token and turn separator", async () => {
+   const pipeline = createPipeline();
+-  pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([1]));
+-  pipeline["conversation"].config.system_prefix_token_ids = undefined;
+-  pipeline["filledKVCacheLength"] = 0;
+-  await (pipeline as any).getInputData();
+-  expect(pipeline["conversation"].getPromptArray).toHaveBeenCalled();
+-  pipeline["filledKVCacheLength"] = 1;
+-  await (pipeline as any).getInputData();
+-  expect(pipeline["conversation"].getPromptArrayLastRound).toHaveBeenCalled();
++  pipeline["conversation"].config.system_prefix_token_ids = [2];
++  pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([10, 20, 21, 30, 40]));
++  pipeline["filledKVCacheLength"] = 3;
++  pipeline["drowseCachedInputIds"] = [2, 10, 20];
++  const result = await (pipeline as any).getInputData();
++  expect(result.slice(0, 2)).toEqual([[[21, 30, 40]], 3]);
++  expect(pipeline["resetKVCache"]).not.toHaveBeenCalled();
++  expect(pipeline["conversation"].getPromptArrayLastRound).not.toHaveBeenCalled();
++  pipeline["contextWindowSize"] = 5;
++  await expect((pipeline as any).getInputData()).rejects.toThrow();
++});
++
++test.each([[2, 99], [2], null, [2, 10, 20]])(
++  "chat reuse resets for a changed, untracked, or nonextending prefix %j",
++  async (cached) => {
++    const pipeline = createPipeline();
++    pipeline["conversation"].config.system_prefix_token_ids = [2];
++    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([10, 20]));
++    pipeline["filledKVCacheLength"] = cached?.length === 3 ? 3 : 2;
++    pipeline["drowseCachedInputIds"] = cached;
++    const result = await (pipeline as any).getInputData();
++    expect(result.slice(0, 2)).toEqual([[[2, 10, 20]], 3]);
++    expect(pipeline["resetKVCache"]).toHaveBeenCalledTimes(1);
++    expect(pipeline["filledKVCacheLength"]).toBe(0);
++    expect(pipeline["tvm"].beginScope).toHaveBeenCalledTimes(1);
++    expect(pipeline["tvm"].endScope).toHaveBeenCalledTimes(1);
++  },
++);
++
 +test("text completion uses only its explicit tokenizer prefix and counts it", async () => {
 +  const pipeline = createPipeline();
 +  pipeline["conversation"].isTextCompletion = true;
@@ -11399,12 +11556,10 @@ index 5138c4e..e72a18c 100644
 +  pipeline["fullVocabSize"] = 100;
 +  pipeline["config"].drowse_completion_prefix_token_ids = prefix as any;
 +  await expect((pipeline as any).getInputData()).rejects.toThrow("valid vocabulary token IDs");
-+});
-+
+ });
+ 
  test("processNextToken ignores eos when requested", () => {
-   const pipeline = createPipeline();
-   pipeline["stopTokens"] = [1];
-@@ -370,3 +655,20 @@ describe("computeImageEmbedSize", () => {
+@@ -370,3 +676,20 @@ describe("computeImageEmbedSize", () => {
      );
    });
  });

@@ -332,6 +332,14 @@ try {
   );
   assert.equal(
     capabilityModule.browserRuntimeClass(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15",
+      "iPad",
+      undefined,
+    ),
+    "apple-mobile-webkit",
+  );
+  assert.equal(
+    capabilityModule.browserRuntimeClass(
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:155.0) Gecko/20100101 Firefox/155.0",
       "MacIntel",
       0,
@@ -461,6 +469,26 @@ try {
     assert.equal(calibratedDevices[0].state.maps, 4);
     assert.equal(calibratedDevices[0].state.copies, 4);
     assert.equal(await checker.adapterForLoad() instanceof Object, true);
+
+    const originalNavigatorIdentity = {
+      userAgent: globalThis.navigator.userAgent,
+      platform: globalThis.navigator.platform,
+      maxTouchPoints: globalThis.navigator.maxTouchPoints,
+    };
+    try {
+      Object.assign(globalThis.navigator, {
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15",
+        platform: "iPad",
+        maxTouchPoints: undefined,
+      });
+      const ipadWorker = await new capabilityModule.BrowserCapabilityChecker().check();
+      assert.equal(ipadWorker.supported, true);
+      assert.equal(ipadWorker.signals.appleMobile, true);
+      assert.equal(ipadWorker.signals.mobile, true);
+      assert.equal(ipadWorker.signals.runtimeClass, "apple-mobile-webkit");
+    } finally {
+      Object.assign(globalThis.navigator, originalNavigatorIdentity);
+    }
 
     const originalRequestAdapter = globalThis.navigator.gpu.requestAdapter;
     const changedAdapter = adapter();

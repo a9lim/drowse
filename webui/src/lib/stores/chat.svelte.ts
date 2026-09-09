@@ -87,7 +87,7 @@ export function clearChat(): void {
     enqueuePending({
       label: "/clear",
       text: null,
-      apply: () => void resetChatToRoot(),
+      apply: resetChatToRoot,
       awaitsGen: false,
       rebuild: null,
       // /clear navigates to the synthetic root (system role) — not a

@@ -98,6 +98,75 @@ test("only Stop remains while an unfocused empty composer is generating", async 
   await expect(page.locator(".input-actions")).toBeHidden();
 });
 
+test("clearing during generation finishes before the next queued message", async ({ page, isMobile }) => {
+  await page.evaluate(async sourceRoot => {
+    const { getRuntimeClient } = await import(`${sourceRoot}/lib/runtime/registry.ts`);
+    const runtime = getRuntimeClient();
+    runtime.generation.tokenDelayMs = 500;
+    const root = (await runtime.tree.get()).root_id;
+    const navigate = runtime.tree.navigate.bind(runtime.tree);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    (window as any).clearGate = { started: false, release };
+    runtime.tree.navigate = async (nodeId: string) => {
+      if (nodeId === root) {
+        (window as any).clearGate.started = true;
+        await gate;
+      }
+      return navigate(nodeId);
+    };
+  }, `/@fs${resolve("src")}`);
+  await compose(page).fill("Before clear");
+  await send(page).click();
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
+  await compose(page).focus();
+  const clear = page.getByRole("button", { name: "Clear conversation", exact: true });
+  if (isMobile) await clear.tap();
+  else await clear.click();
+  const confirm = page.getByRole("button", { name: "Confirm clear conversation", exact: true });
+  await expect(confirm).toBeVisible({ timeout: 3000 });
+  if (isMobile) await confirm.tap();
+  else await confirm.click();
+  await compose(page).fill("After clear");
+  await send(page).click();
+  await expect.poll(() => page.evaluate(() => (window as any).clearGate.started)).toBe(true);
+  await expect(page.locator(".msg").filter({ hasText: "After clear" })).toHaveCount(0);
+  await page.evaluate(() => (window as any).clearGate.release());
+  await expect(page.locator(".msg").filter({ hasText: "Before clear" })).toHaveCount(0);
+  await expect(page.locator(".msg").filter({ hasText: "After clear" })).toHaveCount(1);
+  await expect(page.locator(".msg .response-body").last())
+    .toHaveText("This is a deterministic local Drowse runtime fixture.");
+  const oldBranchKept = await page.evaluate(async sourceRoot => {
+    const { getRuntimeClient } = await import(`${sourceRoot}/lib/runtime/registry.ts`);
+    const tree = await getRuntimeClient().tree.get();
+    return tree.nodes.some((node: { text: string }) => node.text === "Before clear");
+  }, `/@fs${resolve("src")}`);
+  expect(oldBranchKept).toBe(true);
+});
+
+test("clear confirmation supports keyboard activation, Escape, and focus dismissal", async ({ page }) => {
+  await submit(page, "Keep this until I confirm", 1);
+  await compose(page).focus();
+  const clear = page.getByRole("button", { name: "Clear conversation", exact: true });
+  await clear.focus();
+  await expect(clear).toBeFocused();
+  await page.keyboard.press("Enter");
+  const confirm = page.getByRole("button", { name: "Confirm clear conversation", exact: true });
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(clear).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(confirm).toBeFocused();
+  await compose(page).focus();
+  await expect(clear).toBeVisible();
+  await expect(page.locator(".msg").filter({ hasText: "Keep this until I confirm" })).toHaveCount(1);
+  await clear.focus();
+  await page.keyboard.press("Enter");
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".msg")).toHaveCount(0);
+});
+
 test("sending and resizing follow the latest message without interrupting history reading", async ({ page, browserName, isMobile }, testInfo) => {
   for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);

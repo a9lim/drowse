@@ -981,7 +981,7 @@ export function isAppleMobileBrowser(
   platform = navigator.platform,
   maxTouchPoints = navigator.maxTouchPoints,
 ): boolean {
-  return /iPhone|iPad|iPod/i.test(userAgent) ||
+  return /iPhone|iPad|iPod/i.test(userAgent) || /^(iPhone|iPad|iPod)$/i.test(platform) ||
     (/Macintosh/i.test(userAgent) && /Mobile\//i.test(userAgent)) ||
     (maxTouchPoints > 1 &&
       (platform === "MacIntel" || /Macintosh|Mac OS X/i.test(userAgent)));

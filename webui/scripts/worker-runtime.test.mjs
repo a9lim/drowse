@@ -5825,6 +5825,7 @@ try {
     scope.send(request("load-loss-second", "load", {
       modelVariantId: variant.id,
       contextTokens: 2048,
+      explicitUnsafeOverride: true,
     }));
     assert.equal((await response(scope, "load-loss-second")).error.code, "GPU_DEVICE_LOST");
     await waitFor(() => scope.messages.filter(

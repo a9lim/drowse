@@ -110,10 +110,15 @@ test("landing demonstration remains labeled and usable at phone widths", async (
   await expect(demo).toContainText("Recorded preset");
   await demo.getByRole("slider", {name:"Recorded welcoming setting"}).focus();
   await demo.getByRole("slider", {name:"Recorded welcoming setting"}).press("End");
-  await expect(demo.locator(".result")).toContainText("Come find us sometime");
+  await expect.poll(() => demo.locator(".result").evaluate(element => {
+    const copy = element.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll('[aria-hidden="true"]').forEach(node => node.remove());
+    return copy.textContent;
+  })).toContain("Come find us sometime");
   await demo.getByRole("button", {name:"Compare",exact:true}).click();
   await demo.getByRole("button", {name:"Inspect toward welcoming reply"}).click();
-  await expect(demo.locator(".result")).toContainText("moving can be a big change");
+  await expect.poll(async () => (await demo.locator(".token-text .morph-source").allTextContents()).join(""))
+    .toContain("moving can be a big change");
   expect(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth+1)).toBe(true);
 });
 

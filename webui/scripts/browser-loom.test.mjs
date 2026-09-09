@@ -1862,6 +1862,42 @@ try {
     assert.equal(tree.nodes[2].mean_logprob, -0.4);
   }
 
+  {
+    let markPreparing;
+    let finishPreparing;
+    const preparing = new Promise(resolve => { markPreparing = resolve; });
+    const prepared = new Promise(resolve => { finishPreparing = resolve; });
+    const engine = generation();
+    const generate = engine.streamGeneration.bind(engine);
+    const signals = [];
+    engine.streamGeneration = async (plan, onToken) => {
+      signals.push(plan.signal);
+      markPreparing();
+      await prepared;
+      plan.signal?.throwIfAborted();
+      return generate(plan, onToken);
+    };
+    const runtime = new BrowserLoomRuntime({
+      session: session(), generation: engine, createId: ids("cancel-setup"),
+    });
+    const events = [];
+    const request = { type: "submit", text: "Stop before decoding", authored_role: "user", generated_role: "assistant" };
+    const pending = runtime.generate(request, event => events.push(event));
+    await preparing;
+    await runtime.stop();
+    finishPreparing();
+    await pending;
+    assert.equal(events.filter(event => event.type === "token").length, 0);
+    assert.equal(events.find(event => event.type === "done").result.finish_reason, "cancelled");
+    assert.equal(engine.plans.length, 0, "a stop during setup must prevent decoding from starting");
+    const nextEvents = [];
+    await runtime.generate(request, event => nextEvents.push(event));
+    assert.equal(engine.plans.length, 1);
+    assert.equal(signals[0].aborted, true);
+    assert.equal(signals[1].aborted, false);
+    assert.equal(nextEvents.find(event => event.type === "done").result.text, "Local answer");
+  }
+
   const usageAwareCancellation = webLlmCancellableGeneration(streamWebLlmGeneration);
   const usageAwareRuntime = new BrowserLoomRuntime({
     session: session(),

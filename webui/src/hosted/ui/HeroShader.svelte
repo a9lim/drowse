@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { subscribeTheme } from "../../lib/theme";
-  let { paused = false, contained = false }: { paused?: boolean; contained?: boolean } = $props();
+  let { paused = false, contained = false, closeup = false }: { paused?: boolean; contained?: boolean; closeup?: boolean } = $props();
   let updateMotion = $state<(() => void) | null>(null);
   $effect(() => { void paused; updateMotion?.(); });
   let host: HTMLElement;
@@ -53,6 +53,12 @@
       frame = requestAnimationFrame(render);
     };
     const onScroll = () => {
+      if (closeup) {
+        progress = 0.38;
+        orbBoost = 1.25;
+        host.dataset.travel = progress.toFixed(3);
+        return;
+      }
       const viewportHeight = contained ? innerHeight : host.clientHeight;
       const blend = Math.min(1, Math.max(0, window.scrollY / Math.max(viewportHeight * 2.5, 1)));
       const dimming = blend * blend * (3 - 2 * blend);
@@ -141,7 +147,7 @@
   });
 </script>
 
-<div class="hero-visual" class:contained bind:this={host} data-shader-status={status} data-orb-boost={orbBoost.toFixed(3)} aria-hidden="true">
+<div class="hero-visual" class:contained class:closeup bind:this={host} data-shader-status={status} data-orb-boost={orbBoost.toFixed(3)} aria-hidden="true">
   <svg class="palette-definitions" width="0" height="0" focusable="false">
     <defs>
       <filter id="hero-dark-palette" color-interpolation-filters="sRGB">
@@ -216,6 +222,8 @@
   }
 
   .fallback.visible { opacity: 1; }
+
+  .hero-visual.closeup .fallback { background-size: auto 180%; background-position: 60% 48%; }
 
   canvas {
     display: block;

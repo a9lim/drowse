@@ -18,6 +18,7 @@ try {
     measurementGateScores,
     readWebLlmRuntimeCapabilities,
     streamWebLlmGeneration,
+    webLlmGenerationErrorUsage,
     validateWebLlmGenerationSettings,
   } = await server.ssrLoadModule(
     "/src/hosted/runtime/webLlmGeneration.ts",
@@ -1069,6 +1070,76 @@ try {
       };
     },
   };
+  const userAbort = new AbortController();
+  const cancelledTokens = [];
+  let abortInterrupts = 0;
+  await assert.rejects(streamWebLlmGeneration(
+    {
+      ...drowseEngineMethods,
+      chat: { completions: { async create() { return splitStopStream; } } },
+      completions: { async create() { throw new Error("unexpected raw generation"); } },
+    },
+    {
+      async clear() {},
+      async interrupt() { abortInterrupts += 1; },
+      async install() {},
+      async read() {},
+      assertSteeringSupported() {},
+    },
+    {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      signal: userAbort.signal,
+    },
+    token => { cancelledTokens.push(token); userAbort.abort(); },
+  ), error => {
+    assert.equal(error.name, "AbortError");
+    assert.deepEqual(webLlmGenerationErrorUsage(error), {
+      promptTokens: 3, completionTokens: 2, totalTokens: 5,
+    });
+    return true;
+  });
+  assert.equal(cancelledTokens.length, 1, "tokens arriving after Stop must not reach the conversation");
+  assert.equal(abortInterrupts, 1);
+
+  for (const cancelAt of ["raw-start", "raw-token", "visible-token"]) {
+    const controller = new AbortController();
+    const visible = [];
+    let interrupts = 0;
+    const rows = ["a", "b"].map((token, index) => ({
+      token, token_id: index + 10, logprob: -0.2,
+      drowse_sampler: { entropy_nats: 0.4, perplexity: Math.exp(0.4) },
+    }));
+    const engine = {
+      async getDrowseRuntimeCapabilities() {
+        return { topK: true, forcedReplay: true, replayScoring: true, tokenizer: true,
+          namedRoles: true, userSeatGeneration: true, sceneStitching: true };
+      },
+      chat: { completions: { async create() {
+        return (async function* () {
+          yield { choices: [{ index: 0, delta: { content: "ab" }, finish_reason: null,
+            logprobs: { content: rows } }] };
+          yield { choices: [{ index: 0, delta: {}, finish_reason: "abort",
+            drowse_finish_reason: "external_stop", logprobs: null }] };
+          yield { choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } };
+        })();
+      } } },
+    };
+    await assert.rejects(streamWebLlmGeneration(engine, {
+      async clear() {}, async install() {}, async read() {},
+      async interrupt() { interrupts += 1; }, assertSteeringSupported() {},
+    }, {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      signal: controller.signal,
+      async onRawTokenStart() { if (cancelAt === "raw-start") controller.abort(); },
+      async onRawToken() { if (cancelAt === "raw-token") controller.abort(); },
+    }, async token => {
+      visible.push(token.text);
+      if (cancelAt === "visible-token") controller.abort();
+    }), error => error.name === "AbortError");
+    assert.deepEqual(visible, cancelAt === "visible-token" ? ["a"] : [], cancelAt);
+    assert.equal(interrupts, 1);
+  }
+
   const splitStopResult = await streamWebLlmGeneration(
     {
       ...drowseEngineMethods,

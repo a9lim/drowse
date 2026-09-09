@@ -168,6 +168,9 @@ export function assessModelVariant(
   const lastOom = orderedRecords.findLastIndex(
     ({ record }) => record.result === "oom",
   );
+  const lastDeviceLoss = orderedRecords.findLastIndex(
+    ({ record }) => record.result === "device_lost",
+  );
   const deviceRecords = (options.loadRecords ?? [])
     .filter((record) => record.deviceSignature === capabilities.deviceSignature)
     .map((record, index) => ({ record, index }))
@@ -179,7 +182,7 @@ export function assessModelVariant(
   const confirmedOom = lastOom >= 0 && lastOom > lastSuccess;
   const repeatedDeviceLoss = deviceLossesAfterSuccess >= 2;
   const proven =
-    lastSuccess >= 0 && !confirmedOom && !repeatedDeviceLoss;
+    lastSuccess >= 0 && lastSuccess > lastDeviceLoss && !confirmedOom && !repeatedDeviceLoss;
 
   if (confirmedOom && !options.explicitOomRetry) {
     hardFailures.push(
@@ -224,13 +227,15 @@ export function assessModelVariant(
 
   if (
     context &&
-    (context.measuredDevices === 0 ||
+    (lastDeviceLoss > lastSuccess || context.measuredDevices === 0 ||
       (requiresExactBrowserProof(capabilities.signals.runtimeClass) && !proven))
   ) {
     advisories.push(
       issue(
         "PROFILE_UNMEASURED",
-        unmeasuredProfileMessage(capabilities),
+        lastDeviceLoss > lastSuccess
+          ? "The graphics device stopped responding on the last attempt with this configuration. Try a smaller model."
+          : unmeasuredProfileMessage(capabilities),
         "advisory",
       ),
     );
