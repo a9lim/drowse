@@ -1187,7 +1187,8 @@ test("bottom conversation action clears the active path without deleting its bra
   await expect(page.getByRole("button", { name: "Clear conversation" })).toHaveCount(0);
 
   await openWorkspace(page, "Branches");
-  await expect(page.getByText("Keep this branch available", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Fit whole loom" }).click();
+  await expect(page.locator(".tree-node-wrap").filter({ hasText: "Keep this branch available" })).toBeVisible();
 });
 
 test("first run includes J-lens while additional model tools remain manageable", async ({ page }) => {

@@ -154,6 +154,7 @@ test("Weave creates alternatives, backtracks, extends exact tokens, and preserve
   await options.first().getByRole("button", { name: "Star option 1", exact: true }).click();
   await expect(options.first().getByRole("button", { name: "Starred option 1", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: /^Map/ }).click();
+  await page.getByRole("button", { name: "Fit whole loom" }).click();
   await expect(page.locator(".tree-node-wrap:not([data-loom-shared])")).toHaveCount(10);
   await expect(page.locator("[data-loom-shared]")).toHaveCount(2);
   expect(errors).toEqual([]);

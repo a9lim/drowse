@@ -432,7 +432,8 @@ test("interactive motion stays brief and reduced motion removes it", async ({ pa
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await openFixtureWorkbench(page);
 
-  const normal = await page.getByRole("button", { name: "Generate reply" }).evaluate((button) => {
+  await page.getByRole("textbox", { name: /^Compose as / }).focus();
+  const normal = await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).evaluate((button) => {
     const style = getComputedStyle(button);
     const root = getComputedStyle(document.documentElement);
     return {
@@ -448,7 +449,7 @@ test("interactive motion stays brief and reduced motion removes it", async ({ pa
   expect(normal.pressScale).toBe("0.96");
 
   await page.emulateMedia({ reducedMotion: "reduce" });
-  const reducedDurations = await page.getByRole("button", { name: "Generate reply" }).evaluate(
+  const reducedDurations = await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).evaluate(
     (button) => getComputedStyle(button).transitionDuration
       .split(",")
       .map((value) => Number.parseFloat(value) * 1000),

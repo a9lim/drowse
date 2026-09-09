@@ -1,4 +1,4 @@
-import { setAppearance } from "./workbench-navigation";
+import { selectWorkspaceView, setAppearance } from "./workbench-navigation";
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
@@ -45,7 +45,8 @@ test("workbench uses flat material without changing control behavior", async ({ 
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     for (const width of [1440, 320]) {
       await page.setViewportSize({ width, height: 1000 });
-      const send = page.getByRole("button", { name: "Generate reply", exact: true });
+      await page.getByRole("textbox", { name: /^Compose as / }).focus();
+      const send = page.getByRole("button", { name: /^(Send|Generate reply)$/ });
       await expect(send).toBeVisible();
       await expect(send).toHaveCSS("background-image", "none");
       await expect(page.locator(".chat-zone")).toHaveCSS("background-image", "none");
@@ -53,8 +54,8 @@ test("workbench uses flat material without changing control behavior", async ({ 
       await page.screenshot({ path: testInfo.outputPath(`workbench-material-${theme}-${width}.png`) });
     }
   }
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, /^Controls$/);
   await expect(page.locator(".controls")).toBeVisible();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, /^Loom$/);
   await expect(page.locator(".loom-zone")).toBeVisible();
 });
