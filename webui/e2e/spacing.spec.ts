@@ -11,17 +11,21 @@ test("composer and dialog actions follow their container spacing", async ({ page
     await page.setViewportSize(viewport);
     const composer = page.locator(".chat-zone");
     const compactDesktop = viewport.width > 760;
+    await composer.locator("textarea.input").focus();
     await expect.poll(() => composer.evaluate(element => {
       const inset = parseFloat(getComputedStyle(element).paddingBottom);
-      const input = element.querySelector(".input-row")!;
+      const input = element.querySelector("textarea.input")!;
       const actions = element.querySelector(".input-actions")!;
+      const horizontal = getComputedStyle(input.parentElement!).gridTemplateColumns.split(" ").length === 2;
       return {
-        inset, row: parseFloat(getComputedStyle(input).rowGap),
+        inset, row: Math.round(horizontal
+          ? actions.getBoundingClientRect().left - input.getBoundingClientRect().right
+          : actions.getBoundingClientRect().top - input.getBoundingClientRect().bottom),
         buttons: parseFloat(getComputedStyle(actions).gap),
         overflow: element.scrollWidth > element.clientWidth,
       };
     })).toEqual({
-      row: compactDesktop ? 8 : 16,
+      row: viewport.width > 620 && viewport.height <= 600 ? 0 : compactDesktop ? 8 : 16,
       buttons: viewport.width > 760 && viewport.height <= 600 ? 4 : 8,
       inset: viewport.width > 620 && viewport.height <= 600 ? 0 : 12,
       overflow: false,

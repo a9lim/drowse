@@ -7,6 +7,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const server = await createServer({
   root,
   configFile: false,
+  optimizeDeps: { noDiscovery: true, include: [] },
   appType: "custom",
   logLevel: "silent",
   server: { middlewareMode: true, watch: null },

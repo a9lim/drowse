@@ -49,7 +49,12 @@ for (const run of recording.runs) {
 for (const [role, key] of [["model_library", "modelLibrarySha256"], ["converted_manifest", "convertedManifestSha256"], ["tokenizer", "tokenizerSha256"], ["chat_template", "chatTemplateSha256"]]) {
   assert.equal(recording.artifacts.model.find(file => file.role === role).sha256, recording.runtimeIdentity[key]);
 }
-const vite = await createServer({ configFile: false, logLevel: "silent", server: { middlewareMode: true, watch: null } });
+const vite = await createServer({
+  configFile: false,
+  optimizeDeps: { noDiscovery: true, include: [] },
+  logLevel: "silent",
+  server: { middlewareMode: true, watch: null },
+});
 try {
   const { chooseMessage } = await vite.ssrLoadModule("/src/hosted/ui/notFoundMessages.ts");
   for (const previous of [null, ...dataset.messages.map(message => message.id)]) {

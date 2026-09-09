@@ -90,14 +90,31 @@ test("reply motion resizes the unchanged panel and honors reduced motion", async
   await expect.poll(() => readableText(demo.locator(".result"))).toBe(recording.runs[3].text);
   await expect.poll(() => demo.evaluate(el => Math.abs(el.getBoundingClientRect().height - el.firstElementChild!.getBoundingClientRect().height))).toBeLessThan(1);
   const heights = await slider.evaluate(async input => {
-    const demo = input.closest(".capability-demo")!;
+    const demo = input.closest<HTMLElement>(".capability-demo")!;
     const heights = [demo.getBoundingClientRect().height];
+    demo.style.transitionDuration = "2s";
+    const started = new Promise<Animation>(resolve => {
+      const capture = (event: TransitionEvent) => {
+        if (event.target !== demo || event.propertyName !== "height") return;
+        demo.removeEventListener("transitionrun", capture);
+        const animation = demo.getAnimations().find(animation =>
+          "transitionProperty" in animation && animation.transitionProperty === "height",
+        )!;
+        animation.pause();
+        resolve(animation);
+      };
+      demo.addEventListener("transitionrun", capture);
+    });
     (input as HTMLInputElement).value = "5";
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    for (let frame = 0; frame < 30; frame++) {
-      await new Promise(requestAnimationFrame);
+    const animation = await started;
+    const duration = Number(animation.effect!.getTiming().duration);
+    for (const progress of [0.1, 0.25, 0.5, 0.75, 1]) {
+      animation.currentTime = duration * progress;
       heights.push(demo.getBoundingClientRect().height);
     }
+    animation.finish();
+    demo.style.removeProperty("transition-duration");
     return heights;
   });
   expect(Math.abs(heights.at(-1)! - heights[0])).toBeGreaterThan(10);
