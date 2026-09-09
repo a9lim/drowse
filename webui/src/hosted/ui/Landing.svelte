@@ -110,7 +110,7 @@
             </li>
           {/each}
         </ol>
-        <CapabilityDemo />
+        <div class="demo-panel"><CapabilityDemo /></div>
       </section>
 
       <section class="models" id="models" aria-labelledby="models-title">
@@ -320,7 +320,8 @@
   }
 
   .capabilities li,
-  .model-group {
+  .model-group,
+  .demo-panel {
     --fg: var(--landing-panel-ink);
     --fg-dim: var(--landing-panel-muted);
     --fg-muted: var(--landing-panel-muted);
@@ -335,13 +336,16 @@
   }
 
   .glass-definitions { position: absolute; pointer-events: none; }
+  .demo-panel { min-width: 0; margin-top: 32px; }
 
   .capabilities li > *,
-  .model-group > * { position: relative; z-index: 1; }
+  .model-group > *,
+  .demo-panel > :global(*) { position: relative; z-index: 1; }
 
   @supports (backdrop-filter: url("#landing-glass")) and (not (-webkit-touch-callout: none)) {
     .capabilities li,
-    .model-group {
+    .model-group,
+    .demo-panel {
       backdrop-filter: url("#landing-glass") blur(1px);
     }
   }
@@ -419,7 +423,8 @@
 
   @media (prefers-contrast: more), (forced-colors: active), (prefers-reduced-transparency: reduce) {
     .capabilities li,
-    .model-group {
+    .model-group,
+    .demo-panel {
       --fg: CanvasText;
       --fg-dim: CanvasText;
       --fg-muted: CanvasText;

@@ -106,14 +106,14 @@ test("layer, trace and template scrubbing selects real data", async ({ page }) =
 test("landing demonstration remains labeled and usable at phone widths", async ({page}) => {
   await page.goto(`${dev}/`);
   await page.setViewportSize({width:320,height:900});
-  const demo=page.getByRole("region", {name:"Illustrative Drowse example"});
-  await expect(demo).toContainText("illustrative data");
-  await demo.getByRole("slider", {name:"Example poetic influence"}).focus();
-  await demo.getByRole("slider", {name:"Example poetic influence"}).press("End");
-  await expect(demo.locator(".result .morph-source")).toHaveText("The sea wears a silver veil of moonlight.");
+  const demo=page.getByRole("region", {name:"Recorded Drowse example"});
+  await expect(demo).toContainText("Recorded preset");
+  await demo.getByRole("slider", {name:"Recorded welcoming setting"}).focus();
+  await demo.getByRole("slider", {name:"Recorded welcoming setting"}).press("End");
+  await expect(demo.locator(".result")).toContainText("Come find us sometime");
   await demo.getByRole("button", {name:"Compare",exact:true}).click();
-  await demo.getByRole("button", {name:"B · a crowded station."}).click();
-  await expect(demo.locator(".result .morph-source")).toHaveText("a crowded station.");
+  await demo.getByRole("button", {name:"Inspect toward welcoming reply"}).click();
+  await expect(demo.locator(".result")).toContainText("moving can be a big change");
   expect(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth+1)).toBe(true);
 });
 

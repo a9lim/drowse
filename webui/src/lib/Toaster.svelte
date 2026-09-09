@@ -1,7 +1,6 @@
 <script lang="ts">
   import FluentIcon from "./ui/FluentIcon.svelte";
-  // Toast host — renders ``toasts.entries`` in the top-right corner so
-  // notifications never cover the persistent composer actions.
+  // Toast host — renders ``toasts.entries`` in the bottom-right corner.
   // Each toast auto-dismisses after its ``ttlMs`` fires; clicking the
   // ✕ dismisses early.  Toasts with ``ttlMs === null`` are sticky —
   // used by long-running async work (extract / clone) that drives a
@@ -126,8 +125,8 @@
 <style>
   .toaster {
     position: fixed;
-    inset-inline-end: var(--space-6);
-    top: calc(64px + env(safe-area-inset-top));
+    inset-inline-end: calc(var(--space-6) + env(safe-area-inset-right, 0px));
+    bottom: calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
     display: flex;
     flex-direction: column;
     gap: var(--space-3);

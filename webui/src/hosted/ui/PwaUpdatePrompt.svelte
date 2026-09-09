@@ -420,11 +420,6 @@
   }
 
   @media (max-width: 42rem), (max-height: 32rem) {
-    .pwa-notice {
-      top: calc(var(--space-4) + env(safe-area-inset-top, 0px));
-      bottom: auto;
-    }
-
     .pwa-actions button {
       flex: 1 1 auto;
     }

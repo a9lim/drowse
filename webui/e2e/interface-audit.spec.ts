@@ -654,7 +654,7 @@ test("the primary hosted flow mirrors without clipping in RTL", async ({ page })
 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Mirror this message");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   const rtlPadding = await page.locator(".role-chip").first().evaluate((chip) => {
     const roleStyle = getComputedStyle(chip);
     const thinking = chip.cloneNode(false) as HTMLElement;
@@ -704,6 +704,7 @@ test("the 320 px composer preserves a usable writing surface", async ({ page }) 
   await useTouchViewport(page);
   await openFixtureWorkbench(page);
   const composer = page.getByRole("textbox", { name: /^Compose as / });
+  await composer.focus();
   const metrics = await composer.evaluate((element) => {
     const box = element.getBoundingClientRect();
     return {
@@ -1139,7 +1140,7 @@ test("context-launched workbench drawers remain operable at 320 px", async ({ pa
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create inspectable context");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   const drawers: Array<{ name: string; params?: unknown }> = [
     { name: "save_conversation" },

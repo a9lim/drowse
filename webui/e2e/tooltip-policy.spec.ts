@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { showWorkspaceTools } from "./workbench-navigation";
+import { openWorkspaceMenu, showWorkspaceTools } from "./workbench-navigation";
 
 test("ordinary controls stay quiet across chat, instruments, and loom", async ({ page }) => {
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
@@ -8,7 +8,10 @@ test("ordinary controls stay quiet across chat, instruments, and loom", async ({
   await expect(page.locator("[title], svg title, #drowse-tooltip")).toHaveCount(0);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await page.getByRole("textbox", { name: /^Compose as / }).blur();
+  await page.locator(".log").press("Home");
+  await expect.poll(() => page.locator(".log").evaluate(el => el.scrollTop)).toBe(0);
   await page.locator(".msg").first().hover();
   await page.waitForTimeout(400);
   await expect(page.locator(".info-popover:popover-open")).toHaveCount(0);
@@ -24,7 +27,11 @@ test("ordinary controls stay quiet across chat, instruments, and loom", async ({
   await page.locator(".workspace-nav").getByRole("button", { name: "Loom", exact: true }).click();
   await showWorkspaceTools(page, "Loom");
   await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
-  const generate = page.getByRole("button", { name: /^Generate another path from/ });
+  const overview = page.locator(".map-summary").first();
+  if (await overview.count()) await overview.click();
+  await openWorkspaceMenu(page);
+  await page.getByRole("button", { name: "Hide Loom tools", exact: true }).click();
+  const generate = page.locator('.node').getByRole("button", { name: /^Generate another path from user/ });
   await generate.first().hover();
   await page.waitForTimeout(400);
   await expect(page.locator("[title], svg title, #drowse-tooltip")).toHaveCount(0);

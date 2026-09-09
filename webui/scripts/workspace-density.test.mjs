@@ -66,7 +66,7 @@ assert.match(autosave, /<Button variant="solid"/);
 assert.doesNotMatch(autosave, /<button/);
 assert.match(chat, /\.input-row\s*\{[^}]*padding: var\(--surface-padding\);[^}]*background: var\(--workspace-field-bg\);/);
 assert.match(chat, /\.input\s*\{[^}]*--shadow-field-keyboard: none;[^}]*background: transparent;/);
-assert.match(chat, /\.input-actions\s*\{[^}]*flex-wrap: wrap;/);
+assert.match(chat, /\.input-actions\s*\{[^}]*flex-wrap: nowrap;/);
 assert.match(chat, /\.chat > \.log\s*\{[^}]*flex: 1 1 0;/,
   "mobile messages yield space to keep composer actions reachable");
 assert.match(chat, /let rolePlanOpen = \$state\(false\)/,

@@ -245,6 +245,9 @@ try {
   loomBranchJunctions(countedGraph);
   assert.equal(edgeVisits, 2 * deep.edges.length, "junction counts visit edges linearly");
 
+  const shortScreen = fitLoomCamera({ width: 440, height: 96 }, { width: 1100, height: 3000 });
+  assert.ok(shortScreen.y >= 0 && shortScreen.y + 3000 * shortScreen.zoom <= 96,
+    "short phone viewports fit without a fixed padding consuming the entire map");
   const fitted = fitLoomCamera(
     { width: 1200, height: 720 },
     { width: layout.width, height: layout.height },

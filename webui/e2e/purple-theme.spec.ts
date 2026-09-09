@@ -11,7 +11,7 @@ test("purple accents connect conversation, controls, and Loom in both themes", a
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   await composer.fill("Tell me about marmots.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const navigation = page.locator(".workspace-nav");
 
   for (const theme of ["light", "dark"] as const) {

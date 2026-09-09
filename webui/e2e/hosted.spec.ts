@@ -285,7 +285,7 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   const records = () => page.evaluate(async url => (await import(url)).conversationLibrary.list(), libraryUrl);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Automatic marmot notes");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   await expect.poll(async () => (await records()).conversations.length).toBe(1);
   const original = (await records()).conversations[0];
   expect(original.name).toMatch(/^New Chat - [A-Z][a-z]{2} \d{1,2} - \d{1,2}:\d{2} \S+$/);
@@ -313,7 +313,7 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Add a second turn");
   await sendButton(page).click();
   await expect(page.locator(".chat[aria-label='Chat']").getByText("Add a second turn", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   await expect.poll(async () => (await records()).conversations[0].snapshot.tree.nodes.length).toBeGreaterThan(original.snapshot.tree.nodes.length);
   const updated = (await records()).conversations[0];
   expect(updated.id).toBe(original.id);
@@ -342,7 +342,7 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   await selectWorkspaceView(page, "Conversation");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A separate chat");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   await expect.poll(async () => (await records()).conversations.length).toBe(2);
   const newChat = (await records()).conversations.find((record: any) => record.id !== original.id);
   expect(newChat.avatarSeed).not.toBe(chosenSeed);
@@ -410,7 +410,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
   await expect(page.getByRole("button", { name: "Back to Chats", exact: true })).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("What do marmots do in winter?");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
@@ -1106,7 +1106,7 @@ test("fixture installs, opens the shared workbench, stops, and generates", async
 
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   const submit = sendButton(page);
-  const stop = page.getByRole("button", { name: /^Stop$/i });
+  const stop = page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true });
   await openWorkspace(page, "Controls");
   await page.getByRole("button", { name: "Sampling settings" }).click();
   const samplingDrawer = page.getByRole("dialog", { name: "Sampling settings" });
@@ -1349,7 +1349,7 @@ test("installed J-lens and SAE packs are usable without preparation errors", asy
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Measure installed instruments");
   await sendButton(page).click();
   await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   await openWorkspace(page, "Controls");
   await instrumentTabs.getByRole("button", { name: "SAE", exact: true }).click();
   await expect(sae.getByLabel("Strength 0.67").first()).toBeVisible();
@@ -1359,7 +1359,7 @@ test("installed J-lens and SAE packs are usable without preparation errors", asy
 
   await openWorkspace(page, "Conversation");
   await page.getByRole("button", { name: "Reroll assistant message" }).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   await expect.poll(async () => page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
     const user = [...stores.loomTree.nodes.values()].find(
@@ -1486,7 +1486,7 @@ test("hover replay routes the exact token request and exposes a recoverable fail
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create a replayable token");
   await sendButton(page).click();
   await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   await openWorkspace(page, "Controls");
   await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
@@ -1616,7 +1616,7 @@ test("geometry measurements populate and completed timing stays frozen", async (
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Measure geometry");
   await sendButton(page).click();
   await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   await openWorkspace(page, "Controls");
   const probeRack = page.getByLabel("Probe rack");
   await expect(probeRack).toContainText("calm.focused");
@@ -1716,7 +1716,7 @@ test("fixture survives repeated generation, stop, and reload cycles", async ({ p
   const runGeneration = async (prompt: string, stopEarly: boolean) => {
     await setFixtureTokenDelay(page, stopEarly ? 2_000 : 35);
     const composer = page.getByRole("textbox", { name: /^Compose as / });
-    const stop = page.getByRole("button", { name: /^Stop$/i });
+    const stop = page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true });
     const responses = page.locator(".msg:has(.model-avatar) .response-body");
     const previousResponses = await responses.count();
     const response = responses.last();
@@ -1793,7 +1793,7 @@ test("reroll creates an assistant sibling under the original user turn", async (
 
   await page.getByRole("button", { name: "Reroll assistant message" }).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeEnabled();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   const branch = await page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
@@ -1927,7 +1927,7 @@ test("a saved token alternative creates an exact sibling loom branch", async ({ 
   await expect(drilldown).toHaveCount(0);
   await expect(page.locator(".msg .response-body").last()).toContainText("Alternative-0 ");
   await openWorkspace(page, "Conversation");
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   const fork = await page.evaluate(async ({ moduleUrl, parentId, sourceId }) => {
     const stores = await import(moduleUrl);
@@ -1964,7 +1964,7 @@ test("token replacement streams its new continuation visibly on the Loom", async
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Watch this branch grow.");
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled({ timeout: 30_000 });
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled({ timeout: 30_000 });
   const original = await page.evaluate(async url => {
     const stores = await import(url);
     const node = stores.loomTree.nodes.get(stores.loomTree.active_node_id);
@@ -2154,7 +2154,7 @@ test("loom projections stay synchronized across path, options, and starred point
   await sendButton(page).click();
   await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
   await page.getByRole("button", { name: "Reroll assistant message" }).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   await openWorkspace(page, "Branches");
   await expect(page.getByRole("navigation", { name: "Loom views" })).toBeVisible();
@@ -2484,7 +2484,7 @@ test("worker-backed fixture restores its loom and generates offline without redo
   await composer.fill("Persist this conversation across reload");
   await sendButton(page).click();
   await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   const artifactRequests: string[] = [];
   page.on("request", (request) => {
@@ -2625,7 +2625,7 @@ test("loom tree, node menu, and modal are fully keyboard scoped", async ({ page 
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create loom nodes");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   await openWorkspace(page, "Branches");
   const tree = page.getByRole("tree", { name: /Conversation (loom|threads)/ });
@@ -2703,7 +2703,7 @@ test("a reserved branch cannot be deleted and a rejected mutation keeps the loom
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create a branch to protect");
   await sendButton(page).click();
   await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   const result = await page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
@@ -2851,7 +2851,7 @@ test("captured probe readings are not relabeled as unsteered replay results", as
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect measurement provenance");
   await sendButton(page).click();
   await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   // The deterministic backend does not simulate steering; stamp its synthetic
   // capture so this test can exercise the captured/counterfactual UI boundary.
   await page.evaluate(async (moduleUrl) => {
@@ -2896,7 +2896,7 @@ test("token inspection has one keyboard entry point and restores focus", async (
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create inspectable tokens");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   const inspect = page.getByRole("button", { name: "Inspect tokens in assistant message" });
   await expect(inspect).toHaveCount(1);

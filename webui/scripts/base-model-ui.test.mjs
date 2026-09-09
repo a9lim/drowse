@@ -275,7 +275,7 @@ try {
   let lightPanelRules = 0;
   landingStyles.walkRules(rule => {
     if (/\.primary-action|\.skip-link/.test(rule.selector)) return;
-    if (rule.selector.replace(/\s+/g, " ").trim() === ".capabilities li, .model-group") {
+    if (rule.selector.replace(/\s+/g, " ").trim() === ".capabilities li, .model-group, .demo-panel") {
       lightPanelRules++;
       const declarations = Object.fromEntries(rule.nodes.filter(node => node.type === "decl").map(node => [node.prop, node.value]));
       if (rule.parent.type === "atrule") {
@@ -296,7 +296,7 @@ try {
     }
     rule.walkDecls(declaration => {
       assert.ok(!/^(background(?:-.+)?|box-shadow|backdrop-filter|border(?:-.+)?)$/.test(declaration.prop),
-        `${rule.selector}: only feature and model cards gain containers`);
+        `${rule.selector}: only feature, model, and example cards gain containers`);
     });
   });
   assert.equal(lightPanelRules, 3, "cards share base glass, progressive refraction, and accessibility fallback");

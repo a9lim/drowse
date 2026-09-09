@@ -10,6 +10,7 @@ import {
   appRefreshSafetyMessage,
 } from "../src/hosted/runtime/chunkRecovery";
 import { initializeTheme } from "../src/lib/theme";
+import { initializeInputModality } from "../src/lib/inputModality";
 import "../src/lib/style/fonts.css";
 import "../src/lib/style/tokens.css";
 import "../src/lib/style/global.css";
@@ -17,6 +18,7 @@ import "../src/lib/style/global.css";
 const target = document.getElementById("app");
 if (!target) throw new Error("drowse hosted: #app element missing in index.html");
 initializeTheme();
+initializeInputModality();
 const path = window.location.pathname.replace(/\/+$/, "") || "/";
 if (path !== "/") {
   const robots = document.createElement("meta");

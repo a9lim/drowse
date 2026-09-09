@@ -430,6 +430,15 @@ samp {
   box-shadow: var(--shadow-field-focus) !important;
 }
 
+:root[data-input-modality="pointer"] :focus-visible:not(input:not([type="range"]):not([type="checkbox"]):not([type="radio"]), textarea, [contenteditable="true"]) {
+  outline: none !important;
+}
+
+button, input[type="range"], [role="tab"] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .field-focus:focus-visible,
 .field-focus > :is(input, button):focus-visible {
   outline: none !important;

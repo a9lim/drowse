@@ -18,7 +18,7 @@ test("chat accents are independent, persistent, accessible, and follow the activ
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A chat with its own color.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.locator(".msg .response-body").last()).toContainText("deterministic");
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const ids = await page.evaluate(async url => {
     const { conversationLibrary, flushConversationAutosave, savedConversationState } = await import(url);
     await flushConversationAutosave();

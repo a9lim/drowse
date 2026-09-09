@@ -43,6 +43,25 @@ async function installUpdate(page: Page) {
   await expect(updateNotice(page)).toBeVisible();
 }
 
+test("update and reminder confirmation stay at the bottom right on phones and desktops", async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await installUpdate(page);
+  for (const viewport of [{ width: 320, height: 568 }, { width: 440, height: 796 }, { width: 844, height: 390 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => updateNotice(page).evaluate(element => {
+      const box = element.getBoundingClientRect();
+      return { right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom) };
+    })).toEqual({ right: 16, bottom: 16 });
+    await page.screenshot({ path: testInfo.outputPath(`update-bottom-right-${viewport.width}.png`) });
+  }
+  await page.setViewportSize({ width: 440, height: 796 });
+  await updateNotice(page).getByRole("button", { name: "Update later" }).click();
+  await expect.poll(() => page.locator(".pwa-confirmation").evaluate(element => {
+    const box = element.getBoundingClientRect();
+    return { right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom) };
+  })).toEqual({ right: 16, bottom: 16 });
+});
+
 test("update entrance and fading glow play only once, with comfortable button spacing", async ({ context, page }, testInfo) => {
   test.setTimeout(180_000);
   await page.emulateMedia({ colorScheme: "dark" });

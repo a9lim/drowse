@@ -163,6 +163,7 @@
     height: var(--control-target);
     min-height: 44px;
     touch-action: none;
+    -webkit-user-select: none;
     user-select: none;
     margin: 0;
     /* Borderless: the track is a recessed groove — fill only.  The thumb

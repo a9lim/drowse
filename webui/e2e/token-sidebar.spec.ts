@@ -61,7 +61,7 @@ test("chat text has no hover tooltip and remains inspectable", async ({ page }) 
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("What do marmots eat?");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const token = page.locator(".msg .tok").first();
   await expect(token).toBeVisible();
   await expect(page.locator(".msg .tok[title]")).toHaveCount(0);
@@ -183,7 +183,7 @@ test("token details dock, follow selection, and leave the workspace interactive"
   const editor = page.getByRole("textbox", { name: "Editable completion buffer" });
   await editor.fill("A field note: ");
   await page.getByRole("button", { name: "Continue text", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: "Inspect tokens", exact: true }).click();
   const tokens = page.locator(".inspect .tok");
   await tokens.first().click();
@@ -281,7 +281,7 @@ test("chat selection and all analysis views fit the docked inspector", async ({ 
   await selectWorkspaceView(page, "Conversation");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const tokens = page.locator(".msg .tok");
   await tokens.first().click();
   await page.getByRole("button", { name: "Full token details", exact: true }).click();

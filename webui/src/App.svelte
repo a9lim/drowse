@@ -109,6 +109,15 @@
   let drawerEl: HTMLElement | null = $state(null);
   let leftSidebarVisible = $state(true);
   let compactNavigation = $state(false);
+  let restoreNavigationButton: HTMLButtonElement | null = $state(null);
+  let collapseNavigationButton: HTMLButtonElement | null = $state(null);
+  async function setMobileNavigation(visible: boolean) {
+    leftSidebarVisible = visible;
+    await tick();
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    focusWithoutScrolling(visible ? collapseNavigationButton : restoreNavigationButton);
+  }
   let narrowScreen = $state(false);
   onMount(() => {
     const navigationQuery = window.matchMedia("(max-width: 760px)");
@@ -448,6 +457,11 @@
               aria-controls="workspace-sidebar" aria-label={leftSidebarVisible ? "Hide left sidebar" : "Show left sidebar"}
 
               onclick={() => (leftSidebarVisible = !leftSidebarVisible)}><SidebarIcon /></button>
+            {#if compactNavigation && !leftSidebarVisible}
+              <button type="button" class="sidebar-toggle navigation-restore" bind:this={restoreNavigationButton}
+                aria-label="Show navigation bar" aria-expanded="false" aria-controls="workspace-sidebar"
+                onclick={() => void setMobileNavigation(true)}><FluentIcon name="down" /></button>
+            {/if}
           {/snippet}
           {#snippet actions()}
             {#if !leftSidebarVisible || compactNavigation}
@@ -469,6 +483,10 @@
       <aside class="app-sidebar t-panel-slide" id="workspace-sidebar" data-open={leftSidebarVisible} aria-hidden={!leftSidebarVisible}
         inert={modalDrawerOpen || !leftSidebarVisible} aria-label="Workspace sidebar">
         <div class="workspace-navigation">
+        {#if compactNavigation}
+          <button type="button" class="sidebar-toggle mobile-navigation-action" aria-label="Back to Chats"
+            disabled={returningHome} onclick={() => void returnHome()}><FluentIcon name="back" /></button>
+        {/if}
         <nav class="sidebar-links sidebar-back" aria-label="Back to chats">
           <button type="button" disabled={returningHome} onclick={() => void returnHome()}><FluentIcon name="chats" /><span>Back to Chats</span></button>
           <hr />
@@ -512,6 +530,11 @@
           ><FluentIcon name="loom" size={16} /><span class="nav-copy"><span>Loom</span><span class="nav-description" id="workspace-loom-description" aria-hidden="true">Explore alternate paths</span></span></button>
 
         </nav>
+        {#if compactNavigation}
+          <button type="button" class="sidebar-toggle mobile-navigation-action" bind:this={collapseNavigationButton}
+            aria-label="Hide navigation bar" aria-expanded="true" aria-controls="workspace-sidebar"
+            onclick={() => void setMobileNavigation(false)}><FluentIcon name="up" /></button>
+        {/if}
         <nav class="sidebar-links" aria-label="Library and tools">
           {#if runtimeClient.mode !== "http"}<button type="button" disabled={returningHome} onclick={() => void returnHome("models")}><FluentIcon name="models" /><span>Models</span></button>{/if}
           <span class="sidebar-label">Workspace</span>
@@ -1247,6 +1270,8 @@
       border-bottom: 1px solid var(--grid-line);
       background: color-mix(in srgb, var(--bg-elev) 90%, transparent);
     }
+    .app-sidebar.t-panel-slide { transform: translateY(-12px); }
+    .app-sidebar.t-panel-slide[data-open="true"] { transform: translateY(0); }
     .workspace-frame {
       grid-column: 1 / -1;
       grid-row: 3;
@@ -1259,12 +1284,12 @@
       min-width: 0;
       gap: 0;
       padding: calc(var(--space-1) / 2);
-      border-radius: var(--radius);
+      border-radius: var(--radius-lg);
       background: var(--glass);
     }
     .workspace-navigation {
       flex-direction: row;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
       justify-content: center;
       width: 100%;
@@ -1277,7 +1302,7 @@
     }
     .workspace-nav button {
       width: auto;
-      border-radius: var(--radius-inset);
+      border-radius: var(--radius);
       white-space: nowrap;
       text-align: center;
       justify-content: center;
@@ -1298,7 +1323,7 @@
     .workspace-nav {
       display: grid;
       grid-template-columns: repeat(3, auto);
-      width: fit-content;
+      width: 100%;
       max-width: 100%;
       margin-inline: auto;
     }
@@ -1320,6 +1345,8 @@
   @media (max-width: 420px) {
     .workspace-navigation { justify-content: center; }
     .workspace-nav { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .workspace-nav button { padding-inline: var(--space-1); }
+    .workspace-nav :global(.fluent-icon) { display: none; }
   }
 
   @media (min-width: 621px) and (max-height: 600px) {

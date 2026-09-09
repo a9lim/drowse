@@ -18,7 +18,7 @@ test("workbench cursors describe editing, inspecting, adjusting and navigating",
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   await expect(composer).toHaveCSS("cursor", "text");
   await expect(page.getByRole("slider", { name: "Resize writing area" })).toHaveCSS("cursor", "row-resize");
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCSS("cursor", "not-allowed");
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeHidden();
 
   await selectWorkspaceView(page, "Controls");
   const slider = page.getByRole("slider", { name: "Temperature", exact: true });
@@ -29,7 +29,7 @@ test("workbench cursors describe editing, inspecting, adjusting and navigating",
   await selectWorkspaceView(page, "Conversation");
   await composer.fill("Describe the shape of a thought.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await expect(page.locator(".response-body .tok").first()).toHaveCSS("cursor", "crosshair");
 
   await selectWorkspaceView(page, "Loom");

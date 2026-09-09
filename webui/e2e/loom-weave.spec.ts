@@ -10,7 +10,7 @@ test("Loom header glow follows the mouse without moving content and respects red
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A reply to explore.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
   await page.getByRole("button", { name: /^Map/ }).click();
   const card = page.locator('.node[aria-current="true"]');
@@ -40,7 +40,7 @@ test("Loom sentences have complete rounded borders without side shadows", async 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A reply to explore.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
   await page.getByRole("button", { name: /^Map/ }).click();
   const sentence = page.locator(".sentence-node").first();
@@ -164,7 +164,7 @@ test("Weave opens at a chat reply's branch point without hiding its alternatives
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Start in chat, then explore.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
   await expect(page.getByRole("button", { name: /^Map/ })).toHaveAttribute("aria-current", "page");
   await expect(page.locator('.node[aria-current="true"]')).toBeVisible();

@@ -12,7 +12,7 @@ test("main workspaces and dialogs keep a clean responsive layout", async ({ page
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain how a language model chooses its next word.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
 
   for (const theme of ["dark", "light"]) {
     await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);

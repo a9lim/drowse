@@ -29,7 +29,7 @@ async function generate(page: Page) {
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toHaveText("This is a deterministic local Drowse runtime fixture.");
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
 }
 
 test("sheet overlays the unchanged workspace with stepped swipes, focus containment, and dismissal", async ({ page }, info) => {

@@ -133,6 +133,7 @@ async function expectConversationUsable(page: Page, minimumLogHeight: number): P
   const send = page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ });
   const stop = page.getByRole("button", { name: "Stop", exact: true });
 
+  await composer.focus();
   await expect(page.locator(".turn-plan-summary")).toBeVisible();
   await expectInsideVisualViewport(composer);
   await expectInsideVisualViewport(send);
@@ -379,7 +380,7 @@ test("probability and lens meters keep labels, values and bars separated", async
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect the next word.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body .tok").first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async url => {
     const { chatLog } = await import(url);
     chatLog.turns.at(-1).tokens[0].topAlts = [
@@ -416,7 +417,7 @@ test("SAE readout labels preserve metadata and activation bars never overlap val
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect feature activations.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body .tok").first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const description = "References to opening delimiters in nested expressions, including brackets and parentheses.";
   await page.evaluate(async ({ url, description }) => {
     const { chatLog } = await import(url);

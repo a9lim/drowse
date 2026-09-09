@@ -322,7 +322,7 @@ test("chat spacing and corners remain concentric at desktop, phone, and landscap
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, this is a layout test.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg").first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   expect(await page.locator(".chat").evaluate(chat => {
     const message = chat.querySelector(".msg")!.getBoundingClientRect();
     const composer = chat.querySelector(".input-row")!.getBoundingClientRect();

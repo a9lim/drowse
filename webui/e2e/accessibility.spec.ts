@@ -115,7 +115,7 @@ test("context-launched workbench drawers meet automated WCAG checks", async ({ p
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create inspectable context");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   const drawers: Array<{ name: string; params?: unknown }> = [
     { name: "save_conversation" },
@@ -146,7 +146,7 @@ test("a populated saved-chat library meets automated WCAG checks", async ({ page
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A saved accessibility check");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: /^(Loom|Branches)$/ }).click();
   await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();

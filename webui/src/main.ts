@@ -3,6 +3,7 @@ import { mount } from "svelte";
 import { HttpRuntimeClient } from "./lib/runtime/http-client";
 import { installRuntimeClient } from "./lib/runtime/registry";
 import { initializeTheme } from "./lib/theme";
+import { initializeInputModality } from "./lib/inputModality";
 // Side-effect CSS imports — Vite extracts these into the bundled CSS.
 // Imported here (not from App.svelte) so svelte-check, which runs sans
 // Vite's CSS plugin, doesn't trip on missing module declarations.
@@ -20,6 +21,7 @@ const target = document.getElementById("app");
 if (!target) throw new Error("drowse web: #app element missing in index.html");
 
 initializeTheme();
+initializeInputModality();
 
 installRuntimeClient(new HttpRuntimeClient());
 const { default: App } = await import("./App.svelte");

@@ -1,7 +1,32 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
-test("offline notices leave phone generation actions reachable and hide in the workbench", async ({ page }, testInfo) => {
+test("info, warning, and error notifications stack at the bottom right", async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=1");
+  await expect(page.locator(".shell")).toBeVisible();
+  await page.evaluate(async moduleUrl => {
+    const { pushToast } = await import(moduleUrl);
+    for (const kind of ["info", "warning", "error"]) {
+      pushToast(`${kind} notification`, { kind, ttlMs: null });
+    }
+  }, `/@fs/${resolve("src/lib/stores.svelte.ts")}`);
+  await expect(page.locator(".toast")).toHaveCount(3);
+  for (const viewport of [{ width: 320, height: 568 }, { width: 440, height: 796 }, { width: 844, height: 390 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => page.locator(".toaster").evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const right = innerWidth - box.right;
+      const bottom = innerHeight - box.bottom;
+      return right >= 8 && right <= 32 && bottom >= 8 && bottom <= 48 && box.top >= 0;
+    })).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`notifications-bottom-right-${viewport.width}.png`) });
+  }
+  await page.getByRole("button", { name: "Dismiss notification: error notification", exact: true }).click();
+  await expect(page.locator(".toast")).toHaveCount(2);
+});
+
+test("offline notices stay at the bottom right and hide in the workbench", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=1");
@@ -24,14 +49,15 @@ test("offline notices leave phone generation actions reachable and hide in the w
   }, `/@fs/${resolve("src/hosted/ui/PwaUpdatePrompt.svelte")}`);
   const notice = page.locator(".pwa-notice.passive");
   await expect(notice).toBeVisible();
-  for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+  for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello");
-    const send = page.getByRole("button", { name: /^(Send|Generate reply)$/ });
-    await send.click({ trial: true });
-    const noticeBox = (await notice.boundingBox())!;
-    const sendBox = (await send.boundingBox())!;
-    expect(noticeBox.y + noticeBox.height).toBeLessThan(sendBox.y);
+    await expect.poll(() => notice.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const right = innerWidth - box.right;
+      const bottom = innerHeight - box.bottom;
+      return right >= 8 && right <= 32 && bottom >= 8 && bottom <= 48 && box.top >= 0;
+    })).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`offline-notice-${viewport.width}.png`) });
   }
   await page.evaluate(async () => {

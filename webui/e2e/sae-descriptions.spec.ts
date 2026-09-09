@@ -39,7 +39,7 @@ for (const [size, layer] of [["270m", 12], ["1b", 13], ["4b", 17]] as const) {
     await expect(page.locator(".shell")).toBeVisible();
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect the published feature descriptions.");
     await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     const { sheet, index } = await openFeatures(page, size, layer);
     const feature = sheet.getByRole("listitem", { name: `SAE feature 2286, layer ${layer}`, exact: true });
     await expect(feature.locator(".feature-description")).toHaveText(index.explanations["2286"][0]);

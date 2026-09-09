@@ -12,7 +12,7 @@ async function conversation(page: Page) {
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("What do marmots eat?");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await expect(page.locator(".msg .model-avatar")).toBeVisible();
   await page.evaluate(async url => { await (await import(url)).flushConversationAutosave(); }, savedUrl);
 }

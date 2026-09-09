@@ -273,7 +273,7 @@
     parentId: segment.parentId,
     depth: segment.depth,
     width: segmentWidths.get(segment.id),
-    height: measuredHeights.has(segment.id)
+    height: compactMap ? 168 : measuredHeights.has(segment.id)
       ? measuredHeights.get(segment.id)!
       : nodeCardHeight({ ...segment.node, tokens: segment.node.tokens?.slice(segment.start, segment.end) ?? null }, segmentWidths.get(segment.id)!),
   }))));
@@ -433,8 +433,13 @@
     )) ?? candidates.find(segment => segment.id === node.id) ?? candidates[0];
     if (!segment) return;
     searchSegmentId = segment.id;
+    if (compactMap) {
+      zoomView(1);
+      await tick();
+    }
     centerNode(segment.id);
     await tick();
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     const card = viewportEl?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(segment.id)}"]`);
     const sentence = [...(card?.querySelectorAll<HTMLElement>(".sentence-node") ?? [])].find(element =>
       filterState.mode === "text" && loomTextMatches(element.querySelector(".sentence-tokens")?.textContent ?? "", filterState.expr));
@@ -526,9 +531,18 @@
   });
   const savedRows = $derived(rows.filter((row) => row.node.starred && !row.filteredOut));
   let viewportEl: HTMLDivElement | null = $state(null);
-  let lastViewportSize = { width: 0, height: 0 };
+  let lastViewportSize = $state({ width: 0, height: 0 });
   let camera: LoomCamera = $state({ x: 0, y: 0, zoom: 1 });
   let cameraInitialized = $state(false);
+  let cameraFitted = $state(false);
+  const compactMap = $derived(coarsePointer.current && (cameraFitted || !cameraInitialized || camera.zoom < 1));
+  const visibleMapNodes = $derived(graph.nodes.filter(node => {
+    const margin = 120;
+    return node.x * camera.zoom + camera.x < lastViewportSize.width + margin
+      && (node.x + node.width) * camera.zoom + camera.x > -margin
+      && node.y * camera.zoom + camera.y < lastViewportSize.height + margin
+      && (node.y + node.height) * camera.zoom + camera.y > -margin;
+  }));
   let cameraAnimating = $state(false);
   let cameraAnimationTimer: ReturnType<typeof setTimeout> | null = null;
   let dragging = $state(false);
@@ -579,9 +593,10 @@
     };
   }
 
-  function fitView(): void {
+  function fitView(animate = true): void {
     if (!viewportEl || graph.nodes.length === 0) return;
-    setCameraMotion(cameraInitialized);
+    setCameraMotion(animate && cameraInitialized);
+    cameraFitted = true;
     camera = fitLoomCamera(viewportSize(), graph);
     cameraInitialized = true;
     lastViewportSize = viewportSize();
@@ -589,6 +604,10 @@
 
   function focusInitialView(): void {
     if (!active || loomUiState.view !== "map" || !viewportEl) return;
+    if (coarsePointer.current || viewportSize().width < 768) {
+      fitView(false);
+      return;
+    }
     camera.zoom = 0.9;
     if (loomTree.active_node_id) centerNode(loomTree.active_node_id);
     else fitView();
@@ -600,6 +619,7 @@
     animate = true,
   ): void {
     const size = viewportSize();
+    cameraFitted = false;
     setCameraMotion(animate);
     camera = zoomLoomAt(camera, nextZoom, anchor ?? {
       x: size.width / 2,
@@ -621,6 +641,7 @@
       return;
     }
     setCameraMotion(false);
+    cameraFitted = false;
     camera.x -= ev.shiftKey && ev.deltaX === 0 ? ev.deltaY : ev.deltaX;
     camera.y -= ev.shiftKey ? 0 : ev.deltaY;
     cameraInitialized = true;
@@ -679,6 +700,7 @@
   function updatePinch(): void {
     const pair = touchPair();
     if (!pair || !pinchGesture) return;
+    cameraFitted = false;
     const metrics = pinchMetrics(pair[0], pair[1]);
     const zoom = scaleFromPinch(
       pinchGesture.zoom,
@@ -734,6 +756,7 @@
       }
     }
     if (!dragging || dragPointerId !== ev.pointerId) return;
+    cameraFitted = false;
     camera.x = dragOrigin.cameraX + ev.clientX - dragOrigin.x;
     camera.y = dragOrigin.cameraY + ev.clientY - dragOrigin.y;
     cameraInitialized = true;
@@ -759,7 +782,7 @@
   function toggleChildren(nodeId: string): void {
     if (collapsedIds.has(nodeId)) collapsedIds.delete(nodeId);
     else collapsedIds.add(nodeId);
-    void tick().then(fitView);
+    void tick().then(() => fitView());
   }
 
   let lastGraphNodeCount = 0;
@@ -770,6 +793,7 @@
       const size = viewportSize();
       if (size.width === 0 || size.height === 0) return;
       if (!cameraInitialized) focusInitialView();
+      else if (cameraFitted) fitView(false);
       else if (lastViewportSize.width > 0 && lastViewportSize.height > 0) {
         setCameraMotion(false);
         camera = resizeLoomCamera(camera, lastViewportSize, size);
@@ -793,6 +817,7 @@
     }
     void tick().then(() => {
       if (!cameraInitialized || previousCount === 0) focusInitialView();
+      else if (cameraFitted) fitView(false);
       else if (nodeCount !== previousCount) centerCurrent();
     });
   });
@@ -815,16 +840,17 @@
 
   async function focusNode(nodeId: string, scroll = true): Promise<void> {
     focusedId = nodeId;
+    if (scroll) centerNode(nodeId);
     await tick();
     const el = viewportEl?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"]`);
     if (!el) return;
     el.focus({ preventScroll: true });
-    if (scroll) centerNode(nodeId);
   }
 
   function centerNode(nodeId: string): void {
     const placed = graph.nodes.find((node) => node.id === nodeId);
     if (!placed || !viewportEl) return;
+    cameraFitted = false;
     setCameraMotion(cameraInitialized);
     camera = centerLoomRect(viewportSize(), {
       x: placed.x,
@@ -837,7 +863,19 @@
   }
 
   function centerCurrent(): void {
-    if (loomTree.active_node_id) centerNode(loomTree.active_node_id);
+    if (!loomTree.active_node_id) return;
+    if (compactMap) void expandMapNode(loomTree.active_node_id);
+    else centerNode(loomTree.active_node_id);
+  }
+
+  async function expandMapNode(nodeId: string): Promise<void> {
+    if (performance.now() < suppressNodeClickUntil) return;
+    zoomView(1);
+    await tick();
+    centerNode(nodeId);
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    centerNode(nodeId);
+    await focusNode(nodeId, false);
   }
 
   function setLoomView(view: LoomView): void {
@@ -1629,7 +1667,8 @@
     if (k === "Enter" || k === " ") {
       if (focusedId) {
         ev.preventDefault();
-        void loomNavigate(focusedId);
+        if (compactMap) void expandMapNode(treeItem.dataset.nodeId ?? focusedId);
+        else void loomNavigate(focusedId);
       }
       return;
     }
@@ -2110,7 +2149,7 @@
           aria-label="Zoom in"
 
         ><FluentIcon name="add" /></button>
-        <button type="button" onclick={fitView} aria-label="Fit whole loom" >
+        <button type="button" onclick={() => fitView()} aria-label="Fit whole loom" >
           Fit
         </button>
         <button type="button" onclick={centerCurrent} aria-label="Center current path" >
@@ -2136,11 +2175,12 @@
       onlostpointercapture={endViewportGesture}
     >
       <p id="loom-touch-help" class="touch-gesture-hint">Drag to move · pinch to zoom</p>
+      {#if active}
       <div class="loom-depth-field" aria-hidden="true" style={loomDepthStyle}></div>
       <div
         class="loom-canvas"
         class:camera-animating={cameraAnimating}
-        style={`width:${graph.width}px;height:${graph.height}px;transform:translate3d(${camera.x}px,${camera.y}px,0) scale(${camera.zoom})`}
+        style={`transform:translate(${camera.x}px,${camera.y}px) scale(${camera.zoom})`}
         data-loom-nodes={graph.nodes.length}
         data-loom-edges={graph.edges.length}
         data-loom-zoom={camera.zoom.toFixed(2)}
@@ -2149,9 +2189,10 @@
       >
         <svg
           class="loom-edges"
-          width={graph.width}
-          height={graph.height}
-          viewBox={`0 0 ${graph.width} ${graph.height}`}
+          width={lastViewportSize.width / camera.zoom}
+          height={lastViewportSize.height / camera.zoom}
+          style={`left:${-camera.x / camera.zoom}px;top:${-camera.y / camera.zoom}px`}
+          viewBox={`${-camera.x / camera.zoom} ${-camera.y / camera.zoom} ${lastViewportSize.width / camera.zoom} ${lastViewportSize.height / camera.zoom}`}
           aria-hidden="true"
         >
           {#each graph.edges as edge (`${edge.parentId}|${edge.childId}`)}
@@ -2192,7 +2233,7 @@
           {/each}
         </svg>
 
-        {#each graph.nodes as placed (placed.id)}
+        {#each visibleMapNodes as placed (placed.id)}
           {@const row = mapRowById.get(placed.id)!}
           {@const segment = segmentById.get(placed.id)!}
           <div
@@ -2211,6 +2252,24 @@
             data-loom-depth={placed.depth}
             style={`left:${placed.x}px;top:${placed.y}px;width:${placed.width}px;height:${placed.height}px;--branch-depth:${placed.depth}`}
           >
+            {#if compactMap}
+              <button
+                type="button"
+                class="map-summary"
+                role="treeitem"
+                aria-level={row.depth + 1}
+                aria-selected={selectionSet.has(row.node.id)}
+                aria-label={`Zoom into ${nodeRole(row.node)}: ${readableNodeText(row.node).slice(0, 100)}`}
+                data-node-id={segment.id}
+                onfocus={() => { focusedId = row.node.id; }}
+                onkeydown={onSidebarKey}
+                onclick={() => void expandMapNode(placed.id)}
+              >
+                <span>{nodeRole(row.node)}{segment.shared ? ` · ${segment.memberIds.length} paths` : ""}</span>
+                <span class="map-summary-text">{readableNodeText(row.node).slice(0, 240)}</span>
+                <span>{segment.end - segment.start} tokens · zoom to explore</span>
+              </button>
+            {:else}
             <LoomNode
               onmeasure={(height) => { if (measuredHeights.get(segment.id) !== height) measuredHeights.set(segment.id, height); }}
               node={row.node}
@@ -2244,9 +2303,11 @@
               sentenceBranchAvailable={sentenceBranchAvailable && !genStatus.active}
               ontogglechildren={() => toggleChildren(row.node.id)}
             />
+            {/if}
           </div>
         {/each}
       </div>
+      {/if}
     </div>
   {:else if loomUiState.view === "path"}
     <section class="loom-projection path-projection" aria-labelledby="current-path-title">
@@ -3443,10 +3504,9 @@
   .loom-canvas {
     position: relative;
     z-index: 1;
-    min-width: 100%;
-    min-height: 100%;
+    width: 100%;
+    height: 100%;
     transform-origin: 0 0;
-    will-change: transform;
   }
   .loom-canvas.camera-animating {
     transition: transform var(--dur) var(--ease-enter);
@@ -3454,8 +3514,33 @@
   .loom-edges {
     position: absolute;
     inset: 0;
-    overflow: visible;
+    overflow: hidden;
     pointer-events: none;
+  }
+  .map-summary {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: var(--space-2);
+    width: 100%;
+    height: 100%;
+    padding: var(--surface-padding);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--radius-lg);
+    background: var(--bg-elev);
+    color: var(--fg);
+    font: inherit;
+    text-align: start;
+    cursor: zoom-in;
+    overflow: hidden;
+  }
+  .active-path-node .map-summary { border-color: var(--accent); }
+  .map-summary-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
   }
   .loom-edges path {
     fill: none;
@@ -3756,6 +3841,7 @@
   }
 
   @media (pointer: coarse) {
+    .loom-edges path.edge-depth { filter: none; }
     .touch-gesture-hint {
       position: absolute;
       inset-inline-start: var(--space-3);

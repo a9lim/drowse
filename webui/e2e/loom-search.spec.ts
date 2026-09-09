@@ -86,12 +86,12 @@ test("search reveals collapsed children, restores collapsed state, and filters s
   await search.press("Enter");
   await search.press("Escape");
   await page.locator('[data-node-id="long"]').getByRole("button", { name: "Hide child paths", exact: true }).press("Enter");
-  await expect(page.locator('[data-loom-node-id="child"]')).toHaveCount(0);
+  await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-nodes", "3");
   await search.fill("fox, moon");
-  await expect(page.locator('[data-loom-node-id="child"]')).toHaveCount(1);
+  await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-nodes", "4");
   await expect(page.locator("#loom-search-status .morph-source")).toHaveText("1 matching message");
   await search.press("Escape");
-  await expect(page.locator('[data-loom-node-id="child"]')).toHaveCount(0);
+  await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-nodes", "3");
   await page.getByRole("button", { name: /^Starred/ }).click();
   await search.fill("amber fox");
   await expect(page.locator("#loom-search-status .morph-source")).toHaveText("1 matching message");

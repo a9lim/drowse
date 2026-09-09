@@ -12,6 +12,17 @@ const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
 const servicesUrl = `/@fs/${resolve("src/lib/runtime/services.ts")}`;
 test.use({ hasTouch: true });
 
+async function showMapDetails(page: Page, selector?: string) {
+  await showWorkspaceTools(page, "Loom");
+  if (selector) {
+    await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
+    const summary = page.locator(selector).locator(".map-summary");
+    if (await summary.count()) await summary.click();
+  } else {
+    await page.getByRole("button", { name: "Center current path", exact: true }).click();
+  }
+}
+
 test("model settings end with the versioned Drowse footer", async ({ page }, testInfo) => {
   test.slow();
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -125,7 +136,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A complete local backup");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("This is a deterministic local Drowse runtime fixture.");
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const libraryUrl = `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`;
   const original = await page.evaluate(async ({ libraryUrl, workspaceUrl }) => {
     const { conversationLibrary, flushConversationAutosave } = await import(libraryUrl);
@@ -185,7 +196,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Continue only the imported copy");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect.poll(() => page.evaluate(async url => (await (await import(url)).apiTree.get()).nodes.length, `/@fs${resolve("src/lib/runtime/services.ts")}`)).toBe(original.snapshot.tree.nodes.length + 2);
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async url => (await import(url)).flushConversationAutosave(), libraryUrl);
   const continued = await records();
   expect(continued.find((record: any) => record.id === original.id)).toEqual(original);
@@ -303,7 +314,7 @@ for (const theme of ["dark", "light"] as const) {
     expect(await primary.evaluate(el => getComputedStyle(el).getPropertyValue("--btn-accent").trim())).toBe(palette.accent);
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
     await primary.click();
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     await page.evaluate(async url => { (await import(url)).highlightState.target = "__probability__"; }, storesUrl);
     const tokenStyle = await page.locator(".msg .tok").first().getAttribute("style");
     expect(tokenStyle).toContain("--pillar-lens");
@@ -347,6 +358,7 @@ for (const theme of ["dark", "light"] as const) {
     await selectWorkspaceView(page, "Loom");
     await showWorkspaceTools(page, "Loom");
     await selectLoomView(page, /^Map\b/);
+    await showMapDetails(page);
     const loomToken = page.locator("[data-loom-token-node]").first();
     await expect(loomToken).toHaveAttribute("style", tokenStyle!);
     await page.screenshot({ path: testInfo.outputPath(`loom-${theme}.png`) });
@@ -400,7 +412,7 @@ async function emptyGeometry(page: Page, authoring = false) {
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async ({ storesUrl, registryUrl, authoring }) => {
     const { chatLog, probeRack } = await import(storesUrl);
     probeRack.active = [];
@@ -502,7 +514,7 @@ test("geometry setup attaches a probe and hides unsupported training", async ({ 
   await sheet.locator(".drawer-close").click();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Read this new reply with the attached probe.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await openDrawer(page, "token_drilldown", { turnIdx: 3, tokenIdx: 0 });
   await expect(sheet.locator(".geo-list")).toContainText("local/test-concept");
 });
@@ -884,7 +896,7 @@ test.describe("saved chat card interactions", () => {
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, I love marmots!");
     await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
     await expect(page.getByRole("status").filter({ hasText: "Response complete." })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     await mountHome();
     const card = page.locator("[data-saved-conversation]").first();
     await expect(card).toBeVisible();
@@ -1020,7 +1032,7 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, I love marmots!");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: /^Loom\b/ }).click();
   await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
@@ -1036,6 +1048,7 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
       loomTree.nodes.set(id, { ...node, text: tokens.map(token => token.text).join(""), tokens, mean_logprob: -0.24 });
       return id;
     }, { url: storesUrl, long });
+    await showMapDetails(page, `[data-loom-node-id="${id}"]`);
     const node = page.locator(`[data-loom-node-id="${id}"] .node`);
     const field = node.locator(".token-field");
     await expect.poll(() => field.evaluate(el => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
@@ -1052,7 +1065,7 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
       return last.bottom <= field.bottom + 1 && field.bottom <= (meta?.top ?? tools.top) && card.bottom - tools.bottom >= 7 * zoom;
     })).toBe(true);
     await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
-    await node.screenshot({ path: testInfo.outputPath(`loom-footer-${long ? "long" : "wrapped"}.png`) });
+    await page.locator(".loom-viewport").screenshot({ path: testInfo.outputPath(`loom-footer-${long ? "long" : "wrapped"}.png`) });
   }
   expect(errors).toEqual([]);
 });
@@ -1198,7 +1211,7 @@ test("Geometry browses only recorded linear probe layers without changing the ag
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect probe layers.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async url => {
     const { chatLog, probeRack } = await import(url);
     const reading = {
@@ -1289,7 +1302,7 @@ test("SAE stays on its recorded layer and automatically loads source-matched des
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect feature activations.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async url => {
     const { chatLog } = await import(url);
     chatLog.turns.at(-1).tokens[0].measurements.instruments.sae = {
@@ -1386,7 +1399,7 @@ test.describe("token detail tooltip copy", () => {
     await workbench(page);
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
     await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
     const sheet = page.locator('aside[aria-label="Token drilldown"]');
     await expect(sheet.locator('.scrub[title]')).toHaveCount(0);
@@ -1425,7 +1438,7 @@ test("token details scroll past branching controls in every analysis tab", async
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
   const sheet = page.locator('aside[aria-label="Token drilldown"]');
   const branch = sheet.locator(".branch-point");
@@ -1523,7 +1536,7 @@ test("section headings stand alone without redundant eyebrow labels", async ({ p
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain how language models work.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await selectWorkspaceView(page, "Controls");
   await expect(page.getByRole("heading", { name: "Generation settings", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Instruments", exact: true })).toBeVisible();
@@ -1946,6 +1959,7 @@ test("generation uses a stationary card glow and follows the active reply until 
   await page.setViewportSize({ width: 1280, height: 900 });
   await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
+  await showMapDetails(page);
   await expect(page.locator(".node.generation-active .generation-label")).toHaveCount(1);
   expect(await page.locator(".node.generation-active").evaluate(element => getComputedStyle(element, "::before").animationName)).toBe("generation-breathe");
   await expect(page.locator(".node.loading-pulse, .choice.loading-pulse")).toHaveCount(0);
@@ -1992,7 +2006,7 @@ test("Loom depth fills the viewport through long pans, zoom, resize, and pointer
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explore the depth of the loom.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
   const viewport = page.locator(".loom-viewport");
@@ -2098,7 +2112,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explore two endings.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const original = await page.evaluate(async url => {
     const stores = await import(url);
     const node = stores.loomTree.nodes.get(stores.loomTree.active_node_id);
@@ -2113,6 +2127,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
   await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
   const shared = page.locator('[data-loom-shared="2"]');
+  await showMapDetails(page, '[data-loom-shared="2"]');
   await expect(shared).toHaveCount(1);
   await expect(shared.locator(".token-node")).toHaveCount(3);
   await expect(shared.locator('.token-field')).toHaveCSS('flex-grow', '0');
@@ -2123,6 +2138,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
   })).toBeLessThanOrEqual(8);
   await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-nodes", "4");
   const source = page.locator(`[data-loom-node-id="${original.id}"]`);
+  await showMapDetails(page, `[data-loom-node-id="${original.id}"]`);
   await expect(source.locator(".token-node").first()).toHaveAttribute("data-token-index", "3");
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
@@ -2131,7 +2147,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
     await page.screenshot({ path: testInfo.outputPath(`shared-prefix-${width}.png`) });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
+  await showMapDetails(page, `[data-loom-node-id="${original.id}"]`);
   await source.locator(".token-node").first().click();
   await expect(page.getByRole("dialog", { name: "Generated word details" })).toBeVisible();
   const state = await page.evaluate(async ({ url, id }) => {
@@ -2154,6 +2170,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
         stores.loomTree.nodes.set(id, { ...node, tokens, text: tokens.map(token => token.text).join(""), raw_token_ids: tokens.map(token => token.token_id) });
       });
     }, { url: storesUrl, parent: original.parent, count });
+    await showMapDetails(page, '[data-loom-shared="2"]');
     await expect(shared.locator(".token-node")).toHaveCount(count);
     if (count === 3) {
       await expect.poll(() => shared.locator('.node').evaluate(element => {
@@ -2177,13 +2194,15 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
     });
   }, { url: storesUrl, parent: original.parent });
   const continuations = page.locator('[data-loom-node-id] .node').filter({ has: page.locator('.fork', { hasText: 'continuation' }) });
-  await expect(continuations).toHaveCount(2);
+  const continuationIds = await page.evaluate(async ({ url, parent }) => [...(await import(url)).loomTree.children_of.get(parent)], { url: storesUrl, parent: original.parent });
+  expect(continuationIds).toHaveLength(2);
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 1000 });
     for (const theme of ["light", "dark"]) {
       await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
-      await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
-      for (let zoom = 0; zoom < 2; zoom++) {
+      for (const id of continuationIds) {
+        await showMapDetails(page, `[data-loom-node-id="${id}"]`);
+        await expect(page.locator(`[data-loom-node-id="${id}"] .node`)).toBeVisible();
         await expect.poll(() => continuations.evaluateAll(cards => cards.every(card => {
           const field = card.querySelector<HTMLElement>('.token-field')!;
           const last = field.querySelector<HTMLElement>('.token-node:last-child')!;
@@ -2318,7 +2337,7 @@ test("workspace menu returns to chats and restores the current conversation", as
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Remember this path when I go home.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const reply = await page.locator(".msg .response-body").last().innerText();
   await page.screenshot({ path: testInfo.outputPath("home-navigation.png") });
   await returnToChats(page);
@@ -2367,7 +2386,7 @@ test("header download confirms filename and exact backup size without changing t
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Preserve this chat in the backup.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const menu = page.getByRole("button", { name: "Workspace menu", exact: true });
   const button = page.getByRole("button", { name: "Download chat", exact: true });
   const before = await page.evaluate(async url => (await import(url)).captureConversationSnapshot(), `/@fs/${resolve("src/lib/conversationWorkspace.ts")}`);
@@ -2526,7 +2545,7 @@ test("generation statistics and Loom zoom remain readable in both themes", async
   }
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Show a path in the Loom.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await selectLoomView(page, /^Map/);
@@ -2706,7 +2725,7 @@ for (const theme of ["light", "dark"] as const) {
     await audit("Conversation, empty", ".conversation-page");
     await page.getByRole("textbox", { name: /^Compose as / }).fill("A clear explanation of how language models work.");
     await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     await audit("Conversation, generated", ".conversation-page");
     await page.getByRole("button", { name: /^Loom\b/ }).click();
     await audit("Loom, Weave", ".loom-sidebar");

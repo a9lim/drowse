@@ -25,7 +25,7 @@ test("changing the model role updates requests, messages, and saved recipes", as
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Arrgh");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__roleRequests.length)).toBe(labels.length + 1);
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     expect(await page.evaluate(() => (window as any).__roleRequests.at(-1).sampling.assistant_role ?? null))
       .toBe(name === "assistant" ? null : name);
     labels.push(name);

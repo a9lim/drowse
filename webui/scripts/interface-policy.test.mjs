@@ -452,7 +452,8 @@ assert.match(completionGeometry, /\.raw-buffer\s*\{[^}]*flex:\s*1 0 auto;[^}]*mi
 assert.doesNotMatch(completionGeometry, /min-height:\s*24rem/, "The completion buffer has no oversized fixed minimum");
 assert.match(completionGeometry, /\.surface\s*\{[^}]*flex:\s*1 0 calc\(2lh \+ var\(--surface-padding\) \* 2\);/, "The editor keeps two text lines and its padding while yielding space to actions and model identity");
 const chatGeometry = await readFile("src/panels/Chat.svelte", "utf8");
-assert.match(chatGeometry, /\.input-actions\.has-clear :global\(button:first-child\)\s*\{\s*grid-column:\s*1 \/ -1;/, "The primary mobile chat action keeps its own row instead of three cramped columns");
+assert.match(chatGeometry, /\.input-actions\s*\{[^}]*flex-wrap:\s*nowrap;/, "Chat actions share one row");
+assert.doesNotMatch(chatGeometry, /\.input-actions\.has-clear :global\(button:first-child\)\s*\{\s*grid-column:\s*1 \/ -1;/, "The primary action must not create another mobile row");
 assert.match(chatGeometry, /\.chat\s*\{[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*auto;/, "Chat surfaces do not add scrollbar gutters to the horizontal inset");
 assert.match(chatGeometry, /--chat-radius:\s*calc\(var\(--radius-lg\) \+ var\(--chat-inset\)\)/, "The chat frame radius follows the composer radius and inset");
 const statusGeometry = await readFile("src/panels/StatusFooter.svelte", "utf8");

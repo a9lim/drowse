@@ -90,6 +90,7 @@ test("workbench and drawer controls retain minimum targets at desktop and phone 
   await workbench(page);
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: 1000 });
+    await page.getByRole("textbox", { name: /^Compose as / }).focus();
     await layoutFrame(page);
     expect(await targets(page.locator(".shell"))).toEqual([]);
     expect(await page.getByRole("button", { name: "Generate reply", exact: true }).evaluate(el => {
@@ -192,7 +193,7 @@ test("token probability popovers fade out through their parent conditional and r
   await workbench(page, "base");
   await page.getByRole("textbox", { name: "Editable completion buffer" }).fill("A field note: ");
   await page.getByRole("button", { name: "Continue text", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: "Inspect tokens", exact: true }).click();
   const token = page.locator(".inspect .tok").first();
   await token.click();

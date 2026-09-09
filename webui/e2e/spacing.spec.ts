@@ -22,7 +22,7 @@ test("composer and dialog actions follow their container spacing", async ({ page
       };
     })).toEqual({
       row: compactDesktop ? 8 : 16,
-      buttons: compactDesktop ? 8 : 16,
+      buttons: viewport.width > 760 && viewport.height <= 600 ? 4 : 8,
       inset: viewport.width > 620 && viewport.height <= 600 ? 0 : 12,
       overflow: false,
     });

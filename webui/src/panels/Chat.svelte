@@ -505,7 +505,13 @@
       },
     );
     scrolledUp = false;
-    queueScrollToBottom();
+    queueScrollToBottom(true);
+    if (window.matchMedia("(pointer: coarse)").matches) {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && focused.closest("#conversation-composer")) {
+        focused.blur();
+      }
+    }
     queueMicrotask(autosize);
   }
 
@@ -899,9 +905,19 @@
   // ------------------------------------------------------ scroll bookkeeping --
 
   let logRef: HTMLDivElement | null = $state(null);
+  let logContentRef: HTMLDivElement | null = $state(null);
   /** True iff the user has manually scrolled up — freezes auto-scroll
    * until they hit the bottom again. */
   let scrolledUp = $state(false);
+  let previousScrollTop = 0;
+  let scrollingPointer = false;
+  let scrollTouchY = 0;
+  let forceScroll = false;
+
+  function pauseAutoScroll(): void {
+    scrolledUp = true;
+    forceScroll = false;
+  }
 
   function onScroll(ev: Event): void {
     const el = ev.currentTarget as HTMLElement;
@@ -909,21 +925,29 @@
     // counts as "at bottom".
     const atBottom =
       el.scrollHeight - el.scrollTop - el.clientHeight < 8;
-    scrolledUp = !atBottom;
+    if (atBottom && el.scrollTop > previousScrollTop) scrolledUp = false;
+    else if (scrollingPointer && el.scrollTop < previousScrollTop - 1) {
+      pauseAutoScroll();
+    }
+    previousScrollTop = el.scrollTop;
+    if (!scrolledUp) queueScrollToBottom();
   }
 
   function scrollToBottom(): void {
     const el = logRef;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
+    previousScrollTop = el.scrollTop;
   }
 
   let _scrollFrame = 0;
-  function queueScrollToBottom(): void {
+  function queueScrollToBottom(force = false): void {
+    forceScroll ||= force;
     if (_scrollFrame) return;
     _scrollFrame = requestAnimationFrame(() => {
       _scrollFrame = 0;
-      if (!scrolledUp) scrollToBottom();
+      if (forceScroll || !scrolledUp) scrollToBottom();
+      forceScroll = false;
     });
   }
 
@@ -938,6 +962,22 @@
     void lastTurn?.thinkingTokens?.length;
     void lastTurn?.text;
     untrack(() => queueScrollToBottom());
+  });
+
+  $effect(() => {
+    if (!logRef || !logContentRef) return;
+    const observer = new ResizeObserver(() => queueScrollToBottom());
+    observer.observe(logRef);
+    observer.observe(logContentRef);
+    const releasePointer = () => { scrollingPointer = false; };
+    window.addEventListener("pointerup", releasePointer);
+    window.addEventListener("pointercancel", releasePointer);
+    queueScrollToBottom(true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("pointerup", releasePointer);
+      window.removeEventListener("pointercancel", releasePointer);
+    };
   });
 
   onMount(() => {
@@ -1169,14 +1209,36 @@
   {#if rawMode}
     <RawBuffer />
   {:else}
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions (The scrollable conversation supports keyboard scrolling.) -->
   <div
     class="log"
     class:ab={twoColumns}
     bind:this={logRef}
     onscroll={onScroll}
+    onwheel={(event) => { if (event.deltaY < 0) pauseAutoScroll(); }}
+    onpointerdown={(event) => { scrollingPointer = event.pointerType === "mouse"; }}
+    ontouchstart={(event) => { scrollTouchY = event.touches[0].clientY; }}
+    ontouchmove={(event) => {
+      const y = event.touches[0].clientY;
+      if (y > scrollTouchY) pauseAutoScroll();
+      scrollTouchY = y;
+    }}
+    onkeydown={(event) => {
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key)) pauseAutoScroll();
+      if (event.target === logRef && event.key === "Home") {
+        event.preventDefault();
+        event.currentTarget.scrollTop = 0;
+      } else if (event.target === logRef && event.key === "End") {
+        event.preventDefault();
+        scrolledUp = false;
+        queueScrollToBottom(true);
+      }
+    }}
+    tabindex="0"
     role="region"
     aria-label="Conversation"
   >
+    <div class="log-content" bind:this={logContentRef}>
     {#if chatLog.turns.length === 0}
       <div
         class="conversation-empty"
@@ -1235,6 +1297,7 @@
         {@render bubble(turn, turnIdx, false)}
       {/each}
     {/if}
+    </div>
   </div>
 
   <div
@@ -1389,6 +1452,8 @@
   <form
     id="conversation-composer"
     class="input-row"
+    class:has-draft={hasText}
+    class:generating={genStatus.active}
     onsubmit={(ev) => { ev.preventDefault(); doSend(); }}
   >
     <textarea
@@ -1401,7 +1466,7 @@
       rows="3"
       aria-label={`Compose as ${authoredLabel}`}
     ></textarea>
-    <div class="input-actions" class:has-clear={canClearConversation}>
+    <div class="input-actions">
       <Button
         type="submit"
         variant="solid"
@@ -1429,7 +1494,8 @@
             : "Start a blank conversation; existing branches remain available") }}
           aria-label={clearConversationArmed ? "Confirm clear conversation" : "Clear conversation"}
         >
-          {clearConversationArmed ? "Confirm clear" : "Clear conversation"}
+          <span class="clear-icon"><FluentIcon name={clearConversationArmed ? "check" : "refresh"} /></span>
+          <span class="clear-label">{clearConversationArmed ? "Confirm clear" : "Clear conversation"}</span>
         </button>
       {/if}
     </div>
@@ -1750,10 +1816,14 @@
     flex: 1 1 auto;
     overflow-y: auto;
     overflow-x: hidden;
+    min-height: 0;
+  }
+
+  .log-content {
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
-    min-height: 0;
+    min-height: 100%;
   }
 
   .conversation-empty {
@@ -2280,10 +2350,18 @@
   .input-actions {
     display: flex;
     gap: var(--composer-space, var(--space-6));
-    align-items: center;
+    align-items: stretch;
     justify-content: flex-end;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
   }
+  .input-actions :global(button) { white-space: nowrap; }
+  .input-row:not(:focus-within):not(.has-draft):not(.generating) .input-actions {
+    display: none;
+  }
+  .input-row.generating:not(:focus-within):not(.has-draft) .input-actions > :global(:not(.danger)) {
+    display: none;
+  }
+  .clear-icon { display: none; }
   .clear-conversation {
     min-height: var(--control-target);
     padding: var(--space-2) var(--space-4);
@@ -2381,23 +2459,6 @@
     .input {
       width: 100%;
       min-height: 92px;
-    }
-    .input-actions {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) max-content;
-      align-items: stretch;
-    }
-    .input-actions.has-clear { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .input-actions.has-clear :global(button:first-child) {
-      grid-column: 1 / -1;
-    }
-    .input-actions :global(button) {
-      width: 100%;
-      min-height: var(--control-target);
-    }
-    .clear-conversation {
-      padding-inline: var(--space-2);
-      white-space: normal;
     }
   }
 
@@ -2526,6 +2587,21 @@
   }
 
   @media (max-width: 760px), (max-height: 600px) {
+    .input-actions { gap: var(--space-2); }
+    .input-actions :global(button) {
+      flex: 0 0 auto;
+      min-height: var(--control-target);
+      padding-inline: var(--space-2);
+    }
+    .input-actions :global(button:first-child) { flex: 1 1 auto; }
+    .input-actions :global(button:first-child .state-icon) { display: none; }
+    .clear-conversation {
+      padding-inline: var(--space-2);
+      min-width: var(--control-target);
+    }
+    .clear-icon { display: inline-flex; }
+    .clear-label { display: none; }
+
     .input,
     .ctl-input,
     .thinking-input {
