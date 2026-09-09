@@ -172,6 +172,8 @@ test("fixture workbench stays usable across desktop widths and keyboard navigati
 
   for (const viewport of desktopViewports) {
     await page.setViewportSize(viewport);
+    await composer.focus();
+    await expect(send).toBeVisible();
     const conversation = sidebar.getByRole("button", { name: "Conversation", exact: true });
     const controls = sidebar.getByRole("button", { name: "Controls", exact: true });
     const loom = sidebar.getByRole("button", { name: "Loom", exact: true });
