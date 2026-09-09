@@ -5,7 +5,7 @@ test("new chat separates all model types without clipping and keeps downloads in
   test.setTimeout(60_000);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
-  await expect(page.getByRole("heading", { name: "Page not found", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Page not found", exact: true })).toBeVisible();
   await page.evaluate(async moduleUrl => {
     const [{ default: HostedHome }, { mount }] = await Promise.all([
       import(moduleUrl), import("/e2e/svelte-runtime.ts"),

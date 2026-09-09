@@ -943,7 +943,7 @@ test("unknown paths render the hosted 404", async ({ page }) => {
 
   await expect(page).toHaveTitle("Page not found · Drowse");
   await expect(
-    page.getByRole("heading", { name: "Page not found", exact: true }),
+    page.getByRole("region", { name: "Page not found", exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute(
     "href",
