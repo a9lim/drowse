@@ -265,10 +265,9 @@
   --text-section-lede: clamp(1.214285714rem, 1.8vw, 1.428571429rem);
   --text-feature-title: clamp(1.714285714rem, 3vw, 2.428571429rem);
   --text-model-title: clamp(1.714285714rem, 3vw, 2.571428571rem);
+  --text-not-found-prefix: clamp(2.75rem, 7vw, 6.5rem);
   --text-not-found-title: clamp(2rem, 4.8vw, 4.65rem);
   --text-not-found-compact: clamp(1.8rem, 7.5vw, 2.7rem);
-  --text-not-found-code: clamp(16rem, 40vw, 48rem);
-  --text-not-found-code-compact: 70vw;
   --text-glyph-xs: 0.571428571rem;
   --text-glyph-sm: 0.642857143rem;
   --text-marker: 1rem;
@@ -392,6 +391,7 @@
   --demo-token-unlikely: #ffd2a6;
   --landing-bg: #070a12;
   --landing-panel-bg: rgb(7 10 18 / 24%);
+  --recorded-token-panel-bg: rgb(7 10 18 / 55%);
   --landing-panel-ink: #ffffff;
   --landing-panel-muted: #f4f6ff;
   --landing-panel-text-shadow: 0 1px 3px rgb(0 0 0 / 70%);
@@ -533,6 +533,7 @@
   --demo-token-unlikely: #783904;
   --landing-bg: #f2f4f8;
   --landing-panel-bg: rgb(255 255 255 / 24%);
+  --recorded-token-panel-bg: rgb(255 255 255 / 55%);
   --landing-panel-ink: #141822;
   --landing-panel-muted: #1b2130;
   --landing-panel-text-shadow: none;

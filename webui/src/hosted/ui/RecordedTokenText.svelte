@@ -6,14 +6,16 @@
 
   let { tokens, highlights = true }: { tokens: TokenScore[]; highlights?: boolean } = $props();
   let active = $state<number | null>(null);
+  let displayed = $state<number | null>(null);
   let anchor: HTMLElement | null = null;
   let panel: HTMLDivElement;
   let pinned = false;
+  let fade: Animation | null = null;
   let hoverAfter = 0;
   let hoverTimer: ReturnType<typeof setTimeout> | undefined;
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
   const uid = $props.id();
-  const token = $derived(active === null ? null : tokens[active]);
+  const token = $derived(displayed === null ? null : tokens[displayed]);
   const rows = $derived(token ? tokenProbabilityRows(token) : []);
   const groups = $derived.by(() => {
     const result: Array<{ space: string; pieces: Array<{ text: string; index: number }> }> = [];
@@ -47,29 +49,44 @@
   function cancelTimers() { clearTimeout(hoverTimer); clearTimeout(closeTimer); }
   function close(restoreFocus = false) {
     cancelTimers();
+    if (active === null) return;
     const trigger = anchor;
+    const opacity = getComputedStyle(panel).opacity;
+    fade?.cancel();
     active = null;
     pinned = false;
     hoverAfter = performance.now() + 250;
-    panel?.hidePopover();
+    const exit = panel.animate([{ opacity }, { opacity: 0 }], {
+      duration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 200,
+      easing: "ease-out",
+    });
+    fade = exit;
+    exit.onfinish = () => { if (fade === exit) { panel.hidePopover(); fade = null; } };
     if (restoreFocus) trigger?.focus({ preventScroll: true });
   }
   async function open(index: number, element: HTMLElement, pin = false, focus = false) {
     cancelTimers();
     anchor = element;
     active = index;
+    displayed = index;
     pinned = pin;
     await tick();
     if (active !== index || anchor !== element) return;
+    const opacity = panel.matches(":popover-open") ? getComputedStyle(panel).opacity : "0";
+    fade?.cancel();
     panel.showPopover();
     place();
+    fade = panel.animate([{ opacity }, { opacity: 1 }], {
+      duration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 200,
+      easing: "ease-out",
+    });
     if (focus) panel.focus({ preventScroll: true });
   }
   function hover(event: PointerEvent, index: number) {
     if (event.pointerType !== "mouse" || pinned || performance.now() < hoverAfter) return;
     cancelTimers();
     const element = event.currentTarget as HTMLElement;
-    hoverTimer = setTimeout(() => void open(index, element), 180);
+    hoverTimer = setTimeout(() => void open(index, element), 1000);
   }
   function leave() {
     clearTimeout(hoverTimer);
@@ -85,6 +102,8 @@
   }
 
   onMount(() => {
+    const resize = new ResizeObserver(place);
+    resize.observe(panel);
     const outside = (event: PointerEvent) => {
       if (active !== null && !panel.contains(event.target as Node) && !anchor?.contains(event.target as Node)) close();
     };
@@ -104,6 +123,8 @@
     window.visualViewport?.addEventListener("scroll", place);
     return () => {
       cancelTimers();
+      fade?.cancel();
+      resize.disconnect();
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", escape);
       document.removeEventListener("focusin", focusOutside);
@@ -115,8 +136,8 @@
   });
 </script>
 
-<h2 class="message-title" aria-label={tokens.map(token => token.text).join("").trim()}><span class="recorded-tokens">
-  {#each groups as group, groupIndex}{groupIndex === 0 ? "" : group.space}<span class="word">{#each group.pieces as piece}<button
+<h1 class="message-title" aria-label={tokens.map(token => token.text).join("").trim()}><span class="recorded-tokens">
+  {#each [groups.slice(0, 2), groups.slice(2)] as section, sectionIndex}{sectionIndex === 0 ? "" : " "}<span class={sectionIndex === 0 ? "message-prefix" : "message-body"}>{#each section as group, groupIndex}{groupIndex === 0 ? "" : group.space}<span class="word">{#each group.pieces as piece}<button
     type="button" class="recorded-token" class:highlighted={highlights} class:selected={active === piece.index}
     style:--token-tint={highlightColor(surpriseScore(tokens[piece.index].logprob), undefined, "surprise")}
     aria-label={`Inspect token ${visibleTokenText(tokens[piece.index].text)}`}
@@ -124,11 +145,20 @@
     onpointerenter={event => hover(event, piece.index)} onpointerleave={leave}
     onclick={event => void open(piece.index, event.currentTarget, true, event.detail === 0)}
     onkeydown={move}
-  >{piece.text}</button>{/each}</span>{/each}
-</span></h2>
+  >{piece.text}</button>{/each}</span>{/each}</span>{/each}
+</span></h1>
+
+<svg class="glass-definitions" width="0" height="0" aria-hidden="true" focusable="false">
+  <defs>
+    <filter id="recorded-token-glass" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feImage href="/images/landing-glass-map.svg" width="100%" height="100%" preserveAspectRatio="none" result="rim" />
+      <feDisplacementMap in="SourceGraphic" in2="rim" scale="32" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+  </defs>
+</svg>
 
 <div bind:this={panel} id={`${uid}-panel`} class="recorded-token-panel" popover="manual" role="dialog" tabindex="-1"
-  aria-labelledby={`${uid}-title`} onpointerenter={cancelTimers} onpointerleave={leave}>
+  aria-labelledby={`${uid}-title`} aria-hidden={active === null} onpointerenter={cancelTimers} onpointerleave={leave}>
   {#if token}
     <header>
       <div><span class="source">Model token · Gemma 3 4B</span><h2 id={`${uid}-title`}>{visibleTokenText(token.text)}</h2></div>
@@ -142,38 +172,46 @@
         <td>{Math.exp(row.logprob) >= 0.001 ? Math.exp(row.logprob).toFixed(3) : Math.exp(row.logprob).toExponential(2)}</td>
       </tr>{/each}</tbody>
     </table>
-    <p class="provenance">Recorded sampling probabilities, not raw logits. Each choice depends on the preceding tokens.</p>
   {/if}
 </div>
 
 <style>
   .message-title { margin: 0; font: inherit; letter-spacing: inherit; line-height: inherit; text-wrap: balance; }
-  .recorded-tokens { white-space: pre-wrap; }
+  .recorded-tokens { display: flex; flex-direction: column; white-space: pre-wrap; }
+  .message-prefix { --weight-structure: var(--weight-display); font-size: var(--text-not-found-prefix); display: block; margin-bottom: var(--space-sm); font-family: var(--font-structure); font-weight: var(--weight-display); letter-spacing: -0.075em; white-space: nowrap; }
+  .message-body { display: block; }
   .word { display: inline-block; white-space: nowrap; max-width: 100%; }
   .recorded-token { --control-sheen: none; display: inline-block; min-height: 44px; vertical-align: baseline; padding: 0; margin: 0; border: 0; border-radius: var(--data-mark-radius); background: transparent; color: inherit; font: inherit; letter-spacing: inherit; line-height: inherit; cursor: pointer; box-decoration-break: clone; -webkit-box-decoration-break: clone; transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out); }
   .recorded-token.highlighted { background: var(--token-tint); }
   .recorded-token:hover, .recorded-token.selected { box-shadow: 0 0 0 2px var(--accent); }
   .recorded-token:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .recorded-token:active { transform: none; scale: 1; }
-  .recorded-token-panel { position: fixed; inset: auto; margin: 0; box-sizing: border-box; width: min(24rem, calc(100vw - 24px)); padding: var(--surface-padding); overflow: auto; overscroll-behavior: contain; border: 0; border-radius: var(--popup-radius); background: var(--popup-bg); box-shadow: 0 0 0 1px var(--popup-border), var(--popup-shadow); color: var(--fg-strong); font: var(--text-sm)/1.5 var(--font-ui); letter-spacing: normal; }
+  .glass-definitions { position: absolute; pointer-events: none; }
+  .recorded-token-panel { --fg: var(--landing-panel-ink); --fg-dim: var(--landing-panel-muted); position: fixed; inset: auto; margin: 0; box-sizing: border-box; width: min(20rem, calc(100vw - 24px)); padding: var(--space-sm); overflow: auto; overscroll-behavior: contain; border: 0; border-radius: var(--radius-lg); background: var(--recorded-token-panel-bg); color: var(--fg); text-shadow: var(--landing-panel-text-shadow); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font: var(--text-sm)/1.4 var(--font-ui); letter-spacing: normal; }
+  .recorded-token-panel[aria-hidden="true"] { pointer-events: none; }
   header { display: flex; justify-content: space-between; align-items: start; gap: var(--space-sm); }
   header > div { min-width: 0; }
-  .recorded-token-panel h2 { margin: var(--space-xs) 0 var(--space-sm); font-family: var(--font-mono); font-size: var(--text-md); overflow-wrap: anywhere; text-wrap: balance; }
-  .source, .provenance, dt { color: var(--fg-dim); font-size: var(--text-sm); }
+  .recorded-token-panel h2 { margin: var(--space-xs) 0; font-family: var(--font-mono); font-size: var(--text-md); overflow-wrap: anywhere; text-wrap: balance; }
+  .source, dt { color: var(--fg-dim); font-size: var(--text-xs); }
   .close { min-width: 44px; min-height: 44px; padding: var(--space-xs) var(--space-sm); border: 0; border-radius: var(--radius); background: var(--bg-hover); color: var(--fg); font: inherit; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out); }
   .close:hover { background: var(--accent-subtle); }
   .close:active { scale: 0.96; }
-  dl { display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-lg); margin: var(--space-sm) 0; font-variant-numeric: tabular-nums; }
+  dl { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-sm); margin: var(--space-xs) 0; font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
   dl div { display: flex; gap: var(--space-xs); }
   dd { margin: 0; }
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   th { font-weight: var(--weight-medium); color: var(--fg-dim); text-align: start; }
-  th, td { padding: var(--space-sm) var(--space-xs); }
+  th, td { padding: var(--space-xs); }
   th:last-child, td:last-child { width: 6rem; text-align: end; font-variant-numeric: tabular-nums; }
   td { border-top: 1px solid var(--glass-line); }
   code { overflow-wrap: anywhere; font-family: var(--font-mono); }
   .chosen { color: var(--accent); font-weight: var(--weight-medium); background: var(--accent-subtle); }
   .chosen-label { display: inline-block; margin-inline-start: var(--space-xs); font-family: var(--font-ui); font-size: var(--text-xs); }
-  .provenance { margin-block: var(--space-sm) 0; text-wrap: pretty; }
-  @media (prefers-reduced-motion: reduce) { .recorded-token, .close { transition: none; } .close:active { scale: 1; } }
+  @supports (backdrop-filter: url("#recorded-token-glass")) and (not (-webkit-touch-callout: none)) {
+    .recorded-token-panel { backdrop-filter: url("#recorded-token-glass") blur(12px); }
+  }
+  @media (prefers-contrast: more), (forced-colors: active), (prefers-reduced-transparency: reduce) {
+    .recorded-token-panel { --fg: CanvasText; --fg-dim: CanvasText; background: Canvas; -webkit-backdrop-filter: none; backdrop-filter: none; text-shadow: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .recorded-token, .close, .recorded-token-panel { transition: none; } .close:active { scale: 1; } }
 </style>

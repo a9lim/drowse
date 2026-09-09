@@ -15,15 +15,16 @@ test("the 404 page renders real tokens, chooses a fresh unique message, and load
   page.on("pageerror", error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(url);
-  await expect(page.getByRole("heading", { name: "Page not found", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Page not found", exact: true })).toBeVisible();
   const first = await current(page);
   await expect(page.locator(".recorded-tokens")).toHaveText(first.text);
   await expect(page.getByRole("link", { name: "Back to home", exact: true })).toHaveAttribute("href", "/");
   await expect(page.getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute("href", "/app");
   await page.reload();
   await expect(page.locator(".message")).not.toHaveAttribute("data-message-id", first.id);
+  await expect(page.locator(".recording-controls")).toHaveCount(0);
   const second = await current(page);
-  await page.getByRole("button", { name: "Another message", exact: true }).click();
+  await page.reload();
   await expect(page.locator(".message")).not.toHaveAttribute("data-message-id", second.id);
   await expect(page.locator(".recorded-tokens")).toHaveText((await current(page)).text);
   const download = await page.request.get("/recordings/404-gemma3-4b.json");
@@ -43,6 +44,8 @@ test("token hover, touch, keyboard, and surprisal preserve the recorded probabil
   const panel = page.getByRole("dialog");
   if (!testInfo.project.name.includes("webkit")) {
     await trigger.hover();
+    await page.waitForTimeout(500);
+    await expect(panel).toBeHidden();
     await expect(panel).toBeVisible();
     await expect(trigger).not.toBeFocused();
     await panel.hover();
@@ -57,7 +60,6 @@ test("token hover, touch, keyboard, and surprisal preserve the recorded probabil
   await expect(panel.locator("tr.chosen td:last-child")).toHaveText(probability >= 0.001 ? probability.toFixed(3) : probability.toExponential(2));
   await expect(panel.locator("dl")).toContainText(`${(-piece.logprob / Math.LN2).toFixed(2)} bits`);
   await expect(panel.locator("dl")).toContainText(String(piece.tokenId));
-  await expect(panel).toContainText("Recorded sampling probabilities, not raw logits.");
   const bounds = await panel.boundingBox();
   const viewport = page.viewportSize()!;
   expect(bounds!.x).toBeGreaterThanOrEqual(8);
@@ -74,12 +76,6 @@ test("token hover, touch, keyboard, and surprisal preserve the recorded probabil
   await expect(trigger).toBeFocused();
   await trigger.press("ArrowRight");
   await expect(trigger).not.toBeFocused();
-  const highlights = page.getByRole("button", { name: "Surprisal", exact: true });
-  await highlights.click();
-  await expect(highlights).toHaveAttribute("aria-pressed", "false");
-  expect(await trigger.evaluate(element => getComputedStyle(element).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
-  await highlights.click();
-  await expect(highlights).toHaveAttribute("aria-pressed", "true");
   expect(await trigger.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
 });
 
@@ -88,6 +84,10 @@ for (const width of [320, 1440]) {
     test.setTimeout(120_000);
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.addInitScript(() => {
+      const value = sessionStorage.getItem("test.404.random");
+      if (value !== null) Math.random = () => Number(value);
+    });
     await page.goto(url);
     for (const theme of ["dark", "light"]) {
       await page.getByRole("button", { name: theme === "dark" ? "Dark" : "Light", exact: true }).click();
@@ -96,8 +96,8 @@ for (const width of [320, 1440]) {
         if (previous.id !== message.id) {
           const candidates = dataset.messages.filter(item => item.id !== previous.id);
           const value = (candidates.findIndex(item => item.id === message.id) + 0.5) / candidates.length;
-          await page.evaluate(value => { Math.random = () => value; }, value);
-          await page.getByRole("button", { name: "Another message", exact: true }).click();
+          await page.evaluate(value => sessionStorage.setItem("test.404.random", String(value)), value);
+          await page.reload();
         }
         await expect(page.locator(".recorded-tokens")).toHaveText(message.text);
         expect(await page.locator(".message").evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
@@ -120,7 +120,7 @@ test("the close-up shader honors reduced motion and increased contrast", async (
   await expect(page.getByRole("button", { name: "Pause background", exact: true })).toBeHidden();
   await page.emulateMedia({ reducedMotion: "reduce", contrast: "more" });
   await expect(shader).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Page not found", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Another message", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Page not found", exact: true })).toBeVisible();
+  await page.reload();
   await expect(page.locator(".recorded-tokens")).toHaveText((await current(page)).text);
 });
