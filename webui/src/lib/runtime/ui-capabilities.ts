@@ -30,6 +30,7 @@ const DRAWER_REQUIREMENTS: Record<
   session_admin: ["session_admin"],
   local_runtime: [],
   help: [],
+  feedback: [],
   node_compare: [],
   transcript: [],
   template_lab: ["manifold_artifacts", "fitting"],

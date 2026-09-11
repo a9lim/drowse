@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+const fixtureWorker = await readFile(new URL("../src/hosted/runtime/fixtureBrowser.worker.ts", import.meta.url), "utf8");
+const fixtureTests = await readFile(new URL("../e2e/hosted.spec.ts", import.meta.url), "utf8");
+for (const name of ["model", "core", "jlens", "sae"]) {
+  const bytes = await readFile(new URL(`../src/hosted/runtime/fixtures/${name}.fixture.bin`, import.meta.url));
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const declared = fixtureWorker.match(new RegExp(`const ${name}Sha256 = "([a-f0-9]+)"`))?.[1];
+  assert.equal(declared, digest, `${name} fixture catalog hash must match its bytes`);
+  assert.ok(fixtureTests.includes(`"${digest}"`), `${name} fixture browser expectations must match its bytes`);
+}
 const server = await createServer({
   root,
   configFile: false,

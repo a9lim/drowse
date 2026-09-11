@@ -226,7 +226,7 @@ const server = createHttpServer(async (request, response) => {
     );
     send(
       response,
-      error instanceof Error ? error.stack ?? error.message : String(error),
+      "Internal server error",
       "text/plain",
       500,
     );

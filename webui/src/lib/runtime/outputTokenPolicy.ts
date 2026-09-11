@@ -1,8 +1,6 @@
 import type { BrowserRuntimeClass, RuntimeCapabilities } from "./contracts";
 
-export const DESKTOP_MAX_OUTPUT_TOKENS = 8_192;
-export const PREVIEW_DESKTOP_MAX_OUTPUT_TOKENS = 1_024;
-export const APPLE_MOBILE_MAX_OUTPUT_TOKENS = 256;
+export const MAX_OUTPUT_TOKEN_COUNT = Number.MAX_SAFE_INTEGER;
 
 type RuntimeSignals = Pick<
   RuntimeCapabilities["signals"],
@@ -11,20 +9,21 @@ type RuntimeSignals = Pick<
 
 export function outputTokenLimitForRuntime(
   runtimeClass?: BrowserRuntimeClass,
+  contextTokens?: number,
 ): number {
-  if (runtimeClass === "apple-mobile-webkit") return APPLE_MOBILE_MAX_OUTPUT_TOKENS;
-  if (runtimeClass === "desktop-webkit" || runtimeClass === "desktop-gecko") {
-    return PREVIEW_DESKTOP_MAX_OUTPUT_TOKENS;
-  }
-  return DESKTOP_MAX_OUTPUT_TOKENS;
+  void runtimeClass;
+  return contextTokens ?? MAX_OUTPUT_TOKEN_COUNT;
+}
+
+export function defaultOutputTokenCount(runtimeClass?: BrowserRuntimeClass): number {
+  return runtimeClass === "apple-mobile-webkit" ? 256 : 1024;
 }
 
 export function outputTokenLimitForSignals(
   signals?: Partial<RuntimeSignals> | null,
+  contextTokens?: number,
 ): number {
-  return signals?.appleMobile === true
-    ? APPLE_MOBILE_MAX_OUTPUT_TOKENS
-    : outputTokenLimitForRuntime(signals?.runtimeClass);
+  return outputTokenLimitForRuntime(signals?.runtimeClass, contextTokens);
 }
 
 export function clampOutputTokenCount(value: number, limit: number): number {

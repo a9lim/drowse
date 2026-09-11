@@ -33,8 +33,7 @@ function storedTheme(): Theme | null {
 function preferredTheme(): Theme {
   const fromDocument = document.documentElement.dataset.theme;
   if (isTheme(fromDocument)) return fromDocument;
-  return storedTheme() ??
-    (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  return storedTheme() ?? "dark";
 }
 
 function applyTheme(theme: Theme): void {
@@ -92,13 +91,9 @@ export function initializeTheme(): Theme {
   initialized = true;
   applyTheme(preferredTheme());
 
-  const media = window.matchMedia("(prefers-color-scheme: light)");
-  media.addEventListener("change", (event) => {
-    if (storedTheme() === null) changeTheme(event.matches ? "light" : "dark");
-  });
   window.addEventListener("storage", (event) => {
     if (event.key !== THEME_STORAGE_KEY) return;
-    changeTheme(isTheme(event.newValue) ? event.newValue : (media.matches ? "light" : "dark"));
+    changeTheme(isTheme(event.newValue) ? event.newValue : "dark");
   });
   return activeTheme;
 }

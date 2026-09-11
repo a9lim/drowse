@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Derive a manifold from a standalone template.
   //
   // Some categories you *reference* rather than embody — days, months,
@@ -356,7 +357,7 @@
   </AdvancedSection>
 
   <p class="progress form-status" role="status" aria-live="polite" aria-atomic="true">
-    {progress}
+    <MorphText text={progress} />
   </p>
 
   <ValidationBlock
@@ -367,7 +368,7 @@
   <div class="form-actions">
     {#if hostedController && fittingActive}
       <Button variant="ghost" disabled={cancelling} onclick={cancelFit}>
-        {cancelling ? "cancelling…" : "cancel"}
+        <MorphText text={cancelling ? "cancelling…" : "cancel"} numbers={false} />
       </Button>
     {/if}
     <button
@@ -376,7 +377,7 @@
       disabled={submitting}
       onclick={save}
     >
-      {submitting ? "building…" : alsoFit ? "build + fit" : "build"}
+      <MorphText text={submitting ? "building…" : alsoFit ? "build + fit" : "build"} numbers={false} />
     </button>
   </div>
 </div>

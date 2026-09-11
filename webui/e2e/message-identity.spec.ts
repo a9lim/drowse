@@ -12,7 +12,7 @@ async function conversation(page: Page) {
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("What do marmots eat?");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await expect(page.locator(".msg .model-avatar")).toBeVisible();
   await page.evaluate(async url => { await (await import(url)).flushConversationAutosave(); }, savedUrl);
 }
@@ -62,11 +62,11 @@ test("each speaker has a distinct container and its saved avatar or live accent 
   expect(errors).toEqual([]);
 });
 
-test("clicking or keyboard-activating the model picture opens model settings without changing messages", async ({ page }) => {
+test("clicking or keyboard-activating the model picture opens the name and avatar editor without changing messages", async ({ page }) => {
   await conversation(page);
   const before = await page.locator(".response-body").allTextContents();
   for (const activate of ["click", "Enter", "Space"]) {
-    const picture = page.getByRole("button", { name: "Open model settings", exact: true });
+    const picture = page.getByRole("button", { name: "Edit name and avatar", exact: true });
     if (activate === "click") await picture.click();
     else {
       await page.keyboard.press("Tab");
@@ -75,7 +75,10 @@ test("clicking or keyboard-activating the model picture opens model settings wit
       await expect(picture).toHaveCSS("outline-width", "2px");
       await page.keyboard.press(activate);
     }
-    await expect(page.getByRole("tabpanel", { name: "Model controls", exact: true })).toBeVisible();
+    const profile = page.getByRole("tabpanel", { name: "Chat controls", exact: true });
+    await expect(profile).toBeVisible();
+    await expect(profile.getByRole("textbox", { name: "Name", exact: true })).toBeEnabled();
+    await expect(profile.getByRole("button", { name: "Generate another avatar", exact: true })).toBeVisible();
     const showSidebar = page.getByRole("button", { name: "Show left sidebar", exact: true });
     if (await showSidebar.isVisible()) await showSidebar.click();
     await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button", { name: /^(Conversation|Chat)(?: |$)/ }).click();

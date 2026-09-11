@@ -14,6 +14,13 @@ per-layer `subspace_inject` calls carrying an along/onto pair
 
 ## model.py
 
+`load_model` and `DrowseSession.from_pretrained` default to repository Python
+being disabled for configs, tokenizers, and model implementations. Explicit
+`trust_remote_code=True` opts in; `None` honors `DROWSE_TRUST_REMOTE_CODE`
+(`1`/`true`/`yes`/`on`), and explicit `False` overrides the environment.
+Metadata-only resolution stays `False` regardless of that environment variable.
+Native model implementations remain preferred even when custom code is trusted.
+
 HF causal-LM loading and per-architecture wiring. `ArchProfile` /
 `_LAYER_ACCESSORS` map `model_type` → layer-list accessor (module-level `def`s,
 not lambdas); `_TESTED_ARCHS` gates a one-time `UserWarning` on an untested
@@ -476,7 +483,11 @@ activation is the unit only when no metadata is cached (offline or unlisted
 feature), and `ScalarReading.unit` says which. Feature metadata is fetched lazily
 from Neuronpedia at validate/pin time and through a batch backfill the dashboard
 calls between generations — never inside the decode loop — and persists through
-`io/sae.py::save_sae_feature_meta`.
+`io/sae.py::save_sae_feature_meta`. Responses must match the model, source,
+feature id and provider dictionary before entering the cache. A cached maximum
+without a checked description still triggers a lookup. Network requests release
+the instrument lock; publication verifies that the same backend, layer and
+metadata cache remain active, so a late response cannot relabel a successor SAE.
 
 `sae_training.py::train_residual_sae` trains a native one-layer ReLU SAE from
 block-output token activations under model inference mode; decoder rows are
@@ -1003,6 +1014,13 @@ routes flat (`raw=True`) generation; `supports_thinking` /
 (gpt-oss) and bracket (Mistral-3) fallbacks, and the `_ThinkState` machine plus
 `GenerationState` drive streaming.
 
+Token decode tables are bounded to two entries and checked against the exact
+live tokenizer, including added-token growth. Chat renders are bounded to 128
+entries and an 8 MiB estimated text/tensor budget; the key includes the live
+template, special-token values, scene grammar, and model family. Both caches use
+weak tokenizer references and release entries on tokenizer collection or session closure.
+`DrowseSession.close()` also releases the reusable generation KV cache.
+
 **Step identity.** The decode loop owns ONE `step_id` per forward —
 `len(generated_ids)` before that forward — and hands the same value to the capture
 sink (`step_callback`), the gate callback (`score_callback`), and the token tap
@@ -1139,6 +1157,12 @@ writes one `capture_authored` loom mutation per populated channel, then runs the
 ordinary final-prompt sink. There is no second transformer forward. Captured
 authored rows are immutable — rerolls reuse their data.
 
+`GenerationState.cancellation_scope(event)` binds cancellation to the current
+worker thread and survives startup `reset()`. All decode and batch stop checks
+use `is_stop_requested()`, combining this scope with explicit `session.stop()`.
+`generate_stream.close()` joins its worker even before the first iterator read;
+closing an old stream cannot signal a later generation.
+
 **Jacobian-lens surface.** `session.jlens` validates sidecar/live-weight identity
 before loading, refreshes or evicts an already-resident lens when an external
 process replaces its generation, and verifies each layer's payload digest while
@@ -1218,6 +1242,12 @@ unlike the hot-loop `append_token` it advances the tree revision. Per-node token
 blobs live in memory during streaming — `to_dict` omits them, `save` writes a gzip
 sidecar. Mutators raise `MutationDuringGenerationError` (409) on conflict,
 `UnknownNodeError` (404) / `InvalidNodeOperationError` (400) otherwise.
+
+`LoomTree.load` bounds the main JSON at 64 MiB and the decompressed token
+sidecar at 256 MiB before JSON parsing. Invalid JSON and corrupt/truncated gzip
+raise `LoomTreeError`. A positive integer `max_bytes=` overrides both per-file
+limits for trusted large exports. These byte limits bound input expansion, not
+the total memory used by parsed objects. Tree and sidecar remain format 2.
 
 `loom_diff.py` — cross-branch diff primitives: `text_diff` (word-level via
 `difflib.SequenceMatcher` → aligned `DiffSpan`s), `readings_diff` (per-probe

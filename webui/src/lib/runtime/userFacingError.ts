@@ -1,13 +1,24 @@
+import { WINDOWS_GPU_GUIDANCE, WINDOWS_INTEL_GEN9_BLOCK } from "./gpuRecovery";
+
 type ErrorMessage = string | ((raw: string) => string);
 
 const MESSAGES: Array<[RegExp, ErrorMessage]> = [
+  [/MODEL_LOAD_TIMEOUT/u,
+    "The model took too long to load. Reload this page and try a smaller model. Your saved chats and downloads have not been removed."],
+  [/APP_MODULE_UNAVAILABLE/u,
+    "Some app files could not load. Reconnect, reload Drowse, then reopen the model. Your downloaded models and saved chats are kept."],
+  [/WEBGPU_WINDOWS_INTEL_GEN9_BLOCKED/u, WINDOWS_INTEL_GEN9_BLOCK],
+  [/REPEATED_DEVICE_LOSS/u,
+    () => gpuRecoveryMessage("Model loading is blocked because the graphics device repeatedly stopped responding. Update your browser and operating system, or use another device.")],
+  [/SAMPLING_RUNTIME_OUTDATED/u,
+    "Drowse is using an older model runtime that cannot accept these sampling settings. Reload Drowse, then reopen the model. Your downloaded models and saved chats do not need to be removed."],
   [/WEBGPU_LIMIT_TOO_LOW/u, webGpuLimitMessage],
   [/WEBGPU_FEATURE_(?:MISSING|UNAVAILABLE)/u,
     "This browser’s graphics support is missing a feature this model needs. Update your browser and graphics driver, then run the device check again. If it still fails, use another supported browser."],
   [/WEBGPU_(?:UNAVAILABLE|ADAPTER_|CALIBRATION_|LIMIT_UNAVAILABLE)|SOFTWARE_ADAPTER|ADAPTER_KIND_UNKNOWN/u,
     "Drowse could not confirm compatible hardware-accelerated graphics. Update your browser and graphics driver, then run the device check again."],
   [/WEBGPU_(?:DEVICE|OUT_OF_MEMORY)|GPU_DEVICE|DEVICE_LOST/u,
-    "The graphics device stopped responding. Reopen the model and try again. If it happens again, choose a smaller model or shorter context."],
+    () => gpuRecoveryMessage("The graphics device stopped responding. Close other tabs, then reopen Drowse with a smaller model. If it happens again, update your browser and operating system.")],
   [/INSECURE_CONTEXT|CROSS_ORIGIN_ISOLATION_REQUIRED/u,
     "Drowse needs a secure browser connection. Open it over HTTPS or on localhost, then run the device check again."],
   [/WORKER_UNAVAILABLE|WASM_UNAVAILABLE|BROADCAST_CHANNEL_UNAVAILABLE|WEB_LOCKS_UNAVAILABLE/u,
@@ -77,7 +88,9 @@ export function userFacingError(
   fallback = "Drowse could not complete that action. Try again or reopen the model.",
 ): string {
   const raw = errorMessage(error).replace(/^Error:\s*/u, "").trim();
-  const code = errorCode(error) || inferredCode(raw);
+  const suppliedCode = errorCode(error);
+  const genericCode = /^(?:WORKER_OPERATION_FAILED|WORKER_REQUEST_FAILED)$/u.test(suppliedCode);
+  const code = (!suppliedCode || genericCode ? inferredCode(raw) : "") || suppliedCode;
   for (const [pattern, message] of MESSAGES) {
     if (pattern.test(code)) return typeof message === "function" ? message(raw) : message;
   }
@@ -85,7 +98,22 @@ export function userFacingError(
   return raw;
 }
 
+function gpuRecoveryMessage(message: string): string {
+  return typeof navigator !== "undefined" && /windows/iu.test(navigator.userAgent)
+    ? `${message} On Windows: ${WINDOWS_GPU_GUIDANCE}`
+    : message;
+}
+
 function inferredCode(raw: string): string {
+  if (/importing a module script failed|failed to (?:fetch dynamically imported module|load module script)|error loading dynamically imported module|unable to preload css|load failed for module/iu.test(raw)) {
+    return "APP_MODULE_UNAVAILABLE";
+  }
+  if (/\b(?:WEBGPU_DEVICE_LOST|GPU_DEVICE_LOST)\b|(?:WebGPU|GPU|graphics) device (?:was |is |has been )?lost|DeviceLostError/iu.test(raw)) {
+    return "WEBGPU_DEVICE_LOST";
+  }
+  if (/Make sure 0 < top_logprobs <= 5\. Got (?:[6-9]|[1-9]\d+)(?:\.|$)/u.test(raw)) {
+    return "SAMPLING_RUNTIME_OUTDATED";
+  }
   if (/^[A-Z][A-Z0-9_]{2,}$/u.test(raw)) return raw;
   if (/maxStorageBuffersPerShaderStage|graphics buffers?/iu.test(raw)) {
     return "WEBGPU_LIMIT_TOO_LOW";

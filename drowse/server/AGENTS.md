@@ -122,10 +122,26 @@ what carries data.
 app-level dependency over HTTP and WebSocket routes. `_require_auth` +
 `_check_bearer` gate HTTP; `ws_auth_ok(websocket)` runs **before**
 `websocket.accept()` (close 1008 on failure) and accepts either an
-`Authorization: Bearer …` header or the browser-dashboard `?token=…` fallback,
-since browser WebSocket constructors cannot set headers. Unset key = open
-server. `DROWSE_STRICT_MODEL` (`1`/`true`/`yes`/`on`) 404s a `model` mismatch
+`Authorization: Bearer …` header or a `drowse.auth.<base64url-utf8-key>`
+WebSocket subprotocol. The dashboard offers that credential alongside
+`drowse.v1`; only `drowse.v1` is echoed in the handshake. Legacy `?token=…`
+clients remain accepted, but `ws_auth_ok` removes token query entries before
+Uvicorn access logging, including on rejection. Browser origins must
+match the request origin or an explicit `cors_origins` entry; wildcard CORS
+does not grant API or WebSocket access. Non-browser clients may omit Origin. Without
+a key, the TCP peer must be loopback and HTTP/WS Host must be loopback or the
+ASGI server address. In-process ASGI client labels are not network addresses.
+IPv4-mapped loopback IPv6 peers are accepted. The CLI binds
+loopback by default and requires a key for remote binds. `DROWSE_STRICT_MODEL` (`1`/`true`/`yes`/`on`) 404s a `model` mismatch
 across OpenAI and Ollama against `known_model_names`; unset accepts any name.
+
+`_HttpSecurityMiddleware` authenticates private API requests before body parsing
+while preserving the existing auth-error rendering. It checks browser origins
+for all API methods and other mutations, bounds declared and streamed HTTP
+bodies (64 MiB by default; `DROWSE_MAX_REQUEST_BYTES` or the explicit
+`create_app(max_request_bytes=...)` override), sets API `no-store`, and applies
+the dashboard CSP/framing/referrer/MIME/permission headers. It is pure ASGI so
+streaming cancellation and worker ownership stay intact.
 
 **Locking.** `acquire_session_lock(session)` is a bounded
 (`SESSION_LOCK_TIMEOUT_SECONDS = 300`) async context manager yielding
@@ -141,6 +157,10 @@ Ollama `{"error": "<msg>"}` under `/api/`, native `{"detail": "<msg>"}` under
 in the request's own envelope; `_on_http_exception` flattens a native
 `HTTPException.detail` to a **string** so `/drowse/v1/*` clients never have to
 guess between a string, a dict, and a list of pydantic errors.
+Mapped filesystem errors have generic client messages while keeping their
+status and local traceback. Wrapped `DrowseError` messages go through
+`user_message()`; in particular, wrapped HF transport failures must not expose
+signed URLs or upstream credentials in either JSON or SSE.
 
 ## Native tree conventions
 
@@ -153,8 +173,15 @@ models stay protocol-specific.
 `refuse_if_busy(session)` is a non-blocking `gen_lock` probe → 409. It guards
 the mutating manifold routes and the profile bake: `session.lock` orders native
 mutations against each other, but an SSE fit or extract whose request was
-cancelled leaves its worker thread — and the `gen_lock` — alive past the
-cancel.
+cancelled retains its worker thread and locks until the worker exits.
+`finish_worker` shields cleanup from AnyIO and repeated asyncio cancellation.
+`run_in_thread` owns blocking route workers until their real completion, including
+JSON routes and background jobs. Job shutdown joins both fetch/load and fit/train
+workers before marking them idle. OpenAI/Ollama create streaming workers only
+under the session lock; token reads, non-streaming inference, and joins stay off
+the ASGI loop. `ClosingStreamingResponse` closes iterators on send failures too.
+Native progress callbacks are coalesced and keep bounded recent history (256
+messages for JSON/SSE); terminal frames never wait on an abandoned queue.
 
 **Status taxonomy.**
 
@@ -356,7 +383,7 @@ single non-thread-safe command buffer.
   name/layer so the symmetric matrix costs one Woodbury apply per entry rather
   than one per pair. Missing whitener → 409; a pair it doesn't fully cover, or
   a name whose snapshot isn't ready, lands as `null`.
-- `POST /extract` — `session.extract` in `asyncio.to_thread`, SSE or JSON (the
+- `POST /extract` — `session.extract` through `run_in_thread`, SSE or JSON (the
   JSON branch also returns the collected `progress` lines). Body
   `{concept, baseline?, kind, custom_system?, sae?, role?, namespace?, force?}`
   — `kind` ∈ `abstract|concrete|custom` with `custom_system` required for
@@ -503,7 +530,7 @@ before dispatch.
   needs its text, fork and prefill mutually exclusive) live in the model
   validators, so the schema is the single description of a well-formed frame;
   `PydanticCustomError` keeps those messages verbatim.
-- `{type: "stop"}` — signals `session.stop()` mid-generation; a no-op when idle.
+- `{type: "stop"}` — signals only its own worker mid-generation; a no-op when idle.
 
 `WSInputMessage` is `{role, content, label?}` — `label` is the per-turn cast
 label the scene stitcher renders into the constructed header, so a dashboard
@@ -549,17 +576,21 @@ handler catches them explicitly. Pydantic rejections render as
 reported, not just the first, because `input` is a union whose real failure is
 the second branch error. Only an unexpected exception closes (1011).
 
-**Concurrency.** One perpetual reader task owns `receive_json()` and feeds a
-shared `incoming` queue — the underlying `websockets` `recv_in_progress` flag
+**Concurrency.** One perpetual reader task owns `receive_text()` and feeds a
+shared bounded `incoming` buffer (1 MiB/frame, 16 pending messages / 4 MiB) — the underlying `websockets` `recv_in_progress` flag
 makes overlapping receives a `RuntimeError`, so no other task reads the socket.
-All sends go through one `asyncio.Lock`. `tree_mutated` events ride a
+All sends go through one `asyncio.Lock` with a 30-second timeout. `tree_mutated` events ride a
 connection-level `LoomMutated` subscription forwarded by its own task, and
 `done` waits for its node's `finalize_assistant` delta to be forwarded first,
-so a client never sees a completed-but-empty assistant node. Per generate turn
-`generate_stream` runs in a worker thread, `on_token` bridges to asyncio via
-`call_soon_threadsafe`, and the handler races the token queue against
-`incoming` so an in-flight `stop` is honored without blocking; non-stop frames
-mid-generation hold in a deferred deque and drain after the turn.
+so a client never sees a completed-but-empty assistant node. Per generate turn,
+`generate` / fork / prefill runs in a worker thread under a request-owned
+`GenerationState.cancellation_scope`. `on_token` bridges to asyncio through a
+bounded queue. Token and tree queues each allow 256 outstanding events,
+including callbacks pending on the event loop; overflow disconnects the client.
+The handler races token events against coalesced stop/disconnect controls;
+non-stop frames remain in the same bounded FIFO until the turn ends. Disconnect
+cancels queued requests and stops/joins only that connection's active worker;
+closing an idle connection never stops another caller.
 `session.lock` is held for the full N-way batch so concurrent clients serialize
 FIFO; `n>1` fans siblings out serially under deterministic derived seeds, and
 an error inside one sibling aborts the rest of the fan.

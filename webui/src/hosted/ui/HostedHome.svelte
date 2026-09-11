@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import BaseModelTag from "../../lib/ui/BaseModelTag.svelte";
   import TabIdentity from "../../lib/ui/TabIdentity.svelte";
@@ -10,16 +11,20 @@
   import { chatAccentStyle, type ChatAccent } from "../../lib/chatAccent";
   import { animatedDetails } from "../../lib/animatedDetails";
   import { slide } from "svelte/transition";
-  import { collapseIn, collapseOut } from "../../lib/motion";
+  import { flip } from "svelte/animate";
+  import { cubicOut } from "svelte/easing";
+  import { collapseIn, collapseOut, motionDuration } from "../../lib/motion";
 
   import { ConversationLibraryError, displayModelName, randomAvatarSeed, summarizeConversation, type SavedConversationIssue, type SavedConversationRecord, type SavedConversationSummary } from "../../lib/conversationLibrary";
   import { conversationLibrary, flushConversationAutosave, requestPersistentConversationStorage } from "../../lib/stores/savedConversations.svelte";
   import { downloadChatBackup, importChatBackup } from "../../lib/chatBackup";
   import PageHeader from "./PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
+  import SavedChatMenu from "./SavedChatMenu.svelte";
   import ModelProviderLogo from "./ModelProviderLogo.svelte";
   import ModelDownloadChoices from "./ModelDownloadChoices.svelte";
   import { userFacingError } from "../../lib/runtime/userFacingError";
+  import { reloadInstructions, appRefreshSafetyMessage } from "../runtime/chunkRecovery";
   import { formatEtaRange } from "../../lib/runtime/eta";
   import {
     clearConversationOpen,
@@ -34,6 +39,7 @@
     onChooseModels,
     workbenchError = null,
     workbenchNeedsReload = false,
+    workbenchReloading = false,
     onRetryWorkbench,
   }: {
     controller: HostedShellController;
@@ -41,6 +47,7 @@
     onChooseModels: (modelVariantId?: string, conversation?: SavedConversationSummary) => void;
     workbenchError?: string | null;
     workbenchNeedsReload?: boolean;
+    workbenchReloading?: boolean;
     onRetryWorkbench?: () => void;
   } = $props();
 
@@ -123,7 +130,7 @@
       : recoveryProgress?.etaSeconds ? `${formatEtaRange(recoveryProgress.etaSeconds)} remaining`
       : "Downloading…",
   );
-  const storageUnprotected = $derived(snapshot.storage?.persisted === false);
+  const storageUnprotected = $derived(snapshot.storage !== undefined && snapshot.storage.persisted !== true);
   const newChatModel = $derived(
     installedModels.find((model) => model.id === newChatModelId) ?? null,
   );
@@ -405,7 +412,9 @@
     }
   }
 
-  async function deleteConversation(id: string): Promise<void> {
+  async function deleteConversation(id: string, source: HTMLElement): Promise<void> {
+    const card = source.closest(".chat-card");
+    const adjacent = card?.nextElementSibling ?? card?.previousElementSibling;
     changingId = id;
     error = null;
     try {
@@ -415,11 +424,27 @@
       conversations = conversations.filter((record) => record.id !== id);
       issues = issues.filter((issue) => issue.id !== id);
       confirmDeleteId = null;
+      void tick().then(() => {
+        const focusTarget = adjacent?.querySelector<HTMLElement>(".chat-menu-trigger") ?? document.getElementById("home-title");
+        focusTarget?.focus();
+      });
     } catch (cause) {
       error = userFacingError(cause, "The saved chat could not be deleted.");
     } finally {
       changingId = null;
     }
+  }
+
+  function beginDelete(record: SavedConversationSummary): void {
+    confirmDeleteId = record.id;
+    const card = document.activeElement?.closest(".chat-card");
+    void tick().then(() => card?.querySelector<HTMLButtonElement>("[data-cancel-delete]")?.focus());
+  }
+
+  function cancelDelete(event: MouseEvent): void {
+    const card = (event.currentTarget as HTMLElement).closest(".chat-card");
+    confirmDeleteId = null;
+    void tick().then(() => card?.querySelector<HTMLButtonElement>(".chat-menu-trigger")?.focus());
   }
 
   function replaceConversation(updated: SavedConversationRecord): void {
@@ -442,7 +467,8 @@
     else editingId = null;
   }
 
-  function relativeTime(timestamp: number): string {
+  let viewportWidth = $state(1024);
+  function relativeTime(timestamp: number, compact: boolean): string {
     const elapsed = timestamp - Date.now();
     if (Math.abs(elapsed) < 60_000) return "just now";
     const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
@@ -454,13 +480,15 @@
     ];
     for (const [unit, duration] of units) {
       if (Math.abs(elapsed) >= duration || unit === "minute") {
-        return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" })
+        return new Intl.RelativeTimeFormat(undefined, { numeric: "auto", style: compact ? "narrow" : "long" })
           .format(Math.round(elapsed / duration), unit);
       }
     }
     return "just now";
   }
 </script>
+
+<svelte:window bind:innerWidth={viewportWidth} />
 
 <TabIdentity state={openingId !== null && !workbenchError ? "loading" : "chats"}
   title={openingId !== null && !workbenchError ? `${openingStatus} · Drowse` : undefined} />
@@ -482,7 +510,7 @@
             class="secondary"
             disabled={openingId !== null}
             onclick={() => void openCurrent(continueModel)}
-          >{openingId === `continue:${continueModel.id}` ? "Opening…" : "Continue"}</button>
+          ><MorphText text={openingId === `continue:${continueModel.id}` ? "Opening…" : "Continue"} /></button>
         {/if}
         <button
           type="button"
@@ -498,10 +526,13 @@
         <div>
           <h2>Your chat could not open</h2>
           <p>{workbenchError}</p>
+          {#if workbenchNeedsReload}
+            <p>{appRefreshSafetyMessage}</p>
+            <p>{reloadInstructions()}</p>
+          {/if}
         </div>
-        <button type="button" class="secondary" onclick={workbenchNeedsReload
-          ? () => window.location.reload() : onRetryWorkbench}>
-          {workbenchNeedsReload ? "Reload Drowse" : "Try opening chat again"}
+        <button type="button" class="secondary" disabled={workbenchReloading} onclick={onRetryWorkbench}>
+          <MorphText text={workbenchReloading ? "Refreshing app…" : workbenchNeedsReload ? "Reload Drowse" : "Try opening chat again"} />
         </button>
       </section>
     {:else if openingId !== null}
@@ -519,8 +550,10 @@
           <h2 id="storage-title">Keep your chats and models</h2>
           <p>
             {persistenceAttempted
-              ? "Your browser didn't grant storage protection. Your chats are still saved, but you should keep a backup."
-              : "Your chats and models are saved in this browser. Ask it to keep them during automatic cleanup, and back up your chats."}
+              ? "Storage protection isn't confirmed. Your chats still save in this browser, but you should keep a backup."
+              : persistenceRequestAvailable
+                ? "Your chats and models are saved in this browser. Ask it to keep them during automatic cleanup, and back up your chats."
+                : "This browser can't request storage protection. Back up your chats to keep a copy outside this browser."}
           </p>
           <details class="storage-guide" bind:open={storageGuideOpen} use:animatedDetails>
             <summary>How to keep your data</summary>
@@ -546,7 +579,7 @@
           </details>
         </div>
         {#if persistenceRequestAvailable}
-          <button type="button" class="secondary" class:loading-pulse={persistenceRequesting} aria-busy={persistenceRequesting} disabled={persistenceRequesting} onclick={() => void protectStorage()}>
+          <button type="button" class="secondary" aria-busy={persistenceRequesting} disabled={persistenceRequesting} onclick={() => void protectStorage()}>
             {persistenceRequesting ? "Requesting protection…" : "Protect storage"}
           </button>
         {/if}
@@ -570,7 +603,7 @@
           <div class="panel-actions">
             <button type="button" class="quiet" disabled={openingId !== null} onclick={() => (newChatModelId = null)}>Cancel</button>
             <button type="button" class="primary" aria-busy={openingId === `new:${newChatModel.id}`} disabled={openingId !== null} onclick={() => void startNewChat(newChatModel)}>
-              {openingId === `new:${newChatModel.id}` ? "Loading…" : "Start new chat"}
+              <MorphText text={openingId === `new:${newChatModel.id}` ? "Loading…" : "Start new chat"} />
             </button>
           </div>
         {/if}
@@ -607,7 +640,7 @@
               <div class="panel-actions">
                 {#if recovering}
                   <button type="button" class="secondary" disabled={recoveryDownload?.phase !== "downloading"} onclick={() => void pauseRecovery()}>
-                    {recoveryDownload?.phase === "cancelling" ? "Pausing…" : "Pause download"}
+                    <MorphText text={recoveryDownload?.phase === "cancelling" ? "Pausing…" : "Pause download"} />
                   </button>
                 {:else}
                   <button type="button" class="primary" disabled={!snapshot.download.available || downloadBusy} onclick={() => void runRecovery()}>{recoveryError ? "Retry download" : "Resume download"}</button>
@@ -663,7 +696,7 @@
           <span>{conversations.length} {conversations.length === 1 ? "chat" : "chats"}</span>
           <button type="button" class="secondary backup-action" disabled={importing || changingId !== null} aria-busy={importing} onclick={() => importInput?.click()}>
             <FluentIcon name="upload" size={18} />
-            {importing ? "Importing…" : "Import chat"}
+            <MorphText text={importing ? "Importing…" : "Import chat"} />
           </button>
           <input bind:this={importInput} type="file" accept=".drowsechat,.json,application/json" hidden aria-label="Import chat backup file" onchange={importBackup} />
         </div>
@@ -682,7 +715,7 @@
             {@const model = modelForConversation(record)}
             {@const canOpen = model?.setupComplete && model.fit !== "blocked" && snapshot.runtime.available}
             {@const modelActionUnavailable = model === null || model.fit === "blocked" || !snapshot.runtime.available}
-            <div class="chat-card" role="listitem" data-saved-conversation={record.id} data-chat-accent={record.accent ?? "purple"} style={chatAccentStyle(record.accent)}>
+            <div animate:flip={{ duration: () => motionDuration(180), easing: cubicOut }} class="chat-card" role="listitem" data-saved-conversation={record.id} data-chat-accent={record.accent ?? "purple"} style={chatAccentStyle(record.accent)}>
               <button
                 type="button"
                 class="avatar"
@@ -708,18 +741,23 @@
                     <input bind:this={renameInput} bind:value={editingName} disabled={changingId === record.id} maxlength="120" onkeydown={(event) => onRenameKey(event, record)} onblur={(event) => onRenameBlur(event, record)} />
                   </label>
                 {:else}
-                  <button type="button" class="chat-name" data-cursor="text" aria-label={`Rename ${record.name}`} disabled={changingId !== null} onclick={() => beginRename(record)}><strong dir="auto">{record.name}</strong></button>
+                  <button type="button" class="chat-name" data-cursor="text" aria-label={`Rename ${record.name}`} disabled={changingId !== null} onclick={() => beginRename(record)}><strong dir="auto"><MorphText text={record.name} numbers={false} /></strong></button>
                 {/if}
-                <time datetime={new Date(record.updatedAt).toISOString()}>{relativeTime(record.updatedAt)}</time>
+                <div class="chat-meta">
+                  <time datetime={new Date(record.updatedAt).toISOString()}><MorphText text={relativeTime(record.updatedAt, viewportWidth < 480)} /></time>
+                  <SavedChatMenu name={record.name} disabled={changingId !== null || editingId === record.id || confirmDeleteId === record.id}
+                    duplicateDisabled={importing} busy={duplicatingId === record.id}
+                    onduplicate={() => void duplicateConversation(record)} ondelete={() => beginDelete(record)} />
+                </div>
                 </div>
                 <span class="chat-model"><ModelProviderLogo modelId={record.modelId} /><span>{model?.name ?? displayModelName(record.modelId)}{#if (model?.modelType ?? record.modelType) === "base"}<BaseModelTag />{/if}</span></span>
-                <span class="chat-counts">{record.messageCount} {record.messageCount === 1 ? "message" : "messages"}<span aria-hidden="true">{" · "}</span>{record.threadCount} Loom {record.threadCount === 1 ? "thread" : "threads"}</span>
+                <span class="chat-counts"><MorphText text={`${record.messageCount} ${record.messageCount === 1 ? "message" : "messages"} · ${record.threadCount} Loom ${record.threadCount === 1 ? "thread" : "threads"}`} /></span>
                 {#if !model?.setupComplete}<span class="missing">Download required</span>{/if}
               </div>
               <div class="chat-footer" class:confirming={editingId === record.id || confirmDeleteId === record.id}>
                 {#if editingId !== record.id && confirmDeleteId !== record.id}
                   <button type="button" class="primary compact" disabled={openingId !== null || modelActionUnavailable || recovering || recoveryQueue.length > 0 || downloadBusy} onclick={() => void openConversation(record)}>
-                    {openingId === record.id
+                    <MorphText text={openingId === record.id
                       ? "Opening…"
                       : canOpen
                         ? (model?.modelType ?? record.modelType) === "base" ? "Open completion" : "Open chat"
@@ -729,7 +767,7 @@
                             ? "Browser not compatible"
                             : model
                               ? "Download model"
-                              : "Model unavailable"}
+                              : "Model unavailable"} />
                   </button>
                 {/if}
                 <div class="chat-color">
@@ -741,17 +779,13 @@
                   <button type="button" class="secondary" disabled={!editingName.trim() || changingId === record.id} onclick={() => void saveRename(record)}>Save name</button>
                 {:else if confirmDeleteId === record.id}
                   <span>Delete this saved chat?</span>
-                  <button type="button" class="quiet" onclick={() => (confirmDeleteId = null)}>Cancel</button>
-                  <button type="button" class="delete" disabled={changingId === record.id} onclick={() => void deleteConversation(record.id)}>Delete chat</button>
+                  <button type="button" class="quiet" data-cancel-delete onclick={cancelDelete}>Cancel</button>
+                  <button type="button" class="delete" disabled={changingId === record.id} onclick={(event) => void deleteConversation(record.id, event.currentTarget)}>Delete chat</button>
                 {:else}
                   <button type="button" class="secondary backup-action" disabled={changingId !== null || importing} aria-label={`Download backup of ${record.name}`} aria-busy={changingId === record.id && duplicatingId === null} onclick={() => void downloadBackup(record)}>
                     <FluentIcon name="download" size={18} />
-                    <span class="backup-label">{changingId === record.id && duplicatingId === null ? "Preparing…" : "Download"}</span>
+                    <span class="backup-label"><MorphText text={changingId === record.id && duplicatingId === null ? "Preparing…" : "Download"} /></span>
                   </button>
-                  <button type="button" class="secondary duplicate-action" disabled={changingId !== null || importing}
-                    aria-label={`Duplicate ${record.name}`} aria-busy={duplicatingId === record.id}
-                    onclick={() => void duplicateConversation(record)}>Duplicate</button>
-                  <button type="button" class="delete-control" disabled={changingId !== null} onclick={() => (confirmDeleteId = record.id)}>Delete</button>
                 {/if}
                 </div>
               </div>
@@ -769,7 +803,7 @@
                 {#if confirmDeleteId === issue.id}
                   <span>Delete this stored data?</span>
                   <button type="button" class="quiet" onclick={() => (confirmDeleteId = null)}>Cancel</button>
-                  <button type="button" class="delete" onclick={() => void deleteConversation(issue.id)}>Delete data</button>
+                  <button type="button" class="delete" onclick={(event) => void deleteConversation(issue.id, event.currentTarget)}>Delete data</button>
                 {:else}
                   <span class="issue">This chat could not be read</span>
                   <button type="button" class="delete-control" onclick={() => (confirmDeleteId = issue.id)}>Delete</button>
@@ -951,8 +985,8 @@
     background: var(--surface-card);
     box-shadow: var(--shadow-card);
   }
-  button.delete-control { color: var(--accent-red); background: color-mix(in srgb, var(--accent-red) 10%, var(--glass)); box-shadow: var(--shadow-control); }
-  button.delete-control:hover:not(:disabled) { background: color-mix(in srgb, var(--accent-red) 18%, var(--glass)); }
+  button.delete-control { color: var(--accent-red); background: var(--danger-bg); box-shadow: var(--shadow-control); }
+  button.delete-control:hover:not(:disabled) { background: var(--danger-hover); }
   .avatar, .unavailable-avatar {
     width: 62px;
     height: 62px;
@@ -975,7 +1009,8 @@
   }
   .avatar :global(img) { display: block; width: 100%; height: 100%; min-width: 0; border-radius: inherit; }
   .chat-copy { min-width: 0; display: grid; gap: var(--space-4); }
-  .chat-title-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-5); }
+  .chat-title-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--space-5); }
+  .chat-meta { display: flex; align-items: center; justify-content: end; gap: var(--space-2); }
   .chat-title-row time { color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-xs); white-space: nowrap; }
   .chat-copy strong { display: block; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-md); }
   button.chat-name { --control-sheen: none; appearance: none; min-width: 40px; width: fit-content; max-width: 100%; min-height: var(--control-target); padding: 0; text-align: start; justify-content: start; border-radius: var(--radius-sm); color: var(--fg-strong); background: transparent; box-shadow: none; }
@@ -1029,7 +1064,8 @@
   }
   @media (max-width: 430px) {
     .avatar, .unavailable-avatar { width: 54px; height: 54px; }
-    .chat-title-row { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+    .chat-title-row { grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
+    .chat-meta { grid-row: 1; justify-self: end; }
     button.chat-name { min-height: var(--control-target); }
     .chat-actions button { flex: 1 1 auto; }
   }

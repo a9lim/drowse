@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
+from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
-from contextlib import suppress
 from typing import Any
 
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
+from drowse.server.streaming import ClosingStreamingResponse, finish_worker
 
 ProgressCallback = Callable[[str], None]
 ProgressJob = Callable[[ProgressCallback], Awaitable[Any]]
@@ -24,6 +26,7 @@ JsonErrorMap = Sequence[tuple[type[BaseException] | tuple[type[BaseException], .
 #: for their read timeout (nginx defaults to 60 s), and a single manifold
 #: generate / fit progress step can run well past that on MPS.
 HEARTBEAT_SECONDS = 15.0
+MAX_PROGRESS_MESSAGES = 256
 
 
 def progress_sse_response(
@@ -51,17 +54,42 @@ def progress_sse_response(
 
     async def _sse():
         loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(maxsize=MAX_PROGRESS_MESSAGES)
+        pending: deque[str] = deque(maxlen=MAX_PROGRESS_MESSAGES)
+        pending_lock = threading.Lock()
+        scheduled = False
+
+        def _flush_progress() -> None:
+            nonlocal scheduled
+            with pending_lock:
+                messages = list(pending)
+                pending.clear()
+                scheduled = False
+            for message in messages:
+                if queue.full():
+                    queue.get_nowait()
+                queue.put_nowait(("progress", message))
 
         def _on_progress(msg: str) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, ("progress", msg))
+            nonlocal scheduled
+            with pending_lock:
+                pending.append(msg)
+                if scheduled:
+                    return
+                scheduled = True
+            loop.call_soon_threadsafe(_flush_progress)
+
+        def _complete(kind: str, payload: Any) -> None:
+            _flush_progress()
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait((kind, payload))
 
         async with lock:
             async def _run() -> None:
                 try:
                     payload = await job(_on_progress)
-                    await asyncio.sleep(0)
-                    queue.put_nowait(("done", payload))
+                    _complete("done", payload)
                 except Exception as e:
                     err = None
                     if error_formatter is not None:
@@ -75,7 +103,7 @@ def progress_sse_response(
                             "message": error_message,
                             "code": type(e).__name__,
                         }
-                    queue.put_nowait(("error", err))
+                    _complete("error", err)
 
             task = asyncio.create_task(_run())
             try:
@@ -102,10 +130,9 @@ def progress_sse_response(
                     # disconnected SSE client cannot release ``session.lock``
                     # while the underlying job is still mutating session state
                     # or writing artifacts.
-                    with suppress(BaseException):
-                        await task
+                    await finish_worker(task)
 
-    return StreamingResponse(_sse(), media_type="text/event-stream")
+    return ClosingStreamingResponse(_sse(), media_type="text/event-stream")
 
 
 async def sse_or_json(
@@ -150,12 +177,12 @@ async def sse_or_json(
             logger=logger,
         )
 
-    progress: list[str] = []
+    progress: deque[str] = deque(maxlen=MAX_PROGRESS_MESSAGES)
     async with acquire_session_lock(session) as acquired:
         if not acquired:
             raise HTTPException(503, "session locked")
         try:
-            payload = await job(progress.append)
+            payload = await finish_worker(asyncio.ensure_future(job(progress.append)))
         except HTTPException:
             # Already carries its own status — a job that mapped its own
             # failure wins over the generic table.
@@ -166,5 +193,5 @@ async def sse_or_json(
                     raise HTTPException(status, str(exc)) from exc
             raise
     if json_progress_key is not None and isinstance(payload, dict):
-        payload[json_progress_key] = progress
+        payload[json_progress_key] = list(progress)
     return payload

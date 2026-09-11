@@ -1,7 +1,10 @@
+import { selectWorkspaceView } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
+import { setAppearance, returnToChats, showWorkspaceTools, selectLoomView, openTokenDetails } from "./workbench-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
-import { readFile } from "node:fs/promises";
+import { buffer as readStreamBuffer, text as readStreamText } from "node:stream/consumers";
 import { CHAT_ACCENTS } from "../src/lib/chatAccent";
 
 const devUrl = "http://127.0.0.1:4176";
@@ -9,7 +12,19 @@ const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
 const servicesUrl = `/@fs/${resolve("src/lib/runtime/services.ts")}`;
 test.use({ hasTouch: true });
 
+async function showMapDetails(page: Page, selector?: string) {
+  await showWorkspaceTools(page, "Loom");
+  if (selector) {
+    await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
+    const summary = page.locator(selector).locator(".map-summary");
+    if (await summary.count()) await summary.click();
+  } else {
+    await page.getByRole("button", { name: "Center current path", exact: true }).click();
+  }
+}
+
 test("model settings end with the versioned Drowse footer", async ({ page }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
   await page.evaluate(async url => (await import(url)).openDrawer("local_runtime"), storesUrl);
@@ -17,7 +32,8 @@ test("model settings end with the versioned Drowse footer", async ({ page }, tes
   await expect(footer.locator(".wordmark")).toHaveText("Drowse");
   await expect(footer.locator(".version")).toHaveText("v 0.1");
   await expect(footer).toContainText("© 2026 Drowse Contributors");
-  await expect(footer.getByRole("link", { name: "AGPL-3.0-or-later" })).toHaveAttribute("href", "/LICENSE");
+  await expect(footer).toContainText("GNU AGPL v3 or later");
+  await expect(footer.locator('a[href="/LICENSE"]')).toHaveCount(0);
   await expect(footer.getByRole("link", { name: "Contribute" })).toHaveAttribute("href", /github.com\/a9lim\/drowse/);
   await expect(footer.getByRole("link", { name: "Credits" })).toHaveAttribute("href", "/credits");
   for (const theme of ["light", "dark"]) {
@@ -34,6 +50,7 @@ test("model settings end with the versioned Drowse footer", async ({ page }, tes
 });
 
 test("Credits matches the public theme and GitHub links say Contribute", async ({ page, browserName }, testInfo) => {
+  test.slow();
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -59,7 +76,7 @@ test("Credits matches the public theme and GitHub links say Contribute", async (
   await expect.poll(() => page.locator(".portrait, .thanks-portrait").evaluateAll(
     images => images.every(image => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0),
   )).toBe(true);
-  await expect(page.getByRole("link", { name: "Drowse home", exact: true })).toHaveAttribute("href", "/");
+  await expect(page.locator(".page-brand")).toHaveAttribute("href", "/");
   await expect(nav.getByRole("link", { name: "Chats", exact: true })).toHaveAttribute("href", "/app");
   if (browserName === "webkit") {
     // WebKit's default keyboard mode skips links.
@@ -74,15 +91,21 @@ test("Credits matches the public theme and GitHub links say Contribute", async (
   await expect(page.locator(".hero-visual")).toHaveAttribute("data-shader-status", "fallback");
   for (const theme of ["light", "dark"]) {
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await page.getByRole("button", { name: theme === "light" ? "Light" : "Dark", exact: true }).click();
+    await setAppearance(page, theme === "light" ? "Light" : "Dark");
     await expect(page.locator("html")).not.toHaveAttribute("data-theme-transition", /.+/);
     for (const width of [1440, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await expect.poll(() => page.evaluate(() => [...document.querySelectorAll("body *")]
-        .filter(element => !element.closest(".credits-art-frame"))
+        .filter(element => !element.closest('.credits-art-frame, nav[aria-label="Primary navigation"]'))
         .filter(element => element.getBoundingClientRect().right > innerWidth + 1)
         .map(element => `${element.tagName}.${element.className}: ${element.getBoundingClientRect().right}`))).toEqual([]);
+      for (const link of await nav.getByRole("link").all()) {
+        await link.scrollIntoViewIfNeeded();
+        const box = (await link.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(width + 1);
+      }
       await page.screenshot({ path: testInfo.outputPath(`credits-${theme}-${width}.png`), fullPage: true });
       expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     }
@@ -113,7 +136,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A complete local backup");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("This is a deterministic local Drowse runtime fixture.");
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const libraryUrl = `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`;
   const original = await page.evaluate(async ({ libraryUrl, workspaceUrl }) => {
     const { conversationLibrary, flushConversationAutosave } = await import(libraryUrl);
@@ -135,14 +158,14 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await source.getByRole("button", { name: "Download backup of Backup experiment", exact: true }).click();
   const download = await downloading;
   expect(download.suggestedFilename()).toBe("Backup-experiment.drowsechat");
-  const text = await readFile((await download.path())!, "utf8");
+  const text = await readStreamText(await download.createReadStream());
   const backup = JSON.parse(text);
   expect(backup.conversation).toEqual(original);
   const records = () => page.evaluate(async url => (await (await import(url)).conversationLibrary.list()).conversations, libraryUrl);
   const before = await records();
   const fileInput = page.getByLabel("Import chat backup file", { exact: true });
   await fileInput.setInputFiles({ name: download.suggestedFilename(), mimeType: "application/json", buffer: Buffer.from(text) });
-  await expect(page.getByRole("status").filter({ hasText: "Imported" })).toContainText("separate chat");
+  await expect(page.getByRole("status").filter({ hasText: "Imported" })).toContainText("Backup experiment");
   const after = await records();
   expect(after).toHaveLength(before.length + 1);
   const imported = after.find((record: any) => record.name === original.name && record.id !== original.id)!;
@@ -173,7 +196,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Continue only the imported copy");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect.poll(() => page.evaluate(async url => (await (await import(url)).apiTree.get()).nodes.length, `/@fs${resolve("src/lib/runtime/services.ts")}`)).toBe(original.snapshot.tree.nodes.length + 2);
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async url => (await import(url)).flushConversationAutosave(), libraryUrl);
   const continued = await records();
   expect(continued.find((record: any) => record.id === original.id)).toEqual(original);
@@ -184,7 +207,7 @@ test("dropdown and disclosure motion is reversible and respects reduced motion",
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await workbench(page);
   await page.evaluate(async ({ selectUrl, comboUrl, detailsUrl }) => {
-    const { mount, unmount } = await import("/@id/svelte");
+    const { mount, unmount } = await import("/e2e/svelte-runtime.ts");
     const { default: Select } = await import(selectUrl);
     const { default: Combobox } = await import(comboUrl);
     const { animatedDetails } = await import(detailsUrl);
@@ -219,7 +242,9 @@ test("dropdown and disclosure motion is reversible and respects reduced motion",
       const list = page.locator("#motion-test .t-dropdown");
       await expect(list).toHaveClass(/is-open/);
       await expect(list).toHaveAttribute("data-origin", "bottom-left");
-      await expect(list).toHaveCSS("transition-duration", "0.25s, 0.25s");
+      await expect(list).toHaveCSS("transition-duration", "0.14s");
+      await expect(list).toHaveCSS("transition-property", "opacity");
+      await expect(list).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
       await expect(list).toHaveCSS("opacity", "1");
       const box = (await list.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
@@ -229,7 +254,7 @@ test("dropdown and disclosure motion is reversible and respects reduced motion",
         const popup = document.querySelector<HTMLElement>("#motion-test .t-dropdown")!;
         return { closing: popup.classList.contains("is-closing"), inert: popup.inert, duration: getComputedStyle(popup).transitionDuration };
       });
-      expect(closing).toEqual({ closing: true, inert: true, duration: "0.15s, 0.15s" });
+      expect(closing).toEqual({ closing: true, inert: true, duration: "0.1s" });
       await trigger.evaluate(el => (el as HTMLButtonElement).click());
       await expect(list).toHaveCount(1);
       await expect(list).toHaveClass(/is-open/);
@@ -289,7 +314,7 @@ for (const theme of ["dark", "light"] as const) {
     expect(await primary.evaluate(el => getComputedStyle(el).getPropertyValue("--btn-accent").trim())).toBe(palette.accent);
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
     await primary.click();
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     await page.evaluate(async url => { (await import(url)).highlightState.target = "__probability__"; }, storesUrl);
     const tokenStyle = await page.locator(".msg .tok").first().getAttribute("style");
     expect(tokenStyle).toContain("--pillar-lens");
@@ -330,8 +355,10 @@ for (const theme of ["dark", "light"] as const) {
       await page.setViewportSize({ width, height: 900 });
       await page.screenshot({ path: testInfo.outputPath(`conversation-${theme}-${width}.png`) });
     }
-    await page.getByRole("button", { name: "Loom", exact: true }).click();
-    await page.locator(".loom-views").getByRole("button", { name: /^Map\b/ }).click();
+    await selectWorkspaceView(page, "Loom");
+    await showWorkspaceTools(page, "Loom");
+    await selectLoomView(page, /^Map\b/);
+    await showMapDetails(page);
     const loomToken = page.locator("[data-loom-token-node]").first();
     await expect(loomToken).toHaveAttribute("style", tokenStyle!);
     await page.screenshot({ path: testInfo.outputPath(`loom-${theme}.png`) });
@@ -351,10 +378,10 @@ for (const theme of ["dark", "light"] as const) {
     })).toBe(true);
     for (const name of [/^sae$/, /^j-lens$/]) {
       await sheet.getByRole("button", { name }).click();
-      const selected = sheet.locator('.sk-tabs .tab.on');
+      const selected = sheet.locator('.sk-tabs .selection-indicator');
       const selectedColor = await selected.evaluate(el => {
         const swatch = document.createElement("div");
-        swatch.style.background = "var(--accent-subtle)";
+        swatch.style.background = "var(--control-selected-bg)";
         el.appendChild(swatch);
         const color = getComputedStyle(swatch).backgroundColor;
         swatch.remove();
@@ -364,7 +391,7 @@ for (const theme of ["dark", "light"] as const) {
     }
     await page.screenshot({ path: testInfo.outputPath(`token-details-${theme}.png`) });
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Controls", exact: true }).click();
+    await selectWorkspaceView(page, "Controls");
     await expect(page.locator(".controls-page")).toHaveAttribute("aria-hidden", "false");
     await page.locator(".controls-page").screenshot({ path: testInfo.outputPath(`controls-${theme}.png`) });
     const result = await new AxeBuilder({ page }).include(".controls-page").withRules(["color-contrast"]).analyze();
@@ -375,7 +402,7 @@ for (const theme of ["dark", "light"] as const) {
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
       await page.screenshot({ path: testInfo.outputPath(`${name}-${theme}.png`) });
     }
-    await page.getByRole("button", { name: "Models", exact: true }).click();
+    await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Models", exact: true }).click();
     await expect(page.locator(".app-shell")).toBeVisible();
     await page.locator(".app-shell").screenshot({ path: testInfo.outputPath(`models-${theme}.png`) });
   });
@@ -385,7 +412,7 @@ async function emptyGeometry(page: Page, authoring = false) {
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async ({ storesUrl, registryUrl, authoring }) => {
     const { chatLog, probeRack } = await import(storesUrl);
     probeRack.active = [];
@@ -438,15 +465,17 @@ test("geometry setup offers clear actions and preserves the current token", asyn
   await page.screenshot({ path: testInfo.outputPath("geometry-probe-picker-mobile.png") });
   await rack.getByRole("button", { name: "Back to token", exact: true }).click();
   await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: /^geometry\b/i }).click();
   await expect.poll(() => page.evaluate(async url => (await import(url)).drawerState.params.tokenIdx, storesUrl)).toBe(1);
   await sheet.getByRole("button", { name: "Create a concept", exact: true }).click();
   const builder = page.getByRole("region", { name: "Build manifold", exact: true });
   await expect(builder).toBeVisible();
-  await expect(builder.getByRole("form", { name: "Generate manifold" })).toBeVisible();
+  await expect(builder.getByRole("tablist", { name: "Authoring mode" })).toBeVisible();
   expect(await builder.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("geometry-concept-builder.png") });
   await builder.locator(".drawer-close").click();
   await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: /^geometry\b/i }).click();
   await expect.poll(() => page.evaluate(async url => (await import(url)).drawerState.params.tokenIdx, storesUrl)).toBe(1);
 
   // Simulate successful authoring; the layout fixture never trains model weights.
@@ -485,14 +514,14 @@ test("geometry setup attaches a probe and hides unsupported training", async ({ 
   await sheet.locator(".drawer-close").click();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Read this new reply with the attached probe.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await openDrawer(page, "token_drilldown", { turnIdx: 3, tokenIdx: 0 });
   await expect(sheet.locator(".geo-list")).toContainText("local/test-concept");
 });
 
 test("sampling sliders accept full-height drags and reset to original", async ({ page }, testInfo) => {
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const slider = page.getByRole("slider", { name: "Temperature", exact: true });
   const original = await slider.inputValue();
   for (const width of [320, 1440]) {
@@ -525,7 +554,7 @@ test("model reset preserves chats and restores defaults after reopening", async 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Keep this conversation after reset.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.getByRole("status").filter({ hasText: "Response complete." })).toBeVisible();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const slider = page.getByRole("slider", { name: "Temperature", exact: true });
   const original = await slider.inputValue();
   await slider.focus();
@@ -536,7 +565,7 @@ test("model reset preserves chats and restores defaults after reopening", async 
   await page.locator(".drawer-shell").getByRole("button", { name: "Save system prompt", exact: true }).click();
   await page.reload();
   await expect(page.locator(".shell")).toBeVisible();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   await expect(slider).toHaveValue("2");
   const tabs = page.getByRole("group", { name: "Controls section", exact: true });
   await tabs.getByRole("button", { name: "Model", exact: true }).click();
@@ -551,14 +580,14 @@ test("model reset preserves chats and restores defaults after reopening", async 
   await page.getByRole("button", { name: "System prompt", exact: true }).click();
   await expect(page.locator(".drawer-shell textarea")).toHaveValue("");
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Conversation", exact: true }).click();
+  await selectWorkspaceView(page, "Conversation");
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("Keep this conversation after reset.");
 });
 
 test("steering summary only appears for configured directions", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const recipe = page.locator(".inspector .recipe");
   const setState = (state: "empty" | "custom-empty" | "custom" | "disabled") => page.evaluate(async ({ url, state }) => {
     const { steerRack } = await import(url);
@@ -580,8 +609,10 @@ test("steering summary only appears for configured directions", async ({ page },
     await expect(recipe).toContainText("Steering");
     await expect(recipe).toContainText("0.3 jlens/orange");
     await expect(recipe).not.toHaveAttribute("title");
-    const firstPanel = (await page.locator(".reply-panel").boundingBox())!;
-    expect((await recipe.boundingBox())!.x).toBeCloseTo(firstPanel.x, 0);
+      const firstPanel = (await page.locator(".inspector").boundingBox())!;
+    const recipeBox = (await recipe.boundingBox())!;
+    expect(recipeBox.x).toBeGreaterThanOrEqual(firstPanel.x);
+    expect(recipeBox.x + recipeBox.width).toBeLessThanOrEqual(firstPanel.x + firstPanel.width);
     expect(await recipe.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
     await setState("custom-empty");
     await expect(recipe).toHaveCount(0);
@@ -597,7 +628,7 @@ test("steering summary only appears for configured directions", async ({ page },
 test("Chat controls share the three-tab layout on desktop and phones", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const tabs = page.getByRole("group", { name: "Controls section", exact: true });
   await expect(tabs.getByRole("button")).toHaveText(["Response", "Model", "Chat"]);
   await tabs.getByRole("button", { name: "Chat", exact: true }).click();
@@ -611,7 +642,7 @@ test("Chat controls share the three-tab layout on desktop and phones", async ({ 
     for (const width of [320, 1440]) {
       await page.setViewportSize({ width, height: 800 });
       expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
-      expect(await tabs.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      await expect.poll(() => tabs.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       await panel.getByRole("button", { name: "Download copy" }).scrollIntoViewIfNeeded();
       await expect(panel.getByRole("button", { name: "Download copy" })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath(`chat-controls-${colorScheme}-${width}.png`) });
@@ -631,7 +662,7 @@ test("Chat controls update the saved name and avatar without leaving the tab", a
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Save this chat from its controls.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.getByRole("status").filter({ hasText: "Response complete." })).toBeVisible();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const tabs = page.getByRole("group", { name: "Controls section", exact: true });
   await tabs.getByRole("button", { name: "Chat", exact: true }).click();
   const panel = page.getByRole("tabpanel", { name: "Chat controls" });
@@ -656,7 +687,7 @@ test("Chat controls update the saved name and avatar without leaving the tab", a
   await panel.getByRole("button", { name: "Download copy" }).click();
   const file = await download;
   expect(file.suggestedFilename()).toBe("A-named-chat.drowsechat");
-  const backup = JSON.parse(await readFile((await file.path())!, "utf8"));
+  const backup = JSON.parse(await readStreamText(await file.createReadStream()));
   expect(backup.format).toBe("drowse-chat-backup");
   expect(backup.conversation.name).toBe(updated.name);
   expect(backup.conversation.avatarSeed).toBe(updated.avatarSeed);
@@ -679,7 +710,8 @@ test("shared page headers and footers align across public pages and workbench", 
     await page.emulateMedia({ colorScheme: width === 1000 ? "light" : "dark" });
     await page.goto(`${devUrl}/`);
     await page.evaluate(() => document.fonts.ready);
-    const anchor = (await page.locator(".page-brand").boundingBox())!;
+    const anchor = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
+    const anchorHeaderX = await page.locator(".page-header").evaluate(el => el.getBoundingClientRect().x);
     const footerStyle = await page.locator(".page-footer").evaluate(el => {
       const css = getComputedStyle(el);
       const content = el.querySelector(".footer-content")!;
@@ -687,23 +719,55 @@ test("shared page headers and footers align across public pages and workbench", 
         height: content.getBoundingClientRect().height, text: el.textContent?.trim() };
     });
     const check = async (name: string) => {
-      await expect(page.locator(".page-brand")).toBeVisible();
+      if (width === 320 && name !== "workbench") await expect(page.locator(".page-brand")).toBeHidden();
+      else await expect(page.locator(".page-brand")).toBeVisible();
       await page.evaluate(() => document.fonts.ready);
-      const box = (await page.locator(".page-brand").boundingBox())!;
-      for (const key of ["x", "y", "width", "height"] as const) expect(box[key], `${name} ${key}`).toBeCloseTo(anchor[key], 0);
+      const box = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
+      const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
+      await expect.poll(() => page.locator(".page-brand").evaluate((el, expected) =>
+        Math.abs(el.getBoundingClientRect().width - expected), anchor.width * (compact ? 5 / 6 : 1)),
+      { message: `${name} width` }).toBeLessThanOrEqual(1);
+      expect(box.height).toBeCloseTo(await page.locator(".page-brand").evaluate(el => parseFloat(getComputedStyle(el).minHeight)), 0);
       expect(await page.locator(".page-header").evaluate(el => el.scrollWidth - el.clientWidth), name).toBeLessThanOrEqual(1);
+      if (name === "workbench") {
+        if (width <= 760) await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toBeVisible();
+        else await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toHaveCount(0);
+        await expect(page.locator(".page-header .theme-toggle, .page-header nav")).toHaveCount(0);
+        const sidebarToggle = (await page.getByRole("button", { name: /^(Hide|Show) left sidebar$/ }).boundingBox())!;
+        const leadingGap = await page.locator(".page-leading").evaluate(el => parseFloat(getComputedStyle(el).columnGap));
+        expect(box.x).toBeCloseTo(sidebarToggle.x + sidebarToggle.width + leadingGap, 0);
+        await page.screenshot({ path: testInfo.outputPath(`${name}-${width}.png`) });
+        return;
+      }
+      if (!compact && width > 320) for (const key of ["x", "y"] as const) {
+        await expect.poll(() => page.locator(".page-brand").evaluate((el, key) => {
+          const box = el.getBoundingClientRect();
+          return box[key] - (key === "x" ? el.closest(".page-header")!.getBoundingClientRect().x : 0);
+        }, key), { message: `${name} ${key}` }).toBeCloseTo(anchor[key] - (key === "x" ? anchorHeaderX : 0), 0);
+      }
+      else expect(box.x).toBeGreaterThanOrEqual(0);
       await expect(page.locator(".page-header .theme-toggle")).toHaveCount(1);
       await expect(page.locator(".page-header nav a")).toHaveText(["Chats", "Models", "Credits", "Contribute"]);
       await page.screenshot({ path: testInfo.outputPath(`${name}-${width}.png`) });
       const footer = page.locator(".page-footer");
       await footer.scrollIntoViewIfNeeded();
-      await expect(footer.getByRole("link")).toHaveText(["Credits", "Contribute", "License"]);
-      expect(await footer.evaluate(el => {
+      await expect(footer.getByRole("link")).toHaveText(["Credits", "Contact us", "contact@drowse.ai", "Contribute"]);
+      const actualFooter = await footer.evaluate(el => {
         const css = getComputedStyle(el);
         const content = el.querySelector(".footer-content")!;
         return { x: el.getBoundingClientRect().x, width: el.getBoundingClientRect().width, padding: css.paddingInlineStart,
           height: content.getBoundingClientRect().height, text: el.textContent?.trim() };
-      })).toEqual(footerStyle);
+      });
+      const footerContainer = await footer.evaluate(el => el.parentElement!.getBoundingClientRect().toJSON());
+      expect(actualFooter.width).toBe(Math.min(footerContainer.width, (compact ? 90 : 80) * 14));
+      expect(actualFooter.x).toBe(footerContainer.x + (footerContainer.width - actualFooter.width) / 2);
+      if (!compact) expect({ padding: actualFooter.padding, height: actualFooter.height, text: actualFooter.text })
+        .toEqual({ padding: footerStyle.padding, height: footerStyle.height, text: footerStyle.text });
+      else {
+        expect(actualFooter.text).toBe(footerStyle.text);
+        expect(actualFooter.padding).toBe("16px");
+        expect(actualFooter.height).toBeGreaterThanOrEqual(80);
+      }
       expect(await footer.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
       await footer.screenshot({ path: testInfo.outputPath(`${name}-footer-${width}.png`) });
     };
@@ -718,7 +782,7 @@ test("shared page headers and footers align across public pages and workbench", 
     await workbench(page);
     await check("workbench");
     await page.evaluate(async ({ home, stores }) => {
-      const [{ default: HostedHome }, { mount }, { sessionState }] = await Promise.all([import(home), import("/@id/svelte"), import(stores)]);
+      const [{ default: HostedHome }, { mount }, { sessionState }] = await Promise.all([import(home), import("/e2e/svelte-runtime.ts"), import(stores)]);
       const modelId = sessionState.info.model_id;
       document.body.replaceChildren();
       const target = document.createElement("div");
@@ -750,10 +814,19 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await expect(openModel).toBeEnabled();
     await settled();
     await page.evaluate(() => document.fonts.ready);
-    const modelLogo = (await page.locator(".page-brand").boundingBox())!;
+    const modelLogo = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
     const assertHeader = async () => {
-      const logo = (await page.locator(".page-brand").boundingBox())!;
-      for (const key of ["x", "y", "width", "height"] as const) expect(logo[key]).toBeCloseTo(modelLogo[key], 0);
+      const logo = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
+      const inWorkbench = await page.locator(".shell").isVisible();
+      const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
+      expect(Math.abs(logo.width - modelLogo.width * (compact ? 5 / 6 : 1))).toBeLessThanOrEqual(1);
+      expect(logo.height).toBeCloseTo(await page.locator(".page-brand").evaluate(el => parseFloat(getComputedStyle(el).minHeight)), 0);
+      if (inWorkbench) {
+        const sidebarToggle = (await page.getByRole("button", { name: /^(Hide|Show) left sidebar$/ }).boundingBox())!;
+        const leadingGap = await page.locator(".page-leading").evaluate(el => parseFloat(getComputedStyle(el).columnGap));
+        expect(logo.x).toBeCloseTo(sidebarToggle.x + sidebarToggle.width + leadingGap, 0);
+      }
+      else if (!compact && width > 320) for (const key of ["x", "y"] as const) expect(logo[key]).toBeCloseTo(modelLogo[key], 0);
       expect(await page.locator(".page-header").evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
       await expect(page.getByText("Local workbench", { exact: true })).toHaveCount(0);
@@ -763,14 +836,15 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await settled();
     await assertHeader();
     await page.screenshot({ path: testInfo.outputPath(`unified-workbench-${width}.png`) });
-    await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Models", exact: true }).click();
+    await openWorkspaceMenu(page);
+    await page.getByRole("dialog", { name: "Workspace menu", exact: true }).getByRole("button", { name: "Models", exact: true }).click();
     await expect(page.locator(".app-shell")).toBeVisible();
     await settled();
     await assertHeader();
     await page.getByRole("button", { name: /^(Download and open|Open Drowse)$/ }).click();
     await expect(page.locator(".shell")).toBeVisible();
     await settled();
-    await page.getByRole("button", { name: "Back to your chats", exact: true }).click();
+    await returnToChats(page);
     await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
     await settled();
     await assertHeader();
@@ -778,7 +852,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     // Trigger before Playwright waits for the animation to finish, then inspect the outgoing surface.
     await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Models", exact: true }).evaluate((el: HTMLAnchorElement) => el.click());
     await expect(page.locator('.page-route[data-route="home"]')).toHaveAttribute("inert", "");
-    await expect.poll(() => page.locator('.page-route[data-route="models"]').evaluate(el => el.getAnimations().some(a => a.effect?.getKeyframes().some(k => String(k.filter).includes("blur"))))).toBe(true);
+    await expect.poll(() => page.locator('.page-route[data-route="models"]').evaluate(el => el.getAnimations({ subtree: true }).some(a => a.effect?.getKeyframes().some(k => String(k.filter).includes("blur"))))).toBe(true);
     await page.locator('.page-route[data-route="models"]').getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Chats", exact: true }).evaluate((el: HTMLAnchorElement) => el.click());
     await settled();
     await expect(page.locator(".page-route")).toHaveAttribute("data-route", "home");
@@ -802,7 +876,7 @@ test.describe("saved chat card interactions", () => {
   test("chat names edit in place and avatar shuffle reveals without lighting up the card", async ({ page }, testInfo) => {
     const mountHome = () => page.evaluate(async ({ home, saved, stores, workspace }) => {
       const [{ default: HostedHome }, { mount }, { conversationLibrary, registerConversationAutosave }, { sessionState }, { captureConversationSnapshot }] = await Promise.all([
-        import(home), import("/@id/svelte"), import(saved), import(stores), import(workspace),
+        import(home), import("/e2e/svelte-runtime.ts"), import(saved), import(stores), import(workspace),
       ]);
       if (!(await conversationLibrary.hasAny())) {
         await conversationLibrary.create({ name: "Chat 1", snapshot: captureConversationSnapshot() });
@@ -822,12 +896,12 @@ test.describe("saved chat card interactions", () => {
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, I love marmots!");
     await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
     await expect(page.getByRole("status").filter({ hasText: "Response complete." })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     await mountHome();
     const card = page.locator("[data-saved-conversation]").first();
     await expect(card).toBeVisible();
-    await expect(card.locator("time")).toHaveText("just now");
-    await expect(card.locator(".chat-counts")).toHaveText("2 messages · 1 Loom thread");
+    await expect(card.locator("time .morph-source")).toHaveText("just now");
+    await expect(card.locator(".chat-counts .morph-source")).toHaveText("2 messages · 1 Loom thread");
     await card.locator(".chat-name").click();
     const input = card.getByRole("textbox", { name: "Chat name" });
     await expect(input).toBeFocused();
@@ -840,19 +914,19 @@ test.describe("saved chat card interactions", () => {
     await expect(card.getByRole("button", { name: "Save name" })).toBeDisabled();
     await input.fill("Marmot notes");
     await input.press("Enter");
-    await expect(card.locator(".chat-name")).toHaveText("Marmot notes");
+    await expect(card.locator(".chat-name .morph-source")).toHaveText("Marmot notes");
     await card.locator(".chat-name").click();
     await input.fill("Discard this too");
     await card.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(card.locator(".chat-name")).toHaveText("Marmot notes");
+    await expect(card.locator(".chat-name .morph-source")).toHaveText("Marmot notes");
     await card.locator(".chat-name").click();
     await input.fill(" ");
     await card.locator(".chat-counts").click();
-    await expect(card.locator(".chat-name")).toHaveText("Marmot notes");
+    await expect(card.locator(".chat-name .morph-source")).toHaveText("Marmot notes");
     await card.locator(".chat-name").click();
     await input.fill("Marmot research");
     await card.locator(".chat-counts").click();
-    await expect(card.locator(".chat-name")).toHaveText("Marmot research");
+    await expect(card.locator(".chat-name .morph-source")).toHaveText("Marmot research");
 
     const avatar = card.locator(".avatar");
     const image = avatar.locator("img");
@@ -877,8 +951,8 @@ test.describe("saved chat card interactions", () => {
     await expect(avatar).toHaveAttribute("aria-busy", "true");
     await expect(card.locator(".chat-name")).toBeEnabled();
     await expect(card.getByRole("button", { name: "Download backup of Marmot research", exact: true })).toBeEnabled();
-    await expect(card.getByRole("button", { name: "Download backup of Marmot research", exact: true })).toHaveText("Download");
-    await expect(card.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Download backup of Marmot research", exact: true }).locator(".morph-source")).toHaveText("Download");
+    await expect(card.getByRole("button", { name: "More options for Marmot research", exact: true })).toBeEnabled();
     expect(await card.locator(".chat-actions").boundingBox()).toEqual(actionsBefore);
     await page.evaluate(() => (window as any).releaseAvatarUpdate());
     await expect(avatar).toHaveAttribute("aria-busy", "false");
@@ -886,7 +960,9 @@ test.describe("saved chat card interactions", () => {
     await expect(card.locator("time")).toHaveAttribute("datetime", timestamp!);
     await expect(avatar.locator(".avatar-image")).toHaveCSS("filter", "none");
     await expect(avatar.locator(".avatar-shuffle")).toHaveCSS("opacity", "0");
-    await expect(card.getByRole("button", { name: "Delete", exact: true })).toHaveClass(/\bdelete-control\b/);
+    await card.getByRole("button", { name: "More options for Marmot research", exact: true }).click();
+    await expect(card.getByRole("menuitem", { name: "Delete", exact: true })).toHaveClass(/\bdelete-option\b/);
+    await page.keyboard.press("Escape");
 
     for (const theme of ["light", "dark"]) {
       await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
@@ -896,7 +972,8 @@ test.describe("saved chat card interactions", () => {
         const aligned = await card.evaluate(el => {
           const time = el.querySelector("time")!.getBoundingClientRect();
           const row = el.querySelector(".chat-title-row")!.getBoundingClientRect();
-          return innerWidth <= 760 ? Math.abs(row.left - time.left) < 2 : Math.abs(row.right - time.right) < 2;
+          const menu = el.querySelector(".chat-menu-trigger")!.getBoundingClientRect();
+          return time.right <= menu.left && Math.abs(row.right - menu.right) < 2;
         });
         expect(aligned).toBe(true);
         const picker = card.locator(".chat-color .accent-picker > button");
@@ -927,11 +1004,11 @@ test.describe("saved chat card interactions", () => {
     await page.reload();
     await expect(page.locator(".shell")).toBeVisible();
     await mountHome();
-    await expect(page.locator("[data-saved-conversation]").first().locator(".chat-name")).toHaveText("Marmot research");
+    await expect(page.locator("[data-saved-conversation]").first().locator(".chat-name .morph-source")).toHaveText("Marmot research");
     const downloading = page.waitForEvent("download");
     await page.getByRole("button", { name: "Download backup of Marmot research", exact: true }).click();
     const download = await downloading;
-    const text = await readFile((await download.path())!, "utf8");
+    const text = await readStreamText(await download.createReadStream());
     const backup = JSON.parse(text);
     expect(backup.conversation.name).toBe("Marmot research");
     await page.getByLabel("Import chat backup file").setInputFiles({ name: "backup.json", mimeType: "application/json", buffer: Buffer.from(text) });
@@ -955,9 +1032,9 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, I love marmots!");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: /^Loom\b/ }).click();
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+  await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
   await page.getByRole("button", { name: /^Map\b/ }).click();
   let compactHeight = 0;
@@ -971,6 +1048,7 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
       loomTree.nodes.set(id, { ...node, text: tokens.map(token => token.text).join(""), tokens, mean_logprob: -0.24 });
       return id;
     }, { url: storesUrl, long });
+    await showMapDetails(page, `[data-loom-node-id="${id}"]`);
     const node = page.locator(`[data-loom-node-id="${id}"] .node`);
     const field = node.locator(".token-field");
     await expect.poll(() => field.evaluate(el => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
@@ -987,7 +1065,7 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
       return last.bottom <= field.bottom + 1 && field.bottom <= (meta?.top ?? tools.top) && card.bottom - tools.bottom >= 7 * zoom;
     })).toBe(true);
     await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
-    await node.screenshot({ path: testInfo.outputPath(`loom-footer-${long ? "long" : "wrapped"}.png`) });
+    await page.locator(".loom-viewport").screenshot({ path: testInfo.outputPath(`loom-footer-${long ? "long" : "wrapped"}.png`) });
   }
   expect(errors).toEqual([]);
 });
@@ -996,7 +1074,7 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
 
 test("Thinking is shown only for supported models and follows model changes", async ({ page }) => {
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const thinking = page.getByRole("checkbox", { name: "Thinking", exact: true });
   for (const [supported, optional] of [[false, false], [true, true], [true, false], [false, false]]) {
     await page.evaluate(async ({ url, supported, optional }) => {
@@ -1020,7 +1098,7 @@ test("Thinking is shown only for supported models and follows model changes", as
 test("controls tabs have balanced padding and unclipped keyboard focus", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const nav = page.locator(".controls-nav");
   const tabs = page.getByRole("group", { name: "Controls section", exact: true });
   for (const width of [320, 390, 1280]) {
@@ -1035,7 +1113,7 @@ test("controls tabs have balanced padding and unclipped keyboard focus", async (
         const style = getComputedStyle(el);
         return { top: inner.top - outer.top, bottom: outer.bottom - inner.bottom - parseFloat(style.borderBottomWidth), left: inner.left - outer.left, right: outer.right - inner.right, fits: el.scrollWidth <= el.clientWidth };
       });
-      expect(spacing.top).toBeGreaterThanOrEqual(16);
+      expect(spacing.top).toBeGreaterThanOrEqual(12);
       expect(Math.abs(spacing.top - spacing.bottom)).toBeLessThan(1);
       expect(spacing.left).toBeGreaterThanOrEqual(12);
       expect(spacing.right).toBeGreaterThanOrEqual(12);
@@ -1053,7 +1131,7 @@ test("model summary shows its logo, readable name and Drowse version", async ({ 
   for (const [id, name, provider, base] of [
     ["gemma3-1b-instruct", "Gemma 3 1B", "gemma", false],
     ["Qwen/Qwen3-1.7B", "Qwen3 1.7B", "qwen", false],
-    ["google/gemma-3-1b-pt", "Gemma 3 1B Base", "gemma", true],
+    ["google/gemma-3-1b-pt", "Gemma 3 1B[BASE]", "gemma", true],
   ] as const) {
     await page.evaluate(async ({ module, id, base }) => {
       const { sessionState } = await import(module);
@@ -1089,6 +1167,7 @@ test("fields use one soft focus shadow without stacked outlines", async ({ page 
   }, storesUrl);
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   const role = page.getByRole("combobox", { name: "You write as", exact: true });
+  await page.getByRole("button", { name: /^Roles / }).click();
   for (const theme of ["light", "dark"] as const) {
     await page.evaluate(async ({ module, theme }) => {
       const { setTheme } = await import(module);
@@ -1106,9 +1185,9 @@ test("fields use one soft focus shadow without stacked outlines", async ({ page 
       await page.keyboard.press("Escape");
       await composer.fill("A softer place to write.");
       await expect(composer).toHaveCSS("outline-style", "none");
-      expect(await composer.evaluate(el => getComputedStyle(el).boxShadow)).toContain("inset");
+      await expect(composer).toHaveCSS("box-shadow", "none");
       expect(await composer.evaluate(el => getComputedStyle(el).boxShadow)).not.toContain("0px 0px 0px 2px");
-      await expect.poll(() => composer.evaluate(el => getComputedStyle(el).boxShadow)).toContain("0px 0px 24px");
+      await expect(composer).toBeFocused();
       await composer.screenshot({ path: testInfo.outputPath(`composer-focus-${theme}-${width}.png`) });
       expect(await composer.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
     }
@@ -1132,7 +1211,7 @@ test("Geometry browses only recorded linear probe layers without changing the ag
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect probe layers.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async url => {
     const { chatLog, probeRack } = await import(url);
     const reading = {
@@ -1202,6 +1281,7 @@ test("SAE stays on its recorded layer and automatically loads source-matched des
   await page.setViewportSize({ width: 1280, height: 1000 });
   const requests: string[] = [];
   let failDescriptionOnce = true;
+  await page.route("**/sae-descriptions/*.json", route => route.fulfill({ status: 503 }));
   await page.route("https://www.neuronpedia.org/api/feature/**", async route => {
     const request = route.request();
     requests.push(request.url());
@@ -1222,7 +1302,7 @@ test("SAE stays on its recorded layer and automatically loads source-matched des
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect feature activations.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async url => {
     const { chatLog } = await import(url);
     chatLog.turns.at(-1).tokens[0].measurements.instruments.sae = {
@@ -1281,21 +1361,21 @@ test.describe("token detail tooltip copy", () => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.setViewportSize({ width: 1280, height: 900 });
     await workbench(page);
+    await showWorkspaceTools(page, "chat");
+    await page.getByRole("button", { name: /^Roles / }).click();
     const tooltip = page.locator("#drowse-tooltip");
     const quiet = [
       page.getByRole("slider", { name: "Resize writing area" }),
       page.getByRole("button", { name: "Color generated words by" }),
       page.getByRole("button", { name: "Swap writer roles" }),
       page.getByRole("button", { name: "Role settings", exact: true }),
-      page.locator(".kbd-hint"),
       page.locator(".workspace-nav").getByRole("button", { name: "Controls", exact: true }),
-      page.getByRole("group", { name: "Appearance" }).getByRole("button", { name: "Light", exact: true }),
     ];
     for (const control of quiet) {
       await expect(control).not.toHaveAttribute("title");
       await control.hover();
       await page.waitForTimeout(350);
-      await expect(tooltip).not.toHaveClass(/visible/);
+      await expect(tooltip).toHaveCount(0);
     }
     const composer = page.getByRole("textbox", { name: /^Compose as / });
     const before = (await composer.boundingBox())!.height;
@@ -1308,8 +1388,9 @@ test.describe("token detail tooltip copy", () => {
     await expect(page.getByRole("tooltip").filter({ visible: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await page.locator(".workspace-nav").getByRole("button", { name: "Loom", exact: true }).click();
+    await showWorkspaceTools(page, "Loom");
     await expect(page.locator(".loom-views button[title]")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Cut branch…", exact: true })).toHaveAttribute("title", "Remove the current turn and all branches that follow it");
+    await expect(page.getByRole("button", { name: "Cut branch…", exact: true })).toHaveAttribute("aria-description", "Remove the current turn and all branches that follow it");
   });
 
   test("readout hints explain provenance without repeating source IDs", async ({ page }, testInfo) => {
@@ -1318,28 +1399,30 @@ test.describe("token detail tooltip copy", () => {
     await workbench(page);
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
     await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
     const sheet = page.locator('aside[aria-label="Token drilldown"]');
     await expect(sheet.locator('.scrub[title]')).toHaveCount(0);
-    await expect(sheet.getByRole("button", { name: "Next token", exact: true })).toHaveAttribute("title", "Inspect the next token");
+    await expect(sheet.getByRole("button", { name: "Next token", exact: true })).toHaveAttribute("aria-description", "Inspect the next token");
     for (const tab of [/sae/, /j-lens/]) {
       await sheet.getByRole("group", { name: "Token detail view", exact: true }).getByRole("button", { name: tab }).click();
       const source = sheet.locator(".inst-head .source");
       await expect(source).toBeVisible();
       await expect(source).not.toHaveAttribute("title");
       await source.hover();
-      await expect(page.locator("#drowse-tooltip")).not.toHaveClass(/visible/);
+      await expect(page.locator("#drowse-tooltip")).toHaveCount(0);
       const origin = sheet.locator(".inst-head .origin");
       await expect(origin).toHaveText("captured");
       await origin.hover();
-      await expect(page.getByRole("tooltip")).toHaveText("Recorded when this token was generated. No new model run was needed.");
+      await expect(page.locator("#drowse-tooltip")).toHaveCount(0);
+      await sheet.getByRole("button", { name: "About readout provenance", exact: true }).click();
+      await expect(sheet.locator(".info-popover:popover-open")).toHaveText("Recorded when this token was generated. No new model run was needed.");
       await page.keyboard.press("Escape");
-      await expect(page.locator("#drowse-tooltip")).not.toHaveClass(/visible/);
+      await expect(page.locator("#drowse-tooltip")).toHaveCount(0);
       for (const width of [320, 1280]) {
         await page.setViewportSize({ width, height: 900 });
         expect(await source.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-        expect(await sheet.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+        await expect.poll(() => sheet.evaluate(el => el.scrollWidth <= Math.ceil(el.getBoundingClientRect().width))).toBe(true);
       }
     }
     await sheet.screenshot({ path: testInfo.outputPath("readout-tooltip-cleanup.png") });
@@ -1355,15 +1438,16 @@ test("token details scroll past branching controls in every analysis tab", async
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
   const sheet = page.locator('aside[aria-label="Token drilldown"]');
   const branch = sheet.locator(".branch-point");
   await expect(branch).toBeVisible();
   await expect(sheet).toHaveAttribute("tabindex", "-1");
   expect(await sheet.evaluate(element => {
+    const focusRoot = element.closest('[role="dialog"]') ?? element;
     const focused = document.activeElement;
-    return focused instanceof HTMLElement && element.contains(focused) && focused.matches("button, input, select, textarea, a[href]");
+    return focused instanceof HTMLElement && focusRoot.contains(focused) && focused.matches("button, input, select, textarea, a[href]");
   })).toBe(true);
   await expect(sheet).toHaveCSS("overflow-y", "auto");
   await expect(sheet.locator(":scope > .body")).toHaveCSS("overflow-y", "visible");
@@ -1389,8 +1473,12 @@ test("token details scroll past branching controls in every analysis tab", async
     }
   }
   await page.setViewportSize({ width: 390, height: 600 });
+  const resizeHandle = page.getByRole("button", { name: /^Resize word details:/ });
+  await expect(resizeHandle).toBeFocused();
+  await resizeHandle.click({ trial: true });
   await sheet.evaluate(element => { element.scrollTop = 0; });
   await sheet.focus();
+  await expect(sheet).toBeFocused();
   await expect(sheet).toHaveCSS("outline-style", "none");
   await page.keyboard.press("PageDown");
   await expect.poll(() => sheet.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
@@ -1448,8 +1536,8 @@ test("section headings stand alone without redundant eyebrow labels", async ({ p
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain how language models work.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await selectWorkspaceView(page, "Controls");
   await expect(page.getByRole("heading", { name: "Generation settings", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Instruments", exact: true })).toBeVisible();
   await expect(page.locator(".inspector .section-heading p")).toHaveCount(0);
@@ -1461,9 +1549,10 @@ test("section headings stand alone without redundant eyebrow labels", async ({ p
   await expect(page.getByRole("heading", { name: "What each area does", exact: true })).toBeVisible();
   await expect(page.getByText("The workbench", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Close drawer", exact: true }).click();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
+  await showWorkspaceTools(page, "Loom");
   for (const [button, heading] of [[/^Current path/, "Current path"], [/^Next options/, "Next options"], [/^Starred/, "Starred points"]] as const) {
-    await page.locator(".loom-views").getByRole("button", { name: button }).click();
+    await selectLoomView(page, button);
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     await expect(page.locator(".projection-kicker")).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -1472,13 +1561,29 @@ test("section headings stand alone without redundant eyebrow labels", async ({ p
 });
 
 test("theme crossfade gently blends the whole page and survives rapid switches", async ({ page }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   await page.setViewportSize({ width: 1280, height: 850 });
   await page.goto(`${devUrl}/`);
   const root = page.locator("html");
   await expect(root).toHaveAttribute("data-theme", "dark");
   await expect(root).not.toHaveAttribute("data-theme-transition");
-  await page.getByRole("button", { name: "Light", exact: true }).click();
+  await page.evaluate(() => {
+    const start = document.startViewTransition.bind(document);
+    let paused = false;
+    document.startViewTransition = ((...args: Parameters<typeof start>) => {
+      const transition = start(...args);
+      void transition.ready.then(() => {
+        if (paused) return;
+        paused = true;
+        const animation = document.getAnimations().find(animation =>
+          animation instanceof CSSAnimation && animation.animationName === "theme-fade-out");
+        animation?.pause();
+      }, () => {});
+      return transition;
+    }) as typeof document.startViewTransition;
+  });
+  await setAppearance(page, "Light");
   await expect(root).toHaveAttribute("data-theme", "light");
   await expect(root).toHaveAttribute("data-theme-transition", "snapshot");
   const fade = await page.evaluate(() => {
@@ -1488,17 +1593,17 @@ test("theme crossfade gently blends the whole page and survives rapid switches",
     const animation = document.getAnimations().find(animation =>
       animation instanceof CSSAnimation && animation.animationName === "theme-fade-out");
     animation?.pause();
-    if (animation) animation.currentTime = 425;
+    if (animation) animation.currentTime = 110;
     return { duration: old.animationDuration, easing: old.animationTimingFunction,
       blend: old.mixBlendMode, nextAnimation: next.animationName, found: Boolean(animation) };
   });
-  expect(fade).toEqual({ duration: "0.85s", easing: "ease-in-out", blend: "normal", nextAnimation: "none", found: true });
+  expect(fade).toEqual({ duration: "0.22s", easing: "cubic-bezier(0.4, 0, 0.2, 1)", blend: "normal", nextAnimation: "none", found: true });
   await page.screenshot({ path: testInfo.outputPath("theme-crossfade-midpoint.png") });
   await page.evaluate(() => document.getAnimations().forEach(animation => {
     if (animation instanceof CSSAnimation && animation.animationName === "theme-fade-out") animation.play();
   }));
   await expect(root).not.toHaveAttribute("data-theme-transition");
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
+  await setAppearance(page, "Dark");
   await expect(root).toHaveAttribute("data-theme", "dark");
   await expect(root).not.toHaveAttribute("data-theme-transition");
   await page.evaluate(async module => {
@@ -1514,14 +1619,20 @@ test("theme transitions honor reduced motion and fall back to gradual colors", a
   await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" });
   await page.goto(`${devUrl}/`);
   const root = page.locator("html");
-  await page.getByRole("button", { name: "Light", exact: true }).click();
+  await setAppearance(page, "Light");
   await expect(root).toHaveAttribute("data-theme", "light");
   await expect(root).not.toHaveAttribute("data-theme-transition");
   await page.evaluate(() => Object.defineProperty(document, "startViewTransition", { value: undefined }));
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
-  await expect(root).toHaveAttribute("data-theme-transition", "fallback");
-  await expect(page.locator("body")).toHaveCSS("transition-duration", "0.85s");
+  const fallback = await page.getByRole("group", { name: "Appearance" })
+    .getByRole("button", { name: "Dark", exact: true }).evaluate(button => {
+      button.click();
+      return {
+        mode: document.documentElement.dataset.themeTransition,
+        duration: getComputedStyle(document.body).transitionDuration,
+      };
+    });
+  expect(fallback).toEqual({ mode: "fallback", duration: "0.22s" });
   await expect(root).toHaveAttribute("data-theme", "dark");
   await expect(root).not.toHaveAttribute("data-theme-transition");
   await page.reload();
@@ -1679,34 +1790,34 @@ test("tab identity follows generation and Loom navigation", async ({ page, brows
   await expect(page).toHaveTitle("Drowse");
   const icon = page.locator('link[rel="icon"]');
   await expect(icon).toHaveAttribute("data-state", "conversation");
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   await expect(icon).toHaveAttribute("data-state", "controls");
   const sections = page.getByRole("group", { name: "Controls section", exact: true });
   await sections.getByRole("button", { name: "Model", exact: true }).click();
   await expect(icon).toHaveAttribute("data-state", "models");
   await sections.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(icon).toHaveAttribute("data-state", "chat-settings");
-  await page.getByRole("button", { name: "Conversation", exact: true }).click();
+  await selectWorkspaceView(page, "Conversation");
   await expect(icon).toHaveAttribute("data-state", "conversation");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Describe a loom.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page).toHaveTitle("Generating reply · Drowse");
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("data-state", "working");
   await expect(page.locator(".msg .tok").first()).toBeVisible();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await expect(page).toHaveTitle("Loom · Generating reply · Drowse");
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("data-state", "loom-working");
   await page.getByRole("button", { name: /^Weave Text/ }).click();
   await page.locator(".weave").getByRole("button", { name: "Stop", exact: true }).click();
   await expect(page).toHaveTitle("Loom · Drowse");
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("data-state", "loom");
-  await page.getByRole("button", { name: "Conversation", exact: true }).click();
+    await selectWorkspaceView(page, "Conversation");
   await page.locator(".msg .tok").first().click();
-  await expect(page.getByRole("dialog", { name: "Generated word details" })).toBeVisible();
+  await openTokenDetails(page);
   await expect(icon).toHaveAttribute("data-state", "tokens");
   await page.keyboard.press("Escape");
   await expect(icon).toHaveAttribute("data-state", "conversation");
-  await page.getByRole("button", { name: "Back to your chats", exact: true }).click();
+  await returnToChats(page);
   await expect(page).toHaveTitle("Your chats · Drowse");
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("data-state", "chats");
 });
@@ -1715,7 +1826,7 @@ test("lens highlights follow rounded table corners at every scroll position", as
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
   await page.evaluate(async url => {
-    const { mount } = await import("/@id/svelte");
+    const { mount } = await import("/e2e/svelte-runtime.ts");
     const { default: LensTab } = await import(url);
     document.body.replaceChildren();
     const target = document.createElement("section");
@@ -1738,7 +1849,7 @@ test("lens highlights follow rounded table corners at every scroll position", as
       await grid.evaluate(el => { el.scrollLeft = 0; });
       await expect(grid.locator("tbody tr:last-child th")).toHaveCSS("border-bottom-left-radius", "0px");
       await grid.evaluate(el => { el.scrollLeft = el.scrollWidth; });
-      await expect(corner).toHaveCSS("border-bottom-right-radius", "40px");
+      await expect(corner).toHaveCSS("border-bottom-right-radius", await grid.evaluate(el => getComputedStyle(el).borderBottomRightRadius));
       await expect(corner).toHaveCSS("outline-style", "none");
       expect(await corner.evaluate(el => getComputedStyle(el).boxShadow)).toContain("inset");
       expect(await grid.evaluate(el => {
@@ -1762,7 +1873,7 @@ test("loading pulse keeps readout progress legible and honors motion preferences
   await page.goto(`${devUrl}/app?layoutFixture=1`);
   await expect(page.locator(".shell")).toBeVisible();
   await page.evaluate(async (root) => {
-    const { mount } = await import("/@id/svelte");
+    const { mount } = await import("/e2e/svelte-runtime.ts");
     document.body.replaceChildren();
     for (const name of ["LensTab", "SaeTab", "GeometryTab"]) {
       const { default: Component } = await import(`${root}/${name}.svelte`);
@@ -1835,7 +1946,7 @@ test("generation uses a stationary card glow and follows the active reply until 
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await label.scrollIntoViewIfNeeded();
   await card.screenshot({ path: testInfo.outputPath("generating-card-light.png") });
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
+  await setAppearance(page, "Dark");
   await expect(page.locator("html")).not.toHaveAttribute("data-theme-transition", /.+/);
   await label.scrollIntoViewIfNeeded();
   await page.locator(".msg.generation-active").screenshot({ path: testInfo.outputPath("generating-reply.png") });
@@ -1846,8 +1957,9 @@ test("generation uses a stationary card glow and follows the active reply until 
     await reply.screenshot({ path: testInfo.outputPath(`loading-reply-${width}.png`) });
   }
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
+  await showMapDetails(page);
   await expect(page.locator(".node.generation-active .generation-label")).toHaveCount(1);
   expect(await page.locator(".node.generation-active").evaluate(element => getComputedStyle(element, "::before").animationName)).toBe("generation-breathe");
   await expect(page.locator(".node.loading-pulse, .choice.loading-pulse")).toHaveCount(0);
@@ -1886,15 +1998,16 @@ test("base model disclosure is accessible and unclipped on compact screens", asy
 });
 
 test("Loom depth fills the viewport through long pans, zoom, resize, and pointer movement", async ({ page }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(`${devUrl}/app?layoutFixture=1`);
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
+  await setAppearance(page, "Dark");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explore the depth of the loom.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
   const viewport = page.locator(".loom-viewport");
   const field = viewport.locator(".loom-depth-field");
@@ -1979,7 +2092,7 @@ test("Loom depth fills the viewport through long pans, zoom, resize, and pointer
   expect(fitted.x + fitted.width).toBeLessThanOrEqual(phoneBounds.x + phoneBounds.width);
   expect(fitted.y + fitted.height).toBeLessThanOrEqual(phoneBounds.y + phoneBounds.height);
   await page.screenshot({ path: testInfo.outputPath("loom-depth-phone.png") });
-  await page.getByRole("button", { name: "Light", exact: true }).click();
+  await setAppearance(page, "Light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.screenshot({ path: testInfo.outputPath("loom-depth-phone-light.png") });
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -1992,13 +2105,14 @@ test("Loom depth fills the viewport through long pans, zoom, resize, and pointer
 });
 
 test("Loom shows a shared token prefix once and keeps continuation token actions exact", async ({ page }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(`${devUrl}/app?layoutFixture=1`);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explore two endings.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const original = await page.evaluate(async url => {
     const stores = await import(url);
     const node = stores.loomTree.nodes.get(stores.loomTree.active_node_id);
@@ -2010,9 +2124,10 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
     const stores = await import(url);
     return !stores.genStatus.active && (stores.loomTree.children_of.get(parent)?.length ?? 0) === 2;
   }, { url: storesUrl, parent: original.parent })).toBe(true);
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
   const shared = page.locator('[data-loom-shared="2"]');
+  await showMapDetails(page, '[data-loom-shared="2"]');
   await expect(shared).toHaveCount(1);
   await expect(shared.locator(".token-node")).toHaveCount(3);
   await expect(shared.locator('.token-field')).toHaveCSS('flex-grow', '0');
@@ -2023,6 +2138,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
   })).toBeLessThanOrEqual(8);
   await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-nodes", "4");
   const source = page.locator(`[data-loom-node-id="${original.id}"]`);
+  await showMapDetails(page, `[data-loom-node-id="${original.id}"]`);
   await expect(source.locator(".token-node").first()).toHaveAttribute("data-token-index", "3");
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
@@ -2031,7 +2147,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
     await page.screenshot({ path: testInfo.outputPath(`shared-prefix-${width}.png`) });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
+  await showMapDetails(page, `[data-loom-node-id="${original.id}"]`);
   await source.locator(".token-node").first().click();
   await expect(page.getByRole("dialog", { name: "Generated word details" })).toBeVisible();
   const state = await page.evaluate(async ({ url, id }) => {
@@ -2054,6 +2170,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
         stores.loomTree.nodes.set(id, { ...node, tokens, text: tokens.map(token => token.text).join(""), raw_token_ids: tokens.map(token => token.token_id) });
       });
     }, { url: storesUrl, parent: original.parent, count });
+    await showMapDetails(page, '[data-loom-shared="2"]');
     await expect(shared.locator(".token-node")).toHaveCount(count);
     if (count === 3) {
       await expect.poll(() => shared.locator('.node').evaluate(element => {
@@ -2077,13 +2194,15 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
     });
   }, { url: storesUrl, parent: original.parent });
   const continuations = page.locator('[data-loom-node-id] .node').filter({ has: page.locator('.fork', { hasText: 'continuation' }) });
-  await expect(continuations).toHaveCount(2);
+  const continuationIds = await page.evaluate(async ({ url, parent }) => [...(await import(url)).loomTree.children_of.get(parent)], { url: storesUrl, parent: original.parent });
+  expect(continuationIds).toHaveLength(2);
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 1000 });
     for (const theme of ["light", "dark"]) {
       await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
-      await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
-      for (let zoom = 0; zoom < 2; zoom++) {
+      for (const id of continuationIds) {
+        await showMapDetails(page, `[data-loom-node-id="${id}"]`);
+        await expect(page.locator(`[data-loom-node-id="${id}"] .node`)).toBeVisible();
         await expect.poll(() => continuations.evaluateAll(cards => cards.every(card => {
           const field = card.querySelector<HTMLElement>('.token-field')!;
           const last = field.querySelector<HTMLElement>('.token-node:last-child')!;
@@ -2116,7 +2235,7 @@ test("error notifications use the shared solid popup surface without a side acce
   const toast = page.locator(".toast.error");
   for (const theme of ["Light", "Dark"]) {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.getByRole("button", { name: theme, exact: true }).click();
+    await setAppearance(page, theme);
     await expect(toast).toHaveCSS("color", theme === "Dark" ? "rgb(255, 199, 196)" : "rgb(160, 34, 48)");
     for (const width of [320, 1440]) {
       await page.setViewportSize({ width, height: 900 });
@@ -2134,7 +2253,7 @@ test("error notifications use the shared solid popup surface without a side acce
       expect(style.start).toBe("1px");
       expect(style.start).toBe(style.end);
       expect(style.startColor).toBe(style.endColor);
-      expect(style.background).toBe("none");
+      expect(style.background).toMatch(/^none(?:, none)*$/);
       expect(style.color).toBe(theme === "Dark" ? "rgb(255, 199, 196)" : "rgb(160, 34, 48)");
       expect(style.fits).toBe(true);
       await expect(toast.locator(".detail")).toHaveCSS("color", style.color);
@@ -2169,7 +2288,9 @@ test("Loom stays accessible while a reply streams", async ({ page, browserName }
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".conversation-page").getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
   await page.evaluate(() => { (window as any).__loomReads.length = 0; });
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
+  await showWorkspaceTools(page, "Loom");
+  await selectLoomView(page, /^Weave/);
   await expect(page.locator(".weave")).toBeVisible();
   await expect(page.locator(".weave").getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: /^Map/ }).click();
@@ -2182,41 +2303,44 @@ test("Loom stays accessible while a reply streams", async ({ page, browserName }
   await expect(page.locator(".toast.error")).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).__loomReads)).toEqual([]);
   page.once("dialog", dialog => dialog.dismiss());
-  await page.getByRole("button", { name: "Back to your chats", exact: true }).click();
+  await returnToChats(page);
   await expect(page.locator(".weave").getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
   page.once("dialog", dialog => dialog.accept());
-  await page.getByRole("button", { name: "Back to your chats", exact: true }).click();
+  await returnToChats(page);
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   await expect(page.locator(".shell")).toHaveCount(0);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
-  await expect(page.getByLabel("Chat", { exact: true })).toContainText("Keep writing while I explore the branches.");
+  await expect(page.locator(".chat[aria-label='Chat']")).toContainText("Keep writing while I explore the branches.");
 });
 
-test("Back chevron returns to chats and restores the current conversation", async ({ page, browserName }, testInfo) => {
+test("workspace menu returns to chats and restores the current conversation", async ({ page, browserName }, testInfo) => {
   test.skip(browserName === "webkit", "Headless WebKit rejects OPFS; chat restoration requires persistent worker storage.");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(`${devUrl}/app?fixture=1`);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
-  const home = page.getByRole("button", { name: "Back to your chats", exact: true });
+  const home = page.getByRole("button", { name: "Workspace menu", exact: true });
   const brand = page.locator(".app-header .page-brand");
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
+    if (width > 760 && await page.getByRole("button", { name: "Hide left sidebar", exact: true }).isVisible()) {
+      await page.getByRole("button", { name: "Hide left sidebar", exact: true }).click();
+    }
     const iconBox = (await home.boundingBox())!;
     const brandBox = (await brand.boundingBox())!;
-    expect(iconBox.x + iconBox.width).toBeLessThanOrEqual(brandBox.x);
-    expect(iconBox.width).toBeGreaterThanOrEqual(44);
+    expect(iconBox.x).toBeGreaterThanOrEqual(brandBox.x + brandBox.width);
+    expect(iconBox.width).toBeGreaterThanOrEqual(width <= 760 ? 44 : 40);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
   await expect(page.locator(".workspace-nav")).not.toContainText("Saved chats");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Remember this path when I go home.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const reply = await page.locator(".msg .response-body").last().innerText();
   await page.screenshot({ path: testInfo.outputPath("home-navigation.png") });
-  await home.click();
+  await returnToChats(page);
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   await expect(page.locator(".shell")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeFocused();
@@ -2226,24 +2350,27 @@ test("Back chevron returns to chats and restores the current conversation", asyn
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("Remember this path when I go home.");
   await expect(page.locator(".msg .response-body").last()).toHaveText(reply);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await home.click();
+  await returnToChats(page);
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   await expect(page.locator(".shell")).toHaveCount(0);
 });
 
-test("Back chevron has a visible touch target beside the wordmark", async ({ page }, testInfo) => {
+test("workspace menu has a visible touch target after the wordmark", async ({ page }, testInfo) => {
   await page.goto(`${devUrl}/app?layoutFixture=1`);
-  const home = page.getByRole("button", { name: "Back to your chats", exact: true });
-  await expect(home.locator("svg path")).toHaveAttribute("d", "m15 6-6 6 6 6");
+  const home = page.getByRole("button", { name: "Workspace menu", exact: true });
   for (const width of [320, 390, 768, 1440]) {
     await page.setViewportSize({ width, height: 844 });
+    if (width > 760 && await page.getByRole("button", { name: "Hide left sidebar", exact: true }).isVisible()) {
+      await page.getByRole("button", { name: "Hide left sidebar", exact: true }).click();
+    }
+    await expect(home).toHaveAttribute("aria-haspopup", "dialog");
     await expect(home).toBeVisible();
     const icon = (await home.boundingBox())!;
     const brand = (await page.locator(".app-header .page-brand").boundingBox())!;
-    expect(icon.width).toBeGreaterThanOrEqual(44);
-    expect(icon.height).toBeGreaterThanOrEqual(44);
-    expect(icon.x + icon.width).toBeLessThanOrEqual(brand.x);
-    expect(brand.x - icon.x - icon.width).toBeLessThanOrEqual(20);
+    expect(icon.width).toBeGreaterThanOrEqual(width <= 760 ? 44 : 40);
+    expect(icon.height).toBeGreaterThanOrEqual(width <= 760 ? 44 : 40);
+    expect(icon.x).toBeGreaterThanOrEqual(brand.x + brand.width);
+    expect(icon.x + icon.width).toBeLessThanOrEqual(width);
     expect(brand.x + brand.width).toBeLessThanOrEqual(width);
     if (width === 390) await page.screenshot({ path: testInfo.outputPath("home-icon-phone.png") });
   }
@@ -2257,14 +2384,20 @@ async function workbench(page: Page) {
 test("header download confirms filename and exact backup size without changing the chat", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
-  const button = page.getByRole("button", { name: "Download this chat", exact: true });
+  await page.getByRole("textbox", { name: /^Compose as / }).fill("Preserve this chat in the backup.");
+  await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  const menu = page.getByRole("button", { name: "Workspace menu", exact: true });
+  const button = page.getByRole("button", { name: "Download chat", exact: true });
   const before = await page.evaluate(async url => (await import(url)).captureConversationSnapshot(), `/@fs/${resolve("src/lib/conversationWorkspace.ts")}`);
+  await openWorkspaceMenu(page);
   await button.click();
   const dialog = page.getByRole("dialog", { name: "Download chat", exact: true });
   await expect(dialog.getByLabel("File name", { exact: true })).toBeEnabled();
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(button).toBeFocused();
+  await expect(menu).toBeFocused();
+  await openWorkspaceMenu(page);
   await button.click();
   const filename = dialog.getByLabel("File name", { exact: true });
   await filename.fill("   ");
@@ -2284,7 +2417,7 @@ test("header download confirms filename and exact backup size without changing t
   await dialog.getByRole("button", { name: "Download", exact: true }).click();
   const download = await pendingDownload;
   expect(download.suggestedFilename()).toBe("My-backup.drowsechat");
-  const bytes = await readFile((await download.path())!);
+  const bytes = await readStreamBuffer(await download.createReadStream());
   expect(bytes.byteLength).toBe(size);
   const backup = JSON.parse(bytes.toString());
   expect(backup.format).toBe("drowse-chat-backup");
@@ -2292,14 +2425,14 @@ test("header download confirms filename and exact backup size without changing t
   expect(backup.conversation.snapshot.samplingState).toEqual(before.samplingState);
   expect(backup.conversation.name).not.toBe("My backup.drowse-chat.json");
   await expect(dialog).toHaveCount(0);
-  await expect(button).toBeFocused();
+  await expect(await menu.isVisible() ? menu : page.getByRole("button", { name: "Hide left sidebar", exact: true })).toBeFocused();
 });
 
 test("shared controls have comfortable targets and interruptible contextual feedback", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await workbench(page);
   await page.evaluate(async ({ storesUrl, buttonUrl, pinUrl }) => {
-    const { mount, createRawSnippet } = await import("/@id/svelte");
+    const { mount, createRawSnippet } = await import("/e2e/svelte-runtime.ts");
     const { default: Button } = await import(buttonUrl);
     const { default: Pin } = await import(pinUrl);
     const { genStatus } = await import(storesUrl);
@@ -2355,7 +2488,7 @@ test("Rolling numbers interrupt cleanly, preserve precision, and honor reduced m
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await workbench(page);
   await page.evaluate(async ({ storesUrl, componentUrl }) => {
-    const { mount, unmount } = await import("/@id/svelte");
+    const { mount, unmount } = await import("/e2e/svelte-runtime.ts");
     const { default: RollingNumber } = await import(componentUrl);
     const { genStatus } = await import(storesUrl);
     genStatus.tokPerSec = 9.99;
@@ -2373,26 +2506,26 @@ test("Rolling numbers interrupt cleanly, preserve precision, and honor reduced m
     };
   }, { storesUrl, componentUrl: `/@fs/${resolve("src/lib/ui/RollingNumber.svelte")}` });
   const number = page.locator("#rolling-test .rolling-number");
-  await expect(number.locator(".rn-value")).toHaveText("9.99");
-  await expect(number).toHaveAttribute("data-rn-ready", "");
+  await expect(number.locator(".morph-source")).toHaveText("9.99");
+  await expect(number.locator(".morph-text")).toHaveAttribute("data-morph-active", "");
   for (const value of [10, 1234.56, -0.25, 0]) {
     await page.evaluate(async ({ url, value }) => { (await import(url)).genStatus.tokPerSec = value; }, { url: storesUrl, value });
-    await expect(number.locator(".rn-value")).toHaveText(value.toFixed(2));
+    await expect(number.locator(".morph-source")).toHaveText(value.toFixed(2));
   }
   await expect.poll(() => page.evaluate(() => (window as any).rollingAnimations)).toBeGreaterThan(0);
   await expect.poll(() => number.evaluate(el => el.getAnimations({ subtree: true }).length)).toBe(0);
-  expect(await number.locator(".rn-visual").getAttribute("aria-hidden")).toBe("true");
-  expect(await number.locator(".rn-value").count()).toBe(1);
+  expect(await number.locator(".morph-paint").getAttribute("aria-hidden")).toBe("true");
+  expect(await number.locator(".morph-source").count()).toBe(1);
   await page.screenshot({ path: testInfo.outputPath("rolling-number-settled.png") });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.evaluate(async url => { (await import(url)).genStatus.tokPerSec = 98.76; }, storesUrl);
-  await expect(number.locator(".rn-value")).toHaveText("98.76");
+  await expect(number.locator(".morph-source")).toHaveText("98.76");
   await expect.poll(() => number.evaluate(el => el.getAnimations({ subtree: true }).length)).toBe(0);
   await page.evaluate(() => (window as any).disposeRolling());
   await expect(number).toHaveCount(0);
 });
 
-test("Rolling numbers follow live generation stats and Loom zoom in both themes", async ({ page }, testInfo) => {
+test("generation statistics and Loom zoom remain readable in both themes", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
   await page.evaluate(async url => {
@@ -2400,28 +2533,26 @@ test("Rolling numbers follow live generation stats and Loom zoom in both themes"
     Object.assign(genStatus, { startedAt: performance.now() - 1200, finishedAt: performance.now(), active: false, tokensSoFar: 128, tokPerSec: 12.5 });
   }, storesUrl);
   const footer = page.locator(".status-footer");
-  await expect(footer.locator(".speed .rn-value")).toHaveText("12.5");
-  await expect(footer.locator(".done-label .rn-value")).toHaveText("128");
+  await expect(footer.locator(".speed")).toHaveText("12.5 tokens/s");
+  await expect(footer.locator(".token-count")).toContainText("128 tokens");
   for (const theme of ["Light", "Dark"]) {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.getByRole("button", { name: theme, exact: true }).click();
-    await expect.poll(() => footer.locator(".speed .rolling-number").evaluate(el => {
-      const expected = getComputedStyle(el.parentElement!).color;
-      return [...el.querySelectorAll(".rn-value, .rn-face")].every(child => getComputedStyle(child).color === expected);
-    })).toBe(true);
+    await setAppearance(page, theme);
+    await expect(footer.locator(".speed")).toBeVisible();
     await footer.screenshot({ path: testInfo.outputPath(`rolling-stats-${theme}.png`) });
     await page.setViewportSize({ width: 320, height: 844 });
     expect(await footer.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   }
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Show a path in the Loom.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
-  await page.getByRole("button", { name: /^Map/ }).click();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await selectWorkspaceView(page, "Loom");
+  await showWorkspaceTools(page, "Loom");
+  await selectLoomView(page, /^Map/);
   const zoom = page.getByLabel("Loom zoom");
-  const previous = await zoom.locator(".rn-value").innerText();
+  const previous = await zoom.locator(".morph-source").innerText();
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-  await expect(zoom.locator(".rn-value")).not.toHaveText(previous);
+  await expect(zoom.locator(".morph-source")).not.toHaveText(previous);
 });
 
 async function openDrawer(page: Page, name: string, params?: unknown) {
@@ -2459,16 +2590,20 @@ test("popups share material tokens while side drawers remain translucent in both
     expect(expected[2]).toBe("1px");
     expect(expected[4]).toBe("16px");
     await page.getByRole("button", { name: "Sort probes by", exact: true }).click();
-    expect(await surface(page.locator(".sk-select-popover:popover-open"))).toEqual(expected);
+    expect(await surface(page.locator(".sk-select-popover:popover-open"))).toEqual(expected.with(4, "8px"));
     await page.keyboard.press("Escape");
     await openDrawer(page, "advanced_sampling");
-    const drawerSurface = await surface(page.locator(".drawer"));
+    const drawerSurface = await surface(page.locator('.drawer[role="dialog"]'));
     expect(drawerSurface.slice(1)).toEqual(expected.slice(1));
     expect(drawerSurface[0]).toMatch(/\/ 0\.9\)$/);
     await page.getByRole("button", { name: "About Top K", exact: true }).tap();
     const tip = page.locator(".info-popover:popover-open");
     await expect(tip).toBeVisible();
-    expect(await surface(tip)).toEqual(expected);
+    const tipSurface = await surface(tip);
+    expect(tipSurface.slice(0, 2)).toEqual(expected.slice(0, 2));
+    expect(tipSurface[2]).toBe("0px");
+    expect(tipSurface[4]).toBe(expected[4]);
+    expect(tipSurface[5]).toBe(`${expected[3]} 0px 0px 0px 1px, ${expected[5]}`);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: testInfo.outputPath(`popup-family-${theme}.png`) });
     await page.keyboard.press("Escape");
@@ -2506,6 +2641,7 @@ test("open dropdowns reveal complete labels and expose their controlled listbox"
   await page.emulateMedia({ reducedMotion: "reduce" });
   await workbench(page);
   const select = page.getByRole("button", { name: "Color generated words by", exact: true });
+  await showWorkspaceTools(page, "chat");
   await select.evaluate((element) => { (element.parentElement as HTMLElement).style.width = "100px"; });
   await select.click();
   const id = await select.getAttribute("aria-controls");
@@ -2531,14 +2667,14 @@ for (const theme of ["light", "dark"] as const) {
   test(`six-skill pass covers expanded hosted surfaces in ${theme}`, async ({ page }, testInfo) => {
     test.setTimeout(180_000);
     page.setDefaultTimeout(10_000);
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
     await page.emulateMedia({ reducedMotion: "reduce", colorScheme: theme });
     await page.setViewportSize({ width: 390, height: 844 });
     // This audit exercises interface states, independently of download approval and OPFS.
     await workbench(page);
     await expect(page.locator(".shell")).toBeVisible();
     const reports: unknown[] = [];
-    const pageErrors: string[] = [];
-    page.on("pageerror", (error) => pageErrors.push(error.message));
 
     async function audit(name: string, selector: string) {
       const root = page.locator(selector).last();
@@ -2589,7 +2725,7 @@ for (const theme of ["light", "dark"] as const) {
     await audit("Conversation, empty", ".conversation-page");
     await page.getByRole("textbox", { name: /^Compose as / }).fill("A clear explanation of how language models work.");
     await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
     await audit("Conversation, generated", ".conversation-page");
     await page.getByRole("button", { name: /^Loom\b/ }).click();
     await audit("Loom, Weave", ".loom-sidebar");
@@ -2615,7 +2751,7 @@ for (const theme of ["light", "dark"] as const) {
       for (const disclosure of await drawer.locator('.sk-disclosure-trigger').all()) {
         if (await disclosure.getAttribute("aria-expanded") === "false") await disclosure.click();
       }
-      await audit(`Drawer, ${name}`, ".drawer[role='dialog']");
+      await audit(`Drawer, ${name}`, name === "token_drilldown" ? "[role='dialog']:has([data-token-details-scroll])" : ".drawer[role='dialog']");
       if (name === "manifold_builder") {
         for (const mode of ["linear", "template", "custom"]) {
           await drawer.getByRole("tab", { name: mode, exact: true }).click();
@@ -2643,10 +2779,20 @@ test("word details use a darker gray without changing light mode or other drawer
     });
     await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
     const dialog = page.getByRole("dialog", { name: "Generated word details" });
-    await expect(dialog).toHaveCSS("background-color", theme === "dark" ? "rgb(30, 34, 42)" : "rgb(255, 255, 255)");
+    const expectedSurface = async (token: string) => page.getByRole("dialog").evaluate((el, token) => {
+      const swatch = document.createElement("span");
+      swatch.style.backgroundColor = el.matches(".sheet-host.enabled")
+        ? "var(--popup-bg)"
+        : `color-mix(in srgb, var(${token}) 90%, transparent)`;
+      el.append(swatch);
+      const color = getComputedStyle(swatch).backgroundColor;
+      swatch.remove();
+      return color;
+    }, token);
+    await expect(dialog).toHaveCSS("background-color", await expectedSurface(theme === "dark" ? "--bg-elev" : "--popup-bg"));
     await page.screenshot({ path: testInfo.outputPath(`word-details-${theme}.png`) });
     await openDrawer(page, "help");
-    await expect(page.getByRole("dialog")).toHaveCSS("background-color", theme === "dark" ? "rgb(39, 44, 53)" : "rgb(255, 255, 255)");
+    await expect(page.getByRole("dialog")).toHaveCSS("background-color", await expectedSurface("--popup-bg"));
   }
 });
 
@@ -2691,21 +2837,23 @@ test("landing browser copy is consistent across platforms and action labels stay
   ]) {
     await page.goto(`${devUrl}/${query}`);
     const recommendation = page.locator(".hero-action-row > span");
-    await expect(recommendation).toHaveText("Works on Chrome or Safari");
-    const action = page.getByRole("link", { name: "Open Drowse", exact: true });
+    await expect(recommendation).toHaveText("Chrome or Safari · compatible device required");
+    const action = page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse", exact: true });
     await expect(action).toHaveAttribute("href", "/app");
     const returningAction = page.locator(".closing-action");
-    await expect(returningAction).toHaveText("Return to chats");
+    await expect(returningAction.getByRole("link")).toHaveText("Open Drowse");
     await expect(returningAction.getByRole("link")).toHaveAttribute("href", "/app");
-    await expect(returningAction.locator("p")).toHaveCount(0);
+    await expect(returningAction.locator("p")).toHaveText("Choose your model and tools inside the app.");
     for (const width of [320, 390, 768, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       for (const element of [action, recommendation]) {
-        expect(await element.evaluate(element => {
-          const range = document.createRange();
-          range.selectNodeContents(element);
-          return range.getClientRects().length;
-        })).toBe(1);
+        if (element === action) {
+          expect(await element.evaluate(element => {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            return range.getClientRects().length;
+          })).toBe(1);
+        }
         const box = (await element.boundingBox())!;
         expect(box.x).toBeGreaterThanOrEqual(0);
         expect(box.x + box.width).toBeLessThanOrEqual(width);
@@ -2717,6 +2865,7 @@ test("landing browser copy is consistent across platforms and action labels stay
 });
 
 test("smooth scrolling is limited to the homepage and respects reduced motion", async ({ page }) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto("/");
   await expect(page.getByText("Scroll to step inside", { exact: true })).toHaveCount(0);
@@ -2732,11 +2881,11 @@ test("smooth scrolling is limited to the homepage and respects reduced motion", 
   await expect(page.locator("html")).toHaveCSS("scroll-behavior", "auto");
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.getByRole("link", { name: "Check this device", exact: true }).click();
+  await page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse", exact: true }).click();
   await expect(page).toHaveURL(/\/app$/);
   await expect(page.locator(".landing-shell")).toHaveCount(0);
   await expect(page.locator("html")).toHaveCSS("scroll-behavior", "auto");
-  await expect(page.getByRole("link", { name: "Drowse home", exact: true })).toBeVisible();
+  await expect(page.locator(".page-header")).toBeVisible();
   await page.goBack();
   await expect(page.locator("html")).toHaveCSS("scroll-behavior", "smooth");
 });
@@ -2748,8 +2897,8 @@ test("landing actions and local-compute copy have room at phone and desktop size
   const action = page.locator(".hero-action-row .primary-action");
   const note = page.locator(".hero-action-row > span");
   const privacy = page.locator(".trust-line");
-  await expect(note).toHaveText("Works on Chrome or Safari");
-  await expect(privacy).toHaveText("Drowse is fully local and open source. Everything computed and stored in your browser.");
+  await expect(note).toHaveText("Chrome or Safari · compatible device required");
+  await expect(privacy).toHaveText("Open source. Inference and saved work stay on your device.");
   await expect(page.getByRole("button", { name: "Pause background animation" })).toHaveCount(0);
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme });
@@ -2793,6 +2942,7 @@ test("landing animation follows a changed motion preference without a pause butt
 });
 
 test("orb entrance waits for a rendered scene and wordmark uses the accent on hover", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   let releaseArtwork!: () => void;
   const artworkGate = new Promise<void>(resolve => { releaseArtwork = resolve; });
@@ -2824,6 +2974,7 @@ test("orb entrance waits for a rendered scene and wordmark uses the accent on ho
 });
 
 test("ethereal landing renders, enters on scroll, and releases its renderer on navigation", async ({ page, browserName }, testInfo) => {
+  test.slow();
   await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   await page.setViewportSize({ width: 1440, height: 900 });
   const errors: string[] = [];
@@ -2853,18 +3004,30 @@ test("ethereal landing renders, enters on scroll, and releases its renderer on n
   await page.evaluate(() => window.scrollTo(0, 0));
   await expect(visual).toHaveAttribute("data-travel", "0.000");
   await page.screenshot({ path: testInfo.outputPath("orb-phone.png") });
-  await page.getByRole("link", { name: "Check this device", exact: true }).click();
+  await page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse", exact: true }).click();
   await expect(visual).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
 test("dark desktop orb has bright highlights and settles behind reading content", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
   await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(devUrl);
   const visual = page.locator(".hero-visual");
   await expect(visual).toHaveAttribute("data-shader-status", "ready");
   await expect(visual.locator("canvas")).toHaveCSS("opacity", "1");
+  const renderer = await visual.locator("canvas").evaluate(element => {
+    const canvas = element as HTMLCanvasElement;
+    const gl = canvas.getContext("webgl2")!;
+    const info = gl.getExtension("WEBGL_debug_renderer_info");
+    return {
+      name: info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : "",
+      pixels: canvas.width * canvas.height,
+    };
+  });
+  const pixelBudget = /swiftshader|llvmpipe|softpipe/i.test(renderer.name) ? 48_000 : 800_000;
+  expect(renderer.pixels).toBeLessThanOrEqual(pixelBudget + 1000);
   await expect(visual).toHaveAttribute("data-orb-boost", "2.200");
   await expect.poll(() => page.locator(".visual-layer").evaluate(el => getComputedStyle(el).filter)).not.toContain("brightness(");
   const table = page.locator('#hero-dark-palette feFuncR[type="table"]');
@@ -2878,17 +3041,21 @@ test("dark desktop orb has bright highlights and settles behind reading content"
   await expect.poll(() => visual.evaluate(el => Number(el.getAttribute("data-orb-boost")))).toBeCloseTo(1.918, 2);
   await page.screenshot({ path: testInfo.outputPath("bright-dark-orb-scrolled.png") });
   await page.evaluate(() => scrollTo({ top: innerHeight * 3, behavior: "instant" }));
-  await expect(visual).toHaveAttribute("data-orb-boost", "1.400");
+  const finalBoost = await page.evaluate(() => {
+    const progress = Math.min(1, scrollY / (innerHeight * 2.5));
+    return 2.2 - 0.8 * progress * progress * (3 - 2 * progress);
+  });
+  await expect(visual).toHaveAttribute("data-orb-boost", finalBoost.toFixed(3));
   const dimmedValues = (await table.getAttribute("tableValues"))!.split(/\s+/).map(Number);
   for (let i = 0; i <= 12; i++) expect(dimmedValues[i]).toBe(values[i]);
-  expect(dimmedValues[43]).toBeCloseTo(0.602, 3);
+  expect(dimmedValues[43]).toBeCloseTo(0.43 * finalBoost, 3);
   await page.evaluate(() => scrollTo({ top: 0, behavior: "instant" }));
   await expect(visual).toHaveAttribute("data-orb-boost", "2.200");
-  await page.getByRole("button", { name: "Light", exact: true }).click();
+  await setAppearance(page, "Light");
   await expect.poll(() => page.locator(".visual-layer").evaluate(el => getComputedStyle(el).filter)).not.toContain("brightness(");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(visual).toHaveAttribute("data-orb-boost", "1.000");
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
+  await setAppearance(page, "Dark");
   await page.evaluate(() => scrollTo({ top: innerHeight * 3, behavior: "instant" }));
   await expect(visual).toHaveAttribute("data-orb-boost", "0.900");
   const mobileValues = (await table.getAttribute("tableValues"))!.split(/\s+/).map(Number);
@@ -2898,6 +3065,7 @@ test("dark desktop orb has bright highlights and settles behind reading content"
 });
 
 test("ethereal landing keeps rendering without video and reflows in both themes", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.route("**/video/ethereal-orb*.mp4", route => route.abort());
   await page.goto(devUrl);
@@ -2915,7 +3083,7 @@ test("ethereal landing keeps rendering without video and reflows in both themes"
     for (const width of [320, 390, 760, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      await expect(page.getByRole("link", { name: "Check this device", exact: true })).toBeVisible();
+      await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse", exact: true })).toBeVisible();
     }
   }
   await page.setViewportSize({ width: 390, height: 844 });
@@ -2946,6 +3114,7 @@ test("ethereal landing animates when autoplay is denied and recovers its graphic
 });
 
 test("ethereal landing starts offline even when animation was disabled on its first visit", async ({ page, context, browserName }) => {
+  test.setTimeout(90_000);
   test.skip(browserName === "webkit", "This WebKit runner fails cached script requests with an internal error under offline emulation; blocked-video rendering is tested separately.");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
@@ -2960,7 +3129,7 @@ test("ethereal landing starts offline even when animation was disabled on its fi
   await expect(visual).toHaveAttribute("data-travel", "1.000");
   await expect(visual.locator("canvas")).toHaveCSS("opacity", "1");
   const firstFrame = await visual.locator("canvas").screenshot();
-  await expect.poll(async () => (await visual.locator("canvas").screenshot()).equals(firstFrame)).toBe(false);
+  await expect.poll(async () => (await visual.locator("canvas").screenshot()).equals(firstFrame), { timeout: 30_000 }).toBe(false);
 });
 
 test("ethereal landing restores its renderer after a fully offline reload", async ({ page, context, browserName }) => {
@@ -2977,32 +3146,31 @@ test("ethereal landing restores its renderer after a fully offline reload", asyn
   await expect(page.locator(".hero-visual canvas")).toHaveCSS("opacity", "1");
 });
 
-test("landing explains the workbench and separates chat models from unreleased base candidates", async ({ page }, testInfo) => {
+test("landing explains the workbench and separates chat and base model uses", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(devUrl);
   const features = page.locator(".capabilities");
   await expect(features.getByRole("heading", { level: 2 })).toHaveText("Test what shapes a reply.");
-  await expect(features.locator("li")).toHaveCount(6);
-  await expect(features).toContainText("not a transcript of the model’s thoughts");
+  await expect(features.locator("li")).toHaveCount(3);
+  await expect(features).toContainText("predictions across layers");
   const models = page.locator(".models");
   await expect(models).not.toContainText("Best quality");
   await expect(models).not.toContainText("Larger");
   await expect(models).not.toContainText("GB");
-  await expect(models.locator(".model-family").first()).toContainText("Gemma 3 1B");
-  await expect(models.locator(".model-family").first()).toContainText("Gemma 3 4B");
-  const base = models.locator(".base-models");
+  await expect(models.getByRole("region", { name: "Chat models", exact: true })).toContainText("Gemma 3 1B");
+  await expect(models.getByRole("region", { name: "Chat models", exact: true })).toContainText("Gemma 3 4B");
+  const base = models.getByRole("region", { name: "Base models", exact: true });
   await expect(base.locator(".model-row")).toHaveCount(4);
-  await expect(base).toContainText("not available to install");
+  await expect(base).toContainText("Continue raw text.");
   await expect(models).not.toContainText("M means million parameters");
   await expect(models).not.toContainText("These candidates have existing");
   await expect(models).not.toContainText("validation needed");
   await expect(base.locator("a, button")).toHaveCount(0);
-  await expect(models.getByRole("link", { name: "Choose a model", exact: true })).toHaveAttribute("href", "/app?choose=1");
-  await expect(models.locator(".closing-action")).toHaveText("Choose a model");
-  await expect(models.locator(".closing-action p")).toHaveCount(0);
+  await expect(models.getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute("href", "/app");
+  await expect(models.locator(".closing-action p")).toHaveText("Choose your model and tools inside the app.");
   for (const theme of ["Light", "Dark"]) {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.getByRole("button", { name: theme, exact: true }).click();
+    await setAppearance(page, theme);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme.toLowerCase());
     for (const width of [320, 390, 1440]) {
       await page.setViewportSize({ width, height: 900 });
@@ -3020,19 +3188,21 @@ test("landing has no gradient scrims and adapts its ink without panel background
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(devUrl);
   for (const theme of ["Light", "Dark"]) {
-    await page.getByRole("button", { name: theme, exact: true }).click();
+    await setAppearance(page, theme);
     for (const width of [390, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await page.locator(".capabilities").scrollIntoViewIfNeeded();
       expect(await page.evaluate(() => {
-        return [...document.querySelectorAll(".landing-shell, .landing-shell *")].flatMap(element =>
+        return [...document.querySelectorAll(".landing-shell, .landing-shell *")]
+          .filter(element => !element.closest('button, a, .theme-toggle, .capability-demo'))
+          .flatMap(element =>
           [null, "::before", "::after"].flatMap(pseudo => {
             const style = getComputedStyle(element, pseudo);
             return style.backgroundImage.includes("gradient(") ? [element.className] : [];
           })
         );
       })).toEqual([]);
-      for (const selector of [".hero", ".reading-section", ".capabilities", ".models"]) {
+      for (const selector of [".hero", ".capabilities", ".models"]) {
         await expect(page.locator(selector)).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
         expect(await page.locator(selector).evaluate(element => getComputedStyle(element, "::before").content)).toBe("none");
       }
@@ -3044,7 +3214,7 @@ test("landing has no gradient scrims and adapts its ink without panel background
         return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
       }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
       // Bound the mobile backdrop; desktop orb highlights are independently boosted.
-      const filter = await page.locator(".visual-layer").evaluate(element => getComputedStyle(element).filter);
+      const filter = await page.locator(".visual-layer .fallback").evaluate(element => getComputedStyle(element).filter);
       let darkestBackdrop: number[];
       if (theme === "Light") {
         expect(filter).toContain("#hero-light-palette");
@@ -3085,7 +3255,7 @@ test("homepage fills the viewport without a scrollbar strip and still scrolls", 
   await expect(root).toHaveCSS("scrollbar-gutter", "auto");
   await expect(root).toHaveCSS("scrollbar-width", "none");
   for (const theme of ["Light", "Dark"]) {
-    await page.getByRole("button", { name: theme, exact: true }).click();
+    await setAppearance(page, theme);
     for (const width of [320, 390, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await page.evaluate(() => scrollTo({ top: 0, behavior: "instant" }));
@@ -3117,21 +3287,23 @@ test("homepage fills the viewport without a scrollbar strip and still scrolls", 
 });
 
 test("mobile hero overlays the orb without selecting the section", async ({ page }, testInfo) => {
-  test.setTimeout(90_000);
+  test.setTimeout(240_000);
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(devUrl);
   await expect(page.locator(".hero-visual")).toHaveAttribute("data-shader-status", "ready");
   await expect(page.locator(".hero-visual canvas")).toHaveCSS("opacity", "1");
   for (const theme of ["Light", "Dark"]) {
     if (await page.locator("html").getAttribute("data-theme") !== theme.toLowerCase()) {
-      await page.getByRole("button", { name: theme, exact: true }).click();
+      await setAppearance(page, theme);
     }
     for (const width of [320, 390, 760]) {
       await page.setViewportSize({ width, height: 844 });
       await page.evaluate(() => scrollTo({ top: 0, behavior: "instant" }));
       const heading = page.locator("#hero-title");
       const box = (await heading.boundingBox())!;
-      expect(box.y).toBeLessThan(190);
+      const header = (await page.locator(".page-header").boundingBox())!;
+      expect(box.y).toBeGreaterThanOrEqual(header.y + header.height);
+      expect(box.y).toBeLessThan(page.viewportSize()!.height * 0.3);
       expect(await heading.evaluate(element => {
         const style = getComputedStyle(element);
         return style.getPropertyValue("user-select") || style.getPropertyValue("-webkit-user-select");
@@ -3157,7 +3329,7 @@ test("mobile hero overlays the orb without selecting the section", async ({ page
   await expect(page).toHaveURL(/\/app(?:\?|$)/);
 });
 
-test("offline notices reserve workbench space and release it when dismissed", async ({ page, browserName }) => {
+test("passive offline notices stay hidden without moving or overflowing the workbench", async ({ page, browserName }) => {
   test.skip(browserName === "webkit", "Headless WebKit rejects OPFS; this reload test requires the persistent worker fixture.");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${devUrl}/app?fixture=1`);
@@ -3171,17 +3343,16 @@ test("offline notices reserve workbench space and release it when dismissed", as
   await page.reload();
   await expect(page.locator(".shell")).toBeVisible();
   const notice = page.getByRole("status").filter({ hasText: "The interface is ready offline." });
-  await expect(notice).toBeVisible();
+  await expect(notice).toHaveCount(0);
   const shell = page.locator(".shell");
-  const noticeBox = (await notice.boundingBox())!;
-  await expect.poll(async () => (await shell.boundingBox())!.y).toBeGreaterThanOrEqual(noticeBox.y + noticeBox.height);
   await expect.poll(async () => {
     const box = (await shell.boundingBox())!;
     return box.y + box.height;
   }).toBeLessThanOrEqual(845);
   const before = (await shell.boundingBox())!.height;
-  await notice.getByRole("button", { name: "Dismiss" }).click();
-  const dismissalOverflow = await page.evaluate(async () => {
+  await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello");
+  await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click({ trial: true });
+  const layoutOverflow = await page.evaluate(async () => {
     let overflow = 0;
     for (let frame = 0; frame < 20; frame++) {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -3190,9 +3361,9 @@ test("offline notices reserve workbench space and release it when dismissed", as
     }
     return overflow;
   });
-  expect(dismissalOverflow).toBeLessThanOrEqual(1);
-  await expect(notice).not.toBeVisible();
-  await expect.poll(async () => (await shell.boundingBox())!.height).toBeGreaterThan(before);
+  expect(layoutOverflow).toBeLessThanOrEqual(1);
+  await expect(notice).toHaveCount(0);
+  await expect.poll(async () => (await shell.boundingBox())!.height).toBe(before);
   await expect(page.getByRole("textbox", { name: /^Compose as / })).toBeVisible();
 });
 

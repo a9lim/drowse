@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "vite";
 import { readFile } from "node:fs/promises";
 import postcss from "postcss";
+import { parse } from "svelte/compiler";
 
 const server = await createServer({
   appType: "custom", logLevel: "silent",
@@ -123,26 +124,30 @@ try {
   const streaming = render(RawBuffer).body;
   assert.match(streaming, /<textarea[^>]*readonly/);
   assert.match(streaming, /<label for="completion-buffer"[^>]*>Text completion<\/label>/);
-  assert.match(streaming, /<button(?=[^>]*disabled)(?=[^>]*title="Stop or finish generation before inspecting")[^>]*>/);
+  assert.match(streaming, /<button(?=[^>]*disabled)(?=[^>]*aria-description="Stop or finish generation before inspecting")[^>]*>/);
   genStatus.active = false;
   genStatus.finishReason = "cancelled";
-  const stopped = render(StatusFooter).body;
-  assert.doesNotMatch(stopped, /rolling-number/, "generation metrics render directly without animated digits");
+  const textContent = node => node.type === "Text"
+    ? node.data
+    : (node.nodes ?? node.fragment?.nodes ?? []).map(textContent).join("");
+  const plain = html => textContent(parse(html, { modern: true }).fragment).replace(/\s+/g, " ").trim();
+  const stopped = plain(render(StatusFooter).body);
+  assert.match(render(StatusFooter).body, /morph-source/, "current text exists independently of animation");
   const statusSource = await readFile(new URL("../src/panels/StatusFooter.svelte", import.meta.url), "utf8");
-  assert.doesNotMatch(statusSource, /RollingNumber/, "live, completed, and queued counts must all update instantly");
+  assert.match(statusSource, /MorphText/, "status slots share the accessible motion renderer");
   genStatus.tokensSoFar = 24;
   genStatus.tokPerSec = 7.34;
   genStatus.finishedAt = genStatus.startedAt + 7700;
-  const metrics = render(StatusFooter).body;
+  const metrics = plain(render(StatusFooter).body);
   assert.match(metrics, /24 tokens/);
   assert.match(metrics, /7\.3 tokens\/s/);
   assert.match(metrics, /7\.7s/);
-  assert.match(stopped, /Stopped ·/);
+  assert.match(stopped, /Stopped/);
   assert.ok(stopped.indexOf("Stopped") < stopped.indexOf("tokens/s"), "stop reason precedes secondary metrics");
   genStatus.finishReason = "length";
-  assert.match(render(StatusFooter).body, /Token limit ·/);
+  assert.match(plain(render(StatusFooter).body), /Token limit/);
   genStatus.finishReason = null;
-  assert.match(render(StatusFooter).body, /Ended ·/, "an error or unknown finish must not be called complete");
+  assert.match(plain(render(StatusFooter).body), /Ended/, "an error or unknown finish must not be called complete");
   genStatus.finishReason = "stop";
   genStatus.tokensSoFar = 0;
   chatLog.turns = [{ role: "user", text: "I love marmots because", generated: false }];
@@ -168,7 +173,7 @@ try {
   highlightState.target = SURPRISE_TARGET;
   highlightState.compareTwo = false;
   const coloredBuffer = render(RawBuffer).body;
-  assert.doesNotMatch(coloredBuffer, /class="edit-actions /, "a clean buffer has no empty action group to wrap on narrow screens");
+  assert.match(coloredBuffer, /class="edit-actions /, "edit controls keep a stable place when the draft is clean");
   assert.match(coloredBuffer, /class="color-mirror [^"]*"[^>]*aria-hidden="true"/);
   assert.match(coloredBuffer, /<span(?![^>]*style=)[^>]*>Prompt<\/span>/, "unmeasured prompt text stays untinted");
   for (const token of measured) {
@@ -210,10 +215,10 @@ try {
   highlightState.compareTarget = null;
   highlightState.smoothBlend = false;
   const { default: Chat } = await server.ssrLoadModule("/src/panels/Chat.svelte");
-  assert.match(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model" title="fixture\/base"/);
+  assert.doesNotMatch(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model"/);
   sessionState.info = { model_id: "fixture/instruct", is_base_model: false };
   setGenUiMode("chat");
-  assert.match(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model" title="fixture\/instruct"/);
+  assert.doesNotMatch(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model"/);
   sessionState.info = { model_id: "fixture/base", is_base_model: true };
   console.log("Base token colors: edit and live mirrors, surprise, entropy, compare, zero/missing readings, text alignment, and model identity passed");
 
@@ -270,7 +275,7 @@ try {
   let lightPanelRules = 0;
   landingStyles.walkRules(rule => {
     if (/\.primary-action|\.skip-link/.test(rule.selector)) return;
-    if (rule.selector.replace(/\s+/g, " ").trim() === ".capabilities li, .model-group") {
+    if (rule.selector.replace(/\s+/g, " ").trim() === ".capabilities li, .model-group, .demo-panel") {
       lightPanelRules++;
       const declarations = Object.fromEntries(rule.nodes.filter(node => node.type === "decl").map(node => [node.prop, node.value]));
       if (rule.parent.type === "atrule") {
@@ -291,7 +296,7 @@ try {
     }
     rule.walkDecls(declaration => {
       assert.ok(!/^(background(?:-.+)?|box-shadow|backdrop-filter|border(?:-.+)?)$/.test(declaration.prop),
-        `${rule.selector}: only feature and model cards gain containers`);
+        `${rule.selector}: only feature, model, and example cards gain containers`);
     });
   });
   assert.equal(lightPanelRules, 3, "cards share base glass, progressive refraction, and accessibility fallback");

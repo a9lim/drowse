@@ -30,6 +30,7 @@ class HttpRuntimeEventChannel implements RuntimeEventChannel {
   private readonly listeners = new Set<(message: WSServerMessage) => void>();
   private readonly stateListeners = new Set<(state: RuntimeEventChannelState) => void>();
   private readonly expectedClosures = new WeakSet<WebSocket>();
+  private connectionRevision = 0;
 
   get isOpen(): boolean {
     return this.socket?.readyState === WebSocket.OPEN;
@@ -40,8 +41,10 @@ class HttpRuntimeEventChannel implements RuntimeEventChannel {
     if (this.opening) return this.opening;
 
     const socket = connectWs();
+    const revision = ++this.connectionRevision;
     this.socket = socket;
     socket.addEventListener("message", (event: MessageEvent) => {
+      if (this.socket !== socket) return;
       let message: WSServerMessage;
       try {
         message = JSON.parse(String(event.data)) as WSServerMessage;
@@ -51,6 +54,7 @@ class HttpRuntimeEventChannel implements RuntimeEventChannel {
       for (const listener of this.listeners) listener(message);
     });
     socket.addEventListener("close", () => {
+      if (this.connectionRevision !== revision) return;
       if (this.socket === socket) this.socket = null;
       const expected = this.expectedClosures.has(socket);
       this.expectedClosures.delete(socket);
@@ -64,6 +68,7 @@ class HttpRuntimeEventChannel implements RuntimeEventChannel {
     const opening = new Promise<void>((resolve, reject) => {
       const fail = () => reject(new Error("Drowse runtime connection failed"));
       socket.addEventListener("open", () => {
+        if (this.socket !== socket) { fail(); return; }
         this.emitState({ state: "open" });
         resolve();
       }, { once: true });

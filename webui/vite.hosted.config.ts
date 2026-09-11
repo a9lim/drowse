@@ -4,7 +4,7 @@ import { fileURLToPath, URL } from "node:url";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig, type Plugin } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
-import { siteName, siteDescription, socialImageAlt, publicOrigin, discoveryMetadata } from "./scripts/site-metadata.mjs";
+import { siteName, siteDescription, siteAccent, socialImagePath, socialImageAlt, publicOrigin, discoveryMetadata } from "./scripts/site-metadata.mjs";
 
 const fromRoot = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 const releaseBuild = process.env.npm_lifecycle_event === "build:hosted:release";
@@ -28,13 +28,12 @@ if (
 ) {
   throw new Error("Hosted build could not resolve the browser runtime and hook ABIs");
 }
-const sourceRepositoryUrl = "https://github.com/a9lim/polythetic";
+const sourceRepositoryUrl = "https://github.com/a9lim/drowse";
 const sourceUrl = releaseBuild
   ? `${sourceRepositoryUrl}/tree/${artifactSourceRevision}`
   : sourceRepositoryUrl;
 const pageDescription = siteDescription;
-const manifestDescription =
-  "Run, inspect, and steer language models entirely on your device.";
+const manifestDescription = siteDescription;
 const pageTitle = siteName;
 const siteOrigin = publicOrigin(process.env.DROWSE_PUBLIC_ORIGIN);
 const projectLicense = await readFile(fromRoot("../LICENSE"), "utf8");
@@ -65,7 +64,8 @@ const releaseMetadata: Plugin = {
       __DROWSE_HOSTED_CHANNEL__: releaseBuild ? "release" : "preview",
       __DROWSE_HOSTED_DESCRIPTION__: pageDescription,
       __DROWSE_HOSTED_TITLE__: pageTitle,
-      __DROWSE_SOCIAL_IMAGE__: `${siteOrigin}/social/drowse.png`,
+      __DROWSE_SOCIAL_IMAGE__: `${siteOrigin}${socialImagePath}`,
+      __DROWSE_ACCENT__: siteAccent,
       __DROWSE_SOCIAL_ALT__: socialImageAlt,
       __DROWSE_DISCOVERY_METADATA__: discoveryMetadata(siteOrigin),
       __DROWSE_SOURCE_REVISION__: releaseRevision,
@@ -98,6 +98,32 @@ const projectLicenseAsset: Plugin = {
   },
 };
 
+const notFoundPage: Plugin = {
+  name: "drowse-hosted-not-found-page",
+  enforce: "post",
+  generateBundle(_, bundle) {
+    const index = bundle["index.html"];
+    if (!index || index.type !== "asset") throw new Error("Hosted index is missing");
+    this.emitFile({ type: "asset", fileName: "404.html", source: index.source });
+  },
+};
+
+const offlineRuntimeAssets: Plugin = {
+  name: "drowse-offline-runtime-assets",
+  apply: "build",
+  enforce: "post",
+  generateBundle(_, bundle) {
+    const assets = Object.keys(bundle).filter(name =>
+      /^assets\/(?:App|browser\.worker|registry|drowse-web-llm)-[^/]+\.(?:css|js)$/u.test(name)
+    ).sort();
+    this.emitFile({
+      type: "asset",
+      fileName: "runtime-assets.json",
+      source: JSON.stringify({ assets: assets.map(name => `/${name}`) }),
+    });
+  },
+};
+
 export default defineConfig({
   root: fromRoot("./hosted"),
   publicDir: fromRoot("./public-hosted"),
@@ -115,6 +141,8 @@ export default defineConfig({
   plugins: [
     releaseMetadata,
     projectLicenseAsset,
+    notFoundPage,
+    offlineRuntimeAssets,
     svelte({ configFile: fromRoot("./svelte.config.js") }),
     VitePWA({
       strategies: "generateSW",
@@ -133,7 +161,7 @@ export default defineConfig({
         scope: "/",
         display: "standalone",
         background_color: "#0b0e17",
-        theme_color: "#0b0e17",
+        theme_color: siteAccent,
         categories: ["developer", "productivity", "utilities"],
         icons: [
           {
@@ -156,7 +184,9 @@ export default defineConfig({
       },
       workbox: {
         cacheId: "drowse-hosted",
+        clientsClaim: true,
         cleanupOutdatedCaches: true,
+        ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^v$/],
         globPatterns: ["**/*.{css,html,js,json,mp4,png,svg,wasm,woff2}", "images/ethereal-orb.jpg", "LICENSE"],
         globIgnores: [
           "assets/App-*.css",
@@ -166,11 +196,19 @@ export default defineConfig({
           "assets/registry-*.js",
           "assets/drowse-web-llm-*.js",
           "assets/typescript-*.js",
+          "social/**",
           "video/**",
           "wasm/**",
         ],
         maximumFileSizeToCacheInBytes: 1024 * 1024,
+        manifestTransforms: [async (entries) => ({
+          manifest: entries.map((entry) => entry.url.endsWith(".js")
+            ? { ...entry, revision: artifactSourceRevision }
+            : entry),
+          warnings: [],
+        })],
         navigateFallback: "/index.html",
+        navigateFallbackDenylist: [/[?&]app-recovery=/],
         runtimeCaching: [
           {
             urlPattern:
@@ -178,6 +216,8 @@ export default defineConfig({
             handler: "CacheFirst",
             options: {
               cacheName: "drowse-hosted-on-demand-assets-v1",
+              // Content-hashed app files do not vary between module and ordinary fetch requests.
+              matchOptions: { ignoreVary: true },
               cacheableResponse: { statuses: [200] },
             },
           },
@@ -221,6 +261,8 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
+    // This vendored ESM bundle must not outlive an inference-runtime update in Vite's cache.
+    exclude: ["@drowse/web-llm"],
     include: [
       "@noble/hashes/blake2.js",
       "@noble/hashes/sha2.js",
@@ -248,5 +290,7 @@ export default defineConfig({
     outDir: fromRoot("./dist-hosted"),
     emptyOutDir: true,
     sourcemap: false,
+    // Safari can retain failed modulepreloads across reloads (WebKit 270357).
+    modulePreload: false,
   },
 });

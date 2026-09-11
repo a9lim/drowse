@@ -29,7 +29,7 @@ from drowse.server.request_helpers import (
     probe_token_readings,
     strict_model_enabled,
 )
-from drowse.server.streaming import probe_reading_aggregate, stream_finalizer
+from drowse.server.streaming import ClosingStreamingResponse, probe_reading_aggregate, run_in_thread, stream_events, stream_finalizer
 
 import hashlib
 import json
@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 
 from drowse.core.errors import DrowseError
 from drowse.core.results import GenerationResult
@@ -436,7 +436,7 @@ def register_ollama_routes(app: FastAPI) -> None:
         async def _stream():
             yield json.dumps({"status": "pulling manifest"}) + "\n"
             yield json.dumps({"status": "success"}) + "\n"
-        return StreamingResponse(_stream(), media_type="application/x-ndjson")
+        return ClosingStreamingResponse(_stream(), media_type="application/x-ndjson")
 
     @app.post("/api/push")
     async def api_push():
@@ -548,7 +548,7 @@ def register_ollama_routes(app: FastAPI) -> None:
                     },
                 )
             try:
-                result = session.generate(input_payload, raw=raw, **gen_kwargs).first
+                result = (await run_in_thread(session.generate, input_payload, raw=raw, **gen_kwargs)).first
             except ConcurrentGenerationError as e:
                 raise HTTPException(
                     status_code=409, detail="Generation already in progress",
@@ -654,7 +654,7 @@ def register_ollama_routes(app: FastAPI) -> None:
                     input_payload, raw=raw, live_scores=False,
                     live_readouts=False, **gen_kwargs,
                 )
-                for event in stream_iter:
+                async for event in stream_events(stream_iter):
                     # Bail out if the client has hung up — close the inner
                     # generator (handled in ``finally``) and stop spending
                     # the GPU on tokens nobody is reading.
@@ -735,8 +735,8 @@ def register_ollama_routes(app: FastAPI) -> None:
                 # (no-op on an exhausted generator), an in-band error, or
                 # an early client-disconnect ``return`` — rather than
                 # leaving it to GC.
-                assert stream_iter is not None
-                stream_iter.close()
+                if stream_iter is not None:
+                    await run_in_thread(stream_iter.close)
 
             elapsed_ns = time.monotonic_ns() - start_ns
             assert stream_iter is not None
@@ -783,7 +783,7 @@ def register_ollama_routes(app: FastAPI) -> None:
         # rewrite the response — we'd disconnect mid-stream.
         gen_kwargs, system = _resolve_options(body, app.state.default_steering)
         if body.get("stream", True):
-            return StreamingResponse(
+            return ClosingStreamingResponse(
                 _stream_chat_or_generate(
                     body, is_chat=True, gen_kwargs=gen_kwargs, system=system,
                     request=request,
@@ -800,7 +800,7 @@ def register_ollama_routes(app: FastAPI) -> None:
         _check_model_or_404(body)
         gen_kwargs, system = _resolve_options(body, app.state.default_steering)
         if body.get("stream", True):
-            return StreamingResponse(
+            return ClosingStreamingResponse(
                 _stream_chat_or_generate(
                     body, is_chat=False, gen_kwargs=gen_kwargs, system=system,
                     request=request,

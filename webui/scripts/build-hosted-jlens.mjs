@@ -210,7 +210,8 @@ try {
       }
       vite.middlewares(request, response);
     } catch (error) {
-      send(response, error instanceof Error ? error.stack ?? error.message : String(error), "text/plain", 500);
+      console.error(error);
+      send(response, "Internal server error", "text/plain", 500);
     }
   });
   await new Promise((resolvePromise, reject) => {

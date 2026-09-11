@@ -637,7 +637,7 @@ def _resolve_model_for_fetch(model_id: str) -> tuple[str, int, int]:
     """The immutable model revision and dimensions a fetch validates against."""
     from transformers import AutoConfig
 
-    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=False)
     model_revision = _model_commit(config)
     if model_revision is None:
         raise ValueError(

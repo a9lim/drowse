@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import ts from "typescript";
+import { parse } from "svelte/compiler";
 
 const root = resolve(import.meta.dirname, "../src");
 const allowed = new Set(["lib/runtime/http-client.ts"]);
@@ -18,12 +19,17 @@ async function visit(directory) {
     if (allowed.has(local)) continue;
     const source = await readFile(path, "utf8");
     const scripts = entry.name.endsWith(".svelte")
-      ? [...source.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)].map(
-          (match) => match[1],
-        )
+      ? componentScripts(source)
       : [source];
     if (scripts.some((script) => importsApi(script, local))) violations.push(local);
   }
+}
+
+function componentScripts(source) {
+  const component = parse(source, { modern: true });
+  return [component.instance, component.module]
+    .filter(Boolean)
+    .map((script) => source.slice(script.content.start, script.content.end));
 }
 
 function importsApi(source, fileName) {
@@ -101,6 +107,19 @@ for (const fixture of [
 }
 if (importsApi('import "../runtime/services";', "boundary-safe-fixture.ts")) {
   throw new Error("runtime boundary rejected a transport-neutral import");
+}
+
+for (const fixture of [
+  '<script lang="ts">import "../api";</script>',
+  '<script module>export { api } from "../api";</script>',
+  '<script context="module">export { api } from "../api";</script><script>const value = 1;</script>',
+]) {
+  if (!componentScripts(fixture).some((script) => importsApi(script, "fixture.ts"))) {
+    throw new Error(`runtime boundary missed a component import: ${fixture}`);
+  }
+}
+if (componentScripts('<!-- <script>import "../api";</script> --><p>Safe</p>').length) {
+  throw new Error("runtime boundary treated an HTML comment as a script");
 }
 
 await visit(root);

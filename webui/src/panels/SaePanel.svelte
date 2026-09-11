@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { flip } from "svelte/animate";
+  import { motionDuration } from "../lib/motion";
   // SAE — the inspector column's sparse-autoencoder tab: two sections,
   // card-based and symmetric with the other three pillars (every row wears
   // RackCard; the SAE family accent is gold, marker ▲/△).
@@ -129,7 +131,7 @@
         key: row.name,
         name: row.name,
         entry,
-        sortName: info.label || String(info.feature_id),
+        sortName: info.label || (!tokenHoverState.active && saeState.meta.get(info.feature_id)?.label) || String(info.feature_id),
         // Pinned values with max_act are already normalized server-side —
         // the reading's own ``unit`` says which one applied.
         strength: latest?.unit === "activation_over_max" ? value : value / fallbackScale,
@@ -239,7 +241,7 @@
       {#if steerCards.length > 0}
         <div class="cards steer-cards" role="list">
           {#each steerCards as [name, entry] (name)}
-            <div role="listitem">
+            <div role="listitem" animate:flip={{ duration: motionDuration(160) }}>
               <AtomSteerCard mode="sae" {name} {entry} />
             </div>
           {/each}
@@ -297,7 +299,7 @@
         {#if probeCards.length > 0}
           <div class="cards" role="list" aria-label="SAE feature probes">
             {#each probeCards as row (row.key)}
-              <div role="listitem">
+              <div role="listitem" animate:flip={{ duration: motionDuration(160) }}>
                 {#if row.kind === "pinned"}
                   {@const reading = (row.entry.aggregate ?? row.entry.reading) as ScalarReadingJSON | null}
                   {@const probe = row.entry.info as SaeProbeInfo}
@@ -306,7 +308,7 @@
                   <SaeProbeCard
                     id={probe.feature_id}
                     probeName={row.name}
-                    label={probe.label}
+                    label={probe.label || (!tokenHoverState.active ? saeState.meta.get(probe.feature_id)?.label : null)}
                     layer={residentLayer}
                     value={reading?.value ?? row.entry.current ?? 0}
                     measured={reading !== null || row.entry.sparkline.length > 0}

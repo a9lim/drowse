@@ -37,6 +37,7 @@ import CompareDrawer from "./CompareDrawer.svelte";
 import CorrelationDrawer from "./CorrelationDrawer.svelte";
 import HealthDrawer from "./HealthDrawer.svelte";
 import HelpDrawer from "./HelpDrawer.svelte";
+import FeedbackDrawer from "./FeedbackDrawer.svelte";
 import LoadConversationDrawer from "./LoadConversationDrawer.svelte";
 import LocalRuntimeDrawer from "@runtime-local-drawer";
 import ManifoldBuilderDrawer from "./ManifoldBuilderDrawer.svelte";
@@ -54,9 +55,9 @@ import TemplateLabDrawer from "./TemplateLabDrawer.svelte";
 import TokenDrilldownDrawer from "./TokenDrilldownDrawer.svelte";
 import TranscriptDrawer from "./TranscriptDrawer.svelte";
 
-/** The drawer host renders one prop; ``params`` is typed loosely because
- *  each drawer owns its own shape. */
-export type DrawerComponent = Component<{ params: unknown }>;
+/** Each drawer owns its params; responsive drawers can consume the host's
+ *  presentation and dismissal props. */
+export type DrawerComponent = Component<{ params: unknown; mobile?: boolean; onclose?: () => void }>;
 
 /** Palette group keys.  Typing ``launcher.group`` as this union means a
  *  typo can't strand a tool in a group that never renders. */
@@ -192,6 +193,12 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
       label: "Help and shortcuts…",
       keywords: "keyboard grammar cheatsheet",
     },
+  },
+
+  feedback: {
+    component: FeedbackDrawer,
+    narrow: true,
+    launcher: { group: "session", label: "Submit Feedback…", keywords: "contact support bug suggestion feedback" },
   },
 
   // -------------------------------------------- opened in context -----

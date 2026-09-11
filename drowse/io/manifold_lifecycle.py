@@ -726,9 +726,9 @@ def preflight_manifold_fit_noop(
     try:
         from transformers import AutoConfig, AutoTokenizer
 
-        config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+        config = AutoConfig.from_pretrained(model_id, trust_remote_code=False)
         model_type = getattr(config, "model_type", None)
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=False)
     except Exception:
         # Tokenizer/config resolution can raise anything the Hub or a custom
         # implementation chooses; every failure means "cannot prove".

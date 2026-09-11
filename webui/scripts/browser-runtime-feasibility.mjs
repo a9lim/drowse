@@ -83,9 +83,10 @@ const server = createServer(async (request, response) => {
     }
     return send(response, "not found", "text/plain", 404);
   } catch (error) {
+    console.error(error);
     return send(
       response,
-      error instanceof Error ? error.message : String(error),
+      "Internal server error",
       "text/plain",
       500,
     );

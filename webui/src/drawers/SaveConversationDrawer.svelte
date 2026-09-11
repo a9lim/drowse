@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import { Blobatar } from "@blobatar/svelte";
   import { onMount } from "svelte";
   import ChatAccentPicker from "../lib/ui/ChatAccentPicker.svelte";
@@ -123,8 +124,11 @@
     }
   }
 
+  let backupState = $state("idle");
+  $effect(() => { if (backupState !== "ready") return; const timer = setTimeout(() => backupState = "idle", 1800); return () => clearTimeout(timer); });
   async function downloadCopy(): Promise<void> {
     if (saving || loading || genStatus.active) return;
+    backupState = "preparing";
     saving = true;
     error = null;
     try {
@@ -143,7 +147,9 @@
       };
       const blob = new Blob([await encodeChatBackup(record)], { type: "application/json" });
       downloadPreparedChatBackup(blob, record.name);
+      backupState = "ready";
     } catch (cause) {
+      backupState = "idle";
       error = userFacingError(cause, "A backup copy could not be created.");
     } finally { saving = false; }
   }
@@ -152,7 +158,7 @@
 <section class="drawer-shell" class:embedded aria-label={embedded ? "Save and name chat" : "Save conversation drawer"}>
   <header class="header">
     <div>
-      <h2 class="title">{embedded ? "Save and name chat" : current ? "Update saved chat" : "Save chat"}</h2>
+      <h2 class="title"><MorphText text={embedded ? "Save and name chat" : current ? "Update saved chat" : "Save chat"} /></h2>
       <p>Keep the full loom, response settings, and readings on this device.</p>
     </div>
     {#if !embedded}<DrawerCloseButton onclick={closeDrawer} />{/if}
@@ -166,7 +172,7 @@
           class="avatar-button"
           onclick={regenerateAvatar}
           aria-label="Generate another avatar"
-          title="Generate another avatar"
+
         >
           <Blobatar name={avatarSeed} size={76} background="circle" alt="" />
         </button>
@@ -205,7 +211,7 @@
 
   <footer class="footer">
     <button type="button" class="text-button" onclick={downloadCopy} disabled={loading || saving || genStatus.active}>
-      Download copy
+      <MorphText text={backupState === "preparing" ? "Preparing copy…" : backupState === "ready" ? "Download started" : "Download copy"} numbers={false} />
     </button>
     <div class="footer-actions">
       {#if current}
@@ -221,7 +227,7 @@
         onclick={() => void save(false)}
         disabled={loading || saving || genStatus.active || !name.trim()}
       >
-        {saving ? "Saving…" : current ? "Update" : "Save"}
+        <MorphText text={saving ? "Saving…" : current ? "Update" : "Save"} />
       </button>
     </div>
   </footer>

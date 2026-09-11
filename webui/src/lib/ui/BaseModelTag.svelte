@@ -2,7 +2,7 @@
   let { plain = false }: { plain?: boolean } = $props();
 </script>
 
-<span class="base-tag" class:plain title="Base model · continues text without chat instructions">[BASE]</span>
+<span class="base-tag" class:plain {...{ "aria-description": "Base model · continues text without chat instructions" }}>[BASE]</span>
 
 <style>
   .base-tag {

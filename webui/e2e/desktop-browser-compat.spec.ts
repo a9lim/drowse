@@ -1,3 +1,5 @@
+import { clickWorkspaceAction } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const devUrl = "http://127.0.0.1:4176";
@@ -81,12 +83,12 @@ async function expectStorageAndCoordinationCanaries(
         created = true;
         const handle = await directory.getFileHandle("canary.txt", { create: true });
         const initial = await handle.createWritable();
-        await initial.write("poly");
+        await initial.write("dro");
         await initial.close();
         const resumed = await handle.createWritable({ keepExistingData: true });
-        await resumed.seek(4);
-        await resumed.write("thetic-extra");
-        await resumed.truncate(10);
+        await resumed.seek(3);
+        await resumed.write("wse-extra");
+        await resumed.truncate(6);
         await resumed.close();
         const contents = await (await handle.getFile()).text();
         const entries = [];
@@ -108,18 +110,18 @@ async function expectStorageAndCoordinationCanaries(
 test("desktop landing documents supported browsers and supplies runtime prerequisites", async ({
   page,
   browserName,
-}) => {
+}, testInfo) => {
   const pageErrors = collectPageErrors(page);
   const response = await page.goto("/");
 
   expect(response).not.toBeNull();
   expect(response!.headers()["cross-origin-opener-policy"]).toBe("same-origin");
   expect(response!.headers()["cross-origin-embedder-policy"]).toBe("require-corp");
-  if (browserName !== "chromium") {
-    expect(await page.evaluate(() => navigator.userAgent)).toContain("Macintosh");
+  if (testInfo.project.use.userAgent) {
+    expect(await page.evaluate(() => navigator.userAgent)).toBe(testInfo.project.use.userAgent);
   }
 
-  expect(await page.evaluate(() => ({
+  const { opfs, ...prerequisites } = await page.evaluate(() => ({
     secureContext: globalThis.isSecureContext,
     crossOriginIsolated: globalThis.crossOriginIsolated,
     worker: typeof Worker === "function",
@@ -128,7 +130,8 @@ test("desktop landing documents supported browsers and supplies runtime prerequi
     webAssembly: typeof WebAssembly === "object",
     webLocks: typeof navigator.locks?.request === "function",
     opfs: typeof navigator.storage?.getDirectory === "function",
-  }))).toEqual({
+  }));
+  expect(prerequisites).toEqual({
     secureContext: true,
     crossOriginIsolated: true,
     worker: true,
@@ -136,20 +139,21 @@ test("desktop landing documents supported browsers and supplies runtime prerequi
     broadcastChannel: true,
     webAssembly: true,
     webLocks: true,
-    opfs: true,
   });
-  // Playwright WebKit exposes OPFS but rejects getDirectory() in its ephemeral
-  // headless context; real Safari storage remains enforced by the app's live canary.
+  if (browserName !== "webkit") expect(opfs).toBe(true);
+  testInfo.annotations.push({ type: "native-opfs-api", description: String(opfs) });
+  // Playwright WebKit either omits OPFS on Linux or rejects getDirectory() in
+  // ephemeral contexts; the app's live canary still enforces real Safari storage.
   await expectStorageAndCoordinationCanaries(page, browserName !== "webkit");
 
   for (const viewport of desktopViewports) {
     await page.setViewportSize(viewport);
-    await expect(page.getByRole("link", { name: "Check this device" })).toBeVisible();
+    await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
   }
 
   const browserSupport = page.locator(".hero-action-row > span");
-  await expect(browserSupport).toHaveText(/^(Chrome or Edge|Chrome, Edge, or Safari)$/);
+  await expect(browserSupport).toHaveText("Chrome or Safari · compatible device required");
   expect(pageErrors).toEqual([]);
 });
 
@@ -168,6 +172,8 @@ test("fixture workbench stays usable across desktop widths and keyboard navigati
 
   for (const viewport of desktopViewports) {
     await page.setViewportSize(viewport);
+    await composer.focus();
+    await expect(send).toBeVisible();
     const conversation = sidebar.getByRole("button", { name: "Conversation", exact: true });
     const controls = sidebar.getByRole("button", { name: "Controls", exact: true });
     const loom = sidebar.getByRole("button", { name: "Loom", exact: true });
@@ -186,8 +192,7 @@ test("fixture workbench stays usable across desktop widths and keyboard navigati
   await page.keyboard.press("Meta+K");
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await expect(palette).toHaveCount(0);
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const paletteInput = page.getByRole("combobox", { name: "Filter commands" });
   await expect(palette).toBeVisible();
   await expect(paletteInput).toBeFocused();

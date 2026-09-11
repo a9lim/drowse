@@ -4,6 +4,68 @@ import { readFile } from "node:fs/promises";
 
 const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
 
+test("max tokens follows the model limit and rejects repeated oversized edits", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
+  await expect(page.getByRole("button", { name: /^Controls/ })).toBeVisible();
+  const registryUrl = `/@fs${resolve("src/lib/runtime/registry.ts")}`;
+  async function setModelLimit(limit: number) {
+    await page.evaluate(async ({ storesUrl, registryUrl, limit }) => {
+      const registry = await import(registryUrl);
+      registry.getHostedController().snapshot.contextTokens = limit;
+      const stores = await import(storesUrl);
+      stores.sessionState.info = { ...stores.sessionState.info };
+      stores.hydrateSamplingFromInfo();
+    }, { storesUrl, registryUrl, limit });
+  }
+  await setModelLimit(2048);
+  await page.getByRole("button", { name: /^Controls/ }).click();
+  const input = page.getByRole("spinbutton", { name: "Max tokens", exact: true });
+  await expect(input).toHaveAttribute("max", "2048");
+  for (const key of ["Enter", "Tab", "Enter"]) {
+    await input.fill("999999");
+    await expect(input).toHaveValue("2048");
+    await input.press(key);
+    await expect(input).toHaveValue("2048");
+  }
+  await setModelLimit(1024);
+  await expect(input).toHaveAttribute("max", "1024");
+  await expect(input).toHaveValue("1024");
+  expect(await page.evaluate(async url => {
+    const stores = await import(url);
+    stores.setSampling("max_tokens", 999999);
+    const stored = stores.samplingState.max_tokens;
+    stores.samplingState.max_tokens = 999999;
+    const sent = stores.buildSamplingPayload().max_tokens;
+    await stores.patchSessionDefaults({ max_tokens: 999999 });
+    return { stored, sent, persisted: stores.sessionState.info.config.max_tokens };
+  }, storesUrl)).toEqual({ stored: 1024, sent: 1024, persisted: 1024 });
+});
+
+test("sampling controls retain large supported values on desktop and phone layouts", async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
+  await expect(page.getByRole("button", { name: /^Controls/ })).toBeVisible();
+  await page.evaluate(async url => (await import(url)).openDrawer("advanced_sampling"), storesUrl);
+  const drawer = page.getByRole("dialog", { name: "Sampling settings", exact: true });
+  for (const [label, value] of [["Top K", "262144"], ["Temperature value", "3"], ["Seed", "9007199254740991"]]) {
+    const input = drawer.getByRole("spinbutton", { name: label, exact: true });
+    await input.fill(value);
+    await input.press("Tab");
+    await expect(input).toHaveValue(value);
+  }
+  expect(await page.evaluate(async url => {
+    const { samplingState } = await import(url);
+    return { top_k: samplingState.top_k, temperature: samplingState.temperature, seed: samplingState.seed };
+  }, storesUrl)).toEqual({ top_k: 262144, temperature: 3, seed: Number.MAX_SAFE_INTEGER });
+  await expect.poll(() => page.evaluate(async url => {
+    const { sessionState } = await import(url);
+    return sessionState.info.config.temperature;
+  }, storesUrl)).toBe(3);
+  expect(await drawer.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await drawer.screenshot({ path: testInfo.outputPath("sampling-limits.png") });
+});
+
 test("technical controls preserve full names, slider behavior, and translucent side panels", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -69,26 +131,28 @@ test("technical controls preserve full names, slider behavior, and translucent s
   await expect(page.locator(".app-sidebar")).toHaveCSS("background-color", /\/ 0\.9\)$/);
   await tabs.getByRole("button", { name: "Manifold", exact: true }).click();
   await page.getByRole("button", { name: "Add manifold", exact: true }).click();
-  await expect(page.locator(".drawer")).toHaveCSS("background-color", /\/ 0\.9\)$/);
+  await expect(page.getByRole("dialog", { name: "Add manifold", exact: true })).toHaveCSS("background-color", /\/ 0\.9\)$/);
   await page.screenshot({ path: testInfo.outputPath("translucent-drawer.png") });
   await page.emulateMedia({ forcedColors: "active" });
-  await expect(page.locator(".drawer")).toHaveCSS("backdrop-filter", "none");
-  expect(await page.locator(".drawer").evaluate(el => getComputedStyle(el).backgroundColor)).not.toContain("0.9");
+  await expect(page.getByRole("dialog", { name: "Add manifold", exact: true })).toHaveCSS("backdrop-filter", "none");
+  expect(await page.getByRole("dialog", { name: "Add manifold", exact: true }).evaluate(el => getComputedStyle(el).backgroundColor)).not.toContain("0.9");
   const sliderSource = await readFile(resolve("src/lib/Slider.svelte"), "utf8");
   expect(sliderSource).toMatch(/::-webkit-slider-thumb\s*\{[^}]*margin-top:\s*-8px;/);
 });
 
-test("help opens only on explicit activation and Escape keeps the parent drawer open", async ({ page }) => {
+test("help supports hover and keyboard focus while Escape keeps the parent drawer open", async ({ page }) => {
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
+  await expect(page.getByRole("button", { name: /^Controls/ })).toBeVisible();
   await page.evaluate(async url => (await import(url)).openDrawer("advanced_sampling"), storesUrl);
   const drawer = page.getByRole("dialog", { name: "Sampling settings" });
+  await expect.poll(() => drawer.evaluate(el => el.getAnimations({ subtree: true }).filter(animation => animation.playState === "running").length)).toBe(0);
   const help = drawer.getByRole("button", { name: "About Top K", exact: true });
   const tip = drawer.getByRole("tooltip").filter({ hasText: "Top K" });
   await help.hover();
+  await expect(tip).toBeVisible();
+  await page.mouse.move(0, 0);
   await expect(tip).toBeHidden();
   await help.focus();
-  await expect(tip).toBeHidden();
-  await help.press("Enter");
   await expect(tip).toBeVisible();
   await help.press("Escape");
   await expect(tip).toBeHidden();

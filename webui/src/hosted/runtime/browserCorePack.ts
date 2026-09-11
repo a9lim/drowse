@@ -29,6 +29,7 @@ import {
 import type {
   CorrelationData,
   GeometryProbeInfo,
+  ManifoldFitInfo,
   ManifoldInfo,
   PairwiseCompareResponse,
   ProbeGeometryResponse,
@@ -149,6 +150,7 @@ export class BrowserFeasibilityCorePackCompiler {
   private lensLive = false;
   private lensLiveLayers: readonly number[] | null = null;
   private saeLive = false;
+  private compiledProgram: { key: string; program: BrowserHookProgramBuffers } | null = null;
   private readonly attachedProbes = new Map<string, ProbeInfo>();
 
   private constructor(
@@ -815,6 +817,28 @@ export class BrowserFeasibilityCorePackCompiler {
     expression: string,
     probeRequests?: readonly ProbeRequest[],
   ): BrowserHookProgramBuffers {
+    return structuredClone(this.compileForGeneration(expression, probeRequests));
+  }
+
+  /** Borrowed immutable payload; controls and warm state are owned by each generation. */
+  compileForGeneration(
+    expression: string,
+    probeRequests?: readonly ProbeRequest[],
+  ): BrowserHookProgramBuffers {
+    const key = JSON.stringify([
+      expression, probeRequests ?? this.listProbes(),
+      this.instrumentLiveState(), this.instrumentDescriptor(),
+    ]);
+    if (this.compiledProgram?.key === key) return this.compiledProgram.program;
+    const program = this.compileUncached(expression, probeRequests);
+    this.compiledProgram = { key, program };
+    return program;
+  }
+
+  private compileUncached(
+    expression: string,
+    probeRequests?: readonly ProbeRequest[],
+  ): BrowserHookProgramBuffers {
     if (probeRequests === undefined) return this.compileCurrent(expression);
     const previous = [...this.attachedProbes.entries()];
     this.attachedProbes.clear();
@@ -998,11 +1022,17 @@ export class BrowserFeasibilityCorePackCompiler {
       this.structuredHookProfile,
       this.instruments.jlensProgram(
         gateNames.map((name) => this.instrumentProgramProbeName(name)),
-        this.jlensProgramLayerMap(),
+        this.jlensProgramLayerMap(gateNames),
         this.structuredHookProfile.maxProbes,
         this.lensLive,
       ),
     );
+    if (program.jLensBindingId !== undefined) {
+      const displayLayers = new Set(this.lensLiveLayers ?? this.layerMap);
+      program.jLensReadoutLayerIndices = Int32Array.from(
+        [...program.jLensLayerIndices!].filter((index) => this.lensLive && displayLayers.has(this.layerMap[index])),
+      );
+    }
     const descriptor = this.instruments.descriptor();
     program.measurementSchema = {
       layerMap: [...this.layerMap],
@@ -1059,7 +1089,8 @@ export class BrowserFeasibilityCorePackCompiler {
     return names;
   }
 
-  private jlensProgramLayerMap(): readonly number[] {
+  private jlensProgramLayerMap(probeNames: readonly string[]): readonly number[] {
+    if (probeNames.some((name) => this.instrumentProgramProbeName(name).startsWith("jlens/"))) return this.layerMap;
     if (!this.lensLive || this.lensLiveLayers === null) return this.layerMap;
     const selected = new Set(this.lensLiveLayers);
     return this.layerMap.map((layer) => selected.has(layer) ? layer : -1);
@@ -1139,7 +1170,6 @@ export class BrowserFeasibilityCorePackCompiler {
     const layers = fittedLayerNumbers(manifold.tensors);
     const firstLayer = layers[0];
     const prefix = `layer_${firstLayer}`;
-    const shape = manifold.tensors.description.shapes.get(`${prefix}.basis`)!;
     const topN = requestedTopN === undefined ? 3 : requestedTopN;
     if (!Number.isSafeInteger(topN) || topN < 1 || topN > manifold.labels.length + 1) {
       throw coreError("INVALID_PROBE", "Probe nearest-node count is outside its supported range");
@@ -1541,7 +1571,6 @@ export class BrowserFeasibilityCorePackCompiler {
       const token = this.instruments.jlensToken(lensWord);
       const slots: StructuredMeasurementSlot[] = [];
       for (const layer of token.directions.keys()) {
-        if (this.lensLive && !this.lensLiveLayers?.includes(layer)) continue;
         const programIndex = this.layerMap.indexOf(layer);
         if (programIndex < 0) continue;
         (layers[programIndex].probes as StructuredProbe[])[probeIndex] = {
@@ -2665,6 +2694,9 @@ async function loadVerifiedManifold(
   const nodeStatements = await readCoreNodeStatements(verified, request.signal, labels.length);
   const nodeCoordinates = coreNodeCoordinates(tensors, labels.length);
   const fitMode = String(verified.manifold.fit_mode);
+  const resolvedFitMode = fitMode === "auto"
+    ? originPerLayer.size > 0 ? "spectral" : "pca"
+    : fitMode;
   const domain = sidecar.domain;
   const intrinsicDimension = domainIntrinsicDimension(domain, `${namespace}/${name}`);
   const description = typeof verified.manifold.description === "string"
@@ -2720,7 +2752,7 @@ async function loadVerifiedManifold(
     },
     fitted_for_session: true,
     stale: false,
-    resolved_fit_mode: fitMode,
+    resolved_fit_mode: resolvedFitMode,
     nodes: labels.map((label, index) => ({
       label,
       coords: nodeCoordinates[index] ? [...nodeCoordinates[index]] : null,
@@ -2734,6 +2766,8 @@ async function loadVerifiedManifold(
       node_count: labels.length,
       nodes_sha256: typeof sidecar.nodes_sha256 === "string" ? sidecar.nodes_sha256 : null,
       fit_mode: fitMode,
+      hyperparams: structuredClone(sidecar.hyperparams) as Record<string, number | string>,
+      diagnostics: structuredClone(sidecar.diagnostics) as ManifoldFitInfo["diagnostics"],
     }],
   };
   const safeVariantIdentity = fitted.variantIdentity === null
@@ -3186,20 +3220,6 @@ function sameLayerMap(value: unknown, expected: readonly number[]): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function exactFittedArtifact(
-  verified: VerifiedDrowseArchive,
-  request: BrowserModelLoadRequest,
-): VerifiedDrowseArchive["fittedArtifacts"][number] {
-  const matches = matchingFittedArtifacts(verified, request);
-  if (matches.length !== 1) {
-    throw coreError(
-      "CORE_PACK_RUNTIME_MISMATCH",
-      `Core manifold ${verified.manifest.primary} has no unique fit for this exact browser runtime`,
-    );
-  }
-  return matches[0];
 }
 
 function matchingFittedArtifacts(

@@ -197,6 +197,9 @@ export class BrowserSessionPersistence {
       }
       if (record.metadata.runtimeIdentitySha256 !== binding.runtimeIdentitySha256) {
         if (compatibleRuntimeIdentitySha256s.includes(record.metadata.runtimeIdentitySha256)) {
+          if (record.metadata.contextTokens !== binding.contextTokens) {
+            return { status: "incompatible", reason: "context_tokens", record: structuredClone(record) };
+          }
           const claimed = structuredClone({
             ...record,
             metadata: {
@@ -729,7 +732,6 @@ function validateRecipeSampling(value: unknown): asserts value is RecipeSampling
   validateFinite(value.presence_penalty, "sampling presence penalty");
   validateFinite(value.frequency_penalty, "sampling frequency penalty");
   validateNonNegativeInteger(value.return_top_k, "sampling return top-k");
-  if (value.return_top_k > 256) throw invalid("Sampling return top-k is too large");
   for (const key of [
     "persist_per_layer_scores",
     "persist_subspace_coords",
@@ -789,7 +791,7 @@ function validateTokenRows(value: unknown, label: string): void {
       }
     }
     if (row.top_alts !== undefined) {
-      if (!Array.isArray(row.top_alts) || row.top_alts.length > 256) {
+      if (!Array.isArray(row.top_alts) || row.top_alts.length > MAX_TOKEN_ROWS) {
         throw invalid("Token alternatives are invalid");
       }
       for (const alternative of row.top_alts) {
@@ -803,7 +805,8 @@ function validateTokenRows(value: unknown, label: string): void {
     if (row.measurements !== undefined) {
       assertPlainObject(row.measurements, "token measurement envelope");
     }
-    assertJsonValue(row, {
+    const { top_alts: _alternatives, ...metadata } = row;
+    assertJsonValue(metadata, {
       maxDepth: 24,
       maxValues: 131_072,
       maxStringLength: 4 * 1024 * 1024,
@@ -983,10 +986,6 @@ function validateNullablePositiveInteger(value: unknown, label: string): void {
   if (value !== null && (!Number.isSafeInteger(value) || Number(value) < 1)) {
     throw invalid(`${label} is invalid`);
   }
-}
-
-function validatePositiveInteger(value: unknown, label: string): asserts value is number {
-  if (!Number.isSafeInteger(value) || Number(value) <= 0) throw invalid(`${label} is invalid`);
 }
 
 function validateNonNegativeInteger(value: unknown, label: string): asserts value is number {

@@ -1158,7 +1158,10 @@ export class BrowserActivationSpoolFilePort implements ActivationSpoolFilePort {
       if (!(bytes.buffer instanceof ArrayBuffer)) {
         throw new TypeError("Activation spool writes require an ArrayBuffer-backed view");
       }
-      await writable.write(bytes as Uint8Array<ArrayBuffer>);
+      // WebKit ignores a typed-array view's byte offset and length here.
+      await writable.write(bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+        ? bytes.buffer
+        : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
       await writable.close();
     } catch (error) {
       await writable.abort(error).catch(() => undefined);

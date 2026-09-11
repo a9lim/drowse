@@ -3,8 +3,7 @@ import { migrateLegacyStorageItem, removeLegacyStorageItem } from "./brandMigrat
 const RECOVERY_KEY = "drowse:chunk-recovery";
 const RECOVERY_PARAM = "app-recovery";
 const RECOVERY_WINDOW_MS = 45_000;
-const SERVICE_WORKER_WAIT_MS = 2_500;
-const PREPARE_WAIT_MS = 4_000;
+const RECOVERY_TIMEOUT_MS = 10_000;
 
 export type ChunkRecoveryStage = "bootstrap" | "workbench";
 
@@ -64,61 +63,69 @@ function clearRecoveryRecord(stage: ChunkRecoveryStage): void {
   } catch {}
 }
 
-const wait = (milliseconds: number) =>
-  new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
-
-async function settleWithTimeout(task: Promise<unknown>, milliseconds: number): Promise<void> {
-  await Promise.race([task.catch(() => undefined), wait(milliseconds)]);
-}
-
-function waitForWorkerState(worker: ServiceWorker): Promise<void> {
-  return new Promise((resolve) => {
-    const finish = () => {
-      window.clearTimeout(timeout);
-      worker.removeEventListener("statechange", onStateChange);
-      resolve();
-    };
-    const onStateChange = () => {
-      if (worker.state === "installed" || worker.state === "activated" ||
-        worker.state === "redundant") finish();
-    };
-    const timeout = window.setTimeout(finish, SERVICE_WORKER_WAIT_MS);
-    worker.addEventListener("statechange", onStateChange);
-  });
-}
-
-function waitForControllerChange(previousController: ServiceWorker | null): Promise<void> {
-  return new Promise((resolve) => {
-    const finish = () => {
-      window.clearTimeout(timeout);
-      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
-      resolve();
-    };
-    const onControllerChange = () => {
-      if (navigator.serviceWorker.controller !== previousController) finish();
-    };
-    const timeout = window.setTimeout(finish, SERVICE_WORKER_WAIT_MS);
-    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
-  });
-}
-
-async function refreshServiceWorker(): Promise<void> {
-  if (!("serviceWorker" in navigator)) return;
-  const registration = await navigator.serviceWorker.getRegistration("/").catch(() => undefined);
-  if (!registration) return;
-
-  await settleWithTimeout(registration.update(), SERVICE_WORKER_WAIT_MS);
-  const installing = registration.installing;
-  if (installing && installing.state !== "installed" && installing.state !== "activated") {
-    await waitForWorkerState(installing);
+async function withTimeout<T>(task: Promise<T>, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), RECOVERY_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
   }
+}
 
-  const waiting = registration.waiting;
-  if (!waiting) return;
-  const previousController = navigator.serviceWorker.controller;
-  const controllerChanged = waitForControllerChange(previousController);
-  waiting.postMessage({ type: "SKIP_WAITING" });
-  await controllerChanged;
+async function clearAppShell(): Promise<void> {
+  if ("serviceWorker" in navigator) {
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    if (registration?.scope === new URL("/", location.href).href) {
+      const workers = [registration.active, registration.waiting, registration.installing];
+      const script = new URL("/sw.js", location.href).href;
+      const owned = workers.some(worker => worker?.scriptURL === script);
+      if (owned) await registration.unregister();
+    }
+  }
+  if (typeof caches === "undefined") return;
+  for (const name of await caches.keys()) {
+    // These are app code caches, never the model, chat, or artifact stores.
+    if (/^(?:drowse|saklas|polythetic)-hosted-(?:precache-v\d+-|on-demand-assets-v\d+$|landing-shader-v\d+$)/.test(name)) {
+      await caches.delete(name);
+    }
+  }
+}
+
+export async function reloadHostedApp(
+  stage: ChunkRecoveryStage,
+  prepare?: () => Promise<void>,
+): Promise<void> {
+  if (recoveryStarted) return;
+  if (navigator.onLine === false) throw new Error("You’re offline. Reconnect, then reload Drowse.");
+  recoveryStarted = true;
+  try {
+    const checkUrl = new URL("/index.html", location.href);
+    checkUrl.searchParams.set(RECOVERY_PARAM, String(Date.now()));
+    let response: Response;
+    try {
+      response = await fetch(checkUrl, { cache: "no-store", signal: AbortSignal.timeout(RECOVERY_TIMEOUT_MS) });
+    } catch {
+      throw new Error("Drowse could not reach the site. Check your connection, then try again.");
+    }
+    if (!response.ok || !response.headers.get("content-type")?.includes("text/html") ||
+      !(await response.text()).includes('name="drowse-source-revision"')) {
+      throw new Error("The current app files are unavailable. Please try again in a moment.");
+    }
+    if (prepare) await withTimeout(prepare(), "Your work could not be saved in time. Reload was cancelled; please try again.");
+    await withTimeout(clearAppShell(), "App refresh did not finish. Close other Drowse tabs, then try again.");
+    writeRecovery(stage);
+    const url = new URL(window.location.href);
+    url.searchParams.set(RECOVERY_PARAM, `${stage}:${Date.now()}`);
+    window.location.replace(url.href);
+  } catch (error) {
+    recoveryStarted = false;
+    throw error;
+  }
 }
 
 export async function recoverFromChunkLoadError(
@@ -127,6 +134,7 @@ export async function recoverFromChunkLoadError(
   prepare?: () => Promise<void>,
 ): Promise<boolean> {
   if (!isChunkLoadError(error) || recoveryStarted || navigator.onLine === false) return false;
+  if (new URL(location.href).searchParams.get(RECOVERY_PARAM)?.startsWith(`${stage}:`)) return false;
   const previous = readRecovery();
   if (
     previous?.stage === stage &&
@@ -134,24 +142,32 @@ export async function recoverFromChunkLoadError(
     Date.now() - previous.createdAt < RECOVERY_WINDOW_MS
   ) return false;
 
-  recoveryStarted = true;
-  writeRecovery(stage);
-  if (prepare) await settleWithTimeout(prepare(), PREPARE_WAIT_MS);
-  await refreshServiceWorker();
-
-  const url = new URL(window.location.href);
-  url.searchParams.set(RECOVERY_PARAM, String(Date.now()));
-  window.location.replace(url.href);
-  return true;
+  try {
+    await reloadHostedApp(stage, prepare);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function completeChunkRecovery(stage: ChunkRecoveryStage): void {
   clearRecoveryRecord(stage);
   const url = new URL(window.location.href);
-  if (!url.searchParams.has(RECOVERY_PARAM)) return;
+  const recovery = url.searchParams.get(RECOVERY_PARAM);
+  if (!recovery || (recovery.startsWith("workbench:") && stage !== "workbench")) return;
   url.searchParams.delete(RECOVERY_PARAM);
   window.history.replaceState(window.history.state, "", url);
 }
 
 export const chunkLoadFailureMessage =
-  "Drowse updated while this tab was open. Reload the page to open the current version.";
+  "Some app files could not load. This can happen after an update or a connection problem. Reload Drowse to refresh its app files.";
+
+export function reloadInstructions(): string {
+  const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (/Mac/i.test(navigator.platform) && navigator.maxTouchPoints > 1);
+  if (mobile) return "If this keeps happening, use Reload in your browser’s menu. You can also close this tab and reopen Drowse.";
+  const shortcut = /Mac/i.test(navigator.platform) ? "⌘ + R" : "Ctrl + R";
+  return `If this keeps happening, press ${shortcut} to reload the page. If it still cannot open, close other Drowse tabs and try again.`;
+}
+
+export const appRefreshSafetyMessage = "Only app files are refreshed. Your saved chats and downloaded models stay on this device.";

@@ -11,7 +11,7 @@ async function mountChats(page: Page) {
   await expect(page.locator(".shell")).toBeVisible();
   await page.evaluate(async urls => {
     const [{ default: Home }, { mount }, { conversationLibrary, registerConversationAutosave }, { sessionState }, { captureConversationSnapshot }] = await Promise.all([
-      import(urls.home), import("/@id/svelte"), import(urls.saved), import(urls.stores), import(urls.workspace),
+      import(urls.home), import("/e2e/svelte-runtime.ts"), import(urls.saved), import(urls.stores), import(urls.workspace),
     ]);
     const snapshot = captureConversationSnapshot();
     for (const name of ["Marmot notes", "A much longer conversation name to check the library's shared alignment"]) {
@@ -93,7 +93,7 @@ test("color popovers fade both ways and can reopen during dismissal", async ({ p
   const surface = popup.locator(".accent-surface");
   await trigger.click();
   await expect(surface).toHaveClass(/is-open/);
-  await expect(surface).toHaveCSS("transition-duration", "0.25s, 0.25s");
+  await expect(surface).toHaveCSS("transition-duration", "0.14s");
   await expect(surface).toHaveCSS("opacity", "1");
   const closing = await trigger.evaluate(el => {
     (el as HTMLButtonElement).click();
@@ -101,7 +101,7 @@ test("color popovers fade both ways and can reopen during dismissal", async ({ p
     const surface = popup.querySelector<HTMLElement>(".accent-surface")!;
     return { closing: surface.classList.contains("is-closing"), inert: surface.inert, inTopLayer: popup.matches(":popover-open"), duration: getComputedStyle(surface).transitionDuration };
   });
-  expect(closing).toEqual({ closing: true, inert: true, inTopLayer: true, duration: "0.15s, 0.15s" });
+  expect(closing).toEqual({ closing: true, inert: true, inTopLayer: true, duration: "0.1s" });
   await trigger.evaluate(el => (el as HTMLButtonElement).click());
   await expect(surface).toHaveClass(/is-open/);
   await expect(surface).toHaveCSS("opacity", "1");
@@ -207,7 +207,10 @@ test("chat and text completion share a subtle rounded surface without obscuring 
       await theme(page, value);
       for (const width of [1440, 320]) {
         await page.setViewportSize({ width, height: 1000 });
-        await expect(chat).toHaveCSS("border-radius", "8px");
+        await expect.poll(() => chat.evaluate(element => {
+          const style = getComputedStyle(element);
+          return Number.parseFloat(style.borderTopLeftRadius) - Number.parseFloat(style.paddingTop);
+        })).toBe(8);
         await expect(chat).toHaveCSS("background-color", /(?:0\.03|3%)/);
         await expect(chat).toHaveCSS("box-shadow", "none");
         await expect(editor).toHaveValue("A quiet place to write, with the background still visible.");

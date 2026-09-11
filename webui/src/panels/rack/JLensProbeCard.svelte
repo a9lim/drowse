@@ -1,4 +1,5 @@
 <script lang="ts">
+  import TraceDetail from "../../lib/charts/TraceDetail.svelte";
   import { chartValue } from "../../lib/charts/chartValues";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // J-lens probe card — one workspace token, pinned (a ``jlens/<word>``
@@ -116,7 +117,7 @@
 
     <span
       class="name"
-      title={pinned ? `probe ${name}` : `"${token}": averaged across fitted layers`}
+      {...{ "aria-description": (pinned ? `probe ${name}` : `"${token}": averaged across fitted layers`) }}
     >
       {display}
     </span>
@@ -124,8 +125,8 @@
     {#if com !== null}
       <span
         class="com"
-        title="depth ± spread"
-      >@<RollingNumber value={Number.isFinite(com) ? com : 0} digits={2} />{#if spread !== null} ±<RollingNumber value={Number.isFinite(spread) ? spread : 0} digits={2} />{/if}</span>
+        {...{ "aria-description": "depth ± spread" }}
+      >@<RollingNumber value={com} digits={2} />{#if spread !== null} ±<RollingNumber value={spread} digits={2} />{/if}</span>
     {/if}
 
     <span class="spacer"></span>
@@ -146,7 +147,7 @@
       {#snippet left()}
         <span
           class="row-label"
-          title="mean layer probability"
+          {...{ "aria-description": "mean layer probability" }}
         >strength</span>
       {/snippet}
       {#snippet bar()}
@@ -167,6 +168,7 @@
       emptyMessage={pinned ? undefined : "no layer data"}
       positiveColor="var(--layer-cell-lens)"
     />
+    <TraceDetail points={series} />
   {/snippet}
 </RackCard>
 

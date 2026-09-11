@@ -37,9 +37,10 @@ class TestReturnTopKConfig:
         sc = SamplingConfig(return_top_k=-3)
         assert sc.return_top_k == 0
 
-    def test_clamp_above_256(self):
-        sc = SamplingConfig(return_top_k=999)
-        assert sc.return_top_k == 256
+    @pytest.mark.parametrize("count", [257, 999, 262144])
+    def test_large_counts_are_preserved(self, count: int):
+        sc = SamplingConfig(return_top_k=count)
+        assert sc.return_top_k == count
 
     def test_boundary_256_unchanged(self):
         sc = SamplingConfig(return_top_k=256)
@@ -271,12 +272,11 @@ class TestConfigFileReturnTopK:
         with pytest.raises(ConfigFileError):
             ConfigFile.load(p)
 
-    def test_load_rejects_above_256(self, tmp_path: Path):
-        from drowse.cli.config_file import ConfigFile, ConfigFileError
+    def test_load_accepts_full_vocabulary_count(self, tmp_path: Path):
+        from drowse.cli.config_file import ConfigFile
         p = tmp_path / "cfg.yaml"
-        p.write_text("return_top_k: 300\n")
-        with pytest.raises(ConfigFileError):
-            ConfigFile.load(p)
+        p.write_text("return_top_k: 262144\n")
+        assert ConfigFile.load(p).return_top_k == 262144
 
     def test_load_rejects_non_int(self, tmp_path: Path):
         from drowse.cli.config_file import ConfigFile, ConfigFileError

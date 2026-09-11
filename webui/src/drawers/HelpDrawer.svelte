@@ -3,6 +3,7 @@
   import Disclosure from "../lib/Disclosure.svelte";
   import { closeDrawer } from "../lib/stores.svelte";
   import { getRuntimeManifoldFitMaxIntrinsicDim } from "../lib/runtime/registry";
+  import { CONTACT_ADDRESS } from "../lib/contact";
 
   let _drawerProps: { params?: unknown } = $props();
   $effect(() => {
@@ -33,6 +34,10 @@
 
   <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard access for overflow content) -->
   <div class="body" role="region" aria-label="Help reference" tabindex="0">
+    <section class="block" aria-labelledby="help-contact">
+      <h2 id="help-contact">Questions or feedback?</h2>
+      <p class="section-copy">Email <a href={`mailto:${CONTACT_ADDRESS}`}>{CONTACT_ADDRESS}</a> for help, feedback, or research inquiries.</p>
+    </section>
     <section class="intro" aria-labelledby="help-start">
       <h2 id="help-start">What each area does</h2>
       <div class="area-grid">

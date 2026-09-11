@@ -24,7 +24,7 @@ async function seed(page: Page) {
 async function mountHome(page: Page) {
   await page.evaluate(async modules => {
     const [{ default: HostedHome }, { mount }, { registerConversationAutosave }, { sessionState }] = await Promise.all([
-      import(modules.home), import("/@id/svelte"), import(modules.saved), import(modules.stores),
+      import(modules.home), import("/e2e/svelte-runtime.ts"), import(modules.saved), import(modules.stores),
     ]);
     registerConversationAutosave(async () => {});
     const modelId = sessionState.info.model_id;
@@ -73,11 +73,11 @@ for (const [zone, instant, expected] of [
       }, { modules, id: original.id });
       expect(updated.name).toBe(expected);
       await mountHome(page);
-      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name`)).toHaveText(expected);
+      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name .morph-source`)).toHaveText(expected);
       await page.reload();
       await expect(page.getByRole("textbox", { name: "Editable completion buffer" })).toBeVisible();
       await mountHome(page);
-      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name`)).toHaveText(expected);
+      await expect(page.locator(`[data-saved-conversation="${original.id}"] .chat-name .morph-source`)).toHaveText(expected);
     });
   });
 }
@@ -106,14 +106,14 @@ test("chat names stay transparent and neutral, and renaming preserves order thro
   const input = card.getByRole("textbox", { name: "Chat name", exact: true });
   await input.fill("Alpha renamed");
   await input.press("Enter");
-  await expect(card.locator(".chat-name")).toHaveText("Alpha renamed");
+  await expect(card.locator(".chat-name .morph-source")).toHaveText("Alpha renamed");
   expect(await order(page)).toEqual(before);
   await expect(card.locator("time")).toHaveAttribute("datetime", timestamp!);
   await seed(page);
   await mountHome(page);
   await expect(page.locator("[data-saved-conversation]")).toHaveCount(3);
   expect(await order(page)).toEqual(before);
-  await expect(card.locator(".chat-name")).toHaveText("Alpha renamed");
+  await expect(card.locator(".chat-name .morph-source")).toHaveText("Alpha renamed");
 });
 
 test("renaming in the saved-chat drawer preserves position and activity time", async ({ page }) => {

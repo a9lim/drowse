@@ -144,6 +144,7 @@ export interface FittingCoordinatorSpoolPort {
 }
 
 export interface FittingCoordinatorWorkerPort {
+  readonly parallelism?: number;
   run(
     job: FittingWorkerJob,
     options?: {
@@ -174,7 +175,7 @@ export class BrowserFittingCoordinator {
     const layers = new Map<number, AffineFisherResult>();
     let index = 0;
     try {
-      for (const [layer, pooled] of centroids.layers) {
+      await forEachFittingLayer(centroids.layers, this.worker, signal, async ([layer, pooled], signal) => {
         signal.throwIfAborted();
         const whitener = plan.whiteners.get(layer)!;
         const fitCentroids = plan.transformCentroids?.(layer, {
@@ -225,11 +226,11 @@ export class BrowserFittingCoordinator {
           completed: index,
           total: centroids.layers.size,
         });
-      }
+      });
       signal.throwIfAborted();
       return {
         identity: centroids.identity,
-        layers,
+        layers: new Map([...centroids.layers.keys()].map((layer) => [layer, layers.get(layer)!])),
         captureRetained: centroids.captureRetained,
       };
     } catch (error) {
@@ -603,7 +604,7 @@ export async function fitBrowserCurvedSurfaceLayers(
   }
   const finalized = new Map<number, BrowserCurvedMeanLayer>();
   let completed = 0;
-  for (const [layer, fit] of layers) {
+  await forEachFittingLayer(layers, worker, signal, async ([layer, fit], signal) => {
     signal.throwIfAborted();
     if (fit.nodeCount !== nodeCount) {
       throw new Error("Browser curved fitting layers disagree on node count");
@@ -638,8 +639,8 @@ export async function fitBrowserCurvedSurfaceLayers(
     });
     completed += 1;
     options.onProgress?.(layer, completed, layers.size);
-  }
-  return finalized;
+  });
+  return new Map([...layers.keys()].map((layer) => [layer, finalized.get(layer)!]));
 }
 
 export async function fitBrowserAuthoredSurfaceLayers(
@@ -668,7 +669,7 @@ export async function fitBrowserAuthoredSurfaceLayers(
   }
   const finalized = new Map<number, BrowserCurvedMeanLayer>();
   let completed = 0;
-  for (const [layer, fit] of layers) {
+  await forEachFittingLayer(layers, worker, signal, async ([layer, fit], signal) => {
     signal.throwIfAborted();
     if (fit.nodeCount !== nodeCount) {
       throw new Error("Browser authored fitting layers disagree on node count");
@@ -699,8 +700,8 @@ export async function fitBrowserAuthoredSurfaceLayers(
     });
     completed += 1;
     options.onProgress?.(layer, completed, layers.size);
-  }
-  return finalized;
+  });
+  return new Map([...layers.keys()].map((layer) => [layer, finalized.get(layer)!]));
 }
 
 export async function fitBrowserAuthoredFields(
@@ -736,7 +737,7 @@ export async function fitBrowserAuthoredFields(
   }
   const finalized = new Map<number, FinalizedBrowserCurvedLayer>();
   let completed = 0;
-  for (const [layer, fit] of layers) {
+  await forEachFittingLayer(layers, worker, signal, async ([layer, fit], signal) => {
     signal.throwIfAborted();
     let sigmaSurface: SerializedRbfModel | null = null;
     let sigmaSummary: BrowserSigmaFieldSummary | null = null;
@@ -821,8 +822,8 @@ export async function fitBrowserAuthoredFields(
     });
     completed += 1;
     options.onProgress?.("origin", layer, completed, layers.size);
-  }
-  return finalized;
+  });
+  return new Map([...layers.keys()].map((layer) => [layer, finalized.get(layer)!]));
 }
 
 export async function fitBrowserCurvedSigmaFields(
@@ -855,7 +856,7 @@ export async function fitBrowserCurvedSigmaFields(
   }
   const finalized = new Map<number, FinalizedBrowserCurvedLayer>();
   let completed = 0;
-  for (const [layer, fit] of layers) {
+  await forEachFittingLayer(layers, worker, signal, async ([layer, fit], signal) => {
     signal.throwIfAborted();
     if (fit.nodeCount !== nodeCount) {
       throw new Error(`Browser sigma fitting layer ${layer} disagrees on node count`);
@@ -985,8 +986,8 @@ export async function fitBrowserCurvedSigmaFields(
     });
     completed += 1;
     options.onProgress?.("origin", layer, completed, layers.size);
-  }
-  return finalized;
+  });
+  return new Map([...layers.keys()].map((layer) => [layer, finalized.get(layer)!]));
 }
 
 function authoredSigmaValues(
@@ -1995,3 +1996,30 @@ function identity(value: ActivationSpoolIdentity): ActivationSpoolIdentity {
   };
 }
 import { requireBrowserDomain } from "../../lib/manifolds/surfaceGeometry";
+
+async function forEachFittingLayer<T>(
+  source: Iterable<T>,
+  worker: FittingCoordinatorWorkerPort,
+  signal: AbortSignal,
+  consume: (entry: T, signal: AbortSignal) => Promise<void>,
+): Promise<void> {
+  const entries = [...source];
+  const cancellation = new AbortController();
+  const combined = AbortSignal.any([signal, cancellation.signal]);
+  let cursor = 0;
+  let failure: unknown;
+  const run = async () => {
+    while (cursor < entries.length && !combined.aborted) {
+      const entry = entries[cursor++];
+      try {
+        await consume(entry, combined);
+      } catch (error) {
+        if (!cancellation.signal.aborted) failure = error;
+        cancellation.abort(error);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(2, worker.parallelism ?? 1) }, run));
+  if (cancellation.signal.aborted) throw failure;
+  signal.throwIfAborted();
+}

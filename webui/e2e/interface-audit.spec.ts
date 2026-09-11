@@ -1,5 +1,9 @@
+import { selectWorkspaceView } from "./workbench-navigation";
+import { clickWorkspaceAction } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
+import { showWorkspaceTools } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const drawerStoreUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
@@ -31,8 +35,7 @@ async function openFixtureWorkbench(page: Page): Promise<void> {
 }
 
 async function openTranscriptDrawer(page: Page) {
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("conversation transcript");
   await page.keyboard.press("Enter");
@@ -53,6 +56,10 @@ async function expectViewportContainment(page: Page): Promise<void> {
       if (style.display === "none" || style.visibility === "hidden" || box.width === 0 || box.height === 0) {
         return false;
       }
+      const navigation = element.closest<HTMLElement>('nav[aria-label="Primary navigation"]');
+      if (navigation && navigation.scrollWidth > navigation.clientWidth && getComputedStyle(navigation).overflowX === "auto") {
+        return false;
+      }
       return box.left < -1 || box.right > viewportWidth + 1;
     }).map((element) => ({
       tag: element.tagName,
@@ -63,6 +70,12 @@ async function expectViewportContainment(page: Page): Promise<void> {
   });
   expect(result.overflow).toBeLessThanOrEqual(0);
   expect(result.escaped).toEqual([]);
+  for (const link of await page.getByRole("navigation", { name: "Primary navigation", exact: true }).getByRole("link").all()) {
+    await link.scrollIntoViewIfNeeded();
+    const box = (await link.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(await page.evaluate(() => innerWidth));
+  }
 }
 
 async function expectCoherentHeadingOutline(page: Page): Promise<void> {
@@ -96,46 +109,40 @@ test("workspace titles remain accessible without repeating visible heading block
   await expect(page.locator(".workspace-heading, .workspace-eyebrow")).toHaveCount(0);
   await expect(page.locator("#conversation-title.workspace-title-sr")).toHaveText("Talk with your model");
 
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await expect(page.locator("#branches-title.workspace-title-sr")).toHaveText("See every path");
 
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   await expect(page.locator("#controls-title.workspace-title-sr")).toHaveText("Response, model, and chat controls");
   await expect(page.locator(".workbench h1, .workbench h2, .workbench h3, .workbench h4, .workbench h5, .workbench h6"))
     .toHaveCount(0);
 });
 
-test("workspace surfaces share a 24px corner radius", async ({ page }) => {
+test("workspace controls use the compact radius scale", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixtureWorkbench(page);
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
+  await showWorkspaceTools(page, "Loom");
   await page.getByRole("button", { name: /^Map All branches$/ }).click();
 
   const geometry = await page.evaluate(() => {
-    const root = getComputedStyle(document.documentElement);
+    const root = getComputedStyle(document.querySelector(".shell")!);
     const radius = (selector: string) => getComputedStyle(document.querySelector(selector)!).borderRadius;
     return {
       tokens: ["--radius-sm", "--radius-inset", "--radius", "--radius-lg"]
         .map((name) => root.getPropertyValue(name).trim()),
-      workspace: radius(".workspace-surface"),
       toolbar: [...document.querySelectorAll<HTMLElement>(".loom-header .action-btn")]
         .map((element) => getComputedStyle(element).borderRadius),
       views: [...document.querySelectorAll<HTMLElement>(".loom-views button")]
         .map((element) => getComputedStyle(element).borderRadius),
       search: radius(".filter-input"),
-      appearance: radius(".theme-toggle"),
-      appearanceOptions: [...document.querySelectorAll<HTMLElement>(".theme-toggle button")]
-        .map((element) => getComputedStyle(element).borderRadius),
     };
   });
 
-  expect(geometry.tokens).toEqual(["24px", "24px", "24px", "24px"]);
-  expect(geometry.workspace).toBe("24px");
-  expect(new Set(geometry.toolbar)).toEqual(new Set(["24px"]));
-  expect(new Set(geometry.views)).toEqual(new Set(["24px"]));
-  expect(geometry.search).toBe("24px");
-  expect(geometry.appearance).toBe("24px");
-  expect(new Set(geometry.appearanceOptions)).toEqual(new Set(["24px"]));
+  expect(geometry.tokens).toEqual(["4px", "4px", "4px", "8px"]);
+  expect(new Set(geometry.toolbar)).toEqual(new Set(["4px"]));
+  expect(new Set(geometry.views)).toEqual(new Set(["4px"]));
+  expect(geometry.search).toBe("4px");
 });
 
 test("response and model settings share one controls workspace", async ({ page }) => {
@@ -154,8 +161,8 @@ test("response and model settings share one controls workspace", async ({ page }
     conversation.boundingBox(),
     controls.boundingBox(),
   ]);
-  expect(controlsBox!.y).toBeGreaterThan(conversationBox!.y + conversationBox!.height);
-  expect(controlsBox!.x).toBeGreaterThan(conversationBox!.x);
+  expect(controlsBox!.y).toBeGreaterThanOrEqual(conversationBox!.y + conversationBox!.height);
+  expect(controlsBox!.x).toBe(conversationBox!.x);
 
   await controls.click();
   const sections = page.getByRole("group", { name: "Controls section" });
@@ -171,13 +178,13 @@ test("the compact workbench header keeps every primary control on one line", asy
   await page.setViewportSize({ width: 1056, height: 720 });
   await openFixtureWorkbench(page);
 
-  const conversation = page.getByRole("button", { name: "Conversation", exact: true });
-  const controls = page.getByRole("button", { name: "Controls", exact: true });
-  const loom = page.getByRole("button", { name: "Loom", exact: true });
-  const appearance = page.getByRole("group", { name: "Appearance" });
-  const help = page.getByRole("button", { name: "Open help" });
+  const header = page.locator(".app-header");
+  await header.getByRole("button", { name: "Hide left sidebar", exact: true }).click();
+  const left = header.getByRole("button", { name: "Show left sidebar", exact: true });
+  const menu = header.getByRole("button", { name: "Workspace menu", exact: true });
+  const right = header.getByRole("button", { name: "Show right sidebar", exact: true });
   const boxes = await Promise.all(
-    [conversation, controls, loom, appearance, help].map((control) => control.boundingBox()),
+    [left, menu, right].map((control) => control.boundingBox()),
   );
   const centers = boxes.map((box) => box!.y + box!.height / 2);
 
@@ -185,7 +192,7 @@ test("the compact workbench header keeps every primary control on one line", asy
     expect(Math.abs(center - centers[0])).toBeLessThanOrEqual(1);
   }
   expect(boxes[1]!.x).toBeGreaterThan(boxes[0]!.x + boxes[0]!.width);
-  expect(boxes[2]!.x).toBeGreaterThan(boxes[1]!.x + boxes[1]!.width);
+  expect(boxes[2]!.x).toBeGreaterThanOrEqual(boxes[1]!.x + boxes[1]!.width);
 
   const workspaceTop = await page.locator(".workspace-frame").evaluate(
     (frame) => frame.getBoundingClientRect().top,
@@ -196,7 +203,7 @@ test("the compact workbench header keeps every primary control on one line", asy
 
 test("help explains the workbench before showing technical references", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await page.getByRole("button", { name: "Open help" }).click();
+  await page.getByRole("button", { name: "Help and shortcuts", exact: true }).click();
 
   const help = page.getByRole("dialog", { name: "Help and shortcuts" });
   await expect(help.getByRole("heading", { name: "What each area does" })).toBeVisible();
@@ -226,18 +233,22 @@ test("Drowse headers use a plain wordmark without decorative marks or local badg
   await expect(landingBrand.locator("svg, img, [aria-hidden='true'], span")).toHaveCount(0);
 
   await openFixtureWorkbench(page);
-  const workbenchBrand = page.getByRole("link", { name: "Drowse home" });
+  const workbenchBrand = page.locator(".app-header").getByRole("link", { name: "Drowse home" });
   await expect(workbenchBrand).toHaveText("Drowse");
   await expect(workbenchBrand.locator("svg, img, [aria-hidden='true'], span")).toHaveCount(0);
   await expect(page.getByText("LOCAL", { exact: true })).toHaveCount(0);
   await expect(page.getByText("local only", { exact: true })).toHaveCount(0);
 });
 
-test("appearance follows the system and persists across every hosted surface", async ({ page }) => {
+test("appearance defaults to dark and persists across every hosted surface", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   await page.goto(devUrl);
 
   const appearance = page.getByRole("group", { name: "Appearance" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(appearance.getByRole("button", { name: "Dark", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await appearance.getByRole("button", { name: "Light", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(appearance.getByRole("button", { name: "Light", exact: true }))
     .toHaveAttribute("aria-pressed", "true");
@@ -265,7 +276,7 @@ test("appearance follows the system and persists across every hosted surface", a
   expect(lightContrast.muted).toBeGreaterThanOrEqual(4.5);
 
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 
@@ -286,6 +297,7 @@ test("appearance follows the system and persists across every hosted surface", a
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
+  await openWorkspaceMenu(page);
   await expect(page.getByRole("group", { name: "Appearance" })
     .getByRole("button", { name: "Light", exact: true }))
     .toHaveAttribute("aria-pressed", "true");
@@ -310,12 +322,12 @@ test("the conversation gives reading and writing space priority over secondary c
   const composer = await page.getByRole("textbox", { name: /^Compose as / }).boundingBox();
   expect(surface?.width ?? 0).toBeGreaterThan(1200);
   expect(transcript?.height ?? 0).toBeGreaterThan(320);
-  expect(composer?.height ?? 0).toBeGreaterThanOrEqual(90);
+  expect(composer?.height ?? 0).toBeGreaterThanOrEqual(80);
 
   await expect(page.getByRole("button", { name: "Transcript", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Chat view", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "All tools" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "All tools", exact: true })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: "Compare replies" })).toHaveCount(0);
 });
 
@@ -336,8 +348,7 @@ for (const { platform, shortcut, key } of [
 
     await page.keyboard.press(key);
     await expect(page.getByRole("dialog", { name: "Command palette" })).toHaveCount(0);
-    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-    await page.getByRole("button", { name: "All tools", exact: true }).click();
+    await clickWorkspaceAction(page, "All tools");
     await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
   });
 }
@@ -349,8 +360,8 @@ test("landing and onboarding retain hierarchy and reflow at 320 px", async ({ pa
     document.documentElement.style.scrollbarGutter = "stable";
   });
   await expect(page.getByRole("group", { name: "Appearance" }).locator("button:visible"))
-    .toHaveCount(1);
-  await expect(page.getByRole("link", { name: "Check this device" })).toBeVisible();
+    .toHaveCount(2);
+  await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
   await expectCoherentHeadingOutline(page);
   await expectViewportContainment(page);
 
@@ -359,7 +370,7 @@ test("landing and onboarding retain hierarchy and reflow at 320 px", async ({ pa
     page.getByRole("heading", { name: "Choose your first model" }),
   ).toBeVisible();
   await expect(page.getByRole("group", { name: "Appearance" }).locator("button:visible"))
-    .toHaveCount(1);
+    .toHaveCount(2);
   await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
   await expectCoherentHeadingOutline(page);
   await expectViewportContainment(page);
@@ -369,9 +380,10 @@ test("the first visit uses a full-bleed local-compute background without redunda
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(devUrl);
   await expect(page.getByText("Computed on-device", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("Drowse is fully local and open source. Everything computed and stored in your browser.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Open source. Inference and saved work stay on your device.", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "See the privacy boundary" })).toHaveCount(0);
-  await expect(page.locator(".hero-visual svg")).toHaveCount(0);
+  await expect(page.locator(".hero-visual")).toHaveAttribute("aria-hidden", "true");
+  await expect(page.locator(".hero-visual svg")).toHaveAttribute("width", "0");
 
   const initial = await page.locator(".hero-visual").evaluate((element) => {
     return {
@@ -392,7 +404,7 @@ test("mobile keeps model settings inside the controls workspace", async ({ page 
   await useTouchViewport(page);
   await openFixtureWorkbench(page);
   await expect(page.getByRole("button", { name: "Open model settings" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   await page.getByRole("group", { name: "Controls section" })
     .getByRole("button", { name: "Model" }).click();
   await expect(page.getByRole("region", { name: "Model controls", exact: true })).toBeVisible();
@@ -401,7 +413,7 @@ test("mobile keeps model settings inside the controls workspace", async ({ page 
 
 test("drawers expose one unambiguous close action and retain backdrop dismissal", async ({ page }) => {
   await openFixtureWorkbench(page);
-  const helpButton = page.getByRole("button", { name: "Open help" });
+  const helpButton = page.getByRole("button", { name: "Help and shortcuts", exact: true });
 
   await helpButton.click();
   const dialog = page.getByRole("dialog", { name: "Help and shortcuts" });
@@ -420,7 +432,8 @@ test("interactive motion stays brief and reduced motion removes it", async ({ pa
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await openFixtureWorkbench(page);
 
-  const normal = await page.getByRole("button", { name: "Generate reply" }).evaluate((button) => {
+  await page.getByRole("textbox", { name: /^Compose as / }).focus();
+  const normal = await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).evaluate((button) => {
     const style = getComputedStyle(button);
     const root = getComputedStyle(document.documentElement);
     return {
@@ -436,7 +449,7 @@ test("interactive motion stays brief and reduced motion removes it", async ({ pa
   expect(normal.pressScale).toBe("0.96");
 
   await page.emulateMedia({ reducedMotion: "reduce" });
-  const reducedDurations = await page.getByRole("button", { name: "Generate reply" }).evaluate(
+  const reducedDurations = await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).evaluate(
     (button) => getComputedStyle(button).transitionDuration
       .split(",")
       .map((value) => Number.parseFloat(value) * 1000),
@@ -446,6 +459,7 @@ test("interactive motion stays brief and reduced motion removes it", async ({ pa
 
 test("roles, model settings, and reply settings use direct editing with progressive disclosure", async ({ page }) => {
   await openFixtureWorkbench(page);
+  await page.getByRole("button", { name: /^Roles / }).click();
 
   const modelRole = page.getByRole("combobox", { name: "Model writes as" });
   await modelRole.fill("reviewer");
@@ -458,7 +472,7 @@ test("roles, model settings, and reply settings use direct editing with progress
   await expect(roleSettings.getByRole("textbox", { name: /^Label$/ })).toHaveCount(0);
   await roleSettings.getByRole("button", { name: "Close drawer" }).click();
 
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   await page.getByRole("group", { name: "Controls section" })
     .getByRole("button", { name: "Model" }).click();
   const modelInfo = page.getByRole("region", { name: "Model controls", exact: true });
@@ -483,7 +497,7 @@ test("roles, model settings, and reply settings use direct editing with progress
 test("sampling and instrument controls expose persistent contextual help", async ({ page }) => {
   await useTouchViewport(page);
   await openFixtureWorkbench(page);
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
 
   const temperature = page.getByRole("slider", { name: "Temperature" });
   const temperatureDescription = await temperature.getAttribute("aria-describedby");
@@ -551,8 +565,8 @@ test("the semantic type roles load with deliberate variable-font weights", async
   expect(landingType.reading.family).toContain("Wix Madefor Text");
   expect(landingType.reading.weight).toBe(400);
   expect(landingType.control.family).toContain("Wix Madefor Display");
-  expect(landingType.control.weight).toBe(500);
-  expect(landingType.data.family).toContain("Martian Mono");
+  expect(landingType.control.weight).toBe(600);
+  expect(landingType.data.family).toContain("Wix Madefor Text");
   expect(landingType.data.weight).toBeGreaterThanOrEqual(400);
 
   await page.goto(`${devUrl}/app?fixture=1`);
@@ -577,6 +591,7 @@ test("the semantic type roles load with deliberate variable-font weights", async
 
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
+  await page.getByRole("button", { name: /^Roles / }).click();
   const workbenchType = await page.evaluate(() => {
     const tab = getComputedStyle(document.querySelector<HTMLElement>(".workspace-nav button")!);
     const prose = getComputedStyle(document.querySelector<HTMLElement>(".chat textarea")!);
@@ -600,13 +615,13 @@ test("the semantic type roles load with deliberate variable-font weights", async
   expect(workbenchType.prose.family).toContain("Wix Madefor Text");
   expect(workbenchType.prose.weight).toBe(400);
   expect(workbenchType.hud.family).toContain("Martian Mono");
-  expect(workbenchType.tab.size).toBe(14);
+  expect(workbenchType.tab.size).toBe(13);
   expect(workbenchType.prose.size).toBe(14);
-  expect(workbenchType.hud.size).toBe(14);
+  expect(workbenchType.hud.size).toBe(13);
   expect(workbenchType.role.family).toContain("Martian Mono");
-  expect(workbenchType.role.size).toBe(14);
+  expect(workbenchType.role.size).toBe(13);
   expect(workbenchType.role.weight).toBe(400);
-  expect(new Set(workbenchType.roleActions.map((action) => action.size))).toEqual(new Set([12]));
+  expect(new Set(workbenchType.roleActions.map((action) => action.size))).toEqual(new Set([11, 13]));
   expect(new Set(workbenchType.roleActions.map((action) => action.weight))).toEqual(new Set([500]));
 
   await page.setViewportSize({ width: 640, height: 760 });
@@ -640,7 +655,7 @@ test("the primary hosted flow mirrors without clipping in RTL", async ({ page })
 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Mirror this message");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
   const rtlPadding = await page.locator(".role-chip").first().evaluate((chip) => {
     const roleStyle = getComputedStyle(chip);
     const thinking = chip.cloneNode(false) as HTMLElement;
@@ -669,14 +684,13 @@ test("the primary hosted flow mirrors without clipping in RTL", async ({ page })
     thinking.remove();
     return result;
   });
-  expect(rtlPadding.role).toEqual({ inlineStart: 3, inlineEnd: 9, left: 9, right: 3 });
+  expect(rtlPadding.role).toEqual({ inlineStart: 0, inlineEnd: 0, left: 0, right: 0 });
   expect(rtlPadding.thinking.inlineStart).toBeGreaterThan(0);
   expect(rtlPadding.thinking.inlineEnd).toBe(0);
   expect(rtlPadding.thinking.right).toBeGreaterThan(rtlPadding.thinking.left);
   await expectViewportContainment(page);
 
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("model settings");
   await page.keyboard.press("Enter");
@@ -691,21 +705,24 @@ test("the 320 px composer preserves a usable writing surface", async ({ page }) 
   await useTouchViewport(page);
   await openFixtureWorkbench(page);
   const composer = page.getByRole("textbox", { name: /^Compose as / });
+  await composer.focus();
   const metrics = await composer.evaluate((element) => {
     const box = element.getBoundingClientRect();
     return {
       width: box.width,
       height: box.height,
       fontSize: Number.parseFloat(getComputedStyle(element).fontSize),
+      availableWidth: element.closest(".shell")!.getBoundingClientRect().width,
     };
   });
-  expect(metrics.width).toBeGreaterThanOrEqual(280);
+  expect(metrics.width).toBeGreaterThanOrEqual(metrics.availableWidth - 56);
   expect(metrics.height).toBeGreaterThanOrEqual(44);
   expect(metrics.fontSize).toBeGreaterThanOrEqual(16);
   const actionHeights = await page.locator(".input-actions button").evaluateAll(
     (buttons) => buttons.map((button) => button.getBoundingClientRect().height),
   );
   expect(Math.min(...actionHeights)).toBeGreaterThanOrEqual(44);
+  await showWorkspaceTools(page, "chat");
   const [chatHeader, readingTools, headerActions] = await Promise.all([
     page.locator(".chat-header").boundingBox(),
     page.locator(".reading-tools").boundingBox(),
@@ -746,6 +763,7 @@ test("conversation actions stay in one row", async ({ page }) => {
 test("desktop role controls stay compact so the conversation remains primary", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await openFixtureWorkbench(page);
+  await page.getByRole("button", { name: /^Roles / }).click();
 
   const [rolePlan, conversation, roleInput] = await Promise.all([
     page.locator(".turn-plan").boundingBox(),
@@ -764,12 +782,12 @@ test("desktop role controls stay compact so the conversation remains primary", a
 test("narrow role controls stay compact and inside their panel", async ({ page }) => {
   await page.setViewportSize({ width: 504, height: 760 });
   await openFixtureWorkbench(page);
-  await page.getByRole("button", { name: "Expand" }).click();
+  await page.getByRole("button", { name: /^Roles / }).click();
 
   const plan = page.locator(".turn-plan");
   const planBox = await plan.boundingBox();
   expect(planBox).not.toBeNull();
-  expect(planBox!.height).toBeLessThanOrEqual(112);
+  expect(planBox!.height).toBeLessThanOrEqual(144);
 
   const children = await plan.locator(":scope > *").evaluateAll((elements) =>
     elements.map((element) => element.getBoundingClientRect().toJSON())
@@ -788,7 +806,7 @@ test("narrow role controls stay compact and inside their panel", async ({ page }
 test("role settings scroll instead of shrinking their panels", async ({ page }) => {
   await page.setViewportSize({ width: 504, height: 400 });
   await openFixtureWorkbench(page);
-  await page.getByRole("button", { name: "Expand" }).click();
+  await page.getByRole("button", { name: /^Roles / }).click();
   await page.getByRole("button", { name: "Role settings" }).click();
 
   const drawer = page.getByRole("dialog", { name: "Role settings" });
@@ -854,6 +872,7 @@ test("the composer can be resized and role controls can be minimized", async ({ 
   ).toBeGreaterThan(shortHeight);
 
   const collapseRoles = page.getByRole("button", { name: "Collapse roles" });
+  await page.getByRole("button", { name: /^Roles / }).click();
   const rolePlanShell = page.locator(".turn-plan-shell");
   await rolePlanShell.evaluate((element) => {
     const originalAnimate = element.animate.bind(element);
@@ -884,7 +903,7 @@ test("the composer can be resized and role controls can be minimized", async ({ 
   );
   await expect(page.getByRole("combobox", { name: "You write as" })).toHaveCount(0);
 
-  const roleSummary = page.getByRole("button", { name: /Roles.*Expand/ });
+  const roleSummary = page.getByRole("button", { name: /^Roles / });
   await expect(roleSummary).toHaveAttribute("aria-expanded", "false");
   await expect(roleSummary).toHaveAttribute("aria-controls", "turn-role-controls");
   await expect(roleSummary).toBeFocused();
@@ -916,7 +935,7 @@ test("desktop controls and drawer shells use the shared comfortable spacing cont
   expect(Math.min(...treeRowHeights)).toBeGreaterThanOrEqual(32);
 
   const workspaceBefore = await page.locator(".workspace-frame").boundingBox();
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   await page.getByRole("group", { name: "Controls section" })
     .getByRole("button", { name: "Model" }).click();
   const modelControls = page.getByRole("region", { name: "Model controls", exact: true });
@@ -930,9 +949,9 @@ test("desktop controls and drawer shells use the shared comfortable spacing cont
       panelPadding: Number.parseFloat(panel.paddingInlineStart),
     };
   });
-  expect(spacing.bodyInline).toBeGreaterThanOrEqual(18);
-  expect(spacing.bodyGap).toBeGreaterThanOrEqual(16);
-  expect(spacing.panelPadding).toBeGreaterThanOrEqual(16);
+  expect(spacing.bodyInline).toBe(12);
+  expect(spacing.bodyGap).toBeGreaterThanOrEqual(8);
+  expect(spacing.panelPadding).toBeGreaterThanOrEqual(12);
 
   const workspaceAfter = await page.locator(".workspace-frame").boundingBox();
   expect(Math.abs((workspaceAfter?.x ?? 0) - (workspaceBefore?.x ?? 0))).toBeLessThanOrEqual(1);
@@ -952,8 +971,7 @@ test("mobile drawers retain touch targets, readable measure, and viewport contai
   await expectViewportContainment(page);
   await page.keyboard.press("Escape");
 
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const search = page.getByRole("combobox", { name: "Filter commands" });
   await search.fill("model settings");
   await page.keyboard.press("Enter");
@@ -979,8 +997,7 @@ test("mobile drawers retain touch targets, readable measure, and viewport contai
 test("portable pack discovery exposes complete mobile keyboard and touch controls", async ({ page }) => {
   await useTouchViewport(page);
   await openFixtureWorkbench(page);
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const paletteSearch = page.getByRole("combobox", { name: "Filter commands" });
   await paletteSearch.fill("packs");
   await page.getByRole("option", { name: /^Manage downloaded controls\b/i }).click();
@@ -1016,8 +1033,7 @@ test("every hosted command surface remains operable at 320 px", async ({ page })
   await useTouchViewport(page);
   await openFixtureWorkbench(page);
 
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await clickWorkspaceAction(page, "All tools");
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await expect(palette).toBeVisible();
   const paletteMetrics = await palette.locator("input, button").evaluateAll((controls) =>
@@ -1042,8 +1058,7 @@ test("every hosted command surface remains operable at 320 px", async ({ page })
 
   const issues: Array<{ command: string; kind: string; detail: unknown }> = [];
   for (const command of drawerCommands) {
-    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-    await page.getByRole("button", { name: "All tools", exact: true }).click();
+    await clickWorkspaceAction(page, "All tools");
     const search = page.getByRole("combobox", { name: "Filter commands" });
     await search.fill(command);
     await page.getByRole("option", { name: new RegExp(`^${command}\\b`, "i") }).click();
@@ -1063,7 +1078,10 @@ test("every hosted command surface remains operable at 320 px", async ({ page })
         return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
       });
       return {
-        small: interactive.filter((element) => element.getBoundingClientRect().height < 44)
+        small: interactive.filter((element) =>
+          element.getBoundingClientRect().height < 44 &&
+          !(element.matches("a[href]") && element.closest("p") && getComputedStyle(element).display === "inline")
+        )
           .map((element) => ({
             tag: element.tagName,
             name: element.getAttribute("aria-label") ?? element.textContent?.trim().slice(0, 60),
@@ -1123,7 +1141,7 @@ test("context-launched workbench drawers remain operable at 320 px", async ({ pa
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create inspectable context");
   await sendButton(page).click();
-  await expect(page.getByRole("button", { name: /^Stop$/i })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
 
   const drawers: Array<{ name: string; params?: unknown }> = [
     { name: "save_conversation" },

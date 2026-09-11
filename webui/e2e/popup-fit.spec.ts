@@ -1,11 +1,13 @@
+import { selectWorkspaceView } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 
 test("sampling popup stays compact and inside the viewport across themes and sizes", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   for (const theme of ["Light", "Dark"]) {
-    await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+    await openWorkspaceMenu(page);
     await page.getByRole("button", { name: theme, exact: true }).click();
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Sampling settings", exact: true }).click();
@@ -19,7 +21,7 @@ test("sampling popup stays compact and inside the viewport across themes and siz
     ]) {
       await page.setViewportSize(viewport);
       await expect(dialog).toBeVisible();
-      expect(await dialog.evaluate(element => {
+      await expect.poll(() => dialog.evaluate(element => {
         const rect = element.getBoundingClientRect();
         const close = element.querySelector(".drawer-close")!;
         const closeRect = close.getBoundingClientRect();
@@ -32,7 +34,7 @@ test("sampling popup stays compact and inside the viewport across themes and siz
           fieldsFit: [...element.querySelectorAll(".setting")].every(field => field.scrollWidth <= field.clientWidth),
           bodyFits: body.scrollWidth <= body.clientWidth,
         };
-      })).toEqual({ insideViewport: true, popupRadius: "12px", closeRadius: "8px", closeVisible: true, fieldsFit: true, bodyFits: true });
+      })).toEqual({ insideViewport: true, popupRadius: "16px", closeRadius: "4px", closeVisible: true, fieldsFit: true, bodyFits: true });
     }
     await page.setViewportSize({ width: 320, height: 780 });
     await page.getByText("Additional parameters", { exact: true }).click();

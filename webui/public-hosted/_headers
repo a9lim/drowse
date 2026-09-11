@@ -2,7 +2,7 @@
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
-  Content-Security-Policy: default-src 'self'; base-uri 'self'; connect-src 'self' https://huggingface.co https://us.aws.cdn.hf.co; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; manifest-src 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; connect-src 'self' https://huggingface.co https://us.aws.cdn.hf.co https://www.neuronpedia.org; font-src 'self' data:; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; manifest-src 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:
   Permissions-Policy: accelerometer=(), browsing-topics=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff

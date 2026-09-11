@@ -1,4 +1,6 @@
 <script lang="ts">
+  import TraceDetail from "../../lib/charts/TraceDetail.svelte";
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // Unified probe card — one row for every probe shape.  Replaces the
@@ -110,7 +112,7 @@
   );
 
   /** Display name — bare manifold name, namespace prefix stripped; full
-   *  name stays in the tooltip. */
+   *  name stays in the accessible description. */
   const displayName = $derived(name.split("/").pop() ?? name);
 
   // ---------- bipolar poles ----------
@@ -214,13 +216,13 @@
       ariaLabel={`Detach probe ${name}`}
     />
 
-    <span class="name" title="probe {name}">{displayName}</span>
+    <span class="name" {...{ "aria-description": "probe " + (name) }}>{displayName}</span>
 
     {#if depthCom !== null}
       <span
         class="com"
-        title="depth ± spread"
-      >@<RollingNumber value={Number.isFinite(depthCom) ? depthCom : 0} digits={2} />{#if depthSpread !== null} ±<RollingNumber value={Number.isFinite(depthSpread) ? depthSpread : 0} digits={2} />{/if}</span>
+        {...{ "aria-description": "depth ± spread" }}
+      >@<RollingNumber value={depthCom} digits={2} />{#if depthSpread !== null} ±<RollingNumber value={depthSpread} digits={2} />{/if}</span>
     {/if}
 
     <span class="spacer"></span>
@@ -229,7 +231,7 @@
       type="button"
       class="icon inspect"
       aria-label="Inspect probe {name}"
-      title="inspect"
+      {...{ "aria-description": "inspect" }}
       onclick={onInspect}
     ><FluentIcon name="info" /></button>
 
@@ -241,7 +243,7 @@
       aria-label={isHighlight
         ? `Deselect ${name} as transcript highlight target`
         : `Select ${name} as transcript highlight target`}
-      title="highlight"
+      {...{ "aria-description": "highlight" }}
       onclick={toggleHighlight}
     >{isHighlight ? "highlighted" : "highlight"}</button>
 
@@ -267,7 +269,7 @@
       {#snippet left()}
         <span
           class="row-label"
-          title="subspace share"
+          {...{ "aria-description": "Share of the centered activation in this subspace · 0 to 1 · not confidence" }}
         >subspace</span>
       {/snippet}
       {#snippet bar()}
@@ -278,12 +280,12 @@
       {#snippet middle()}
         <span
           class="nearest"
-          title={topNearest
-            ? `nearest · ${nearestLabel} · d ${fmtDistance(nearestDistance)}`
-            : "awaiting first token"}
+          {...{ "aria-description": (topNearest
+            ? `nearest · ${nearestLabel} · ${fmtDistance(nearestDistance)} typical label spacings away · smaller is closer`
+            : "awaiting first token") }}
         >
           {#if topNearest}
-            <span class="nearest-label">{nearestLabel}</span>
+            <span class="nearest-label"><MorphText text={nearestLabel} numbers={false} /></span>
             <span class="nearest-dist">d={#if nearestDistance !== null && Number.isFinite(nearestDistance)}<RollingNumber value={nearestDistance} digits={2} />{:else}-{/if}</span>
           {:else}
             <span class="nearest-empty">-</span>
@@ -312,7 +314,7 @@
         {/snippet}
         {#snippet middle()}
           {#if showPoles}
-            <span class="pole pos" title={`positive pole (${poles.positive})`}>
+            <span class="pole pos" {...{ "aria-description": (`positive pole (${poles.positive})`) }}>
               {poles.positive}
             </span>
           {:else}
@@ -331,7 +333,7 @@
       <!-- Settled meta: the curved-only off-surface residual (the depth
            CoM moved to the statline, right of the probe name). -->
       <div class="meta">
-        <span class="meta-item" title="residual">
+        <span class="meta-item" {...{ "aria-description": "residual" }}>
           residual <RollingNumber value={Number.isFinite(residual) ? residual : 0} digits={2} />
         </span>
       </div>
@@ -356,6 +358,7 @@
         />
       </div>
     {/if}
+    <TraceDetail points={sparkline} />
   {/snippet}
 </RackCard>
 

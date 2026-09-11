@@ -3,6 +3,8 @@
   import SidebarIcon from "./lib/ui/SidebarIcon.svelte";
   import { tokenInspectorUi, dockTokenDetails, hideTokenDetails } from "./lib/stores/drawers.svelte";
   import TokenDrilldownDrawer from "./drawers/TokenDrilldownDrawer.svelte";
+  import BottomSheet from "./lib/ui/BottomSheet.svelte";
+  import { MOBILE_SHEET_QUERY } from "./lib/bottomSheet";
   import "./lib/style/workspace.css";
   import WorkspaceBackground from "./lib/ui/WorkspaceBackground.svelte";
   import { slidingSelection } from "./lib/slidingSelection";
@@ -36,6 +38,7 @@
   } from "./lib/motion";
   import { userFacingError } from "./lib/runtime/userFacingError";
   import { restoreConversationSnapshot } from "./lib/conversationWorkspace";
+  import { resetSettings } from "./lib/stores/settingsReset.svelte";
   import {
     conversationLibrary,
     savedConversationState,
@@ -106,8 +109,34 @@
   }));
   let drawerEl: HTMLElement | null = $state(null);
   let leftSidebarVisible = $state(true);
+  let compactNavigation = $state(false);
+  let restoreNavigationButton: HTMLButtonElement | null = $state(null);
+  let collapseNavigationButton: HTMLButtonElement | null = $state(null);
+  async function setMobileNavigation(visible: boolean) {
+    leftSidebarVisible = visible;
+    await tick();
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    focusWithoutScrolling(visible ? collapseNavigationButton : restoreNavigationButton);
+  }
+  let narrowScreen = $state(false);
+  onMount(() => {
+    const navigationQuery = window.matchMedia("(max-width: 760px)");
+    const updateNavigation = () => { compactNavigation = navigationQuery.matches; };
+    updateNavigation();
+    navigationQuery.addEventListener("change", updateNavigation);
+    return () => navigationQuery.removeEventListener("change", updateNavigation);
+  });
+  onMount(() => {
+    const query = window.matchMedia(MOBILE_SHEET_QUERY);
+    const update = () => { narrowScreen = query.matches; };
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  });
   const dockedTokenDetails = $derived(tokenInspectorUi.visible);
-  const modalDrawerOpen = $derived(drawerState.open !== null);
+  const mobileTokenDrawer = $derived(narrowScreen && drawerState.open === "token_drilldown");
+  const modalDrawerOpen = $derived(drawerState.open !== null || (narrowScreen && dockedTokenDetails));
   let workspaceView: WorkspaceView = $state("conversation");
   let conversationToolsVisible = $state(false);
   let loomToolsVisible = $state(false);
@@ -163,7 +192,7 @@
 
   $effect(() => {
     const open = drawerState.open;
-    const modal = modalDrawerOpen;
+    const modal = open !== null && !mobileTokenDrawer;
     if (open !== null && previousDrawer === null) {
       drawerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
@@ -176,6 +205,7 @@
       const trigger = drawerTrigger;
       void tick().then(() => {
         if (trigger?.isConnected) focusWithoutScrolling(trigger);
+        else focusWithoutScrolling(document.querySelector<HTMLElement>('[aria-controls="workspace-sidebar"]'));
       });
       drawerTrigger = null;
     }
@@ -212,6 +242,7 @@
       health: "Model health",
       appearance: "Appearance",
       help: "Help and shortcuts",
+      feedback: "Submit Feedback",
       load_conversation: "Saved chats",
       local_runtime: "Model settings",
       manifold_builder: "Create a concept or scale",
@@ -262,6 +293,8 @@
           savedConversationState.activeId = record.id;
           savedConversationState.avatarSeed = record.avatarSeed;
           savedConversationState.accent = record.accent ?? "purple";
+        } else if (tree?.nodes.length === 1 && tree.active_node_id === tree.root_id) {
+          await resetSettings(true);
         }
       }
       // Open the WS eagerly so the first generate doesn't pay connect
@@ -294,6 +327,7 @@
   // via the sidebar's modal flow.  Browser Ctrl+B (bold) is suppressed
   // via ``preventDefault`` per Decision 9.
   async function onWindowKey(ev: KeyboardEvent) {
+    if (ev.defaultPrevented) return;
     // Escape priority (most-targeted close first):
     //   1. open loom modal / menu — let the sidebar's own Esc handler
     //      (LoomSidebar.svelte::onWindowKey) close it.  We DON'T
@@ -412,7 +446,7 @@
     <main
       class="layout"
       class:sidebar-collapsed={!leftSidebarVisible}
-      class:has-token-sidebar={dockedTokenDetails}
+      class:has-token-sidebar={dockedTokenDetails && !narrowScreen}
       id="workspace-main"
       inert={paletteState.open || bootStatus !== "ready"}
       aria-busy={bootStatus === "loading"}
@@ -424,20 +458,27 @@
           {#snippet leading()}
             <button type="button" class="sidebar-toggle" aria-expanded={leftSidebarVisible}
               aria-controls="workspace-sidebar" aria-label={leftSidebarVisible ? "Hide left sidebar" : "Show left sidebar"}
-              title={leftSidebarVisible ? "Hide left sidebar" : "Show left sidebar"}
+
               onclick={() => (leftSidebarVisible = !leftSidebarVisible)}><SidebarIcon /></button>
+            {#if compactNavigation && !leftSidebarVisible}
+              <button type="button" class="sidebar-toggle navigation-restore" bind:this={restoreNavigationButton}
+                aria-label="Show navigation bar" aria-expanded="false" aria-controls="workspace-sidebar"
+                onclick={() => void setMobileNavigation(true)}><FluentIcon name="down" /></button>
+            {/if}
           {/snippet}
           {#snippet actions()}
+            {#if !leftSidebarVisible || compactNavigation}
             <WorkbenchMenu hosted={runtimeClient.mode !== "http"} busy={returningHome}
               hasChat={loomTree.nodes.size > 1} generating={genStatus.active}
               toolsLabel={workspaceView === "controls" ? null : workspaceView === "branches" ? "Loom tools" : "chat tools"}
               toolsVisible={headersVisible} onToggleTools={toggleViewTools}
               onChats={() => void returnHome()} onModels={() => void returnHome("models")}
               onDownload={() => openDrawer("download_chat")} onAllTools={openPalette} onHelp={() => openDrawer("help")} />
+            {/if}
             <button type="button" class="sidebar-toggle" aria-expanded={dockedTokenDetails}
               aria-controls="workspace-token-sidebar" aria-label={dockedTokenDetails ? "Hide right sidebar" : "Show right sidebar"}
-              title={dockedTokenDetails ? "Hide right sidebar" : "Show right sidebar"}
-              onclick={() => dockedTokenDetails ? hideTokenDetails() : dockTokenDetails()}><SidebarIcon side="right" /></button>
+
+              onclick={(event) => { focusWithoutScrolling(event.currentTarget); if (dockedTokenDetails) hideTokenDetails(); else dockTokenDetails(); }}><SidebarIcon side="right" /></button>
           {/snippet}
         </PageHeader>
       </div>
@@ -445,6 +486,14 @@
       <aside class="app-sidebar t-panel-slide" id="workspace-sidebar" data-open={leftSidebarVisible} aria-hidden={!leftSidebarVisible}
         inert={modalDrawerOpen || !leftSidebarVisible} aria-label="Workspace sidebar">
         <div class="workspace-navigation">
+        {#if compactNavigation}
+          <button type="button" class="sidebar-toggle mobile-navigation-action" aria-label="Back to Chats"
+            disabled={returningHome} onclick={() => void returnHome()}><FluentIcon name="back" /></button>
+        {/if}
+        <nav class="sidebar-links sidebar-back" aria-label="Back to chats">
+          <button type="button" disabled={returningHome} onclick={() => void returnHome()}><FluentIcon name="chats" /><span>Back to Chats</span></button>
+          <hr />
+        </nav>
         <nav class="workspace-nav" aria-label="Workspace" use:slidingSelection>
           <div class="workspace-group" class:current={workspaceView === "conversation" || workspaceView === "controls"}>
             <button
@@ -452,11 +501,12 @@
               class="workspace-parent"
               class:active={workspaceView === "conversation"}
               aria-current={workspaceView === "conversation" ? "page" : undefined}
+              aria-describedby="workspace-conversation-description"
               onclick={() => (workspaceView = "conversation")}
             >
               <FluentIcon name="conversation" size={16} />
               <span class="nav-copy"><span class="wide-label">{sessionState.info?.is_base_model ? "Completion" : "Conversation"}</span>
-                <span class="nav-description">Write and inspect text</span></span>
+                <span class="nav-description" id="workspace-conversation-description" aria-hidden="true">Write and inspect text</span></span>
               <span class="short-label">{sessionState.info?.is_base_model ? "Text" : "Chat"}</span>
             </button>
             <div class="workspace-subnav" aria-label="Conversation tools">
@@ -465,9 +515,10 @@
                 class="workspace-child"
                 class:active={workspaceView === "controls"}
                 aria-current={workspaceView === "controls" ? "page" : undefined}
+                aria-describedby="workspace-controls-description"
                 onclick={() => (workspaceView = "controls")}
               >
-                <FluentIcon name="controls" size={16} /><span class="nav-copy"><span>Controls</span><span class="nav-description">Shape and measure output</span></span>
+                <FluentIcon name="controls" size={16} /><span class="nav-copy"><span>Controls</span><span class="nav-description" id="workspace-controls-description" aria-hidden="true">Shape and measure output</span></span>
               </button>
             </div>
           </div>
@@ -477,18 +528,27 @@
             class="workspace-parent"
             class:active={workspaceView === "branches"}
             aria-current={workspaceView === "branches" ? "page" : undefined}
+            aria-describedby="workspace-loom-description"
             onclick={() => (workspaceView = "branches")}
-          ><FluentIcon name="loom" size={16} /><span class="nav-copy"><span>Loom</span><span class="nav-description">Explore alternate paths</span></span></button>
+          ><FluentIcon name="loom" size={16} /><span class="nav-copy"><span>Loom</span><span class="nav-description" id="workspace-loom-description" aria-hidden="true">Explore alternate paths</span></span></button>
 
         </nav>
+        {#if compactNavigation}
+          <button type="button" class="sidebar-toggle mobile-navigation-action" bind:this={collapseNavigationButton}
+            aria-label="Hide navigation bar" aria-expanded="true" aria-controls="workspace-sidebar"
+            onclick={() => void setMobileNavigation(false)}><FluentIcon name="up" /></button>
+        {/if}
         <nav class="sidebar-links" aria-label="Library and tools">
-          <span class="sidebar-label">Library</span>
-          <button type="button" disabled={returningHome} onclick={() => void returnHome()}><FluentIcon name="chats" /><span>Your chats</span></button>
           {#if runtimeClient.mode !== "http"}<button type="button" disabled={returningHome} onclick={() => void returnHome("models")}><FluentIcon name="models" /><span>Models</span></button>{/if}
           <span class="sidebar-label">Workspace</span>
+          {#if workspaceView !== "controls"}
+            <button type="button" aria-pressed={headersVisible} onclick={toggleViewTools}><FluentIcon name="controls" /><span>{headersVisible ? "Hide" : "Show"} {workspaceView === "branches" ? "Loom tools" : "chat tools"}</span></button>
+          {/if}
+          {#if loomTree.nodes.size > 1}<button type="button" disabled={genStatus.active} onclick={() => openDrawer("download_chat")}><FluentIcon name="download" /><span>Download chat</span></button>{/if}
           <button type="button" onclick={openPalette}><FluentIcon name="search" /><span>All tools</span></button>
           <button type="button" onclick={() => openDrawer("appearance")}><FluentIcon name="appearance" /><span>Appearance</span></button>
           <button type="button" onclick={() => openDrawer("help")}><FluentIcon name="help" /><span>Help and shortcuts</span></button>
+          <button type="button" onclick={(event) => { focusWithoutScrolling(event.currentTarget); openDrawer("feedback"); }}><FluentIcon name="conversation" /><span>Submit Feedback</span></button>
         </nav>
         </div>
 
@@ -542,16 +602,21 @@
         </section>
       </div>
 
-      <div class="drawer token-details docked t-panel-slide" id="workspace-token-sidebar"
+      <BottomSheet enabled={narrowScreen} open={dockedTokenDetails && drawerState.open === null} onclose={hideTokenDetails}>
+        {#snippet children(dismiss)}
+        <div class="drawer token-details docked t-panel-slide" class:mobile-sheet-content={narrowScreen} id="workspace-token-sidebar"
         data-open={dockedTokenDetails} aria-hidden={!dockedTokenDetails}
-        inert={!dockedTokenDetails || modalDrawerOpen} role="complementary" aria-label="Generated word details">
+        inert={!dockedTokenDetails || drawerState.open !== null} role={narrowScreen ? undefined : "complementary"} aria-label={narrowScreen ? undefined : "Generated word details"}>
         {#if tokenInspectorUi.docked}
-          <TokenDrilldownDrawer docked params={tokenInspectorUi.params} active={dockedTokenDetails && !modalDrawerOpen} />
+          <TokenDrilldownDrawer docked mobile={narrowScreen} onclose={dismiss} params={tokenInspectorUi.params} active={dockedTokenDetails && drawerState.open === null} />
         {/if}
-      </div>
+        </div>
+        {/snippet}
+      </BottomSheet>
 
       {#if drawerState.open !== null}
         {@const entry = DRAWERS[drawerState.open]}
+        {#if !mobileTokenDrawer}
         <div
           class="drawer-backdrop"
           aria-hidden="true"
@@ -559,26 +624,30 @@
           in:fade={scrimIn()}
           out:fade={scrimOut()}
         ></div>
+        {/if}
+        <BottomSheet enabled={mobileTokenDrawer} open onclose={closeDrawer}>
+          {#snippet children(dismiss)}
         <div
           bind:this={drawerEl}
           class="drawer"
           class:narrow={entry.narrow}
           class:token-details={drawerState.open === "token_drilldown"}
+          class:mobile-sheet-content={mobileTokenDrawer}
           class:download-confirm={drawerState.open === "download_chat"}
-          role="dialog"
-          aria-modal="true"
-          aria-label={drawerLabel(drawerState.open)}
+          role={mobileTokenDrawer ? undefined : "dialog"}
+          aria-modal={mobileTokenDrawer ? undefined : "true"}
+          aria-label={mobileTokenDrawer ? undefined : drawerLabel(drawerState.open!)}
           tabindex="-1"
-          onkeydown={onDrawerKeydown}
-          in:fly={panelIn(24)}
-          out:fly={panelOut(14)}
+          onkeydown={event => { if (!mobileTokenDrawer) onDrawerKeydown(event); }}
+          in:fly={mobileTokenDrawer ? { duration: 0 } : panelIn(24)}
+          out:fly={mobileTokenDrawer ? { duration: 0 } : panelOut(14)}
           onintrostart={(event) => { event.currentTarget.inert = false; }}
           onoutrostart={(event) => { event.currentTarget.inert = true; }}
         >
-          <entry.component
-            params={drawerParams(drawerState.open, drawerState.params)}
-          />
+          <entry.component params={drawerParams(drawerState.open!, drawerState.params)} mobile={mobileTokenDrawer} onclose={dismiss} />
         </div>
+          {/snippet}
+        </BottomSheet>
       {/if}
     </main>
 
@@ -965,6 +1034,8 @@
   .nav-copy { display: grid; gap: 0; min-width: 0; }
   .nav-description { color: var(--fg-muted); font-size: var(--text-xs); font-weight: var(--weight-normal); line-height: 1.4; }
   .sidebar-links { display: grid; gap: var(--space-1); margin-top: var(--space-lg); }
+  .sidebar-back { margin-top: 0; }
+  .sidebar-back hr { margin: var(--space-2) var(--space-3); border: 0; border-block-start: 1px solid var(--glass-line); }
   .sidebar-label { padding: var(--space-sm) var(--space-3) var(--space-xs); color: var(--fg-muted); font-size: var(--text-xs); }
   .sidebar-links button { display: flex; align-items: center; gap: var(--control-label-gap); min-width: 0; min-height: var(--control-target); padding: var(--space-xs) var(--space-3); border: 0; border-radius: var(--radius); background: transparent; color: var(--fg-dim); font-size: var(--text-sm); text-align: start; }
   .sidebar-links button:hover:not(:disabled) { background: var(--bg-hover); color: var(--fg); }
@@ -1167,13 +1238,9 @@
   @media (max-width: 760px) {
     .layout, .layout.sidebar-collapsed, .layout.has-token-sidebar, .layout.sidebar-collapsed.has-token-sidebar {
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: max-content minmax(0, calc(var(--control-target) + var(--space-2) * 2)) minmax(0, 1fr) minmax(0, 0fr);
+      grid-template-rows: max-content minmax(0, calc(var(--control-target) + var(--space-2) * 2 + var(--space-1))) minmax(0, 1fr) minmax(0, 0fr);
     }
     .layout.sidebar-collapsed { grid-template-rows: max-content minmax(0, 0px) minmax(0, 1fr) minmax(0, 0fr); }
-    .layout.has-token-sidebar { grid-template-rows: max-content minmax(0, calc(var(--control-target) + var(--space-2) * 2)) minmax(0, 1fr) minmax(0, 1fr); }
-    .layout.sidebar-collapsed.has-token-sidebar {
-      grid-template-rows: max-content minmax(0, 0px) minmax(0, 1fr) minmax(0, 1fr);
-    }
     .drawer.docked {
       grid-column: 1;
       grid-row: 4;
@@ -1193,7 +1260,7 @@
       flex-direction: row;
       flex-wrap: wrap;
       align-items: center;
-      justify-content: flex-start;
+      justify-content: center;
       gap: var(--space-4);
       min-height: 0;
       padding:
@@ -1206,6 +1273,8 @@
       border-bottom: 1px solid var(--grid-line);
       background: color-mix(in srgb, var(--bg-elev) 90%, transparent);
     }
+    .app-sidebar.t-panel-slide { transform: translateY(-12px); }
+    .app-sidebar.t-panel-slide[data-open="true"] { transform: translateY(0); }
     .workspace-frame {
       grid-column: 1 / -1;
       grid-row: 3;
@@ -1217,14 +1286,16 @@
       width: fit-content;
       min-width: 0;
       gap: 0;
-      padding: 0;
+      padding: calc(var(--space-1) / 2);
+      border-radius: var(--radius-lg);
+      background: var(--glass);
     }
     .workspace-navigation {
       flex-direction: row;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
-      justify-content: space-between;
-      width: fit-content;
+      justify-content: center;
+      width: 100%;
       max-width: 100%;
       flex: 1 1 auto;
     }
@@ -1234,7 +1305,7 @@
     }
     .workspace-nav button {
       width: auto;
-      border-radius: var(--radius-inset);
+      border-radius: var(--radius);
       white-space: nowrap;
       text-align: center;
       justify-content: center;
@@ -1255,7 +1326,7 @@
     .workspace-nav {
       display: grid;
       grid-template-columns: repeat(3, auto);
-      width: fit-content;
+      width: 100%;
       max-width: 100%;
       margin-inline: auto;
     }
@@ -1277,5 +1348,11 @@
   @media (max-width: 420px) {
     .workspace-navigation { justify-content: center; }
     .workspace-nav { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .workspace-nav button { padding-inline: var(--space-1); }
+    .workspace-nav :global(.fluent-icon) { display: none; }
+  }
+
+  @media (min-width: 621px) and (max-height: 600px) {
+    .chat-zone:not(:has(:global(.chat-header))) { padding: 0; }
   }
 </style>

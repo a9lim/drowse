@@ -105,9 +105,8 @@ class _StubSession:
         self.last_per_token_scores = None
         self.last_result = None
 
-        gen_state = MagicMock()
-        gen_state.finish_reason = "stop"
-        self.generation_state = gen_state
+        from drowse.core.generation import GenerationState
+        self.generation_state = GenerationState()
 
         self.lock = asyncio.Lock()
 
@@ -131,6 +130,7 @@ class _StubSession:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self.generation_state.request_stop()
 
     # ----- loom conflict check (mirrors DrowseSession._loom_conflict_check)
     def _loom_conflict_check(self, node_id: str, op: str) -> None:
@@ -221,7 +221,11 @@ class _StubSession:
                     assistant_id, {"token_id": 1000 + sibling_idx, "text": token_text},
                 )
                 if self._block_until_stop:
-                    assert self._stop_event.wait(timeout=5.0)
+                    import time
+                    deadline = time.monotonic() + 5
+                    while not self.generation_state.is_stop_requested():
+                        assert time.monotonic() < deadline
+                        self._stop_event.wait(timeout=0.01)
                 full_text = prefix + token_text
                 from drowse.core.measurements import build_measurements
 

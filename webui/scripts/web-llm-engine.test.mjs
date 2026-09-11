@@ -213,6 +213,7 @@ try {
     }
     async unload() { this.unloaded += 1; }
     async interruptGenerate() { this.interrupted += 1; }
+    async resetChat() { this.chatResets = (this.chatResets ?? 0) + 1; }
     async getDrowseRuntimeCapabilities() {
       return {
         topK: true,
@@ -477,15 +478,48 @@ try {
     },
   };
   const generated = await runtime.streamGeneration(
-    { input: { kind: "chat", messages: [{ role: "user", content: "hello" }] } },
+    { input: { kind: "chat", messages: [{ role: "user", content: "hello" }] }, thinking: false },
     () => {},
   );
   assert.equal(generated.text, "answer");
-  assert.equal(generationRequest.max_tokens, 8_192);
+  assert.equal(engine.chatResets, 1);
+  assert.equal(generationRequest.max_tokens, loadRequest().contextTokens);
   assert.deepEqual(runtime.generationPerformance(), {
     prefillTokensPerSecond: 18,
     decodeTokensPerSecond: 7.5,
   });
+  const followupMessages = [
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "answer" },
+    { role: "user", content: "and next?" },
+  ];
+  engine.chat.completions.create = async request => {
+    assert.equal(engine.chatResets, 1, "ordinary chat lets the vendor verify and reuse an exact conversation prefix");
+    assert.deepEqual(request.messages, followupMessages);
+    return successfulGenerationStream();
+  };
+  assert.equal((await runtime.streamGeneration(
+    { input: { kind: "chat", messages: followupMessages }, thinking: false,
+      generationSeat: "assistant", generationRoleName: null, hookProgram: null }, () => {},
+  )).text, "answer");
+  engine.chat.completions.create = async () => {
+    assert.equal(engine.chatResets, 2, "steering invalidates plain conversation prefix reuse");
+    return successfulGenerationStream();
+  };
+  await runtime.streamGeneration({input: {kind: "chat", messages: followupMessages},
+    hookProgram, steeringExpression: "0.5 local/fixture"}, () => {});
+  engine.chat.completions.create = async () => {
+    assert.equal(engine.chatResets, 3, "plain chat after steering starts from a clean prefix");
+    return successfulGenerationStream();
+  };
+  await runtime.streamGeneration({input: {kind: "chat", messages: followupMessages}}, () => {});
+  engine.chat.completions.create = async () => successfulGenerationStream("length");
+  await runtime.streamGeneration({ input: { kind: "chat", messages: followupMessages }, thinking: false }, () => {});
+  engine.chat.completions.create = async () => {
+    assert.equal(engine.chatResets, 4, "a capped response cannot leave a reusable prefix");
+    return successfulGenerationStream();
+  };
+  await runtime.streamGeneration({ input: { kind: "chat", messages: followupMessages }, thinking: false }, () => {});
   engine.chat.completions.create = async () => {
     throw new Error("fixture generation failed");
   };
@@ -529,7 +563,7 @@ try {
     input: { kind: "chat", messages: [{ role: "user", content: "hello" }] },
     sampling: { max_tokens: 8_192 },
   }, () => {});
-  assert.equal(appleMobileGenerationRequest.max_tokens, 256);
+  assert.equal(appleMobileGenerationRequest.max_tokens, loadRequest().contextTokens);
   await appleMobileRuntime.unload();
 
   class RetryableUnloadEngine extends FixtureEngine {
@@ -777,7 +811,24 @@ try {
   FixtureEngine.instances.at(-1).config.appConfig.onDeviceLost({ reason: "unknown" });
   assert.equal(deviceLoss.code, "WEBGPU_DEVICE_LOST");
   assert.equal(deviceLoss.confirmedOom, false);
+  assert.doesNotMatch(deviceLoss.message, /Last initialization phase/u);
   await runtime.unload();
+
+  class LostDuringInitEngine extends FixtureEngine {
+    async reload() {
+      this.config.initProgressCallback({ progress: 0.4, timeElapsed: 2, text: "Loading GPU shader modules" });
+      this.config.appConfig.onDeviceLost({ reason: "unknown" });
+      throw new Error("initialization interrupted");
+    }
+  }
+  const lostDuringInit = new DrowseWebLlmRuntime({
+    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    MLCEngine: LostDuringInitEngine,
+  });
+  await assert.rejects(lostDuringInit.load(loadRequest({
+    onDeviceLost: (failure) => { deviceLoss = failure; },
+  })), /initialization interrupted/u);
+  assert.match(deviceLoss.message, /Last initialization phase: Loading GPU shader modules/u);
 
   const badAbi = new DrowseWebLlmRuntime({
     DROWSE_HOOK_ABI: "different",
@@ -1479,7 +1530,7 @@ try {
   await server.close();
 }
 
-async function* successfulGenerationStream() {
+async function* successfulGenerationStream(terminalReason = "eos") {
   yield {
     choices: [{
       index: 0,
@@ -1501,8 +1552,8 @@ async function* successfulGenerationStream() {
     choices: [{
       index: 0,
       delta: {},
-      finish_reason: "stop",
-      drowse_finish_reason: "eos",
+      finish_reason: terminalReason === "length" ? "length" : "stop",
+      drowse_finish_reason: terminalReason,
       logprobs: null,
     }],
   };

@@ -28,7 +28,7 @@
   class:pinned
   {disabled}
   {onclick}
-  {title}
+  {...{ "aria-description": (title) }}
   aria-label={ariaLabel}
   aria-pressed={pinned}
 >

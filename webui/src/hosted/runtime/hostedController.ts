@@ -16,6 +16,7 @@ import type {
 } from "../../lib/runtime/contracts";
 import { rankCatalogModels } from "../../lib/runtime/recommendation";
 import { ApiError } from "../../lib/runtime/errors";
+import { cacheOfflineRuntimeAssets } from "./offlineRuntimeAssets";
 import { clearDrowseLocalData } from "../../lib/runtime/localData";
 import { initialRuntimeSnapshot, runtimeFailure } from "../../lib/runtime/state";
 import {
@@ -37,8 +38,10 @@ import {
 } from "./capabilities";
 
 const CONSERVATIVE_RUNTIME_IDLE_WATCHDOG_MS = 180_000;
+const CONSERVATIVE_MODEL_LOAD_TIMEOUT_MS = 600_000;
 
 export interface HostedControllerOptions extends WorkerRpcOptions {
+  modelLoadTimeoutMs?: number;
   loadRecords?: DeviceLoadRecord[];
   installedModelVariantIds?: string[];
   installedPackIds?: string[];
@@ -50,6 +53,8 @@ export interface HostedControllerOptions extends WorkerRpcOptions {
 
 export class HostedControllerImpl implements HostedController {
   private readonly transport: WorkerRpcTransport;
+  private readonly modelLoadTimeoutMs: number;
+  private modelLoadTimedOut = false;
   private readonly listeners = new Set<(snapshot: RuntimeSnapshot) => void>();
   private readonly loadRecords: DeviceLoadRecord[];
   private readonly installedModelVariantIds: Set<string>;
@@ -81,6 +86,7 @@ export class HostedControllerImpl implements HostedController {
       ? workerOrTransport
       : new WorkerRpcTransport(workerOrTransport, options);
     this.ownsTransport = options.ownsTransport ?? !(workerOrTransport instanceof WorkerRpcTransport);
+    this.modelLoadTimeoutMs = options.modelLoadTimeoutMs ?? 0;
     this.loadRecords = options.loadRecords ?? [];
     this.installedModelVariantIds = new Set(options.installedModelVariantIds ?? []);
     this.installedPackIds = new Set(options.installedPackIds ?? []);
@@ -93,7 +99,7 @@ export class HostedControllerImpl implements HostedController {
     this.unsubscribeEvents = this.transport.subscribe((event) => this.onWorkerEvent(event));
     this.unsubscribeFailures = this.transport.subscribeFailure((reason) => {
       this.ownership?.release();
-      this.fail("RUNTIME_WORKER_FAILED", new Error(reason), false);
+      this.fail(this.modelLoadTimedOut ? "MODEL_LOAD_TIMEOUT" : "RUNTIME_WORKER_FAILED", new Error(reason), false);
     });
   }
 
@@ -228,8 +234,8 @@ export class HostedControllerImpl implements HostedController {
     });
   }
 
-  requestPersistence(): Promise<boolean> {
-    return requestPersistentStorage();
+  requestPersistence(onLateGranted?: () => void): Promise<boolean> {
+    return requestPersistentStorage(undefined, undefined, onLateGranted);
   }
 
   refreshStorage(): Promise<RuntimeCapabilities["storage"]> {
@@ -241,12 +247,41 @@ export class HostedControllerImpl implements HostedController {
     contextTokens: number,
     options: { explicitUnsafeOverride?: boolean; resetSession?: boolean } = {},
   ): Promise<void> {
+    if (this.modelLoadTimeoutMs <= 0) return this.loadWithOwnership(modelVariantId, contextTokens, options);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.loadWithOwnership(modelVariantId, contextTokens, options),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            const error = Object.assign(new Error(
+              "The model took too long to load. Reload this page and try a smaller model. Your saved chats and downloads have not been removed.",
+            ), { code: "MODEL_LOAD_TIMEOUT" });
+            this.modelLoadTimedOut = true;
+            this.transport.terminateWithFailure(error.message);
+            this.ownership?.close();
+            this.ownership = null;
+            reject(error);
+          }, this.modelLoadTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+    }
+  }
+
+  private async loadWithOwnership(
+    modelVariantId: string,
+    contextTokens: number,
+    options: { explicitUnsafeOverride?: boolean; resetSession?: boolean },
+  ): Promise<void> {
     if (this.capabilities) assertAppleMobileContext(this.capabilities, contextTokens);
     const ownership = this.runtimeOwnership();
     if (!(await ownership.acquire())) {
       throw new Error("Another tab owns the Drowse GPU runtime. Close it or request takeover there.");
     }
     try {
+      if (import.meta.env.PROD) await cacheOfflineRuntimeAssets();
       await this.transport.call("load", {
         modelVariantId,
         contextTokens,
@@ -489,16 +524,6 @@ function toFailure(
   );
 }
 
-export function createHostedController(
-  options: HostedControllerOptions = {},
-): HostedControllerImpl {
-  const worker = new Worker(new URL("./browser.worker.ts", import.meta.url), {
-    type: "module",
-    name: "drowse-runtime",
-  });
-  return new HostedControllerImpl(worker, platformTransportOptions(options));
-}
-
 export interface HostedRuntimeBundle {
   controller: HostedController;
   runtime: RuntimeClient;
@@ -543,7 +568,6 @@ function platformTransportOptions(
     ? null
     : browserRuntimeClass();
   if (
-    options.longOperationIdleTimeoutMs !== undefined ||
     runtimeClass === null ||
     ![
       "apple-mobile-webkit",
@@ -553,6 +577,7 @@ function platformTransportOptions(
   ) return options;
   return {
     ...options,
-    longOperationIdleTimeoutMs: CONSERVATIVE_RUNTIME_IDLE_WATCHDOG_MS,
+    longOperationIdleTimeoutMs: options.longOperationIdleTimeoutMs ?? CONSERVATIVE_RUNTIME_IDLE_WATCHDOG_MS,
+    modelLoadTimeoutMs: options.modelLoadTimeoutMs ?? CONSERVATIVE_MODEL_LOAD_TIMEOUT_MS,
   };
 }

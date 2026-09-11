@@ -3,13 +3,23 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { siteDescription } from "./site-metadata.mjs";
+import { siteDescription, siteAccent, socialImagePath, socialImageAlt } from "./site-metadata.mjs";
 
 const root = resolve("dist-hosted");
 const release = process.argv.includes("--release");
 const manifest = JSON.parse(await readFile(resolve(root, "manifest.webmanifest"), "utf8"));
 const index = await readFile(resolve(root, "index.html"), "utf8");
+const notFound = await readFile(resolve(root, "404.html"), "utf8");
+const redirects = await readFile(resolve(root, "_redirects"), "utf8");
+assert.equal(notFound, index, "The 404 page must render Drowse without an asset SPA fallback");
+assert.equal(redirects.trim(), "/app / 200\n/app/ / 200\n/credits / 200\n/credits/ / 200\n/contact / 200\n/contact/ / 200\n/app/* / 200");
 const serviceWorker = await readFile(resolve(root, "sw.js"), "utf8");
+assert.match(serviceWorker, /\.clientsClaim\(\)/u, "first-visit model code must be controlled and cached without a reload");
+const offlineRuntimeManifest = JSON.parse(await readFile(resolve(root, "runtime-assets.json"), "utf8"));
+const offlineRuntimeFiles = (await readdir(resolve(root, "assets"))).filter(name =>
+  /^(?:App|browser\.worker|registry|drowse-web-llm)-[^/]+\.(?:css|js)$/u.test(name)
+).map(name => `/assets/${name}`).sort();
+assert.deepEqual(offlineRuntimeManifest.assets, offlineRuntimeFiles, "offline model setup must include its exact app-code closure");
 const headers = await readFile(resolve(root, "_headers"), "utf8");
 const robots = await readFile(resolve(root, "robots.txt"), "utf8");
 const [builtLicense, sourceLicense] = await Promise.all([
@@ -32,13 +42,12 @@ const fittingManifest = JSON.parse(await readFile(
   "utf8",
 ));
 const metadata = (name) => {
-  const match = new RegExp(`<meta name="${name}" content="([^"]+)" \\/>`).exec(index);
+  const match = new RegExp(`<meta\\s+(?:name|property)="${name}"\\s+content="([^"]+)"\\s*\\/>`).exec(index);
   assert.ok(match, `hosted index is missing ${name}`);
   return match[1];
 };
 const pageDescription = siteDescription;
-const manifestDescription =
-  "Run, inspect, and steer language models entirely on your device.";
+const manifestDescription = siteDescription;
 const sourceRevision = metadata("drowse-source-revision");
 const sourceUrl = metadata("drowse-source-url");
 const entryScript = /<script[^>]+src="\/assets\/([^"]+\.js)"/.exec(index)?.[1];
@@ -48,6 +57,15 @@ assert.equal(manifest.id, "/app");
 assert.equal(manifest.start_url, "/app");
 assert.equal(manifest.scope, "/");
 assert.equal(manifest.display, "standalone");
+assert.equal(manifest.theme_color, siteAccent);
+assert.equal(metadata("theme-color"), siteAccent);
+assert.equal(metadata("description"), siteDescription);
+assert.equal(metadata("og:description"), siteDescription);
+assert.equal(metadata("twitter:description"), siteDescription);
+assert.equal(metadata("og:image:alt"), socialImageAlt);
+assert.equal(metadata("twitter:image:alt"), socialImageAlt);
+assert.ok(metadata("og:image").endsWith(socialImagePath));
+assert.ok(metadata("twitter:image").endsWith(socialImagePath));
 assert.equal(
   manifest.description,
   manifestDescription,
@@ -85,10 +103,10 @@ assert.ok(
 );
 if (release) {
   assert.match(sourceRevision, /^[0-9a-f]{40}$/);
-  assert.equal(sourceUrl, `https://github.com/a9lim/polythetic/tree/${sourceRevision}`);
+  assert.equal(sourceUrl, `https://github.com/a9lim/drowse/tree/${sourceRevision}`);
 } else {
   assert.equal(sourceRevision, "preview");
-  assert.equal(sourceUrl, "https://github.com/a9lim/polythetic");
+  assert.equal(sourceUrl, "https://github.com/a9lim/drowse");
 }
 assert.equal(builtLicense, sourceLicense, "hosted build has the wrong AGPL license");
 assert.match(serviceWorker, /index\.html/);
@@ -121,6 +139,7 @@ for (const required of [
 }
 
 const connectOrigins = [...new Set([
+  "https://www.neuronpedia.org",
   new URL(distributionLock.catalogUrl).origin,
   new URL(distributionLock.signatureUrl).origin,
   ...distributionLock.allowedCatalogRedirectOrigins,
@@ -237,7 +256,7 @@ for (const identity of [
 }
 assert.equal(hasUpdatePrompt, true, "hosted build is missing its prompt-style update UI");
 assert.ok(bundledSource.includes(sourceUrl), "hosted UI does not expose the exact source URL");
-assert.ok(bundledSource.includes("/LICENSE"), "hosted UI does not expose the local AGPL license");
+assert.ok(bundledSource.includes("GNU AGPL v3 or later"), "hosted UI is missing its license notice");
 assert.ok(
   bundledSource.includes("Open source. Inference and saved work stay on your device."),
   "hosted landing page is missing its local-compute promise",

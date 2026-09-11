@@ -22,7 +22,7 @@ RESULT_DIGESTS = {
     "python/mlc_llm/model/llama/llama_model.py": "2a34402c81074ce0a773f9a73dc95aea20a7a0533b2561708d32ceeb72aec7dc",
     "python/mlc_llm/model/qwen3/qwen3_model.py": "0621190a80fc12ec58ca3fd5d439411135815c4f4f6596a5a0d258475b5c7291",
     "python/mlc_llm/model/gemma3/gemma3_model.py": "fd219c4779b1a7497fa533b264d5c77a973c5a1f46f41ed29923c312d6220f18",
-    "python/mlc_llm/model/drowse_hooks.py": "bc1763ba32ef304b4c45be05bcbd2f2eb1240fc5fd7f95f48e025d96dce76c9e",
+    "python/mlc_llm/model/drowse_hooks.py": "4fadef9db1c875c81ca9cde76dfdbc477a3755f4d982ba9d097ccc730f6778b1",
 }
 
 

@@ -61,7 +61,7 @@
   role="img"
   aria-label={tip}
 >
-  <title>{tip}</title>
+  <desc>{tip}</desc>
   {#if paths.area}
     <path d={paths.area} fill={stroke} fill-opacity="0.14" stroke="none" />
   {/if}

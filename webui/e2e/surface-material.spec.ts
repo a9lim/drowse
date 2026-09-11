@@ -1,3 +1,4 @@
+import { selectWorkspaceView, setAppearance } from "./workbench-navigation";
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
@@ -5,7 +6,7 @@ test("cards and buttons share the credits material in both appearances", async (
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/credits");
   for (const theme of ["light", "dark"]) {
-    await page.getByRole("button", { name: theme === "light" ? "Light" : "Dark", exact: true }).click();
+    await setAppearance(page, theme === "light" ? "Light" : "Dark");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     const material = await page.evaluate(() => {
       const card = getComputedStyle(document.querySelector(".team-member")!);
@@ -34,26 +35,27 @@ test("cards and buttons share the credits material in both appearances", async (
   await expect(page.locator(".contribute-action")).toHaveCSS("background-image", /^none(?:, none)*$/);
 });
 
-test("workbench uses the same material without changing control behavior", async ({ page }, testInfo) => {
+test("workbench uses flat material without changing control behavior", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/app?fixture=1");
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   for (const theme of ["light", "dark"]) {
-    await page.getByRole("button", { name: theme === "light" ? "Light" : "Dark", exact: true }).click();
+    await setAppearance(page, theme === "light" ? "Light" : "Dark");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     for (const width of [1440, 320]) {
       await page.setViewportSize({ width, height: 1000 });
-      const send = page.getByRole("button", { name: "Generate reply", exact: true });
+      await page.getByRole("textbox", { name: /^Compose as / }).focus();
+      const send = page.getByRole("button", { name: /^(Send|Generate reply)$/ });
       await expect(send).toBeVisible();
-      await expect(send).toHaveCSS("background-image", /^linear-gradient\((?:180deg, )?rgba/);
+      await expect(send).toHaveCSS("background-image", "none");
       await expect(page.locator(".chat-zone")).toHaveCSS("background-image", "none");
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: testInfo.outputPath(`workbench-material-${theme}-${width}.png`) });
     }
   }
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, /^Controls$/);
   await expect(page.locator(".controls")).toBeVisible();
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, /^Loom$/);
   await expect(page.locator(".loom-zone")).toBeVisible();
 });

@@ -7,7 +7,7 @@ import type {
   StructuredHookProfileId,
 } from "../../lib/runtime/contracts";
 import {
-  DESKTOP_MAX_OUTPUT_TOKENS,
+  MAX_OUTPUT_TOKEN_COUNT,
   outputTokenLimitForRuntime,
 } from "../../lib/runtime/outputTokenPolicy";
 import type { GpuAdapterLike } from "./capabilities";
@@ -92,6 +92,7 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
   reload(modelId: string): Promise<void>;
   unload(): Promise<void>;
   interruptGenerate(): Promise<void> | void;
+  resetChat(): Promise<void>;
   supportsDrowseRankOneHooks(modelId?: string): Promise<boolean>;
   supportsDrowseStructuredHooks(modelId?: string): Promise<boolean>;
   supportsDrowseCurvedHooks(modelId?: string): Promise<boolean>;
@@ -272,6 +273,7 @@ export class DrowseWebLlmRuntime {
   private engine: DrowseWebLlmEngineInstance | null = null;
   private captureSpecialTokenIds: number[] | null = null;
   private generating = false;
+  private reusablePlainChatPrefix = false;
   private structuredHooks = false;
   private curvedHooks = false;
   private saeHooks = false;
@@ -279,7 +281,7 @@ export class DrowseWebLlmRuntime {
   private thinkingProfile: WebLlmThinkingProfile | null = null;
   private drowseCapabilities: WebLlmRuntimeCapabilities | null = null;
   private structuredHookProfile: CompiledDrowseStructuredHookProfile | null = null;
-  private maxOutputTokens = DESKTOP_MAX_OUTPUT_TOKENS;
+  private maxOutputTokens = MAX_OUTPUT_TOKEN_COUNT;
   private readonly decodedTokenText = new Map<number, string>();
   private readonly pendingDecodedTokenText = new Map<number, Promise<string>>();
   private decodedTokenCacheEpoch = 0;
@@ -301,7 +303,7 @@ export class DrowseWebLlmRuntime {
   async load(request: BrowserModelLoadRequest): Promise<BrowserModelLoadResult> {
     if (request.signal.aborted) throw abortReason(request.signal);
     await this.unload();
-    this.maxOutputTokens = outputTokenLimitForRuntime(request.runtimeClass);
+    this.maxOutputTokens = outputTokenLimitForRuntime(request.runtimeClass, request.contextTokens);
     assertExactReadoutWebGpuRequirements(
       request.variant.structuredHookProfile,
       request.variant.requirements,
@@ -337,8 +339,10 @@ export class DrowseWebLlmRuntime {
       );
     }
     let ownedEngine: DrowseWebLlmEngineInstance | null = null;
+    let initializationPhase: string | null = "Starting model initialization";
     const engine = new this.module.MLCEngine({
       initProgressCallback: (report: WebLlmInitProgressReport) => {
+        initializationPhase = report.text;
         request.onProgress?.({
           event: "progress",
           data: {
@@ -361,7 +365,8 @@ export class DrowseWebLlmRuntime {
           const detail = deviceLossDetail(info);
           request.onDeviceLost({
             code: "WEBGPU_DEVICE_LOST",
-            message: detail ? `The WebGPU device was lost: ${detail}` : "The WebGPU device was lost",
+            message: (detail ? `The WebGPU device was lost: ${detail}` : "The WebGPU device was lost") +
+              (initializationPhase ? ` Last initialization phase: ${initializationPhase}` : ""),
             confirmedOom: false,
           });
         },
@@ -515,6 +520,7 @@ export class DrowseWebLlmRuntime {
         );
       }
       this.captureSpecialTokenIds = [...prepared.captureSpecialTokenIds];
+      initializationPhase = null;
       return { prefillTokensPerSecond: null, decodeTokensPerSecond: null };
     } catch (error) {
       this.captureSpecialTokenIds = null;
@@ -525,7 +531,7 @@ export class DrowseWebLlmRuntime {
       this.thinkingProfile = null;
       this.drowseCapabilities = null;
       this.structuredHookProfile = null;
-      this.maxOutputTokens = DESKTOP_MAX_OUTPUT_TOKENS;
+      this.maxOutputTokens = MAX_OUTPUT_TOKEN_COUNT;
       this.resetDecodedTokenCache();
       this.saeDictionaryIdentity = null;
       this.saeDictionary = null;
@@ -550,6 +556,7 @@ export class DrowseWebLlmRuntime {
     if (engine) await engine.unload();
     if (this.engine !== engine) return;
     this.engine = null;
+    this.reusablePlainChatPrefix = false;
     this.captureSpecialTokenIds = null;
     this.structuredHooks = false;
     this.curvedHooks = false;
@@ -558,7 +565,7 @@ export class DrowseWebLlmRuntime {
     this.thinkingProfile = null;
     this.drowseCapabilities = null;
     this.structuredHookProfile = null;
-    this.maxOutputTokens = DESKTOP_MAX_OUTPUT_TOKENS;
+    this.maxOutputTokens = MAX_OUTPUT_TOKEN_COUNT;
     this.resetDecodedTokenCache();
     this.saeDictionaryIdentity = null;
     this.saeDictionary = null;
@@ -587,8 +594,14 @@ export class DrowseWebLlmRuntime {
     if (this.runtimeCapabilities().baseModel && plan.input.kind !== "raw") {
       throw runtimeError("BASE_MODEL_RAW_INPUT_REQUIRED", "This base model requires a plain text completion prompt");
     }
+    const plainChat = plan.input.kind === "chat" && !plan.hookProgram &&
+      !plan.steeringExpression?.trim() && !plan.replay && !plan.thinking &&
+      !plan.generationRoleName && (!plan.generationSeat || plan.generationSeat === "assistant");
+    const reusePrefix = plainChat && this.reusablePlainChatPrefix;
+    this.reusablePlainChatPrefix = false;
     this.generating = true;
     try {
+      if (plan.input.kind === "chat" && !reusePrefix) await engine.resetChat();
       const result = await streamWebLlmGeneration(
         engine,
         {
@@ -617,6 +630,7 @@ export class DrowseWebLlmRuntime {
         },
         onToken,
       );
+      this.reusablePlainChatPrefix = plainChat && result.terminalReason === "eos" && !plan.signal?.aborted;
       this.performance = {
         prefillTokensPerSecond: result.prefillTokensPerSecond,
         decodeTokensPerSecond: result.decodeTokensPerSecond,
@@ -1051,6 +1065,7 @@ export class DrowseWebLlmRuntime {
         "Drowse capture positions must be sorted unique token positions in the prepared row",
       );
     }
+    this.reusablePlainChatPrefix = false;
     const capture = await this.requireEngine().captureDrowseResiduals(
       row.inputIds,
       positions,
@@ -1089,6 +1104,7 @@ export class DrowseWebLlmRuntime {
         "The loaded model library does not expose the Drowse rank-one residual capture v1 ABI",
       );
     }
+    this.reusablePlainChatPrefix = false;
     const capture = await engine.captureDrowseRankOneResidualsV1(
       row.inputIds,
       positions,

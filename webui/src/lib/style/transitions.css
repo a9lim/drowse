@@ -56,11 +56,11 @@
   --text-swap-blur: 2px;
   --text-swap-ease: ease-out;
   /* Menu dropdown */
-  --dropdown-open-dur: 250ms;
-  --dropdown-close-dur: 150ms;
-  --dropdown-pre-scale: 0.97;
-  --dropdown-closing-scale: 0.99;
-  --dropdown-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --dropdown-open-dur: 140ms;
+  --dropdown-close-dur: 100ms;
+  --dropdown-pre-scale: 1;
+  --dropdown-closing-scale: 1;
+  --dropdown-ease: var(--ease-out);
   /* Modal open / close */
   --modal-open-dur: 250ms;
   --modal-close-dur: 150ms;
@@ -94,15 +94,15 @@
   transform: scale(var(--dropdown-pre-scale));
   opacity: 0;
   pointer-events: none;
-  transition:
-    transform var(--dropdown-open-dur) var(--dropdown-ease),
-    opacity   var(--dropdown-open-dur) var(--dropdown-ease);
+  transition: opacity var(--dropdown-open-dur) var(--dropdown-ease);
 }
 
+.t-dropdown[role="menu"] { --dropdown-open-dur: 0ms; }
+
 @media (prefers-reduced-motion: no-preference) {
-  .page-entering [data-page-group] { animation: page-group-enter 240ms var(--ease-out) both; }
-  .page-entering [data-page-group="1"] { animation-delay: 100ms; }
-  .page-entering [data-page-group="2"] { animation-delay: 200ms; }
+  .page-entering [data-page-group] { animation: page-group-enter 180ms var(--ease-out) both; }
+  .page-entering [data-page-group="1"] { animation-delay: 40ms; }
+  .page-entering [data-page-group="2"] { animation-delay: 80ms; }
 }
 
 @keyframes page-group-enter {
@@ -124,9 +124,7 @@
   transform: scale(var(--dropdown-closing-scale));
   opacity: 0;
   pointer-events: none;
-  transition:
-    transform var(--dropdown-close-dur) var(--dropdown-ease),
-    opacity   var(--dropdown-close-dur) var(--dropdown-ease);
+  transition: opacity var(--dropdown-close-dur) var(--ease-exit);
 }
 
 @media (prefers-reduced-motion: reduce) {

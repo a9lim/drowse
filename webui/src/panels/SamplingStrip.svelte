@@ -26,7 +26,7 @@
   import NumberInput from "../lib/NumberInput.svelte";
   import Checkbox from "../lib/Checkbox.svelte";
   import InfoTip from "../lib/ui/InfoTip.svelte";
-  import { getRuntimeCapabilities } from "../lib/runtime/registry";
+  import { getRuntimeCapabilities, getHostedController } from "../lib/runtime/registry";
   import { outputTokenLimitForSignals } from "../lib/runtime/outputTokenPolicy";
 
   // ------------------------------------------------------------------- consts
@@ -116,7 +116,10 @@
   const tempView = $derived(samplingState.temperature ?? PLACEHOLDER.temperature);
   const topPView = $derived(samplingState.top_p ?? PLACEHOLDER.top_p);
   const maxTokenLimit = $derived(
-    outputTokenLimitForSignals(getRuntimeCapabilities()?.signals),
+    sessionState.info ? outputTokenLimitForSignals(
+      getRuntimeCapabilities()?.signals,
+      getHostedController()?.snapshot.contextTokens ?? undefined,
+    ) : MAX_TOK_MIN,
   );
   const maxView = $derived(
     Math.min(samplingState.max_tokens || PLACEHOLDER.max_tokens, maxTokenLimit),
@@ -187,7 +190,7 @@
         <Slider
           value={tempView}
           min={TEMP_MIN}
-          max={TEMP_MAX}
+          max={Math.max(TEMP_MAX, tempView)}
           step={TEMP_STEP}
           disabled={!ready}
           oninput={onTemp}

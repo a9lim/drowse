@@ -1,4 +1,5 @@
 <script lang="ts">
+  import TraceDetail from "../../lib/charts/TraceDetail.svelte";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // SAE probe card — one feature of the resident SAE, pinned (a
   // ``sae/<id>`` readout probe — persistent, gate-able) or unpinned (a
@@ -121,12 +122,12 @@
       ariaLabel={`${pinned ? "Unpin" : "Pin"} probe ${name}`}
     />
 
-    <span class="name" title="probe {name}">
-      {id}{label ? ` · ${label}` : ""}
+    <span class="name" {...{ "aria-description": "probe " + (name) }}>
+      {id}
     </span>
 
     {#if layer !== null}
-      <span class="layer" title="hook layer">L{layer}</span>
+      <span class="layer" {...{ "aria-description": "hook layer" }}>L{layer}</span>
     {/if}
 
     <span class="spacer"></span>
@@ -139,6 +140,7 @@
   {/snippet}
 
   {#snippet body()}
+    {#if label}<p class="feature-description">{label}</p>{/if}
     {#if !measured}
       <span class="row-label">Not measured</span>
     {:else if strength !== null}
@@ -149,7 +151,7 @@
         {#snippet left()}
           <span
             class="row-label"
-            title="normalized activation"
+            {...{ "aria-description": "normalized activation" }}
           >strength</span>
         {/snippet}
         {#snippet bar()}
@@ -166,7 +168,7 @@
         {#snippet left()}
           <span
             class="row-label"
-            title="raw activation"
+            {...{ "aria-description": "raw activation" }}
           >activation</span>
         {/snippet}
         {#snippet bar()}
@@ -176,10 +178,20 @@
         {#snippet right()}<span class="value"><RollingNumber value={rawValue} digits={2} /></span>{/snippet}
       </ProbeReadingRow>
     {/if}
+    <TraceDetail points={series} />
   {/snippet}
 </RackCard>
 
 <style>
+  @media (prefers-reduced-motion: no-preference) { .feature-description { animation: description-reveal 160ms ease-out; } }
+  @keyframes description-reveal { from { opacity: .4; } to { opacity: 1; } }
+  .feature-description {
+    margin: 0 0 var(--space-3);
+    color: var(--fg-strong);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
   /* ----- statline (mirrors JLensProbeCard) ----- */
   .name {
     color: var(--fg-strong);

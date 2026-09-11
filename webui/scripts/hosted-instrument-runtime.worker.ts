@@ -28,7 +28,7 @@ interface Request {
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
   thinkingProfile: ModelVariant["thinkingProfile"];
-  quantization: "q4f16_1" | "q4f32_1";
+  quantization: "q4f16_1" | "q4f32_1" | "q0f32";
   requiredFeatures: GPUFeatureName[];
   contextTokens: number;
   contextProfiles: number[];
@@ -349,10 +349,30 @@ self.onmessage = async (event: MessageEvent<Request>) => {
             "one-token exact readout lost its pinned J-lens or SAE reading",
           );
         }
+        const chatArtifact = modelArtifacts.find((entry) => entry.manifest.role === "chat_template")!;
+        const chatConfig = JSON.parse(await chatArtifact.file.text());
+        const completionPrefix = chatConfig.drowse_completion_prefix_token_ids
+          ?? chatConfig.polythetic_completion_prefix_token_ids
+          ?? chatConfig.saklas_completion_prefix_token_ids
+          ?? [];
+        const inputIds = [...completionPrefix, ...await runtime!.tokenizeText("hello")];
+        if (inputIds.length !== generation.usage.promptTokens) {
+          throw new Error("instrument reference prompt does not match the measured generation");
+        }
+        const position = inputIds.length - 1;
+        const capture = await runtime!.capturePreparedRow({ inputIds, position });
         return {
           generation,
           lensReading,
           saeReading,
+          referenceCapture: {
+            inputIds,
+            position,
+            hiddenSize: capture.hiddenSize,
+            layerCount: capture.layerCount,
+            residuals: Array.from(capture.values),
+            measurements,
+          },
           readouts: requireExactReadouts(
             measurements,
             measuredDescriptor,
@@ -535,6 +555,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
           finishReason: exact.value.generation.finishReason,
           lensReading: exact.value.lensReading,
           saeReading: exact.value.saeReading,
+          referenceCapture: exact.value.referenceCapture,
           ...exact.value.readouts,
         },
         priorStepGatedGeneration: gated === null ? null : {

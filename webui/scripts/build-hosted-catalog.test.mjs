@@ -10,6 +10,7 @@ import {
   prepareRequirements,
   validatePackDirectory,
   validatePackSemantics,
+  validateWeightBufferRequirements,
 } from "./build-hosted-catalog.mjs";
 import { expectedBuildToolchain } from "./hosted-model-closure.mjs";
 
@@ -19,6 +20,25 @@ assert.deepEqual(parseArguments(["release.json", "catalog.json"]), {
 });
 assert.throws(() => parseArguments(["release.json"]), /usage/);
 assert.throws(() => parseArguments(["release.json", "catalog.json", "--force"]), /usage/);
+const q0Cache = { records: [{ records: [{ dtype: "float32", shape: [262144, 640], format: "raw" }] }] };
+const q0Limits = { limits: { maxBufferSize: 671088640, maxStorageBufferBindingSize: 671088640 } };
+assert.equal(validateWeightBufferRequirements(q0Limits, q0Cache, "q0 fixture"), 671088640);
+for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"]) {
+  assert.throws(() => validateWeightBufferRequirements(
+    { limits: { ...q0Limits.limits, [name]: 134217728 } }, q0Cache, "q0 fixture",
+  ), new RegExp(`${name} must declare at least 671088640`));
+}
+q0Cache.records[0].records[0].format = "f32-to-bf16";
+assert.equal(validateWeightBufferRequirements(q0Limits, q0Cache, "encoded f32 fixture"), 671088640);
+for (const cache of [
+  { records: [] },
+  { records: [{}] },
+  { records: [{ records: [{ dtype: "float32", shape: [-1] }] }] },
+  { records: [{ records: [{ dtype: "unknown", shape: [1] }] }] },
+  { records: [{ records: [{ dtype: "float32", shape: [Number.MAX_SAFE_INTEGER, 2] }] }] },
+]) {
+  assert.throws(() => validateWeightBufferRequirements(q0Limits, cache, "invalid fixture"), /weight tensor/);
+}
 const semanticCommands = [];
 const semanticRunner = async (...args) => semanticCommands.push(args);
 await validatePackSemantics("fixture", "core", "/tmp/core", semanticRunner);
@@ -43,9 +63,11 @@ try {
     mkdir(join(instrumentDirectory, "packs", "sae"), { recursive: true }),
     mkdir(join(jlensDirectory, "packs", "jlens"), { recursive: true }),
   ]);
-  const weightContents = "weights";
+  const weightContents = "data";
   const tensorCacheContents = JSON.stringify({
-    records: [{ dataPath: "params_shard_0.bin", nbytes: Buffer.byteLength(weightContents) }],
+    records: [{ dataPath: "params_shard_0.bin", nbytes: Buffer.byteLength(weightContents),
+      records: [{ dtype: "float32", shape: [1], byteOffset: 0, nbytes: 4, format: "raw" }],
+    }],
   });
   const configContents = JSON.stringify({
     model_type: "qwen3",
@@ -252,6 +274,12 @@ try {
   const semanticCalls = [];
   const validateSemantics = async (...args) => semanticCalls.push(args);
   const catalog = await prepareCatalog(spec, runtimeLock, root, validateSemantics);
+  const undersizedWeightBuffer = structuredClone(spec);
+  undersizedWeightBuffer.models[0].requirements.limits.maxStorageBufferBindingSize = 2;
+  await assert.rejects(
+    () => prepareCatalog(undersizedWeightBuffer, runtimeLock, root, validateSemantics),
+    /maxStorageBufferBindingSize must declare at least 4 bytes/,
+  );
   const catalogFiles = catalog.models[0].variants[0].files;
   assert.equal(catalog.models[0].variants[0].downloadBytes, sum(catalogFiles));
   assert.deepEqual(

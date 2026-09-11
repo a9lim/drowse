@@ -11,6 +11,7 @@ const server = await createServer({
 try {
   const requests = [];
   const filters = [];
+  const navigations = [];
   let treeReads = 0;
   let fetchedSnapshot;
   const { installRuntimeClient } = await server.ssrLoadModule("/src/lib/runtime/registry.ts");
@@ -18,12 +19,15 @@ try {
     get: async () => { treeReads += 1; return fetchedSnapshot; },
     edgeLabel: (parent, child) => new Promise((resolve, reject) => requests.push({ parent, child, resolve, reject })),
     filter: expr => new Promise((resolve, reject) => filters.push({ expr, resolve, reject })),
+    navigate: nodeId => new Promise(resolve => navigations.push({ nodeId, resolve })),
   } });
   const { applyTreeSnapshot, applyTreeDelta, loomTree, syncChatLogFromTree, refreshLoomTree } =
     await server.ssrLoadModule("/src/lib/stores/loom.svelte.ts");
   const { fetchEdgeLabel, edgeLabelCache, invalidateEdgeLabels, applyTreeFilter, clearTreeFilter, filterState, loomUiState } =
     await server.ssrLoadModule("/src/lib/stores/loomUi.svelte.ts");
-  const { chatLog, genStatus } = await server.ssrLoadModule("/src/lib/stores/chat.svelte.ts");
+  const { chatLog, genStatus, clearChat } = await server.ssrLoadModule("/src/lib/stores/chat.svelte.ts");
+  const { enqueuePending, drainNextPendingAction, pendingActions } =
+    await server.ssrLoadModule("/src/lib/stores/pending.svelte.ts");
   const node = (id, parent_id, steering = null) => ({
     id, parent_id, role: parent_id === null ? "system" : "assistant", text: id,
     role_label: null, recipe: { steering }, applied_steering: steering,
@@ -109,6 +113,20 @@ try {
   assert.equal(applyTreeSnapshot({ ...currentSnapshot, rev: 0 }), false,
     "stale revisions are still rejected within the same model and session");
   assert.equal(loomTree.rev, 1);
+  genStatus.active = true;
+  genStatus.tokensSoFar = 17;
+  loomTree.pendingNodeId = "b";
+  const freshTree = { ...snapshot, root_id: "fresh", active_node_id: "fresh", rev: 0,
+    nodes: [{ ...node("fresh", null), text: "" }], children_of: { fresh: [] } };
+  assert.equal(applyTreeSnapshot(freshTree), true,
+    "a new chat in the same model and default session starts at revision zero");
+  assert.equal(loomTree.root_id, "fresh");
+  assert.equal(loomTree.nodes.has("b"), false);
+  assert.equal(chatLog.turns.length, 0);
+  assert.equal(loomTree.pendingNodeId, null);
+  assert.equal(genStatus.active, false);
+  assert.equal(genStatus.tokensSoFar, 0);
+  applyTreeSnapshot({ ...currentSnapshot, rev: 1 });
   fetchEdgeLabel("a", "b");
   requests.at(-1).reject(new Error("temporary connection failure"));
   await new Promise((resolve) => setImmediate(resolve));
@@ -167,6 +185,25 @@ try {
   await applyTreeFilter(" ", "text");
   assert.equal(loomUiState.siblingSort, "default");
   assert.equal(filterState.error, null);
+  genStatus.active = true;
+  clearChat();
+  let nextActionNode = null;
+  enqueuePending({ label: "next message", text: null, awaitsGen: false, rebuild: null,
+    apply: () => { nextActionNode = loomTree.active_node_id; } });
+  assert.equal(navigations.length, 0, "clearing waits for the active generation");
+  genStatus.active = false;
+  const drained = drainNextPendingAction();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(navigations.length, 1);
+  assert.equal(navigations[0].nodeId, "root");
+  assert.equal(nextActionNode, null, "the next action must wait for clearing to finish");
+  fetchedSnapshot = { ...snapshot, rev: 21, active_node_id: "root" };
+  navigations[0].resolve();
+  await drained;
+  assert.equal(nextActionNode, "root", "a queued message starts from the cleared conversation");
+  assert.equal(chatLog.turns.some(turn => turn.role !== "system"), false);
+  assert.equal(loomTree.nodes.size, snapshot.nodes.length, "clearing preserves existing branches");
+  assert.equal(pendingActions.queue.length, 0);
   console.log("Loom store invalidation, streaming, and search checks passed");
 } finally {
   await server.close();

@@ -499,10 +499,14 @@ export async function backfillSaeMeta(): Promise<void> {
   try {
     const out = await apiInstruments.saeFeaturesMetadata(wanted);
     if (epoch !== saeMetadataEpoch) return;
+    for (const id of wanted) {
+      if (!Object.hasOwn(out.features, String(id))) _saeMetaRequested.delete(id);
+    }
     for (const [key, entry] of Object.entries(out.features)) {
+      const prior = saeState.meta.get(Number(key));
       saeState.meta.set(Number(key), {
-        label: entry.label ?? null,
-        max_act: entry.max_act ?? null,
+        label: entry.label ?? prior?.label ?? null,
+        max_act: entry.max_act ?? prior?.max_act ?? null,
       });
     }
   } catch {

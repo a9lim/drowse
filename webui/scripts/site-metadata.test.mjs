@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
-import { siteDescription, publicOrigin, discoveryMetadata } from "./site-metadata.mjs";
+import { siteDescription, siteAccent, socialImagePath, socialImageAlt, publicOrigin, discoveryMetadata } from "./site-metadata.mjs";
 
 test("public metadata requires an explicit, safe HTTPS origin", () => {
   assert.equal(publicOrigin(), "");
@@ -12,11 +12,33 @@ test("public metadata requires an explicit, safe HTTPS origin", () => {
 
 test("structured data describes only the website and actual application", () => {
   const html = discoveryMetadata("https://drowse.example");
-  const graph = JSON.parse(/<script[^>]*>(.*?)<\/script>/.exec(html)[1])["@graph"];
+  const scriptStart = '<script type="application/ld+json">';
+  assert.ok(html.includes(scriptStart));
+  assert.ok(html.endsWith("</script>"));
+  const graph = JSON.parse(html.slice(html.indexOf(scriptStart) + scriptStart.length, -"</script>".length))["@graph"];
   assert.deepEqual(graph.map(item => item["@type"]), ["WebSite", "WebApplication"]);
   assert.ok(graph.every(item => item.name === "Drowse" && item.description === siteDescription));
   assert.ok(graph.every(item => !item.aggregateRating && !item.potentialAction));
+  assert.equal(graph[1].image, `https://drowse.example${socialImagePath}`);
   assert.match(html, /rel="canonical" href="https:\/\/drowse.example\/"/);
+});
+
+test("SEO and social metadata use the requested description and Drowse lavender", async () => {
+  assert.equal(siteDescription, "Drowse is an open-source and fully local AI mechanistic interpretability workbench that works fully in your browser. Use Drowse to research large language models, inspect predictions and change an LLMs internal activity.");
+  assert.equal(siteAccent, "#c5b3ff");
+  assert.ok((await readFile("index.html", "utf8")).includes(`name="description" content="${siteDescription}"`));
+  assert.ok((await readFile("src/lib/style/tokens.css", "utf8")).includes(`--accent: ${siteAccent};`));
+  assert.ok(socialImagePath.includes("?v=shader-orb"));
+  assert.match(socialImageAlt, /shader orb/);
+  for (const root of ["public", "public-hosted"]) {
+    const artwork = await readFile(`${root}/social/drowse.svg`, "utf8");
+    assert.deepEqual([...artwork.matchAll(/<text\b[^>]*>([^<]*)<\/text>/g)].map(match => match[1]), ["Drowse", "Interpretability Workbench"]);
+    assert.match(artwork, /fill="#ffffff">Drowse<\/text>/);
+    assert.match(artwork, /font-family="DrowseText, sans-serif"[^>]*>Interpretability Workbench<\/text>/);
+    assert.ok(artwork.includes('<image href="data:image/png;base64,'));
+    assert.ok(artwork.includes("data:font/woff2;base64,"));
+  }
+  assert.deepEqual(await readFile("public/social/drowse.png"), await readFile("public-hosted/social/drowse.png"));
 });
 
 test("social preview and icon assets have the declared PNG dimensions", async () => {

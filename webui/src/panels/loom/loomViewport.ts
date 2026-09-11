@@ -14,7 +14,7 @@ export interface LoomPoint {
   y: number;
 }
 
-export const LOOM_MIN_ZOOM = 0.05;
+export const LOOM_MIN_ZOOM = 0.01;
 export const LOOM_MAX_ZOOM = 1.4;
 
 export function clampLoomZoom(value: number): number {
@@ -24,7 +24,7 @@ export function clampLoomZoom(value: number): number {
 export function fitLoomCamera(
   viewport: LoomSize,
   graph: LoomSize,
-  padding = 48,
+  padding = Math.min(48, viewport.width / 10, viewport.height / 10),
 ): LoomCamera {
   if (viewport.width <= 0 || viewport.height <= 0 || graph.width <= 0 || graph.height <= 0) {
     return { x: 0, y: 0, zoom: 1 };

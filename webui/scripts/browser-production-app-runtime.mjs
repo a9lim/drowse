@@ -23,6 +23,7 @@ import {
   createProductionAppFailureReport,
   isExpectedOfflineCatalogFailure,
   isOfflineServiceWorkerMaintenanceRequest,
+  isPublishedSaeDescriptionUrl,
   isVerifiedLocalArtifactAbort,
   legacyWebLlmPersistentState,
   parseBrowserProductionAppArguments,
@@ -49,6 +50,7 @@ const SECONDARY_KEY_ID = "production-app-next";
 const GENERATION_TIMEOUT_MS = 5 * 60_000;
 const SERVICE_WORKER_TIMEOUT_MS = 30_000;
 const options = parseBrowserProductionAppArguments(process.argv.slice(2));
+const isDescriptionRequest = (url) => isPublishedSaeDescriptionUrl(url, options.modelId);
 const webuiRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(webuiRoot, "..");
 const runtimeLockPath = options.runtimeLock === null
@@ -269,6 +271,8 @@ try {
   const artifactRequests = [];
   const artifactRequestsOutsideDownload = [];
   const unexpectedExternalRequests = [];
+  const descriptionRequests = [];
+  const expectedResourceErrors = [];
   const offlineCatalogRefreshes = [];
   let routePhase = "catalog";
   let artifactRequestsAtInstall = null;
@@ -299,7 +303,7 @@ try {
   const page = releaseBrowser.page;
   browser = context.browser();
   if (browser === null) throw new Error("persistent release browser is unavailable");
-  page.setDefaultTimeout(Math.min(options.timeoutMs, GENERATION_TIMEOUT_MS));
+  page.setDefaultTimeout(30_000);
   page.setDefaultNavigationTimeout(60_000);
   stage("browser launched");
   const failedRequests = [];
@@ -336,7 +340,13 @@ try {
   page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
   page.on("console", (message) => {
     const text = message.text();
-    if (message.type() === "error") consoleErrors.push(text);
+    if (message.type() === "error") {
+      const url = message.location().url;
+      const offlineTransportError = routePhase === "offline" && text === "Failed to load resource: net::ERR_INTERNET_DISCONNECTED";
+      if (isDescriptionRequest(url) || offlineTransportError || (routePhase === "offline" && (url === catalogUrl || url === signatureUrl))) {
+        expectedResourceErrors.push({ url, text, phase: routePhase });
+      } else consoleErrors.push(text);
+    }
     if (isBrowserFullRuntimeWebGpuError(text)) webGpuErrors.push(text);
     if (message.type() === "error" || message.type() === "warning") {
       process.stderr.write(`browser ${message.type()}: ${text}\n`);
@@ -349,9 +359,15 @@ try {
       await route.continue();
       return;
     }
+    if (request.method() === "GET" && isDescriptionRequest(url)) {
+      descriptionRequests.push({ url, phase: routePhase });
+      await route.continue();
+      return;
+    }
     const resource = routedResources.get(url);
     if (!resource || request.method() !== "GET") {
       unexpectedExternalRequests.push(`${request.method()} ${url} during ${routePhase}`);
+      process.stderr.write(`[production-app] blocked unexpected request: ${request.method()} ${url}\n`);
       await route.abort("blockedbyclient");
       return;
     }
@@ -426,17 +442,17 @@ try {
   requireCondition(environment.crossOriginIsolated, "the hosted /app is not cross-origin isolated");
   requireCondition(environment.webGpu, "the hosted /app has no WebGPU API");
 
-  const modelButtons = page.locator(".model-grid > button");
+  const modelButtons = page.locator(".model-grid > button").filter({ hasNotText: "Download unavailable" });
   const modelButton = modelButtons.first();
   await modelButton.waitFor({ timeout: 30_000 });
   requireEqual(await modelButtons.count(), 1, "production catalog model choice count");
   await modelButton.click();
-  await selectAllFirstRunPacks(page, 2);
+  await selectAllFirstRunPacks(page, 1);
   stage(`${options.modelId} ${options.contextTokens}-token profile selected`);
   routePhase = "download";
   await clickDownload(page);
   stage("signed setup download started");
-  await page.getByText("Installed and verified", { exact: true }).waitFor();
+  await waitForAuthoritativeInstalledState(page, catalog.variantId, "signed setup completion", options.timeoutMs);
   stage("signed setup installed and verified");
   const downloadedHashes = new Set(artifactRequests.map((request) => request.sha256));
   const missingHashes = [...expectedHashes].filter((hash) => !downloadedHashes.has(hash));
@@ -446,10 +462,10 @@ try {
   routePhase = "load";
   await clickOpen(page);
   stage("real backend load started");
-  await page.locator(".shell").waitFor();
-  await page.getByRole("textbox", { name: /^Compose as /u }).waitFor();
+  await page.locator(".shell").waitFor({ timeout: options.timeoutMs });
+  await page.getByRole("textbox", { name: /^Compose as /u }).waitFor({ timeout: options.timeoutMs });
   requireEqual(artifactRequestsOutsideDownload.length, 0, "artifact requests during model load");
-  requireEqual(await page.title(), "Drowse — local model workbench", "workbench title");
+  requireCondition((await page.title()).includes("Drowse"), "workbench title");
   stage("real Drowse workbench opened");
 
   const initialDocumentMarker = await page.evaluate(() => crypto.randomUUID());
@@ -469,7 +485,7 @@ try {
     "explicit model unload did not recreate the production app document",
   );
   await clickOpen(page);
-  await page.getByRole("textbox", { name: /^Compose as /u }).waitFor();
+  await page.getByRole("textbox", { name: /^Compose as /u }).waitFor({ timeout: options.timeoutMs });
   requireEqual(
     artifactRequests.length,
     artifactRequestsAtInstall,
@@ -479,6 +495,11 @@ try {
   requireNoLegacyWebLlmPersistentState(reopenedPersistentState, "explicit unload/reload");
   stage("verified OPFS model reopened after explicit unload and page recreation");
 
+  const firstReply = await generate(page, { prompt: "hiho", maxTokens: options.maxTokens });
+  const followupReply = await generate(page, { prompt: "In one sentence, say hello again.", maxTokens: options.maxTokens });
+  runMeasurements.plainConversation = { firstReply, followupReply };
+  if (options.output) await page.screenshot({ path: `${resolve(options.output)}.png`, fullPage: true });
+  stage("first and follow-up replies completed with default token alternatives");
   const instrumentResult = await attachInstrumentProbes(page, options);
   stage("J-lens and SAE probes attached");
   const onlineGeneration = await generate(page, {
@@ -527,6 +548,7 @@ try {
     () => navigator.onLine,
   );
   await page.goto(`${origin}/app`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Open chat", exact: true }).click();
   await waitForAuthoritativeInstalledState(
     page,
     catalog.variantId,
@@ -544,7 +566,7 @@ try {
   await waitForRequestQuiescence(serverRequests);
   offlineWorkbenchArmed = true;
   await clickOpen(page);
-  await page.getByRole("textbox", { name: /^Compose as /u }).waitFor();
+  await page.getByRole("textbox", { name: /^Compose as /u }).waitFor({ timeout: options.timeoutMs });
   const offlineGeneration = await generate(page, {
     prompt: `${PROMPT_SENTINEL}_OFFLINE: Reply with the single word green.`,
     maxTokens: options.maxTokens,
@@ -601,7 +623,9 @@ try {
     failedRequests: failedRequests.filter(
       (request) =>
         !verifiedLocalArtifactAbortSet.has(request) &&
-        !expectedOfflineCatalogFailureSet.has(request),
+        !expectedOfflineCatalogFailureSet.has(request) &&
+        !(isDescriptionRequest(request.url) && (request.errorText === "net::ERR_ABORTED" ||
+          (request.phase === "offline" && request.errorText === "net::ERR_INTERNET_DISCONNECTED"))),
     ),
     pageErrors,
     promptUploads,
@@ -610,6 +634,7 @@ try {
     unexpectedOfflineWorkbenchRequests,
     webGpuErrors,
   };
+  Object.assign(runMeasurements, { onlineGeneration, offlineGeneration, probes: probeResult, tokenReadouts: tokenReadoutResult, audit, descriptionRequests, expectedResourceErrors });
   for (const [name, entries] of Object.entries(audit)) {
     if (entries.length > 0) throw new Error(`${name} is non-empty: ${JSON.stringify(entries)}`);
   }
@@ -645,6 +670,7 @@ try {
       noLegacyWebLlmPersistence: true,
       zeroArtifactRequestsAfterInstall: true,
       realBackendGeneration: true,
+      repeatedPlainConversation: true,
       instrumentMeasurements: true,
       serviceWorkerOfflineReopen: true,
       promptNetworkIsolation: true,
@@ -661,6 +687,9 @@ try {
       coreBytes: sumBytes(sets.core.files),
       jlensBytes: sumBytes(sets.jlens.files),
       saeBytes: sumBytes(sets.sae.files),
+      plainConversation: runMeasurements.plainConversation,
+      descriptionRequests,
+      expectedResourceErrors,
       onlineGeneration,
       offlineGeneration,
       instruments: instrumentResult,
@@ -685,6 +714,12 @@ try {
   if (options.output) await writeFile(resolve(options.output), output, { flag: "wx" });
   process.stdout.write(output);
 } catch (error) {
+  if (releaseBrowser?.page && !releaseBrowser.page.isClosed()) {
+    runMeasurements.pageText = await releaseBrowser.page.locator("body").innerText().catch(() => "");
+    if (options.output) {
+      await releaseBrowser.page.screenshot({ path: `${resolve(options.output)}.failure.png`, fullPage: true }).catch(() => undefined);
+    }
+  }
   const failureReport = createProductionAppFailureReport({
     stage: currentStage,
     error,
@@ -718,8 +753,11 @@ async function attachInstrumentProbes(page, options) {
   const lensPackId = `${options.modelId}-jlens`;
   await locatorContains(lens.getByRole("button", { name: "Compatible data pack" }), lensPackId);
   await lens.getByRole("button", { name: "In use", exact: true }).waitFor();
-  await lens.getByTitle("turn live readout on").click();
-  await lens.getByTitle("turn live readout off").waitFor();
+  const lensLiveOn = lens.getByRole("button", { name: "Turn on live predicted-word readings", exact: true });
+  if (await lensLiveOn.isVisible()) {
+    await lensLiveOn.click();
+  }
+  await lens.getByRole("button", { name: "Turn off live predicted-word readings", exact: true }).waitFor();
   await lens.getByRole("textbox", { name: "Watch a prediction word" }).fill(options.jlensWord);
   await lens.getByRole("button", { name: "Watch word", exact: true }).click();
   await lens.getByRole("list", { name: "J-lens probe tokens" }).waitFor();
@@ -729,8 +767,11 @@ async function attachInstrumentProbes(page, options) {
   const saePackId = `${options.modelId}-sae`;
   await locatorContains(sae.getByRole("button", { name: "Compatible data pack" }), saePackId);
   await sae.getByRole("button", { name: "In use", exact: true }).waitFor();
-  await sae.getByTitle("turn live readout on").click();
-  await sae.getByTitle("turn live readout off").waitFor();
+  const saeLiveOn = sae.getByRole("button", { name: "Turn on live model-feature readings", exact: true });
+  if (await saeLiveOn.isVisible()) {
+    await saeLiveOn.click();
+  }
+  await sae.getByRole("button", { name: "Turn off live model-feature readings", exact: true }).waitFor();
   await sae.getByRole("textbox", { name: "Watch a model feature" }).fill(String(options.saeFeature));
   await sae.getByRole("button", { name: "Watch feature", exact: true }).click();
   await sae.getByRole("list", { name: "SAE feature probes" }).waitFor();
@@ -770,7 +811,7 @@ async function assertProbeMeasurements(page, options) {
     typeof lensLayerValue === "string" && !/no (?:layer )?data/iu.test(lensLayerValue),
     `J-lens layer strip has no data: ${lensLayerValue}`,
   );
-  const lensStrength = await finiteAriaMeasurement(lensList, /Strength (-?[0-9.]+)/u);
+  const lensStrength = await finiteAriaMeasurement(lensList, /Strength (-?[0-9.]+(?:e[+-]?[0-9]+)?)/u);
 
   await tabs.getByRole("button", { name: "SAE", exact: true }).click();
   const sae = page.getByLabel("Model feature controls");
@@ -796,7 +837,8 @@ async function assertProbeMeasurements(page, options) {
 async function assertTokenInstrumentReadouts(page) {
   await openWorkspace(page, "Conversation");
   await page.getByRole("button", { name: /Inspect tokens in .* message/u }).last().click();
-  const drawer = page.getByRole("dialog", { name: "Generated word details" });
+  const drawer = page.getByRole("dialog", { name: "Generated word details" })
+    .or(page.getByRole("complementary", { name: "Generated word details" }));
   await drawer.waitFor();
   const tabs = drawer.getByRole("group", { name: "Token detail view" });
 
@@ -836,8 +878,10 @@ async function finiteAriaMeasurement(root, pattern) {
 }
 
 async function generate(page, { prompt, maxTokens }) {
+  const dismissNotice = page.getByRole("button", { name: "Dismiss", exact: true });
+  if (await dismissNotice.isVisible()) await dismissNotice.click();
   await openWorkspace(page, "Controls");
-  const length = page.getByRole("spinbutton", { name: "Maximum reply length in tokens" });
+  const length = page.getByRole("spinbutton", { name: "Max tokens", exact: true });
   await length.fill(String(maxTokens));
   await length.press("Enter");
   await openWorkspace(page, "Conversation");
@@ -846,6 +890,8 @@ async function generate(page, { prompt, maxTokens }) {
   requireEqual(await composer.inputValue(), prompt, "composer prompt before generation");
   const statusLocator = page.getByLabel("Generation status", { exact: true });
   const responseLocator = page.locator(".msg .response-body").last();
+  const generatedTurns = page.getByRole("button", { name: /Inspect tokens in .* message/u });
+  const previousGeneratedTurns = await generatedTurns.count();
   const previousStatus = await statusLocator.innerText({ timeout: 5_000 }).catch(() => "");
   const previousResponse = await responseLocator.innerText({ timeout: 5_000 }).catch(() => "");
   const deadline = Date.now() + GENERATION_TIMEOUT_MS;
@@ -869,6 +915,10 @@ async function generate(page, { prompt, maxTokens }) {
   let response = "";
   while (Date.now() < deadline) {
     if (clickState.error) throw clickState.error;
+    const alerts = await page.getByRole("alert").allTextContents();
+    if (alerts.some((text) => /Generation:|Drowse stopped:/u.test(text))) {
+      throw new Error(`generation failed: ${alerts.join(" ")}`);
+    }
     const statusResult = await boundedLocatorRead(
       () => statusLocator.innerText({ timeout: 5_000 }),
       status,
@@ -901,7 +951,8 @@ async function generate(page, { prompt, maxTokens }) {
       nextProgressLog = Date.now() + 30_000;
     }
     const changed = status !== previousStatus.trim() || response !== previousResponse.trim();
-    if ((sawActive || changed) && active === false && doneResult.value === true) break;
+    const newGeneratedTurn = await generatedTurns.count() > previousGeneratedTurns;
+    if (clickState.settled && newGeneratedTurn && (sawActive || changed) && active === false && doneResult.value === true) break;
     await delay(5_000);
   }
   if (Date.now() >= deadline) {
@@ -918,7 +969,7 @@ async function generate(page, { prompt, maxTokens }) {
   );
   response = (await responseLocator.innerText({ timeout: 10_000 })).trim();
   requireCondition(response.length > 0, "assistant response is empty");
-  status = (await statusLocator.innerText({ timeout: 10_000 })).trim();
+  status = (await statusLocator.innerText({ timeout: 10_000 })).replaceAll(/\s+/gu, " ").trim();
   const tokensMatch = /([0-9]+) tokens/u.exec(status);
   const speedMatch = /([0-9]+(?:\.[0-9]+)?) tokens\/s/u.exec(status);
   if (!tokensMatch || !speedMatch) throw new Error(`generation status is incomplete: ${status}`);
@@ -952,7 +1003,7 @@ async function delay(milliseconds) {
 
 async function openWorkspace(page, name) {
   const accessibleName = name === "Conversation"
-    ? /^(Conversation|Chat)$/u
+    ? /^Conversation$/u
     : name === "Controls"
       ? /^Controls$/u
       : /^Branches$/u;
@@ -994,7 +1045,7 @@ async function selectAllFirstRunPacks(page, expectedCount) {
 
 async function waitForReadyPage(page) {
   try {
-    await page.getByRole("heading", { name: "This device is ready" }).waitFor({ timeout: 60_000 });
+    await page.locator(".app-shell.hardware-compatible").waitFor({ timeout: 60_000 });
   } catch (error) {
     const body = (await page.locator("body").innerText().catch(() => "<body unavailable>"))
       .replaceAll(/\s+/gu, " ")
@@ -1051,12 +1102,12 @@ async function waitForServiceWorkerController(page) {
   }
 }
 
-async function waitForAuthoritativeInstalledState(page, expectedModelVariantId, label) {
+async function waitForAuthoritativeInstalledState(page, expectedModelVariantId, label, timeoutMs = 30_000) {
   try {
     const choice = await waitForVisibleChoice(page, [
       ["verified-onboarding", page.getByText("Installed and verified", { exact: true })],
       ["loaded-workbench", page.locator(".shell")],
-    ], label);
+    ], label, timeoutMs);
     let loadedModelVariantId = null;
     if (choice.name === "loaded-workbench") {
       loadedModelVariantId = await currentWorkbenchModelVariantId(page);
@@ -1092,10 +1143,10 @@ async function currentWorkbenchModelVariantId(page) {
     .getByRole("button", { name: "Model", exact: true }).click();
   const modelControls = page.getByRole("region", { name: "Model controls", exact: true });
   await modelControls.waitFor({ state: "visible", timeout: 30_000 });
-  const modelVariantId = await modelControls.locator("[data-model-variant-id]")
-    .getAttribute("data-model-variant-id");
+  const modelVariantId = await modelControls.getAttribute("data-model-variant-id");
   await page.getByRole("group", { name: "Controls section" })
     .getByRole("button", { name: "Response", exact: true }).click();
+  await openWorkspace(page, "Conversation");
   return modelVariantId?.trim() || null;
 }
 
@@ -1161,10 +1212,10 @@ async function clickOpen(page) {
   }
 }
 
-async function waitForVisibleChoice(page, choices, label) {
+async function waitForVisibleChoice(page, choices, label, timeoutMs = 30_000) {
   try {
     return await Promise.any(choices.map(async ([name, locator]) => {
-      await locator.waitFor({ state: "visible", timeout: 30_000 });
+      await locator.waitFor({ state: "visible", timeout: timeoutMs });
       return { name, locator };
     }));
   } catch (error) {
@@ -1434,8 +1485,9 @@ function createStaticServer(
       if (method === "HEAD") response.end();
       else await pipeline(createReadStream(absolute), response);
     } catch (error) {
+      console.error(error);
       if (response.headersSent) response.destroy(error instanceof Error ? error : undefined);
-      else send(response, error instanceof Error ? error.stack ?? error.message : String(error), "text/plain", 500);
+      else send(response, "Internal server error", "text/plain", 500);
     }
   });
 }

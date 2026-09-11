@@ -1,3 +1,5 @@
+import { selectWorkspaceView } from "./workbench-navigation";
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
@@ -9,26 +11,28 @@ test("workbench cursors describe editing, inspecting, adjusting and navigating",
   await page.goto(`${devUrl}/app?layoutFixture=instruments`);
   await expect(page.locator(".shell")).toBeVisible();
   await expect(page.locator(".page-brand")).toHaveCSS("cursor", "pointer");
+  await openWorkspaceMenu(page);
   await expect(page.getByRole("button", { name: "Dark", exact: true }).locator("svg")).toHaveCSS("cursor", "pointer");
+  await page.getByRole("button", { name: "Show chat tools", exact: true }).click();
   await expect(page.getByRole("button", { name: "About word colors", exact: true })).toHaveCSS("cursor", "help");
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   await expect(composer).toHaveCSS("cursor", "text");
   await expect(page.getByRole("slider", { name: "Resize writing area" })).toHaveCSS("cursor", "row-resize");
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCSS("cursor", "not-allowed");
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeHidden();
 
-  await page.getByRole("button", { name: "Controls", exact: true }).click();
+  await selectWorkspaceView(page, "Controls");
   const slider = page.getByRole("slider", { name: "Temperature", exact: true });
   await expect(slider).toHaveCSS("cursor", "ew-resize");
   await page.evaluate(async url => { (await import(url)).steerRack.customExpression = "0.3 jlens/orange"; }, `/@fs${resolve("src/lib/stores.svelte.ts")}`);
   await expect(page.getByRole("button", { name: "Copy response recipe", exact: true })).toHaveCSS("cursor", "copy");
   await page.evaluate(async url => { (await import(url)).steerRack.customExpression = null; }, `/@fs${resolve("src/lib/stores.svelte.ts")}`);
-  await page.getByRole("button", { name: "Conversation", exact: true }).click();
+  await selectWorkspaceView(page, "Conversation");
   await composer.fill("Describe the shape of a thought.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await expect(page.locator(".response-body .tok").first()).toHaveCSS("cursor", "crosshair");
 
-  await page.getByRole("button", { name: "Loom", exact: true }).click();
+  await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
   await expect(page.getByRole("button", { name: "Zoom in", exact: true })).toHaveCSS("cursor", "zoom-in");
   await expect(page.getByRole("button", { name: "Zoom out", exact: true })).toHaveCSS("cursor", "zoom-out");
@@ -51,7 +55,7 @@ test("busy and unavailable states override the normal action cursor", async ({ p
   await page.goto(`${devUrl}/credits`);
   await page.evaluate(async ({ buttonUrl, sliderUrl }) => {
     const [{ mount, createRawSnippet }, { default: Button }, { default: Slider }] = await Promise.all([
-      import("/@id/svelte"), import(buttonUrl), import(sliderUrl),
+      import("/e2e/svelte-runtime.ts"), import(buttonUrl), import(sliderUrl),
     ]);
     const target = document.createElement("div");
     document.body.append(target);

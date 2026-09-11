@@ -176,7 +176,6 @@ function createBundle(overrides = {}, document = catalogFixture()) {
       assert.deepEqual(
         catalog.document.models.map(({ id }) => id),
         verifiedCatalog.document.models
-          .filter(({ id }) => id !== "gemma3-270m-instruct")
           .map(({ id }) => id),
       );
       return [recommendation(document)];
@@ -475,7 +474,21 @@ try {
     assert.equal(snapshot.download.available, true);
   });
 
-  test("Gemma 3 270M stays hidden when an older signed catalog still includes it", async () => {
+  test("GPT-2 Base includes its parameter count in the model label", async () => {
+    const { bundle } = createBundle({
+      recommend(verified) {
+        const entry = recommendation(verified.document);
+        entry.model.id = "gpt2-base";
+        entry.model.displayName = "GPT-2 Base";
+        return [entry];
+      },
+    });
+    const shell = createShellController(bundle);
+    await shell.check();
+    assert.equal(shell.current().models.find(model => model.modelId === "gpt2-base").name, "GPT-2 Base (124M)");
+  });
+
+  test("Gemma 3 270M remains available from the signed catalog", async () => {
     const { bundle } = createBundle({
       recommend(verified) {
         const retained = recommendation(verified.document);
@@ -491,6 +504,7 @@ try {
     await shell.check();
 
     assert.deepEqual(shell.current().models.filter((model) => model.catalogAvailable !== false).map((model) => model.id), [
+      "gemma3-270m-instruct-q4f32_1",
       "smollm2-360m-q4f16",
     ]);
   });
@@ -691,6 +705,61 @@ try {
     assert.deepEqual(calls, ["check"]);
   });
 
+  test("graphics checks show the selected adapter and conditional Windows guidance", async () => {
+    const { windowsIntelGpuHint, windowsIntelGen9Blocked } = await server.ssrLoadModule("/src/lib/runtime/gpuRecovery.ts");
+    const hint = windowsIntelGpuHint("intel", "Windows NT 10.0");
+    assert.match(hint, /If this laptop has a dedicated GPU/u);
+    assert.match(hint, /chrome:\/\/flags\/#force-high-performance-gpu/u);
+    const chromeWindows = "Windows NT 10.0 Chrome/151.0";
+    assert.equal(windowsIntelGen9Blocked("intel", "gen-9", chromeWindows), true);
+    assert.equal(windowsIntelGen9Blocked("intel", "gen-12", chromeWindows), false);
+    assert.equal(windowsIntelGen9Blocked("nvidia", "gen-9", chromeWindows), false);
+    assert.equal(windowsIntelGen9Blocked("intel", "gen-9", "Macintosh Chrome/151.0"), false);
+    assert.equal(windowsIntelGen9Blocked("intel", "gen-9", "Windows Firefox/150.0"), false);
+    assert.equal(windowsIntelGen9Blocked("intel", undefined, chromeWindows), false);
+    assert.equal(windowsIntelGpuHint("intel", "Macintosh"), null);
+    assert.equal(windowsIntelGpuHint("nvidia", "Windows NT 10.0"), null);
+    assert.equal(windowsIntelGpuHint(undefined, "Windows NT 10.0"), null);
+    const { bundle } = createBundle({
+      async check() {
+        return capabilities({
+          webGpu: { ...capabilities().webGpu, adapterInfo: { vendor: "intel", architecture: "gen-9" } },
+          issues: [{ code: "WINDOWS_INTEL_GPU", message: hint, severity: "advisory" }],
+        });
+      },
+    });
+    const shell = createShellController(bundle);
+    await shell.check();
+    const graphics = shell.current().checks.find(({ id }) => id === "webgpu");
+    assert.equal(graphics.state, "warn");
+    assert.match(graphics.detail, /intel \/ gen-9/u);
+    assert.match(graphics.detail, /does not guarantee stability/u);
+    assert.match(graphics.detail, /chrome.exe/u);
+  });
+
+  test("the Windows Intel Gen9 block keeps its GPU-switch instructions in the shell", async () => {
+    const { WINDOWS_INTEL_GEN9_BLOCK } = await server.ssrLoadModule("/src/lib/runtime/gpuRecovery.ts");
+    const failure = { code: "WEBGPU_WINDOWS_INTEL_GEN9_BLOCKED", message: WINDOWS_INTEL_GEN9_BLOCK, severity: "hard" };
+    const { bundle } = createBundle({
+      async check() {
+        const base = capabilities();
+        return capabilities({
+          supported: false,
+          webGpu: { ...base.webGpu, adapterInfo: { vendor: "intel", architecture: "gen-9" } },
+          issues: [failure],
+          operations: { ...base.operations, generation: { available: false, reasons: [failure] } },
+        });
+      },
+    });
+    const shell = createShellController(bundle);
+    await shell.check();
+    const graphics = shell.current().checks.find(({ id }) => id === "webgpu");
+    assert.equal(graphics.state, "fail");
+    assert.match(graphics.detail, /Selected GPU: intel \/ gen-9/u);
+    assert.match(graphics.detail, /force-high-performance-gpu/u);
+    assert.equal(shell.current().runtime.available, false);
+  });
+
   test("a failed compute calibration marks graphics support as unavailable", async () => {
     const calibrationFailure = {
       code: "WEBGPU_CALIBRATION_FAILED",
@@ -719,7 +788,7 @@ try {
     assert.equal(graphics?.state, "fail");
     assert.equal(
       graphics?.detail,
-      "Drowse could not confirm compatible hardware-accelerated graphics. Update your browser and graphics driver, then run the device check again.",
+      "Selected GPU: fixture. Drowse could not confirm compatible hardware-accelerated graphics. Update your browser and graphics driver, then run the device check again.",
     );
   });
 
@@ -1076,6 +1145,50 @@ try {
       fixture.calls.filter((call) => call === "download:smollm2-360m-q4f16").length,
       1,
     );
+  });
+
+  test("late storage approval clears the notice without repeating the download", async () => {
+    let grant;
+    const fixture = createBundle({
+      async requestPersistence(onLateGranted) { grant = onLateGranted; return false; },
+      async refreshStorage() { return { ...capabilities().storage, persisted: false }; },
+    });
+    const shell = createShellController(fixture.bundle);
+    await shell.check();
+    await shell.download("smollm2-360m-q4f16");
+    assert.equal(shell.current().storage.persisted, false);
+    grant();
+    assert.equal(shell.current().storage.persisted, true);
+    assert.equal(shell.current().download.persistenceDenied, false);
+    assert.equal(shell.current().download.phase, "installed");
+    assert.equal(fixture.calls.filter(call => call === "download:smollm2-360m-q4f16").length, 1);
+    await shell.retryPersistence();
+    assert.equal(shell.current().storage.persisted, false);
+    grant();
+    assert.equal(shell.current().storage.persisted, true);
+    shell.dispose();
+    const snapshot = shell.current();
+    grant();
+    assert.equal(shell.current(), snapshot);
+  });
+
+  test("a stale quota check cannot overwrite late storage approval", async () => {
+    let grant;
+    let finishStorage;
+    const fixture = createBundle({
+      async requestPersistence(onLateGranted) { grant = onLateGranted; return false; },
+      refreshStorage() { return new Promise(resolve => { finishStorage = resolve; }); },
+    });
+    const shell = createShellController(fixture.bundle);
+    await shell.check();
+    const download = shell.download("smollm2-360m-q4f16");
+    await waitFor(() => finishStorage);
+    grant();
+    finishStorage({ ...capabilities().storage, persisted: false });
+    await download;
+    assert.equal(shell.current().storage.persisted, true);
+    assert.equal(shell.current().download.persistenceDenied, false);
+    shell.dispose();
   });
 
   test("optional pack admission types SAE buffer and concurrent resident-budget failures", () => {

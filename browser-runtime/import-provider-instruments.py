@@ -44,10 +44,17 @@ def main() -> None:
 
 
 def create_jlens_pack(args, model: dict) -> None:
-    checkpoint = torch.load(args.jlens_checkpoint, map_location="cpu", weights_only=False)
+    checkpoint = torch.load(args.jlens_checkpoint, map_location="cpu", weights_only=True)
     raw_layers = checkpoint.get("J") if isinstance(checkpoint, dict) else None
     if not isinstance(raw_layers, dict) or not raw_layers:
         raise SystemExit("provider J-lens checkpoint does not contain a J layer dictionary")
+    prompt_counts = [checkpoint[key] for key in ("n_prompts", "prompts_fitted") if key in checkpoint]
+    if not prompt_counts or any(
+        type(count) is not int or count <= 0 or count != prompt_counts[0]
+        for count in prompt_counts
+    ):
+        raise SystemExit("provider J-lens checkpoint has no consistent positive prompt count")
+    prompt_count = prompt_counts[0]
     layers: dict[str, torch.Tensor] = {}
     provider_layers = sorted(int(layer) for layer in raw_layers)
     layer_ids = select_jlens_layers(
@@ -68,7 +75,6 @@ def create_jlens_pack(args, model: dict) -> None:
     save_file(layers, tensor_path)
     tensor_digest = sha256(tensor_path)
     checkpoint_digest = sha256(args.jlens_checkpoint)
-    prompt_count = int(checkpoint.get("n_prompts", checkpoint.get("prompts_fitted", 278)))
     manifest = {
         "format_version": 6,
         "method": "provider_jacobian_lens",

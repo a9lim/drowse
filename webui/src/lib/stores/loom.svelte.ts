@@ -335,9 +335,12 @@ export function applyTreeSnapshot(
   if (
     loomTree.loaded && !options.allowRevisionRegression &&
     snap.model_id === loomTree.modelId &&
+    snap.root_id === loomTree.root_id &&
     snap.session_id === loomTree.session_id && snap.rev < loomTree.rev
   ) return false;
-  if (loomTree.loaded && (snap.model_id !== loomTree.modelId || snap.session_id !== loomTree.session_id)) {
+  if (loomTree.loaded && (snap.model_id !== loomTree.modelId || snap.session_id !== loomTree.session_id ||
+    snap.root_id !== loomTree.root_id)) {
+    loomTree.pendingNodeId = null;
     Object.assign(genStatus, {
       active: false,
       replay: null,

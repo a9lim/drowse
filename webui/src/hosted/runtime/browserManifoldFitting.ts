@@ -41,7 +41,7 @@ import {
   type BrowserTopologyFittingPlan,
   type FinalizedBrowserAffineLayer,
 } from "../fitting/coordinator";
-import { BrowserFittingWorkerClient } from "../fitting/fittingWorkerClient";
+import { BrowserFittingWorkerPool } from "../fitting/fittingWorkerPool";
 import { mahalanobisNorm } from "../fitting/mahalanobis";
 import type { SerializedMahalanobisWhitener, TopologyResult } from "../fitting/workerContracts";
 import type { BrowserModelLoadRequest } from "./modelBackend";
@@ -169,7 +169,7 @@ const DEFAULT_DEPENDENCIES: BrowserManifoldFittingDependencies = {
   createCoordinator(request) {
     return new BrowserFittingCoordinator(
       request.activationSpool,
-      new BrowserFittingWorkerClient(),
+      new BrowserFittingWorkerPool(),
     );
   },
   async loadExactSae(_request, selector, runtime) {
@@ -188,7 +188,7 @@ const DEFAULT_DEPENDENCIES: BrowserManifoldFittingDependencies = {
 
 export class BrowserManifoldFitting {
   private readonly dependencies: BrowserManifoldFittingDependencies;
-  private readonly fittingWorker: BrowserFittingWorkerClient | null;
+  private readonly fittingWorker: BrowserFittingWorkerPool | null;
   private readonly producerVersion: string;
   private readonly drowseVersion: string;
 
@@ -200,7 +200,7 @@ export class BrowserManifoldFitting {
     this.producerVersion = typeof producer === "string" ? producer : producer.producerVersion;
     this.drowseVersion = typeof producer === "string" ? producer : producer.drowseVersion;
     this.fittingWorker = dependencies.createCoordinator === undefined
-      ? new BrowserFittingWorkerClient()
+      ? new BrowserFittingWorkerPool()
       : null;
     this.dependencies = {
       ...DEFAULT_DEPENDENCIES,

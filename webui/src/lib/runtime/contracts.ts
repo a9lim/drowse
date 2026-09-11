@@ -722,7 +722,7 @@ export interface HostedController {
   deleteModel(modelVariantId: string): Promise<void>;
   deletePack(packId: string): Promise<void>;
   clearAll(): Promise<void>;
-  requestPersistence(): Promise<boolean>;
+  requestPersistence(onLateGranted?: () => void): Promise<boolean>;
   refreshStorage(): Promise<RuntimeCapabilities["storage"]>;
   load(
     modelVariantId: string,

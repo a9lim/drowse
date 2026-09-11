@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Cross-branch diff drawer — phase 5.  Renders a side-by-side
   // word-level diff between two (or more) generated nodes, plus the
@@ -428,7 +429,7 @@
       <div class="name-row">
         <span class="meta">
           {#if ids.length >= 2}
-            {ids.length} branch{ids.length === 1 ? "" : "es"} selected
+            <MorphText text={ids.length} /> branch{ids.length === 1 ? "" : "es"} selected
           {:else}
             Select branches
           {/if}
@@ -505,13 +506,13 @@
               <tr>
                 <th class="ss-tag">tag</th>
                 <th class="ss-preview">preview</th>
-                <th class="ss-num" title="mean logprob">
+                <th class="ss-num" {...{ "aria-description": "mean logprob" }}>
                   mean lp
                 </th>
-                <th class="ss-num" title="rank-1 agreement">
+                <th class="ss-num" {...{ "aria-description": "rank-1 agreement" }}>
                   rk1 unchanged
                 </th>
-                <th class="ss-num" title="approximate KL">
+                <th class="ss-num" {...{ "aria-description": "approximate KL" }}>
                   mean ≈KL
                 </th>
               </tr>
@@ -523,18 +524,18 @@
                   <td class="ss-preview">{row.preview}</td>
                   <td class="ss-num">{fmtLp(row.meanLogprob)}</td>
                   <td class="ss-num">
-                    {row.isAnchor
+                    <MorphText text={row.isAnchor
                       ? "-"
                       : row.jointReady
                         ? fmtPct(row.rank1Unchanged)
-                        : "…"}
+                        : "…"} />
                   </td>
                   <td class="ss-num">
-                    {row.isAnchor
+                    <MorphText text={row.isAnchor
                       ? "-"
                       : row.jointReady
                         ? fmtKlMean(row.klMean)
-                        : "…"}
+                        : "…"} />
                   </td>
                 </tr>
               {/each}
@@ -558,7 +559,7 @@
                 {ids.length === 2 ? "A vs B" : `A vs B${diffIdx + 1}`}
               </span>
               {#if d.parent_applied_steering !== null || d.steering_delta}
-                <code class="recipe-delta" title="steering delta A → B">
+                <code class="recipe-delta" {...{ "aria-description": "steering delta A → B" }}>
                   Δ recipe: {d.steering_delta || "none"}
                 </code>
               {/if}
@@ -578,7 +579,7 @@
                         <span
                           class="tok"
                           class:highlight-anchor={hoveredAnchorIdx === sp.a_index}
-                          title={spanTooltip(sp)}
+                          {...{ "aria-description": (spanTooltip(sp)) }}
                           onmouseenter={() => (hoveredAnchorIdx = sp.a_index)}
                           onmouseleave={() => (hoveredAnchorIdx = null)}
                         >{sp.a_text}</span>
@@ -602,7 +603,7 @@
                         <span
                           class="tok"
                           class:highlight-target={matched}
-                          title={spanTooltip(sp)}
+                          {...{ "aria-description": (spanTooltip(sp)) }}
                         >{sp.b_text}</span>
                       {/each}
                     {:else}
@@ -665,13 +666,13 @@
                           <th class="lp-tok">token</th>
                           <th class="lp-num">lp(A)</th>
                           <th class="lp-num">lp(B)</th>
-                          <th class="lp-num" title="log pB(A token) − log pA(A token)">
+                          <th class="lp-num" {...{ "aria-description": "log pB(A token) − log pA(A token)" }}>
                             Δ lp(A)
                           </th>
-                          <th class="lp-num" title="approx KL(A ∥ B) · top-K">
+                          <th class="lp-num" {...{ "aria-description": "approx KL(A ∥ B) · top-K" }}>
                             ≈KL
                           </th>
-                          <th class="lp-flag" title="argmax differs">rk1Δ</th>
+                          <th class="lp-flag" {...{ "aria-description": "argmax differs" }}>rk1Δ</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -709,9 +710,9 @@
                     <div class="reading-row" class:top-delta={top}>
                       <span class="r-name">{r.name}</span>
                       <span class="r-vals">
-                        <span class="r-side">{r.a_value.toFixed(3)}</span>
+                        <span class="r-side"><MorphText text={r.a_value.toFixed(3)} /></span>
                         <span class="r-arrow">→</span>
-                        <span class="r-side">{r.b_value.toFixed(3)}</span>
+                        <span class="r-side"><MorphText text={r.b_value.toFixed(3)} /></span>
                       </span>
                       <div class="r-bar-track">
                         <div
@@ -720,7 +721,7 @@
                         ></div>
                       </div>
                       <span class="r-delta" style={`color: ${deltaColor(r.delta)}`}>
-                        {formatReadingDelta(r)}
+                        <MorphText text={formatReadingDelta(r)} />
                       </span>
                     </div>
                   {/each}

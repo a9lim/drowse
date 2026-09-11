@@ -7,6 +7,7 @@ export const STORAGE_PERSISTENCE_TIMEOUT_MS = 5_000;
 export async function requestPersistentStorage(
   storage: PersistentStorageManager | undefined = navigator.storage,
   timeoutMs = STORAGE_PERSISTENCE_TIMEOUT_MS,
+  onLateGranted?: () => void,
 ): Promise<boolean> {
   if (!storage) return false;
 
@@ -18,12 +19,19 @@ export async function requestPersistentStorage(
   if (storage.persisted) checks.push(startBooleanCheck(() => storage.persisted!()));
   if (checks.length === 0) return false;
 
+  const decision = firstGranted(checks);
+  let timedOut = false;
+  void decision.then((granted) => {
+    if (timedOut && granted) onLateGranted?.();
+  });
+
   try {
     return await withTimeout(
-      firstGranted(checks),
+      decision,
       positiveTimeout(timeoutMs),
     );
   } catch {
+    timedOut = true;
     return false;
   }
 }

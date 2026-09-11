@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Any, Sequence
 
@@ -145,6 +146,13 @@ def _run_serve(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     _pkg._load_effective_config(args)
+    from drowse.server.app import is_loopback_host
+    api_key = getattr(args, "api_key", None)
+    if api_key is None:
+        api_key = os.environ.get("DROWSE_API_KEY")
+    if not is_loopback_host(args.host) and not api_key:
+        print("drowse serve: non-loopback binding requires --api-key or DROWSE_API_KEY", file=sys.stderr)
+        sys.exit(2)
     if not args.model:
         print(
             "drowse serve: model required. Pass a HuggingFace repo id (e.g.\n"
@@ -176,7 +184,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     web_enabled = not getattr(args, "no_web", False)
     app = create_app(session, default_steering=default_steering,
                      cors_origins=args.cors or None,
-                     api_key=getattr(args, "api_key", None),
+                     api_key=api_key,
                      web=web_enabled)
 
     # The default probe roster — tagged concept axes plus every fitted bundled
@@ -207,4 +215,6 @@ def _run_serve(args: argparse.Namespace) -> None:
     print(f"API docs:           http://{args.host}:{args.port}/docs")
     if args.port != 11434:
         print("Tip: for drop-in Ollama compatibility, run with `--port 11434`.")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    from drowse.server.ws_stream import MAX_WS_MESSAGE_BYTES
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info",
+                ws_max_size=MAX_WS_MESSAGE_BYTES)

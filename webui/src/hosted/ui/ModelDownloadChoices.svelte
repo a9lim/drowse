@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import InfoTip from "../../lib/ui/InfoTip.svelte";
   import ModelProviderLogo from "./ModelProviderLogo.svelte";
   import { formatEtaRange } from "../../lib/runtime/eta";
@@ -92,13 +93,14 @@
               : determinate && progress.bytesReceived >= progress.bytesTotal ? "Verifying files…"
               : progress?.etaSeconds ? `${formatEtaRange(progress.etaSeconds)} remaining` : "Downloading…"}
             <div class="model-choice" class:installed={model.installed} class:armed class:active data-model-id={model.id}>
+              <span class="model-download-size"><span class="sr-only">Total download: </span>{model.size}</span>
               <button type="button" class="model-choice-button" disabled={unavailable(model)}
                 onclick={() => void choose(model)} onkeydown={(event) => { if (event.key === "Escape") armedId = null; }}
                 aria-describedby={armed && (model.fit === "uncertain" || model.requiresOomRetry) ? `model-warning-${model.id}` : undefined}>
                 <ModelProviderLogo modelId={model.modelId} size={28} />
                 <span class="model-choice-copy">
                   <span class="model-name">{model.name}</span>
-                  <span class="model-status" aria-live="polite">{model.fit === "blocked" ? "Not supported on this device"
+                  <span class="model-status" aria-live="polite"><MorphText text={model.fit === "blocked" ? "Not supported on this device"
                     : model.setupComplete ? "Ready to use"
                     : active ? "Download in progress"
                     : model.catalogAvailable === false || !snapshot.download.available ? "Download unavailable"
@@ -106,7 +108,7 @@
                     : paused ? "Download paused. Click to resume"
                     : failed ? "Download failed. Click to retry"
                     : model.installed ? "Model downloaded. Download remaining tools"
-                    : "Click to download"}</span>
+                    : "Click to download"} /></span>
                 </span>
               </button>
               {#if armed && (model.fit === "uncertain" || model.requiresOomRetry)}
@@ -120,7 +122,7 @@
                     <span class:indeterminate={!determinate} style:width={`${determinate ? percent : 18}%`}></span>
                   </div>
                   <div class="download-detail">
-                    <span>{paused ? "Downloaded files kept" : status}{determinate ? ` · ${percent}%` : ""}</span>
+                    <span><MorphText text={paused ? "Downloaded files kept" : status} numbers={false} />{#if determinate} · <MorphText text={`${percent}%`} />{/if}</span>
                     {#if active}<button type="button" class="pause-download" disabled={pausing || download?.phase !== "downloading"} onclick={() => void pause(model.id)}>Pause</button>{/if}
                   </div>
                 </div>
@@ -140,11 +142,13 @@
   .model-group-heading { display: flex; align-items: center; gap: var(--space-xs); }
   h3 { margin: 0; font-size: var(--text-sm); color: var(--fg-muted); }
   .model-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-7); align-items: start; }
-  .model-choice { min-width: 0; border-radius: var(--radius); background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control); }
+  .model-choice { position: relative; min-width: 0; border-radius: var(--radius); background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control); }
+  .model-download-size { position: absolute; inset-block-start: var(--space-sm); inset-inline-end: var(--space-sm); z-index: 1; pointer-events: none; color: var(--fg-muted); font-size: var(--text-xs); line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .installed .model-download-size { color: var(--action-ink); }
   .model-choice.installed { --fg: var(--action-ink); color: var(--action-ink); background: var(--action-sheen), var(--action-bg); }
   .model-choice.armed { box-shadow: inset 0 0 0 2px var(--accent), var(--shadow-control); }
   button { font: inherit; color: inherit; border: 0; border-radius: var(--radius); background: transparent; cursor: pointer; }
-  .model-choice-button { display: flex; align-items: center; gap: var(--space-7); width: 100%; min-height: 7.25rem; padding: var(--model-card-padding); text-align: start; }
+  .model-choice-button { display: flex; align-items: center; gap: var(--space-7); width: 100%; min-height: 7.25rem; padding: var(--model-card-padding); padding-block-start: calc(var(--model-card-padding) + var(--space-xs)); text-align: start; }
   .model-choice-button:hover:not(:disabled) { background: var(--bg-hover); }
   .installed .model-choice-button:hover:not(:disabled) { background: var(--action-hover); }
   .model-choice-button:disabled { cursor: default; }

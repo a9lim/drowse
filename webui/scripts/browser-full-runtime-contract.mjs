@@ -15,6 +15,27 @@ export const REQUIRED_BROWSER_FULL_RUNTIME_CHECKS = Object.freeze([
   "offline_reuse",
 ]);
 
+export function validatePairedSteeringControls(logprobs) {
+  const names = ["baseline", "zero", "positive", "negative"];
+  if (!isRecord(logprobs) || Object.keys(logprobs).length !== names.length || names.some((name) => {
+    const value = logprobs[name];
+    return typeof value !== "number" || Number.isNaN(value) || value > 0;
+  }) || !Number.isFinite(logprobs.baseline) || !Number.isFinite(logprobs.zero)) {
+    throw new Error("paired steering controls returned invalid sampler logprobs");
+  }
+  if (Math.abs(logprobs.zero - logprobs.baseline) > 1e-4) {
+    throw new Error("zero steering changed the baseline distribution");
+  }
+  if (Math.max(Math.abs(logprobs.positive - logprobs.baseline), Math.abs(logprobs.negative - logprobs.baseline)) < 1e-4) {
+    throw new Error("nonzero steering controls did not change the sampler distribution");
+  }
+  return {
+    controlLogprobs: Object.fromEntries(names.map((name) => [name, logprobs[name] === -Infinity ? "-Infinity" : logprobs[name]])),
+    controlProbabilities: Object.fromEntries(names.map((name) => [name, Math.exp(logprobs[name])])),
+    zeroSteeringTolerance: 1e-4,
+  };
+}
+
 export function parseBrowserFullRuntimeArguments(args) {
   const result = {
     browserChannel: "chrome",
@@ -144,8 +165,10 @@ export function validateBrowserFullRuntimeModelClosure({
   }
   if (manifest.schemaVersion !== 1)
     throw new Error("browser model closure schema is unsupported");
+  const legacyRuntimeAlias = runtimeLock.runtimeAbi === "drowse-web-runtime-v1" &&
+    ["saklas-web-runtime-v1", "polythetic-web-runtime-v1"].includes(manifest.runtimeAbi);
   for (const [label, actual, expected] of [
-    ["runtime ABI", manifest.runtimeAbi, runtimeLock.runtimeAbi],
+    ["runtime ABI", legacyRuntimeAlias ? runtimeLock.runtimeAbi : manifest.runtimeAbi, runtimeLock.runtimeAbi],
     ["hook ABI", manifest.hookAbi, runtimeLock.hookAbi],
     ["architecture", manifest.architecture, lock.architecture],
     ["quantization", manifest.quantization, lock.quantization],

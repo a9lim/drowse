@@ -928,10 +928,8 @@ class BrowserContentWriteSession implements ContentWriteSession {
       throw new Error("The chunk exceeds the signed object size");
     }
     if (chunk.byteLength === 0) return this.currentOffset;
-    const bytes: Uint8Array<ArrayBuffer> = chunk.buffer instanceof ArrayBuffer
-      ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
-      : Uint8Array.from(chunk);
-    await this.writable.write(bytes);
+    // WebKit writes the entire backing buffer of a typed-array view.
+    await this.writable.write(Uint8Array.from(chunk).buffer);
     this.currentOffset += chunk.byteLength;
     return this.currentOffset;
   }
@@ -1402,7 +1400,7 @@ async function truncateTo(
   handle: FileSystemFileHandle,
   size: number,
 ): Promise<void> {
-  const writable = await handle.createWritable();
+  const writable = await handle.createWritable({ keepExistingData: size > 0 });
   await writable.truncate(size);
   await writable.close();
 }

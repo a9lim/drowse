@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
+import { returnToChats } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const hostedHomeModule = `/@fs/${resolve("src/hosted/ui/HostedHome.svelte")}`;
@@ -13,19 +14,19 @@ test("first use chooses a model and later visits open the chat home", async ({ p
   await expect(page.locator(".shell")).toBeVisible();
   await expect.poll(() => new URL(page.url()).searchParams.get("reopen")).toBe("1");
 
-  await page.getByRole("link", { name: "Drowse home" }).click();
-  await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible();
+  await returnToChats(page);
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
 
   await page.goto(`${devUrl}/app?fixture=1`);
-  await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "New Instance", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "This device is ready" })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Models", exact: true }).click();
+  await page.getByRole("link", { name: "Models", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Back to chats", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible();
+  await page.locator('.page-route[data-route="models"]').getByRole("link", { name: "Chats", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
 });
 
 test("missing model files preserve saved chats and offer a matching re-download", async ({ page }) => {
@@ -118,7 +119,7 @@ test("missing model files preserve saved chats and offer a matching re-download"
   });
 
   await page.goto(`${devUrl}/app?fixture=1`);
-  await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "A model needs to be downloaded again" })).toBeVisible();
   await expect(page.getByText("Your saved chats are safe.")).toBeVisible();
   const card = page.locator('[data-saved-conversation="saved-chat"]');
@@ -135,7 +136,7 @@ test("returning home explains unprotected storage with an actionable control", a
   await page.evaluate(async ({ hostedHomeModule }) => {
     const [{ default: HostedHome }, { mount }] = await Promise.all([
       import(hostedHomeModule),
-      import("/@id/svelte"),
+      import("/e2e/svelte-runtime.ts"),
     ]);
     const snapshot = {
       phase: "supported",
@@ -166,8 +167,8 @@ test("returning home explains unprotected storage with an actionable control", a
     });
   }, { hostedHomeModule });
 
-  await expect(page.getByRole("heading", { name: "Protect chats and models from browser cleanup" })).toBeVisible();
-  await expect(page.getByText(/browser may remove local files when storage is low/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Keep your chats and models" })).toBeVisible();
+  await expect(page.getByText(/Ask it to keep them during automatic cleanup/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Protect storage" })).toBeVisible();
 });
 
@@ -184,9 +185,9 @@ test("returning home remains usable at narrow phone widths", async ({ page }) =>
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
     await page.goto(`${devUrl}/app?fixture=1`);
-    await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Download a model", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Manage models", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Models", exact: true })).toBeVisible();
     expect(await page.evaluate(() =>
       document.documentElement.scrollWidth <= window.innerWidth + 1
     )).toBe(true);

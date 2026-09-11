@@ -183,6 +183,12 @@ export function createShellController(
     for (const listener of listeners) listener(snapshot);
   };
 
+  const markStorageProtected = () => publish({
+    ...snapshot,
+    download: { ...snapshot.download, persistenceDenied: false },
+    storage: { ...snapshot.storage, persisted: true },
+  });
+
   const confirmBusyTakeover = (state: RuntimeSnapshot): Promise<boolean> => {
     if (disposed || pendingTakeover !== null) return Promise.resolve(false);
     const pending = createPendingTakeover();
@@ -285,17 +291,8 @@ export function createShellController(
               offline,
               preferCached: offline,
             });
-            const visibleCatalog = {
-              ...catalog,
-              document: {
-                ...catalog.document,
-                models: catalog.document.models.filter((model) =>
-                  model.id !== "gemma3-270m-instruct"
-                ),
-              },
-            };
             const recommendations = runtime.recommend(
-              visibleCatalog,
+              catalog,
               capabilities.signals.appleMobile === true ? "speed" : "balanced",
               2048,
             );
@@ -312,7 +309,6 @@ export function createShellController(
             );
             recommendedModels = groupModelsByFamily(
               recommendations
-                .filter(({ model }) => model.id !== "gemma3-270m-instruct")
                 .map((recommendation) =>
                   modelFromRecommendation(
                     recommendation,
@@ -512,7 +508,11 @@ export function createShellController(
       );
       const remainingBytes = model.remainingDownloadBytes;
       downloadCancellationRequested = false;
-      const persistence = runtime.requestPersistence();
+      let persistenceGranted = false;
+      const persistence = runtime.requestPersistence(() => {
+        persistenceGranted = true;
+        markStorageProtected();
+      });
       publish({
         ...snapshot,
         download: {
@@ -522,9 +522,8 @@ export function createShellController(
           progress: undefined,
         },
       });
-      let persistenceGranted: boolean;
       try {
-        persistenceGranted = await persistence;
+        persistenceGranted = await persistence || persistenceGranted;
       } catch (error) {
         publish({
           ...snapshot,
@@ -697,7 +696,11 @@ export function createShellController(
       }
     },
     async retryPersistence() {
-      const persisted = await runtime.requestPersistence();
+      let grantedLate = false;
+      const persisted = await runtime.requestPersistence(() => {
+        grantedLate = true;
+        markStorageProtected();
+      }) || grantedLate;
       publish({
         ...snapshot,
         download: {
@@ -1027,7 +1030,7 @@ function modelFromRecommendation(
     modelType: model.modelType ?? "chat",
     modelId: model.id,
     tier: variant.tier,
-    name: model.displayName,
+    name: model.id === "gpt2-base" ? "GPT-2 Base (124M)" : model.displayName,
     sourceUrl: model.sourceUrl,
     license: model.license,
     size: formatModelBytes(modelDownloadBytes),
@@ -1210,6 +1213,9 @@ function isSessionResetError(error: unknown): boolean {
 }
 
 function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckItem[] {
+  const adapter = capabilities.webGpu.adapterInfo;
+  const adapterLabel = [adapter?.vendor, adapter?.architecture].filter(Boolean).join(" / ");
+  const gpuHint = capabilities.issues.find((issue) => issue.code === "WINDOWS_INTEL_GPU");
   const graphicsFailure = capabilities.issues.find((issue) =>
     issue.severity === "hard" && (
       issue.code.startsWith("WEBGPU_") ||
@@ -1242,8 +1248,8 @@ function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckI
     {
       id: "webgpu",
       label: "Graphics support",
-      state: webGpuState,
-      detail: graphicsFailure
+      state: webGpuState === "pass" && gpuHint ? "warn" : webGpuState,
+      detail: (adapterLabel ? `Selected GPU: ${adapterLabel}. ` : "") + (graphicsFailure
         ? userFacingError(
             graphicsFailure,
             "This browser could not provide the graphics support Drowse needs. Update it and run the device check again.",
@@ -1256,7 +1262,8 @@ function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckI
             ? capabilities.signals.calibrationScore === null
               ? "The browser did not identify its graphics adapter, and the compute check could not finish."
               : "The browser did not name its graphics adapter, but the WebGPU compute check passed."
-            : "Compatible hardware-accelerated graphics are available.",
+            : "The basic graphics check passed. This does not guarantee stability under model load.") +
+          (gpuHint ? ` ${gpuHint.message}` : ""),
     },
     {
       id: "storage",

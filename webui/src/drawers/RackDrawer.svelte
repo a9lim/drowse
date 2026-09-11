@@ -643,7 +643,7 @@
             class="nodes-toggle"
             aria-expanded={nodesOpen(key)}
             onclick={() => toggleNodes(key)}
-            title={nodesOpen(key) ? "collapse" : "expand"}
+            {...{ "aria-description": (nodesOpen(key) ? "collapse" : "expand") }}
           >
             <span class="caret" aria-hidden="true">{nodesOpen(key) ? "▾" : "▸"}</span>
             <span class="nodes-label">nodes</span>
@@ -660,12 +660,12 @@
                     class="node-chip"
                     disabled={!steerable}
                     onclick={() => onSteerNode(m, label)}
-                    title={steerable
+                    {...{ "aria-description": (steerable
                       ? `steer ${key} → ${label}`
-                      : `fit ${key} first to steer to ${label}`}
+                      : `fit ${key} first to steer to ${label}`) }}
                   >
                     <span class="node-name">{label}</span>
-                    {#if role}<span class="node-role" title="role baseline">{role}</span>{/if}
+                    {#if role}<span class="node-role" {...{ "aria-description": "role baseline" }}>{role}</span>{/if}
                   </button>
                 </li>
               {/each}
@@ -685,14 +685,14 @@
       {@const choice = selectorChoice(m)}
       {@const unavailable = unavailableSelectorMessage(m)}
       {@const deleteGuard = deletionGuard(m)}
-      <li class="row" title={m.description || key}>
+      <li class="row" {...{ "aria-description": (m.description || key) }}>
         <div class="row-line">
           <div class="meta">
             <span class="row-name">{key}</span>
             <span class="row-sub">
               {m.domain_label} · {m.node_count} nodes
               {#if badge}<span class="fit-badge fit-{badge}">{badge}</span>{/if}
-              {#if isRoleAugmented(m)}<span class="fit-badge fit-persona" title="role-paired manifold">persona</span>{/if}
+              {#if isRoleAugmented(m)}<span class="fit-badge fit-persona" {...{ "aria-description": "role-paired manifold" }}>persona</span>{/if}
               {#if m.stale}<span class="stale">stale</span>{/if}
             </span>
           </div>
@@ -703,34 +703,34 @@
               aria-expanded={inspecting}
               aria-label={`${inspecting ? "Hide" : "Show"} details for ${key}`}
               onclick={() => void toggleInspect(m)}
-              title={inspecting ? "hide" : "inspect"}
+              {...{ "aria-description": (inspecting ? "hide" : "inspect") }}
             ><FluentIcon name={inspecting ? "down" : "info"} /></button>
             <button
               type="button"
               class="act steer"
               disabled={busy || isRacked(m) || choice === null || !choice.available}
               onclick={() => onSteer(m)}
-              title={unavailable ?? (isRacked(m)
+              {...{ "aria-description": (unavailable ?? (isRacked(m)
                 ? `${key} already racked`
-                : `steer with ${choice?.selector ?? key}`)}
+                : `steer with ${choice?.selector ?? key}`)) }}
             >+steer</button>
             <button
                 type="button"
                 class="act probe"
                 disabled={busy || isProbed(m) || choice === null || !choice.available}
                 onclick={() => void onProbe(m)}
-                title={unavailable ?? (isProbed(m)
+                {...{ "aria-description": (unavailable ?? (isProbed(m)
                   ? `${key} already attached`
-                  : `probe with ${choice?.selector ?? key}`)}
+                  : `probe with ${choice?.selector ?? key}`)) }}
             >+probe</button>
             <button
               type="button"
               class="act fit"
               disabled={busy || !fittingAvailability.available}
               onclick={() => onFit(m)}
-              title={fittingAvailability.available
+              {...{ "aria-description": (fittingAvailability.available
                 ? `re-fit ${key}`
-                : fittingAvailability.reason ?? "Fitting unavailable"}
+                : fittingAvailability.reason ?? "Fitting unavailable") }}
             >{busy ? "…" : "re-fit"}</button>
             <button
               type="button"
@@ -738,7 +738,7 @@
               class:confirm={confirming}
               disabled={busy}
               onclick={() => onDeleteClick(m)}
-              title={deleteGuard ?? (confirming ? "click again to confirm" : `delete ${key}`)}
+              {...{ "aria-description": (deleteGuard ?? (confirming ? "click again to confirm" : `delete ${key}`)) }}
             >{confirming ? "confirm?" : "delete"}</button>
           </div>
         </div>
@@ -786,7 +786,7 @@
       {@const confirming = confirmKeys.has(key)}
       {@const badge = fitModeBadge(m)}
       {@const deleteGuard = deletionGuard(m)}
-      <li class="row" title={m.description || key}>
+      <li class="row" {...{ "aria-description": (m.description || key) }}>
         <div class="row-line">
           <div class="meta">
             <span class="row-name">{key}</span>
@@ -801,9 +801,9 @@
               class="act fit"
               disabled={busy || !fittingAvailability.available}
               onclick={() => onFit(m)}
-              title={fittingAvailability.available
+              {...{ "aria-description": (fittingAvailability.available
                 ? `fit ${key}`
-                : fittingAvailability.reason ?? "Fitting unavailable"}
+                : fittingAvailability.reason ?? "Fitting unavailable") }}
             >{busy ? "…" : "fit"}</button>
             <button
               type="button"
@@ -811,7 +811,7 @@
               class:confirm={confirming}
               disabled={busy}
               onclick={() => onDeleteClick(m)}
-              title={deleteGuard ?? (confirming ? "click again to confirm" : `delete ${key}`)}
+              {...{ "aria-description": (deleteGuard ?? (confirming ? "click again to confirm" : `delete ${key}`)) }}
             >{confirming ? "confirm?" : "delete"}</button>
           </div>
         </div>
@@ -899,7 +899,7 @@
           class="refresh"
           onclick={() => void refreshManifoldList()}
           disabled={steerRack.loading}
-          title="refresh"
+          {...{ "aria-description": "refresh" }}
           aria-label="Refresh"
         ><FluentIcon name="refresh" spin={steerRack.loading} /></button>
       </div>

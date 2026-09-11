@@ -10,13 +10,13 @@ matrix across loaded profiles and probes.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
 from drowse.core.profile import Profile
+from drowse.server.streaming import run_in_thread
 from drowse.server.app import acquire_session_lock
 from drowse.server.native_common import (
     extraction_error_frame,
@@ -384,7 +384,7 @@ def register_profile_routes(app: FastAPI) -> None:
             )
 
         async def _job(on_progress: ProgressCallback) -> ExtractResponse:
-            canonical, profile = await asyncio.to_thread(_run, on_progress)
+            canonical, profile = await run_in_thread(_run, on_progress)
             registry_name = extract_registry_name(canonical, req.namespace)
             session.steer(registry_name, profile)
             return {
@@ -434,7 +434,7 @@ def register_profile_routes(app: FastAPI) -> None:
             # fingerprint mismatch, a merge that produced no tensor) is a
             # DrowseError and reaches the client as a 400 through the global
             # handler.
-            name, profile = await asyncio.to_thread(
+            name, profile = await run_in_thread(
                 session.bake, req.name, req.expression,
             )
         return profile_to_json(name, profile)

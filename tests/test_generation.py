@@ -71,8 +71,10 @@ def test_token_tables_are_shape_keyed_and_lru_bounded() -> None:
         tokenizer = _StopTokenizer()
         assert len(_get_token_table(cast(Any, tokenizer), 4)) == 4
         assert len(_get_token_table(cast(Any, tokenizer), 5)) == 5
+        tokenizers = []
         for index in range(_TOKEN_TABLE_CACHE_MAX + 1):
             other = _StopTokenizer()
+            tokenizers.append(other)
             other.name_or_path = f"tokenizer-{index}"
             _get_token_table(cast(Any, other), 4)
         assert len(_token_table_cache) == _TOKEN_TABLE_CACHE_MAX

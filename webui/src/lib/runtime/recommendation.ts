@@ -168,13 +168,21 @@ export function assessModelVariant(
   const lastOom = orderedRecords.findLastIndex(
     ({ record }) => record.result === "oom",
   );
-  const deviceLossesAfterSuccess = orderedRecords
-    .slice(lastSuccess + 1)
+  const lastDeviceLoss = orderedRecords.findLastIndex(
+    ({ record }) => record.result === "device_lost",
+  );
+  const deviceRecords = (options.loadRecords ?? [])
+    .filter((record) => record.deviceSignature === capabilities.deviceSignature)
+    .map((record, index) => ({ record, index }))
+    .sort((a, b) => a.record.recordedAt - b.record.recordedAt || a.index - b.index);
+  const lastDeviceSuccess = deviceRecords.findLastIndex(({ record }) => record.result === "success");
+  const deviceLossesAfterSuccess = deviceRecords
+    .slice(lastDeviceSuccess + 1)
     .filter(({ record }) => record.result === "device_lost").length;
   const confirmedOom = lastOom >= 0 && lastOom > lastSuccess;
   const repeatedDeviceLoss = deviceLossesAfterSuccess >= 2;
   const proven =
-    lastSuccess >= 0 && !confirmedOom && !repeatedDeviceLoss;
+    lastSuccess >= 0 && lastSuccess > lastDeviceLoss && !confirmedOom && !repeatedDeviceLoss;
 
   if (confirmedOom && !options.explicitOomRetry) {
     hardFailures.push(
@@ -186,11 +194,11 @@ export function assessModelVariant(
     );
   }
   if (repeatedDeviceLoss) {
-    advisories.push(
+    hardFailures.push(
       issue(
         "REPEATED_DEVICE_LOSS",
-        "This configuration repeatedly lost the WebGPU device",
-        "advisory",
+        userFacingError({ code: "REPEATED_DEVICE_LOSS" }),
+        "hard",
       ),
     );
   }
@@ -219,13 +227,15 @@ export function assessModelVariant(
 
   if (
     context &&
-    (context.measuredDevices === 0 ||
+    (lastDeviceLoss > lastSuccess || context.measuredDevices === 0 ||
       (requiresExactBrowserProof(capabilities.signals.runtimeClass) && !proven))
   ) {
     advisories.push(
       issue(
         "PROFILE_UNMEASURED",
-        unmeasuredProfileMessage(capabilities),
+        lastDeviceLoss > lastSuccess
+          ? "The graphics device stopped responding on the last attempt with this configuration. Try a smaller model."
+          : unmeasuredProfileMessage(capabilities),
         "advisory",
       ),
     );

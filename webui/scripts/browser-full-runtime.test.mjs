@@ -12,6 +12,7 @@ import {
   validateBrowserFullRuntimeAudit,
   validateBrowserFullRuntimeModelClosure,
   validateBrowserFullRuntimeTranscript,
+  validatePairedSteeringControls,
 } from "./browser-full-runtime-contract.mjs";
 import {
   artifactSetReceipt,
@@ -35,6 +36,24 @@ const requiredArgs = [
   "--sae-directory",
   "/tmp/sae",
 ];
+
+test("paired steering permits a forced token outside the sampler support without losing its zero probability", () => {
+  const measured = validatePairedSteeringControls({ baseline: -0.5, zero: -0.5, positive: -2, negative: -Infinity });
+  assert.equal(measured.controlProbabilities.negative, 0);
+  assert.equal(measured.controlLogprobs.negative, "-Infinity");
+  assert.equal(measured.controlProbabilities.baseline, measured.controlProbabilities.zero);
+  assert.deepEqual(JSON.parse(JSON.stringify(measured)), measured);
+});
+
+test("paired steering rejects missing, invalid, changed-zero, and ineffective controls", () => {
+  const valid = { baseline: -0.5, zero: -0.5, positive: -2, negative: -3 };
+  for (const value of [NaN, Infinity, 0.1, undefined]) {
+    assert.throws(() => validatePairedSteeringControls({ ...valid, negative: value }), /invalid sampler logprobs/);
+  }
+  assert.throws(() => validatePairedSteeringControls({ ...valid, baseline: -Infinity }), /invalid sampler logprobs/);
+  assert.throws(() => validatePairedSteeringControls({ ...valid, zero: -0.6 }), /zero steering changed/);
+  assert.throws(() => validatePairedSteeringControls({ baseline: -0.5, zero: -0.5, positive: -0.5, negative: -0.5 }), /did not change/);
+});
 
 test("parses the complete real-browser E2E input contract", () => {
   const parsed = parseBrowserFullRuntimeArguments([
@@ -206,6 +225,30 @@ test("requires a model closure that exactly matches the selected runtime lock", 
       label,
     );
   }
+});
+
+test("accepts only the production loader's exact legacy runtime aliases", () => {
+  for (const runtimeAbi of ["saklas-web-runtime-v1", "polythetic-web-runtime-v1"]) {
+    const fixture = modelClosure();
+    fixture.runtimeLock.runtimeAbi = "drowse-web-runtime-v1";
+    fixture.manifest.runtimeAbi = runtimeAbi;
+    const original = structuredClone(fixture);
+    assert.doesNotThrow(() => validateBrowserFullRuntimeModelClosure(fixture));
+    assert.deepEqual(fixture, original);
+
+    fixture.files.find(file => file.role === "model_library").sha256 = "f".repeat(64);
+    assert.throws(() => validateBrowserFullRuntimeModelClosure(fixture), /model_library/);
+  }
+  for (const runtimeAbi of ["saklas-web-runtime-v2", "other-web-runtime-v1"]) {
+    const fixture = modelClosure();
+    fixture.runtimeLock.runtimeAbi = "drowse-web-runtime-v1";
+    fixture.manifest.runtimeAbi = runtimeAbi;
+    assert.throws(() => validateBrowserFullRuntimeModelClosure(fixture), /runtime ABI/);
+  }
+  const future = modelClosure();
+  future.runtimeLock.runtimeAbi = "drowse-web-runtime-v2";
+  future.manifest.runtimeAbi = "saklas-web-runtime-v1";
+  assert.throws(() => validateBrowserFullRuntimeModelClosure(future), /runtime ABI/);
 });
 
 test("recognizes uncaptured WebGPU and device-loss console failures", () => {

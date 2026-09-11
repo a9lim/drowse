@@ -1,3 +1,4 @@
+import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 
 const devUrl = "http://127.0.0.1:4176";
@@ -5,12 +6,12 @@ const devUrl = "http://127.0.0.1:4176";
 test("base completion colors match inspection, retain recorded readings through edits, and follow scrolling", async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 898 });
   await page.goto(`${devUrl}/app?layoutFixture=base`);
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+  await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Show chat tools", exact: true }).click();
   const editor = page.getByRole("textbox", { name: "Editable completion buffer" });
   const mirror = page.locator(".color-mirror");
-  const model = page.getByLabel("Active model", { exact: true });
-  await expect(model).toContainText("pythia-70m-base");
+  await expect(page.locator(".model-summary")).toBeAttached();
+  await expect(page.getByLabel("Active model", { exact: true })).toHaveCount(0);
   await editor.fill("A field note: ");
   await page.getByRole("button", { name: "Continue text", exact: true }).click();
   await expect(mirror.locator("span[style*='background-color']").first()).toBeAttached();
@@ -26,7 +27,7 @@ test("base completion colors match inspection, retain recorded readings through 
   await expect(mirror).toHaveCount(1);
   expect(await colors()).toEqual(editColors);
   await expect(mirror.locator(".origin-draft")).toHaveText(" Unsaved");
-  await expect(page.locator(".color-notice")).toHaveText("Retained tokens keep their original readings; edited text has no recorded probabilities.");
+  await expect(page.locator(".color-notice")).toHaveCount(0);
   await page.getByRole("button", { name: "Discard edit", exact: true }).click();
   await expect(editor).toHaveValue(text);
   expect(await colors()).toEqual(editColors);
@@ -65,17 +66,12 @@ test("base completion colors match inspection, retain recorded readings through 
   await expectAligned();
   await page.keyboard.press("Control+End");
   await expectAligned();
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
+  await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Hide chat tools", exact: true }).click();
   for (const viewport of [{ width: 320, height: 780 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
     await expectAligned();
-    expect(await model.evaluate(element => {
-      const model = element.getBoundingClientRect();
-      const panel = element.closest(".chat-panel")!.getBoundingClientRect();
-      return Math.abs(model.bottom - panel.bottom) < 1 && model.right <= innerWidth && model.bottom <= innerHeight;
-    })).toBe(true);
-    expect(await page.locator(".generation-actions").evaluate(element => {
+    await expect.poll(() => page.locator(".generation-actions").evaluate(element => {
       const actions = element.getBoundingClientRect();
       const chat = element.closest(".chat")!.getBoundingClientRect();
       return actions.bottom <= chat.bottom + 1;

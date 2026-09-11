@@ -24,7 +24,7 @@ try {
   const { default: Bar } = await server.ssrLoadModule("/src/lib/charts/Bar.svelte");
   const negative = render(Bar, { props: { value: -0.5, max: 1, bipolar: true } }).body;
   assert.match(negative, /left: 25%; width: 25%/);
-  assert.match(negative, /title="-0.5 · 50% of scale \(1\)"/);
+  assert.match(negative, /aria-label="-0.5 · 50% of scale \(1\)"/);
   const invalid = render(Bar, { props: { value: NaN, max: 1 } }).body;
   assert.doesNotMatch(invalid, /NaN/);
   const { default: Sparkline } = await server.ssrLoadModule("/src/lib/charts/Sparkline.svelte");

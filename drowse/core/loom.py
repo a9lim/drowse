@@ -35,11 +35,12 @@ import os
 import re
 import secrets
 import tempfile
+import zlib
 from contextlib import suppress
 import threading
 import time
 from dataclasses import dataclass, field, fields
-from typing import Any, Callable, Iterator, Literal, cast
+from typing import Any, BinaryIO, Callable, Iterator, Literal, cast
 
 from drowse.core.errors import DrowseError
 # ``LoomMutated`` is defined in ``events`` (one module owns the bus's payload
@@ -109,6 +110,16 @@ class MutationDuringGenerationError(RuntimeError, LoomTreeError):
 
     def user_message(self) -> tuple[int, str]:
         return (409, str(self) or self.__class__.__name__)
+
+
+def _read_json_bounded(stream: BinaryIO | gzip.GzipFile, max_bytes: int, label: str) -> Any:
+    raw = stream.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise LoomTreeError(f"{label} exceeds the {max_bytes}-byte import limit")
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+        raise LoomTreeError(f"{label} is invalid JSON") from error
 
 
 def _require_fields(
@@ -455,7 +466,7 @@ def _parse_recipe_modifier(value: str) -> Recipe:
         if number is not None:
             sampling_values[key] = number
 
-    _recipe_modifier_range(sampling_values, "temperature", 0.0, 2.0)
+    _recipe_modifier_range(sampling_values, "temperature", 0.0, None)
     _recipe_modifier_range(sampling_values, "top_p", 0.0, 1.0)
     _recipe_modifier_range(sampling_values, "top_k", 0, None)
     _recipe_modifier_range(sampling_values, "max_tokens", 1, None)
@@ -780,6 +791,8 @@ def derive_seed_schedule(base_seed: int | None, n: int) -> list[int]:
 # Current-only loaders require these versions and every field written by the
 # corresponding schema; there is no implicit v1 or additive-field migration.
 TREE_FORMAT_VERSION = 2
+_TREE_MAX_LOAD_BYTES = 64 * 1024 * 1024
+_TOKEN_SIDECAR_MAX_LOAD_BYTES = 256 * 1024 * 1024
 TOKEN_SIDECAR_FORMAT_VERSION = 2
 
 
@@ -1810,13 +1823,27 @@ class LoomTree:
         write_json_atomic(out_path, data)
 
     @classmethod
-    def load(cls, path: Any, *, events: EventBus | None = None) -> "LoomTree":
+    def load(
+        cls, path: Any, *, events: EventBus | None = None,
+        max_bytes: int | None = None,
+    ) -> "LoomTree":
+        """Load a saved tree with bounded JSON and gzip expansion.
+
+        Defaults to 64 MiB for the tree and 256 MiB for its expanded token
+        sidecar. ``max_bytes`` overrides both limits for trusted large exports.
+        """
         from pathlib import Path
         from drowse.io.brand_migration import migrate_legacy_record
 
+        if max_bytes is not None and (
+            type(max_bytes) is not int or max_bytes <= 0
+        ):
+            raise ValueError("max_bytes must be a positive integer")
         in_path = Path(path)
-        with open(in_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        with open(in_path, "rb") as f:
+            data = _read_json_bounded(
+                f, _TREE_MAX_LOAD_BYTES if max_bytes is None else max_bytes, "loom tree",
+            )
         if not isinstance(data, dict):
             raise LoomTreeError("loom tree file must contain an object")
         data = migrate_legacy_record(data)
@@ -1838,12 +1865,17 @@ class LoomTree:
                 )
             sidecar = in_path.parent / sidecar_name
             try:
-                with gzip.open(sidecar, "rt", encoding="utf-8") as f:
-                    token_payload = json.load(f)
+                with gzip.GzipFile(sidecar, "rb") as f:
+                    token_payload = _read_json_bounded(
+                        f, _TOKEN_SIDECAR_MAX_LOAD_BYTES if max_bytes is None else max_bytes,
+                        "token sidecar",
+                    )
             except FileNotFoundError as e:
                 raise LoomTreeError(
                     f"token sidecar declared but missing: {sidecar}"
                 ) from e
+            except (gzip.BadGzipFile, EOFError, zlib.error) as error:
+                raise LoomTreeError("token sidecar is not a complete gzip file") from error
             if not isinstance(token_payload, dict):
                 raise LoomTreeError("token sidecar must contain an object")
             _require_fields(token_payload, frozenset({"token_sidecar_format", "nodes"}), "token sidecar")

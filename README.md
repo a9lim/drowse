@@ -36,15 +36,33 @@ drowse serve google/gemma-3-4b-it --device cuda
 ## Hosted browser edition status
 
 The repository includes an isolated Svelte PWA for the on-device WebGPU
-edition. This Drowse checkout is a preview: its renamed runtime and distribution
-locks remain `feasibility-required`, so one-click model installation is not enabled.
+edition. The runtime and distribution locks are `verified`, enabling installation
+from the signed catalog after the browser's device checks pass. These release
+checks do not guarantee that every GPU remains stable under model load.
 The [published model files](https://huggingface.co/logitsml/drowse-web-catalog)
-are available separately; their upload does not establish compatibility with
-this preview. Base-model file links appear on the home page without a beta badge.
+are available separately; their upload alone does not establish compatibility.
+Base-model file links appear on the home page without a beta badge.
 Gemma PT still has a matched-weight numerical discrepancy; Qwen 3.5 still needs
 matched-quantization validation. Matching core packs and a signed installation
 catalog also remain required. J-lens and SAE are optional for base-model setup.
 The development fixture is deterministic test data, not real inference.
+
+The device check shows the selected GPU vendor and architecture when the browser
+exposes them. Its short compute test is not a full model-load stress test. On
+Windows, an Intel adapter gets conditional guidance for selecting a dedicated
+GPU through the browser's Windows Graphics settings. Two recorded device losses
+since the last successful load block further loads on that device profile;
+changing models or context length does not bypass that block. Software fallback
+adapters remain unsupported, including in remote sessions without hardware WebGPU.
+
+Windows Chromium on an identified Intel `gen-9` adapter is conservatively blocked
+before model loading following a reported GPU-process watchdog hang during
+initialization. Other Intel generations retain a warning. Chrome on Windows
+ignores WebGPU's `powerPreference`; Drowse cannot enumerate or select a hidden
+dedicated GPU. On dual-GPU laptops, copy
+`chrome://flags/#force-high-performance-gpu` into Chrome's address bar, enable it,
+restart Chrome, and run the device check again. Confirm that the selected adapter
+is the dedicated GPU. This changes GPU routing, not the GPU's memory capacity.
 
 The hosted edition keeps prompts, conversations, activations, and
 fitted artifacts on the device. WebGPU is mandatory for inference; it does not
@@ -250,6 +268,11 @@ uv pip install -e ".[dev]"
 drowse serve MODEL [options]
 ```
 
+Repository Python is disabled by default. For a trusted model that requires custom
+code, use `DROWSE_TRUST_REMOTE_CODE=1 drowse serve MODEL`; Python callers can
+pass `trust_remote_code=True` to `DrowseSession.from_pretrained`. This grants
+the model repository permission to execute Python locally.
+
 Common options:
 
 | Option | Default | Purpose |
@@ -257,7 +280,7 @@ Common options:
 | `-d`, `--device` | `auto` | `cuda`, `mps`, `cpu`, or automatic selection |
 | `-q`, `--quantize` | none | `4bit` or `8bit` bitsandbytes quantization on CUDA |
 | `-p`, `--probes` | `all` | Bundled probe categories, `all`, or `none` |
-| `-H`, `--host` | `0.0.0.0` | Bind address |
+| `-H`, `--host` | `127.0.0.1` | Bind address; non-loopback requires an API key |
 | `-P`, `--port` | `8000` | Bind port |
 | `-S`, `--steer` | none | Default steering expression |
 | `--top-k-alts` | `0` | Alternative tokens captured at each decode step |
@@ -538,7 +561,11 @@ the verbalizable-workspace method of
 If you use Drowse in published research, please cite the relevant upstream methods
 alongside the Drowse version and exact model checkpoint you used.
 
-## Issues and security
+## Contact, issues, and security
+
+For questions, feedback, or research inquiries, email
+[contact@drowse.ai](mailto:contact@drowse.ai) or use the
+[contact form](https://drowse.ai/contact).
 
 Please update to the latest Drowse release before filing a bug. Include the model
 ID, device, dtype or quantization mode, Drowse version, and a minimal reproduction

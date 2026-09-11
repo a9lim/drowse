@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { validateHostedConnectSources } from "./check-runtime-lock.mjs";
 import {
   accessHeaders,
   assertAccessProtected,
@@ -11,15 +12,30 @@ import {
   deploymentOrigin,
   expectedCsp,
   parseArguments,
+  workboxRuntimeName,
+  precachedScripts,
+  assertJavaScriptResponse,
 } from "./verify-hosted-deployment.mjs";
 
 const revision = "a".repeat(40);
+assert.deepEqual(precachedScripts('precache([{url:"assets/app-A.js"},{url:"assets/app-A.js"},{url:"assets/app-B.css"}]);'), ["/assets/app-A.js"]);
+assert.throws(() => precachedScripts('precache([{url:"index.html"}]);'));
+assert.doesNotThrow(() => assertJavaScriptResponse(new Response("export {};", { headers: { "Content-Type": "application/javascript" } })));
+assert.throws(() => assertJavaScriptResponse(new Response("<html></html>", { headers: { "Content-Type": "text/html" } })), /MIME/);
+assert.throws(() => assertJavaScriptResponse(new Response("not found", { status: 404 })), /did not return/);
+assert.equal(workboxRuntimeName('define(["./workbox-651d168f"], function () { precache([{url:"assets/workbox-window.prod.es5-Bd17z0YL.js"}]); });'), "workbox-651d168f.js");
+assert.throws(() => workboxRuntimeName('precache([{url:"assets/workbox-window.prod.es5-Bd17z0YL.js"}]);'));
 const distributionLock = {
   catalogUrl: "https://huggingface.co/a9lim/catalog/catalog.json",
   signatureUrl: "https://huggingface.co/a9lim/catalog/catalog.sig.json",
   allowedCatalogRedirectOrigins: ["https://huggingface.co"],
   allowedArtifactRedirectOrigins: ["https://cdn.example.test"],
 };
+const connectSources = "connect-src 'self' https://www.neuronpedia.org https://huggingface.co https://cdn.example.test;";
+assert.doesNotThrow(() => validateHostedConnectSources(connectSources, distributionLock));
+assert.throws(() => validateHostedConnectSources(connectSources.replace("https://www.neuronpedia.org ", ""), distributionLock));
+assert.throws(() => validateHostedConnectSources(connectSources.replace("https://www.neuronpedia.org", "https://unexpected.example.test"), distributionLock));
+assert.throws(() => validateHostedConnectSources(connectSources.replace("https://www.neuronpedia.org", "https://*.neuronpedia.org"), distributionLock));
 
 function expectFailure(callback, pattern) {
   assert.throws(callback, pattern);
@@ -134,14 +150,16 @@ expectFailure(
 const previewHtml = `
   <meta name="drowse-release-channel" content="preview">
   <meta name="drowse-source-revision" content="preview">
-  <meta name="drowse-source-url" content="https://github.com/a9lim/polythetic">`;
+  <meta name="drowse-source-url" content="https://github.com/a9lim/drowse">`;
 assert.doesNotThrow(() => assertChannelHtml(previewHtml, "preview"));
 const releaseHtml = `
   <meta name="drowse-release-channel" content="release">
   <meta name="drowse-source-revision" content="${revision}">
-  <meta name="drowse-source-url" content="https://github.com/a9lim/polythetic">`;
+  <meta name="drowse-source-url" content="https://github.com/a9lim/drowse/tree/${revision}">`;
 assert.doesNotThrow(() => assertChannelHtml(releaseHtml, "release"));
 assert.doesNotThrow(() => assertChannelHtml(releaseHtml, "candidate"));
+assert.throws(() => assertChannelHtml(releaseHtml.replace(`/tree/${revision}`, ""), "release"));
+assert.throws(() => assertChannelHtml(releaseHtml.replace(`/tree/${revision}`, `/tree/${"b".repeat(40)}`), "release"));
 expectFailure(
   () => assertChannelHtml(releaseHtml, "release", "b".repeat(40)),
   /differs from --revision/,
@@ -160,6 +178,15 @@ expectFailure(
   () => assertRobotsHeader(candidateHeaders, "release"),
   /release must not be noindex/,
 );
+for (const path of ["/app", "/app/saved-chat"]) {
+  const response = new Response("", { headers: { "X-Robots-Tag": "noindex, follow" } });
+  Object.defineProperty(response, "url", { value: `https://drowse.ai${path}` });
+  assert.doesNotThrow(() => assertRobotsHeader(response, "release"));
+  response.headers.set("X-Robots-Tag", "noindex, nofollow");
+  assert.throws(() => assertRobotsHeader(response, "release"));
+  response.headers.delete("X-Robots-Tag");
+  assert.throws(() => assertRobotsHeader(response, "release"));
+}
 
 const manifest = {
   start_url: "/app",

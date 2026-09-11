@@ -54,7 +54,7 @@
       style:--tab-c={item.color}
       aria-label={item.label}
       aria-pressed={item.value === value}
-      title={item.title}
+      {...{ "aria-description": (item.title) }}
       disabled={item.disabled}
       onclick={() => pick(item.value)}
     >

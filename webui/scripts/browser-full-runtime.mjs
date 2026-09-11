@@ -222,12 +222,13 @@ const server = createHttpServer(async (request, response) => {
     }
     vite.middlewares(request, response);
   } catch (error) {
+    console.error(error);
     if (response.headersSent)
       response.destroy(error instanceof Error ? error : undefined);
     else {
       send(
         response,
-        error instanceof Error ? (error.stack ?? error.message) : String(error),
+        "Internal server error",
         "text/plain",
         500,
       );

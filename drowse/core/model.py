@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import os
 import threading
 import warnings
 import weakref
@@ -161,7 +162,7 @@ def model_source_fingerprint(
         effective_quantize = quantize if resolved_device == "cuda" else None
         resolved_load_dtype = _resolve_dtype(dtype, resolved_device)
         if config is None:
-            config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+            config = AutoConfig.from_pretrained(model_id, trust_remote_code=False)
         resolved_commit = (
             getattr(config, "_commit_hash", None)
             or getattr(getattr(config, "text_config", None), "_commit_hash", None)
@@ -233,7 +234,7 @@ def config_model_shape(model_id: str) -> tuple[int, int]:
     Raises when the config declares neither, because a *guessed* layer count
     would silently widen or narrow a proof.
     """
-    config = AutoConfig.from_pretrained(model_id)
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=False)
     text_config = getattr(config, "text_config", config)
     n_layers = getattr(
         text_config, "num_hidden_layers", getattr(text_config, "n_layer", None),
@@ -936,6 +937,7 @@ def load_model(
     *,
     compile: bool = False,
     compile_mode: str = "default",
+    trust_remote_code: bool | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> tuple[PreTrainedModel, PreTrainedTokenizerBase]:
     """Load a HuggingFace causal LM and its tokenizer.
@@ -966,6 +968,8 @@ def load_model(
             would shape-recompile per decode step).
             ``"max-autotune"`` runs Triton autotune (long first-call
             latency, marginal gains for decode-shape workloads).
+        trust_remote_code: Permit repository Python only when explicitly True,
+            or when unset and DROWSE_TRUST_REMOTE_CODE is enabled. Defaults off.
         on_progress: Optional per-step status sink.  The loader's own
             status goes to ``log.info``, which is invisible unless the
             embedding application configured logging — a library must not
@@ -978,6 +982,10 @@ def load_model(
         ``OptimizedModule.__getattr__``, so ``get_layers`` and
         ``get_model_info`` continue to work.
     """
+    if trust_remote_code is None:
+        trust_remote_code = os.environ.get("DROWSE_TRUST_REMOTE_CODE", "").strip().lower() in {"1", "true", "yes", "on"}
+    if type(trust_remote_code) is not bool:
+        raise ValueError("trust_remote_code must be a boolean")
     device = detect_device(device)
     if device == "mps":
         patch_torch_for_mps()
@@ -985,7 +993,7 @@ def load_model(
     if on_progress is not None:
         on_progress(f"Device: {device}")
 
-    plan = _resolve_load_plan(model_id, quantize=quantize, device=device, dtype=dtype)
+    plan = _resolve_load_plan(model_id, quantize=quantize, device=device, dtype=dtype, trust_remote_code=trust_remote_code)
     tokenizer = AutoTokenizer.from_pretrained(
         model_id, **plan.tokenizer_kwargs, **plan.pin_kwargs,
     )
@@ -1034,6 +1042,7 @@ def _resolve_load_plan(
     quantize: str | None,
     device: str,
     dtype: torch.dtype | str | None,
+    trust_remote_code: bool = False,
 ) -> LoadPlan:
     """Decide how to load ``model_id``; read configs, never weights."""
     resolved_dtype = _resolve_dtype(dtype, device)
@@ -1043,7 +1052,7 @@ def _resolve_load_plan(
     # single pin, a mutable Hub branch can advance between independent
     # ``from_pretrained`` calls and leave caches stamped with config A over
     # weights B. Local paths carry no commit and remain path-hash identified.
-    probe_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    probe_config = AutoConfig.from_pretrained(model_id, trust_remote_code=trust_remote_code)
     resolved_revision = (
         getattr(probe_config, "_commit_hash", None)
         or getattr(getattr(probe_config, "text_config", None), "_commit_hash", None)
@@ -1059,7 +1068,7 @@ def _resolve_load_plan(
     # so it fires for any mistralai/* repo (Mistral-Small, Ministral, etc.) and
     # third-party finetunes whose name carries the family.
     # https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84
-    tokenizer_kwargs: dict[str, Any] = {"trust_remote_code": True}
+    tokenizer_kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
     if "mistral" in model_id.lower():
         tokenizer_kwargs["fix_mistral_regex"] = True
 
@@ -1098,7 +1107,7 @@ def _resolve_load_plan(
     native_type = getattr(probe_config, "model_type", None)
     native_text_type = getattr(getattr(probe_config, "text_config", None),
                                "model_type", None)
-    trust = not (
+    trust = trust_remote_code and not (
         (native_type and native_type in CONFIG_MAPPING)
         or (native_text_type and native_text_type in CONFIG_MAPPING)
     )

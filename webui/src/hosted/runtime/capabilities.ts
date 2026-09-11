@@ -20,6 +20,7 @@ import {
   BROWSER_AUTHORING_RUNTIME_INTEGRATED,
 } from "./browserAuthoring";
 import { CATALOG_WEBGPU_LIMIT_NAMES } from "../../lib/runtime/catalog";
+import { windowsIntelGpuHint, windowsIntelGen9Blocked, WINDOWS_INTEL_GEN9_BLOCK } from "../../lib/runtime/gpuRecovery";
 
 interface GpuAdapterInfoLike {
   vendor?: string;
@@ -231,6 +232,12 @@ export class BrowserCapabilityChecker {
         const info = await adapterInformation(this.adapter, this.adapterInfoTimeoutMs);
         if (info) {
           adapterInfo = adapterInfoSnapshot(info);
+          const gpuHint = windowsIntelGpuHint(adapterInfo.vendor, navigator.userAgent);
+          if (windowsIntelGen9Blocked(adapterInfo.vendor, adapterInfo.architecture, navigator.userAgent)) {
+            issues.push(hard("WEBGPU_WINDOWS_INTEL_GEN9_BLOCKED", WINDOWS_INTEL_GEN9_BLOCK));
+          } else if (gpuHint) {
+            issues.push(advisory("WINDOWS_INTEL_GPU", gpuHint));
+          }
           if (typeof info.isFallbackAdapter === "boolean") {
             fallback = info.isFallbackAdapter ? "fallback" : "hardware";
           }
@@ -456,21 +463,22 @@ export async function storageEstimate(
   if (!navigator.storage?.estimate) {
     return unknown;
   }
-  let estimate: StorageEstimate;
-  let persisted: boolean | null;
-  try {
-    [estimate, persisted] = await withTimeout(
-      Promise.all([
-        navigator.storage.estimate(),
-        navigator.storage.persisted?.().catch(() => null) ?? Promise.resolve(null),
-      ]),
-      positiveTimeout(timeoutMs, 5_000),
+  const timeout = positiveTimeout(timeoutMs, 5_000);
+  const [estimate, persisted] = await Promise.all([
+    withTimeout(
+      Promise.resolve().then(() => navigator.storage.estimate()),
+      timeout,
       "STORAGE_ESTIMATE_TIMEOUT",
       "The browser storage estimate timed out",
-    );
-  } catch {
-    return unknown;
-  }
+    ).catch(() => null),
+    withTimeout(
+      Promise.resolve().then(() => navigator.storage.persisted?.() ?? null),
+      timeout,
+      "STORAGE_PERSISTENCE_TIMEOUT",
+      "The browser storage protection check timed out",
+    ).catch(() => null),
+  ]);
+  if (estimate === null) return { ...unknown, persisted };
   const quotaBytes = finiteOrNull(estimate.quota);
   const usageBytes = finiteOrNull(estimate.usage);
   return {
@@ -487,8 +495,9 @@ export async function storageEstimate(
 export async function requestPersistentStorage(
   storage: PersistentStorageManager | undefined = navigator.storage,
   timeoutMs = 5_000,
+  onLateGranted?: () => void,
 ): Promise<boolean> {
-  return requestBrowserPersistentStorage(storage, timeoutMs);
+  return requestBrowserPersistentStorage(storage, timeoutMs, onLateGranted);
 }
 
 async function verifyOpfsLifecycle(
@@ -972,7 +981,7 @@ export function isAppleMobileBrowser(
   platform = navigator.platform,
   maxTouchPoints = navigator.maxTouchPoints,
 ): boolean {
-  return /iPhone|iPad|iPod/i.test(userAgent) ||
+  return /iPhone|iPad|iPod/i.test(userAgent) || /^(iPhone|iPad|iPod)$/i.test(platform) ||
     (/Macintosh/i.test(userAgent) && /Mobile\//i.test(userAgent)) ||
     (maxTouchPoints > 1 &&
       (platform === "MacIntel" || /Macintosh|Mac OS X/i.test(userAgent)));

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { parse } from "svelte/compiler";
 import { readdir, readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 
@@ -20,6 +21,23 @@ const files = (await Promise.all(sourceRoots.map(sourceFiles))).flat();
 const violations = [];
 for (const file of files) {
   const source = await readFile(file, "utf8");
+  if (extname(file) === ".svelte") {
+    const visit = node => {
+      if (!node || typeof node !== "object") return;
+      if (node.type === "RegularElement" && node.attributes?.some(attribute => attribute.name === "title")) {
+        violations.push(`${file}: native hover title; use accessible descriptions or explicit InfoTip help`);
+      }
+      if (node.type === "RegularElement" && node.name === "svg" && /<title[\s>]/.test(source.slice(node.start, node.end))) {
+        violations.push(`${file}: SVG hover title; use desc or aria-label`);
+      }
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) value.forEach(visit);
+        else if (value && typeof value === "object") visit(value);
+      }
+    };
+    visit(parse(source, { modern: true }).fragment);
+  }
+
   if (/transition\s*:\s*all\b/i.test(source)) {
     violations.push(`${file}: transition: all`);
   }
@@ -84,6 +102,7 @@ for (const file of files) {
       "var(--radius)",
       "var(--radius-lg)",
       "var(--popup-radius)",
+      "var(--chat-radius)",
       "var(--radius-pill)",
       "var(--data-mark-radius)",
       "50%",
@@ -107,6 +126,7 @@ for (const file of [
   "src/panels/rack/SteerCard.svelte",
 ]) {
   const source = await readFile(file, "utf8");
+
   assert.match(source, /background:\s*var\(--warning-bg\)/, `${file}: use the shared yellow warning surface`);
   assert.match(source, /color:\s*var\(--warning-ink\)/, `${file}: use matching warning ink`);
 }
@@ -115,11 +135,13 @@ assert.match(chatHome, /\.storage-notice\s*\{[^}]*background:\s*var\(--surface-c
 assert.match(chatHome, /background:\s*var\(--warning-action\)/, "storage protection keeps its yellow action button");
 for (const file of ["src/hosted/ui/HostedHome.svelte", "src/lib/builder/ValidationBlock.svelte", "src/panels/SteeringRack.svelte"]) {
   const source = await readFile(file, "utf8");
+
   assert.doesNotMatch(source, /border-(?:left|right|inline-start|inline-end)\s*:/, `${file}: no decorative side borders`);
   assert.doesNotMatch(source, /inset\s+[1-9]\d*px\s+0\s+0\s+var\(--(?:warning|accent)/, `${file}: no decorative side shadows`);
 }
 for (const file of ["src/hosted/ui/HostedHome.svelte", "src/hosted/ui/HostedApp.svelte", "src/drawers/RackDrawer.svelte", "src/drawers/ProbeInspectorDrawer.svelte", "src/panels/loom/LoomWeave.svelte"]) {
   const source = await readFile(file, "utf8");
+
   for (const opening of source.matchAll(/<details\b[^>]*>/g)) {
     assert.match(opening[0], /use:animatedDetails/, `${file}: native disclosures share reversible motion`);
   }
@@ -131,6 +153,7 @@ for (const file of [
   "src/drawers/LoadConversationDrawer.svelte",
 ]) {
   const source = await readFile(file, "utf8");
+
   assert.match(source, /background:\s*(?:var\(--control-sheen\),\s*)?var\(--danger-bg\)/, `${file}: use the shared destructive surface`);
   assert.match(source, /background:\s*(?:var\(--control-sheen\),\s*)?var\(--danger-hover\)/, `${file}: use matching destructive hover`);
 }
@@ -176,15 +199,14 @@ assert.deepEqual(
 );
 assert.match(motionTokens, /--weight-display:\s*780;/, "Display text retains its original heavy weight");
 assert.match(globalCss, /b,\s*strong\s*\{\s*font-weight:\s*var\(--weight-bold\)/);
-for (const [file, selector] of [
+for (const [file, selector, compact = false] of [
   ["src/hosted/ui/HostedApp.svelte", ".model-grid > button"],
   ["src/hosted/ui/HostedHome.svelte", ".chat-card"],
   ["src/hosted/ui/Credits.svelte", ".team-member"],
   ["src/hosted/ui/HostedRoot.svelte", ".runtime-dialog"],
   ["src/drawers/DownloadChatDrawer.svelte", ".download-chat"],
-  ["src/lib/Select.svelte", ".sk-select-popover"],
-  ["src/lib/Combobox.svelte", ".popover"],
-  ["src/lib/ui/InfoTip.svelte", ".info-popover"],
+  ["src/lib/Select.svelte", ".sk-select-popover", true],
+  ["src/lib/Combobox.svelte", ".popover", true],
   ["src/lib/Toaster.svelte", ".toast"],
   ["src/panels/Chat.svelte", ".msg"],
   ["src/panels/Chat.svelte", ".input-row"],
@@ -197,7 +219,8 @@ for (const [file, selector] of [
   const paddedRules = rules.filter((match) => /(?:^|;)\s*padding\s*:/.test(match[2]));
   assert.ok(paddedRules.length > 0, `${file}: ${selector} defines its content inset`);
   for (const rule of paddedRules) {
-    assert.match(rule[2], /padding:\s*var\(--surface-padding\)(?:\s+var\(--surface-padding\))*\s*;/, `${file}: ${selector} keeps 24px padding at every breakpoint`);
+    if (file === "src/panels/Chat.svelte" && selector === ".input-row" && /padding:\s*var\(--space-[12]\)\s*;/.test(rule[2])) continue;
+    assert.match(rule[2], compact ? /padding:\s*var\(--space-2\)\s*;/ : /padding:\s*var\(--surface-padding\)(?:\s+var\(--surface-padding\))*\s*;/, `${file}: ${selector} uses ${compact ? "compact menu" : "24px panel"} padding`);
   }
 }
 assert.match(motionTokens, /--popup-radius:\s*var\(--radius-lg\)/);
@@ -328,7 +351,7 @@ assert.doesNotMatch(creditsLayout, /opacity: 0\.35|width: 1[25]rem/, "Mobile art
 assert.match(pageHeader, /column-gap: var\(--space-8\)/, "Navigation and appearance keep a full group gap");
 assert.match(pageHeader, /aria-current=/, "Current page stays identifiable");
 assert.match(pageHeader, /event\.metaKey \|\| event\.ctrlKey/, "Modified clicks retain browser navigation behavior");
-assert.match(savedChatLayout, /class="chat-title-row">[\s\S]*?<time[\s\S]*?<\/time>\s*<\/div>/, "Timestamp stays in the title row");
+assert.match(savedChatLayout, /class="chat-meta">\s*<time[\s\S]*?<\/time>\s*<SavedChatMenu/, "Timestamp sits immediately before the chat options menu");
 assert.doesNotMatch(savedChatLayout, /class="chat-status"/, "Timestamp must not get a separate mobile row");
 assert.match(savedChatLayout, /\.chat-model, \.chat-counts \{ font-weight: var\(--weight-structure-bold\); line-height: 24px;/);
 assert.match(savedChatLayout, /\.chat-copy \{[^}]*gap: var\(--space-4\)/, "Metadata uses one spacing step");
@@ -345,6 +368,7 @@ for (const [file, selector] of [
   ["src/panels/loom/LoomSidebar.svelte", ".loom-view-controls"],
 ]) {
   const source = await readFile(file, "utf8");
+
   const css = (source.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "").replace(/\/\*[\s\S]*?\*\//g, "");
   const rule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(match => match[1].trim() === selector)?.[2];
   assert.ok(rule, `${file}: compact group exists`);
@@ -382,7 +406,7 @@ assert.match(workspaceGeometry, /conversationToolsVisible = \$state\(false\)/, "
 assert.match(workspaceGeometry, /loomToolsVisible = \$state\(false\)/, "Loom tools keep an independent opt-in preference");
 assert.doesNotMatch(workspaceGeometry, /headers-collapsed|header-toggle/, "Main navigation never disappears or grows a second disclosure row");
 assert.match(workspaceGeometry, /onToggleTools=\{toggleViewTools\}/, "View tools remain available in the menu");
-assert.match(workspaceGeometry, /\.workspace-navigation\s*\{[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;/, "Compact workspace navigation is sized to its contents");
+assert.match(workspaceGeometry, /\.workspace-navigation\s*\{[^}]*justify-content:\s*center;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/, "Compact workspace navigation centers its tabs across the available width");
 assert.match(workspaceGeometry, /@media \(max-width: 420px\)[\s\S]*\.workspace-navigation \{ justify-content: center; \}/, "Narrow navigation remains centered");
 assert.doesNotMatch(workspaceGeometry, /--(?:radius(?:-[a-z]+)?|popup-radius):/, "Workbench and detached overlays share the same global corner geometry");
 assert.match(workspaceGeometry, /\.workspace-surface\s*\{[^}]*border-radius:\s*0;[^}]*background:\s*transparent;/, "The workspace has no decorative outer container");
@@ -392,7 +416,7 @@ assert.doesNotMatch(workspaceGeometry, /@media \(max-width: (?:900|1120)px\)/, "
 assert.match(workspaceGeometry, /<PageHeader current="workbench" compact/);
 assert.match(workspaceGeometry, /<WorkbenchMenu/);
 assert.doesNotMatch(workspaceGeometry, /<PageFooter|home-button|help-action/, "Secondary actions do not form permanent extra rows");
-assert.match(workspaceGeometry, /grid-template-rows:\s*max-content minmax\(0, calc\(var\(--control-target\) \+ var\(--space-2\) \* 2\)\) minmax\(0, 1fr\) minmax\(0, 0fr\)/, "Compact chrome reserves a collapsible navigation row and leaves remaining height for content");
+assert.match(workspaceGeometry, /grid-template-rows:\s*max-content minmax\(0, calc\(var\(--control-target\) \+ var\(--space-2\) \* 2 \+ var\(--space-1\)\)\) minmax\(0, 1fr\) minmax\(0, 0fr\)/, "Compact chrome reserves room for the inset tab group and leaves remaining height for content");
 const workspaceMenu = await readFile("src/lib/ui/WorkbenchMenu.svelte", "utf8");
 assert.match(workspaceMenu, /\{#if toolsLabel\}/, "Only relevant view tools are offered");
 assert.match(workspaceMenu, /\{#if hasChat\}/, "An empty chat has no download action");
@@ -406,6 +430,7 @@ assert.ok(contextualChat.indexOf('id="chat-tools-header"') < contextualChat.inde
 assert.match(workspaceGeometry, /\.app-header\s*\{[^}]*background:\s*var\(--workspace-panel-bg\);/, "The site header shares the quiet workspace material");
 for (const file of ["src/panels/Chat.svelte", "src/panels/loom/LoomSidebar.svelte"]) {
   const source = await readFile(file, "utf8");
+
   assert.match(source, /headersVisible = true/, `${file}: standalone panels retain their headers`);
   assert.match(source, /\{#if headersVisible\}/, `${file}: tool headers follow the shell disclosure`);
   assert.match(source, /in:slide=\{collapseIn\(\)\} out:slide=\{collapseOut\(\)\}/, `${file}: reveal and dismissal use shared motion`);
@@ -427,8 +452,10 @@ assert.match(completionGeometry, /\.raw-buffer\s*\{[^}]*flex:\s*1 0 auto;[^}]*mi
 assert.doesNotMatch(completionGeometry, /min-height:\s*24rem/, "The completion buffer has no oversized fixed minimum");
 assert.match(completionGeometry, /\.surface\s*\{[^}]*flex:\s*1 0 calc\(2lh \+ var\(--surface-padding\) \* 2\);/, "The editor keeps two text lines and its padding while yielding space to actions and model identity");
 const chatGeometry = await readFile("src/panels/Chat.svelte", "utf8");
-assert.match(chatGeometry, /\.input-actions\.has-clear :global\(button:first-child\)\s*\{\s*grid-column:\s*1 \/ -1;/, "The primary mobile chat action keeps its own row instead of three cramped columns");
-assert.match(chatGeometry, /\.chat\s*\{[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*stable both-edges;/, "Short completion and chat layouts scroll with balanced gutters");
+assert.match(chatGeometry, /\.input-actions\s*\{[^}]*flex-wrap:\s*nowrap;/, "Chat actions share one row");
+assert.doesNotMatch(chatGeometry, /\.input-actions\.has-clear :global\(button:first-child\)\s*\{\s*grid-column:\s*1 \/ -1;/, "The primary action must not create another mobile row");
+assert.match(chatGeometry, /\.chat\s*\{[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*auto;/, "Chat surfaces do not add scrollbar gutters to the horizontal inset");
+assert.match(chatGeometry, /--chat-radius:\s*calc\(var\(--radius-lg\) \+ var\(--chat-inset\)\)/, "The chat frame radius follows the composer radius and inset");
 const statusGeometry = await readFile("src/panels/StatusFooter.svelte", "utf8");
 assert.match(statusGeometry, /\.status-footer\s*\{[^}]*flex:\s*0 0 auto;/, "Status controls do not shrink into adjacent actions");
 assert.ok(statusGeometry.includes("min-height: var(--workspace-status-height, calc(var(--control-target) + var(--space-2) * 2));"), "The status row supports compact workspace spacing with equal standalone insets");

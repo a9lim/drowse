@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "./MorphText.svelte";
   import Button from "./Button.svelte";
   import { genStatus } from "../stores/chat.svelte";
   import { modelDefaultsState } from "../stores/sampling.svelte";
@@ -8,12 +9,15 @@
 
   let { full = false }: { full?: boolean } = $props();
   let confirming = $state(false);
+  let resetDone = $state(false);
+  $effect(() => { if (!resetDone) return; const timer = setTimeout(() => resetDone = false, 1800); return () => clearTimeout(timer); });
   let error = $state<string | null>(null);
   async function reset(): Promise<void> {
     error = null;
     try {
       await resetSettings(full);
       confirming = false;
+      resetDone = true;
       pushToast(full ? "Model settings reset." : "Generation settings reset.", { kind: "info" });
     } catch (cause) {
       error = userFacingError(cause, "Settings could not be fully reset. Try again.");
@@ -35,7 +39,7 @@
   {:else}
     <Button disabled={!modelDefaultsState.info || settingsResetState.busy || genStatus.active}
       onclick={() => full ? confirming = true : void reset()}>
-      {settingsResetState.busy ? "Resetting…" : full ? "Reset Settings" : "Reset to original"}
+      <MorphText text={settingsResetState.busy ? "Resetting…" : resetDone ? "Settings reset" : full ? "Reset Settings" : "Reset to original"} numbers={false} />
     </Button>
   {/if}
   {#if genStatus.active}<p>Available when the current reply finishes.</p>{/if}

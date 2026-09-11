@@ -17,7 +17,7 @@ export function pageTransition(
   const leaving = direction === "out";
   const grouped = !leaving && node.querySelector("[data-page-group]") !== null;
   return {
-    duration: animate ? motionDuration(leaving ? 180 : grouped ? 440 : 240) : 0,
+    duration: animate ? motionDuration(leaving ? 180 : grouped ? 260 : 240) : 0,
     easing: leaving ? cubicIn : cubicOut,
     css: (t) => grouped ? "" : `opacity: ${t}; filter: blur(${(1 - t) * 4}px); ${leaving ? "position: absolute; inset: 0; overflow: clip; pointer-events: none;" : ""}`,
   };

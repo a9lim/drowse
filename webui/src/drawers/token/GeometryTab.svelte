@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // Geometry tab — the full whitened Monitor reading for every attached
   // geometry probe at the forward that produced this token: all
@@ -104,23 +105,23 @@
     reading: ProbeReadingJSON,
   ): { layer: number; value: number | null; title: string }[] {
     const curved = affineOf(name) === false;
-    const source: Record<string, number> = {};
+    const source: Record<string, number | null> = {};
     if (curved) {
       Object.assign(source, reading.fraction_per_layer ?? {});
     } else {
       for (const [layer, c] of Object.entries(reading.coords_per_layer ?? {})) {
-        source[layer] = Array.isArray(c) && c.length > 0 ? c[0] : 0;
+        source[layer] = c[0] ?? null;
       }
     }
     return Object.keys(source)
       .sort((a, b) => Number(a) - Number(b))
       .map((layer) => {
         const v = source[layer];
-        const sign = v >= 0 ? "+" : "";
+        const sign = v !== null && v >= 0 ? "+" : "";
         return {
           layer: Number(layer),
           value: v,
-          title: `L${layer} · ${sign}${v.toFixed(3)}`,
+          title: v === null ? `L${layer} · unavailable` : `L${layer} · ${sign}${v.toFixed(3)}`,
         };
       });
   }
@@ -130,31 +131,31 @@
     return probeAxisScale(name, 0);
   }
 
-  function geometryEvidence(reading: ProbeReadingJSON) {
+  function geometryEvidence(reading: ProbeReadingJSON, affine: boolean | null) {
     return [
       ...(reading.nearest ?? []).map(([label, dist]) => ({
         label,
         value: `d=${dist.toFixed(2)}`,
-        title: `whitened distance · ${dist.toFixed(3)}`,
+        title: `${dist.toFixed(3)} typical label spacings away · smaller is closer`,
       })),
       ...(reading.assignment ?? []).map(([label, prob]) => ({
         label: `~${label}`,
         value: `${(prob * 100).toFixed(0)}%`,
-        title: `soft assignment · ${(prob * 100).toFixed(1)}%`,
+        title: `geometric assignment · ${(prob * 100).toFixed(1)}% · relative fit among nodes, not semantic confidence`,
         soft: true,
       })),
-      ...(reading.residual !== 0
+      ...(affine === false || reading.residual !== 0
         ? [{
             label: "residual",
             value: reading.residual.toFixed(3),
-            title: "off-surface distance",
+            title: "off-surface distance divided by the in-subspace activation norm · smaller is closer to the surface",
           }]
         : []),
-      ...(reading.membership != null
+      ...(affine !== true && reading.membership != null
         ? [{
             label: "membership",
             value: reading.membership.toFixed(3),
-            title: "tube-fit density",
+            title: "fit inside the learned tube · 0 to 1 · not semantic confidence; without a learned tube this defaults to 1",
           }]
         : []),
     ];
@@ -164,7 +165,7 @@
 {#if readout.loading}
   <div class="readout-progress loading-pulse" role="status" aria-live="polite">
     <div class="progress-heading">
-      <span>{progressTitle}</span>
+      <span><MorphText text={progressTitle} numbers={false} /></span>
       <code>{#if determinateProgress}<RollingNumber value={progressPercent} />%{:else}starting{/if}</code>
     </div>
     <div
@@ -197,13 +198,28 @@
     title="PROBE READINGS"
     count={`${rows.length} attached`}
   >
+    <details class="geometry-guide">
+      <summary>How to read geometry</summary>
+      <dl>
+        <dt>Coordinates</dt>
+        <dd>Position in the fitted domain. On a two-pole axis, 0 is neutral and +1 is the named pole. Values can extend beyond a pole.</dd>
+        <dt>Subspace</dt>
+        <dd>Share of the centered activation in this subspace, from 0 to 1. Larger subspaces can capture more; this is not confidence.</dd>
+        <dt>Distance · d</dt>
+        <dd>Distance to a node in typical label spacings. Smaller is closer; 1 means one typical spacing away.</dd>
+        <dt>Assignment · ~</dt>
+        <dd>Relative geometric fit among nodes, not the probability that a trait is true.</dd>
+        <dt>Membership</dt>
+        <dd>Fit inside a curved manifold’s learned tube. Flat fits always return 1, so that value is hidden.</dd>
+      </dl>
+    </details>
     <div class="geo-list">
       {#each rows as [name, reading] (name)}
         {@const rank = reading.coords.length}
         {@const cells = stripCells(name, reading)}
         {@const affine = affineOf(name)}
         {@const cardAccent = affine === false ? "--pillar-manifold" : "--pillar-subspace"}
-        {@const evidence = geometryEvidence(reading)}
+        {@const evidence = geometryEvidence(reading, affine)}
         <RackCard accent={cardAccent} disabled={false}>
           {#snippet statline()}
             <DetailCardHeader
@@ -224,7 +240,7 @@
           {#snippet body()}
             <p class="aggregate-label">Across fitted layers</p>
             <ProbeReadingRow ariaLabel={`Subspace fraction ${reading.fraction.toFixed(3)}`}>
-              {#snippet left()}<span class="geo-axis-label">subspace</span>{/snippet}
+              {#snippet left()}<span class="geo-axis-label" {...{ "aria-description": "Share of the centered activation in this subspace · 0 to 1 · not confidence" }}>subspace</span>{/snippet}
               {#snippet bar()}
                 <Bar percentage value={reading.fraction} max={1} color="var(--fg)" />
               {/snippet}
@@ -235,12 +251,12 @@
                   </span>
                 {/if}
               {/snippet}
-              {#snippet right()}<span class="geo-value">{reading.fraction.toFixed(3)}</span>{/snippet}
+              {#snippet right()}<span class="geo-value"><MorphText text={reading.fraction.toFixed(3)} /></span>{/snippet}
             </ProbeReadingRow>
             {#each reading.coords as coord, axis (axis)}
             <ProbeReadingRow ariaLabel={`${name} axis ${axis}`}>
               {#snippet left()}
-                <span class="geo-axis-label" title={`coordinate axis ${axis}`}>
+                <span class="geo-axis-label" {...{ "aria-description": (`coordinate axis ${axis}`) }}>
                   {axisLabel(name, axis, rank)}
                 </span>
               {/snippet}
@@ -255,14 +271,14 @@
                 {#if reading.depth_com && reading.depth_com[axis] != null}
                   <span
                     class="geo-depth"
-                    title={`depth center ±${(reading.depth_spread?.[axis] ?? 0).toFixed(2)} · 0 first, 1 last`}
+                    {...{ "aria-description": (`depth center ±${(reading.depth_spread?.[axis] ?? 0).toFixed(2)} · 0 first, 1 last`) }}
                   >
-                    @{reading.depth_com[axis].toFixed(2)}
+                    @<MorphText text={reading.depth_com[axis].toFixed(2)} />
                   </span>
                 {/if}
               {/snippet}
               {#snippet right()}
-                <span class="geo-value">{coord.toFixed(3)}</span>
+                <span class="geo-value"><MorphText text={coord.toFixed(3)} /></span>
               {/snippet}
             </ProbeReadingRow>
             {/each}
@@ -369,6 +385,20 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-3);
   }
+  .geometry-guide {
+    margin-bottom: var(--space-4);
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .geometry-guide summary {
+    color: var(--fg);
+    cursor: pointer;
+    padding-block: var(--space-2);
+  }
+  .geometry-guide dl { margin: var(--space-2) 0 0; }
+  .geometry-guide dt { color: var(--fg); font-weight: var(--weight-medium); }
+  .geometry-guide dd { margin: 0 0 var(--space-3); }
   @media (prefers-reduced-motion: reduce) {
     .progress-track.indeterminate span {
       animation: none;

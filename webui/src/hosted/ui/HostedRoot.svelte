@@ -3,7 +3,6 @@
   import { onDestroy, onMount, tick, type Component } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { createShellController } from "../../../hosted/shell-controller";
-  import { installTooltipLayer } from "../../lib/tooltips";
   import {
     installHostedController,
     installRuntimeCapabilities,
@@ -23,6 +22,7 @@
     completeChunkRecovery,
     isChunkLoadError,
     recoverFromChunkLoadError,
+    reloadHostedApp,
   } from "../runtime/chunkRecovery";
   import {
     contentIn,
@@ -47,6 +47,7 @@
   let Workbench = $state<Component | null>(null);
   let workbenchError = $state<string | null>(null);
   let workbenchNeedsReload = $state(false);
+  let workbenchReloading = $state(false);
   let runtimeRecovery = $state<string | null>(null);
   let shellSnapshot = $state<HostedShellSnapshot | null>(null);
   let entryView: EntryView = $state("resolving");
@@ -62,7 +63,6 @@
   let previousFocus: HTMLElement | null = null;
   let restoreFocusOnClose = true;
   let workbenchPromise: Promise<void> | null = null;
-  let disposeTooltips: (() => void) | null = null;
   const initialUrl = new URL(window.location.href);
   const requestedModelPicker = initialUrl.searchParams.get("choose") === "1";
   const requestedWorkbenchReopen = initialUrl.searchParams.get("reopen") === "1";
@@ -299,7 +299,6 @@
         installRuntimeClient(appController.runtimeClient());
         installRuntimeCapabilities(capabilities);
         installHostedController(appController.hostedController());
-        disposeTooltips ??= installTooltipLayer();
         const component = (await import("../../App.svelte")).default;
         if (!disposed) {
           if (appController.current().runtime.phase === "ready") {
@@ -333,6 +332,21 @@
     }
   }
 
+  async function retryWorkbench(): Promise<void> {
+    if (!workbenchNeedsReload) return mountWorkbench();
+    if (workbenchReloading) return;
+    workbenchReloading = true;
+    try {
+      await reloadHostedApp("workbench", async () => {
+        await appController.prepareForReload();
+        await flushConversationAutosave();
+      });
+    } catch (error) {
+      workbenchError = userFacingError(error, "The app could not refresh. Please try again.");
+      workbenchReloading = false;
+    }
+  }
+
   onMount(() => {
     if (!appController) return;
     const unsubscribe = appController.subscribe((snapshot) => {
@@ -361,7 +375,6 @@
 
   onDestroy(() => {
     disposed = true;
-    disposeTooltips?.();
     appController?.dispose();
   });
 </script>
@@ -369,6 +382,7 @@
 
 <div class="hosted-background" inert={dialogOpen}>
   <PwaUpdatePrompt
+    showOfflineReady={!Workbench}
     onPrepareReload={prepareForPwaUpdate}
     onApplyingChange={onPwaApplyingChange}
   />
@@ -406,7 +420,8 @@
         onChooseModels={showModels}
         {workbenchError}
         {workbenchNeedsReload}
-        onRetryWorkbench={() => void mountWorkbench()}
+        {workbenchReloading}
+        onRetryWorkbench={() => void retryWorkbench()}
       />
     </div>
   {:else}
@@ -416,7 +431,8 @@
       onBack={firstRun ? undefined : showHome}
       {workbenchError}
       {workbenchNeedsReload}
-      onRetryWorkbench={() => void mountWorkbench()}
+      {workbenchReloading}
+      onRetryWorkbench={() => void retryWorkbench()}
     />
   {/if}
   </div>

@@ -1,4 +1,13 @@
 <script lang="ts">
+  import { createTokenArrival } from "../lib/tokenArrival";
+  const arrivals = createTokenArrival();
+  $effect.pre(() => {
+    const pending = chatLog.pendingIndex === null ? null : chatLog.turns[chatLog.pendingIndex];
+    arrivals.track(pending?.tokens ?? [], genStatus.active, "response");
+    arrivals.track(pending?.thinkingTokens ?? [], genStatus.active, "thinking");
+  });
+  import MorphText from "../lib/ui/MorphText.svelte";
+  import { createTokenViewCache } from "../lib/runtime/tokenViews";
   import { tokenInspectorUi } from "../lib/stores/drawers.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   import StateIcon from "../lib/ui/StateIcon.svelte";
@@ -175,6 +184,7 @@
 
   function updateComposerBounds(): void {
     if (!chatRef) return;
+    chatRef.style.setProperty("--chat-scrollbar-width", `${chatRef.offsetWidth - chatRef.clientWidth}px`);
     const compact = chatRef.clientHeight < 560 || chatRef.clientWidth <= 620 ||
       (window.visualViewport?.height ?? window.innerHeight) < 600;
     composerMinHeight = compact ? COMPACT_COMPOSER_MIN_HEIGHT : COMPOSER_MIN_HEIGHT;
@@ -495,7 +505,13 @@
       },
     );
     scrolledUp = false;
-    queueScrollToBottom();
+    queueScrollToBottom(true);
+    if (window.matchMedia("(pointer: coarse)").matches) {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && focused.closest("#conversation-composer")) {
+        focused.blur();
+      }
+    }
     queueMicrotask(autosize);
   }
 
@@ -889,9 +905,19 @@
   // ------------------------------------------------------ scroll bookkeeping --
 
   let logRef: HTMLDivElement | null = $state(null);
+  let logContentRef: HTMLDivElement | null = $state(null);
   /** True iff the user has manually scrolled up — freezes auto-scroll
    * until they hit the bottom again. */
   let scrolledUp = $state(false);
+  let previousScrollTop = 0;
+  let scrollingPointer = false;
+  let scrollTouchY = 0;
+  let forceScroll = false;
+
+  function pauseAutoScroll(): void {
+    scrolledUp = true;
+    forceScroll = false;
+  }
 
   function onScroll(ev: Event): void {
     const el = ev.currentTarget as HTMLElement;
@@ -899,22 +925,29 @@
     // counts as "at bottom".
     const atBottom =
       el.scrollHeight - el.scrollTop - el.clientHeight < 8;
-    scrolledUp = !atBottom;
+    if (atBottom && el.scrollTop > previousScrollTop) scrolledUp = false;
+    else if (scrollingPointer && el.scrollTop < previousScrollTop - 1) {
+      pauseAutoScroll();
+    }
+    previousScrollTop = el.scrollTop;
+    if (!scrolledUp) queueScrollToBottom();
   }
 
   function scrollToBottom(): void {
     const el = logRef;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
+    previousScrollTop = el.scrollTop;
   }
 
-  let _scrollScheduled = false;
-  function queueScrollToBottom(): void {
-    if (_scrollScheduled) return;
-    _scrollScheduled = true;
-    queueMicrotask(() => {
-      _scrollScheduled = false;
-      if (!scrolledUp) scrollToBottom();
+  let _scrollFrame = 0;
+  function queueScrollToBottom(force = false): void {
+    forceScroll ||= force;
+    if (_scrollFrame) return;
+    _scrollFrame = requestAnimationFrame(() => {
+      _scrollFrame = 0;
+      if (forceScroll || !scrolledUp) scrollToBottom();
+      forceScroll = false;
     });
   }
 
@@ -931,19 +964,46 @@
     untrack(() => queueScrollToBottom());
   });
 
+  $effect(() => {
+    if (!logRef || !logContentRef) return;
+    const observer = new ResizeObserver(() => queueScrollToBottom());
+    observer.observe(logRef);
+    observer.observe(logContentRef);
+    const releasePointer = () => { scrollingPointer = false; };
+    window.addEventListener("pointerup", releasePointer);
+    window.addEventListener("pointercancel", releasePointer);
+    queueScrollToBottom(true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("pointerup", releasePointer);
+      window.removeEventListener("pointercancel", releasePointer);
+    };
+  });
+
   onMount(() => {
     autosize();
     scrollToBottom();
     if (!window.matchMedia("(pointer: coarse)").matches) textareaRef?.focus();
     updateComposerBounds();
+    let resizeFrame = 0;
+    const scheduleComposerBounds = () => {
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        updateComposerBounds();
+      });
+    };
     const observer = typeof ResizeObserver === "undefined"
       ? null
-      : new ResizeObserver(updateComposerBounds);
+      : new ResizeObserver(scheduleComposerBounds);
     if (chatRef) observer?.observe(chatRef);
-    window.visualViewport?.addEventListener("resize", updateComposerBounds);
+    window.visualViewport?.addEventListener("resize", scheduleComposerBounds);
     return () => {
       observer?.disconnect();
-      window.visualViewport?.removeEventListener("resize", updateComposerBounds);
+      cancelAnimationFrame(resizeFrame);
+      cancelAnimationFrame(_scrollFrame);
+      _scrollFrame = 0;
+      window.visualViewport?.removeEventListener("resize", scheduleComposerBounds);
       rolePlanAnimation?.cancel();
     };
   });
@@ -953,19 +1013,7 @@
   /** Drop whitespace-only tokens from the head of the response so the gap below ``</think>``
    * goes away in plain-text mode too.  Returns the surviving slice
    * starting at the first non-whitespace token. */
-  interface VisibleToken {
-    tok: TokenScore;
-    originalIdx: number;
-  }
-
-  function visibleResponseTokens(tokens: TokenScore[]): VisibleToken[] {
-    let i = 0;
-    while (i < tokens.length && !tokens[i].text.trim()) i++;
-    return tokens.slice(i).map((tok, offset) => ({
-      tok,
-      originalIdx: i + offset,
-    }));
-  }
+  const visibleResponseTokens = createTokenViewCache<TokenScore>();
 
   let tokenPopup = $state<{
     token: TokenScore; anchor: HTMLElement; turnIdx: number; tokenIdx: number; isThinking: boolean;
@@ -1161,14 +1209,36 @@
   {#if rawMode}
     <RawBuffer />
   {:else}
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions (The scrollable conversation supports keyboard scrolling.) -->
   <div
     class="log"
     class:ab={twoColumns}
     bind:this={logRef}
     onscroll={onScroll}
+    onwheel={(event) => { if (event.deltaY < 0) pauseAutoScroll(); }}
+    onpointerdown={(event) => { scrollingPointer = event.pointerType === "mouse"; }}
+    ontouchstart={(event) => { scrollTouchY = event.touches[0].clientY; }}
+    ontouchmove={(event) => {
+      const y = event.touches[0].clientY;
+      if (y > scrollTouchY) pauseAutoScroll();
+      scrollTouchY = y;
+    }}
+    onkeydown={(event) => {
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key)) pauseAutoScroll();
+      if (event.target === logRef && event.key === "Home") {
+        event.preventDefault();
+        event.currentTarget.scrollTop = 0;
+      } else if (event.target === logRef && event.key === "End") {
+        event.preventDefault();
+        scrolledUp = false;
+        queueScrollToBottom(true);
+      }
+    }}
+    tabindex="0"
     role="region"
     aria-label="Conversation"
   >
+    <div class="log-content" bind:this={logContentRef}>
     {#if chatLog.turns.length === 0}
       <div
         class="conversation-empty"
@@ -1195,7 +1265,7 @@
                 type="button"
                 class="pin-unpin"
                 onclick={unpinComparison}
-                title="Unpin"
+                {...{ "aria-description": "Unpin" }}
               >unpin</button>
             </header>
             {#each pinnedPath as turn, idx (idx)}
@@ -1227,6 +1297,7 @@
         {@render bubble(turn, turnIdx, false)}
       {/each}
     {/if}
+    </div>
   </div>
 
   <div
@@ -1336,7 +1407,7 @@
       in:fly={contentIn(2)}
     >
       <span class="summary-label">Roles</span>
-      <span class="summary-value">{rolePlanSummary}</span>
+      <span class="summary-value"><MorphText text={rolePlanSummary} numbers={false} /></span>
       <span class="summary-action">Edit roles</span>
     </button>
   {/if}
@@ -1381,6 +1452,8 @@
   <form
     id="conversation-composer"
     class="input-row"
+    class:has-draft={hasText}
+    class:generating={genStatus.active}
     onsubmit={(ev) => { ev.preventDefault(); doSend(); }}
   >
     <textarea
@@ -1393,52 +1466,55 @@
       rows="3"
       aria-label={`Compose as ${authoredLabel}`}
     ></textarea>
-    <div class="input-actions" class:has-clear={canClearConversation}>
-      <Button
-        type="submit"
-        variant="solid"
-        disabled={primaryDisabled}
-        title={appendSelected ? "Enter · add your message only" : "Enter · send and generate a reply"}
-      ><StateIcon icons={["add", "send", "conversation"]} name={appendSelected ? "add" : hasText ? "send" : "conversation"} />{sendLabel}</Button>
-      <Button
-        variant="danger"
-        onclick={sendStop}
-        disabled={!genStatus.active}
-        title="Escape · stop the current reply"
-      ><FluentIcon name="stop" />Stop</Button>
-      {#if canClearConversation}
-        <button
-          type="button"
-          class="clear-conversation"
-          class:confirm-clear={clearConversationArmed}
-          onclick={requestClearConversation}
-          onblur={() => (clearConversationArmed = false)}
-          onkeydown={(event) => {
-            if (event.key === "Escape") clearConversationArmed = false;
-          }}
-          title={clearConversationArmed
-            ? "Clear the current view and start a new path"
-            : "Start a blank conversation; existing branches remain available"}
-          aria-label={clearConversationArmed ? "Confirm clear conversation" : "Clear conversation"}
-        >
-          {clearConversationArmed ? "Confirm clear" : "Clear conversation"}
-        </button>
-      {/if}
+    <div class="input-actions-reveal">
+      <div class="input-actions">
+        <Button
+          type="submit"
+          variant="solid"
+          disabled={primaryDisabled}
+          title={appendSelected ? "Enter · add your message only" : "Enter · send and generate a reply"}
+        ><StateIcon icons={["add", "send", "conversation"]} name={appendSelected ? "add" : hasText ? "send" : "conversation"} /><MorphText text={sendLabel} numbers={false} /></Button>
+        <Button
+          variant="danger"
+          onclick={sendStop}
+          disabled={!genStatus.active}
+          title="Escape · stop the current reply"
+        ><FluentIcon name="stop" />Stop</Button>
+        {#if canClearConversation}
+          <button
+            type="button"
+            class="clear-conversation"
+            class:confirm-clear={clearConversationArmed}
+            onmousedown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.currentTarget.focus({ preventScroll: true });
+            }}
+            onclick={requestClearConversation}
+            onblur={() => (clearConversationArmed = false)}
+            onkeydown={(event) => {
+              if (event.key === "Escape") clearConversationArmed = false;
+            }}
+            {...{ "aria-description": (clearConversationArmed
+              ? "Clear the current view and start a new path"
+              : "Start a blank conversation; existing branches remain available") }}
+            aria-label={clearConversationArmed ? "Confirm clear conversation" : "Clear conversation"}
+          >
+            <span class="clear-icon"><FluentIcon name={clearConversationArmed ? "check" : "refresh"} /></span>
+            <span class="clear-label">{clearConversationArmed ? "Confirm clear" : "Clear conversation"}</span>
+          </button>
+        {/if}
+      </div>
     </div>
   </form>
   {/if}
 </div>
-  {#if sessionState.info?.model_id}
-    <div class="active-model" aria-label="Active model" title={sessionState.info.model_id}>
-      <span>Model</span>
-      <span class="active-model-name">{sessionState.info.model_id.split("/").at(-1)}</span>
-    </div>
-  {/if}
 
 {#if tokenPopup}
   {@const popup = tokenPopup}
   {#key popup.anchor}
     <TokenLogitsPopover token={popup.token} anchor={popup.anchor}
+      isCurrent={anchor => tokenPopup?.anchor === anchor}
       source={chatLog.turns[popup.turnIdx]?.generated ? "Model token" : "User text · recorded"}
       onclose={() => tokenPopup = null}
       ondetails={() => openDrawer("token_drilldown", { turnIdx: popup.turnIdx, tokenIdx: popup.tokenIdx, isThinking: popup.isThinking, initialTab: "logits" })} />
@@ -1450,17 +1526,17 @@
   <span class="role-chip">
     {#if turn.role === "assistant"}
       {#if interactive}
-        <button type="button" class="model-avatar" aria-label="Open model settings" title="Model settings"
-          onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "model" } }))}>
-          <Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={32} background="circle" alt="" />
+        <button type="button" class="model-avatar" aria-label="Edit name and avatar"
+          onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "chat" } }))}>
+          <Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={40} background="circle" alt="" />
         </button>
       {:else}
-        <span class="speaker-marker" aria-hidden="true"><Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={32} background="circle" alt="" /></span>
+        <span class="speaker-marker" aria-hidden="true"><Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={40} background="circle" alt="" /></span>
       {/if}
     {:else}
       <span class="speaker-marker" aria-hidden="true"><span class="user-avatar"></span></span>
     {/if}
-    <span class="role-label">{roleDisplayLabel(turn.role, turn.roleLabel)}</span>
+    <span class="role-label"><MorphText text={roleDisplayLabel(turn.role, turn.roleLabel)} numbers={false} /></span>
   </span>
 {/snippet}
 
@@ -1471,13 +1547,14 @@
       class="stage"
       class:shadow={isShadow}
       dir="auto"
-      title="system prompt"
+      {...{ "aria-description": "system prompt" }}
       in:fly={contentIn()}
     >{turn.text}</div>
   {:else}
   <div
     class="msg"
     class:shadow={isShadow}
+    class:historical={turnIdx < chatLog.turns.length - 8}
     class:generation-active={genStatus.active && (isShadow ? abState.pendingTurnIdx === turnIdx : !abState.processingAb && chatLog.pendingIndex === turnIdx)}
     in:fly={contentIn()}
   >
@@ -1502,13 +1579,13 @@
       {/if}
       {#if isShadow && !pinnedActive}<span class="who-meta">(unsteered)</span>{/if}
       {#if genStatus.active && (isShadow ? abState.pendingTurnIdx === turnIdx : !abState.processingAb && chatLog.pendingIndex === turnIdx)}
-        <span class="who-meta generation-label" role="status">{(turn.tokens?.length ?? 0) > 0 ? "Writing…" : (turn.thinkingTokens?.length ?? 0) > 0 ? "Thinking…" : "Preparing reply…"}</span>
+        <span class="who-meta generation-label" role="status"><MorphText text={(turn.tokens?.length ?? 0) > 0 ? "Writing…" : (turn.thinkingTokens?.length ?? 0) > 0 ? "Thinking…" : "Preparing reply…"} numbers={false} /></span>
       {/if}
       {#if turn.meanLogprob != null && Number.isFinite(turn.meanLogprob)}
         <span
           class="prov"
-          title="sequence perplexity"
-        >seq ppl {Math.exp(-turn.meanLogprob).toFixed(1)}</span>
+          {...{ "aria-description": "sequence perplexity" }}
+        >seq ppl <MorphText text={Math.exp(-turn.meanLogprob).toFixed(1)} /></span>
       {/if}
     </div>
 
@@ -1533,6 +1610,7 @@
             {#each turn.thinkingTokens ?? [] as tok, tokenIdx (tokenIdx)}
               <span
                 class="tok"
+                use:arrivals.reveal={genStatus.active ? tok : null}
                 data-cursor="inspect"
                 class:tinted={highlightState.target !== null}
                 style={highlightStyleString(tok)}
@@ -1558,6 +1636,7 @@
         {#each visibleResponseTokens(turn.tokens ?? []) as { tok, originalIdx }, visibleIdx (originalIdx)}
           <span
             class="tok"
+                use:arrivals.reveal={genStatus.active ? tok : null}
             data-cursor="inspect"
             class:tinted={highlightState.target !== null}
             style={highlightStyleString(tok)}
@@ -1591,21 +1670,11 @@
     min-width: 0;
     min-height: 0;
   }
-  .active-model {
-    display: flex;
-    flex: 0 0 auto;
-    align-self: flex-end;
-    align-items: baseline;
-    justify-content: flex-end;
-    gap: var(--space-2);
-    max-width: 100%;
-    color: var(--fg-muted);
-    font-family: var(--font-ui);
-    font-size: var(--text-sm);
-    line-height: 1.5;
-  }
-  .active-model-name { min-width: 0; overflow-wrap: anywhere; text-align: end; }
   .chat {
+    --chat-scrollbar-width: 0px;
+    --chat-base-inset: var(--surface-padding);
+    --chat-inset: max(var(--chat-base-inset), var(--chat-scrollbar-width, 0px));
+    --chat-radius: calc(var(--radius-lg) + var(--chat-inset));
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -1613,13 +1682,14 @@
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    scrollbar-gutter: stable both-edges;
+    scrollbar-gutter: auto;
     gap: var(--space-2);
     font-family: var(--font-reading);
     font-size: var(--text);
     color: var(--fg);
-    padding: var(--surface-padding);
-    border-radius: var(--radius-lg);
+    padding: var(--chat-inset);
+    padding-inline-end: calc(var(--chat-inset) - var(--chat-scrollbar-width, 0px));
+    border-radius: var(--chat-radius);
     background: var(--workspace-panel-bg);
   }
 
@@ -1733,11 +1803,14 @@
     flex: 1 1 auto;
     overflow-y: auto;
     overflow-x: hidden;
+    min-height: 0;
+  }
+
+  .log-content {
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
-    min-height: 0;
-    padding-inline-end: var(--space-2);
+    min-height: 100%;
   }
 
   .conversation-empty {
@@ -1821,6 +1894,10 @@
     min-width: 0;
     word-break: break-word;
   }
+  .msg.historical {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 160px;
+  }
   .msg.shadow {
     border-color: color-mix(in srgb, var(--pillar-manifold) 26%, transparent);
   }
@@ -1851,15 +1928,15 @@
     max-width: 40%;
     white-space: nowrap;
   }
-  .role-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .model-avatar, .speaker-marker { display: inline-grid; place-items: center; width: var(--control-target); height: var(--control-target); flex: none; }
+  .role-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-structure); font-weight: var(--weight-display); }
+  .model-avatar, .speaker-marker { display: inline-grid; align-items: center; justify-items: start; width: max(40px, var(--control-target)); height: max(40px, var(--control-target)); flex: none; }
   .model-avatar { padding: 0; border: 0; border-radius: var(--radius-pill); background: transparent; cursor: pointer; }
   .model-avatar:hover { background: var(--bg-hover); }
   .model-avatar:active { transform: scale(0.96); }
   .model-avatar:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-  .model-avatar :global(img), .speaker-marker :global(img) { display: block; width: 32px; height: 32px; border-radius: var(--radius-pill); outline: 1px solid oklch(1 0 0 / 0.1); outline-offset: -1px; }
+  .model-avatar :global(img), .speaker-marker :global(img) { display: block; width: 40px; height: 40px; border-radius: var(--radius-pill); outline: 1px solid oklch(1 0 0 / 0.1); outline-offset: -1px; }
   :global(:root[data-theme="light"]) .model-avatar :global(img), :global(:root[data-theme="light"]) .speaker-marker :global(img) { outline-color: oklch(0 0 0 / 0.1); }
-  .user-avatar { width: 24px; height: 24px; border-radius: var(--radius-pill); background: var(--accent); }
+  .user-avatar { width: 32px; height: 32px; border-radius: var(--radius-pill); background: var(--accent); }
   @media (forced-colors: active) { .msg { border-color: CanvasText; } .user-avatar { background: Highlight; forced-color-adjust: none; } }
   .who-meta {
     color: var(--fg-muted);
@@ -2224,9 +2301,9 @@
   .input-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: var(--composer-space, var(--space-6));
+    gap: 0;
     padding: var(--surface-padding);
-    border-radius: var(--popup-radius);
+    border-radius: var(--radius-lg);
     background: var(--workspace-field-bg);
     -webkit-backdrop-filter: blur(1px);
     backdrop-filter: blur(1px);
@@ -2257,13 +2334,43 @@
   .input:focus {
     outline: none;
   }
+  .input-actions-reveal {
+    display: grid;
+    grid-template-rows: 1fr;
+    margin-top: var(--composer-space, var(--space-6));
+    opacity: 1;
+    visibility: visible;
+    transition:
+      grid-template-rows var(--dur-slow) var(--ease-move),
+      margin-top var(--dur-slow) var(--ease-move),
+      opacity var(--dur-slow) var(--ease-move),
+      visibility 0s;
+  }
   .input-actions {
     display: flex;
+    min-height: 0;
+    overflow: hidden;
     gap: var(--composer-space, var(--space-6));
-    align-items: center;
+    align-items: stretch;
     justify-content: flex-end;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
   }
+  .input-actions :global(button) { white-space: nowrap; }
+  .input-actions :global(button:focus-visible) { outline-offset: -2px; }
+  .input-row:not(:focus-within):not(.has-draft):not(.generating) .input-actions-reveal {
+    grid-template-rows: 0fr;
+    margin-top: 0;
+    opacity: 0;
+    visibility: hidden;
+    transition-delay: 0s, 0s, 0s, var(--dur-slow);
+  }
+  .input-row.generating:not(:focus-within):not(.has-draft) .input-actions > :global(:not(.danger)) {
+    visibility: hidden;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .input-actions-reveal { transition: none; }
+  }
+  .clear-icon { display: none; }
   .clear-conversation {
     min-height: var(--control-target);
     padding: var(--space-2) var(--space-4);
@@ -2362,23 +2469,6 @@
       width: 100%;
       min-height: 92px;
     }
-    .input-actions {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) max-content;
-      align-items: stretch;
-    }
-    .input-actions.has-clear { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .input-actions.has-clear :global(button:first-child) {
-      grid-column: 1 / -1;
-    }
-    .input-actions :global(button) {
-      width: 100%;
-      min-height: var(--control-target);
-    }
-    .clear-conversation {
-      padding-inline: var(--space-2);
-      white-space: normal;
-    }
   }
 
   /* Wrap compact controls so scrolling does not clip their focus halos. */
@@ -2428,16 +2518,20 @@
     }
 
     .input {
-      min-height: calc(var(--surface-padding) * 2 + var(--space-lg));
+      min-height: 64px;
     }
   }
 
   @media (max-width: 620px) {
     .chat {
+      --chat-base-inset: var(--space-2);
       overflow-y: auto;
       overscroll-behavior: contain;
       scroll-padding-block-end: var(--surface-padding);
+      scrollbar-gutter: auto;
     }
+
+    .input-row { padding: var(--space-2); }
 
     .chat > :global(*) {
       flex-shrink: 0;
@@ -2445,7 +2539,7 @@
 
     .chat > .log {
       flex: 1 1 0;
-      min-height: 8rem;
+      min-height: var(--control-target);
     }
 
     .chat-header {
@@ -2481,7 +2575,42 @@
 
   }
 
+  @media (min-width: 621px) and (max-height: 600px) {
+    .chat:not(:has(.chat-header)) {
+      --chat-base-inset: var(--space-2);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 5.5rem;
+      grid-template-rows: minmax(24px, 1fr);
+      grid-auto-rows: max-content;
+      scrollbar-gutter: auto;
+    }
+    .chat:not(:has(.chat-header)) > :global(*) { grid-column: 1 / -1; }
+    .chat:not(:has(.chat-header)) > .log { grid-row: 1; min-height: 24px; }
+    .chat:not(:has(.chat-header)) > .composer-resizer-shell { grid-column: 2; grid-row: 2; }
+    .chat:not(:has(.chat-header)) > :global(.status-footer) { grid-column: 1; grid-row: 2; }
+    .input-row {
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: end;
+      padding: var(--space-1);
+    }
+  }
+
   @media (max-width: 760px), (max-height: 600px) {
+    .input-actions { gap: var(--space-2); }
+    .input-actions :global(button) {
+      flex: 0 0 auto;
+      min-height: var(--control-target);
+      padding-inline: var(--space-2);
+    }
+    .input-actions :global(button:first-child) { flex: 1 1 auto; }
+    .input-actions :global(button:first-child .state-icon) { display: none; }
+    .clear-conversation {
+      padding-inline: var(--space-2);
+      min-width: var(--control-target);
+    }
+    .clear-icon { display: inline-flex; }
+    .clear-label { display: none; }
+
     .input,
     .ctl-input,
     .thinking-input {

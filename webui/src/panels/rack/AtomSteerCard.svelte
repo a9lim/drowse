@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import { slidingSelection } from "../../lib/slidingSelection";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
@@ -60,7 +61,7 @@
       <RackMarker shape={family.marker} filled={entry.enabled} />
     </button>
 
-    <span class="name" class:struck={!entry.enabled} title="{family.noun} {name}">
+    <span class="name" class:struck={!entry.enabled} {...{ "aria-description": (family.noun) + " " + (name) }}>
       {atomId}
     </span>
 
@@ -81,9 +82,9 @@
         type="button"
         class="trigger-pill"
         onclick={cycleTrigger}
-        title={TRIGGER_LABEL[entry.trigger]}
+        {...{ "aria-description": (TRIGGER_LABEL[entry.trigger]) }}
         aria-label="trigger for {name}: {entry.trigger}"
-      >{TRIGGER_WORD[entry.trigger]}</button>
+      ><MorphText text={TRIGGER_WORD[entry.trigger]} numbers={false} /></button>
     </div>
     <div class="operation" role="group" aria-label="steering operation for {name}" use:slidingSelection>
       <button

@@ -157,7 +157,7 @@
 
 <div class="sk-combobox field-focus" class:is-open={open} class:is-invalid={invalid}>
   <input
-    bind:this={input} bind:value {placeholder} {disabled} {title} {spellcheck}
+    bind:this={input} bind:value {placeholder} {disabled} {...{ "aria-description": (title) }} {spellcheck}
     role="combobox" aria-label={ariaLabel} aria-autocomplete="list"
     aria-describedby={ariaDescribedby}
     aria-expanded={open} aria-controls={open ? `${uid}-listbox` : undefined}
@@ -217,12 +217,12 @@
     cursor: pointer; transition: color var(--dur-fast) var(--ease-out),
       transform var(--dur-fast) var(--ease-out); }
   .is-open .caret { color: var(--accent); transform: rotate(180deg); }
-  .popover { position: fixed; inset: auto; z-index: var(--z-modal); box-sizing: border-box;
-    overflow-y: auto; margin: 0; padding: var(--surface-padding); list-style: none;
+  .popover { --popup-radius: var(--radius-lg); position: fixed; inset: auto; z-index: var(--z-modal); box-sizing: border-box;
+    overflow-y: auto; margin: 0; padding: var(--space-2); list-style: none;
     border: 1px solid var(--popup-border); border-radius: var(--popup-radius); background: var(--surface-sheen), var(--popup-bg);
     box-shadow: var(--popup-shadow); }
-  li { min-height: var(--control-target); padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius);
+  li { display: flex; align-items: center; min-height: var(--control-option); padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
     color: var(--fg-strong); font-size: var(--text-sm); line-height: 1.45;
     overflow-wrap: anywhere; white-space: normal; cursor: pointer; }
   li.highlight { background: var(--control-sheen), var(--bg-hover); color: var(--fg); }

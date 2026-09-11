@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -40,14 +40,14 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "torch>=2.2",
+    "torch>=2.13.0",
     # >=5.10: gemma4_unified (the Gemma-4 unified arch, a tested arch) lands in
     # the 5.10 line; 5.8/5.9 only ship the non-unified gemma4 and fail to load it.
     "transformers>=5.10",
     "accelerate>=0.27",
     "safetensors>=0.7.0",
     "sae-lens>=6.0,<7.0",
-    "nltk>=3.10.0",
+    "nltk>=3.10.3",
     "pyyaml>=6.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.44.0",
@@ -134,6 +134,7 @@ include = [
     "examples",
 ]
 exclude = ["**/__pycache__", "**/node_modules"]
+extraPaths = ["browser-runtime"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = false

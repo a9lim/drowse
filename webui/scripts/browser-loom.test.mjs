@@ -500,6 +500,30 @@ try {
   });
 
   const namedEngine = generation();
+  const renamedEngine = generation();
+  const renamedRuntime = new BrowserLoomRuntime({
+    session: session(), generation: renamedEngine, createId: ids("renamed"),
+  });
+  for (const name of [null, "pirate", "forest_guide", null]) {
+    await renamedRuntime.generate({
+      type: "submit", text: "Arrgh", authored_role: "user", generated_role: "assistant",
+      sampling: name === null ? {} : { assistant_role: name },
+    }, () => {});
+    assert.equal(renamedEngine.plans.at(-1).generationRoleName, name);
+    const node = renamedRuntime.snapshot().tree.nodes.at(-1);
+    assert.equal(node.role, "assistant");
+    assert.equal(node.role_label, name);
+    assert.equal(node.recipe.sampling.assistant_role, name);
+  }
+  assert.deepEqual(
+    renamedEngine.plans.at(-1).input.messages.filter(message => message.role === "assistant")
+      .map(message => message.name ?? null),
+    [null, "pirate", "forest_guide"],
+    "Changing the next speaker must preserve the actual names of historical turns",
+  );
+  const renamedTranscript = await renamedRuntime.request({ service: "tree", method: "transcriptExport", args: [null] });
+  assert.match(renamedTranscript.yaml, /speaker: pirate/);
+  assert.match(renamedTranscript.yaml, /speaker: forest_guide/);
   const namedRuntime = new BrowserLoomRuntime({
     session: session(),
     generation: namedEngine,
@@ -1838,6 +1862,42 @@ try {
     assert.equal(tree.nodes[2].mean_logprob, -0.4);
   }
 
+  {
+    let markPreparing;
+    let finishPreparing;
+    const preparing = new Promise(resolve => { markPreparing = resolve; });
+    const prepared = new Promise(resolve => { finishPreparing = resolve; });
+    const engine = generation();
+    const generate = engine.streamGeneration.bind(engine);
+    const signals = [];
+    engine.streamGeneration = async (plan, onToken) => {
+      signals.push(plan.signal);
+      markPreparing();
+      await prepared;
+      plan.signal?.throwIfAborted();
+      return generate(plan, onToken);
+    };
+    const runtime = new BrowserLoomRuntime({
+      session: session(), generation: engine, createId: ids("cancel-setup"),
+    });
+    const events = [];
+    const request = { type: "submit", text: "Stop before decoding", authored_role: "user", generated_role: "assistant" };
+    const pending = runtime.generate(request, event => events.push(event));
+    await preparing;
+    await runtime.stop();
+    finishPreparing();
+    await pending;
+    assert.equal(events.filter(event => event.type === "token").length, 0);
+    assert.equal(events.find(event => event.type === "done").result.finish_reason, "cancelled");
+    assert.equal(engine.plans.length, 0, "a stop during setup must prevent decoding from starting");
+    const nextEvents = [];
+    await runtime.generate(request, event => nextEvents.push(event));
+    assert.equal(engine.plans.length, 1);
+    assert.equal(signals[0].aborted, true);
+    assert.equal(signals[1].aborted, false);
+    assert.equal(nextEvents.find(event => event.type === "done").result.text, "Local answer");
+  }
+
   const usageAwareCancellation = webLlmCancellableGeneration(streamWebLlmGeneration);
   const usageAwareRuntime = new BrowserLoomRuntime({
     session: session(),
@@ -2046,10 +2106,10 @@ try {
   const patched = await serviceRuntime.request({
     service: "sessions",
     method: "patch",
-    args: [{ temperature: 0.5, max_tokens: 32 }],
+    args: [{ temperature: 3, max_tokens: 32768 }],
   });
-  assert.equal(patched.config.temperature, 0.5);
-  assert.equal(patched.config.max_tokens, 32);
+  assert.equal(patched.config.temperature, 3);
+  assert.equal(patched.config.max_tokens, 32768);
   assert.deepEqual(await serviceRuntime.request({
     service: "profiles", method: "list", args: [],
   }), { profiles: [] });

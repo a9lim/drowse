@@ -22,7 +22,7 @@
     scale?: number;
     /** Cell width in pixels. */
     size?: number;
-    /** Optional tooltip text override.  When omitted, the value is
+    /** Optional accessible label override.  When omitted, the value is
      * formatted to 3 decimals. */
     title?: string;
     /** Optional semantic hues. Signed probe cells use the green/red
@@ -84,7 +84,7 @@
   class="cell"
   class:active
   style="width: {size}px; height: {size}px; background: {bg}; color: {textColor};"
-  title={tip}
+
   role="img"
   aria-label={tip}
 >
@@ -98,7 +98,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    cursor: help;
+    cursor: default;
     font-size: var(--text-2xs);
     color: var(--fg);
     box-sizing: border-box;

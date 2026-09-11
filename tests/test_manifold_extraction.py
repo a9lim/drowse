@@ -1001,6 +1001,7 @@ def test_capture_generation_fsyncs_before_pointer_and_gc(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Payload entries and recovery journal are durable before pointer GC."""
+    from drowse.core import extraction
     from drowse.io import atomic
     from drowse.io.paths import model_dir
 
@@ -1009,6 +1010,7 @@ def test_capture_generation_fsyncs_before_pointer_and_gc(
     events: list[str] = []
     real_write_json = atomic.write_json_atomic
     real_fsync_directory = atomic.fsync_directory
+    real_gc = extraction._gc_capture_generations
 
     def track_write(path: Path, payload: Any, **kwargs: Any) -> None:
         resolved = Path(path)
@@ -1023,13 +1025,22 @@ def test_capture_generation_fsyncs_before_pointer_and_gc(
             events.append("fsync-dir")
         real_fsync_directory(path)
 
+    def track_gc(*args: Any, **kwargs: Any) -> None:
+        events.append("gc")
+        real_gc(*args, **kwargs)
+
     monkeypatch.setattr(atomic, "write_json_atomic", track_write)
     monkeypatch.setattr(atomic, "fsync_directory", track_fsync)
+    monkeypatch.setattr(extraction, "_gc_capture_generations", track_gc)
     ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
 
-    assert events[:5] == [
-        "fsync-dir", "write-pending", "fsync-dir", "write-pointer", "fsync-dir",
-    ]
+    pending = events.index("write-pending")
+    pointer = events.index("write-pointer")
+    gc = events.index("gc")
+    assert 0 < pending < pointer < gc
+    assert "fsync-dir" in events[:pending]
+    assert "fsync-dir" in events[pending + 1:pointer]
+    assert "fsync-dir" in events[pointer + 1:gc]
     assert events[-1] == "fsync-dir"  # generation GC durability barrier
 
 

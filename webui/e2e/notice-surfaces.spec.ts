@@ -1,6 +1,71 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
+test("info, warning, and error notifications stack at the bottom right", async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=1");
+  await expect(page.locator(".shell")).toBeVisible();
+  await page.evaluate(async moduleUrl => {
+    const { pushToast } = await import(moduleUrl);
+    for (const kind of ["info", "warning", "error"]) {
+      pushToast(`${kind} notification`, { kind, ttlMs: null });
+    }
+  }, `/@fs/${resolve("src/lib/stores.svelte.ts")}`);
+  await expect(page.locator(".toast")).toHaveCount(3);
+  for (const viewport of [{ width: 320, height: 568 }, { width: 440, height: 796 }, { width: 844, height: 390 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => page.locator(".toaster").evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const right = innerWidth - box.right;
+      const bottom = innerHeight - box.bottom;
+      return right >= 8 && right <= 32 && bottom >= 8 && bottom <= 48 && box.top >= 0;
+    })).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`notifications-bottom-right-${viewport.width}.png`) });
+  }
+  await page.getByRole("button", { name: "Dismiss notification: error notification", exact: true }).click();
+  await expect(page.locator(".toast")).toHaveCount(2);
+});
+
+test("offline notices stay at the bottom right and hide in the workbench", async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=1");
+  await expect(page.locator(".shell")).toBeVisible();
+  await page.evaluate(async moduleUrl => {
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: Object.assign(new EventTarget(), {
+      controller: {}, getRegistration: async () => ({ active: {} }),
+    }) });
+    const [{ default: Prompt }, { mount, unmount }] = await Promise.all([
+      import(moduleUrl), import("/e2e/svelte-runtime.ts"),
+    ]);
+    const target = document.createElement("div");
+    document.body.append(target);
+    let instance = mount(Prompt, { target });
+    Object.assign(window, { hideOfflineNotice: async () => {
+      await unmount(instance);
+      instance = mount(Prompt, { target, props: { showOfflineReady: false } });
+    } });
+  }, `/@fs/${resolve("src/hosted/ui/PwaUpdatePrompt.svelte")}`);
+  const notice = page.locator(".pwa-notice.passive");
+  await expect(notice).toBeVisible();
+  for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello");
+    await expect.poll(() => notice.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const right = innerWidth - box.right;
+      const bottom = innerHeight - box.bottom;
+      return right >= 8 && right <= 32 && bottom >= 8 && bottom <= 48 && box.top >= 0;
+    })).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`offline-notice-${viewport.width}.png`) });
+  }
+  await page.evaluate(async () => {
+    await (window as unknown as { hideOfflineNotice(): Promise<void> }).hideOfflineNotice();
+  });
+  await expect(notice).toHaveCount(0);
+});
+
 test("humanized public copy stays readable without em dashes", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
@@ -27,8 +92,11 @@ test("storage guidance has no decorative side stripe in either theme", async ({ 
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
   await page.evaluate(async moduleUrl => {
+    if (!navigator.storage) {
+      Object.defineProperty(navigator, "storage", { configurable: true, value: { persist: async () => false } });
+    }
     const [{ default: HostedHome }, { mount }] = await Promise.all([
-      import(moduleUrl), import("/@id/svelte"),
+      import(moduleUrl), import("/e2e/svelte-runtime.ts"),
     ]);
     document.body.replaceChildren();
     const target = document.createElement("div");
@@ -68,7 +136,7 @@ test("storage guidance has no decorative side stripe in either theme", async ({ 
   }
   await notice.getByRole("button", { name: "Protect storage", exact: true }).click();
   await expect(notice.getByRole("button", { name: "Protect storage", exact: true })).toBeEnabled();
-  await expect(notice).toContainText("Your browser didn't grant storage protection");
+  await expect(notice).toContainText("Storage protection isn't confirmed");
   await expect(notice).toContainText("Your existing chats and models won't transfer to it");
   await expect(notice.getByRole("link", { name: "Chrome site data settings", exact: true }))
     .toHaveAttribute("href", "https://support.google.com/chrome/answer/14114868?hl=en");

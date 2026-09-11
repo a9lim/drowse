@@ -5,6 +5,8 @@
   import katPortrait from "../../assets/credits/transkatgirl.jpg";
   import vogelPortrait from "../../assets/credits/voooooogel.jpg";
   import motionPortrait from "../../assets/credits/motion_so.jpg";
+  import claudeLogo from "../../assets/credits/claude.svg";
+  import openaiLogo from "../../assets/model-providers/openai.png";
   import VerificationBadge from "./VerificationBadge.svelte";
   import HeroShader from "./HeroShader.svelte";
   import PageHeader from "./PageHeader.svelte";
@@ -13,7 +15,7 @@
   import PwaUpdatePrompt from "./PwaUpdatePrompt.svelte";
 
   const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string"
-    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/polythetic";
+    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
   // X profile verification snapshot, checked 2026-09-06 (voooooogel: 2026-09-07).
   const team = [
     { name: "a9lim", handle: "@_a9lim", profile: "https://x.com/_a9lim", website: "a9l.im", portrait: a9limPortrait, verification: "blue" },
@@ -23,6 +25,15 @@
     { handle: "@transkatgirl", profile: "https://x.com/transkatgirl", portrait: katPortrait, verification: "blue" },
     { handle: "@voooooogel", profile: "https://x.com/voooooogel", portrait: vogelPortrait, verification: "blue" },
     { handle: "@motion_so", profile: "https://x.com/motion_so", portrait: motionPortrait, verification: "gold" },
+  ] as const;
+  const models = [
+    { name: "Opus 4.6", provider: "claude" },
+    { name: "Opus 4.7", provider: "claude" },
+    { name: "Opus 4.8", provider: "claude" },
+    { name: "Opus 5", provider: "claude" },
+    { name: "Fable 5", provider: "claude" },
+    { name: "GPT-5.6 Sol", provider: "openai" },
+    { name: "GPT-6 Astra", provider: "openai" },
   ] as const;
 </script>
 
@@ -50,6 +61,7 @@
     <section class="team-section" aria-labelledby="team-title">
       <div class="section-heading">
         <h2 id="team-title">The team</h2>
+        <p>The people who built &amp; maintain Drowse</p>
       </div>
       <div class="team-list">
         {#each team as member}
@@ -71,7 +83,10 @@
     </section>
 
     <section class="thanks-section" aria-labelledby="thanks-title">
-      <h2 id="thanks-title">Special thanks to:</h2>
+      <div class="section-heading">
+        <h2 id="thanks-title">Special thanks</h2>
+        <p>People &amp; Groups whose work inspired Drowse or have supported/contributed in some way</p>
+      </div>
       <ul class="thanks-list">
         {#each thanks as contributor}
           <li>
@@ -80,6 +95,23 @@
               <span class="thanks-name"><span>{contributor.handle}</span><VerificationBadge status={contributor.verification} id={`${contributor.handle}-verification`} /></span>
               <FluentIcon name="external" size={18} />
             </a>
+          </li>
+        {/each}
+      </ul>
+    </section>
+
+    <section class="models-section" aria-labelledby="models-title">
+      <div class="section-heading">
+        <h2 id="models-title">Models of Technical Staff</h2>
+        <p>The models that worked hard to bring Drowse to life.</p>
+      </div>
+      <ul class="models-list">
+        {#each models as model}
+          <li class="model-credit">
+            <span class="model-logo" data-provider={model.provider} aria-hidden="true">
+              <span class="model-mark" style:mask-image={`url("${model.provider === "claude" ? claudeLogo : openaiLogo}")`}></span>
+            </span>
+            <span>{model.name}</span>
           </li>
         {/each}
       </ul>
@@ -114,7 +146,8 @@
   .credits-art-frame { position: absolute; z-index: -1; inset-block: -3rem -2rem; left: calc(50% - 50vw); width: 100vw; overflow: hidden; pointer-events: none; mask-image: linear-gradient(transparent, black 12%, black 76%, transparent); }
   .credits-art { position: absolute; width: clamp(44rem, 92vw, 96rem); aspect-ratio: 1; top: 50%; right: -24%; transform: translateY(-50%); mask-image: radial-gradient(ellipse, black 42%, transparent 72%); }
   .team-section { padding-block: var(--surface-padding) var(--surface-padding); }
-  .section-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: var(--space-4); margin-block-end: var(--space-7); }
+  .section-heading { display: grid; gap: var(--space-4); margin-block-end: var(--space-7); }
+  .section-heading p { max-width: 65ch; color: var(--fg-muted); font-size: var(--text-md); line-height: 1.6; text-wrap: pretty; }
   h2 { font-size: var(--text-model-title); line-height: 1.1; letter-spacing: -0.035em; }
   .team-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-6); }
   .team-member { overflow: hidden; padding: var(--surface-padding); border-radius: var(--radius-lg); background: var(--surface-card); box-shadow: var(--shadow-card); }
@@ -133,14 +166,17 @@
   .member-website:hover { background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control-hover); }
   .member-website:hover :global(svg) { transform: translate(2px, -2px); }
   .member-website:active, .thanks-list a:active { transform: scale(var(--press-scale)); box-shadow: var(--shadow-control-pressed); }
-  .thanks-section { padding-block: var(--surface-padding) var(--surface-padding); }
-  .thanks-section h2 { font-size: var(--text-lg); letter-spacing: -0.02em; }
-  .thanks-list { display: flex; flex-wrap: wrap; gap: var(--space-5); margin: var(--space-5) 0 0; padding: 0; list-style: none; }
+  .thanks-section, .models-section { padding-block: var(--surface-padding) var(--surface-padding); }
+  .thanks-list, .models-list { display: flex; flex-wrap: wrap; gap: var(--space-5); margin: 0; padding: 0; list-style: none; }
   .thanks-list li { min-width: 0; }
   .thanks-list a { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-5); border-radius: var(--radius); background: var(--surface-card); box-shadow: var(--shadow-rack); color: var(--fg); font-size: var(--text-sm); overflow-wrap: anywhere; transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
   .thanks-list a:hover { background: var(--surface-card-hover); box-shadow: var(--shadow-rack-hover); }
   .thanks-list a > :global(svg) { flex: none; color: var(--fg-muted); }
   .thanks-portrait { display: block; flex: none; width: 48px; height: 48px; object-fit: cover; border-radius: 50%; }
+  .model-credit { display: flex; align-items: center; gap: var(--space-4); min-width: 0; padding: var(--space-4) var(--space-5); border-radius: var(--radius); background: var(--surface-card); box-shadow: var(--shadow-rack); font-size: var(--text-sm); }
+  .model-logo { display: grid; place-items: center; flex: none; width: 48px; height: 48px; border-radius: 50%; background: var(--brand-claude); }
+  .model-logo[data-provider="openai"] { background: var(--brand-openai); }
+  .model-mark { width: 30px; height: 30px; background: var(--brand-logo-ink); mask-size: contain; mask-position: center; mask-repeat: no-repeat; mask-mode: alpha; }
   .contribute-section { display: flex; justify-content: space-between; align-items: center; gap: var(--space-6); padding-block: var(--surface-padding) var(--surface-padding); }
   .contribute-section p { max-width: 49ch; margin-block-start: var(--space-4); color: var(--fg-muted); font-size: var(--text-md); line-height: 1.6; text-wrap: pretty; }
   .contribute-action { flex: none; display: inline-flex; justify-content: center; align-items: center; min-height: 48px; padding: var(--space-4) var(--space-6); border-radius: var(--radius); background: var(--control-sheen), var(--action-bg); box-shadow: var(--shadow-control); color: var(--action-ink); font-weight: var(--weight-structure); transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }

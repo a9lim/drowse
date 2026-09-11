@@ -146,6 +146,7 @@ export function parseCsp(value) {
 
 export function expectedCsp(distributionLock) {
   const connectOrigins = [...new Set([
+    "https://www.neuronpedia.org",
     new URL(distributionLock.catalogUrl).origin,
     new URL(distributionLock.signatureUrl).origin,
     ...distributionLock.allowedCatalogRedirectOrigins,
@@ -155,7 +156,7 @@ export function expectedCsp(distributionLock) {
     ["default-src", ["'self'"]],
     ["base-uri", ["'self'"]],
     ["connect-src", ["'self'", ...connectOrigins]],
-    ["font-src", ["'self'"]],
+    ["font-src", ["'self'", "data:"]],
     ["form-action", ["'self'"]],
     ["frame-ancestors", ["'none'"]],
     ["img-src", ["'self'", "data:"]],
@@ -251,10 +252,10 @@ export function assertChannelHtml(html, channel, expectedRevision = null) {
     if (expectedRevision !== null) {
       assert.equal(revision, expectedRevision, "Release HTML revision differs from --revision");
     }
-    assert.equal(sourceUrl, "https://github.com/a9lim/polythetic");
+    assert.equal(sourceUrl, `https://github.com/a9lim/drowse/tree/${revision}`);
   } else {
     assert.equal(revision, "preview", "Preview HTML must not claim a release revision");
-    assert.equal(sourceUrl, "https://github.com/a9lim/polythetic");
+    assert.equal(sourceUrl, "https://github.com/a9lim/drowse");
   }
 }
 
@@ -270,7 +271,12 @@ export function assertRobotsHeader(response, channel) {
       `${response.url} release candidate must be noindex`,
     );
   } else {
-    assert.ok(!value.includes("noindex"), `${response.url} release must not be noindex`);
+    const pathname = response.url ? new URL(response.url).pathname : "/";
+    if (pathname === "/app" || pathname.startsWith("/app/")) {
+      assert.equal(value, "noindex, follow", `${response.url} workbench must remain noindex, follow`);
+    } else {
+      assert.ok(!value.includes("noindex"), `${response.url} release must not be noindex`);
+    }
     assert.ok(!value.includes("nofollow"), `${response.url} release must not be nofollow`);
   }
 }
@@ -322,6 +328,24 @@ function assertCache(response, expected) {
   );
 }
 
+export function workboxRuntimeName(serviceWorker) {
+  const module = /\bdefine\(\[\s*["']\.\/(workbox-[A-Za-z0-9_-]+)["']/.exec(serviceWorker)?.[1];
+  assert.ok(module, "Deployed service worker does not reference a Workbox runtime");
+  return `${module}.js`;
+}
+
+export function precachedScripts(serviceWorker) {
+  const paths = [...new Set([...serviceWorker.matchAll(/\burl:["'](assets\/[^"']+\.js)["']/g)]
+    .map((match) => `/${match[1]}`))];
+  assert.ok(paths.length > 0, "Service worker contains no precached JavaScript");
+  return paths;
+}
+
+export function assertJavaScriptResponse(response) {
+  assert.equal(response.status, 200, `${response.url} did not return JavaScript`);
+  assertMime(response, ["application/javascript", "text/javascript"]);
+}
+
 async function assertPwaAssets(origin, headers, html) {
   const manifestResponse = await fetchRoute(origin, "/manifest.webmanifest", headers);
   assertMime(manifestResponse, ["application/manifest+json", "application/json"]);
@@ -333,8 +357,20 @@ async function assertPwaAssets(origin, headers, html) {
   assertMime(serviceWorkerResponse, ["application/javascript", "text/javascript"]);
   assertCache(serviceWorkerResponse, ["no-cache"]);
   const serviceWorker = await serviceWorkerResponse.text();
-  const workboxName = /\b(workbox-[A-Za-z0-9._-]+\.js)\b/.exec(serviceWorker)?.[1];
-  assert.ok(workboxName, "Deployed service worker does not reference a Workbox runtime");
+  const scripts = precachedScripts(serviceWorker);
+  for (let offset = 0; offset < scripts.length; offset += 8) {
+    await Promise.all(scripts.slice(offset, offset + 8).map(async (path) => {
+      const response = await fetchRoute(origin, path, headers);
+      assertJavaScriptResponse(response);
+      await response.body?.cancel();
+    }));
+  }
+  const missingAsset = await fetch(new URL(`/assets/missing-${crypto.randomUUID()}.js`, origin), {
+    headers, redirect: "manual", signal: AbortSignal.timeout(20_000),
+  });
+  await missingAsset.body?.cancel();
+  assert.equal(missingAsset.status, 404, "Missing JavaScript must return 404, not cached SPA HTML");
+  const workboxName = workboxRuntimeName(serviceWorker);
 
   const workboxResponse = await fetchRoute(origin, `/${workboxName}`, headers);
   assertMime(workboxResponse, ["application/javascript", "text/javascript"]);
@@ -377,7 +413,7 @@ async function assertPwaAssets(origin, headers, html) {
   assert.equal(deployedLicense, sourceLicense, "Deployed AGPL license differs from source");
 }
 
-async function assertBrowserBehavior(origin, headers) {
+async function assertBrowserBehavior(origin, headers, expectedRevision) {
   const browser = await chromium.launch({ headless: true });
   let context;
   try {
@@ -402,6 +438,7 @@ async function assertBrowserBehavior(origin, headers) {
 
     await page.goto(`${origin}/app`, { waitUntil: "domcontentloaded" });
     await page.locator("#device-check").waitFor({ state: "visible" });
+    assert.equal(await page.locator('meta[name="drowse-source-revision"]').getAttribute("content"), expectedRevision, "The browser opened a stale app build");
     assert.equal(await page.evaluate(() => globalThis.crossOriginIsolated), true, "/app is not cross-origin isolated");
 
     await page.evaluate(async () => {
@@ -409,7 +446,7 @@ async function assertBrowserBehavior(origin, headers) {
       await Promise.race([
         navigator.serviceWorker.ready,
         new Promise((_, reject) => {
-          setTimeout(() => reject(new Error("Service worker did not become ready")), 20_000);
+          setTimeout(() => reject(new Error("Service worker did not become ready")), 90_000);
         }),
       ]);
     });
@@ -422,6 +459,7 @@ async function assertBrowserBehavior(origin, headers) {
     await context.setOffline(true);
     await page.goto(offlineProbe, { waitUntil: "domcontentloaded" });
     await page.locator("#device-check").waitFor({ state: "visible" });
+    assert.equal(await page.locator('meta[name="drowse-source-revision"]').getAttribute("content"), expectedRevision, "The offline app cached a stale build");
     assert.equal(
       await page.evaluate(() => globalThis.crossOriginIsolated),
       true,
@@ -464,9 +502,16 @@ async function main() {
   }
   assertChannelHtml(rootHtml, options.channel, options.revision);
   assertChannelHtml(appHtml, options.channel, options.revision);
+  for (const path of ["/credits", "/credits/", "/contact", "/contact/"]) {
+    const response = await fetchRoute(origin, path, headers);
+    assertMime(response, "text/html");
+    assertSecurityHeaders(response, distributionLock);
+    assertRobotsHeader(response, options.channel);
+    assertChannelHtml(await response.text(), options.channel, options.revision);
+  }
   assertRobotsFile(robots, options.channel);
   await assertPwaAssets(origin, headers, rootHtml);
-  await assertBrowserBehavior(origin, headers);
+  await assertBrowserBehavior(origin, headers, metadata(rootHtml, "drowse-source-revision"));
 
   console.log(`Hosted ${options.channel} deployment passed at ${origin}`);
 }

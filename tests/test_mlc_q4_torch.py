@@ -275,6 +275,65 @@ def test_build_transformers_model_binds_exact_special_token_ids(
     assert model.config.pad_token_id == 0
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("scaling", [None, {"rope_type": "linear", "factor": 8.0}])
+@pytest.mark.parametrize("quantization", ["q4f32_1", "q0f32"])
+def test_gemma_reference_preserves_local_geometry_and_materializes_rope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy: bool, scaling: dict[str, object] | None, quantization: str):
+    from transformers import Gemma3ForCausalLM, Gemma3TextConfig
+
+    common = {
+        "vocab_size": 32, "hidden_size": 8, "intermediate_size": 16,
+        "num_hidden_layers": 2, "num_attention_heads": 2, "num_key_value_heads": 1,
+        "head_dim": 4, "rms_norm_eps": 1e-6, "attention_bias": False,
+        "hidden_activation": "gelu_pytorch_tanh", "query_pre_attn_scalar": 4,
+        "bos_token_id": 2, "eos_token_id": [1, 7], "pad_token_id": 0,
+    }
+    global_rope = {"rope_type": "default", "rope_theta": 1_000_000, **(scaling or {})}
+    reference = Gemma3ForCausalLM(Gemma3TextConfig(
+        **common, max_position_embeddings=128, sliding_window=4,
+        layer_types=["sliding_attention", "full_attention"],
+        rope_parameters={"full_attention": global_rope, "sliding_attention": {"rope_type": "default", "rope_theta": 10_000}},
+    )).eval()
+    reference.config._attn_implementation = "eager"
+    state = reference.state_dict()
+
+    class Cache:
+        def __init__(self, directory: Path):
+            assert directory == tmp_path
+
+        def q4(self, name: str):
+            name = name.removeprefix("language_model.")
+            if name.endswith(".gate_up_proj"):
+                return torch.cat([state[name.replace("gate_up_proj", "gate_proj") + ".weight"], state[name.replace("gate_up_proj", "up_proj") + ".weight"]])
+            return state[name + ".weight"]
+
+        def tensor(self, name: str):
+            name = name.removeprefix("language_model.")
+            if name.endswith(".gate_up_proj.weight"):
+                return torch.cat([state[name.replace("gate_up_proj", "gate_proj")], state[name.replace("gate_up_proj", "up_proj")]]).numpy()
+            value = state[name]
+            return (value + 1 if "norm.weight" in name else value).numpy()
+
+    geometry = {"rope_local_base_freq": 10_000, "sliding_window_pattern": 2, "rope_scaling": scaling}
+    text_config = {**common, "context_window_size": 128, "position_embedding_base": 1_000_000}
+    text_config.update({"sliding_window": 4, "kwargs": geometry} if legacy else {"sliding_window_size": 4, **geometry})
+    (tmp_path / "mlc-chat-config.json").write_text(json.dumps({
+        "model_type": "gemma3_text", "quantization": quantization, **common,
+        "model_config": {"text_config": text_config, "vocab_size": 32, "context_window_size": 128, "sliding_window_size": -1},
+    }))
+    monkeypatch.setattr(_MODULE, "MlcTensorCache", Cache)
+    model = _MODULE.build_transformers_model(tmp_path)
+    assert model.config.sliding_window == 4
+    assert model.config.layer_types == reference.config.layer_types
+    assert model.config.rope_parameters == reference.config.rope_parameters
+    actual_buffers = dict(model.model.rotary_emb.named_buffers())
+    for name, expected in reference.model.rotary_emb.named_buffers():
+        torch.testing.assert_close(actual_buffers[name], expected, rtol=0, atol=0)
+    input_ids = torch.tensor([[2, 3, 4, 5, 6, 8, 9, 10]])
+    with torch.inference_mode():
+        torch.testing.assert_close(model(input_ids).logits, reference(input_ids).logits, rtol=1e-5, atol=1e-6)
+
+
 def test_browser_residual_correction_preserves_gradient_and_replaces_value() -> None:
     layers = [torch.nn.Linear(2, 2, bias=False), torch.nn.Linear(2, 2, bias=False)]
     for layer in layers:

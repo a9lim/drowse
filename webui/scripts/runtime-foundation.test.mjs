@@ -715,6 +715,75 @@ try {
   );
   const localData = await server.ssrLoadModule("/src/lib/runtime/localData.ts");
   const userErrors = await server.ssrLoadModule("/src/lib/runtime/userFacingError.ts");
+  const { cacheOfflineRuntimeAssets } = await server.ssrLoadModule("/src/hosted/runtime/offlineRuntimeAssets.ts");
+  test("model setup caches only missing app modules and rejects unsafe or unavailable files", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalCaches = Object.getOwnPropertyDescriptor(globalThis, "caches");
+    const files = new Map();
+    const fetched = [];
+    let activeFetches = 0;
+    let peakFetches = 0;
+    let manifest = { assets: ["/assets/browser.worker-abc.js", "/assets/drowse-web-llm-def.js", "/assets/App-ghi.css"] };
+    let missing = false;
+    let wrongMime = false;
+    let networkFailed = false;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: {
+      async open(name) {
+        assert.equal(name, "drowse-hosted-on-demand-assets-v1");
+        return {
+          async match(path) { return files.get(path); },
+          async put(path, response) { files.set(path, await response.text()); },
+        };
+      },
+    } });
+    globalThis.fetch = async path => {
+      fetched.push(path);
+      if (networkFailed) throw new TypeError("Load failed");
+      if (path === "/runtime-assets.json") return Response.json(manifest);
+      activeFetches += 1;
+      peakFetches = Math.max(peakFetches, activeFetches);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      activeFetches -= 1;
+      return new Response("module", { status: missing ? 404 : 200, headers: {
+        "Content-Type": wrongMime ? "text/html" : path.endsWith(".css") ? "text/css" : "text/javascript",
+      } });
+    };
+    try {
+      await cacheOfflineRuntimeAssets();
+      assert.equal(peakFetches, 3, "independent app files should load concurrently");
+      assert.equal(activeFetches, 0);
+      assert.deepEqual([...files.keys()], manifest.assets);
+      fetched.length = 0;
+      await cacheOfflineRuntimeAssets();
+      assert.deepEqual(fetched, ["/runtime-assets.json"]);
+      for (const path of ["https://outside.test/assets/App-abc.js", "/assets/App-%2fsecret.js", "/assets/App-abc.js?other=1", "/models/weights.bin"]) {
+        manifest = { assets: [path] };
+        await assert.rejects(cacheOfflineRuntimeAssets(), { code: "APP_MODULE_UNAVAILABLE" });
+      }
+      manifest = { assets: ["/assets/App-new.js"] };
+      missing = true;
+      await assert.rejects(cacheOfflineRuntimeAssets(), { code: "APP_MODULE_UNAVAILABLE" });
+      missing = false;
+      wrongMime = true;
+      await assert.rejects(cacheOfflineRuntimeAssets(), { code: "APP_MODULE_UNAVAILABLE" });
+      wrongMime = false;
+      networkFailed = true;
+      await assert.rejects(cacheOfflineRuntimeAssets(), { code: "APP_MODULE_UNAVAILABLE" });
+      assert.equal(files.has("/assets/App-new.js"), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalCaches) Object.defineProperty(globalThis, "caches", originalCaches);
+      else delete globalThis.caches;
+    }
+  });
+  for (const message of [
+    "Importing a module script failed.",
+    "Failed to fetch dynamically imported module: https://example.test/assets/engine.js",
+    "error loading dynamically imported module",
+  ]) {
+    assert.equal(userErrors.userFacingError({ code: "WORKER_OPERATION_FAILED", message }),
+      "Some app files could not load. Reconnect, reload Drowse, then reopen the model. Your downloaded models and saved chats are kept.");
+  }
 
   test("turns runtime failures into actionable interface copy", () => {
     assert.equal(
@@ -791,6 +860,45 @@ try {
     );
   });
 
+  test("generic worker failures preserve actionable stale-sampler recovery", () => {
+    for (const code of [undefined, "WORKER_OPERATION_FAILED", "WORKER_REQUEST_FAILED"]) {
+      assert.equal(userErrors.userFacingError({
+        code,
+        message: "Make sure 0 < top_logprobs <= 5. Got 8",
+      }), "Drowse is using an older model runtime that cannot accept these sampling settings. Reload Drowse, then reopen the model. Your downloaded models and saved chats do not need to be removed.");
+    }
+    assert.equal(userErrors.userFacingError({
+      code: "WORKER_OPERATION_FAILED",
+      message: "TypeError: failure at worker.ts:12",
+    }), "Drowse could not complete that action. Try again or reopen the model.");
+  });
+
+  test("device loss survives generic worker error wrappers without retry advice", () => {
+    for (const code of [undefined, "WORKER_OPERATION_FAILED", "WEBGPU_DEVICE_LOST", "MODEL_DEVICE_LOST_DURING_LOAD"]) {
+      const message = userErrors.userFacingError({ code, message: "The WebGPU device was lost while loading" });
+      assert.match(message, /graphics device stopped responding/u);
+      assert.match(message, /smaller model/u);
+      assert.doesNotMatch(message, /try again/iu);
+    }
+  });
+
+  test("graphics recovery only includes Windows settings on Windows", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    try {
+      for (const userAgent of ["Macintosh Safari/605.1.15", "iPhone", "Android", "Windows NT 10.0 Chrome/150.0"]) {
+        Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent } });
+        for (const code of ["WEBGPU_DEVICE_LOST", "REPEATED_DEVICE_LOSS"]) {
+          const message = userErrors.userFacingError({ code });
+          assert.equal(message.includes("chrome://flags"), userAgent.includes("Windows"));
+          assert.equal(message.includes("Windows Settings"), userAgent.includes("Windows"));
+        }
+      }
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor);
+      else delete globalThis.navigator;
+    }
+  });
+
   test("persistent storage requests protection while the user gesture is active", async () => {
     let requests = 0;
     const order = [];
@@ -827,6 +935,42 @@ try {
       async persisted() { return false; },
     }, 20), false);
     assert.ok(Date.now() - startedAt < 500);
+  });
+
+  test("late storage approval is delivered after the bounded wait", async () => {
+    let answer;
+    let grants = 0;
+    assert.equal(await browserCapabilities.requestPersistentStorage({
+      persist: () => new Promise(resolve => { answer = resolve; }),
+      persisted: async () => false,
+    }, 20, () => { grants++; }), false);
+    assert.equal(grants, 0);
+    answer(true);
+    await waitFor(() => grants === 1);
+  });
+
+  test("unsupported and rejected storage requests stay nonblocking", async () => {
+    for (const storage of [
+      {},
+      { persisted: async () => true },
+      { persist() { throw new TypeError("Storage disabled"); } },
+      { persist: async () => { throw new Error("Private browsing"); } },
+    ]) {
+      assert.equal(await browserCapabilities.requestPersistentStorage(storage), Boolean(storage.persisted));
+    }
+  });
+
+  test("immediate approval and late denial do not emit late approval", async () => {
+    let grants = 0;
+    const granted = () => { grants++; };
+    assert.equal(await browserCapabilities.requestPersistentStorage({ persist: async () => true }, 20, granted), true);
+    let answer;
+    assert.equal(await browserCapabilities.requestPersistentStorage({
+      persist: () => new Promise(resolve => { answer = resolve; }),
+    }, 20, granted), false);
+    answer(false);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(grants, 0);
   });
 
   test("compatibility checks do not require secure-context UUID support", async () => {
@@ -1111,14 +1255,37 @@ try {
       { ...loadRecord(variant, "device_lost"), recordedAt: 3 },
       { ...loadRecord(variant, "device_lost"), recordedAt: 4 },
     ];
+    const singleLoss = recommendation.assessModelVariant(model, variant, {
+      ...base,
+      loadRecords: lossesAfterSuccess.slice(0, -1),
+    });
+    assert.equal(singleLoss.proven, false);
+    assert.equal(singleLoss.eligible, true);
+    assert.match(singleLoss.advisories.find(({ code }) => code === "PROFILE_UNMEASURED").message,
+      /stopped responding on the last attempt/);
+    assert.equal(recommendation.assessModelVariant(model, variant, {
+      ...base,
+      loadRecords: [...lossesAfterSuccess, { ...loadRecord(variant, "success"), recordedAt: 5 }],
+    }).proven, true);
     const unstable = recommendation.assessModelVariant(model, variant, {
       ...base,
       loadRecords: lossesAfterSuccess,
     });
     assert.equal(unstable.proven, false);
     assert.ok(
-      unstable.advisories.some((issue) => issue.code === "REPEATED_DEVICE_LOSS"),
+      unstable.hardFailures.some((issue) => issue.code === "REPEATED_DEVICE_LOSS"),
     );
+    assert.equal(unstable.eligible, false);
+    assert.equal(recommendation.assessModelVariant(model, variant, {
+      ...base,
+      contextTokens: 4096,
+      explicitOomRetry: true,
+      loadRecords: lossesAfterSuccess,
+    }).hardFailures.some((issue) => issue.code === "REPEATED_DEVICE_LOSS"), true);
+    assert.equal(recommendation.assessModelVariant(model, variant, {
+      ...base,
+      loadRecords: lossesAfterSuccess.map(record => ({ ...record, deviceSignature: "other-gpu" })),
+    }).hardFailures.some((issue) => issue.code === "REPEATED_DEVICE_LOSS"), false);
 
     const gatedCapabilities = capabilities();
     gatedCapabilities.operations.generation = {
@@ -3448,6 +3615,114 @@ try {
     assert.equal(controller.snapshot.modelVariantId, "fixture-variant");
     assert.equal(ownership.isOwner, true);
     assert.equal(releases, 0);
+    transport.dispose();
+  });
+
+  for (const phase of ["ownership", "worker"]) {
+    test(`model load deadline covers stalled ${phase} even with worker progress`, async () => {
+      const worker = new FakeWorker();
+      let closed = false;
+      const ownership = {
+        isOwner: false,
+        acquire() {
+          if (phase === "ownership") return new Promise(() => {});
+          this.isOwner = true;
+          return Promise.resolve(true);
+        },
+        release() { this.isOwner = false; },
+        close() {
+          assert.equal(worker.terminated, true, "terminate GPU work before releasing ownership");
+          closed = true;
+        },
+      };
+      const controller = new hostedController.HostedControllerImpl(worker, {
+        ownershipFactory: () => ownership,
+        requestTimeoutMs: 0,
+        longOperationIdleTimeoutMs: 50,
+        modelLoadTimeoutMs: 80,
+      });
+      const loading = controller.load("fixture-variant", 2048);
+      const rejected = assert.rejects(loading, /model took too long to load/);
+      let progress;
+      if (phase === "worker") {
+        const request = await waitFor(() => worker.posted[0]);
+        let sequence = 0;
+        progress = setInterval(() => worker.emit({
+          protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+          kind: "event", requestId: request.requestId, sequence: ++sequence,
+          generationId: null, event: "progress",
+          payload: { kind: "model_load", phase: "webllm_initialization", progress: 0.5 },
+        }), 10);
+      }
+      try {
+        await rejected;
+      } finally {
+        clearInterval(progress);
+      }
+      assert.equal(worker.terminated, true);
+      assert.equal(closed, true);
+      assert.equal(controller.snapshot.lifecycle, "failed");
+      assert.equal(ownership.isOwner, false);
+      assert.equal(controller.snapshot.error.code, "MODEL_LOAD_TIMEOUT");
+      assert.match(controller.snapshot.error.message, /saved chats and downloads have not been removed/);
+      assert.match(userErrors.userFacingError(controller.snapshot.error), /Reload this page and try a smaller model/);
+    });
+  }
+
+  test("Safari runtime factory enables both load and idle deadlines", async () => {
+    const worker = new FakeWorker();
+    const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    const workerDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Worker");
+    const setTimer = globalThis.setTimeout;
+    const delays = [];
+    let bundle;
+    try {
+      Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+        platform: "MacIntel", maxTouchPoints: 0,
+      } });
+      Object.defineProperty(globalThis, "Worker", { configurable: true, value: function () { return worker; } });
+      globalThis.setTimeout = (callback, delay, ...args) => {
+        delays.push(delay);
+        return setTimer(callback, delay, ...args);
+      };
+      bundle = hostedController.createHostedRuntime({
+        ownershipFactory: () => ({ isOwner: true, acquire: async () => true, release() {}, close() {} }),
+      });
+      const loading = bundle.controller.load("fixture-variant", 2048);
+      const rejected = assert.rejects(loading, /fixture worker stopped/);
+      await waitFor(() => worker.posted[0]);
+      assert.ok(delays.includes(600_000), "Safari has an overall model-load deadline");
+      assert.ok(delays.includes(180_000), "Safari retains its no-progress watchdog");
+      worker.emitError("fixture worker stopped");
+      await rejected;
+    } finally {
+      globalThis.setTimeout = setTimer;
+      if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+      else delete globalThis.navigator;
+      if (workerDescriptor) Object.defineProperty(globalThis, "Worker", workerDescriptor);
+      else delete globalThis.Worker;
+      if (bundle) await bundle.dispose();
+    }
+  });
+
+  test("successful model load cancels its deadline", async () => {
+    const worker = new FakeWorker();
+    const transport = new browser.WorkerRpcTransport(worker, { requestTimeoutMs: 0 });
+    const controller = new hostedController.HostedControllerImpl(transport, {
+      requestTimeoutMs: 0,
+      modelLoadTimeoutMs: 40,
+      ownershipFactory: () => ({
+        isOwner: true, acquire: async () => true, release() {}, close() {},
+      }),
+    });
+    const loading = controller.load("fixture-variant", 2048);
+    const request = await waitFor(() => worker.posted[0]);
+    worker.emit({ protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+      kind: "response", requestId: request.requestId, ok: true, result: undefined });
+    await loading;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(worker.terminated, false);
     transport.dispose();
   });
 

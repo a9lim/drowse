@@ -11,7 +11,54 @@ extension vs the native ``probe_readings`` block).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import asyncio
+from collections.abc import AsyncIterator, Callable, Iterator
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
+
+from anyio import CancelScope
+from starlette.responses import StreamingResponse
+from starlette.types import Send
+
+_T = TypeVar("_T")
+_P = ParamSpec("_P")
+
+
+async def finish_worker(task: asyncio.Future[_T]) -> _T:
+    """Join a worker without letting request cancellation abandon its thread."""
+    cancelled = False
+    with CancelScope(shield=True):
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    return task.result()
+
+
+async def run_in_thread(func: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs) -> _T:
+    return await finish_worker(asyncio.create_task(asyncio.to_thread(func, *args, **kwargs)))
+
+
+async def stream_events(iterator: Iterator[_T]) -> AsyncIterator[_T]:
+    sentinel = object()
+    while True:
+        event = await run_in_thread(next, iterator, sentinel)
+        if event is sentinel:
+            return
+        yield cast(_T, event)
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is not None:
+                await close()
+
 
 if TYPE_CHECKING:
     from drowse.core.results import GenerationResult

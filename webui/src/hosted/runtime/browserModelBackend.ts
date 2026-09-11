@@ -69,6 +69,7 @@ export async function prepareBrowserInstrumentDictionaries(
       "Insight data prepared",
     );
   }
+  if (request.runtimeClass === "apple-mobile-webkit") return;
   if (saeDictionary !== null) {
     reportLoadProgress(
       request,
@@ -89,13 +90,6 @@ export async function prepareBrowserInstrumentDictionaries(
     request.signal.throwIfAborted();
     reportLoadProgress(request, "jlens_dictionary_ready", "J-lens insights ready");
   }
-}
-
-export function createBrowserModelBackend(
-  module: DrowseWebLlmModule,
-  artifacts: BrowserManifoldArtifactPort,
-): BrowserModelBackend {
-  return createDrowseBrowserModelBackend(module, artifacts);
 }
 
 export function createLazyBrowserModelBackend(
@@ -238,9 +232,7 @@ export function createDrowseBrowserModelBackend(
         loadRequest.variant.contextProfiles.find(
           (profile) => profile.contextTokens === loadRequest.contextTokens,
         )?.bindingSha256 ?? null,
-        loadRequest.runtimeClass !== "apple-mobile-webkit" &&
-          loadRequest.runtimeClass !== "desktop-webkit" &&
-          loadRequest.runtimeClass !== "desktop-gecko",
+        false,
       );
       activeLoadRequest = loadRequest;
       activeCompiler = entry;
@@ -265,7 +257,7 @@ export function createDrowseBrowserModelBackend(
         });
         await compiler.prepareJlensWords(words, runtime);
       }
-      return compiler.compile(expression, probeRequests);
+      return compiler.compileForGeneration(expression, probeRequests);
     },
     steeringDelta({ parent, child, loadRequest }) {
       const cached = loadRequest === activeLoadRequest ? activeCompiler : compilers.get(loadRequest);

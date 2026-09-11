@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import { onMount } from "svelte";
   import Bar from "../lib/charts/Bar.svelte";
   import Select from "../lib/Select.svelte";
@@ -211,7 +212,7 @@
         step="10000"
         bind:value={trainTokens}
         aria-label="SAE training tokens"
-        title="tokens"
+        {...{ "aria-description": "tokens" }}
       />
     </label>
     <label class="setup-field setup-field-narrow">
@@ -228,9 +229,9 @@
   {#snippet progress()}
     <div class="train-progress loading-pulse loading-placeholder" role="status" aria-live="polite">
       <div class="train-line">
-        <span class="work-status">{saeTrain.state.message ?? "training…"}</span>
+        <span class="work-status"><MorphText text={saeTrain.state.message ?? "training…"} /></span>
         <span class="train-count">
-          {saeTrain.state.current.toLocaleString()}/{saeTrain.state.total.toLocaleString()}
+          <MorphText text={saeTrain.state.current.toLocaleString()} />/<MorphText text={saeTrain.state.total.toLocaleString()} />
         </span>
       </div>
       <Bar
@@ -246,7 +247,7 @@
         disabled={saeTrain.state.cancelling}
         onclick={() => void saeTrain.cancel()}
       >
-        {saeTrain.state.cancelling ? "cancelling…" : "cancel"}
+        <MorphText text={saeTrain.state.cancelling ? "cancelling…" : "cancel"} />
       </Button>
     </div>
   {/snippet}
@@ -257,7 +258,7 @@
   {/snippet}
   {#snippet messages()}
     {#if saeLoad.state.running && saeLoad.state.message}
-      <p class="hint" role="status" aria-live="polite">{saeLoad.state.message}</p>
+      <p class="hint" role="status" aria-live="polite"><MorphText text={saeLoad.state.message} /></p>
     {/if}
     {#if saeLoad.state.error}
       <p class="hint load-error" role="alert">{saeLoad.state.error}</p>

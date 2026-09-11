@@ -101,7 +101,7 @@
           {#snippet body()}
             <ProbeReadingRow ariaLabel={`Pinned probe ${name}`}>
               {#snippet left()}
-                <span class="row-label" title={UNIT_LABEL[reading.unit]}>
+                <span class="row-label" {...{ "aria-description": (UNIT_LABEL[reading.unit]) }}>
                   {reading.unit === "raw_activation" ? "activation" : "strength"}
                 </span>
               {/snippet}

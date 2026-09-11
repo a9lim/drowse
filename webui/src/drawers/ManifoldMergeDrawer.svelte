@@ -191,11 +191,11 @@
             type="submit"
             class="primary"
             disabled={!canSubmit}
-            title={selected.size < 2
+            {...{ "aria-description": (selected.size < 2
                 ? "Choose at least two response controls"
               : !targetName.trim()
                 ? "Enter a name for the combined control"
-                : "Combine controls"}
+                : "Combine controls") }}
           >
             {#if merging}
               <FluentIcon name="refresh" spin /> Combining…

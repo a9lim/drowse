@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Canonical SOURCE section for the SAE and J-LENS pillars. Prepared and
   // provider-backed artifacts share one selector. Local authoring is an
   // explicit selector mode: its fields stay out of the way until chosen, and
@@ -185,7 +186,7 @@
                       (ready || selectedProviderOption === undefined)))}
               onclick={applySource}
             >
-              {busy
+              <MorphText text={busy
                 ? "Preparing…"
                 : localSelected
                   ? localActionLabel
@@ -199,7 +200,7 @@
                       : "Unavailable"
                   : selectedSource
                     ? "Use pack"
-                    : "Download"}
+                    : "Download"} />
             </Button>
           </div>
         </div>

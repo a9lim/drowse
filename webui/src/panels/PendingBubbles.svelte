@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   // Pending-queue strip — ghosted bubbles between the streaming
   // assistant turn and the composer.  Each bubble shows the item's
@@ -34,16 +35,16 @@
         {#if idx === editingSlot}
           <span class="edit-marker" aria-label="editing">✎</span>
         {/if}
-        <span class="tag">{item.label}</span>
+        <span class="tag"><MorphText text={item.label} numbers={false} /></span>
         {#if item.text !== null}
-          <span class="text" title={item.text}>{truncate(item.text, 80)}</span>
+          <span class="text" {...{ "aria-description": (item.text) }}><MorphText text={truncate(item.text, 80)} numbers={false} /></span>
         {/if}
         <button
           type="button"
           class="cancel"
           onclick={() => cancelPendingAction(item.id)}
           aria-label="Cancel pending {item.label}"
-          title="cancel"
+          {...{ "aria-description": "cancel" }}
         ><FluentIcon name="dismiss" /></button>
       </div>
     {/each}

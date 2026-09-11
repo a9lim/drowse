@@ -3,6 +3,9 @@
   // everywhere so the tabs cannot drift: capture/replay origin, source,
   // resident layer, recipe, then the steered counterfactual control.
 
+  import InfoTip from "../../lib/ui/InfoTip.svelte";
+  import { fade } from "svelte/transition";
+  import { motionDuration } from "../../lib/motion";
   import type { ReadoutOrigin } from "./readout.svelte";
 
   let {
@@ -32,22 +35,27 @@
 <div class="inst-head" style:--inst-accent={accent}>
   <span class="context-label">readout</span>
   {#if origin}
-    <span class="kv origin" title={origin === "captured"
+    {#key origin}
+    <span class="kv origin" in:fade={{duration: motionDuration(140)}} {...{ "aria-description": (origin === "captured"
       ? "Recorded when this token was generated. No new model run was needed."
-      : "Computed by running the recorded context through the model again."}>{origin}</span>
+      : "Computed by running the recorded context through the model again.") }}>{origin}</span>
+    {/key}
+    <InfoTip label="About readout provenance" text={origin === "captured"
+      ? "Recorded when this token was generated. No new model run was needed."
+      : "Computed by running the recorded context through the model again."} />
   {/if}
   {#if source}
     <span class="kv source">{source}</span>
   {/if}
   {#if layer != null && layer >= 0}
-    <span class="kv" title="The model layer where this SAE measures feature activations.">L{layer}</span>
+    <span class="kv" {...{ "aria-description": "The model layer where this SAE measures feature activations." }}>L{layer}</span>
   {/if}
   {#if steering !== null}
-    <span class="kv steer-chip" title="These steering settings were applied when computing this readout.">
+    <span class="kv steer-chip" {...{ "aria-description": "These steering settings were applied when computing this readout." }}>
       steered: <code>{steering}</code>
     </span>
   {:else if !steered}
-    <span class="kv" title="Computed without steering so you can compare it with the steered readout.">unsteered</span>
+    <span class="kv" {...{ "aria-description": "Computed without steering so you can compare it with the steered readout." }}>unsteered</span>
   {/if}
   {#if showToggle}
     <button
@@ -55,11 +63,11 @@
       class="steer-toggle"
       class:on={steered}
       aria-pressed={steered}
-      title={steered
+      {...{ "aria-description": (steered
         ? "Recompute without the original steering to compare its effect."
-        : "Recompute using the steering saved with this generation."}
+        : "Recompute using the steering saved with this generation.") }}
       onclick={() => { steered = !steered; }}
-    >recipe {steered ? "on" : "off"}</button>
+    >Steering {steered ? "on" : "off"}</button>
   {/if}
 </div>
 

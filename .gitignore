@@ -23,8 +23,10 @@ webui/dist-hosted/
 browser-runtime/.v3-compile.*/
 browser-runtime/.local-build/
 browser-runtime/vendor/*.tgz
-!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.32.tgz
 !browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.34.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.36.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.37.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.38.tgz
 
 # Virtual environments
 .venv/
@@ -34,6 +36,7 @@ env/
 # pytest / ruff
 .pytest_cache/
 .ruff_cache/
+.coverage
 
 # OS
 .DS_Store
@@ -58,3 +61,45 @@ scripts/out/
 
 # Local research experiments (scripts + results live outside version control)
 scripts/experiments/
+
+# Local audit reports, repair checklists, and historical validation notes.
+*_AUDIT*.md
+*-audit*.md
+*_QA.md
+*_REVIEW.md
+*-review*.md
+*_VALIDATION_*.md
+*-validation-20??-??-??.md
+*CHECKLIST*.md
+*checklist*.md
+*_FIXES*.md
+*-fixes*.md
+/browser-runtime/BASE_MODELS.md
+/webui/GEO-SCHEMA-REPORT.md
+/docs/cloudflare-configuration-20??-??-??.md
+/docs/*-20??-??-??.md
+/legacy/
+
+# Ongoing local evidence and provenance records; schemas are source code.
+*-evidence*.json
+!*.schema.json
+/browser-runtime/evidence/*
+!/browser-runtime/evidence/README.md
+PROVENANCE.md
+provenance.json
+# Required authored-source manifest, not a run or audit record.
+!/browser-runtime/release-inputs/core-manifolds/welcoming.detached/provenance.json
+
+# Local research, benchmark reports, and generated verification output.
+/DOMAIN_NAME_*.md
+/domain-name-*.csv
+/domain-name-*.json
+/domain-registrar-*.json
+/docs/research/
+/benchmarks/*_20??-??-??.md
+playwright-report/
+test-results/
+blob-report/
+coverage/
+audit-reports/
+verification-results/

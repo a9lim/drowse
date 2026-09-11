@@ -81,6 +81,52 @@ try {
     assert.equal(fitTransfer.views.includes(sourceWhitener.mean), false);
   });
 
+  test("parallel affine fitting preserves layer order and drains failed siblings", async () => {
+    for (const fail of [false, true]) {
+      const harness = coordinatorHarness(BrowserFittingCoordinator);
+      harness.worker.parallelism = 2;
+      const original = harness.worker.run.bind(harness.worker);
+      const pending = [];
+      let bothStarted;
+      const started = new Promise(resolve => { bothStarted = resolve; });
+      let aborted = false;
+      harness.worker.run = async (job, options) => {
+        if (job.operation !== "affine_fisher") return original(job, options);
+        return new Promise((resolve, reject) => {
+          const onAbort = () => { aborted = true; reject(options.signal.reason); };
+          options.signal.addEventListener("abort", onAbort, { once: true });
+          pending.push({
+            finish: async () => {
+              options.signal.removeEventListener("abort", onAbort);
+              resolve(await original(job, options));
+            },
+            fail: () => reject(new Error("parallel fit failed")),
+          });
+          if (pending.length === 2) bothStarted();
+        });
+      };
+      const result = harness.coordinator.captureAffineLayers({
+        ...plan(), maxComponents: 1,
+        whiteners: new Map([[0, identityWhitener(2)], [1, identityWhitener(2)]]),
+      }, captureSource([
+        [0, new Float32Array([1, 10, 3, 14, 8, 20, 12, 24])],
+        [1, new Float32Array([2, 4, 4, 8, 10, 20, 14, 28])],
+      ]));
+      await started;
+      if (fail) {
+        const rejected = assert.rejects(result, /parallel fit failed/);
+        pending[1].fail();
+        await rejected;
+        assert.equal(aborted, true);
+        assert.equal(harness.lifecycle.at(-1), "remove");
+      } else {
+        await pending[1].finish();
+        await pending[0].finish();
+        assert.deepEqual([...(await result).layers.keys()], [0, 1]);
+      }
+    }
+  });
+
   test("builds a consensus Gram and variable-width topology target envelope", async () => {
     const harness = coordinatorHarness(BrowserFittingCoordinator);
     const result = await harness.coordinator.captureTopologyFoundation(

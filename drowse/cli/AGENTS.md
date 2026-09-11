@@ -159,7 +159,8 @@ discovery and download entirely.
   naturalness`. All default `None`/`False`; YAML fills unset values, session
   defaults (DLS on, compile and cuda-graphs off) win otherwise.
 - `_add_logit_args` — `--top-k-alts N`, the session default for
-  `SamplingConfig.return_top_k`. Enforced in `[0, 256]` by both CLI and YAML.
+  `SamplingConfig.return_top_k`. CLI and YAML require a nonnegative integer;
+  the sampler bounds the retained count by its actual candidate pool.
   On `serve` and `experiment fan`.
 - `_add_config_args` — `-c/--config PATH` (repeatable) and `-s/--strict`.
 
@@ -191,7 +192,7 @@ visibility or skip the upload. The manifold compute verbs (`extract`,
 ## Per-verb flags
 
 **serve** — `model` (optional when YAML supplies it), `-q`, `-d`, `-p`,
-`-H/--host` (`0.0.0.0`), `-P/--port` (`[1, 65535]`, 8000), `-S/--steer EXPR`,
+`-H/--host` (`127.0.0.1`; non-loopback requires `--api-key` or `DROWSE_API_KEY`), `-P/--port` (`[1, 65535]`, 8000), `-S/--steer EXPR`,
 `-C/--cors ORIGIN` (repeatable), `-k/--api-key` (falls back to
 `$DROWSE_API_KEY`), `--no-web`, plus the injection, logit, and config blocks.
 

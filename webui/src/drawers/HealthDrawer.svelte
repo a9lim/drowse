@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   import ResetSettings from "../lib/ui/ResetSettings.svelte";
   import {
@@ -83,7 +84,7 @@
         <p>{sessionState.info ? `${sessionState.info.device}/${sessionState.info.dtype}` : "session offline"}</p>
       </div>
       <Button variant="solid" {busy} disabled={busy} onclick={audit}>
-        {busy ? "checking…" : "refresh"}
+        <MorphText text={busy ? "checking…" : "refresh"} />
       </Button>
     </section>
 
@@ -97,11 +98,11 @@
       <div class="tile">
         <span>generation</span>
         <strong>{genStatus.active ? "active" : genStatus.finishReason ?? "idle"}</strong>
-        <p>{genStatus.tokensSoFar}/{genStatus.maxTokens || "-"} tokens · {genStatus.tokPerSec.toFixed(1)} tok/s</p>
+        <p><MorphText text={`${genStatus.tokensSoFar}/${genStatus.maxTokens || "-"} tokens`} /> · <MorphText text={genStatus.tokPerSec.toFixed(1)} /> tok/s</p>
       </div>
       <div class="tile">
         <span>Perplexity</span>
-        <strong>{ppl === null ? "-" : ppl.toFixed(2)}</strong>
+        <strong><MorphText text={ppl === null ? "-" : ppl.toFixed(2)} /></strong>
         <p>{genStatus.ppl.count} steps</p>
       </div>
       <div class="tile">
@@ -111,12 +112,12 @@
       </div>
       <div class="tile">
         <span>artifacts</span>
-        <strong>{steerRack.catalog.length}</strong>
+        <strong><MorphText text={steerRack.catalog.length} /></strong>
         <p>{steerRack.entries.size} racked · {vectorsState.names.length} resident</p>
       </div>
       <div class="tile">
         <span>probes</span>
-        <strong>{probeRack.active.length}</strong>
+        <strong><MorphText text={probeRack.active.length} /></strong>
         <p>{probeRack.entries.size} rows · {steerRack.correlation ? "matrix cached" : "no matrix"}</p>
       </div>
     </section>
@@ -133,7 +134,7 @@
     </section>
 
     <section class="panel">
-      <h3>warnings</h3>
+      <h3>warnings · <MorphText text={warnings.length} /></h3>
       {#if warnings.length === 0}
         <p class="good">clear</p>
       {:else}

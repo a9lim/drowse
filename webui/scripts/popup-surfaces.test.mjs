@@ -9,7 +9,7 @@ const surfaces = [
   ["src/lib/ui/InfoTip.svelte", ".info-popover"],
   ["src/lib/ui/TokenLogitsPopover.svelte", ".token-logits-popover"],
   ["src/lib/ui/WorkbenchMenu.svelte", ".workbench-menu"],
-  ["src/lib/style/global.css", ".drowse-tooltip"],
+  ["src/hosted/ui/SavedChatMenu.svelte", ".chat-menu"],
   ["src/hosted/ui/PwaUpdatePrompt.svelte", ".pwa-notice"],
   ["src/hosted/ui/HostedRoot.svelte", ".runtime-dialog"],
   ["src/panels/CommandPalette.svelte", ".palette"],

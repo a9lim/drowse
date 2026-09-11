@@ -86,7 +86,7 @@ try {
     assert.equal(closes, opens);
   });
 
-  test("passes the exact Uint8Array view to OPFS without copying it", async () => {
+  test("writes exact byte ranges on WebKit and reuses whole buffers", async () => {
     const previous = Object.getOwnPropertyDescriptor(globalThis, "navigator");
     let written = null;
     const writable = {
@@ -120,8 +120,11 @@ try {
       const backing = new Uint8Array([9, 1, 2, 3, 8]);
       const view = backing.subarray(1, 4);
       await port.append(activationSpoolFileName("a".repeat(64), 0), 0, view);
-      assert.equal(written, view);
-      assert.deepEqual([...written], [1, 2, 3]);
+      assert.ok(written instanceof ArrayBuffer);
+      assert.equal(written.byteLength, view.byteLength);
+      assert.deepEqual([...new Uint8Array(written)], [1, 2, 3]);
+      await port.append(activationSpoolFileName("b".repeat(64), 0), 0, backing);
+      assert.equal(written, backing.buffer);
     } finally {
       if (previous) Object.defineProperty(globalThis, "navigator", previous);
       else delete globalThis.navigator;

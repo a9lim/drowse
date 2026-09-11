@@ -21,7 +21,7 @@ RESULT_DIGESTS = {
     "python/mlc_llm/model/llama/llama_model.py": "2a34402c81074ce0a773f9a73dc95aea20a7a0533b2561708d32ceeb72aec7dc",
     "python/mlc_llm/model/qwen3/qwen3_model.py": "0621190a80fc12ec58ca3fd5d439411135815c4f4f6596a5a0d258475b5c7291",
     "python/mlc_llm/model/gemma3/gemma3_model.py": "fd219c4779b1a7497fa533b264d5c77a973c5a1f46f41ed29923c312d6220f18",
-    "python/mlc_llm/model/drowse_hooks.py": "bc1763ba32ef304b4c45be05bcbd2f2eb1240fc5fd7f95f48e025d96dce76c9e",
+    "python/mlc_llm/model/drowse_hooks.py": "4fadef9db1c875c81ca9cde76dfdbc477a3755f4d982ba9d097ccc730f6778b1",
 }
 REQUIRED_FUNCTIONS = {
     "drowse_hook_profile",
@@ -1456,25 +1456,75 @@ def parse_args() -> argparse.Namespace:
 
 
 def strip_gpu_thread_bindings(module, tvm):
-    def rewrite(node):
-        if isinstance(node, tvm.tirx.For) and node.kind == tvm.tirx.ForKind.THREAD_BINDING:
-            return tvm.tirx.For(
-                node.loop_var,
-                node.min,
-                node.extent,
-                tvm.tirx.ForKind.SERIAL,
-                node.body,
-                annotations=node.annotations,
-                step=node.step,
-                span=node.span,
-            )
-        return None
+    """Execute workgroup phases serially on CPU, retaining per-lane local state."""
+    tir = tvm.tirx
+    def has_sync(node):
+        found = []
+        tir.stmt_functor.post_order_visit(node, lambda n: found.append(n) if isinstance(n, tvm.ir.Call) and n.op.name == "tirx.tvm_storage_sync" else None)
+        return bool(found)
 
-    for global_var in list(module.get_global_vars()):
-        function = module[global_var]
-        if isinstance(function, tvm.tirx.PrimFunc):
-            body = tvm.tirx.stmt_functor.ir_transform(function.body, None, rewrite)
-            module.update_func(global_var, function.with_body(body))
+    def lower(function):
+        # Resolve block axes before moving a phase across its thread loop.
+        one = tvm.IRModule({"main": function})
+        one = tvm.s_tir.transform.ConvertBlocksToOpaque()(one)
+        function = one["main"]
+        lanes = []
+        tir.stmt_functor.post_order_visit(function.body, lambda n: lanes.append(n) if isinstance(n, tir.For) and n.thread_binding is not None and n.thread_binding.thread_tag == "threadIdx.x" else None)
+        if not lanes:
+            return function
+        extent = lanes[0].extent
+        locals_ = {}
+        def find_buffers(node):
+            if isinstance(node, tir.SBlock):
+                for buf in node.alloc_buffers:
+                    if buf.scope() == "local":
+                        locals_[buf] = tir.decl_buffer((extent, *buf.shape), buf.dtype, name=buf.name)
+                    elif buf.scope() == "shared":
+                        locals_[buf] = tir.decl_buffer(buf.shape, buf.dtype, name=buf.name)
+        tir.stmt_functor.post_order_visit(function.body, find_buffers)
+        thread = lanes[0].loop_var
+        def buffers(node):
+            if isinstance(node, tir.BufferLoad) and node.buffer in locals_:
+                indices = [thread, *node.indices] if node.buffer.scope() == "local" else node.indices
+                return tir.BufferLoad(locals_[node.buffer], indices)
+            if isinstance(node, tir.BufferStore) and node.buffer in locals_:
+                indices = [thread, *node.indices] if node.buffer.scope() == "local" else node.indices
+                return tir.BufferStore(locals_[node.buffer], node.value, indices)
+            if isinstance(node, tir.SBlock):
+                return tir.SBlock(node.iter_vars, node.reads, node.writes, node.name_hint, node.body, node.init,
+                    [locals_.get(b,b) for b in node.alloc_buffers], node.match_buffers, node.annotations)
+            return None
+        body = tir.stmt_functor.ir_transform(function.body, None, buffers)
+        def serial_loop(node, body):
+            return tir.For(node.loop_var,node.min,node.extent,tir.ForKind.SERIAL,body,annotations=node.annotations,step=node.step)
+        def lane_loop(node):
+            return tir.For(thread,0,extent,tir.ForKind.SERIAL,node)
+        def phases(node):
+            if not has_sync(node):
+                return lane_loop(node)
+            if isinstance(node,tir.Evaluate):
+                return tir.Evaluate(0)
+            if isinstance(node,tir.SeqStmt):
+                return tir.SeqStmt([phases(s) for s in node.seq])
+            if isinstance(node,tir.For):
+                return serial_loop(node,phases(node.body))
+            if isinstance(node,tir.IfThenElse):
+                return tir.IfThenElse(node.condition,phases(node.then_case),phases(node.else_case) if node.else_case is not None else None)
+            if isinstance(node,tir.SBlockRealize):
+                b=node.block
+                return tir.SBlockRealize(node.iter_values,node.predicate,tir.SBlock(b.iter_vars,b.reads,b.writes,b.name_hint,phases(b.body),b.init,b.alloc_buffers,b.match_buffers,b.annotations))
+            raise ValueError(f"unsupported cooperative CPU phase: {type(node)}")
+        def threads(node):
+            if isinstance(node,tir.For) and node.kind == tir.ForKind.THREAD_BINDING:
+                if node.thread_binding.thread_tag == "threadIdx.x":
+                    return phases(node.body)
+                return serial_loop(node,node.body)
+            return None
+        body=tir.stmt_functor.ir_transform(body,None,threads)
+        return function.with_body(body)
+    for var in list(module.get_global_vars()):
+        if isinstance(module[var],tir.PrimFunc):
+            module.update_func(var,lower(module[var]))
     return module
 
 
@@ -1513,16 +1563,16 @@ def verify_portable_topk_source(repository: Path) -> None:
         "candidate_count = T.ceildiv(column_count, EXACT_READOUT_TOPK_BLOCK_SIZE)",
         '"drowse_exact_top8_tiles"',
         '"drowse_exact_top8_merge"',
-        "_exact_readout_not_selected",
-        "for block in T.thread_binding(0, rows * candidate_count, \"blockIdx.x\")",
-        "for candidate in T.serial(candidates_per_row):",
+        "_exact_readout_is_better",
+        "while candidate_count > 1:",
+        'for thread in T.thread_binding(0, 64, "threadIdx.x"):',
         "T.And(",
         "T.Or(",
     ):
         if fragment not in hooks_source:
             raise SystemExit(f"Drowse exact tiled top-8 omits {fragment}")
-    if 'scope="shared"' in exact_source or "tvm_storage_sync" in exact_source:
-        raise SystemExit("Drowse exact tiled top-8 must not use workgroup storage or barriers")
+    if 'scope="shared"' not in exact_source or "tvm_storage_sync" not in exact_source:
+        raise SystemExit("Drowse exact tiled top-8 requires bounded cooperative reduction")
     for relative_path in (
         "python/mlc_llm/model/llama/llama_model.py",
         "python/mlc_llm/model/qwen3/qwen3_model.py",

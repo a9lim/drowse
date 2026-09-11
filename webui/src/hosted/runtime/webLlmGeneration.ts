@@ -9,11 +9,11 @@ import type {
   WSSampling,
 } from "../../lib/types";
 import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
-import { BROWSER_RETURN_TOP_K_MAX } from "../../lib/runtime/samplingCapabilities";
-import { DESKTOP_MAX_OUTPUT_TOKENS } from "../../lib/runtime/outputTokenPolicy";
+import { BROWSER_RETURN_TOP_K_MAX, BROWSER_SAMPLING_TOP_K_MAX } from "../../lib/runtime/samplingCapabilities";
+import { MAX_OUTPUT_TOKEN_COUNT } from "../../lib/runtime/outputTokenPolicy";
 import {
   geometryCoordinateMean,
-  structuredHookControlsFor,
+  createStructuredHookControlEvaluator,
   type StructuredGeometryMeasurementProbe,
   type StructuredHookProgramBuffers,
 } from "./structuredHookProgram";
@@ -242,6 +242,13 @@ export async function streamWebLlmGeneration(
   plan: WebLlmGenerationPlan,
   onToken: (token: WebLlmGeneratedToken) => void | Promise<void>,
 ): Promise<WebLlmGenerationResult> {
+  if (plan.hookProgram && isStructuredProgram(plan.hookProgram)) {
+    plan = { ...plan, hookProgram: {
+      ...plan.hookProgram,
+      affineActive: new Uint32Array(plan.hookProgram.affineActive),
+      curveActive: new Uint32Array(plan.hookProgram.curveActive),
+    } };
+  }
   const request = buildRequest(plan);
   const readoutTopK = exactReadoutTopK(plan, plan.sampling ?? {});
   if (
@@ -281,6 +288,9 @@ export async function streamWebLlmGeneration(
     }
   }
   throwIfAborted(plan.signal);
+  const controlEvaluator = plan.hookProgram && isStructuredProgram(plan.hookProgram)
+    ? createStructuredHookControlEvaluator(plan.hookProgram)
+    : null;
   const perTokenControlUpdates = requiresPerTokenControlUpdates(plan.hookProgram);
   const needsGateReadings = hasProbeGates(plan.hookProgram);
   let observedUsage: WebLlmGenerationUsage | null = null;
@@ -289,7 +299,7 @@ export async function streamWebLlmGeneration(
   try {
     if (plan.hookProgram) {
       if (isStructuredProgram(plan.hookProgram)) {
-        const controls = structuredHookControlsFor(plan.hookProgram, {
+        const controls = controlEvaluator!({
           prefill: true,
           thinking: thinking.active,
           generatedTokens: 0,
@@ -326,9 +336,7 @@ export async function streamWebLlmGeneration(
     );
     let processingError: unknown = null;
     for await (const value of stream) {
-      if (processingError !== null) continue;
       try {
-        throwIfAborted(plan.signal);
         const chunk = requireRecord(value, "generation chunk");
         const chunkUsage = readUsage(chunk.usage);
         if (chunkUsage) {
@@ -336,6 +344,8 @@ export async function streamWebLlmGeneration(
           prefillTokensPerSecond = chunkUsage.prefillTokensPerSecond;
           decodeTokensPerSecond = chunkUsage.decodeTokensPerSecond;
         }
+        if (processingError !== null) continue;
+        throwIfAborted(plan.signal);
         const choices = requireArray(chunk.choices, "generation chunk choices");
         if (choices.length === 0) {
           if (!chunkUsage) {
@@ -450,6 +460,7 @@ export async function streamWebLlmGeneration(
             );
           }
           for (const row of rows) {
+            throwIfAborted(plan.signal);
             const rawIndex = tokenCount;
             if (plan.onRawTokenStart) await plan.onRawTokenStart(rawIndex);
             const preservingPrefix = rawIndex < (plan.measurementStartRawIndex ?? 0);
@@ -460,6 +471,7 @@ export async function streamWebLlmGeneration(
               !preservingPrefix && (plan.measurementTargetRawIndex === undefined ||
                 rawIndex === plan.measurementTargetRawIndex),
             );
+            throwIfAborted(plan.signal);
             tokenCount += 1;
             const capturedEnvelope = measurementEnvelope(
               plan.hookProgram,
@@ -498,6 +510,7 @@ export async function streamWebLlmGeneration(
             for (const piece of classified.flatMap((item) =>
               stopBuffer.consume(item)
             )) {
+              throwIfAborted(plan.signal);
               const token = emittedToken(
                 piece.text,
                 piece.thinking,
@@ -534,6 +547,7 @@ export async function streamWebLlmGeneration(
               await updateStructuredControls(
                 plan.hookProgram,
                 hooks,
+                controlEvaluator!,
                 tokenCount,
                 thinking.active,
                 measurement.scalar,
@@ -548,7 +562,7 @@ export async function streamWebLlmGeneration(
           );
         }
       } catch (error) {
-        processingError = error;
+        processingError ??= error;
         await hooks.interrupt();
       }
     }
@@ -771,7 +785,11 @@ function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
     top_logprobs: Math.max(1, sampling.return_top_k ?? 0),
   };
   copySampling(request, sampling);
-  const replayExtraBody = replayRequestExtraBody(plan.replay);
+  const replayExtraBody = {
+    ...replayRequestExtraBody(plan.replay),
+    ...(plan.measurementStartRawIndex === undefined ? {} : { drowse_readout_start_index: plan.measurementStartRawIndex }),
+    ...(plan.measurementTargetRawIndex === undefined ? {} : { drowse_readout_target_index: plan.measurementTargetRawIndex }),
+  };
   if (plan.input.kind === "chat") {
     request.messages = plan.input.messages.map((message) => ({ ...message }));
     const extraBody = {
@@ -779,7 +797,7 @@ function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
       ...(plan.generationSeat === null || plan.generationSeat === undefined
         ? {}
         : { drowse_generation_seat: plan.generationSeat }),
-      ...(plan.thinking === null || plan.thinking === undefined
+      ...(plan.thinkingProfile == null || plan.thinking === null || plan.thinking === undefined
         ? {}
         : { enable_thinking: plan.thinking }),
       ...(plan.generationRoleName === null || plan.generationRoleName === undefined
@@ -833,15 +851,15 @@ function applyOutputTokenLimit(
   if (limit === undefined) return sampling;
   if (
     !Number.isSafeInteger(limit) || limit < 1 ||
-    limit > DESKTOP_MAX_OUTPUT_TOKENS
+    limit > MAX_OUTPUT_TOKEN_COUNT
   ) {
     throw generationError(
       "INVALID_OUTPUT_TOKEN_LIMIT",
-      `The browser output token limit must be between 1 and ${DESKTOP_MAX_OUTPUT_TOKENS}`,
+      `The browser output token limit must be between 1 and ${MAX_OUTPUT_TOKEN_COUNT}`,
     );
   }
   const forcedTokens = plan.replay?.forcedPrefixTokenIds?.length ?? 0;
-  const maximumCompletionTokens = forcedTokens + limit;
+  const maximumCompletionTokens = Math.min(Number.MAX_SAFE_INTEGER, forcedTokens + limit);
   return {
     ...sampling,
     max_tokens: Math.min(
@@ -1017,7 +1035,7 @@ function exactReadoutTopK(
 ): number {
   const requested = plan.readoutTopK ?? (
     typeof sampling.return_top_k === "number" && sampling.return_top_k > 0
-      ? sampling.return_top_k
+      ? Math.min(sampling.return_top_k, BROWSER_EXACT_READOUT_TOP_K_CAPACITY)
       : BROWSER_EXACT_READOUT_TOP_K_CAPACITY
   );
   if (!Number.isSafeInteger(requested) || requested < 1) {
@@ -1054,9 +1072,9 @@ function validateSampling(value: WSSampling | null | undefined): WSSampling {
   const sampling = value ?? {};
   optionalFinite(sampling.temperature, "temperature");
   optionalFiniteRange(sampling.top_p, "top_p", 0, 1);
-  optionalInteger(sampling.top_k, "top_k", 0);
+  optionalInteger(sampling.top_k, "top_k", 0, BROWSER_SAMPLING_TOP_K_MAX);
   optionalInteger(sampling.max_tokens, "max_tokens", 1);
-  optionalInteger(sampling.seed, "seed", Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+  optionalInteger(sampling.seed, "seed", 0, Number.MAX_SAFE_INTEGER);
   optionalInteger(
     sampling.return_top_k,
     "return_top_k",
@@ -2153,6 +2171,7 @@ function requiresPerTokenMeasurementReads(
 async function updateStructuredControls(
   program: WebLlmHookProgram | null | undefined,
   hooks: WebLlmGenerationHooks,
+  evaluateControls: ReturnType<typeof createStructuredHookControlEvaluator>,
   generatedTokens: number,
   thinking: boolean,
   priorMeasurements: Float32Array | undefined,
@@ -2165,7 +2184,7 @@ async function updateStructuredControls(
       "The browser model runtime cannot update gated steering controls",
     );
   }
-  const controls = structuredHookControlsFor(program, {
+  const controls = evaluateControls({
     prefill: false,
     thinking,
     generatedTokens,

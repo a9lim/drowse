@@ -1,3 +1,4 @@
+import { createFrameQueue } from "../runtime/frameQueue";
 // The singleton runtime event channel and the message dispatcher over it.
 //
 // One connection owned at module level — the chat panel is not
@@ -88,6 +89,7 @@ interface RuntimeConnection {
   recoveringGap: boolean;
   treeRecovery: Promise<void> | null;
   ready: Promise<void> | null;
+  flushTokens: (() => void) | null;
 }
 
 const wsConn: RuntimeConnection = {
@@ -99,6 +101,7 @@ const wsConn: RuntimeConnection = {
   recoveringGap: false,
   treeRecovery: null,
   ready: null,
+  flushTokens: null,
 };
 
 let firstDecodeTokenAt: number | null = null;
@@ -119,6 +122,7 @@ export function ensureRuntimeChannel(): Promise<RuntimeEventChannel> {
     return Promise.resolve(wsConn.channel);
   }
 
+  wsConn.flushTokens?.();
   wsConn.unsubscribe?.();
   wsConn.unsubscribeState?.();
   const channel = runtimeClient.events;
@@ -145,6 +149,15 @@ export function ensureRuntimeChannel(): Promise<RuntimeEventChannel> {
       }
     }
   };
+  const tokenQueue = createFrameQueue<{ message: WSServerMessage; receivedAt: number }>(
+    ({ message, receivedAt }) => {
+      handleWsMessage(message, receivedAt);
+      notifyListeners(message);
+    },
+    (callback) => requestAnimationFrame(callback),
+    (frame) => cancelAnimationFrame(frame),
+  );
+  wsConn.flushTokens = tokenQueue.flush;
   const dispatch = (msg: WSServerMessage): void => {
     if (treeRecovering) {
       treeRecoveryBuffer.push(msg);
@@ -153,6 +166,12 @@ export function ensureRuntimeChannel(): Promise<RuntimeEventChannel> {
       }
       return;
     }
+    if (msg.type === "token" && typeof requestAnimationFrame === "function" &&
+      (typeof document === "undefined" || document.visibilityState === "visible")) {
+      tokenQueue.push({ message: msg, receivedAt: performance.now() });
+      return;
+    }
+    tokenQueue.flush();
     const disposition = handleWsMessage(msg);
     if (disposition === "tree_resync" && msg.type === "tree_mutated") {
       beginTreeRecovery(msg.rev);
@@ -162,6 +181,8 @@ export function ensureRuntimeChannel(): Promise<RuntimeEventChannel> {
   };
   const clearConnection = (): void => {
     if (wsConn.channel !== channel) return;
+    tokenQueue.flush();
+    wsConn.flushTokens = null;
     treeRecoverySerial += 1;
     treeRecovering = false;
     requiredTreeRevision = 0;
@@ -230,6 +251,7 @@ export function ensureRuntimeChannel(): Promise<RuntimeEventChannel> {
     });
   };
   const recoverSequenceGap = (message: Extract<WSServerMessage, { type: "error" }>): void => {
+    tokenQueue.flush();
     if (wsConn.channel !== channel || wsConn.recoveringGap) return;
     wsConn.recoveringGap = true;
     void (async () => {
@@ -343,6 +365,8 @@ export function ensureRuntimeChannel(): Promise<RuntimeEventChannel> {
 }
 
 export function disconnectRuntimeChannel(): void {
+  wsConn.flushTokens?.();
+  wsConn.flushTokens = null;
   wsConn.unsubscribe?.();
   wsConn.unsubscribeState?.();
   wsConn.channel?.close();
@@ -416,7 +440,7 @@ function adoptStreamingNode(nodeId: string | null | undefined): void {
 /** Default WS message handler — owns the gen-status lifecycle and the
  * live token stream.  External subscribers (panels) layer additional
  * behavior via ``onWsMessage``. */
-function handleWsMessage(msg: WSServerMessage): void | "tree_resync" {
+function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): void | "tree_resync" {
   switch (msg.type) {
     case "tree_mutated": {
       // The roster is derived from every observed turn label, so any tree
@@ -533,7 +557,7 @@ function handleWsMessage(msg: WSServerMessage): void | "tree_resync" {
         );
       }
       if (isNewToken) {
-        const tokenReceivedAt = performance.now();
+        const tokenReceivedAt = receivedAt;
         if (firstDecodeTokenAt === null) {
           firstDecodeTokenAt = tokenReceivedAt;
         } else {
@@ -1048,9 +1072,11 @@ export async function sendTextFork(
 }
 
 export function sendStop(): void {
+  wsConn.flushTokens?.();
   const channel = wsConn.channel;
   if (!channel) return;
   void channel.stop().catch((error) => {
+    wsConn.flushTokens?.();
     handleWsMessage({
       type: "error",
       code: "RUNTIME_STOP_FAILED",

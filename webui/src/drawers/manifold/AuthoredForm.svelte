@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import { slide } from "svelte/transition";
   import { collapseIn, collapseOut } from "../../lib/motion";
@@ -591,7 +592,7 @@
         {/if}
       {/if}
       <p class="dim-note">
-        dim <strong>{intrinsicDim}</strong> · min <strong>{minNodes}</strong> nodes
+        dim <strong><MorphText text={intrinsicDim} /></strong> · min <strong><MorphText text={minNodes} /></strong> nodes
       </p>
     </section>
   {/if}
@@ -599,6 +600,7 @@
   <!-- node editor -->
   <section class="step">
     <h2 class="step-title">nodes</h2>
+    <p class="dim-note"><MorphText text={`${nodes.length} ${nodes.length === 1 ? "node" : "nodes"} · ${autoDomain ? "coordinates derived at fit" : `${intrinsicDim} dimensions`}`} /></p>
     {#if nodes.length === 0}
       <p class="muted">
         add ≥{autoDomain ? 2 : minNodes} nodes
@@ -651,7 +653,7 @@
               class="node-remove"
               onclick={() => removeNode(idx)}
               aria-label="remove node {node.label}"
-              title="remove node"
+              {...{ "aria-description": "remove node" }}
             ><FluentIcon name="dismiss" /></button>
           </div>
           {#if nodeLabelError(idx)}
@@ -721,7 +723,7 @@
     {#if nodeCountError()}
       <p class="field-error">{nodeCountError()}</p>
     {/if}
-    <p class="muted" title={PER_NODE_ROLE_HELP}>
+    <p class="muted" {...{ "aria-description": (PER_NODE_ROLE_HELP) }}>
       Roles are optional. When nodes use different roles, Drowse follows the role of the nearest node.
     </p>
   </section>
@@ -743,7 +745,7 @@
     disabled={submitting}
     onclick={save}
   >
-    {submitting ? "building…" : autoDomain ? `build · ${tuning.fitMode}` : "build"}
+    <MorphText text={submitting ? "building…" : autoDomain ? `build · ${tuning.fitMode}` : "build"} numbers={false} />
   </button>
 </div>
 

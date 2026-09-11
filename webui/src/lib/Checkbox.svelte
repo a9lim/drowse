@@ -43,7 +43,7 @@
     bind:checked
     aria-label={ariaLabel ?? undefined}
     {disabled}
-    {title}
+    {...{ "aria-description": (title) }}
     onchange={onChange}
   />
   <span class="sk-checkbox" aria-hidden="true">

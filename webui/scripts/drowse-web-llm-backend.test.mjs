@@ -1127,7 +1127,7 @@ try {
     () => {},
     new AbortController().signal,
   );
-  assert.equal(cappedAppleMobileSession.config.max_tokens, 256);
+  assert.equal(cappedAppleMobileSession.config.max_tokens, loadRequest().contextTokens);
   await backend.generate({
     type: "submit",
     text: "Keep it short",
@@ -1137,8 +1137,8 @@ try {
     sampling: { max_tokens: 8_192 },
   }, () => {});
   const appleMobilePlan = calls.findLast(([kind]) => kind === "generate")[1];
-  assert.equal(appleMobilePlan.sampling.max_tokens, 256);
-  assert.equal(appleMobilePlan.maxOutputTokens, 256);
+  assert.equal(appleMobilePlan.sampling.max_tokens, loadRequest().contextTokens);
+  assert.equal(appleMobilePlan.maxOutputTokens, loadRequest().contextTokens);
 
   const aborted = new AbortController();
   aborted.abort(new DOMException("cancelled", "AbortError"));

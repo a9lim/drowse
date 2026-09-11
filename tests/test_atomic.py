@@ -3,12 +3,47 @@ from __future__ import annotations
 
 import json
 import ctypes
+import gc
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from drowse.io import atomic
-from drowse.io.atomic import _temp_path, write_bytes_atomic, write_json_atomic
+from drowse.io.atomic import write_bytes_atomic, write_json_atomic
+
+
+def test_artifact_lock_registry_releases_inactive_paths(tmp_path: Path):
+    for index in range(64):
+        with atomic.artifact_lock(tmp_path / f"artifact-{index}"):
+            pass
+    gc.collect()
+    assert not [path for path in atomic._ARTIFACT_LOCKS if path.is_relative_to(tmp_path)]
+
+
+def test_artifact_lock_waiters_share_the_live_reentrant_lock(tmp_path: Path):
+    path = tmp_path / "artifact"
+    entered = threading.Event()
+    finished = threading.Event()
+    order = []
+
+    def waiting_writer():
+        entered.set()
+        with atomic.artifact_lock(path):
+            order.append("waiter")
+        finished.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with atomic.artifact_lock(path):
+            with atomic.artifact_lock(path):
+                future = pool.submit(waiting_writer)
+                assert entered.wait(2)
+                gc.collect()
+                assert not finished.wait(0.05)
+                order.append("owner")
+        future.result(timeout=2)
+    assert order == ["owner", "waiter"]
 
 
 def test_write_json_atomic_creates_file(tmp_path: Path):
@@ -30,8 +65,7 @@ def test_write_json_atomic_overwrites(tmp_path: Path):
 def test_write_json_atomic_no_orphan_tmp(tmp_path: Path):
     path = tmp_path / "x.json"
     write_json_atomic(path, {"v": 1})
-    # Successful write leaves no <path>.tmp behind.
-    assert not _temp_path(path).exists()
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_write_json_atomic_creates_parent(tmp_path: Path):
@@ -44,24 +78,20 @@ def test_write_bytes_atomic_basic(tmp_path: Path):
     path = tmp_path / "blob.bin"
     write_bytes_atomic(path, b"\x00\x01\x02")
     assert path.read_bytes() == b"\x00\x01\x02"
-    assert not _temp_path(path).exists()
+    assert list(tmp_path.iterdir()) == [path]
 
 
-def test_temp_path_with_suffix(tmp_path: Path):
-    p = tmp_path / "x.json"
-    assert _temp_path(p) == tmp_path / "x.json.tmp"
+def test_atomic_staging_uses_the_destination_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    target = tmp_path / "subdir" / "state.json"
+    replace = atomic.os.replace
 
+    def publish(source: Path, destination: Path) -> None:
+        assert Path(source).parent == destination.parent
+        replace(source, destination)
 
-def test_temp_path_no_suffix(tmp_path: Path):
-    p = tmp_path / "Makefile"
-    assert _temp_path(p) == tmp_path / "Makefile.tmp"
-
-
-def test_temp_path_same_directory(tmp_path: Path):
-    """Atomicity requires the tempfile sit on the same volume — same dir
-    is a sufficient proxy."""
-    p = tmp_path / "subdir" / "x.json"
-    assert _temp_path(p).parent == p.parent
+    monkeypatch.setattr(atomic.os, "replace", publish)
+    write_json_atomic(target, {"state": "complete"})
+    assert target.is_file()
 
 def test_atomic_overwrite_preserves_prior_on_simulated_crash(tmp_path: Path):
     """If the .tmp file is written but the ``os.replace`` step never lands
@@ -72,7 +102,7 @@ def test_atomic_overwrite_preserves_prior_on_simulated_crash(tmp_path: Path):
     original_bytes = path.read_bytes()
 
     # Simulate a partial write: stage a new tempfile but don't replace.
-    tmp = _temp_path(path)
+    tmp = tmp_path / ".x.json.orphan.tmp"
     tmp.write_text('{"version": 2, "trunc')
 
     # The "kill" window: tmp exists, original is untouched.

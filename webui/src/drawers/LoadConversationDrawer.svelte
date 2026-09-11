@@ -360,7 +360,7 @@
                 onclick={() => void regenerateAvatar(record)}
                 disabled={changingId === record.id}
                 aria-label={`Generate another avatar for ${record.name}`}
-                title="Generate another avatar"
+                {...{ "aria-description": "Generate another avatar" }}
               >
                 <Blobatar name={record.avatarSeed} size={62} background="circle" alt="" />
               </button>
@@ -378,7 +378,7 @@
                     />
                   </label>
                 {:else}
-                  <strong title={record.name} dir="auto">{record.name}</strong>
+                  <strong {...{ "aria-description": (record.name) }} dir="auto">{record.name}</strong>
                 {/if}
                 <span class="card-meta">
                   <span class="model">{displayModelName(record.modelId)}{#if record.modelType === "base" || (matchesModel && sessionState.info?.is_base_model)}<BaseModelTag />{/if}</span>
@@ -386,7 +386,7 @@
                 </span>
               </div>
 
-              <time datetime={new Date(record.updatedAt).toISOString()} title={absoluteTime(record.updatedAt)}>
+              <time datetime={new Date(record.updatedAt).toISOString()} {...{ "aria-description": (absoluteTime(record.updatedAt)) }}>
                 {relativeTime(record.updatedAt)}
               </time>
             </div>
@@ -419,7 +419,7 @@
                   class="button primary compact"
                   onclick={() => void openConversation(record)}
                   disabled={!matchesModel || genStatus.active || openingId !== null}
-                  title={matchesModel ? undefined : `Load ${displayModelName(record.modelId)} to open this chat`}
+                  {...{ "aria-description": (matchesModel ? undefined : `Load ${displayModelName(record.modelId)} to open this chat`) }}
                 >{openingId === record.id ? "Opening…" : matchesModel ? "Open" : "Different model"}</button>
                 <button type="button" class="quiet-button" onclick={() => beginRename(record)}>Rename</button>
                 <button type="button" class="quiet-button" disabled={changingId !== null} onclick={() => void download(record)}>Download</button>
@@ -451,7 +451,7 @@
               <div class="card-actions">
                 <span
                   class="issue-reason"
-                  title={userFacingError(issue.reason, "This saved chat could not be read. The data is still in storage.")}
+                  {...{ "aria-description": (userFacingError(issue.reason, "This saved chat could not be read. The data is still in storage.")) }}
                 >Could not read this chat</span>
                 <button type="button" class="quiet-button danger-text" onclick={() => requestDelete(issue.id)}>Delete</button>
               </div>

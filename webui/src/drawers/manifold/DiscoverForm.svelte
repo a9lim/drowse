@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../../lib/ui/MorphText.svelte";
   // Auto-generated authoring: hand the model a flat concept list, the
   // K-tuple generator produces per-concept corpora against the shared
   // baseline prompts, then the fitter derives coords per-model via PCA or
@@ -331,7 +332,7 @@
         <span id="discover-concepts-error" class="field-error">{conceptsError}</span>
       {/if}
       <span class="dim-note">
-        <strong>{concepts.length}</strong> parsed
+        <strong><MorphText text={concepts.length} /></strong> parsed
       </span>
     </label>
     <div class="grid2">
@@ -433,7 +434,7 @@
   </AdvancedSection>
 
   <p class="progress form-status" role="status" aria-live="polite" aria-atomic="true">
-    {progress}
+    <MorphText text={progress} />
   </p>
 
   <ValidationBlock
@@ -447,7 +448,7 @@
     disabled={submitting}
     onclick={save}
   >
-    {submitting ? "generating…" : alsoFit ? "generate + fit" : "generate"}
+    <MorphText text={submitting ? "generating…" : alsoFit ? "generate + fit" : "generate"} />
   </button>
 </div>
 

@@ -295,8 +295,10 @@ def transformers_state_dict(directory: Path) -> tuple[dict[str, torch.Tensor], d
     quantization = chat.get("quantization")
     if architecture not in {"gemma3_text", "llama", "qwen3", "qwen3_5"} or not isinstance(raw_config, dict):
         raise ValueError("only the pinned Gemma 3, Llama, Qwen3, and Qwen3.5 q4 browser architectures are supported")
-    if quantization not in {"q4f16_1", "q4f32_1"}:
-        raise ValueError("only q4f16_1 and q4f32_1 browser weights are supported")
+    if quantization not in {"q4f16_1", "q4f32_1"} and not (
+        quantization == "q0f32" and architecture == "gemma3_text"
+    ):
+        raise ValueError("only q4f16_1, q4f32_1, and Gemma q0f32 browser weights are supported")
     if architecture == "gemma3_text":
         text_config = raw_config.get("text_config")
         if not isinstance(text_config, dict):
@@ -305,7 +307,7 @@ def transformers_state_dict(directory: Path) -> tuple[dict[str, torch.Tensor], d
             **text_config,
             "vocab_size": raw_config.get("vocab_size"),
             "context_window_size": raw_config.get("context_window_size", text_config.get("context_window_size")),
-            "sliding_window_size": raw_config.get("sliding_window_size", text_config.get("sliding_window_size")),
+            "sliding_window_size": text_config.get("sliding_window_size", text_config.get("sliding_window")),
         }
         source_prefix = "language_model."
     else:
@@ -313,13 +315,14 @@ def transformers_state_dict(directory: Path) -> tuple[dict[str, torch.Tensor], d
         source_prefix = ""
     cache = MlcTensorCache(directory)
     direct_dtype = np.float16 if quantization == "q4f16_1" else np.float32
+    matrix = cache.q4 if quantization != "q0f32" else lambda name: direct(cache, f"{name}.weight", np.float32)
     if architecture == "qwen3_5":
         return qwen35_state_dict(cache, config, direct_dtype), {
             "architecture": architecture, "quantization": quantization,
             **config, **special_token_config(chat),
         }
     state: dict[str, torch.Tensor] = {}
-    embedding = cache.q4(f"{source_prefix}model.embed_tokens")
+    embedding = matrix(f"{source_prefix}model.embed_tokens")
     state["model.embed_tokens.weight"] = embedding
     state["lm_head.weight"] = embedding
     hidden_size = int(config["hidden_size"])
@@ -343,25 +346,25 @@ def transformers_state_dict(directory: Path) -> tuple[dict[str, torch.Tensor], d
                 cache, f"{source}.post_feedforward_layernorm.weight", direct_dtype
             )
             for projection, width in (("q", q_width), ("k", kv_width), ("v", kv_width)):
-                value = cache.q4(f"{source}.self_attn.{projection}_proj")
+                value = matrix(f"{source}.self_attn.{projection}_proj")
                 if tuple(value.shape) != (width, hidden_size):
                     raise ValueError(f"MLC Gemma {projection.upper()} projection shape is invalid at layer {layer}")
                 state[f"{target}.self_attn.{projection}_proj.weight"] = value
         else:
             fused_attention = "qkv_proj" if architecture == "llama" else "c_attn"
-            qkv = cache.q4(f"{source}.self_attn.{fused_attention}")
+            qkv = matrix(f"{source}.self_attn.{fused_attention}")
             if tuple(qkv.shape) != (q_width + 2 * kv_width, hidden_size):
                 raise ValueError(f"MLC fused QKV shape is invalid at layer {layer}")
             state[f"{target}.self_attn.q_proj.weight"] = qkv[:q_width]
             state[f"{target}.self_attn.k_proj.weight"] = qkv[q_width : q_width + kv_width]
             state[f"{target}.self_attn.v_proj.weight"] = qkv[q_width + kv_width :]
-        state[f"{target}.self_attn.o_proj.weight"] = cache.q4(f"{source}.self_attn.o_proj")
-        gate_up = cache.q4(f"{source}.mlp.gate_up_proj")
+        state[f"{target}.self_attn.o_proj.weight"] = matrix(f"{source}.self_attn.o_proj")
+        gate_up = matrix(f"{source}.mlp.gate_up_proj")
         if tuple(gate_up.shape) != (2 * intermediate, hidden_size):
             raise ValueError(f"MLC fused gate/up shape is invalid at layer {layer}")
         state[f"{target}.mlp.gate_proj.weight"] = gate_up[:intermediate]
         state[f"{target}.mlp.up_proj.weight"] = gate_up[intermediate:]
-        state[f"{target}.mlp.down_proj.weight"] = cache.q4(f"{source}.mlp.down_proj")
+        state[f"{target}.mlp.down_proj.weight"] = matrix(f"{source}.mlp.down_proj")
         if architecture in {"gemma3_text", "qwen3"}:
             state[f"{target}.self_attn.q_norm.weight"] = direct(
                 cache, f"{source}.self_attn.q_norm.weight", direct_dtype
@@ -470,12 +473,15 @@ def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.M
             kwargs = {}
         layer_types = kwargs.get("layer_types")
         if not isinstance(layer_types, list) or len(layer_types) != common["num_hidden_layers"]:
-            pattern = int(kwargs.get("_sliding_window_pattern", 6))
+            pattern = int(config.get("sliding_window_pattern", kwargs.get("sliding_window_pattern", kwargs.get("_sliding_window_pattern", 6))))
             layer_types = [
                 "full_attention" if (layer + 1) % pattern == 0 else "sliding_attention"
                 for layer in range(common["num_hidden_layers"])
             ]
         rope_theta = float(config["position_embedding_base"])
+        local_rope_theta = float(config.get("rope_local_base_freq", kwargs.get("rope_local_base_freq", 10_000)))
+        global_rope = {"rope_type": "default", "rope_theta": rope_theta}
+        global_rope.update(config.get("rope_scaling") or kwargs.get("rope_scaling") or {})
         model_config = Gemma3TextConfig(
             **common,
             max_position_embeddings=int(config["context_window_size"]),
@@ -485,8 +491,8 @@ def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.M
             sliding_window=int(config["sliding_window_size"]),
             layer_types=layer_types,
             rope_parameters={
-                "full_attention": {"rope_type": "default", "rope_theta": rope_theta},
-                "sliding_attention": {"rope_type": "default", "rope_theta": rope_theta},
+                "full_attention": global_rope,
+                "sliding_attention": {"rope_type": "default", "rope_theta": local_rope_theta},
             },
         )
         model_type = Gemma3ForCausalLM
@@ -499,6 +505,7 @@ def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.M
         raise ValueError(
             f"MLC q4 state does not close the Transformers model: missing={missing}, unexpected={unexpected}"
         )
+    materialize_rotary_embeddings(model)
     for module in model.modules():
         for name, buffer in tuple(module.named_buffers(recurse=False)):
             if not buffer.is_meta:
@@ -508,12 +515,6 @@ def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.M
                     common["hidden_size"] ** 0.5,
                     dtype=model_dtype,
                 )
-            elif name.endswith("inv_freq"):
-                inverse_frequency = 1.0 / (
-                    float(config.get("position_embedding_base", config.get("rope_theta")))
-                    ** (torch.arange(0, int(config["head_dim"]), 2, dtype=torch.float32) / int(config["head_dim"]))
-                )
-                module._buffers[name] = inverse_frequency
     remaining_meta = [name for name, value in model.named_buffers() if value.is_meta]
     if remaining_meta:
         raise ValueError(f"MLC q4 model has unmaterialized buffers: {remaining_meta}")
@@ -526,6 +527,15 @@ def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.M
     model._drowse_mlc_architecture = config["architecture"]
     model._drowse_mlc_quantization = config["quantization"]
     return model
+
+
+def materialize_rotary_embeddings(module: torch.nn.Module) -> None:
+    for name, child in tuple(module.named_children()):
+        if child.__class__.__name__.endswith("RotaryEmbedding"):
+            with torch.device("cpu"):
+                setattr(module, name, type(child)(child.config))
+        else:
+            materialize_rotary_embeddings(child)
 
 
 def replace_rms_norms(module: torch.nn.Module) -> None:

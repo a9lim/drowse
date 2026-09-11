@@ -2,7 +2,7 @@ import type { RuntimeServiceRequest } from "../../lib/runtime/contracts";
 import type { LoomTreeJSON, SessionInfo } from "../../lib/types";
 import {
   clampOutputTokenCount,
-  DESKTOP_MAX_OUTPUT_TOKENS,
+  MAX_OUTPUT_TOKEN_COUNT,
 } from "../../lib/runtime/outputTokenPolicy";
 import {
   type HostedSessionSettings,
@@ -190,7 +190,7 @@ export class BrowserSessionCoordinator {
   ) {
     this.persistence = persistence;
     this.execute = execute;
-    this.maxOutputTokens = options.maxOutputTokens ?? DESKTOP_MAX_OUTPUT_TOKENS;
+    this.maxOutputTokens = options.maxOutputTokens ?? MAX_OUTPUT_TOKEN_COUNT;
     if (!Number.isSafeInteger(this.maxOutputTokens) || this.maxOutputTokens < 1) {
       throw new SessionCoordinatorError(
         "INVALID_RUNTIME_IDENTITY",
@@ -558,7 +558,7 @@ function validateClaimResult(value: unknown): asserts value is HostedSessionClai
 
 function configSettings(
   config: SessionInfo["config"],
-  maxOutputTokens = DESKTOP_MAX_OUTPUT_TOKENS,
+  maxOutputTokens = MAX_OUTPUT_TOKEN_COUNT,
 ): HostedSessionSettings {
   validateConfig(config, "Session config", "INVALID_RUNTIME_RESPONSE");
   return structuredClone({

@@ -149,12 +149,16 @@ def test_active_vocabulary_cannot_exceed_model_rows():
     assert TOOL.bounded_active_vocab_size(32_000, 32_768) == 32_000
 
 
-def test_validate_source_requires_one_exact_hugging_face_revision(tmp_path: Path):
+@pytest.mark.parametrize("architecture,config", [
+    ("qwen3", {"model_type": "qwen3"}),
+    ("gemma3_text", {"model_type": "gemma3", "text_config": {"model_type": "gemma3_text"}}),
+])
+def test_validate_source_requires_one_exact_hugging_face_revision(tmp_path: Path, architecture: str, config: dict[str, object]):
     revision = "a" * 40
     metadata = tmp_path / ".cache/huggingface/download"
     metadata.mkdir(parents=True)
     files = {
-        "config.json": json.dumps({"model_type": "qwen3"}).encode(),
+        "config.json": json.dumps(config).encode(),
         "model.safetensors": b"weights",
         "tokenizer.json": b"{}",
         "tokenizer_config.json": b"{}",
@@ -163,9 +167,55 @@ def test_validate_source_requires_one_exact_hugging_face_revision(tmp_path: Path
         (tmp_path / name).write_bytes(data)
         (metadata / f"{name}.metadata").write_text(f"{revision}\netag\n0\n")
 
-    TOOL.validate_source(tmp_path, revision, "qwen3")
+    TOOL.validate_source(tmp_path, revision, architecture)
     with pytest.raises(SystemExit, match="came from"):
-        TOOL.validate_source(tmp_path, "b" * 40, "qwen3")
+        TOOL.validate_source(tmp_path, "b" * 40, architecture)
+    if architecture == "gemma3_text":
+        text_config = config["text_config"]
+        assert isinstance(text_config, dict)
+        text_config["model_type"] = "foreign_text"
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        with pytest.raises(SystemExit, match="source model type"):
+            TOOL.validate_source(tmp_path, revision, architecture)
+
+
+def test_gemma_wrapped_text_backbone_supplies_position_limit_and_eos(tmp_path: Path):
+    config = {"model_type": "gemma3", "text_config": {
+        "model_type": "gemma3_text", "max_position_embeddings": 131072, "eos_token_id": 106,
+    }}
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    args = SimpleNamespace(architecture="gemma3_text", model_type="chat", conv_template="gemma3_instruction",
+                           context_window_size=4096, prefill_chunk_size=2048)
+    TOOL.validate_completion_policy(args, tmp_path)
+    assert TOOL.source_eos_ids(tmp_path) == [106]
+    args.context_window_size = 131073
+    with pytest.raises(SystemExit, match="position limit"):
+        TOOL.validate_completion_policy(args, tmp_path)
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("source_key,compiled_key,wrong", [
+    ("rope_theta", "position_embedding_base", 10000),
+    ("rope_local_base_freq", "rope_local_base_freq", 1000000),
+    ("rope_scaling", "rope_scaling", None),
+    ("sliding_window", "sliding_window_size", -1),
+    ("sliding_window_pattern", "sliding_window_pattern", 5),
+])
+def test_gemma_conversion_preserves_source_attention_settings(tmp_path: Path, wrapped: bool,
+                                                            source_key: str, compiled_key: str, wrong: object):
+    source = {"rope_theta": 1000000, "rope_local_base_freq": 10000,
+              "rope_scaling": {"rope_type": "linear", "factor": 8},
+              "sliding_window": 1024, "sliding_window_pattern": 6}
+    compiled = {"position_embedding_base": 1000000, "rope_local_base_freq": 10000,
+                "rope_scaling": source["rope_scaling"], "sliding_window_size": 1024, "sliding_window_pattern": 6}
+    (tmp_path / "config.json").write_text(json.dumps({"text_config": source} if wrapped else source))
+    output = tmp_path / "mlc-chat-config.json"
+    output.write_text(json.dumps({"model_config": {"text_config": compiled}}))
+    TOOL.validate_gemma_attention_config(tmp_path, tmp_path)
+    compiled[compiled_key] = wrong
+    output.write_text(json.dumps({"model_config": {"text_config": compiled}}))
+    with pytest.raises(SystemExit, match=source_key):
+        TOOL.validate_gemma_attention_config(tmp_path, tmp_path)
 
 
 def test_validate_source_closes_sharded_weights_and_optional_tokenizer_inputs(tmp_path: Path):
@@ -298,9 +348,9 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
         + b"\n"
         + TOOL.TOPK_WORKGROUP_LINE
         + b"\nfn drowse_exact_top8_tiles_kernel() {\n"
-        + b"var local_values : array<f32, 8>;\n"
-        + b"var local_indices : array<i32, 8>;\n"
-        + b"for (var rank : i32 = 0i; rank < 8i; rank++) {\n"
+        + b"var<workgroup> best_values : array<f32, 64>;\n"
+        + b"var<workgroup> best_indices : array<i32, 64>;\n"
+        + b"workgroupBarrier();\nfor (var rank : i32 = 0i; rank < 8i; rank++) {\n"
         + b"for (var step : i32 = 0i; step < 256i; step++) {}\n}\n}\n"
     )
     merge_shader = (
@@ -312,9 +362,9 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
         + b"\n"
         + TOOL.TOPK_WORKGROUP_LINE
         + b"\nfn drowse_exact_top8_merge_kernel() {\n"
-        + b"var local_values : array<f32, 8>;\n"
-        + b"var local_indices : array<i32, 8>;\n"
-        + b"for (var rank : i32 = 0i; rank < 8i; rank++) {\n"
+        + b"var<workgroup> best_values : array<f32, 64>;\n"
+        + b"var<workgroup> best_indices : array<i32, 64>;\n"
+        + b"workgroupBarrier();\nfor (var rank : i32 = 0i; rank < 8i; rank++) {\n"
         + b"for (var candidate : i32 = 0i; candidate < podArgs.candidates_per_row; candidate++) {}\n}\n}\n"
     )
     transport_shader = (
@@ -326,7 +376,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
         + b"\n"
         + TOOL.JLENS_TRANSPORT_WORKGROUP_LINE
         + b"\nfn drowse_jlens_transport_kernel() {\n"
-        + b"for (var source_coordinate : i32 = 0i; source_coordinate < 8i; source_coordinate++) {\n"
+        + b"var<workgroup> partial : array<f32, 128>;\nworkgroupBarrier();\nfor (var source_coordinate : i32 = 0i; source_coordinate < 8i; source_coordinate++) {\n"
         + b"let transported = fma(1.0f, 1.0f, 0.0f);\n}\n}\n"
     )
     geometry_shader = (
@@ -346,7 +396,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
     TOOL.verify_compiled_library(output)
 
     output.write_bytes(output.read_bytes().replace(b"fma(", b"mul(", 1))
-    with pytest.raises(SystemExit, match="barrier-free fp32 schedule"):
+    with pytest.raises(SystemExit, match="bounded cooperative fp32 schedule"):
         TOOL.verify_compiled_library(output)
 
     output.write_bytes(b"not wasm")

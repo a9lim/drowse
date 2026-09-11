@@ -13,7 +13,6 @@ artifact lazily on scope entry.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 from pathlib import Path
@@ -49,6 +48,7 @@ from drowse.io.manifolds import (
 )
 from drowse.io.paths import manifold_dir
 from drowse.io.templates import AmbiguousTemplateError, TemplateNotFoundError
+from drowse.server.streaming import run_in_thread
 from drowse.server.app import acquire_session_lock
 from drowse.server.native_common import (
     NativeRequest,
@@ -525,6 +525,8 @@ def _install_error_frame(exc: Exception) -> dict[str, Any] | None:
         http_error = cast(HTTPException, exc)
         return {"message": str(http_error.detail), "code": "Conflict"}
     if isinstance(exc, (ManifoldInstallConflict, ManifoldHFError)):
+        if exc.__cause__ is not None:
+            log.error("manifold install failed", exc_info=exc)
         _status, message = exc.user_message()
         return {"message": message, "code": type(exc).__name__}
     if isinstance(exc, ImportError):
@@ -708,7 +710,7 @@ def register_manifold_routes(app: FastAPI) -> None:
                 raise HTTPException(503, "session locked")
             refuse_if_busy(session)
             try:
-                folder = await asyncio.to_thread(
+                folder = await run_in_thread(
                     merge_discover_manifolds,
                     req.namespace,
                     req.name,
@@ -772,7 +774,7 @@ def register_manifold_routes(app: FastAPI) -> None:
             # Under the session lock in both branches; the gen-lock probe has
             # to run before the worker thread starts writing the folder.
             refuse_if_busy(session)
-            return await asyncio.to_thread(_install, on_progress)
+            return await run_in_thread(_install, on_progress)
 
         return await sse_or_json(
             request,
@@ -863,7 +865,7 @@ def register_manifold_routes(app: FastAPI) -> None:
             return body
 
         async def _job(on_progress: ProgressCallback) -> ManifoldInfo:
-            return await asyncio.to_thread(_gen, on_progress)
+            return await run_in_thread(_gen, on_progress)
 
         def _format_error(e: Exception) -> dict[str, Any] | None:
             if isinstance(e, HTTPException):
@@ -921,7 +923,7 @@ def register_manifold_routes(app: FastAPI) -> None:
                 raise HTTPException(503, "session locked")
             refuse_if_busy(session)
             try:
-                await asyncio.to_thread(
+                await run_in_thread(
                     update_manifold_folder,
                     folder,
                     description=req.description,
@@ -966,7 +968,7 @@ def register_manifold_routes(app: FastAPI) -> None:
             try:
                 return cast(
                     ManifoldDeleteResponse,
-                    await asyncio.to_thread(
+                    await run_in_thread(
                         remove_manifold_folder, namespace, name,
                     ),
                 )
@@ -1012,7 +1014,7 @@ def register_manifold_routes(app: FastAPI) -> None:
             return body
 
         async def _job(on_progress: ProgressCallback) -> ManifoldInfo:
-            return await asyncio.to_thread(_fit, on_progress)
+            return await run_in_thread(_fit, on_progress)
 
         return await sse_or_json(
             request,

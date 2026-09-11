@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
@@ -9,7 +10,7 @@ test("Loom header glow follows the mouse without moving content and respects red
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A reply to explore.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
   await page.getByRole("button", { name: /^Map/ }).click();
   const card = page.locator('.node[aria-current="true"]');
@@ -39,12 +40,12 @@ test("Loom sentences have complete rounded borders without side shadows", async 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A reply to explore.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
   await page.getByRole("button", { name: /^Map/ }).click();
   const sentence = page.locator(".sentence-node").first();
   for (const theme of ["Light", "Dark"]) {
-    await page.getByRole("button", { name: theme, exact: true }).click();
+    await setAppearance(page, theme);
     for (const width of [390, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await expect(sentence).toBeVisible();
@@ -60,7 +61,7 @@ test("Loom sentences have complete rounded borders without side shadows", async 
       expect(style.widths).toEqual(["1px", "1px", "1px", "1px"]);
       expect(style.shadow).toBe("none");
       expect(style.background).toBe("none");
-      expect(style.radius).toBe("24px");
+      expect(style.radius).toBe("4px");
       expect(style.left).toBe(style.right);
       expect(style.fits).toBe(true);
     }
@@ -153,6 +154,7 @@ test("Weave creates alternatives, backtracks, extends exact tokens, and preserve
   await options.first().getByRole("button", { name: "Star option 1", exact: true }).click();
   await expect(options.first().getByRole("button", { name: "Starred option 1", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: /^Map/ }).click();
+  await page.getByRole("button", { name: "Fit whole loom" }).click();
   await expect(page.locator(".tree-node-wrap:not([data-loom-shared])")).toHaveCount(10);
   await expect(page.locator("[data-loom-shared]")).toHaveCount(2);
   expect(errors).toEqual([]);
@@ -163,7 +165,7 @@ test("Weave opens at a chat reply's branch point without hiding its alternatives
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Start in chat, then explore.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.getByRole("button", { name: "Loom", exact: true }).click();
   await expect(page.getByRole("button", { name: /^Map/ })).toHaveAttribute("aria-current", "page");
   await expect(page.locator('.node[aria-current="true"]')).toBeVisible();

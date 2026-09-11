@@ -56,7 +56,7 @@ assert.match(chatHome, /@media \(max-width: 430px\)[\s\S]*\.chat-title-row\s*\{[
 assert.match(chatHome, /\.chat-footer\s*\{[^}]*flex-wrap: wrap;/,
   "chat actions wrap instead of squeezing into fixed columns");
 assert.doesNotMatch(chatHome, /backdrop-filter: blur/, "Saved chats use flat, unblurred surfaces");
-assert.match(chat, /\.chat\s*\{[^}]*border-radius: var\(--radius-lg\);[^}]*background: var\(--workspace-panel-bg\);/,
+assert.match(chat, /\.chat\s*\{[^}]*border-radius: var\(--chat-radius\);[^}]*background: var\(--workspace-panel-bg\);/,
   "Chat and completion share a faint rounded container");
 assert.ok(app.indexOf('<ConversationAutosave />') > app.indexOf('class="workspace-notices"'),
   "autosave warnings participate in the viewport layout instead of pushing the workspace offscreen");
@@ -66,7 +66,7 @@ assert.match(autosave, /<Button variant="solid"/);
 assert.doesNotMatch(autosave, /<button/);
 assert.match(chat, /\.input-row\s*\{[^}]*padding: var\(--surface-padding\);[^}]*background: var\(--workspace-field-bg\);/);
 assert.match(chat, /\.input\s*\{[^}]*--shadow-field-keyboard: none;[^}]*background: transparent;/);
-assert.match(chat, /\.input-actions\s*\{[^}]*flex-wrap: wrap;/);
+assert.match(chat, /\.input-actions\s*\{[^}]*flex-wrap: nowrap;/);
 assert.match(chat, /\.chat > \.log\s*\{[^}]*flex: 1 1 0;/,
   "mobile messages yield space to keep composer actions reachable");
 assert.match(chat, /let rolePlanOpen = \$state\(false\)/,

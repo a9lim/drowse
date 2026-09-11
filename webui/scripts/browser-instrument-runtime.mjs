@@ -10,16 +10,15 @@ import {
   launchReleaseToolContext,
 } from "./release-tool-storage-quota.mjs";
 import { verifyArtifactFile } from "./verify-artifact-file.mjs";
+import { readRuntimeLock } from "./runtime-lock-document.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 const webuiRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(webuiRoot, "..");
-const runtimeLock = JSON.parse(
-  await readFile(
-    resolve(repositoryRoot, "browser-runtime/runtime-lock.json"),
-    "utf8",
-  ),
-);
+const runtimeLockPath = options.runtimeLock === null
+  ? resolve(repositoryRoot, "browser-runtime/runtime-lock.json")
+  : resolve(options.runtimeLock);
+const { value: runtimeLock } = await readRuntimeLock(runtimeLockPath);
 const lock = runtimeLock.models.find((entry) => entry.id === options.modelId);
 if (!lock) throw new Error(`unknown runtime-lock model ${options.modelId}`);
 const sets = {
@@ -129,9 +128,10 @@ const server = createHttpServer(async (request, response) => {
     }
     vite.middlewares(request, response);
   } catch (error) {
+    console.error(error);
     send(
       response,
-      error instanceof Error ? (error.stack ?? error.message) : String(error),
+      "Internal server error",
       "text/plain",
       500,
     );
@@ -353,6 +353,7 @@ function parseArguments(args) {
     jlensLayerLimit: null,
     jlensWord: "ocean",
     output: null,
+    runtimeLock: null,
     saeFeature: 17,
     stepTimeoutMs: 300_000,
     timeoutMs: 1_200_000,
@@ -371,6 +372,7 @@ function parseArguments(args) {
     "--jlens-layer-limit": "jlensLayerLimit",
     "--jlens-word": "jlensWord",
     "--output": "output",
+    "--runtime-lock": "runtimeLock",
     "--sae-feature": "saeFeature",
     "--step-timeout-ms": "stepTimeoutMs",
     "--timeout-ms": "timeoutMs",

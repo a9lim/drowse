@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import { slidingSelection } from "../lib/slidingSelection";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Transcript export / import drawer — phase 5.  Two tabs:
@@ -105,12 +106,15 @@
     URL.revokeObjectURL(url);
   }
 
+  let copied = $state(false);
+  $effect(() => { if (!copied) return; const timer = setTimeout(() => copied = false, 1800); return () => clearTimeout(timer); });
   async function copyYaml(): Promise<void> {
     if (!exportYaml) return;
     try {
       await navigator.clipboard.writeText(exportYaml);
+      copied = true;
     } catch {
-      // Clipboard unavailable — leave the textarea content for the user.
+      exportError = "Could not copy. Select the YAML above and copy it manually.";
     }
   }
 
@@ -250,7 +254,7 @@
           class="btn primary"
           onclick={runExport}
           disabled={exportBusy}
-        >{exportBusy ? "preparing…" : "preview YAML"}</button>
+        ><MorphText text={exportBusy ? "preparing…" : "preview YAML"} /></button>
       </div>
 
       {#if exportError}
@@ -266,7 +270,7 @@
           aria-label="Rendered transcript YAML"
         ></textarea>
         <div class="form-actions">
-          <button type="button" class="btn" data-cursor="copy" onclick={copyYaml}>copy</button>
+          <button type="button" class="btn" data-cursor="copy" onclick={copyYaml}><span role="status"><MorphText text={copied ? "Copied" : "Copy"} numbers={false} /></span></button>
           <button type="button" class="btn primary" onclick={downloadYaml}
             >download .yaml</button>
         </div>
@@ -320,7 +324,7 @@
           class="btn primary"
           onclick={runImport}
           disabled={importBusy}
-        >{importBusy ? "importing…" : "import"}</button>
+        ><MorphText text={importBusy ? "importing…" : "import"} /></button>
       </div>
 
       {#if importError}

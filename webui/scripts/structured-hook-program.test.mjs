@@ -262,6 +262,20 @@ try {
     generatedTokens: 1,
     priorMeasurements: instrumentResult.probes,
   }).affineActive[0], 1);
+  const evaluateControls = hooks.createStructuredHookControlEvaluator(instrumentProgram);
+  const controlContext = {
+    prefill: false, thinking: false, generatedTokens: 1,
+    priorMeasurements: instrumentResult.probes,
+  };
+  const originalThreshold = instrumentProgram.controls.affine[0].gate.threshold;
+  instrumentProgram.controls.affine[0].gate.threshold = 1e9;
+  const originalDirection = instrumentProgram.probeDirection[0];
+  instrumentProgram.probeDirection[0] = Number.NaN;
+  assert.equal(evaluateControls(controlContext).affineActive[0], 1);
+  assert.throws(() => hooks.structuredHookControlsFor(instrumentProgram, controlContext));
+  instrumentProgram.probeDirection[0] = originalDirection;
+  instrumentProgram.controls.affine[0].gate.threshold = originalThreshold;
+  assert.deepEqual(evaluateControls(controlContext), hooks.structuredHookControlsFor(instrumentProgram, controlContext));
   console.log("ok 4 - exact SAE feature and J-lens direction math feed prior-step GPU gates");
 
   const multiCurve = hooks.compileStructuredHookProgram(4, [{

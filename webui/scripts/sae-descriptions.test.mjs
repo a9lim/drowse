@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { verifiedSaeDescriptionSource, parseSaeDescription, loadSaeDescription } from "../src/lib/saeDescriptions.ts";
+
+const headers = await readFile(new URL("../public-hosted/_headers", import.meta.url), "utf8");
+assert.match(headers, /connect-src[^;]*https:\/\/www\.neuronpedia\.org(?:\s|;)/);
 
 const manifest = {
   model_id: "google/gemma-3-1b-it", layer: 13, d_sae: 16384, activation: "jump_relu",
@@ -45,6 +49,7 @@ const originalFetch = globalThis.fetch;
 let calls = 0;
 try {
   globalThis.fetch = async (url, options) => {
+    if (url.includes("/sae-descriptions/")) return new Response("unavailable", { status: 503 });
     calls++;
     assert.equal(url, "https://www.neuronpedia.org/api/feature/gemma-3-1b-it/13-gemmascope-2-res-16k/16190");
     assert.equal(options.credentials, "omit");
@@ -59,6 +64,28 @@ try {
   assert.equal(result.label, "terms and phrases");
   assert.deepEqual(await loadSaeDescription(binding, 16190, signal), result);
   assert.equal(calls, 2);
+} finally {
+  globalThis.fetch = originalFetch;
+}
+const nativeBinding = { model: binding.model, source: binding.source, repository: binding.repository,
+  saeId: "layer_13_width_16k_l0_medium" };
+assert.equal(parseSaeDescription({ ...payload, source: { ...payload.source, saelensSaeId: nativeBinding.saeId } }, nativeBinding, 16190).label, "terms and phrases");
+assert.throws(() => parseSaeDescription({ ...payload, source: { ...payload.source, saelensSaeId: "other-l0" } }, nativeBinding, 16190));
+
+let bundledRequests = 0;
+try {
+  globalThis.fetch = async (url, options) => {
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.referrerPolicy, "no-referrer");
+    assert.ok(url.includes("/sae-descriptions/"), "published bundled labels need no external lookup");
+    bundledRequests++;
+    return Response.json(JSON.parse(await readFile(new URL(url), "utf8")));
+  };
+  const published = await Promise.all([2286, 13181].map(id => loadSaeDescription(binding, id, new AbortController().signal)));
+  assert.deepEqual(published.map(entry => entry.label), ["Reuters", "particular conjunctions"]);
+  assert.equal(bundledRequests, 1, "parallel features share one dictionary download");
+  assert.equal((await loadSaeDescription(nativeBinding, 2286, new AbortController().signal)).label, "Reuters");
+  assert.equal(bundledRequests, 1, "native and browser bindings share the verified index");
 } finally {
   globalThis.fetch = originalFetch;
 }

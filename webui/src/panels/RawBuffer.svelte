@@ -1,4 +1,11 @@
 <script lang="ts">
+  import { createTokenArrival } from "../lib/tokenArrival";
+  const arrivals = createTokenArrival();
+  $effect.pre(() => {
+    const pending = chatLog.pendingIndex === null ? null : chatLog.turns[chatLog.pendingIndex];
+    arrivals.track(pending?.tokens ?? [], genStatus.active, "response");
+    arrivals.track(pending?.thinkingTokens ?? [], genStatus.active, "thinking");
+  });
   import { tokenInspectorUi } from "../lib/stores/drawers.svelte";
   // Flat completion buffer — the chat surface for base (non-chat)
   // models.  No bubbles, no role labels: the loom active path is joined
@@ -108,9 +115,10 @@
   });
 
   function onInput(ev: Event): void {
-    selection = null;
     editError = null;
-    const next = (ev.currentTarget as HTMLTextAreaElement).value;
+    const editor = ev.currentTarget as HTMLTextAreaElement;
+    const next = editor.value;
+    selection = { start: editor.selectionStart, end: editor.selectionEnd, text: next, nodeId: activeLeaf };
     editedTokenViews = next === bufferText ? null : projectEditedTokens(editedTokenViews ?? tokenViews, next);
     draft = next;
     dirty = draft !== bufferText;
@@ -363,8 +371,7 @@
   );
   const colorNotice = $derived.by(() => {
     if (!highlightState.target) return null;
-    if (dirty) return "Retained tokens keep their original readings; edited text has no recorded probabilities.";
-    if (committing || !hasClickableTokens) return null;
+    if (committing || !tokenViews.some(view => view.tok)) return null;
     const targets = [highlightState.target, ...(highlightState.compareTwo && highlightState.compareTarget
       ? [highlightState.compareTarget] : [])];
     const scores = tokenViews.flatMap(({ tok }) => targets.flatMap((target) => {
@@ -558,15 +565,13 @@
   </div>
   <p class="completion-hint" id="completion-hint">{mode === "inspect"
     ? "Click a recorded token to see its probabilities. Arrow keys move between tokens; editing stays in Edit text."
-    : "Continue from the end, or place the cursor or select text to complete from another point. The original stays saved in Loom."}{#if colorNotice}<span class="color-notice" role="status">{colorNotice}</span>{/if}</p>
+    : "Continue at the end, cursor, or selection. Originals stay saved in Loom."}{#if colorNotice}<span class="color-notice" role="status">{colorNotice}</span>{/if}</p>
 
-  {#if hasRecordedTokens || dirty}
-    <div class="token-legend" aria-label="Text origin legend">
-      <span class="origin-user">User text</span>
-      <span class="origin-model">Model tokens</span>
-      {#if dirty}<span class="origin-draft">Unsaved edit</span>{/if}
-    </div>
-  {/if}
+  <div class="token-legend" aria-label="Text origin legend">
+    <span class="origin-user">User text</span>
+    <span class="origin-model">Model tokens</span>
+    <span class="origin-draft" class:inactive={!dirty} role="status">Unsaved edit</span>
+  </div>
   {#if mode === "inspect" && inspectionSources.length > 1}
     <div class="inspection-source">
       <span>Inspect</span>
@@ -576,13 +581,13 @@
     {#if inspectionSource !== "current"}<p class="completion-hint">Original recorded text. Your current text and unsaved edits are unchanged.</p>{/if}
   {/if}
 
-  <div class="surface" class:inspecting={mode === "inspect"} class:loading-pulse={genStatus.active} bind:this={logRef} onscroll={mode === "inspect" ? onScroll : undefined}>
+  <div class="surface" class:inspecting={mode === "inspect"} class:generation-active={genStatus.active} bind:this={logRef} onscroll={mode === "inspect" ? onScroll : undefined}>
     {#if mode === "inspect"}
       <div class="inspect" dir="auto" aria-label="Completion tokens">
         {#each inspectedTokenViews as v, i (i)}
           {#if !v.tok}
             <span class="seg plain" class:origin-user={v.source === "user"} class:origin-draft={v.source === "draft"}
-              title={v.source === "draft" ? "Unsaved user edit · no recorded probabilities" : v.source === "model" ? "Model text · no recorded probabilities" : "User text · no recorded probabilities"}>{v.text}</span>
+              {...{ "aria-description": (v.source === "draft" ? "Unsaved user edit · no recorded probabilities" : v.source === "model" ? "Model text · no recorded probabilities" : "User text · no recorded probabilities") }}>{v.text}</span>
           {:else}
             <span
               class="seg tok clickable"
@@ -593,7 +598,7 @@
               class:tinted={highlightState.target !== null}
               class:has-alts={(v.tok?.topAlts?.length ?? 0) > 0}
               style={v.tok ? highlightStyleString(v.tok) : ""}
-              title={inspectTooltip(v)}
+              {...{ "aria-description": (inspectTooltip(v)) }}
               role="button"
               tabindex={i === focusedTokenViewIndex ? 0 : -1}
               data-token-view-index={i}
@@ -616,7 +621,7 @@
     {:else}
       {#if showColorMirror}
         <div class="color-mirror" bind:this={colorMirrorRef} dir="auto" aria-hidden="true">
-          {#each currentTokenViews as token, i (i)}<span class:origin-draft={token.source === "draft"} style={token.tok ? highlightStyleString(token.tok) : ""}>{token.text}</span>{/each}<span>{"\u200b"}</span>
+          {#each currentTokenViews as token, i (i)}<span use:arrivals.reveal={!genStatus.active || dirty || document.activeElement === textareaRef ? null : token.tok} class:origin-draft={token.source === "draft"} style={token.tok ? highlightStyleString(token.tok) : ""}>{token.text}</span>{/each}<span>{"\u200b"}</span>
         </div>
       {/if}
       <textarea
@@ -645,24 +650,11 @@
     {/if}
   </div>
 
-  {#if mode === "edit" && selectionCurrent && selection && draft.length > 0}
-    <div class="selection-actions" role="group" aria-label="Complete from selected text" aria-describedby="selection-hint">
-      <div class="selection-buttons">
-        <Button onclick={() => completeFromSelection()} disabled={dirty || genStatus.active || committing || preparingSelection || pendingActions.queue.length > 0}>
-          {selection.start === selection.end ? "Continue from cursor" : "Continue after selection"}
-        </Button>
-        {#if selection.start !== selection.end}
-          <Button onclick={() => completeFromSelection(true)} disabled={dirty || genStatus.active || committing || preparingSelection || pendingActions.queue.length > 0}>Re-complete from selection</Button>
-        {/if}
-      </div>
-      <p id="selection-hint" class="completion-hint">{dirty ? "Save your edit first to complete from this point." : selection.start === selection.end ? "Text after the cursor is regenerated in a new branch. The original stays saved." : "Continue keeps the selection; re-complete starts before it. Text after that point is regenerated in a new branch."}</p>
-    </div>
-  {/if}
-
   {#if tokenPopup?.view.tok}
     {@const view = tokenPopup.view}
     {#key tokenPopup.anchor}
       <TokenLogitsPopover token={tokenPopup.view.tok} anchor={tokenPopup.anchor}
+        isCurrent={anchor => tokenPopup?.anchor === anchor}
         source={inspectionSource !== "current" ? "Original recorded token" : tokenPopup.view.source === "user" ? "User text · recorded" : "Model token"}
         contextChanged={tokenPopup.view.contextChanged}
         onclose={() => tokenPopup = null}
@@ -675,45 +667,48 @@
   <PendingBubbles />
 
   <div class="actions">
-    {#if dirty}
     <div class="edit-actions">
-      <span class="dirty-flag" role="status">
-        Unsaved edit
-      </span>
       <Button
         onclick={() => void appendEdit()}
-        disabled={genStatus.active || committing || preparingSelection}
+        disabled={!dirty || genStatus.active || committing || preparingSelection}
         title="Save this edit without generating"
       >
         Save edit
       </Button>
-      <Button onclick={revertEdit} disabled={genStatus.active || committing || preparingSelection}>
+      <Button onclick={revertEdit} disabled={!dirty || genStatus.active || committing || preparingSelection}>
         Discard edit
       </Button>
+      <span class="keyboard-hint" aria-hidden="true">⌘ / Ctrl + Enter</span>
     </div>
-    {/if}
-    <div class="generation-actions">
-    <span class="keyboard-hint" aria-hidden="true">⌘ / Ctrl + Enter</span>
-    <Button
-      variant="solid"
-      onclick={submitBuffer}
-      disabled={genStatus.active || committing || preparingSelection}
-      busy={committing && !genStatus.active}
-      title="Continue text (Cmd/Ctrl+Enter)"
-    >Continue text</Button>
-    <Button
-      variant="danger"
-      onclick={sendStop}
-      disabled={!genStatus.active}
-      title="Esc"
-    >Stop</Button>
+    <div class="generation-actions" role="group" aria-label="Completion actions" aria-describedby="selection-hint">
+      <Button onclick={() => completeFromSelection()}
+        disabled={mode !== "edit" || !selectionCurrent || !selection || !draft.length || dirty || genStatus.active || committing || preparingSelection || pendingActions.queue.length > 0}>
+        {selection && selection.start !== selection.end ? "Continue after selection" : "Continue from cursor"}
+      </Button>
+      <Button
+        variant="solid"
+        onclick={submitBuffer}
+        disabled={genStatus.active || committing || preparingSelection}
+        busy={committing && !genStatus.active}
+        title="Continue text (Cmd/Ctrl+Enter)"
+      >Continue text</Button>
+      <Button onclick={() => completeFromSelection(true)}
+        disabled={mode !== "edit" || !selectionCurrent || !selection || selection.start === selection.end || dirty || genStatus.active || committing || preparingSelection || pendingActions.queue.length > 0}>
+        Re-complete from selection
+      </Button>
+      <Button
+        variant="danger"
+        onclick={sendStop}
+        disabled={!genStatus.active}
+        title="Esc"
+      >Stop</Button>
     </div>
+    <p id="selection-hint" class="completion-hint">Save edits first. Re-complete replaces the selection; the original stays saved.</p>
   </div>
 </div>
 
 <style>
-  .selection-actions { display: grid; gap: var(--space-sm); }
-  .selection-buttons { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+  .inactive { visibility: hidden; }
   .completion-hint, .completion-error, .color-notice { margin: 0; color: var(--fg-muted); font-family: var(--font-ui); font-size: var(--text-sm); line-height: 1.5; text-wrap: pretty; }
   .color-notice { display: block; }
   .token-legend { display: flex; flex-wrap: wrap; gap: var(--space-md); color: var(--fg-dim); font-family: var(--font-ui); font-size: var(--text-xs); }
@@ -848,17 +843,16 @@
     align-items: center;
     gap: var(--composer-space, var(--space-6));
   }
-  .actions { flex: 0 0 auto; justify-content: space-between; }
-  .generation-actions { margin-inline-start: auto; }
-  .keyboard-hint { color: var(--fg-muted); font-size: var(--text-xs); }
-  .dirty-flag {
-    color: var(--accent-yellow);
-    font-size: var(--text-xs);
-    margin-inline-end: auto;
+  .actions { flex: 0 0 auto; flex-direction: column; align-items: stretch; }
+  .generation-actions {
+    display: grid;
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
   }
+  .keyboard-hint { margin-inline-start: auto; color: var(--fg-muted); font-size: var(--text-xs); }
   @media (max-width: 40rem) {
     .keyboard-hint { display: none; }
-    .generation-actions { gap: var(--space-2); }
+    .generation-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
     .surface, .buffer-text, .color-mirror, .inspect { font-size: max(16px, var(--text)); }
   }
 </style>

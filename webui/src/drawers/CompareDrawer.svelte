@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Pairwise compare drawer — cross-layer cosine matrix between two
   // named steering profiles / probes. Two dropdowns pick from registered
@@ -127,6 +128,7 @@
   /** Cell pixel size — matches the correlation matrix.  Typical model
    * is ~30 layers so the matrix lands ~900px square; the scroll
    * container handles larger models. */
+  let focusedCell = $state("Select a cell to inspect its value");
   const CELL_SIZE = 26;
 
   const matrix = $derived(data?.matrix ?? null);
@@ -183,6 +185,7 @@
     {:else if !matrix || layersA.length === 0 || layersB.length === 0}
       <div class="empty">Choose two available profiles or probes to compare their layers.</div>
     {:else}
+      <p class="focused-cell" role="status"><MorphText text={focusedCell} numbers={false} /></p>
       <div class="grid-scroll">
         <table class="grid" style="--cell: {CELL_SIZE}px;">
           <thead>
@@ -193,7 +196,7 @@
                 <span class="axis-b">{conceptB}</span>
               </th>
               {#each layersB as lb (lb)}
-                <th class="col-label" scope="col" title="{conceptB} L{lb}">
+                <th class="col-label" scope="col" {...{ "aria-description": (conceptB) + " L" + (lb) }}>
                   <span>L{lb}</span>
                 </th>
               {/each}
@@ -202,15 +205,17 @@
           <tbody>
             {#each layersA as la, i (la)}
               <tr>
-                <th class="row-label" scope="row" title="{conceptA} L{la}">L{la}</th>
+                <th class="row-label" scope="row" {...{ "aria-description": (conceptA) + " L" + (la) }}>L{la}</th>
                 {#each layersB as lb, j (lb)}
                   {@const v = matrix[i]?.[j] ?? null}
                   <td class="cell-td">
+                    <button class="matrix-pick" type="button" onpointerenter={() => focusedCell = cellTitle(la, lb, v)} onfocus={() => focusedCell = cellTitle(la, lb, v)} onclick={() => focusedCell = cellTitle(la, lb, v)} aria-label={cellTitle(la, lb, v)}>
                     <HeatmapCell
                       value={v}
                       size={CELL_SIZE}
                       title={cellTitle(la, lb, v)}
                     />
+                    </button>
                   </td>
                 {/each}
               </tr>
@@ -224,6 +229,8 @@
 </aside>
 
 <style>
+  .matrix-pick { display: grid; place-items: center; min-width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; cursor: crosshair; }
+  .focused-cell { min-height: 2em; font: var(--text-sm)/1.5 var(--font-mono); overflow-wrap: anywhere; }
   /* v2 sheet interior — the host paints the sheet surface, so the root
    * stays transparent and chrome speaks sans (data stays mono). */
   .drawer {

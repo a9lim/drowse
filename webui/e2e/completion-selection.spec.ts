@@ -61,7 +61,7 @@ test("selection completion branches at the cursor, selection end, and selection 
   await select(page, 1, 4);
   for (const width of [1440, 450, 320]) {
     await page.setViewportSize({ width, height: 900 });
-    const actions = page.getByRole("group", { name: "Complete from selected text" });
+    const actions = page.getByRole("group", { name: "Completion actions" });
     await actions.scrollIntoViewIfNeeded();
     expect(await actions.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
     await actions.screenshot({ path: testInfo.outputPath(`selection-${width}.png`) });
@@ -74,9 +74,9 @@ test("unsaved selections require saving, and branch failures leave the original 
   await editor(page).fill(original + " Extra words.");
   await select(page, 3, 7);
   await expect(page.getByRole("button", { name: "Re-complete from selection", exact: true })).toBeDisabled();
-  await expect(page.locator("#selection-hint")).toHaveText("Save your edit first to complete from this point.");
+  await expect(page.locator("#selection-hint")).toContainText("Save edits first.");
   await page.getByRole("button", { name: "Save edit", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Save edit", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Save edit", exact: true })).toBeDisabled();
   await expect(editor(page)).toHaveValue(original + " Extra words.");
   await select(page, 3, 7);
   await page.evaluate(async url => {
@@ -94,7 +94,7 @@ test("duplicate chat UI preserves full snapshots and independent autosave identi
   await generate(page);
   await page.evaluate(async modules => {
     const [{ default: HostedHome }, { mount }, { conversationLibrary, registerConversationAutosave }, { sessionState }, { captureConversationSnapshot }] = await Promise.all([
-      import(modules.home), import("/@id/svelte"), import(modules.saved), import(modules.stores), import(modules.workspace),
+      import(modules.home), import("/e2e/svelte-runtime.ts"), import(modules.saved), import(modules.stores), import(modules.workspace),
     ]);
     await conversationLibrary.create({ name: "Moon notes", modelType: "base", snapshot: captureConversationSnapshot() });
     registerConversationAutosave(async () => {});
@@ -109,12 +109,13 @@ test("duplicate chat UI preserves full snapshots and independent autosave identi
     } });
   }, modules);
   const cards = page.locator("[data-saved-conversation]");
-  await expect(page.getByRole("button", { name: "Duplicate Moon notes", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "More options for Moon notes", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Duplicate Moon notes", exact: true })).toBeVisible();
   const beforeCount = await cards.count();
-  await page.getByRole("button", { name: "Duplicate Moon notes", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Duplicate Moon notes", exact: true }).click();
   await expect(cards).toHaveCount(beforeCount + 1);
   const copyCard = cards.filter({ hasText: "Moon notes (copy)" });
-  await expect(copyCard.locator(".chat-counts")).toHaveText("2 messages · 1 Loom thread");
+  await expect(copyCard.locator(".chat-counts .morph-source")).toHaveText("2 messages · 1 Loom thread");
   for (const width of [1440, 600, 450, 320]) {
     await page.setViewportSize({ width, height: 1000 });
     await copyCard.scrollIntoViewIfNeeded();

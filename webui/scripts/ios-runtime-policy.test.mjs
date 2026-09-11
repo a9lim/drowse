@@ -332,6 +332,14 @@ try {
   );
   assert.equal(
     capabilityModule.browserRuntimeClass(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15",
+      "iPad",
+      undefined,
+    ),
+    "apple-mobile-webkit",
+  );
+  assert.equal(
+    capabilityModule.browserRuntimeClass(
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:155.0) Gecko/20100101 Firefox/155.0",
       "MacIntel",
       0,
@@ -363,20 +371,20 @@ try {
     "desktop-gecko",
   );
   assert.equal(
-    outputTokenPolicy.outputTokenLimitForRuntime("apple-mobile-webkit"),
-    256,
+    outputTokenPolicy.outputTokenLimitForRuntime("apple-mobile-webkit", 4096),
+    4096,
   );
   assert.equal(
-    outputTokenPolicy.outputTokenLimitForRuntime("desktop-webkit"),
-    1_024,
+    outputTokenPolicy.outputTokenLimitForRuntime("desktop-webkit", 16384),
+    16384,
   );
   assert.equal(
-    outputTokenPolicy.outputTokenLimitForRuntime("desktop-gecko"),
-    1_024,
+    outputTokenPolicy.outputTokenLimitForRuntime("desktop-gecko", 32768),
+    32768,
   );
   assert.equal(
     outputTokenPolicy.outputTokenLimitForRuntime("desktop-chromium"),
-    8_192,
+    Number.MAX_SAFE_INTEGER,
   );
 
   const opfs = memoryOpfs();
@@ -422,6 +430,29 @@ try {
     }),
   ];
   try {
+    const originalStorage = globalThis.navigator.storage;
+    try {
+      for (const persisted of [
+        () => new Promise(() => {}),
+        () => { throw new Error("Protection status unavailable"); },
+        async () => { throw new Error("Protection status rejected"); },
+      ]) {
+        globalThis.navigator.storage = { ...originalStorage, persisted };
+        const estimate = await capabilityModule.storageEstimate(20);
+        assert.equal(estimate.availableBytes, 4_000_000_000);
+        assert.equal(estimate.persisted, null);
+      }
+      globalThis.navigator.storage = {
+        ...originalStorage,
+        estimate: () => new Promise(() => {}),
+        persisted: async () => true,
+      };
+      const unavailable = await capabilityModule.storageEstimate(20);
+      assert.equal(unavailable.availableBytes, null);
+      assert.equal(unavailable.persisted, true);
+    } finally {
+      globalThis.navigator.storage = originalStorage;
+    }
     const checker = new capabilityModule.BrowserCapabilityChecker();
     const checked = await checker.check();
     assert.equal(checked.supported, true);
@@ -438,6 +469,26 @@ try {
     assert.equal(calibratedDevices[0].state.maps, 4);
     assert.equal(calibratedDevices[0].state.copies, 4);
     assert.equal(await checker.adapterForLoad() instanceof Object, true);
+
+    const originalNavigatorIdentity = {
+      userAgent: globalThis.navigator.userAgent,
+      platform: globalThis.navigator.platform,
+      maxTouchPoints: globalThis.navigator.maxTouchPoints,
+    };
+    try {
+      Object.assign(globalThis.navigator, {
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15",
+        platform: "iPad",
+        maxTouchPoints: undefined,
+      });
+      const ipadWorker = await new capabilityModule.BrowserCapabilityChecker().check();
+      assert.equal(ipadWorker.supported, true);
+      assert.equal(ipadWorker.signals.appleMobile, true);
+      assert.equal(ipadWorker.signals.mobile, true);
+      assert.equal(ipadWorker.signals.runtimeClass, "apple-mobile-webkit");
+    } finally {
+      Object.assign(globalThis.navigator, originalNavigatorIdentity);
+    }
 
     const originalRequestAdapter = globalThis.navigator.gpu.requestAdapter;
     const changedAdapter = adapter();
@@ -562,6 +613,30 @@ try {
       globalThis.navigator.platform = mobilePlatform;
       globalThis.navigator.maxTouchPoints = mobileTouchPoints;
     }
+
+    globalThis.navigator.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0";
+    globalThis.navigator.gpu.requestAdapter = async () => ({
+      ...adapter({ fallback: false }),
+      info: { vendor: "intel", architecture: "gen-9" },
+    });
+    const windowsChecker = new capabilityModule.BrowserCapabilityChecker();
+    const windowsIntel = await windowsChecker.check();
+    assert.ok(windowsIntel.issues.some(({ code, severity, message }) =>
+      code === "WEBGPU_WINDOWS_INTEL_GEN9_BLOCKED" && severity === "hard" && /force-high-performance-gpu/u.test(message)
+    ));
+    assert.equal(windowsIntel.supported, false);
+    assert.equal(windowsIntel.operations.generation.available, false);
+    await assert.rejects(windowsChecker.adapterForLoad());
+    assert.equal(windowsIntel.webGpu.adapterInfo.architecture, "gen-9");
+    globalThis.navigator.gpu.requestAdapter = async () => ({
+      ...adapter({ fallback: false }),
+      info: { vendor: "nvidia", architecture: "pascal" },
+    });
+    const switchedGpu = await windowsChecker.check();
+    assert.equal(switchedGpu.supported, true);
+    assert.notEqual(switchedGpu.deviceSignature, windowsIntel.deviceSignature);
+    assert.equal((await windowsChecker.adapterForLoad()).info.vendor, "nvidia");
+    globalThis.navigator.userAgent = mobileUserAgent;
 
     globalThis.navigator.gpu.requestAdapter = async () => adapter({ fallback: true });
     const fallback = await new capabilityModule.BrowserCapabilityChecker().check();
@@ -766,7 +841,7 @@ try {
   await shell.check();
   assert.deepEqual(
     recommendedCatalog.document.models.map(({ id }) => id),
-    ["gemma3-1b-instruct"],
+    ["gemma3-270m-instruct", "gemma3-1b-instruct"],
   );
   assert.equal(recommendedPreference, "speed");
   const shellModel = shell.current().models[0];
@@ -778,9 +853,9 @@ try {
   console.log("ok - Safari admission uses capabilities and a real OPFS canary");
   console.log("ok - Apple mobile calibration repeats compute submissions and mapped readbacks");
   console.log("ok - Apple mobile model policy requires evidence and blocks 4B models");
-  console.log("ok - Apple mobile setup filters 270M, prefers speed, and defers SAE packs");
+  console.log("ok - Apple mobile setup retains 270M, prefers speed, and defers SAE packs");
   console.log("ok - Safari and Firefox previews require exact-browser load evidence");
-  console.log("ok - preview browsers use conservative output limits");
+  console.log("ok - output limits follow context capacity across browsers");
   console.log("ok - Firefox 155 remains blocked when its adapter reports 9 of 10 buffers");
 } finally {
   await server.close();

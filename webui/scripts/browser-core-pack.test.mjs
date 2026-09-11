@@ -63,6 +63,7 @@ try {
     const secondContextBindingSha256 = "c".repeat(64);
     const sphere = options.sphere === true;
     const curved = options.curved === true || sphere;
+    const fitMode = options.auto ? "auto" : curved ? "spectral" : "pca";
     const curveOrigin = options.curveOrigin ?? 0;
     const affineRank2 = options.affineRank2 === true || options.nonPoised === true;
     const saeFit = options.saeFit === true;
@@ -182,11 +183,12 @@ try {
       name: "demo",
       method: saeFit
         ? "manifold_discover_sae"
+        : options.auto ? "manifold_discover_auto"
         : curved ? "manifold_discover_spectral" : "manifold_discover_pca",
       drowse_version: "test",
-      fit_mode: curved ? "spectral" : "pca",
+      fit_mode: fitMode,
       hyperparams: {},
-      diagnostics: {},
+      diagnostics: options.diagnostics ?? {},
       node_count: labels.length,
       node_labels: labels,
       node_roles: nodeRoles,
@@ -217,7 +219,7 @@ try {
       nodes_sha256: discoverNodesHash(
         labels,
         Object.values(nodeFiles),
-        curved ? "spectral" : "pca",
+        fitMode,
         nodeRoles,
       ),
       sae_release: saeFit ? "release-a" : null,
@@ -243,9 +245,12 @@ try {
         "0": { sigma_mean: 0, sigma_min: 0, sigma_max: 0, lambda: 0 },
         "1": { sigma_mean: 0, sigma_min: 0, sigma_max: 0, lambda: 0 },
       } : {},
-      resolved_fit_mode: null,
-      topology_winner: null,
-      topology_candidates: [],
+      resolved_fit_mode: options.auto ? curved ? "spectral" : "pca" : null,
+      topology_winner: options.auto ? "fixture" : null,
+      topology_candidates: options.auto ? [{
+        name: "fixture", fit_mode: curved ? "spectral" : "pca", intrinsic_dim: 1,
+        score: 0.5, viable: true, reason: null,
+      }] : [],
       components: null,
       bake_policy: null,
       source_model_id: null,
@@ -256,7 +261,7 @@ try {
       format_version: 10,
       name: "demo",
       description: "core-pack fixture",
-      fit_mode: curved ? "spectral" : "pca",
+      fit_mode: fitMode,
       hyperparams: {},
       nodes: labels.map((label, index) => ({
         label,
@@ -727,6 +732,41 @@ try {
       loweringGolden.layers.map((layer) => layer.expectedAlong),
     );
     assert.deepEqual([...program.collapse], [0, 0]);
+  });
+
+  test("caches immutable generation payloads and isolates public mutable programs", async () => {
+    const { request } = await fixture({ withWhitener: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const borrowed = compiler.compileForGeneration("0.5 alert");
+    assert.equal(compiler.compileForGeneration("0.5 alert"), borrowed);
+    const publicProgram = compiler.compile("0.5 alert");
+    publicProgram.basis.fill(0);
+    assert.deepEqual([...borrowed.basis], [1, 0, 0, 1]);
+    assert.notEqual(compiler.compileForGeneration("0.3 alert"), borrowed);
+    const plain = compiler.compileForGeneration("");
+    compiler.attachProbe({ selector: "local/demo" });
+    assert.notEqual(compiler.compileForGeneration(""), plain);
+  });
+
+  test("routes auto fits by their fitted geometry and preserves inspector diagnostics", async () => {
+    for (const curved of [false, true]) {
+      const diagnostics = curved
+        ? { eigenvalues: [0, 0.5], picked_k: 1, gap_index: 1, gap_magnitude: 0.5, bandwidth: 1, k_nn: 1, component_count: 1 }
+        : { per_component_variance: [1], cumulative_variance: [1], picked_k: 1, threshold: 0.9 };
+      const { request } = await fixture({ auto: true, curved, diagnostics, withWhitener: true, structuredHookProfile: "standard-v3" });
+      const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+      const [summary] = compiler.listManifolds();
+      assert.equal(summary.fit_mode, "auto");
+      assert.equal(summary.resolved_fit_mode, curved ? "spectral" : "pca");
+      assert.equal(summary.fitted_for_session, true);
+      assert.equal(compiler.attachProbe({ selector: "local/demo" }).is_affine, !curved);
+      const detail = compiler.getManifold("local", "demo");
+      assert.deepEqual(detail.fitted[0].diagnostics, diagnostics);
+      assert.equal(detail.fitted[0].fit_mode, "auto");
+      detail.fitted[0].diagnostics.picked_k = 99;
+      assert.equal(compiler.getManifold("local", "demo").fitted[0].diagnostics.picked_k, 1);
+      assert.ok(compiler.compile("0.1 local/demo%alert").layerCount > 0);
+    }
   });
 
   test("loads a verified legacy-named core archive", async () => {
@@ -1247,6 +1287,7 @@ try {
     const requested = [];
     try {
       globalThis.fetch = async url => {
+        if (url.includes("/sae-descriptions/")) return new Response("unavailable", { status: 503 });
         const id = url.split("/").at(-1);
         requested.push(id);
         return Response.json({ modelId: binding.model, layer: binding.source, index: id,
@@ -1262,6 +1303,40 @@ try {
       assert.deepEqual(await runtime.request(request, () => null), expected);
       assert.deepEqual(await runtime.request(request, () => null), expected);
       assert.deepEqual(requested, ["1", "2"], "bundled labels and cached misses never trigger duplicate requests");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("keeps successful SAE descriptions when another lookup fails and retries the missing feature", async () => {
+    const binding = { model: "partial-model", source: "partial-source",
+      repository: "test/partial", folder: "layer_1" };
+    const compiler = {
+      instrumentDescriptor: () => ({ sae: { descriptionSource: binding }, jlens: null }),
+      validateSaeFeature: id => ({ id, label: null, max_act: 42 }),
+    };
+    const runtime = new BrowserInstrumentRuntime(compiler, null, null, false);
+    const originalFetch = globalThis.fetch;
+    const requested = [];
+    try {
+      globalThis.fetch = async url => {
+        const id = url.split("/").at(-1);
+        requested.push(id);
+        if (id === "2" && requested.filter(value => value === "2").length === 1) {
+          return new Response("unavailable", { status: 503 });
+        }
+        return Response.json({ modelId: binding.model, layer: binding.source, index: id,
+          source: { hfRepoId: binding.repository, hfFolderId: binding.folder },
+          explanations: [{ description: `published ${id}` }] });
+      };
+      const request = { service: "instruments", method: "saeFeaturesMetadata", args: [[1, 2]] };
+      assert.deepEqual(await runtime.request(request, () => null), {
+        features: { "1": { label: "published 1", max_act: 42 } },
+      });
+      assert.deepEqual(await runtime.request(request, () => null), {
+        features: { "1": { label: "published 1", max_act: 42 }, "2": { label: "published 2", max_act: 42 } },
+      });
+      assert.deepEqual(requested, ["1", "2", "2"]);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -1700,6 +1775,31 @@ try {
     assert.equal(Object.hasOwn(program.measurementSchema, "geometryProbes"), false);
   });
 
+  test("keeps lens gate and pinned means independent of live display layers", async () => {
+    const { request } = await fixture({ withWhitener: true, withJlens: true, structuredHookProfile: "standard-v3" });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    for (const pinned of [false, true]) {
+      if (pinned) compiler.attachProbe({ selector: "jlens/hello", name: "jlens/hello" });
+      for (const [enabled, layers] of [[false, undefined], [true, undefined], [true, [1]], [true, [0]]]) {
+        compiler.setInstrumentLive("lens", enabled, layers);
+        const program = compiler.compile("0.5 alert@when:jlens/hello>0.6");
+        assert.deepEqual([...program.jLensLayerIndices], [0, 1]);
+        assert.deepEqual([...program.jLensReadoutLayerIndices], enabled ? layers ?? [0, 1] : []);
+        const values = new Float32Array(program.layerCount * program.profile.maxProbes);
+        values[0] = 0.1;
+        values[program.profile.maxProbes] = 0.9;
+        const controls = structuredHookControlsFor(program, {
+          prefill: false, thinking: false, generatedTokens: 1, priorMeasurements: values,
+        });
+        assert.equal(controls.affineActive.some(Boolean), false);
+        values[0] = 0.7;
+        assert.equal(structuredHookControlsFor(program, {
+          prefill: false, thinking: false, generatedTokens: 1, priorMeasurements: values,
+        }).affineActive.some(Boolean), true);
+      }
+    }
+  });
+
   test("compiles exact selected J-lens live layers", async () => {
     const { request } = await fixture({
       withWhitener: true,
@@ -1820,10 +1920,11 @@ try {
     assert.equal(compiler.compile("").measurementSchema.lensReadout, false);
   });
 
-  test("Apple mobile starts optional live readouts off but keeps them available", async () => {
+  test("optional live readouts can stay off without disabling their tools", async () => {
     const { request } = await fixture({
       withWhitener: true,
       withJlens: true,
+      withSae: true,
       structuredHookProfile: "standard-v3",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
@@ -1839,6 +1940,8 @@ try {
       layers: null,
     });
     assert.equal(compiler.compile("").measurementSchema.lensReadout, false);
+    assert.equal(compiler.compile("").measurementSchema.saeReadout, false);
+    assert.equal(runtime.blocks()[2].live.enabled, false);
     assert.deepEqual(runtime.request({
       service: "instruments",
       method: "setLive",

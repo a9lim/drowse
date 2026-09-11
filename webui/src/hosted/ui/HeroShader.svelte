@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  let { paused = false, contained = false }: { paused?: boolean; contained?: boolean } = $props();
+  import { subscribeTheme } from "../../lib/theme";
+  let { paused = false, contained = false, closeup = false }: { paused?: boolean; contained?: boolean; closeup?: boolean } = $props();
   let updateMotion = $state<(() => void) | null>(null);
   $effect(() => { void paused; updateMotion?.(); });
   let host: HTMLElement;
@@ -25,6 +26,7 @@
     let source: ReturnType<typeof import("./heroShaderRuntime").createHeroShaderSource> | null = null;
     let disposed = false, initialized = false, inView = false, lost = false;
     let frame = 0, lastFrame = 0, progress = 0;
+    let lightTheme = document.documentElement.dataset.theme === "light";
     if (motion.matches || saveData) status = "fallback";
     const moving = () => !disposed && !paused && !motion.matches && !saveData && !document.hidden && inView && !lost;
     const stop = () => {
@@ -36,10 +38,10 @@
     const render = (now: number) => {
       frame = 0;
       if (!moving() || !source) return;
-      if (!lastFrame || now - lastFrame >= 1000 / 30) {
+      if (!lastFrame || now - lastFrame >= source.frameInterval) {
         const delta = lastFrame ? Math.min((now - lastFrame) / 1000, 0.1) : 1 / 30;
         lastFrame = now;
-        try { if (source.update(progress, delta)) status = "ready"; }
+        try { if (source.update(progress, delta, lightTheme, orbBoost)) status = "ready"; }
         catch { fail(); return; }
       }
       frame = requestAnimationFrame(render);
@@ -51,22 +53,35 @@
       frame = requestAnimationFrame(render);
     };
     const onScroll = () => {
-      const blend = Math.min(1, Math.max(0, window.scrollY / Math.max(innerHeight * 2.5, 1)));
+      if (closeup) {
+        progress = 0.38;
+        orbBoost = 1.25;
+        host.dataset.travel = progress.toFixed(3);
+        return;
+      }
+      const viewportHeight = contained ? innerHeight : host.clientHeight;
+      const blend = Math.min(1, Math.max(0, window.scrollY / Math.max(viewportHeight * 2.5, 1)));
       const dimming = blend * blend * (3 - 2 * blend);
       orbBoost = host.clientWidth > 760 ? 2.2 - 0.8 * dimming : 1 - 0.1 * dimming;
       if (paused || motion.matches || saveData) return;
-      progress = Math.min(1, Math.max(0, window.scrollY / Math.max(innerHeight * 1.8, 1)));
+      progress = Math.min(1, Math.max(0, window.scrollY / Math.max(viewportHeight * 1.8, 1)));
       host.dataset.travel = progress.toFixed(3);
     };
     const resize = () => {
+      onScroll();
       if (source) {
         try {
           source.resize(host.clientWidth, host.clientHeight);
-          if (!moving()) source.update(progress, 0);
+          // Resizing clears the canvas; redraw before Safari can composite it.
+          source.update(progress, 0, lightTheme, orbBoost);
         } catch { fail(); }
       }
-      onScroll();
     };
+    const unsubscribeTheme = subscribeTheme((theme) => {
+      lightTheme = theme === "light";
+      try { source?.update(progress, 0, lightTheme, orbBoost); }
+      catch { fail(); }
+    });
     const initialize = async () => {
       if (initialized || !moving()) return;
       initialized = true;
@@ -116,6 +131,7 @@
     onScroll();
     return () => {
       disposed = true; stop(); source?.dispose(); source = null;
+      unsubscribeTheme();
       intersection.disconnect(); observer.disconnect();
       motion.removeEventListener("change", update);
       document.removeEventListener("visibilitychange", update);
@@ -131,7 +147,7 @@
   });
 </script>
 
-<div class="hero-visual" class:contained bind:this={host} data-shader-status={status} data-orb-boost={orbBoost.toFixed(3)} aria-hidden="true">
+<div class="hero-visual" class:contained class:closeup bind:this={host} data-shader-status={status} data-orb-boost={orbBoost.toFixed(3)} aria-hidden="true">
   <svg class="palette-definitions" width="0" height="0" focusable="false">
     <defs>
       <filter id="hero-dark-palette" color-interpolation-filters="sRGB">
@@ -182,8 +198,10 @@
   .visual-layer {
     position: absolute;
     inset: 0;
-    filter: var(--hero-media-filter);
-    transition: filter var(--dur) var(--ease-out);
+  }
+
+  @media (hover: none) and (pointer: coarse) {
+    .hero-visual:not(.contained) { bottom: auto; height: 100lvh; }
   }
 
   .hero-visual.contained { position: absolute; }
@@ -198,11 +216,14 @@
 
   .fallback {
     background: url("/images/ethereal-orb.jpg") center / cover no-repeat;
+    filter: var(--hero-media-filter);
     opacity: 0;
     transition: opacity 600ms var(--ease-out);
   }
 
   .fallback.visible { opacity: 1; }
+
+  .hero-visual.closeup .fallback { background-size: auto 180%; background-position: 60% 48%; }
 
   canvas {
     display: block;

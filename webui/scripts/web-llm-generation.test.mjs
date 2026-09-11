@@ -18,6 +18,8 @@ try {
     measurementGateScores,
     readWebLlmRuntimeCapabilities,
     streamWebLlmGeneration,
+    webLlmGenerationErrorUsage,
+    validateWebLlmGenerationSettings,
   } = await server.ssrLoadModule(
     "/src/hosted/runtime/webLlmGeneration.ts",
   );
@@ -29,6 +31,7 @@ try {
   );
   const {
     BROWSER_RETURN_TOP_K_MAX,
+    BROWSER_SAMPLING_TOP_K_MAX,
     HTTP_RETURN_TOP_K_DEFAULT,
     HTTP_RETURN_TOP_K_MAX,
     clampTokenAlternativeCount,
@@ -62,10 +65,16 @@ try {
   assert.equal(tokenAlternativeLimit("browser"), BROWSER_RETURN_TOP_K_MAX);
   assert.equal(tokenAlternativeLimit("fake"), 0);
   assert.equal(tokenAlternativeDefault("http"), HTTP_RETURN_TOP_K_DEFAULT);
-  assert.equal(tokenAlternativeDefault("browser"), BROWSER_RETURN_TOP_K_MAX);
+  assert.equal(tokenAlternativeDefault("browser"), 5);
   assert.equal(tokenAlternativeDefault("fake"), 0);
-  assert.equal(clampTokenAlternativeCount(8, "browser"), 5);
+  assert.equal(clampTokenAlternativeCount(262144, "browser"), 262144);
   assert.equal(clampTokenAlternativeCount(8, "http"), 8);
+  for (const top_k of [1025, 4097, 262144, BROWSER_SAMPLING_TOP_K_MAX]) {
+    assert.equal(validateWebLlmGenerationSettings({ top_k }, false).top_k, top_k);
+  }
+  assert.throws(() => validateWebLlmGenerationSettings({ top_k: Number.MAX_SAFE_INTEGER + 1 }, false), /top_k/);
+  assert.throws(() => validateWebLlmGenerationSettings({ seed: -1 }, false), /seed/);
+  assert.equal(validateWebLlmGenerationSettings({ seed: Number.MAX_SAFE_INTEGER }, false).seed, Number.MAX_SAFE_INTEGER);
   const drowseEngineMethods = {
     async getDrowseRuntimeCapabilities() {
       return {
@@ -321,10 +330,21 @@ try {
     { role: "user", content: "Continue" },
   ]);
   assert.deepEqual(calls.at(-1)[1].extra_body, {
-    enable_thinking: false,
     drowse_generation_role: "forest_guide",
   });
   assert.deepEqual(namedRoleTokens.map((token) => token.text), ["Hello", " world"]);
+
+  for (const thinkingProfile of [null, {
+    start: "<think>", end: "</think>", startTokenIds: [100], endTokenIds: [101], startsInThinking: false,
+  }]) {
+    await streamWebLlmGeneration(engine, hooks, {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      thinking: false,
+      thinkingProfile,
+    }, () => {});
+    assert.deepEqual(calls.at(-1)[1].extra_body, thinkingProfile ? { enable_thinking: false } : undefined,
+      "models without thinking must not receive an empty thinking-block prompt override");
+  }
 
   await assert.rejects(
     streamWebLlmGeneration(
@@ -1050,6 +1070,76 @@ try {
       };
     },
   };
+  const userAbort = new AbortController();
+  const cancelledTokens = [];
+  let abortInterrupts = 0;
+  await assert.rejects(streamWebLlmGeneration(
+    {
+      ...drowseEngineMethods,
+      chat: { completions: { async create() { return splitStopStream; } } },
+      completions: { async create() { throw new Error("unexpected raw generation"); } },
+    },
+    {
+      async clear() {},
+      async interrupt() { abortInterrupts += 1; },
+      async install() {},
+      async read() {},
+      assertSteeringSupported() {},
+    },
+    {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      signal: userAbort.signal,
+    },
+    token => { cancelledTokens.push(token); userAbort.abort(); },
+  ), error => {
+    assert.equal(error.name, "AbortError");
+    assert.deepEqual(webLlmGenerationErrorUsage(error), {
+      promptTokens: 3, completionTokens: 2, totalTokens: 5,
+    });
+    return true;
+  });
+  assert.equal(cancelledTokens.length, 1, "tokens arriving after Stop must not reach the conversation");
+  assert.equal(abortInterrupts, 1);
+
+  for (const cancelAt of ["raw-start", "raw-token", "visible-token"]) {
+    const controller = new AbortController();
+    const visible = [];
+    let interrupts = 0;
+    const rows = ["a", "b"].map((token, index) => ({
+      token, token_id: index + 10, logprob: -0.2,
+      drowse_sampler: { entropy_nats: 0.4, perplexity: Math.exp(0.4) },
+    }));
+    const engine = {
+      async getDrowseRuntimeCapabilities() {
+        return { topK: true, forcedReplay: true, replayScoring: true, tokenizer: true,
+          namedRoles: true, userSeatGeneration: true, sceneStitching: true };
+      },
+      chat: { completions: { async create() {
+        return (async function* () {
+          yield { choices: [{ index: 0, delta: { content: "ab" }, finish_reason: null,
+            logprobs: { content: rows } }] };
+          yield { choices: [{ index: 0, delta: {}, finish_reason: "abort",
+            drowse_finish_reason: "external_stop", logprobs: null }] };
+          yield { choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } };
+        })();
+      } } },
+    };
+    await assert.rejects(streamWebLlmGeneration(engine, {
+      async clear() {}, async install() {}, async read() {},
+      async interrupt() { interrupts += 1; }, assertSteeringSupported() {},
+    }, {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      signal: controller.signal,
+      async onRawTokenStart() { if (cancelAt === "raw-start") controller.abort(); },
+      async onRawToken() { if (cancelAt === "raw-token") controller.abort(); },
+    }, async token => {
+      visible.push(token.text);
+      if (cancelAt === "visible-token") controller.abort();
+    }), error => error.name === "AbortError");
+    assert.deepEqual(visible, cancelAt === "visible-token" ? ["a"] : [], cancelAt);
+    assert.equal(interrupts, 1);
+  }
+
   const splitStopResult = await streamWebLlmGeneration(
     {
       ...drowseEngineMethods,
@@ -1446,7 +1536,8 @@ try {
       layerProbabilities: selectColumns(probabilities),
     };
   };
-  for (const width of [5, 8]) {
+  for (const alternatives of [5, 8, 262144]) {
+    const width = Math.min(alternatives, 8);
     const requestedWidths = [];
     let scalarReads = 0;
     const exactTokens = [];
@@ -1486,7 +1577,7 @@ try {
         input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
         hookProgram: exactReadoutProgram,
         measurementSpecialTokenIds: [99],
-        ...(width === 5 ? { sampling: { return_top_k: 5 } } : {}),
+        sampling: { return_top_k: alternatives },
       },
       (token) => exactTokens.push(token),
     );
@@ -2221,7 +2312,7 @@ try {
   );
   assert.deepEqual(thinkingRequest.extra_body, { enable_thinking: true });
   assert.deepEqual(thinkingUpdates, [1, 0]);
-  assert.equal(thinkingProgram.affineActive[0], 0);
+  assert.equal(thinkingProgram.affineActive[0], 1, "generation does not mutate the compiled payload");
   assert.deepEqual(thinkingTokens.map(({ text, thinking }) => [text, thinking]), [
     ["reason", true],
     ["answer", false],
@@ -2671,6 +2762,7 @@ try {
     async unload() {},
     async reload() {},
     async interruptGenerate() {},
+    async resetChat() {},
     async supportsDrowseRankOneHooks() { return true; },
     async setDrowseRankOneProgram() {},
     async clearDrowseRankOneProgram() {},

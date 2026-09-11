@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { fade } from "svelte/transition";
+  import { motionDuration } from "../../lib/motion";
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import Select from "../../lib/Select.svelte";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // Feature descriptions and reference maxima belong to the readout's SAE.
@@ -47,6 +50,7 @@
     source.source === readout.source && source.layer === readout.data?.layer));
   const descriptionSource = $derived(sourceInfo?.description_source as SaeDescriptionSource | null | undefined);
   const descriptionIdentity = $derived(JSON.stringify(descriptionSource ?? null));
+  const readoutIdentity = $derived(`${readout.data?.node_id}/${readout.data?.raw_index}/${readout.source}/${readout.data?.layer}/${readout.data?.features.map(feature => feature.id).join(",")}`);
   let query = $state("");
   let sort = $state("activation");
   let descriptions = $state<Record<number, SaeDescription>>({});
@@ -59,10 +63,8 @@
     .sort((a, b) => b.activation - a.activation)
     .map((feature, index) => [feature.id, index + 1])));
   $effect(() => {
-    const identity = `${readout.data?.node_id}/${readout.data?.raw_index}/${readout.source}/${readout.data?.layer}`;
-    void identity;
+    void readoutIdentity;
     void descriptionIdentity;
-    void readout.data?.features.map(feature => feature.id).join(",");
     descriptions = {};
     descriptionsError = "";
     descriptionsLoading = false;
@@ -73,7 +75,7 @@
   const visibleFeatures = $derived.by(() => {
     const text = query.trim().toLowerCase();
     return [...(readout.data?.features ?? [])]
-      .filter(feature => !text || `sae/${feature.id} ${feature.label ?? descriptions[feature.id]?.label ?? ""}`.toLowerCase().includes(text))
+      .filter(feature => !text || `sae/${feature.id} ${feature.label?.trim() || descriptions[feature.id]?.label || ""}`.toLowerCase().includes(text))
       .sort((a, b) => sort === "id" ? a.id - b.id : b.activation - a.activation);
   });
 
@@ -165,7 +167,7 @@
 {#if readout.loading}
   <div class="readout-progress loading-pulse" role="status" aria-live="polite">
     <div class="progress-heading">
-      <span>{progressTitle}</span>
+      <span><MorphText text={progressTitle} numbers={false} /></span>
       <code>{#if determinateProgress}<RollingNumber value={progressPercent} />%{:else}starting{/if}</code>
     </div>
     <div
@@ -199,9 +201,14 @@
     <p>Feature descriptions are published interpretations, not definitive meanings. Activations are not probabilities.</p>
     {#if descriptionSource}
       <button class="description-action" disabled={descriptionsLoading || !missingDescriptions} aria-busy={descriptionsLoading} onclick={loadDescriptions}>
-        {descriptionsLoading ? "Loading descriptions…" : descriptionsError ? "Retry descriptions" : !missingDescriptions ? "Descriptions checked" : "Load published descriptions"}
+        <MorphText text={descriptionsLoading ? "Loading descriptions…" : descriptionsError ? "Retry descriptions" : !missingDescriptions ? "Descriptions checked" : "Load published descriptions"} />
       </button>
-      <p class="metadata-privacy">Automatically looks up this SAE’s feature IDs on Neuronpedia. Your conversation and activation values are not sent.</p>
+      <p class="metadata-privacy">Uses published Neuronpedia descriptions included with Drowse, then looks up missing feature IDs. Your conversation and activation values are not sent.</p>
+    {:else if saeSourceState.loading}
+      <p role="status">Checking the SAE description source…</p>
+    {:else if saeSourceState.error}
+      <p class="metadata-error" role="alert">{saeSourceState.error}</p>
+      <button class="description-action" onclick={() => void refreshSaeSources()}>Retry description source</button>
     {:else}
       <p class="metadata-privacy">Only labels included with this exact SAE pack are shown. An exact published dictionary match is required for additional descriptions.</p>
     {/if}
@@ -241,16 +248,20 @@
                 </DetailCardHeader>
               {/snippet}
               {#snippet body()}
-                <p class="feature-description" class:missing={!label}>
-                  {label || (published ? "No description published for this feature" : descriptionSource ? descriptionsLoading ? "Loading description…" : "Description could not be loaded" : "No description included in this pack")}
+                {#if label}
+                  {#key label}<p class="feature-description" in:fade={{duration: motionDuration(160)}}>{label}</p>{/key}
+                {:else}
+                <p class="feature-description missing">
+                  <MorphText text={(published ? "No description published for this feature" : descriptionSource ? descriptionsLoading ? "Loading description…" : "Description could not be loaded" : saeSourceState.loading ? "Loading description source…" : saeSourceState.error ? "Description source could not be loaded" : "No description included in this pack")} numbers={false} />
                 </p>
+                {/if}
                 {#if published}
                   <a class="description-source" href={published.url} target="_blank" rel="noreferrer">Neuronpedia{published.explanationModel ? ` · ${published.explanationModel}` : " · feature record"}</a>
                 {/if}
                 <div class="feature-reading" role="group" aria-label={`Activation for sae/${feature.id}`}>
                   <span class="row-label">{strength != null ? "Relative activation" : "Raw activation"}</span>
                   <span class="sae-value">
-                    {strength != null ? strength.toFixed(3) : feature.activation.toFixed(2)}
+                    <MorphText text={strength != null ? strength.toFixed(3) : feature.activation.toFixed(2)} identity={strength != null ? "relative" : "raw"} />
                   </span>
                   <div class="feature-bar">
                     {#if strength != null}

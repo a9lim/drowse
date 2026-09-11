@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MorphText from "../lib/ui/MorphText.svelte";
   import { onDestroy, tick } from "svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   import Button from "../lib/ui/Button.svelte";
@@ -64,7 +65,7 @@
           aria-describedby={`surface-input-help${error ? " surface-error" : ""}`}></textarea>
         <div class="actions">
           <Button disabled={busy} onclick={() => { input = JSON.stringify(exampleSphere()); changed(); }}>Use sphere example</Button>
-          <Button variant="solid" type="submit" disabled={busy}>{busy ? "Inspecting…" : "Inspect surface"}</Button>
+          <Button variant="solid" type="submit" disabled={busy}><MorphText text={busy ? "Inspecting…" : "Inspect surface"} /></Button>
         </div>
         <p role="status">{busy ? "Computing surface evidence locally. This can take a minute; generation is unchanged." : ""}</p>
         {#if error}<p id="surface-error" role="alert">{error}</p>{/if}
@@ -107,7 +108,7 @@
   .surface-card { display: grid; gap: var(--space-4); padding: var(--surface-padding); border-radius: var(--radius); background: var(--bg-elev); }
   form { display: grid; gap: var(--space-4); }
   label { color: var(--fg-strong); font-weight: var(--weight-medium); }
-  textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 9rem; padding: var(--space-3); border-radius: var(--radius); background: var(--bg-deep); color: var(--fg); font: inherit; font-family: var(--font-mono); }
+  textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 9rem; padding: var(--space-3); border-radius: var(--radius); background: var(--input-well); color: var(--fg); font: inherit; font-family: var(--font-mono); }
   .actions { display: flex; flex-wrap: wrap; gap: var(--space-4); }
   [role="alert"] { color: var(--accent-red); }
   .eyebrow { color: var(--accent); font-size: var(--text-xs); font-weight: var(--weight-medium); }

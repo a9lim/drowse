@@ -83,6 +83,15 @@ try {
   metadataRequests[3].resolve({ features: { "396": { label: "correct dictionary", max_act: null } } });
   await retry;
   assert.equal(saeState.meta.get(396).label, "correct dictionary");
+  recordSaeReadoutFrame([{ id: 17, activation: 1, label: null, max_act: 20 }]);
+  const partial = backfillSaeMeta();
+  metadataRequests[4].resolve({ features: {} });
+  await partial;
+  const partialRetry = backfillSaeMeta();
+  assert.deepEqual(metadataRequests[5].ids, [17], "an omitted feature is a retryable lookup failure");
+  metadataRequests[5].resolve({ features: { "17": { label: "recovered label", max_act: null } } });
+  await partialRetry;
+  assert.deepEqual(saeState.meta.get(17), { label: "recovered label", max_act: 20 });
   console.log("SAE metadata lifecycle: missing-label backfill, frame preservation, pack-switch isolation, and offline retry passed");
   console.log("Readout lifecycle: bounded pending work, 500 overflow attempts, deduplication, invalidation, and transport recovery passed");
 } finally {

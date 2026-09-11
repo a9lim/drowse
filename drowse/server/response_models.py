@@ -693,6 +693,14 @@ class InstrumentsResponse(TypedDict):
     instruments: list[InstrumentFamilyBlock]
 
 
+class SaeDescriptionSourceJSON(TypedDict):
+    model: str
+    source: str
+    repository: str
+    folder: NotRequired[str]
+    saeId: NotRequired[str]
+
+
 class InstrumentSourceJSON(TypedDict):
     """One usable artifact source (lens binding / SAE source row)."""
 
@@ -708,6 +716,7 @@ class InstrumentSourceJSON(TypedDict):
     checkpoint: NotRequired[str]
     layer: NotRequired[int]
     features: NotRequired[int]
+    description_source: NotRequired[SaeDescriptionSourceJSON | None]
 
 
 class SaeReleaseJSON(TypedDict):

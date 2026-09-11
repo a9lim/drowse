@@ -1,9 +1,10 @@
 import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../lib/runtime/contracts";
 import {
   clampOutputTokenCount,
-  DESKTOP_MAX_OUTPUT_TOKENS,
+  MAX_OUTPUT_TOKEN_COUNT,
 } from "../../lib/runtime/outputTokenPolicy";
 import { blake2b } from "@noble/hashes/blake2.js";
+import { SAMPLING_TEMPERATURE_MAX } from "../../lib/runtime/samplingCapabilities";
 import type {
   ChatRole,
   LoomNodeJSON,
@@ -110,10 +111,11 @@ export class BrowserLoomRuntime {
   private readonly maxOutputTokens: number;
   private generating = false;
   private stopRequested = false;
+  private generationController: AbortController | null = null;
   private generationReservation: GenerationReservation | null = null;
 
   constructor(options: BrowserLoomOptions) {
-    this.maxOutputTokens = options.maxOutputTokens ?? DESKTOP_MAX_OUTPUT_TOKENS;
+    this.maxOutputTokens = options.maxOutputTokens ?? MAX_OUTPUT_TOKEN_COUNT;
     if (!Number.isSafeInteger(this.maxOutputTokens) || this.maxOutputTokens < 1) {
       throw loomError(
         "INVALID_OUTPUT_TOKEN_LIMIT",
@@ -232,10 +234,12 @@ export class BrowserLoomRuntime {
     }
     this.stopRequested = false;
     this.generating = true;
+    this.generationController = new AbortController();
     try {
       await this.runGeneration(request, emit);
     } finally {
       this.generationReservation = null;
+      this.generationController = null;
       this.stopRequested = false;
       this.generating = false;
     }
@@ -243,6 +247,7 @@ export class BrowserLoomRuntime {
 
   stop(userInitiated = true): Promise<void> {
     if (userInitiated && this.generating) this.stopRequested = true;
+    this.generationController?.abort();
     return this.generation.stop();
   }
 
@@ -551,6 +556,7 @@ export class BrowserLoomRuntime {
       let result: WebLlmGenerationResult;
       try {
         const plan: WebLlmGenerationPlan = {
+          signal: this.generationController!.signal,
           input: generationInput(
             request,
             this.tree,
@@ -3107,7 +3113,7 @@ function validateResolvedSamplingCapabilities(
 }
 
 function validateSessionConfig(value: SessionInfo["config"]): void {
-  finiteRange(value.temperature, "temperature", 0, 2);
+  finiteRange(value.temperature, "temperature", 0, SAMPLING_TEMPERATURE_MAX);
   finiteRange(value.top_p, "top_p", 0, 1);
   nullableInteger(value.top_k, "top_k", 0);
   nullableInteger(value.max_tokens, "max_tokens", 1);

@@ -1,5 +1,5 @@
 diff --git a/package-lock.json b/package-lock.json
-index 0070bde..79ea513 100644
+index 0070bde..ec5b039 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,21 +1,21 @@
@@ -7,7 +7,7 @@ index 0070bde..79ea513 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.34",
++  "version": "0.2.84-drowse.38",
    "lockfileVersion": 3,
    "requires": true,
    "packages": {
@@ -15,7 +15,7 @@ index 0070bde..79ea513 100644
 -      "name": "@mlc-ai/web-llm",
 -      "version": "0.2.84",
 +      "name": "@drowse/web-llm",
-+      "version": "0.2.84-drowse.34",
++      "version": "0.2.84-drowse.38",
        "license": "Apache-2.0",
        "dependencies": {
 -        "loglevel": "^1.9.1"
@@ -170,18 +170,25 @@ index 0070bde..79ea513 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..53aa196 100644
+index cabfc3d..c64c3c4 100644
 --- a/package.json
 +++ b/package.json
-@@ -1,6 +1,6 @@
+@@ -1,12 +1,12 @@
  {
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.34",
++  "version": "0.2.84-drowse.38",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
+   "type": "module",
+   "scripts": {
+-    "build": "rollup -c && ./cleanup-index-js.sh",
++    "build": "node --test tvm-direct-upload.test.mjs && rollup -c && ./cleanup-index-js.sh",
+     "lint": "npx eslint ./src/ ./tests/ ./examples/ && npx prettier ./src/ ./tests/ ./examples/ --check",
+     "test": "jest --coverage",
+     "format": "prettier --write \"./src/\" \"./examples/\" \"./tests/\"",
 @@ -17,7 +17,7 @@
    ],
    "repository": {
@@ -224,6 +231,26 @@ index cabfc3d..53aa196 100644
 +    }
    }
  }
+diff --git a/rollup.config.js b/rollup.config.js
+index 60fbfe9..abc1c0b 100644
+--- a/rollup.config.js
++++ b/rollup.config.js
+@@ -2,6 +2,7 @@ import { nodeResolve } from "@rollup/plugin-node-resolve";
+ import ignore from "rollup-plugin-ignore";
+ import commonjs from "@rollup/plugin-commonjs";
+ import typescript from "@rollup/plugin-typescript";
++import { directUploadPlugin } from "./tvm-direct-upload.mjs";
+ 
+ export default {
+   input: "src/index.ts",
+@@ -15,6 +16,7 @@ export default {
+     },
+   ],
+   plugins: [
++    directUploadPlugin(),
+     ignore(["fs", "path", "crypto", "node:fs", "node:path", "node:crypto"]),
+     nodeResolve({ browser: true }),
+     commonjs({
 diff --git a/src/cache_util.ts b/src/cache_util.ts
 index 6bf8d4f..69bf5db 100644
 --- a/src/cache_util.ts
@@ -248,7 +275,7 @@ index 6bf8d4f..69bf5db 100644
  }
  
 diff --git a/src/config.ts b/src/config.ts
-index 6c45add..117c6ae 100644
+index 6c45add..13aff98 100644
 --- a/src/config.ts
 +++ b/src/config.ts
 @@ -1,3 +1,5 @@
@@ -281,18 +308,20 @@ index 6c45add..117c6ae 100644
    temperature?: number | null;
    // Only in OpenAI APIs
    max_tokens?: number | null;
-@@ -162,6 +167,10 @@ export interface GenerationConfig {
+@@ -162,6 +167,12 @@ export interface GenerationConfig {
    // extra_body in ChatCompletionsRequest
    enable_thinking?: boolean | null;
    enable_latency_breakdown?: boolean | null;
 +  drowse_generation_role?: string | null;
 +  drowse_generation_seat?: "user" | "assistant" | null;
 +  drowse_forced_prefix_token_ids?: number[] | null;
++  drowse_readout_start_index?: number;
++  drowse_readout_target_index?: number;
 +  drowse_score_token_ids?: number[] | null;
  }
  
  export function postInitAndCheckGenerationConfigValues(
-@@ -171,6 +180,34 @@ export function postInitAndCheckGenerationConfigValues(
+@@ -171,6 +182,44 @@ export function postInitAndCheckGenerationConfigValues(
      // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
      return value !== undefined && value !== null;
    }
@@ -309,6 +338,16 @@ index 6c45add..117c6ae 100644
 +    config.drowse_generation_seat !== "assistant"
 +  ) {
 +    throw new TypeError("drowse_generation_seat must be `user` or `assistant`");
++  }
++  for (const index of [
++    config.drowse_readout_start_index,
++    config.drowse_readout_target_index,
++  ]) {
++    if (index !== undefined && (!Number.isSafeInteger(index) || index < 0)) {
++      throw new TypeError(
++        "Drowse readout indices must be non-negative integers",
++      );
++    }
 +  }
 +  for (const [name, tokenIds] of [
 +    ["drowse_forced_prefix_token_ids", config.drowse_forced_prefix_token_ids],
@@ -327,7 +366,7 @@ index 6c45add..117c6ae 100644
    if (
      config.frequency_penalty &&
      (config.frequency_penalty < -2.0 || config.frequency_penalty > 2.0)
-@@ -189,11 +226,26 @@ export function postInitAndCheckGenerationConfigValues(
+@@ -189,11 +238,27 @@ export function postInitAndCheckGenerationConfigValues(
    if (_hasValue(config.max_tokens) && config.max_tokens! <= 0) {
      throw new MinValueError("max_tokens", 0);
    }
@@ -351,13 +390,26 @@ index 6c45add..117c6ae 100644
 +  }
 +  if (
 +    _hasValue(config.temperature) &&
-+    (typeof config.temperature !== "number" || !Number.isFinite(config.temperature))
++    (typeof config.temperature !== "number" ||
++      !Number.isFinite(config.temperature))
 +  ) {
 +    throw new TypeError("temperature must be finite");
    }
    // If only one of frequency or presence penatly is set, make the other one 0.0
    if (
-@@ -305,6 +357,14 @@ export interface ModelRecord {
+@@ -235,9 +300,8 @@ export function postInitAndCheckGenerationConfigValues(
+     if (!config.logprobs) {
+       throw new DependencyError("top_logprobs", "logprobs", true);
+     }
+-    // top_logprobs should be in range [0,5]
+-    if (config.top_logprobs! < 0 || config.top_logprobs! > 5) {
+-      throw new RangeError("top_logprobs", 0, 5, "Got " + config.top_logprobs);
++    if (!Number.isSafeInteger(config.top_logprobs) || config.top_logprobs! < 0) {
++      throw new RangeError("top_logprobs", 0, Number.MAX_SAFE_INTEGER, "Got " + config.top_logprobs);
+     }
+   }
+   // If defined logprobs but not top_logprobs, simply make it 0
+@@ -305,6 +369,14 @@ export interface ModelRecord {
   * - "sync": require OPFS sync access handles.
   * - "auto": use sync access handles when available and fall back to async OPFS otherwise.
   *
@@ -372,7 +424,7 @@ index 6c45add..117c6ae 100644
   * @note Note that the Cache API is the most well-tested in WebLLM as of now.
   */
  export type CacheBackend = "cache" | "indexeddb" | "cross-origin" | "opfs";
-@@ -314,6 +374,9 @@ export interface AppConfig {
+@@ -314,6 +386,9 @@ export interface AppConfig {
    model_list: Array<ModelRecord>;
    cacheBackend?: CacheBackend;
    opfsAccessMode?: OPFSAccessMode;
@@ -586,12 +638,278 @@ index 122e933..a9fb36b 100644
      );
    }
    const iterEnd = includeLastMsg ? input.length : input.length - 1;
+diff --git a/src/drowse_gpu_controls.ts b/src/drowse_gpu_controls.ts
+new file mode 100644
+index 0000000..156b4b9
+--- /dev/null
++++ b/src/drowse_gpu_controls.ts
+@@ -0,0 +1,36 @@
++import type * as tvmjs from "@mlc-ai/web-runtime";
++
++export function drowseCurveControlShader(stride: number): string {
++  return `
++@group(0) @binding(0) var<storage, read> masks: array<f32>;
++@group(0) @binding(1) var<storage, read_write> parameters: array<f32>;
++struct PODArgs { count: u32, packGridDimX: u32 }
++@group(0) @binding(2) var<uniform> args: PODArgs;
++@compute @workgroup_size(64, 1, 1)
++fn main_kernel(@builtin(global_invocation_id) position: vec3<u32>) {
++  if (position.x < args.count) {
++    parameters[position.x * ${stride}u] = masks[position.x];
++  }
++}`;
++}
++
++export function createDrowseCurveControlKernel(
++  tvm: tvmjs.Instance,
++  stride: number,
++): tvmjs.PackedFunc {
++  const create = tvm.getGlobalFunc("wasm.WebGPUCreateShader");
++  try {
++    return tvm.detachFromCurrentScope(
++      create(
++        JSON.stringify({
++          name: "main_kernel",
++          arg_types: ["handle", "handle", "uint32"],
++          launch_param_tags: ["blockIdx.x", "paramWriteAccess:[false,true]"],
++        }),
++        drowseCurveControlShader(stride),
++      ) as tvmjs.PackedFunc,
++    );
++  } finally {
++    create.dispose();
++  }
++}
+diff --git a/src/drowse_gpu_topk.ts b/src/drowse_gpu_topk.ts
+new file mode 100644
+index 0000000..74d754a
+--- /dev/null
++++ b/src/drowse_gpu_topk.ts
+@@ -0,0 +1,218 @@
++import type * as tvmjs from "@mlc-ai/web-runtime";
++
++export function drowseSamplingTopKShader(
++  capacity: number,
++  merge: boolean,
++): string {
++  if (capacity === 1) return drowseSamplingArgmaxShader(merge);
++  const width = merge ? capacity * 2 : Math.max(256, capacity);
++  return `
++@group(0) @binding(0) var<storage, read_write> output_values: array<f32>;
++@group(0) @binding(1) var<storage, read_write> output_indices: array<i32>;
++@group(0) @binding(2) var<storage, read> source_values: array<f32>;
++${merge ? "@group(0) @binding(3) var<storage, read> source_indices: array<i32>;" : ""}
++struct PODArgs { columns: u32, lists: u32, packGridDimX: u32 }
++@group(0) @binding(${merge ? 4 : 3}) var<uniform> args: PODArgs;
++var<workgroup> values: array<f32, ${width}>;
++var<workgroup> indices: array<i32, ${width}>;
++fn better(av: f32, ai: i32, bv: f32, bi: i32) -> bool {
++  return ai >= 0 && (bi < 0 || av > bv || (av == bv && ai < bi));
++}
++@compute @workgroup_size(128, 1, 1)
++fn main_kernel(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
++  for (var i = local.x; i < ${width}u; i += 128u) {
++    values[i] = -3.402823e38;
++    indices[i] = -1;
++    ${
++      merge
++        ? `
++    let list = group.x * 2u + i / ${capacity}u;
++    let column = select(i, ${width - 1}u - i, i >= ${capacity}u);
++    if (list < args.lists) {
++      let source = list * ${capacity}u + column;
++      values[i] = source_values[source];
++      indices[i] = source_indices[source];
++    }`
++        : `
++    let source = group.x * ${width}u + i;
++    if (source < args.columns) {
++      values[i] = source_values[source];
++      indices[i] = i32(source);
++    }`
++    }
++  }
++  workgroupBarrier();
++  ${
++    merge
++      ? `for (var distance = ${capacity}u; distance > 0u; distance /= 2u) {`
++      : `
++  for (var size = 2u; size <= ${width}u; size *= 2u) {
++    for (var distance = size / 2u; distance > 0u; distance /= 2u) {`
++  }
++      for (var i = local.x; i < ${merge ? capacity : width}u; i += 128u) {
++        let peer = i ^ distance;
++        if (i < peer) {
++          let av = values[i]; let ai = indices[i];
++          let bv = values[peer]; let bi = indices[peer];
++          let descending = ${merge ? "true" : "(i & size) == 0u"};
++          if ((descending && better(bv, bi, av, ai)) || (!descending && better(av, ai, bv, bi))) {
++            values[i] = bv; indices[i] = bi;
++            values[peer] = av; indices[peer] = ai;
++          }
++        }
++      }
++      workgroupBarrier();
++    }
++  ${merge ? "" : "}"}
++  for (var i = local.x; i < ${capacity}u; i += 128u) {
++    output_values[group.x * ${capacity}u + i] = values[i];
++    output_indices[group.x * ${capacity}u + i] = indices[i];
++  }
++}`;
++}
++
++function drowseSamplingArgmaxShader(merge: boolean): string {
++  return `
++@group(0) @binding(0) var<storage, read_write> output_values: array<f32>;
++@group(0) @binding(1) var<storage, read_write> output_indices: array<i32>;
++@group(0) @binding(2) var<storage, read> source_values: array<f32>;
++${merge ? "@group(0) @binding(3) var<storage, read> source_indices: array<i32>;" : ""}
++struct PODArgs { columns: u32, lists: u32, packGridDimX: u32 }
++@group(0) @binding(${merge ? 4 : 3}) var<uniform> args: PODArgs;
++var<workgroup> values: array<f32, 128>;
++var<workgroup> indices: array<i32, 128>;
++fn better(av: f32, ai: i32, bv: f32, bi: i32) -> bool {
++  return ai >= 0 && (bi < 0 || av > bv || (av == bv && ai < bi));
++}
++@compute @workgroup_size(128, 1, 1)
++fn main_kernel(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
++  var value = -3.402823e38;
++  var index = -1;
++  for (var offset = local.x; offset < 256u; offset += 128u) {
++    let source = group.x * 256u + offset;
++    if (source < args.${merge ? "lists" : "columns"}) {
++      let candidate = ${merge ? "source_indices[source]" : "i32(source)"};
++      let score = source_values[source];
++      if (better(score, candidate, value, index)) {
++        value = score;
++        index = candidate;
++      }
++    }
++  }
++  values[local.x] = value;
++  indices[local.x] = index;
++  workgroupBarrier();
++  for (var distance = 64u; distance > 0u; distance /= 2u) {
++    if (local.x < distance) {
++      let peer = local.x + distance;
++      if (better(values[peer], indices[peer], values[local.x], indices[local.x])) {
++        values[local.x] = values[peer];
++        indices[local.x] = indices[peer];
++      }
++    }
++    workgroupBarrier();
++  }
++  if (local.x == 0u) {
++    output_values[group.x] = values[0];
++    output_indices[group.x] = indices[0];
++  }
++}`;
++}
++
++export class DrowseGpuTopK {
++  private kernels = new Map<number, [tvmjs.PackedFunc, tvmjs.PackedFunc]>();
++
++  constructor(private readonly tvm: tvmjs.Instance) {}
++
++  select(
++    probabilities: tvmjs.Tensor,
++    count: number,
++  ): [tvmjs.Tensor, tvmjs.Tensor] {
++    const columns = probabilities.shape.at(-1)!;
++    if (
++      !Number.isSafeInteger(count) ||
++      count < 1 ||
++      count > Math.min(columns, 1024)
++    ) {
++      throw new RangeError(
++        "Drowse GPU sampling supports 1 through 1024 candidates",
++      );
++    }
++    const capacity = 2 ** Math.ceil(Math.log2(count));
++    let kernels = this.kernels.get(capacity);
++    if (!kernels) {
++      const create = this.tvm.getGlobalFunc("wasm.WebGPUCreateShader");
++      try {
++        kernels = [false, true].map((merge) => {
++          const handles = merge ? 4 : 3;
++          const kernel = create(
++            JSON.stringify({
++              name: "main_kernel",
++              arg_types: [...Array(handles).fill("handle"), "uint32", "uint32"],
++              launch_param_tags: [
++                "blockIdx.x",
++                `paramWriteAccess:${JSON.stringify([true, true, ...Array(handles - 2).fill(false)])}`,
++              ],
++            }),
++            drowseSamplingTopKShader(capacity, merge),
++          ) as tvmjs.PackedFunc;
++          return this.tvm.detachFromCurrentScope(kernel);
++        }) as [tvmjs.PackedFunc, tvmjs.PackedFunc];
++      } finally {
++        create.dispose();
++      }
++      this.kernels.set(capacity, kernels);
++    }
++    let lists = Math.ceil(columns / Math.max(256, capacity));
++    let values = this.tvm.empty(
++      [lists * capacity],
++      "float32",
++      probabilities.device,
++    );
++    let indices = this.tvm.empty(
++      [lists * capacity],
++      "int32",
++      probabilities.device,
++    );
++    kernels[0](
++      values.getDataPtr(),
++      indices.getDataPtr(),
++      probabilities.getDataPtr(),
++      columns,
++      lists,
++      lists,
++    );
++    while (lists > 1) {
++      const nextLists = Math.ceil(lists / (capacity === 1 ? 256 : 2));
++      const nextValues = this.tvm.empty(
++        [nextLists * capacity],
++        "float32",
++        probabilities.device,
++      );
++      const nextIndices = this.tvm.empty(
++        [nextLists * capacity],
++        "int32",
++        probabilities.device,
++      );
++      kernels[1](
++        nextValues.getDataPtr(),
++        nextIndices.getDataPtr(),
++        values.getDataPtr(),
++        indices.getDataPtr(),
++        columns,
++        lists,
++        nextLists,
++      );
++      values = nextValues;
++      indices = nextIndices;
++      lists = nextLists;
++    }
++    return [values.view([count]), indices.view([count])];
++  }
++
++  dispose(): void {
++    for (const pair of this.kernels.values())
++      for (const kernel of pair) kernel.dispose();
++    this.kernels.clear();
++  }
++}
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
-index 0000000..86c0bc2
+index 0000000..b551af2
 --- /dev/null
 +++ b/src/drowse.ts
-@@ -0,0 +1,1338 @@
+@@ -0,0 +1,1352 @@
 +export const DROWSE_HOOK_ABI = "post-block-residual-v4" as const;
 +export const DROWSE_EXACT_READOUT_ABI = "exact-readout-v1" as const;
 +
@@ -922,6 +1240,7 @@ index 0000000..86c0bc2
 +  geometryFeet?: Float32Array;
 +  jLensBindingId?: string;
 +  jLensLayerIndices?: Int32Array;
++  jLensReadoutLayerIndices?: Int32Array;
 +  jLensTokenIds?: Int32Array;
 +  saeBindingId?: string;
 +}
@@ -1615,12 +1934,25 @@ index 0000000..86c0bc2
 +  for (const value of program.probeKind) {
 +    if (value > 4) throw new TypeError("Drowse probe kind is invalid");
 +  }
++  if (
++    program.jLensReadoutLayerIndices !== undefined &&
++    (!(program.jLensReadoutLayerIndices instanceof Int32Array) ||
++      program.jLensLayerIndices === undefined ||
++      program.jLensReadoutLayerIndices.some(
++        (layer, index) =>
++          !program.jLensLayerIndices!.includes(layer) ||
++          (index > 0 && layer <= program.jLensReadoutLayerIndices![index - 1]),
++      ))
++  )
++    throw new TypeError(
++      "J-lens readout layers must be an ordered subset of probability layers",
++    );
 +  const hasJlensProbe = program.probeKind.some((value) => value === 3);
 +  const hasJlensProgram = program.jLensBindingId !== undefined;
 +  if (
 +    hasJlensProgram !== (program.jLensLayerIndices !== undefined) ||
 +    hasJlensProgram !== (program.jLensTokenIds !== undefined) ||
-+    hasJlensProbe && !hasJlensProgram
++    (hasJlensProbe && !hasJlensProgram)
 +  ) {
 +    throw new TypeError(
 +      "Drowse J-lens probes require one complete probability program",
@@ -1931,7 +2263,7 @@ index 0000000..86c0bc2
 +  }
 +}
 diff --git a/src/engine.ts b/src/engine.ts
-index 1934771..49deb22 100644
+index 1934771..9de3869 100644
 --- a/src/engine.ts
 +++ b/src/engine.ts
 @@ -76,11 +76,44 @@ import {
@@ -2212,7 +2544,7 @@ index 1934771..49deb22 100644
        temperature: request.temperature,
        logit_bias: request.logit_bias,
        logprobs: request.logprobs,
-@@ -822,6 +894,11 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -822,6 +894,15 @@ export class MLCEngine implements MLCEngineInterface {
        ignore_eos: request.ignore_eos,
        enable_thinking: request.extra_body?.enable_thinking,
        enable_latency_breakdown: request.extra_body?.enable_latency_breakdown,
@@ -2221,10 +2553,14 @@ index 1934771..49deb22 100644
 +      drowse_forced_prefix_token_ids:
 +        request.extra_body?.drowse_forced_prefix_token_ids,
 +      drowse_score_token_ids: request.extra_body?.drowse_score_token_ids,
++      drowse_readout_start_index:
++        request.extra_body?.drowse_readout_start_index,
++      drowse_readout_target_index:
++        request.extra_body?.drowse_readout_target_index,
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -842,6 +919,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -842,6 +923,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -2232,7 +2568,7 @@ index 1934771..49deb22 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -889,12 +967,14 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -889,12 +971,14 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -2252,7 +2588,7 @@ index 1934771..49deb22 100644
            message: isFunctionCalling
              ? {
                  content: null,
-@@ -906,7 +986,8 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -906,7 +990,8 @@ export class MLCEngine implements MLCEngineInterface {
                  role: "assistant",
                },
          });
@@ -2262,7 +2598,7 @@ index 1934771..49deb22 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -997,11 +1078,16 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -997,11 +1082,20 @@ export class MLCEngine implements MLCEngineInterface {
        max_tokens: request.max_tokens,
        stop: request.stop,
        top_p: request.top_p,
@@ -2276,10 +2612,14 @@ index 1934771..49deb22 100644
 +      drowse_forced_prefix_token_ids:
 +        request.extra_body?.drowse_forced_prefix_token_ids,
 +      drowse_score_token_ids: request.extra_body?.drowse_score_token_ids,
++      drowse_readout_start_index:
++        request.extra_body?.drowse_readout_start_index,
++      drowse_readout_target_index:
++        request.extra_body?.drowse_readout_target_index,
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -1022,6 +1108,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1022,6 +1116,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -2287,7 +2627,7 @@ index 1934771..49deb22 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -1051,15 +1138,18 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1051,15 +1146,18 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -2312,7 +2652,7 @@ index 1934771..49deb22 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -1302,6 +1392,459 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1302,6 +1400,459 @@ export class MLCEngine implements MLCEngineInterface {
      return selectedPipeline.forwardTokensAndSample(inputIds, isPrefill);
    }
  
@@ -2772,7 +3112,7 @@ index 1934771..49deb22 100644
    /**
     * Get the current generated response.
     *
-@@ -1402,8 +1945,16 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1402,8 +1953,16 @@ export class MLCEngine implements MLCEngineInterface {
        ] as ChatCompletionMessageParam;
        input_str = last_msg.content as string;
        input_role_str =
@@ -2958,10 +3298,17 @@ index d583419..146eb24 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..254fa3e 100644
+index 616cff4..34a2209 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
-@@ -10,11 +10,13 @@ import {
+@@ -1,4 +1,6 @@
+ import * as tvmjs from "@mlc-ai/web-runtime";
++import { DrowseGpuTopK } from "./drowse_gpu_topk";
++import { createDrowseCurveControlKernel } from "./drowse_gpu_controls";
+ import * as xgr from "@mlc-ai/web-xgrammar";
+ import log from "loglevel";
+ import { Tokenizer } from "@mlc-ai/web-tokenizers";
+@@ -10,11 +12,13 @@ import {
    getImageDataFromURL,
    getRGBArrayFromImageData,
    getTokenTableFromTokenizer,
@@ -2976,7 +3323,7 @@ index 616cff4..254fa3e 100644
    TopLogprob,
    ResponseFormat,
    ChatCompletionContentPartImage,
-@@ -23,6 +25,7 @@ import {
+@@ -23,6 +27,7 @@ import {
    AttentionSinkSizeError,
    ContextWindowSizeExceededError,
    MinValueError,
@@ -2984,7 +3331,7 @@ index 616cff4..254fa3e 100644
    RangeError,
    WindowSizeConfigurationError,
    WindowSizeSpecificationError,
-@@ -30,6 +33,50 @@ import {
+@@ -30,6 +35,50 @@ import {
    TextCompletionExpectsKVEmptyError,
    CannotFindImageEmbedError,
  } from "./error";
@@ -3035,7 +3382,7 @@ index 616cff4..254fa3e 100644
  
  type ImageURL = ChatCompletionContentPartImage.ImageURL;
  
-@@ -47,6 +94,421 @@ type VMFunctionAvailability = {
+@@ -47,6 +96,418 @@ type VMFunctionAvailability = {
  
  type VMFunctionRegistry = Record<string, tvmjs.PackedFunc | undefined>;
  
@@ -3203,6 +3550,7 @@ index 616cff4..254fa3e 100644
 +  curveBasis?: tvmjs.Tensor;
 +  curveNeutral?: tvmjs.Tensor;
 +  curveParameters?: tvmjs.Tensor;
++  curveActive?: tvmjs.Tensor;
 +  curveFeet?: tvmjs.Tensor;
 +  curveDomainKind?: tvmjs.Tensor;
 +  jLensTokenIds?: tvmjs.Tensor;
@@ -3318,10 +3666,7 @@ index 616cff4..254fa3e 100644
 +
 +export const DROWSE_DEFAULT_TOP_K = 1024;
 +
-+export function effectiveDrowseTopK(
-+  topK: number,
-+  vocabSize: number,
-+): number {
++export function effectiveDrowseTopK(topK: number, vocabSize: number): number {
 +  if (!Number.isSafeInteger(topK) || topK < 0) {
 +    throw new Error("Drowse sampler received an invalid top-k value");
 +  }
@@ -3338,20 +3683,22 @@ index 616cff4..254fa3e 100644
 +  topK: number,
 +  uniformSample: number,
 +  selectedTokenIds: readonly number[] = [],
++  topLogprobCount = 32,
 +): DrowseSamplerResult {
 +  if (
 +    sortedProbabilities.length === 0 ||
 +    sortedProbabilities.length !== sortedTokenIds.length
 +  ) {
-+    throw new Error(
-+      "Drowse sampler received an invalid sorted distribution",
-+    );
++    throw new Error("Drowse sampler received an invalid sorted distribution");
 +  }
 +  if (!Number.isFinite(topP) || topP < 0 || topP > 1) {
 +    throw new Error("Drowse sampler received an invalid top-p value");
 +  }
 +  if (!Number.isSafeInteger(topK) || topK < 0) {
 +    throw new Error("Drowse sampler received an invalid top-k value");
++  }
++  if (!Number.isSafeInteger(topLogprobCount) || topLogprobCount < 0) {
++    throw new Error("Drowse sampler received an invalid alternative count");
 +  }
 +  if (
 +    !Number.isFinite(uniformSample) ||
@@ -3361,10 +3708,7 @@ index 616cff4..254fa3e 100644
 +    throw new Error("Drowse sampler received an invalid uniform draw");
 +  }
 +
-+  const candidateCount = effectiveDrowseTopK(
-+    topK,
-+    sortedProbabilities.length,
-+  );
++  const candidateCount = effectiveDrowseTopK(topK, sortedProbabilities.length);
 +  let topKMass = 0;
 +  for (let index = 0; index < candidateCount; index += 1) {
 +    const probability = sortedProbabilities[index];
@@ -3425,7 +3769,7 @@ index 616cff4..254fa3e 100644
 +    logprob: selectedById.get(tokenId) ?? Number.NEGATIVE_INFINITY,
 +  }));
 +  const topLogprobs = Array.from(
-+    { length: Math.min(32, supportCount) },
++    { length: Math.min(topLogprobCount, supportCount) },
 +    (_, index) => ({
 +      token_id: sortedTokenIds[index],
 +      logprob: logprobAt(index),
@@ -3435,7 +3779,7 @@ index 616cff4..254fa3e 100644
 +    sampledTokenId,
 +    sampledLogprob,
 +    selectedLogprobs,
-+    argmax: topLogprobs[0],
++    argmax: { token_id: sortedTokenIds[0], logprob: logprobAt(0) },
 +    topLogprobs,
 +    entropyNats,
 +    perplexity: Math.exp(entropyNats),
@@ -3457,7 +3801,7 @@ index 616cff4..254fa3e 100644
  type ResolvedModelABI = {
    kvStateKind: Exclude<KVStateKind, "none">;
    prefillABI: ComputeABIKind;
-@@ -67,6 +529,25 @@ export class LLMChatPipeline {
+@@ -67,6 +528,25 @@ export class LLMChatPipeline {
    private vm: tvmjs.VirtualMachine;
    private prefill: tvmjs.PackedFunc;
    private decoding: tvmjs.PackedFunc;
@@ -3483,10 +3827,15 @@ index 616cff4..254fa3e 100644
    private resolvedModelABI!: ResolvedModelABI;
    private kvStateKind: KVStateKind = "kv_cache";
    private image_embed: tvmjs.PackedFunc | undefined;
-@@ -94,6 +575,26 @@ export class LLMChatPipeline {
+@@ -94,7 +574,34 @@ export class LLMChatPipeline {
    private prefillLogitPositionHost = new Int32Array(1);
    private maxHistorySize = 1;
    private logitsOnCPU?: tvmjs.Tensor = undefined;
++  private drowseGpuTopK?: DrowseGpuTopK;
++  private drowseCurveControlKernel?: tvmjs.PackedFunc;
++  private drowseAffineActiveStaging?: Float32Array;
++  private drowseAffineAlongStaging?: Float32Array;
++  private drowseCurveActiveStaging?: Float32Array;
 +  private drowseProgram?: DrowseRankOneBuffers;
 +  private drowseStructuredProgram?: DrowseStructuredBuffers;
 +  private drowseStructuredMode?: "structured" | "curved";
@@ -3494,6 +3843,7 @@ index 616cff4..254fa3e 100644
 +  private drowseCurveParametersHost?: Float32Array;
 +  private drowseMeasurements?: tvmjs.Tensor;
 +  private drowseGeometryMeasurements?: tvmjs.Tensor;
++  private drowseJlensReadoutLayers: Set<number> | undefined;
 +  private drowseJlensChunks?: DrowseJlensChunk[];
 +  private drowseJlensDictionary?: DrowseJlensBuffers;
 +  private drowseJlensBufferLimits?: DrowseJlensBufferLimits;
@@ -3508,9 +3858,11 @@ index 616cff4..254fa3e 100644
 +  private drowseExactReadoutAttested = false;
 +  private drowseProbeKindHost?: Uint32Array;
    private filledKVCacheLength = 0;
++  private drowseCachedInputIds: number[] | null = [];
  
    // meta data
-@@ -109,8 +610,12 @@ export class LLMChatPipeline {
+   private bosTokenId = 1;
+@@ -109,8 +616,12 @@ export class LLMChatPipeline {
    // states
    private outputMessage = "";
    private outputIds: Array<number> = [];
@@ -3523,16 +3875,18 @@ index 616cff4..254fa3e 100644
    // frequency of appeared token ids till now (refresh after PrefillStep); token_id mapped to freq
    private appearedTokensFreq = new Map<number, number>();
    private imageDataCache = new Map<string, ImageData>();
-@@ -130,6 +635,8 @@ export class LLMChatPipeline {
+@@ -130,6 +641,10 @@ export class LLMChatPipeline {
    private curRoundPrefillTotalTokens = 0;
    private curRoundDecodingTotalTime = 0;
    private curRoundPrefillTotalTime = 0;
 +  private curRoundSampledTokens = 0;
 +  private curRoundDrowseCompletionTokens = 0;
++  private drowseReadoutStart = 0;
++  private drowseReadoutTarget: number | undefined;
  
    // additional stats, reset at every prefillStep()
    public curRoundLatencyBreakdown: LatencyBreakdown = {
-@@ -181,12 +688,14 @@ export class LLMChatPipeline {
+@@ -181,12 +696,14 @@ export class LLMChatPipeline {
      tokenizer: Tokenizer,
      config: ChatConfig,
      logitProcessor?: LogitProcessor,
@@ -3547,7 +3901,7 @@ index 616cff4..254fa3e 100644
      this.fullVocabSize = this.config.vocab_size;
      this.bitmaskSize = Math.ceil(this.fullVocabSize / 32);
  
-@@ -233,6 +742,31 @@ export class LLMChatPipeline {
+@@ -233,6 +750,31 @@ export class LLMChatPipeline {
        "batch_prefill",
        "decode",
        "batch_decode",
@@ -3579,7 +3933,7 @@ index 616cff4..254fa3e 100644
        "create_tir_paged_kv_cache",
        "create_rnn_state",
        "sample_with_top_p",
-@@ -244,6 +778,7 @@ export class LLMChatPipeline {
+@@ -244,6 +786,7 @@ export class LLMChatPipeline {
        "apply_logit_bias_inplace",
        "softmax_with_temperature",
      ]);
@@ -3587,7 +3941,7 @@ index 616cff4..254fa3e 100644
  
      const fgetMetadata = this.vm.getFunction("_metadata");
      const ret_value = fgetMetadata();
-@@ -253,9 +788,15 @@ export class LLMChatPipeline {
+@@ -253,9 +796,15 @@ export class LLMChatPipeline {
  
      const vmFunctionAvailability =
        LLMChatPipeline.getVMFunctionAvailability(vmFunctionRegistry);
@@ -3603,7 +3957,7 @@ index 616cff4..254fa3e 100644
      );
      const stateKinds: string[] = [];
      if (this.resolvedModelABI.needsKVCache) {
-@@ -287,6 +828,139 @@ export class LLMChatPipeline {
+@@ -287,6 +836,132 @@ export class LLMChatPipeline {
          vmFunctionRegistry,
        ),
      );
@@ -3618,10 +3972,8 @@ index 616cff4..254fa3e 100644
 +    const drowsePrefill = vmFunctionRegistry[drowsePrefillName];
 +    const drowseDecoding = vmFunctionRegistry[drowseDecodeName];
 +    if (drowsePrefill !== undefined && drowseDecoding !== undefined) {
-+      this.drowsePrefill =
-+        this.tvm.detachFromCurrentScope(drowsePrefill);
-+      this.drowseDecoding =
-+        this.tvm.detachFromCurrentScope(drowseDecoding);
++      this.drowsePrefill = this.tvm.detachFromCurrentScope(drowsePrefill);
++      this.drowseDecoding = this.tvm.detachFromCurrentScope(drowseDecoding);
 +    }
 +    if (
 +      this.resolvedModelABI.prefillABI === "batch" &&
@@ -3645,10 +3997,8 @@ index 616cff4..254fa3e 100644
 +        this.drowseCurvedDecoding =
 +          this.tvm.detachFromCurrentScope(curvedDecode);
 +      }
-+      const geometryPrefill =
-+        vmFunctionRegistry.drowse_geometry_batch_prefill;
-+      const geometryDecode =
-+        vmFunctionRegistry.drowse_geometry_batch_decode;
++      const geometryPrefill = vmFunctionRegistry.drowse_geometry_batch_prefill;
++      const geometryDecode = vmFunctionRegistry.drowse_geometry_batch_decode;
 +      if (geometryPrefill !== undefined && geometryDecode !== undefined) {
 +        this.drowseGeometryPrefill =
 +          this.tvm.detachFromCurrentScope(geometryPrefill);
@@ -3658,8 +4008,7 @@ index 616cff4..254fa3e 100644
 +    }
 +    const jlensReadout = vmFunctionRegistry.drowse_jlens_probabilities;
 +    if (jlensReadout !== undefined) {
-+      this.drowseJlensReadout =
-+        this.tvm.detachFromCurrentScope(jlensReadout);
++      this.drowseJlensReadout = this.tvm.detachFromCurrentScope(jlensReadout);
 +    }
 +    const jlensReadoutAccumulate =
 +      vmFunctionRegistry.drowse_jlens_readout_accumulate;
@@ -3687,8 +4036,9 @@ index 616cff4..254fa3e 100644
 +    const saeJumpReluReadoutAccumulate =
 +      vmFunctionRegistry.drowse_sae_jump_relu_readout_accumulate;
 +    if (saeJumpReluReadoutAccumulate !== undefined) {
-+      this.drowseSaeJumpReluReadoutAccumulate =
-+        this.tvm.detachFromCurrentScope(saeJumpReluReadoutAccumulate);
++      this.drowseSaeJumpReluReadoutAccumulate = this.tvm.detachFromCurrentScope(
++        saeJumpReluReadoutAccumulate,
++      );
 +    }
 +    const hookProfile = vmFunctionRegistry.drowse_hook_profile;
 +    if (hookProfile !== undefined) {
@@ -3702,17 +4052,14 @@ index 616cff4..254fa3e 100644
 +      this.resolvedModelABI.decodeABI === "batch"
 +        ? "drowse_capture_batch_decode"
 +        : "drowse_capture_decode";
-+    const drowseCapturePrefill =
-+      vmFunctionRegistry[drowseCapturePrefillName];
-+    const drowseCaptureDecoding =
-+      vmFunctionRegistry[drowseCaptureDecodeName];
++    const drowseCapturePrefill = vmFunctionRegistry[drowseCapturePrefillName];
++    const drowseCaptureDecoding = vmFunctionRegistry[drowseCaptureDecodeName];
 +    if (
 +      drowseCapturePrefill !== undefined &&
 +      drowseCaptureDecoding !== undefined
 +    ) {
-+      this.drowseCapturePrefill = this.tvm.detachFromCurrentScope(
-+        drowseCapturePrefill,
-+      );
++      this.drowseCapturePrefill =
++        this.tvm.detachFromCurrentScope(drowseCapturePrefill);
 +      this.drowseCaptureDecoding = this.tvm.detachFromCurrentScope(
 +        drowseCaptureDecoding,
 +      );
@@ -3743,38 +4090,10 @@ index 616cff4..254fa3e 100644
      if (this.resolvedModelABI.prefillABI === "batch") {
        log.info("Using batch_prefill kernel.");
      }
-@@ -483,28 +1157,1757 @@ export class LLMChatPipeline {
-     tvm.endScope();
-   }
- 
--  dispose() {
--    // TODO: Do we need to dispose all PackedFuncs here?
--    this.grammarMatcher?.dispose();
--    this.params.dispose();
--    this.decoding.dispose();
--    this.prefill.dispose();
--    this.embed.dispose();
--    this.image_embed?.dispose();
--    this.prefillLogitPositions?.dispose();
--    this.rnnState?.dispose();
--    this.kvCache?.dispose();
--    this.fsampleWithTopP.dispose();
--    this.fargsortProbs.dispose();
--    this.sampleIndicesDevice?.dispose();
--    this.topPDevice?.dispose();
--    this.vm.dispose();
--    this.fclearKVCaches.dispose();
--    this.logitsOnCPU?.dispose();
--    this.tvm.dispose();
--    this.tokenizer.dispose();
--    this.xgTokenizerInfo?.dispose();
--    this.grammarCompiler?.dispose();
-+  dispose() {
-+    // TODO: Do we need to dispose all PackedFuncs here?
-+    this.grammarMatcher?.dispose();
-+    this.params.dispose();
-+    this.decoding.dispose();
-+    this.prefill.dispose();
+@@ -489,6 +1164,32 @@ export class LLMChatPipeline {
+     this.params.dispose();
+     this.decoding.dispose();
+     this.prefill.dispose();
 +    this.drowseDecoding?.dispose();
 +    this.drowsePrefill?.dispose();
 +    this.drowseStructuredDecoding?.dispose();
@@ -3794,31 +4113,23 @@ index 616cff4..254fa3e 100644
 +    this.drowseSaeReadoutAccumulate?.dispose();
 +    this.drowseSaeJumpReluReadoutAccumulate?.dispose();
 +    this.drowseHookProfile?.dispose();
++    this.drowseCurveControlKernel?.dispose();
++    this.drowseCurveControlKernel = undefined;
++    this.drowseGpuTopK?.dispose();
++    this.drowseGpuTopK = undefined;
 +    this.disposeDrowseProgram();
 +    this.disposeDrowseJlensDictionary();
 +    this.disposeDrowseSaeDictionary();
-+    this.embed.dispose();
-+    this.image_embed?.dispose();
-+    this.prefillLogitPositions?.dispose();
-+    this.rnnState?.dispose();
-+    this.kvCache?.dispose();
-+    this.fsampleWithTopP.dispose();
-+    this.fargsortProbs.dispose();
-+    this.sampleIndicesDevice?.dispose();
-+    this.topPDevice?.dispose();
-+    this.vm.dispose();
-+    this.fclearKVCaches.dispose();
-+    this.logitsOnCPU?.dispose();
-+    this.tvm.dispose();
-+    this.tokenizer.dispose();
-+    this.xgTokenizerInfo?.dispose();
-+    this.grammarCompiler?.dispose();
-+  }
-+
+     this.embed.dispose();
+     this.image_embed?.dispose();
+     this.prefillLogitPositions?.dispose();
+@@ -507,6 +1208,1761 @@ export class LLMChatPipeline {
+     this.grammarCompiler?.dispose();
+   }
+ 
 +  supportsDrowseRankOneHooks(): boolean {
 +    return (
-+      this.drowsePrefill !== undefined &&
-+      this.drowseDecoding !== undefined
++      this.drowsePrefill !== undefined && this.drowseDecoding !== undefined
 +    );
 +  }
 +
@@ -3858,8 +4169,7 @@ index 616cff4..254fa3e 100644
 +      replayScoring: true,
 +      tokenizer: true,
 +      namedRoles: this.conversation.supportsDrowseNamedRoles(),
-+      userSeatGeneration:
-+        this.conversation.supportsDrowseUserSeatGeneration(),
++      userSeatGeneration: this.conversation.supportsDrowseUserSeatGeneration(),
 +      sceneStitching: this.conversation.supportsDrowseUserSeatGeneration(),
 +    };
 +  }
@@ -3903,9 +4213,7 @@ index 616cff4..254fa3e 100644
 +          tokenId >= this.fullVocabSize,
 +      )
 +    ) {
-+      throw new TypeError(
-+        "Drowse tokenizer IDs must be inside the vocabulary",
-+      );
++      throw new TypeError("Drowse tokenizer IDs must be inside the vocabulary");
 +    }
 +    return this.tokenizer.decode(Int32Array.from(tokenIds));
 +  }
@@ -4247,7 +4555,9 @@ index 616cff4..254fa3e 100644
 +      );
 +    }
 +    const hasCurve = program.curveRank.some((rank) => rank > 0);
-+    const hasGeometry = program.format === DROWSE_STRUCTURED_HOOK_FORMAT;
++    const hasGeometry =
++      program.format === DROWSE_STRUCTURED_HOOK_FORMAT &&
++      program.geometryActive!.some(Boolean);
 +    if (
 +      hasCurve
 +        ? !this.supportsDrowseCurvedHooks()
@@ -4375,6 +4685,10 @@ index 616cff4..254fa3e 100644
 +            [layerCount, DROWSE_STRUCTURED_MAX_CURVES],
 +            program.curveDomainKind!,
 +          ),
++          curveActive: f32(
++            [layerCount, DROWSE_STRUCTURED_MAX_CURVES],
++            Float32Array.from(program.curveActive),
++          ),
 +          curveParameters: f32(
 +            [
 +              layerCount,
@@ -4452,6 +4766,10 @@ index 616cff4..254fa3e 100644
 +    this.disposeDrowseProgram();
 +    this.drowseStructuredProgram = next;
 +    this.drowseJlensChunks = nextJlensChunks;
++    this.drowseJlensReadoutLayers =
++      program.jLensReadoutLayerIndices === undefined
++        ? undefined
++        : new Set(program.jLensReadoutLayerIndices);
 +    this.drowseSaeReadoutActive = program.saeBindingId !== undefined;
 +    this.drowseStructuredMode = hasCurve ? "curved" : "structured";
 +    this.drowseAffineAlongHost = new Float32Array(program.affineAlong);
@@ -4474,18 +4792,17 @@ index 616cff4..254fa3e 100644
 +    ) {
 +      throw new TypeError("Drowse affine controls have the wrong length");
 +    }
-+    program.affineActive.copyFrom(Float32Array.from(affineActive));
-+    program.affineAlong.copyFrom(
-+      Float32Array.from(
-+        this.drowseAffineAlongHost!,
-+        (value, index) => value * affineActive[index],
-+      ),
-+    );
++    this.drowseAffineActiveStaging ??= new Float32Array(affineActive.length);
++    this.drowseAffineAlongStaging ??= new Float32Array(affineActive.length);
++    for (let index = 0; index < affineActive.length; index += 1) {
++      this.drowseAffineActiveStaging[index] = affineActive[index];
++      this.drowseAffineAlongStaging[index] =
++        this.drowseAffineAlongHost![index] * affineActive[index];
++    }
++    program.affineActive.copyFrom(this.drowseAffineActiveStaging);
++    program.affineAlong.copyFrom(this.drowseAffineAlongStaging);
 +    if (curveActive !== undefined) {
-+      if (
-+        curveActive.length !==
-+        layerCount * DROWSE_STRUCTURED_MAX_CURVES
-+      ) {
++      if (curveActive.length !== layerCount * DROWSE_STRUCTURED_MAX_CURVES) {
 +        throw new TypeError(
 +          "Drowse curve controls do not match the installed program",
 +        );
@@ -4501,16 +4818,33 @@ index 616cff4..254fa3e 100644
 +          this.drowseCurveParametersHost!,
 +          curveActive,
 +        );
-+        program.curveParameters.copyFrom(this.drowseCurveParametersHost!);
++        this.drowseCurveActiveStaging ??= new Float32Array(curveActive.length);
++        this.drowseCurveActiveStaging.set(curveActive);
++        program.curveActive!.copyFrom(this.drowseCurveActiveStaging);
++        if (!this.drowseCurveControlKernel) {
++          this.tvm.beginScope();
++          try {
++            this.drowseCurveControlKernel = createDrowseCurveControlKernel(
++              this.tvm,
++              DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
++            );
++          } finally {
++            this.tvm.endScope();
++          }
++        }
++        this.drowseCurveControlKernel(
++          program.curveActive!.getDataPtr(),
++          program.curveParameters.getDataPtr(),
++          curveActive.length,
++          Math.ceil(curveActive.length / 64),
++        );
 +      }
 +    }
 +    // WebGPU preserves copyFrom uploads before the next forward on this queue.
 +    this.resetDrowseReadbackState();
 +  }
 +
-+  async setDrowseSaeDictionary(
-+    dictionary: DrowseSaeDictionary,
-+  ): Promise<void> {
++  async setDrowseSaeDictionary(dictionary: DrowseSaeDictionary): Promise<void> {
 +    await this.requireDrowseExactReadout("sae");
 +    const hiddenSize = this.requireModelDimension("hidden_size");
 +    const layerCount = this.requireModelDimension("num_hidden_layers");
@@ -4600,8 +4934,7 @@ index 616cff4..254fa3e 100644
 +
 +  async clearDrowseJlensDictionary(): Promise<void> {
 +    await this.requireDrowseExactReadout("jlens");
-+    if (this.drowseJlensChunks !== undefined)
-+      this.disposeDrowseProgram();
++    if (this.drowseJlensChunks !== undefined) this.disposeDrowseProgram();
 +    this.disposeDrowseJlensDictionary();
 +  }
 +
@@ -4625,9 +4958,7 @@ index 616cff4..254fa3e 100644
 +
 +  async readDrowseMeasurementBundle(): Promise<DrowseMeasurementBundle> {
 +    if (this.drowseMeasurementBundleHost !== undefined) {
-+      return cloneDrowseMeasurementBundle(
-+        this.drowseMeasurementBundleHost,
-+      );
++      return cloneDrowseMeasurementBundle(this.drowseMeasurementBundleHost);
 +    }
 +    this.tvm.beginScope();
 +    try {
@@ -4635,11 +4966,7 @@ index 616cff4..254fa3e 100644
 +        this.drowseMeasurements === undefined
 +          ? undefined
 +          : this.tvm
-+              .empty(
-+                this.drowseMeasurements.shape,
-+                "float32",
-+                this.tvm.cpu(),
-+              )
++              .empty(this.drowseMeasurements.shape, "float32", this.tvm.cpu())
 +              .copyFrom(this.drowseMeasurements);
 +      const geometryHost =
 +        this.drowseGeometryMeasurements === undefined
@@ -4688,9 +5015,7 @@ index 616cff4..254fa3e 100644
 +          ? {}
 +          : { saeTopFeatures: this.drowseSaeTopFeaturesHost }),
 +      };
-+      return cloneDrowseMeasurementBundle(
-+        this.drowseMeasurementBundleHost,
-+      );
++      return cloneDrowseMeasurementBundle(this.drowseMeasurementBundleHost);
 +    } finally {
 +      this.disposeDrowsePendingReadbacks();
 +      this.tvm.endScope();
@@ -4701,9 +5026,7 @@ index 616cff4..254fa3e 100644
 +    return (await this.readDrowseMeasurementBundle()).scalar;
 +  }
 +
-+  async readDrowseGeometryMeasurements(): Promise<
-+    Float32Array | undefined
-+  > {
++  async readDrowseGeometryMeasurements(): Promise<Float32Array | undefined> {
 +    return (await this.readDrowseMeasurementBundle()).geometry;
 +  }
 +
@@ -4787,6 +5110,14 @@ index 616cff4..254fa3e 100644
 +    return selected;
 +  }
 +
++  private drowseDiscoveryRequested(): boolean {
++    return (
++      this.curRoundDrowseCompletionTokens >= this.drowseReadoutStart &&
++      (this.drowseReadoutTarget === undefined ||
++        this.curRoundDrowseCompletionTokens === this.drowseReadoutTarget)
++    );
++  }
++
 +  private async computeDrowseJlensProbabilities(
 +    hiddenStates: tvmjs.Tensor,
 +    tokenIds: tvmjs.Tensor,
@@ -4795,15 +5126,20 @@ index 616cff4..254fa3e 100644
 +    this.drowseJlensProbabilitiesHost = undefined;
 +    this.drowseJlensTopTokensHost = undefined;
 +    if (
++      !this.drowseDiscoveryRequested() &&
++      !this.drowseProbeKindHost?.some((kind) => kind === 3)
++    )
++      return;
++    if (
 +      this.drowseJlensReadout === undefined ||
 +      this.drowseProbeKindHost === undefined ||
 +      this.drowseJlensChunks === undefined
 +    ) {
-+      throw new Error(
-+        "The Drowse J-lens probability runtime is unavailable",
-+      );
++      throw new Error("The Drowse J-lens probability runtime is unavailable");
 +    }
 +    if (
++      this.drowseDiscoveryRequested() &&
++      this.drowseJlensReadoutLayers?.size !== 0 &&
 +      this.drowseExactReadoutAttested &&
 +      this.drowseJlensReadoutAccumulate !== undefined &&
 +      this.drowseJlensReadoutTopK !== undefined
@@ -4870,6 +5206,31 @@ index 616cff4..254fa3e 100644
 +      let fittedLayerCount = 0;
 +      for (const [chunkIndex, chunk] of this.drowseJlensChunks!.entries()) {
 +        stage = `running chunk ${chunkIndex + 1}/${this.drowseJlensChunks!.length}`;
++        if (
++          this.drowseJlensReadoutLayers !== undefined &&
++          !this.drowseJlensReadoutLayers.has(chunk.layerIds[0])
++        ) {
++          const selected = this.drowseJlensReadout!(
++            hiddenStates,
++            chunk.jacobians,
++            tokenIds,
++            chunk.layerIdsDevice,
++            this.params,
++          );
++          this.requireDrowseTensorShape(
++            selected,
++            [chunk.layerIds.length, DROWSE_STRUCTURED_MAX_PROBES],
++            "J-lens probabilities",
++          );
++          const selectedHost = this.tvm.empty(
++            selected.shape,
++            "float32",
++            this.tvm.cpu(),
++          );
++          selectedHost.copyFrom(selected);
++          pending.push({ chunk, selectedHost });
++          continue;
++        }
 +        const accumulated = this.drowseJlensReadoutAccumulate!(
 +          hiddenStates,
 +          chunk.jacobians,
@@ -4978,8 +5339,10 @@ index 616cff4..254fa3e 100644
 +      statsHost.copyFrom(statsDevice);
 +      for (const row of pending) {
 +        this.tvm.detachFromCurrentScope(row.selectedHost);
-+        this.tvm.detachFromCurrentScope(row.layerTokenIdsHost!);
-+        this.tvm.detachFromCurrentScope(row.layerProbabilitiesHost!);
++        if (row.layerTokenIdsHost)
++          this.tvm.detachFromCurrentScope(row.layerTokenIdsHost);
++        if (row.layerProbabilitiesHost)
++          this.tvm.detachFromCurrentScope(row.layerProbabilitiesHost);
 +      }
 +      this.tvm.detachFromCurrentScope(tokenIdsHost);
 +      this.tvm.detachFromCurrentScope(statsHost);
@@ -4995,9 +5358,7 @@ index 616cff4..254fa3e 100644
 +          : typeof error === "object" && error !== null && "message" in error
 +            ? String(error.message)
 +            : String(error);
-+      throw new Error(
-+        `Drowse exact J-lens failed while ${stage}: ${message}`,
-+      );
++      throw new Error(`Drowse exact J-lens failed while ${stage}: ${message}`);
 +    } finally {
 +      this.tvm.endScope();
 +    }
@@ -5156,6 +5517,7 @@ index 616cff4..254fa3e 100644
 +        ? this.drowseSaeJumpReluReadoutAccumulate
 +        : this.drowseSaeReadoutAccumulate;
 +    if (
++      !this.drowseDiscoveryRequested() ||
 +      !this.drowseSaeReadoutActive ||
 +      dictionary === undefined ||
 +      accumulate === undefined
@@ -5263,12 +5625,15 @@ index 616cff4..254fa3e 100644
 +    let fittedLayerOffset = 0;
 +    for (const row of pending.chunks) {
 +      if (
++        this.drowseJlensReadoutLayers !== undefined &&
++        !this.drowseJlensReadoutLayers.has(row.chunk.layerIds[0])
++      )
++        continue;
++      if (
 +        row.layerTokenIdsHost === undefined ||
 +        row.layerProbabilitiesHost === undefined
 +      ) {
-+        throw new Error(
-+          "The Drowse J-lens aggregate readback is incomplete",
-+        );
++        throw new Error("The Drowse J-lens aggregate readback is incomplete");
 +      }
 +      layerIndices.set(row.chunk.layerIds, fittedLayerOffset);
 +      layerTokenIds.set(
@@ -5285,10 +5650,7 @@ index 616cff4..254fa3e 100644
 +    this.drowseJlensTopTokensHost = {
 +      tokenIds: new Int32Array(aggregate.tokenIdsHost.toArray()),
 +      strength: stats.slice(0, DROWSE_READOUT_TOP_K),
-+      centerOfMass: stats.slice(
-+        DROWSE_READOUT_TOP_K,
-+        2 * DROWSE_READOUT_TOP_K,
-+      ),
++      centerOfMass: stats.slice(DROWSE_READOUT_TOP_K, 2 * DROWSE_READOUT_TOP_K),
 +      spread: stats.slice(2 * DROWSE_READOUT_TOP_K),
 +      fittedLayerCount: aggregate.fittedLayerCount,
 +      layerIndices,
@@ -5372,9 +5734,7 @@ index 616cff4..254fa3e 100644
 +
 +  private requireDrowseJlensBufferLimits(): DrowseJlensBufferLimits {
 +    if (this.drowseJlensBufferLimits === undefined) {
-+      throw new Error(
-+        "The Drowse J-lens WebGPU buffer limits are unavailable",
-+      );
++      throw new Error("The Drowse J-lens WebGPU buffer limits are unavailable");
 +    }
 +    return this.drowseJlensBufferLimits;
 +  }
@@ -5403,9 +5763,7 @@ index 616cff4..254fa3e 100644
 +    const byLayer = new Map<number, DrowseJlensChunk>();
 +    for (const chunk of dictionary.chunks) {
 +      if (chunk.layerIds.length !== 1) {
-+        throw new Error(
-+          "The resident Drowse J-lens chunk layout is invalid",
-+        );
++        throw new Error("The resident Drowse J-lens chunk layout is invalid");
 +      }
 +      byLayer.set(chunk.layerIds[0], chunk);
 +    }
@@ -5473,10 +5831,12 @@ index 616cff4..254fa3e 100644
 +    this.drowseSaeReadoutActive = false;
 +    this.drowseProbeKindHost = undefined;
 +    this.drowseAffineAlongHost = undefined;
++    this.drowseAffineActiveStaging = undefined;
++    this.drowseAffineAlongStaging = undefined;
++    this.drowseCurveActiveStaging = undefined;
 +    this.drowseCurveParametersHost = undefined;
 +    if (this.drowseProgram !== undefined) {
-+      for (const tensor of Object.values(this.drowseProgram))
-+        tensor.dispose();
++      for (const tensor of Object.values(this.drowseProgram)) tensor.dispose();
 +      this.drowseProgram = undefined;
 +    }
 +    if (this.drowseStructuredProgram !== undefined) {
@@ -5520,10 +5880,12 @@ index 616cff4..254fa3e 100644
 +    this.disposeDrowsePendingSaeReadback();
 +    this.drowseSaeTopFeaturesHost = undefined;
 +    this.drowseMeasurementBundleHost = undefined;
-   }
- 
++  }
++
    /**
-@@ -514,6 +2917,11 @@ export class LLMChatPipeline {
+    * Get the current message.
+    */
+@@ -514,6 +2970,11 @@ export class LLMChatPipeline {
      return this.outputMessage;
    }
  
@@ -5535,7 +5897,7 @@ index 616cff4..254fa3e 100644
    /**
     * Reset the runtime statistics
     */
-@@ -535,6 +2943,7 @@ export class LLMChatPipeline {
+@@ -535,6 +2996,7 @@ export class LLMChatPipeline {
      }
      this.resetKVCache();
      this.filledKVCacheLength = 0;
@@ -5543,7 +5905,15 @@ index 616cff4..254fa3e 100644
      this.logitProcessor?.resetState();
      this.tvm.endScope();
    }
-@@ -572,6 +2981,10 @@ export class LLMChatPipeline {
+@@ -543,6 +3005,7 @@ export class LLMChatPipeline {
+    * Reset KV Cache
+    */
+   resetKVCache() {
++    this.drowseCachedInputIds = [];
+     const states = this.getActiveKVStates();
+     for (const state of states) {
+       this.fclearKVCaches(state);
+@@ -572,6 +3035,10 @@ export class LLMChatPipeline {
      return this.finishReason;
    }
  
@@ -5554,7 +5924,7 @@ index 616cff4..254fa3e 100644
    /**
     * @returns tokenLogprobArray for this current round of autoregressive generation.
     * Updated upon each sampled token, cleared upon each prefillStep().
-@@ -587,6 +3000,10 @@ export class LLMChatPipeline {
+@@ -587,6 +3054,10 @@ export class LLMChatPipeline {
      return this.curRoundDecodingTotalTokens;
    }
  
@@ -5565,7 +5935,7 @@ index 616cff4..254fa3e 100644
    /**
     * @returns the number of tokens decoded for a single request or a single choice in the request.
     */
-@@ -721,13 +3138,17 @@ export class LLMChatPipeline {
+@@ -721,13 +3192,17 @@ export class LLMChatPipeline {
     */
    async prefillStep(
      inp: string,
@@ -5586,7 +5956,7 @@ index 616cff4..254fa3e 100644
        );
      }
      if (this.resetStatsPerPrefill) {
-@@ -738,8 +3159,10 @@ export class LLMChatPipeline {
+@@ -738,8 +3213,10 @@ export class LLMChatPipeline {
  
      // cleanup the per convo states
      this.outputIds = [];
@@ -5597,16 +5967,18 @@ index 616cff4..254fa3e 100644
      this.tokenLogprobArray = [];
      this.curRoundDecodingTotalTokens = 0;
      this.curRoundPrefillTotalTokens = 0;
-@@ -747,6 +3170,8 @@ export class LLMChatPipeline {
+@@ -747,6 +3224,10 @@ export class LLMChatPipeline {
      this.curRoundDecodingTotalTime = 0;
      this.curRoundGrammarInitTotalTime = 0;
      this.curRoundGrammarPerTokenTotalTime = 0;
 +    this.curRoundSampledTokens = 0;
 +    this.curRoundDrowseCompletionTokens = 0;
++    this.drowseReadoutStart = genConfig?.drowse_readout_start_index ?? 0;
++    this.drowseReadoutTarget = genConfig?.drowse_readout_target_index;
  
      this.curRoundLatencyBreakdown = {
        logitProcessorTime: [],
-@@ -758,6 +3183,8 @@ export class LLMChatPipeline {
+@@ -758,6 +3239,8 @@ export class LLMChatPipeline {
      };
  
      this.stopTriggered = false;
@@ -5615,7 +5987,7 @@ index 616cff4..254fa3e 100644
      const conversation = this.conversation;
  
      // -1. Instantiate grammar matcher according to generation config. This step is overlapped
-@@ -835,17 +3262,28 @@ export class LLMChatPipeline {
+@@ -835,17 +3318,28 @@ export class LLMChatPipeline {
        conversation.prompt = inp;
      } else {
        conversation.appendMessage(msgRole, inp, inp_role_str);
@@ -5648,7 +6020,7 @@ index 616cff4..254fa3e 100644
        }
      }
      const [inputData, promptLen, getEmbedSize] = await this.getInputData();
-@@ -944,8 +3382,9 @@ export class LLMChatPipeline {
+@@ -944,8 +3438,9 @@ export class LLMChatPipeline {
      }
      this.stopTriggered = true;
      this.finishReason = "abort";
@@ -5659,7 +6031,7 @@ index 616cff4..254fa3e 100644
      }
    }
  
-@@ -999,9 +3438,11 @@ export class LLMChatPipeline {
+@@ -999,9 +3494,11 @@ export class LLMChatPipeline {
      if (stopTokens.includes(nextToken)) {
        this.stopTriggered = true;
        this.finishReason = "stop";
@@ -5671,7 +6043,7 @@ index 616cff4..254fa3e 100644
        // Update token appearance frequency
        const curFreq = this.appearedTokensFreq.get(nextToken);
        if (curFreq !== undefined) {
-@@ -1013,6 +3454,7 @@ export class LLMChatPipeline {
+@@ -1013,6 +3510,7 @@ export class LLMChatPipeline {
  
      // Stop condition 2: stop string; update `this.outputMessage` subsequently
      let outputMessage = this.tokenizer.decode(new Int32Array(this.outputIds));
@@ -5679,7 +6051,7 @@ index 616cff4..254fa3e 100644
      let stopPos = -1;
      for (const stopStr of stopStrs) {
        // Stop at the first stopStr we find
-@@ -1021,32 +3463,36 @@ export class LLMChatPipeline {
+@@ -1021,32 +3519,36 @@ export class LLMChatPipeline {
          outputMessage = outputMessage.substring(0, stopPos);
          this.stopTriggered = true;
          this.finishReason = "stop";
@@ -5718,7 +6090,7 @@ index 616cff4..254fa3e 100644
        }
      }
    }
-@@ -1227,7 +3673,15 @@ export class LLMChatPipeline {
+@@ -1227,7 +3729,15 @@ export class LLMChatPipeline {
    private async embedAndForward(
      inputData: Array<Array<number> | ImageURL>,
      inputDataLen: number,
@@ -5734,7 +6106,7 @@ index 616cff4..254fa3e 100644
      if (inputDataLen > this.prefillChunkSize) {
        throw new Error(
          "InternalError: expect inputDataLen <= this.prefillChunkSize.",
-@@ -1238,51 +3692,120 @@ export class LLMChatPipeline {
+@@ -1238,51 +3748,129 @@ export class LLMChatPipeline {
  
      // 1. Embed all inputData
      this.tvm.beginScope();
@@ -5879,6 +6251,15 @@ index 616cff4..254fa3e 100644
 +      while (forwardBegun > 0) {
 +        this.fKVCacheEndForward!(forwardStates[--forwardBegun]);
 +      }
++      if (this.drowseCachedInputIds?.length === this.filledKVCacheLength) {
++        for (const input of inputData) {
++          if (!Array.isArray(input)) {
++            this.drowseCachedInputIds = null;
++            break;
++          }
++          for (const token of input) this.drowseCachedInputIds.push(token);
++        }
++      }
 +      this.filledKVCacheLength += inputDataLen;
 +      logits = this.tvm.detachFromCurrentScope(retValue.get(0));
 +    } finally {
@@ -5896,26 +6277,31 @@ index 616cff4..254fa3e 100644
      this.tvm.attachToCurrentScope(logits);
      return logits;
    }
-@@ -1292,7 +3815,9 @@ export class LLMChatPipeline {
+@@ -1292,7 +3880,14 @@ export class LLMChatPipeline {
      names: string[],
    ): VMFunctionRegistry {
      const registry: VMFunctionRegistry = {};
 -    for (const name of names) {
-+    const legacyNames = names.filter((name) => name.startsWith("drowse_"))
-+      .flatMap((name) => ["polythetic_", "saklas_"].map((prefix) => `${prefix}${name.slice("drowse_".length)}`));
++    const legacyNames = names
++      .filter((name) => name.startsWith("drowse_"))
++      .flatMap((name) =>
++        ["polythetic_", "saklas_"].map(
++          (prefix) => `${prefix}${name.slice("drowse_".length)}`,
++        ),
++      );
 +    for (const name of [...names, ...legacyNames]) {
        try {
          const func = vm.getFunction(name) as unknown;
          if (typeof func === "function") {
-@@ -1305,6 +3830,17 @@ export class LLMChatPipeline {
+@@ -1305,6 +3900,17 @@ export class LLMChatPipeline {
      return registry;
    }
  
-+  private static applyLegacyDrowseAliases(
-+    registry: VMFunctionRegistry,
-+  ): void {
++  private static applyLegacyDrowseAliases(registry: VMFunctionRegistry): void {
 +    for (const [name, func] of Object.entries(registry)) {
-+      const prefix = ["polythetic_", "saklas_"].find((value) => name.startsWith(value));
++      const prefix = ["polythetic_", "saklas_"].find((value) =>
++        name.startsWith(value),
++      );
 +      if (prefix === undefined || func === undefined) continue;
 +      const currentName = `drowse_${name.slice(prefix.length)}`;
 +      if (registry[currentName] === undefined) registry[currentName] = func;
@@ -5925,7 +6311,7 @@ index 616cff4..254fa3e 100644
    private static getRequiredVMFunctionByName(
      name: string,
      registry: VMFunctionRegistry,
-@@ -1365,6 +3901,7 @@ export class LLMChatPipeline {
+@@ -1365,6 +3971,7 @@ export class LLMChatPipeline {
    private static resolveModelABI(
      kvStateKind: KVStateKind,
      availability: VMFunctionAvailability,
@@ -5933,7 +6319,7 @@ index 616cff4..254fa3e 100644
    ): ResolvedModelABI {
      const hasSingleKernelPair = availability.prefill && availability.decode;
      const hasBatchKernelPair =
-@@ -1450,6 +3987,17 @@ export class LLMChatPipeline {
+@@ -1450,6 +4057,17 @@ export class LLMChatPipeline {
      }
  
      // kv_cache
@@ -5951,7 +6337,7 @@ index 616cff4..254fa3e 100644
      if (hasSingleKernelPair) {
        return {
          kvStateKind,
-@@ -1525,14 +4073,279 @@ export class LLMChatPipeline {
+@@ -1525,14 +4143,267 @@ export class LLMChatPipeline {
      return states;
    }
  
@@ -6004,9 +6390,7 @@ index 616cff4..254fa3e 100644
 +        inputIds.length,
 +        capturePositions,
 +      );
-+      const captures = retValue.get(
-+        this.drowseOutputOffset(),
-+      ) as tvmjs.Tensor;
++      const captures = retValue.get(this.drowseOutputOffset()) as tvmjs.Tensor;
 +      const layerCount = this.requireModelDimension("num_hidden_layers");
 +      const hiddenSize = this.requireModelDimension("hidden_size");
 +      const expectedShape = [layerCount, positions.length, hiddenSize];
@@ -6162,9 +6546,7 @@ index 616cff4..254fa3e 100644
 +      : this.resolvedModelABI.decodeABI;
 +    const drowseArgs = this.getDrowseForwardArguments();
 +    if (drowseArgs.length === 0) {
-+      throw new Error(
-+        "Drowse rank-one capture requires an installed program",
-+      );
++      throw new Error("Drowse rank-one capture requires an installed program");
 +    }
 +    if (abi === "single") {
 +      return forward(
@@ -6209,20 +6591,12 @@ index 616cff4..254fa3e 100644
 +    let forward = this.prefill;
 +    if (useDrowseProgram && this.drowseProgram !== undefined) {
 +      forward = this.drowsePrefill!;
-+    } else if (
-+      useDrowseProgram &&
-+      this.drowseStructuredMode === "structured"
-+    ) {
++    } else if (useDrowseProgram && this.drowseStructuredMode === "structured") {
 +      forward = this.drowseStructuredPrefill!;
-+    } else if (
-+      useDrowseProgram &&
-+      this.drowseStructuredMode === "curved"
-+    ) {
++    } else if (useDrowseProgram && this.drowseStructuredMode === "curved") {
 +      forward = this.drowseCurvedPrefill!;
 +    }
-+    const drowseArgs = useDrowseProgram
-+      ? this.getDrowseForwardArguments()
-+      : [];
++    const drowseArgs = useDrowseProgram ? this.getDrowseForwardArguments() : [];
      if (this.resolvedModelABI.prefillABI === "single") {
 -      return this.prefill(
 +      return forward(
@@ -6232,7 +6606,7 @@ index 616cff4..254fa3e 100644
          this.params,
        );
      }
-@@ -1549,27 +4362,50 @@ export class LLMChatPipeline {
+@@ -1549,27 +4420,42 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -6264,20 +6638,12 @@ index 616cff4..254fa3e 100644
 +    let forward = this.decoding;
 +    if (useDrowseProgram && this.drowseProgram !== undefined) {
 +      forward = this.drowseDecoding!;
-+    } else if (
-+      useDrowseProgram &&
-+      this.drowseStructuredMode === "structured"
-+    ) {
++    } else if (useDrowseProgram && this.drowseStructuredMode === "structured") {
 +      forward = this.drowseStructuredDecoding!;
-+    } else if (
-+      useDrowseProgram &&
-+      this.drowseStructuredMode === "curved"
-+    ) {
++    } else if (useDrowseProgram && this.drowseStructuredMode === "curved") {
 +      forward = this.drowseCurvedDecoding!;
 +    }
-+    const drowseArgs = useDrowseProgram
-+      ? this.getDrowseForwardArguments()
-+      : [];
++    const drowseArgs = useDrowseProgram ? this.getDrowseForwardArguments() : [];
      if (this.resolvedModelABI.decodeABI === "single") {
 -      return this.decoding(
 +      return forward(
@@ -6287,7 +6653,7 @@ index 616cff4..254fa3e 100644
          this.params,
        );
      }
-@@ -1577,20 +4413,73 @@ export class LLMChatPipeline {
+@@ -1577,20 +4463,73 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -6363,7 +6729,7 @@ index 616cff4..254fa3e 100644
    // NOTE: caller must call device.sync()
    private updateLogitsOnCPU(logits: tvmjs.Tensor): tvmjs.Tensor {
      if (this.logitsOnCPU == undefined) {
-@@ -1610,7 +4499,7 @@ export class LLMChatPipeline {
+@@ -1610,7 +4549,7 @@ export class LLMChatPipeline {
      logitsOnGPU: tvmjs.Tensor,
      genConfig?: GenerationConfig,
    ) {
@@ -6372,7 +6738,7 @@ index 616cff4..254fa3e 100644
      // Also load other genConfig items like logit_bias. Consume all fields of `genConfig` here.
      function _hasValue(value: any): boolean {
        // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
-@@ -1618,6 +4507,7 @@ export class LLMChatPipeline {
+@@ -1618,6 +4557,7 @@ export class LLMChatPipeline {
      }
      let temperature: number = this.config.temperature;
      let top_p: number = this.config.top_p;
@@ -6380,7 +6746,7 @@ index 616cff4..254fa3e 100644
      let repetition_penalty: number = this.config.repetition_penalty;
      let frequency_penalty: number = this.config.frequency_penalty;
      let presence_penalty: number = this.config.presence_penalty;
-@@ -1633,6 +4523,9 @@ export class LLMChatPipeline {
+@@ -1633,6 +4573,9 @@ export class LLMChatPipeline {
        if (_hasValue(genConfig.top_p)) {
          top_p = genConfig.top_p!;
        }
@@ -6390,7 +6756,7 @@ index 616cff4..254fa3e 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,11 +4568,14 @@ export class LLMChatPipeline {
+@@ -1675,11 +4618,14 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -6408,7 +6774,7 @@ index 616cff4..254fa3e 100644
      }
      if (repetition_penalty <= 0) {
        throw new MinValueError("repetition_penalty", 0);
-@@ -1894,13 +4790,38 @@ export class LLMChatPipeline {
+@@ -1894,13 +4840,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -6451,17 +6817,15 @@ index 616cff4..254fa3e 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +4834,119 @@ export class LLMChatPipeline {
+@@ -1913,79 +4884,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
 -    const topPValue = Math.max(top_p, 1e-5);
 -    let sampledToken = -1;
-+    const topPValue = deterministic ? 0 : top_p;
-+    const captureLogprobs = Boolean(logprobs) || replayRequested;
-     const argsortResults = this.fargsortProbs(probs);
-     const sortedProbsDevice = argsortResults.get(0);
-     const sortedIndicesDevice = argsortResults.get(1);
+-    const argsortResults = this.fargsortProbs(probs);
+-    const sortedProbsDevice = argsortResults.get(0);
+-    const sortedIndicesDevice = argsortResults.get(1);
 -    const uniformSamplesDevice = this.tvm.uniform([1], 0.0, 1.0, this.device);
 -
 -    const topPHost = new Float32Array(numProbs).fill(-1);
@@ -6481,6 +6845,26 @@ index 616cff4..254fa3e 100644
 -      this.tvm
 -        .empty([numSeqs], "int32", this.tvm.cpu())
 -        .copyFrom(sampledTokensDevice),
+-    );
+-    if (logprobs && top_logprobs! > 0) {
+-      this.updateLogitsOnCPU(probs);
++    const topPValue = deterministic ? 0 : top_p;
++    const captureLogprobs = Boolean(logprobs) || replayRequested;
++    const readbackCandidates = deterministic ? 1 : effectiveTopK;
++    let sortedProbsDevice: tvmjs.Tensor;
++    let sortedIndicesDevice: tvmjs.Tensor;
++    if (readbackCandidates <= 1024) {
++      this.drowseGpuTopK ??= new DrowseGpuTopK(this.tvm);
++      [sortedProbsDevice, sortedIndicesDevice] = this.drowseGpuTopK.select(
++        probs,
++        readbackCandidates,
++      );
++    } else {
++      const sorted = this.fargsortProbs(probs);
++      sortedProbsDevice = sorted.get(0);
++      sortedIndicesDevice = sorted.get(1);
+     }
+-    this.tvm.endScope();
 +    const sortedProbsHost = this.tvm
 +      .empty(sortedProbsDevice.shape, sortedProbsDevice.dtype, this.tvm.cpu())
 +      .copyFrom(sortedProbsDevice);
@@ -6496,7 +6880,10 @@ index 616cff4..254fa3e 100644
 +      : this.tvm
 +          .empty([1], "float32", this.tvm.cpu())
 +          .copyFrom(this.tvm.uniform([1], 0.0, 1.0, this.device));
-+    await this.device.sync();
+     await this.device.sync();
+-
+-    sampledToken = sampledTokensHost.toArray()[0];
+-    sampledTokensHost.dispose();
 +    const samplerResult = sampleDrowseTopKTopP(
 +      sortedProbsHost.toArray() as Float32Array,
 +      sortedIndicesHost.toArray() as Int32Array,
@@ -6506,16 +6893,10 @@ index 616cff4..254fa3e 100644
 +        ? 0
 +        : (uniformSamplesHost.toArray() as Float32Array)[0],
 +      samplerSelectedTokenIds,
-     );
--    if (logprobs && top_logprobs! > 0) {
--      this.updateLogitsOnCPU(probs);
--    }
++      Math.max(logprobs ? (top_logprobs ?? 0) : 0, replayRequested ? 32 : 0),
++    );
 +    const sampledToken = samplerResult.sampledTokenId;
-     this.tvm.endScope();
--    await this.device.sync();
--
--    sampledToken = sampledTokensHost.toArray()[0];
--    sampledTokensHost.dispose();
++    this.tvm.endScope();
      if (sampledToken < 0) {
        throw new Error("InternalError: failed to sample a valid token.");
      }
@@ -6618,27 +6999,56 @@ index 616cff4..254fa3e 100644
    }
  
    /**
-@@ -2028,6 +4989,19 @@ export class LLMChatPipeline {
+@@ -2028,20 +5051,37 @@ export class LLMChatPipeline {
        if (this.filledKVCacheLength !== 0) {
          throw new TextCompletionExpectsKVEmptyError();
        }
 +      const legacyConfig = this.config as ChatConfig & Record<string, unknown>;
-+      const prefixes = ["drowse", "polythetic", "saklas"].map((name) => legacyConfig[`${name}_completion_prefix_token_ids`])
++      const prefixes = ["drowse", "polythetic", "saklas"]
++        .map((name) => legacyConfig[`${name}_completion_prefix_token_ids`])
 +        .filter((value) => value !== undefined);
-+      if (prefixes.some((value) => JSON.stringify(value) !== JSON.stringify(prefixes[0]))) {
-+        throw new Error("The completion-prefix metadata contains conflicting values");
++      if (
++        prefixes.some(
++          (value) => JSON.stringify(value) !== JSON.stringify(prefixes[0]),
++        )
++      ) {
++        throw new Error(
++          "The completion-prefix metadata contains conflicting values",
++        );
 +      }
 +      const prefix = (prefixes[0] ?? []) as number[];
-+      if (!Array.isArray(prefix) || prefix.some((id) =>
-+        !Number.isSafeInteger(id) || id < 0 || id >= this.fullVocabSize
-+      )) {
-+        throw new TypeError("Text completion prefix must contain valid vocabulary token IDs");
++      if (
++        !Array.isArray(prefix) ||
++        prefix.some(
++          (id) =>
++            !Number.isSafeInteger(id) || id < 0 || id >= this.fullVocabSize,
++        )
++      ) {
++        throw new TypeError(
++          "Text completion prefix must contain valid vocabulary token IDs",
++        );
 +      }
 +      curTokens = [...prefix];
        prompts = this.conversation.getPromptArrayTextCompletion();
      } else {
        // 1.2. Conversation style
-@@ -2082,7 +5056,7 @@ export class LLMChatPipeline {
+-      if (this.filledKVCacheLength === 0) {
+-        if (
+-          this.conversation.config.system_prefix_token_ids !== undefined &&
+-          this.conversation.config.system_prefix_token_ids !== null
+-        ) {
+-          curTokens = [...this.conversation.config.system_prefix_token_ids];
+-        }
+-        prompts = this.conversation.getPromptArray(this.config);
+-      } else {
+-        prompts = this.conversation.getPromptArrayLastRound(this.config);
+-      }
++      curTokens = [...(this.conversation.config.system_prefix_token_ids ?? [])];
++      prompts = this.conversation.getPromptArray(this.config);
+     }
+ 
+     // 1.5. Preload image dimensions to compute per-image embed sizes
+@@ -2082,7 +5122,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -6647,7 +7057,31 @@ index 616cff4..254fa3e 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2186,50 +5160,53 @@ export class LLMChatPipeline {
+@@ -2116,6 +5156,23 @@ export class LLMChatPipeline {
+         }
+       }
+     }
++    if (!this.conversation.isTextCompletion && this.filledKVCacheLength > 0) {
++      const cached = this.drowseCachedInputIds;
++      if (ret.length === 0 && cached?.length === this.filledKVCacheLength &&
++          cached.length < curTokens.length &&
++          cached.every((token, index) => curTokens[index] === token)) {
++        curTokens = curTokens.slice(cached.length);
++        numPromptTokens = curTokens.length;
++      } else {
++        this.tvm.beginScope();
++        try {
++          this.resetKVCache();
++          this.filledKVCacheLength = 0;
++        } finally {
++          this.tvm.endScope();
++        }
++      }
++    }
+     // Deal with last curTokens
+     if (curTokens.length !== 0) {
+       ret.push([...curTokens]);
+@@ -2186,50 +5243,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -6711,13 +7145,11 @@ index 616cff4..254fa3e 100644
 +        entropy_nats: samplerResult.entropyNats,
 +        perplexity: samplerResult.perplexity,
 +      },
-+      ...(drowseReplay === undefined
-+        ? {}
-+        : { drowse_replay: drowseReplay }),
++      ...(drowseReplay === undefined ? {} : { drowse_replay: drowseReplay }),
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +5261,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +5342,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }
@@ -6874,7 +7306,7 @@ index 8be38bb..e9ca605 100644
    | ChatCompletionChunk
    | CreateEmbeddingResponse
 diff --git a/src/openai_api_protocols/chat_completion.ts b/src/openai_api_protocols/chat_completion.ts
-index 0ec5040..ffe762e 100644
+index 0ec5040..15f80c3 100644
 --- a/src/openai_api_protocols/chat_completion.ts
 +++ b/src/openai_api_protocols/chat_completion.ts
 @@ -162,6 +162,12 @@ export interface ChatCompletionRequestBase {
@@ -6890,7 +7322,16 @@ index 0ec5040..ffe762e 100644
    /**
     * Modify the likelihood of specified tokens appearing in the completion.
     *
-@@ -283,6 +289,21 @@ export interface ChatCompletionRequestBase {
+@@ -191,7 +197,7 @@ export interface ChatCompletionRequestBase {
+   logprobs?: boolean | null;
+ 
+   /**
+-   * An integer between 0 and 5 specifying the number of most likely tokens to return
++   * A nonnegative integer specifying the number of most likely tokens to return
+    * at each token position, each with an associated log probability. `logprobs` must
+    * be set to `true` if this parameter is used.
+    */
+@@ -283,6 +289,23 @@ export interface ChatCompletionRequestBase {
       * stages of token sampling.
       */
      enable_latency_breakdown?: boolean | null;
@@ -6906,13 +7347,15 @@ index 0ec5040..ffe762e 100644
 +     * every step so the normal RNG stream is preserved.
 +     */
 +    drowse_forced_prefix_token_ids?: number[] | null;
++  drowse_readout_start_index?: number;
++  drowse_readout_target_index?: number;
 +
 +    /** Token IDs whose exact sampler log probabilities are returned per step. */
 +    drowse_score_token_ids?: number[] | null;
    };
  }
  
-@@ -476,14 +497,20 @@ export function postInitAndCheckFields(
+@@ -476,14 +499,20 @@ export function postInitAndCheckFields(
      },
    );
  
@@ -6939,7 +7382,7 @@ index 0ec5040..ffe762e 100644
      );
    }
  
-@@ -880,6 +907,9 @@ export type ChatCompletionToolChoiceOption =
+@@ -880,6 +909,9 @@ export type ChatCompletionToolChoiceOption =
  
  //////////////////////////////// 3.1. LOG PROBS ////////////////////////////////
  export interface TopLogprob {
@@ -6949,7 +7392,7 @@ index 0ec5040..ffe762e 100644
    /**
     * The token.
     */
-@@ -903,6 +933,9 @@ export interface TopLogprob {
+@@ -903,6 +935,9 @@ export interface TopLogprob {
  }
  
  export interface ChatCompletionTokenLogprob {
@@ -6959,7 +7402,7 @@ index 0ec5040..ffe762e 100644
    /**
     * The token.
     */
-@@ -930,6 +963,31 @@ export interface ChatCompletionTokenLogprob {
+@@ -930,6 +965,31 @@ export interface ChatCompletionTokenLogprob {
     * `top_logprobs` returned.
     */
    top_logprobs: Array<TopLogprob>;
@@ -6991,7 +7434,7 @@ index 0ec5040..ffe762e 100644
  }
  
  //////////////////////////////// 3.2. OTHERS ////////////////////////////////
-@@ -1039,6 +1097,13 @@ export type ChatCompletionFinishReason =
+@@ -1039,6 +1099,13 @@ export type ChatCompletionFinishReason =
    | "tool_calls"
    | "abort";
  
@@ -7005,7 +7448,7 @@ index 0ec5040..ffe762e 100644
  export namespace ChatCompletion {
    export interface Choice {
      /**
-@@ -1049,6 +1114,9 @@ export namespace ChatCompletion {
+@@ -1049,6 +1116,9 @@ export namespace ChatCompletion {
       */
      finish_reason: ChatCompletionFinishReason;
  
@@ -7015,7 +7458,7 @@ index 0ec5040..ffe762e 100644
      /**
       * The index of the choice in the list of choices.
       */
-@@ -1093,6 +1161,9 @@ export namespace ChatCompletionChunk {
+@@ -1093,6 +1163,9 @@ export namespace ChatCompletionChunk {
       */
      finish_reason: ChatCompletionFinishReason | null;
  
@@ -7026,7 +7469,7 @@ index 0ec5040..ffe762e 100644
       * The index of the choice in the list of choices.
       */
 diff --git a/src/openai_api_protocols/completion.ts b/src/openai_api_protocols/completion.ts
-index 0534fe9..256ffb4 100644
+index 0534fe9..6391ef2 100644
 --- a/src/openai_api_protocols/completion.ts
 +++ b/src/openai_api_protocols/completion.ts
 @@ -27,6 +27,7 @@ import {
@@ -7037,6 +7480,15 @@ index 0534fe9..256ffb4 100644
  } from "./chat_completion";
  
  export class Completions {
+@@ -108,7 +109,7 @@ export interface CompletionCreateParamsBase {
+   logprobs?: boolean | null;
+ 
+   /**
+-   * An integer between 0 and 5 specifying the number of most likely tokens to return
++   * A nonnegative integer specifying the number of most likely tokens to return
+    * at each token position, each with an associated log probability. `logprobs` must
+    * be set to `true` if this parameter is used.
+    */
 @@ -189,6 +190,12 @@ export interface CompletionCreateParamsBase {
     */
    top_p?: number | null;
@@ -7050,7 +7502,7 @@ index 0534fe9..256ffb4 100644
    /**
     * If true, will ignore stop string and stop token and generate until max_tokens hit.
     * If unset, will treat as false.
-@@ -242,6 +249,15 @@ export interface CompletionCreateParamsBase {
+@@ -242,6 +249,17 @@ export interface CompletionCreateParamsBase {
       * stages of token sampling.
       */
      enable_latency_breakdown?: boolean | null;
@@ -7060,13 +7512,15 @@ index 0534fe9..256ffb4 100644
 +     * every step so the normal RNG stream is preserved.
 +     */
 +    drowse_forced_prefix_token_ids?: number[] | null;
++  drowse_readout_start_index?: number;
++  drowse_readout_target_index?: number;
 +
 +    /** Token IDs whose exact sampler log probabilities are returned per step. */
 +    drowse_score_token_ids?: number[] | null;
    };
  }
  
-@@ -319,6 +335,9 @@ export interface CompletionChoice {
+@@ -319,6 +337,9 @@ export interface CompletionChoice {
     */
    finish_reason: ChatCompletionFinishReason | null;
  
@@ -8225,10 +8679,10 @@ index 8fa04b2..92ae4af 100644
    type ImageURL = ChatCompletionContentPartImage.ImageURL;
 diff --git a/tests/drowse_pipeline.test.ts b/tests/drowse_pipeline.test.ts
 new file mode 100644
-index 0000000..d4810a5
+index 0000000..02b47b8
 --- /dev/null
 +++ b/tests/drowse_pipeline.test.ts
-@@ -0,0 +1,1086 @@
+@@ -0,0 +1,1131 @@
 +import { jest, test, expect } from "@jest/globals";
 +
 +import {
@@ -8273,6 +8727,8 @@ index 0000000..d4810a5
 +
 +function pipeline(): any {
 +  const result = Object.create(LLMChatPipeline.prototype) as any;
++  result["curRoundDrowseCompletionTokens"] = 0;
++  result["drowseReadoutStart"] = 0;
 +  result["drowsePrefill"] = jest.fn();
 +  result["drowseDecoding"] = jest.fn();
 +  result["config"] = {
@@ -8508,10 +8964,12 @@ index 0000000..d4810a5
 +
 +test("one synchronization materializes every token readout before queued control changes", async () => {
 +  const result = pipeline();
-+  const dataTensor = (
-+    shape: number[],
-+    data: Float32Array | Int32Array,
-+  ) => ({ ...tensor(), shape, data, toArray: jest.fn(() => data) });
++  const dataTensor = (shape: number[], data: Float32Array | Int32Array) => ({
++    ...tensor(),
++    shape,
++    data,
++    toArray: jest.fn(() => data),
++  });
 +  result["drowseMeasurements"] = dataTensor(
 +    [2, 8],
 +    Float32Array.from({ length: 16 }, (_value, index) => index),
@@ -8537,16 +8995,18 @@ index 0000000..d4810a5
 +  );
 +  result["drowsePendingJlensReadback"] = {
 +    layerCount: 2,
-+    chunks: [{
-+      chunk: {
-+        layerIds: Int32Array.of(0),
-+        jacobians: tensor(),
-+        layerIdsDevice: tensor(),
++    chunks: [
++      {
++        chunk: {
++          layerIds: Int32Array.of(0),
++          jacobians: tensor(),
++          layerIdsDevice: tensor(),
++        },
++        selectedHost,
++        layerTokenIdsHost,
++        layerProbabilitiesHost,
 +      },
-+      selectedHost,
-+      layerTokenIdsHost,
-+      layerProbabilitiesHost,
-+    }],
++    ],
 +    aggregate: {
 +      tokenIdsHost: dataTensor(
 +        [1, 8],
@@ -8560,10 +9020,7 @@ index 0000000..d4810a5
 +    },
 +  };
 +  result["drowsePendingSaeReadback"] = {
-+    valuesHost: dataTensor(
-+      [1, 8],
-+      Float32Array.from([9, 8, 7, 6, 5, 4, 3, 2]),
-+    ),
++    valuesHost: dataTensor([1, 8], Float32Array.from([9, 8, 7, 6, 5, 4, 3, 2])),
 +    featureIdsHost: dataTensor(
 +      [1, 8],
 +      Int32Array.from([8, 3, 10, 1, 11, 0, 9, 2]),
@@ -8651,11 +9108,7 @@ index 0000000..d4810a5
 +  result["tvm"].endScope.mockClear();
 +
 +  await expect(
-+    result.resolveDrowseJlensTokenDirections(
-+      JLENS_BINDING,
-+      [0, 1],
-+      [3, 7],
-+    ),
++    result.resolveDrowseJlensTokenDirections(JLENS_BINDING, [0, 1], [3, 7]),
 +  ).resolves.toEqual(
 +    Float32Array.from([0, 1, 2, 3, 4, 5, 6, 7, 32, 33, 34, 35, 36, 37, 38, 39]),
 +  );
@@ -8710,18 +9163,22 @@ index 0000000..d4810a5
 +  await result.setDrowseJlensDictionary(dictionary);
 +  const resident = result["drowseJlensDictionary"];
 +
-+  await expect(result.setDrowseJlensDictionary({
-+    ...dictionary,
-+    layerIndices: Int32Array.from([0]),
-+    matrices: [new Float32Array(16)],
-+  })).rejects.toThrow(/conflicting metadata/);
++  await expect(
++    result.setDrowseJlensDictionary({
++      ...dictionary,
++      layerIndices: Int32Array.from([0]),
++      matrices: [new Float32Array(16)],
++    }),
++  ).rejects.toThrow(/conflicting metadata/);
 +  expect(result["drowseJlensDictionary"]).toBe(resident);
 +
 +  result["device"].sync.mockRejectedValueOnce(new Error("device lost"));
-+  await expect(result.setDrowseJlensDictionary({
-+    ...dictionary,
-+    bindingId: "c".repeat(64),
-+  })).rejects.toThrow("device lost");
++  await expect(
++    result.setDrowseJlensDictionary({
++      ...dictionary,
++      bindingId: "c".repeat(64),
++    }),
++  ).rejects.toThrow("device lost");
 +  expect(result["drowseJlensDictionary"]).toBe(resident);
 +  for (const chunk of resident.chunks) {
 +    expect(chunk.jacobians.dispose).not.toHaveBeenCalled();
@@ -8793,7 +9250,10 @@ index 0000000..d4810a5
 +  });
 +  const chunks = await result["uploadDrowseJlensChunks"](
 +    Array.from({ length: 3 }, (_value, matrix) =>
-+      Float32Array.from({ length: 4 * 4 }, (_entry, index) => matrix * 16 + index)
++      Float32Array.from(
++        { length: 4 * 4 },
++        (_entry, index) => matrix * 16 + index,
++      ),
 +    ),
 +    Int32Array.from([0, 2, 3]),
 +    plans,
@@ -9035,17 +9495,21 @@ index 0000000..d4810a5
 +  await result.setDrowseSaeDictionary(dictionary);
 +  const resident = result["drowseSaeDictionary"];
 +
-+  await expect(result.setDrowseSaeDictionary({
-+    ...dictionary,
-+    runtimeLayerIndex: 0,
-+  })).rejects.toThrow(/conflicting metadata/);
++  await expect(
++    result.setDrowseSaeDictionary({
++      ...dictionary,
++      runtimeLayerIndex: 0,
++    }),
++  ).rejects.toThrow(/conflicting metadata/);
 +  expect(result["drowseSaeDictionary"]).toBe(resident);
 +
 +  result["device"].sync.mockRejectedValueOnce(new Error("device lost"));
-+  await expect(result.setDrowseSaeDictionary({
-+    ...dictionary,
-+    bindingId: "d".repeat(64),
-+  })).rejects.toThrow("device lost");
++  await expect(
++    result.setDrowseSaeDictionary({
++      ...dictionary,
++      bindingId: "d".repeat(64),
++    }),
++  ).rejects.toThrow("device lost");
 +  expect(result["drowseSaeDictionary"]).toBe(resident);
 +  expect(resident.decoderBias.dispose).not.toHaveBeenCalled();
 +  expect(resident.runtimeLayerIndexDevice.dispose).not.toHaveBeenCalled();
@@ -9226,18 +9690,15 @@ index 0000000..d4810a5
 +    return host;
 +  });
 +
-+  await result["computeDrowseJlensProbabilities"](
-+    tensor(),
-+    tensor(),
-+  );
++  await result["computeDrowseJlensProbabilities"](tensor(), tensor());
 +  expect(result["device"].sync).not.toHaveBeenCalled();
 +  const bundle = await result.readDrowseMeasurementBundle();
-+  expect(Array.from(result["drowseJlensProbabilitiesHost"].slice(0, 8))).toEqual(
-+    [0, 1, 2, 3, 4, 5, 6, 7],
-+  );
-+  expect(Array.from(result["drowseJlensProbabilitiesHost"].slice(16, 24))).toEqual([
-+    8, 9, 10, 11, 12, 13, 14, 15,
-+  ]);
++  expect(
++    Array.from(result["drowseJlensProbabilitiesHost"].slice(0, 8)),
++  ).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
++  expect(
++    Array.from(result["drowseJlensProbabilitiesHost"].slice(16, 24)),
++  ).toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
 +  expect(result["drowseJlensReadout"]).not.toHaveBeenCalled();
 +  expect(result["drowseJlensReadoutAccumulate"]).toHaveBeenCalledTimes(2);
 +  expect(
@@ -9314,6 +9775,44 @@ index 0000000..d4810a5
 +    /does not attest the exact Drowse readout ABI/,
 +  );
 +  expect(result["drowseExactReadoutAttested"]).not.toBe(true);
++});
++
++test("replay discovery runs only at the requested raw token", () => {
++  const result = pipeline();
++  result.drowseReadoutStart = 2;
++  result.drowseReadoutTarget = 4;
++  const demanded = [0, 1, 2, 3, 4, 5].map((index) => {
++    result.curRoundDrowseCompletionTokens = index;
++    return result.drowseDiscoveryRequested();
++  });
++  expect(demanded).toEqual([false, false, false, false, true, false]);
++  result.drowseReadoutTarget = undefined;
++  expect(result.drowseDiscoveryRequested()).toBe(true);
++});
++
++test("skipped replay discovery avoids lens GPU work without a token probe", async () => {
++  const result = pipeline();
++  result.curRoundDrowseCompletionTokens = 1;
++  result.drowseReadoutStart = 4;
++  result.drowseProbeKindHost = new Uint32Array(8);
++  await result.computeDrowseJlensProbabilities(tensor(), tensor());
++  expect(result.tvm.beginScope).not.toHaveBeenCalled();
++  result.drowseProbeKindHost[0] = 3;
++  await expect(
++    result.computeDrowseJlensProbabilities(tensor(), tensor()),
++  ).rejects.toThrow("J-lens probability runtime is unavailable");
++});
++
++test("skipped replay discovery avoids SAE feature discovery", async () => {
++  const result = pipeline();
++  result.curRoundDrowseCompletionTokens = 1;
++  result.drowseReadoutStart = 4;
++  result.drowseSaeReadoutActive = true;
++  result.drowseSaeDictionary = { activation: "relu", chunks: [] };
++  result.drowseSaeReadoutAccumulate = jest.fn();
++  await result.computeDrowseSaeTopFeatures(tensor());
++  expect(result.tvm.beginScope).not.toHaveBeenCalled();
++  expect(result.drowseSaeReadoutAccumulate).not.toHaveBeenCalled();
 +});
 diff --git a/tests/drowse.test.ts b/tests/drowse.test.ts
 new file mode 100644
@@ -10388,7 +10887,7 @@ index 43b9e95..c0efb9a 100644
      const engine = createEngineWithMultiplePipelines();
      await expect(
 diff --git a/tests/generation_config.test.ts b/tests/generation_config.test.ts
-index e48b225..129d5ed 100644
+index e48b225..2242e71 100644
 --- a/tests/generation_config.test.ts
 +++ b/tests/generation_config.test.ts
 @@ -5,6 +5,33 @@ import {
@@ -10425,7 +10924,27 @@ index e48b225..129d5ed 100644
    test("High-level unsupported fields", () => {
      expect(() => {
        const genConfig: GenerationConfig = {
-@@ -74,6 +101,21 @@ describe("Check generation config illegal values", () => {
+@@ -44,11 +71,17 @@ describe("Check generation config illegal values", () => {
+     expect(() => {
+       const genConfig: GenerationConfig = {
+         logprobs: true,
+-        top_logprobs: 6,
++        top_logprobs: -1,
+         max_tokens: 10,
+       };
+       postInitAndCheckGenerationConfigValues(genConfig);
+-    }).toThrow("Make sure 0 < top_logprobs <= 5.");
++    }).toThrow("top_logprobs");
++  });
++
++  test("top_logprobs supports full-vocabulary requests", () => {
++    const genConfig: GenerationConfig = { logprobs: true, top_logprobs: 262144 };
++    postInitAndCheckGenerationConfigValues(genConfig);
++    expect(genConfig.top_logprobs).toBe(262144);
+   });
+ 
+   test("top_logprobs set without setting logprobs", () => {
+@@ -74,6 +107,21 @@ describe("Check generation config illegal values", () => {
  });
  
  describe("Check generation post init", () => {
@@ -10641,16 +11160,27 @@ index a7cf3ed..ef9c512 100644
 +  expect(retValue.get).not.toHaveBeenCalledWith(3);
 +});
 diff --git a/tests/llm_chat_pipeline.test.ts b/tests/llm_chat_pipeline.test.ts
-index 5138c4e..7b39b64 100644
+index 5138c4e..9a17c13 100644
 --- a/tests/llm_chat_pipeline.test.ts
 +++ b/tests/llm_chat_pipeline.test.ts
-@@ -1,4 +1,4 @@
+@@ -1,4 +1,15 @@
 -import { LLMChatPipeline } from "../src/llm_chat";
 +import { LLMChatPipeline, sampleDrowseTopKTopP } from "../src/llm_chat";
++
++test("retains the requested alternatives through the full candidate pool", () => {
++  const probabilities = new Float32Array(4096).fill(1 / 4096);
++  const ids = Int32Array.from({ length: 4096 }, (_, i) => i);
++  for (const count of [0, 5, 33, 257, 4096, 262144]) {
++    const result = sampleDrowseTopKTopP(probabilities, ids, 1, 4096, 0.5, [], count);
++    expect(result.topLogprobs).toHaveLength(Math.min(count, 4096));
++    expect(result.argmax).toEqual({ token_id: 0, logprob: Math.log(1 / 4096) });
++    expect(result.sampledTokenId).toBe(2048);
++  }
++});
  import { MinValueError } from "../src/error";
  import { Role } from "../src/config";
  import { jest, test, expect, beforeEach } from "@jest/globals";
-@@ -66,6 +66,96 @@ beforeEach(() => {
+@@ -66,6 +77,96 @@ beforeEach(() => {
    compileJSONSchemaMock.mockClear();
  });
  
@@ -10747,7 +11277,7 @@ index 5138c4e..7b39b64 100644
  type PipelineLike = LLMChatPipeline & Record<string, any>;
  
  function createPipeline(): PipelineLike {
-@@ -85,6 +175,8 @@ function createPipeline(): PipelineLike {
+@@ -85,6 +186,8 @@ function createPipeline(): PipelineLike {
    } as any;
    pipeline["config"] = {} as any;
    pipeline["outputIds"] = [];
@@ -10756,7 +11286,16 @@ index 5138c4e..7b39b64 100644
    pipeline["appearedTokensFreq"] = new Map<number, number>();
    pipeline["stopTokens"] = [];
    pipeline["stopStr"] = [];
-@@ -167,12 +259,16 @@ test("processNextToken appends tokens until stop string reached", () => {
+@@ -101,6 +204,8 @@ function createPipeline(): PipelineLike {
+   pipeline["contextWindowSize"] = 16;
+   pipeline["slidingWindowSize"] = -1;
+   pipeline["filledKVCacheLength"] = 0;
++  pipeline["drowseCachedInputIds"] = [];
++  pipeline["resetKVCache"] = jest.fn(() => { pipeline["drowseCachedInputIds"] = []; });
+   pipeline["outputMessage"] = "";
+   pipeline["curRoundLatencyBreakdown"] = {
+     logitProcessorTime: [],
+@@ -167,12 +272,16 @@ test("processNextToken appends tokens until stop string reached", () => {
      max_tokens: 5,
    });
    expect(pipeline["stopTriggered"]).toBe(false);
@@ -10773,7 +11312,7 @@ index 5138c4e..7b39b64 100644
  });
  
  test("processNextToken respects max_tokens and updates token frequency", () => {
-@@ -215,15 +311,45 @@ test("prefillStep adds thinking reply header when thinking disabled", async () =
+@@ -215,15 +324,45 @@ test("prefillStep adds thinking reply header when thinking disabled", async () =
    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([9, 9]));
    await pipeline.prefillStep("hello", Role.user, undefined, {
      enable_thinking: false,
@@ -10820,7 +11359,7 @@ index 5138c4e..7b39b64 100644
  test("prefillStep appends standard reply header when thinking enabled", async () => {
    const pipeline = preparePrefillPipeline();
    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([2]));
-@@ -236,6 +362,121 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
+@@ -236,6 +375,121 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
    ).not.toHaveBeenCalled();
  });
  
@@ -10942,10 +11481,50 @@ index 5138c4e..7b39b64 100644
  test("prefillStep reuses grammar matcher when schema unchanged", async () => {
    const pipeline = preparePrefillPipeline();
    const matcher = { reset: jest.fn(), dispose: jest.fn() };
-@@ -285,6 +526,39 @@ test("getInputData uses cached prompts when KV cache filled", async () => {
-   expect(pipeline["conversation"].getPromptArrayLastRound).toHaveBeenCalled();
+@@ -273,16 +527,68 @@ test("prefillStep compiles custom grammar when response type is grammar", async
+   expect(compileGrammarMock).toHaveBeenCalledWith("root ::= WORD");
  });
  
+-test("getInputData uses cached prompts when KV cache filled", async () => {
++test("chat reuse includes every uncached token and turn separator", async () => {
+   const pipeline = createPipeline();
+-  pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([1]));
+-  pipeline["conversation"].config.system_prefix_token_ids = undefined;
+-  pipeline["filledKVCacheLength"] = 0;
+-  await (pipeline as any).getInputData();
+-  expect(pipeline["conversation"].getPromptArray).toHaveBeenCalled();
+-  pipeline["filledKVCacheLength"] = 1;
+-  await (pipeline as any).getInputData();
+-  expect(pipeline["conversation"].getPromptArrayLastRound).toHaveBeenCalled();
++  pipeline["conversation"].config.system_prefix_token_ids = [2];
++  pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([10, 20, 21, 30, 40]));
++  pipeline["filledKVCacheLength"] = 3;
++  pipeline["drowseCachedInputIds"] = [2, 10, 20];
++  const result = await (pipeline as any).getInputData();
++  expect(result.slice(0, 2)).toEqual([[[21, 30, 40]], 3]);
++  expect(pipeline["resetKVCache"]).not.toHaveBeenCalled();
++  expect(pipeline["conversation"].getPromptArrayLastRound).not.toHaveBeenCalled();
++  pipeline["contextWindowSize"] = 5;
++  await expect((pipeline as any).getInputData()).rejects.toThrow();
++});
++
++test.each([[2, 99], [2], null, [2, 10, 20]])(
++  "chat reuse resets for a changed, untracked, or nonextending prefix %j",
++  async (cached) => {
++    const pipeline = createPipeline();
++    pipeline["conversation"].config.system_prefix_token_ids = [2];
++    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([10, 20]));
++    pipeline["filledKVCacheLength"] = cached?.length === 3 ? 3 : 2;
++    pipeline["drowseCachedInputIds"] = cached;
++    const result = await (pipeline as any).getInputData();
++    expect(result.slice(0, 2)).toEqual([[[2, 10, 20]], 3]);
++    expect(pipeline["resetKVCache"]).toHaveBeenCalledTimes(1);
++    expect(pipeline["filledKVCacheLength"]).toBe(0);
++    expect(pipeline["tvm"].beginScope).toHaveBeenCalledTimes(1);
++    expect(pipeline["tvm"].endScope).toHaveBeenCalledTimes(1);
++  },
++);
++
 +test("text completion uses only its explicit tokenizer prefix and counts it", async () => {
 +  const pipeline = createPipeline();
 +  pipeline["conversation"].isTextCompletion = true;
@@ -10977,11 +11556,30 @@ index 5138c4e..7b39b64 100644
 +  pipeline["fullVocabSize"] = 100;
 +  pipeline["config"].drowse_completion_prefix_token_ids = prefix as any;
 +  await expect((pipeline as any).getInputData()).rejects.toThrow("valid vocabulary token IDs");
-+});
-+
+ });
+ 
  test("processNextToken ignores eos when requested", () => {
-   const pipeline = createPipeline();
-   pipeline["stopTokens"] = [1];
+@@ -370,3 +676,20 @@ describe("computeImageEmbedSize", () => {
+     );
+   });
+ });
++
++
++test("bounded sampler readback preserves distribution, forced support, and RNG mapping", () => {
++  const probabilities = Float32Array.from({ length: 2048 }, (_, index) => (2048 - index) / 2098176);
++  const ids = Int32Array.from({ length: 2048 }, (_, index) => index);
++  for (const topK of [1, 7, 1024, 2048]) {
++    for (const topP of [0, 0.1, 0.9, 1]) {
++      for (const draw of [0, 0.1, 0.5, 0.999999]) {
++        const selected = [0, 6, 1023, 2047];
++        expect(sampleDrowseTopKTopP(probabilities.slice(0, topK), ids.slice(0, topK), topP, topK, draw, selected))
++          .toEqual(sampleDrowseTopKTopP(probabilities, ids, topP, topK, draw, selected));
++      }
++    }
++  }
++  expect(sampleDrowseTopKTopP(probabilities.slice(0, 1), ids.slice(0, 1), 0, 1024, 0, [0, 7]))
++    .toEqual(sampleDrowseTopKTopP(probabilities, ids, 0, 1024, 0, [0, 7]));
++});
 diff --git a/tests/web_worker_handler.test.ts b/tests/web_worker_handler.test.ts
 index 9b04efa..1482f3b 100644
 --- a/tests/web_worker_handler.test.ts
@@ -11494,4 +12092,144 @@ index 9b04efa..1482f3b 100644
 +    "tokenizeDrowseText",
 +    "decodeDrowseTokens",
 +  ]);
++});
+diff --git a/tvm-direct-upload.mjs b/tvm-direct-upload.mjs
+new file mode 100644
+index 0000000..3316eab
+--- /dev/null
++++ b/tvm-direct-upload.mjs
+@@ -0,0 +1,45 @@
++import { createHash } from "node:crypto";
++
++const runtimeSha256 = "71cc97f20b962c9f88a3c29ca684504df2f69af72f49ad7a089d9e2136b90d16";
++const recordLine = "const rec = shardRecords[j];";
++
++export function canDirectUploadTensor(rec) {
++  return rec.format === "raw" ||
++    (rec.format === "f32-to-bf16" && rec.dtype !== "float32");
++}
++
++export async function uploadRawTensor(tvm, rec, buffer, device) {
++  const array = tvm.withNewScope(() =>
++    tvm.detachFromCurrentScope(tvm.empty(rec.shape, rec.dtype, device)),
++  );
++  try {
++    array.copyFromRawBytes(new Uint8Array(buffer, rec.byteOffset, rec.nbytes));
++    await device.sync();
++    tvm.tensorCacheUpdate(rec.name, array, false);
++  } finally {
++    array.dispose();
++  }
++}
++
++export function patchTensorCacheLoader(code) {
++  if (createHash("sha256").update(code).digest("hex") !== runtimeSha256 ||
++      code.split(recordLine).length !== 2) {
++    throw new Error("The pinned TVM runtime changed; review the direct-upload patch before building.");
++  }
++  const branch = `${recordLine}
++                            if (device.deviceType === DeviceStrToEnum.webgpu && canDirectUploadTensor(rec)) {
++                                yield uploadRawTensor(this, rec, buffer, device);
++                                continue;
++                            }`;
++  return `${canDirectUploadTensor.toString()}\n${uploadRawTensor.toString()}\n${code.replace(recordLine, branch)}`;
++}
++
++export function directUploadPlugin() {
++  return {
++    name: "drowse-tvm-direct-upload",
++    transform(code, id) {
++      if (!id.replaceAll("\\", "/").endsWith("/@mlc-ai/web-runtime/lib/index.js")) return null;
++      return { code: patchTensorCacheLoader(code), map: null };
++    },
++  };
++}
+diff --git a/tvm-direct-upload.test.mjs b/tvm-direct-upload.test.mjs
+new file mode 100644
+index 0000000..5b9375a
+--- /dev/null
++++ b/tvm-direct-upload.test.mjs
+@@ -0,0 +1,83 @@
++import assert from "node:assert/strict";
++import { readFile } from "node:fs/promises";
++import test from "node:test";
++import { canDirectUploadTensor, uploadRawTensor, patchTensorCacheLoader, directUploadPlugin } from "./tvm-direct-upload.mjs";
++
++for (const [format, dtype, expected] of [
++  ["raw", "float32", true],
++  ["raw", "uint32", true],
++  ["f32-to-bf16", "uint32", true],
++  ["f32-to-bf16", "float16", true],
++  ["f32-to-bf16", "float32", false],
++  ["unknown", "float16", false],
++]) {
++  test(`${format}/${dtype} retains the storage decoder when needed`, () => {
++    assert.equal(canDirectUploadTensor({ format, dtype }), expected);
++  });
++}
++
++function fixture(failAt) {
++  const calls = [];
++  const buffer = Uint8Array.from([9, 8, 7, 6, 1, 2, 3, 4, 5, 6, 7, 8]).buffer;
++  const rec = { name: "weight", shape: [2], dtype: "uint32", format: "raw", byteOffset: 4, nbytes: 8 };
++  const step = (name) => {
++    calls.push(name);
++    if (failAt === name) throw new Error(name);
++  };
++  const device = { async sync() { step("sync"); } };
++  const array = {
++    copyFromRawBytes(bytes) {
++      step("copy");
++      assert.equal(bytes.buffer, buffer);
++      assert.equal(bytes.byteOffset, 4);
++      assert.deepEqual([...bytes], [1, 2, 3, 4, 5, 6, 7, 8]);
++    },
++    dispose() { step("dispose"); },
++  };
++  const tvm = {
++    withNewScope(fn) { return fn(); },
++    detachFromCurrentScope(value) { return value; },
++    empty(shape, dtype, target) {
++      step("allocate");
++      assert.deepEqual(shape, rec.shape);
++      assert.equal(dtype, rec.dtype);
++      assert.equal(target, device);
++      return array;
++    },
++    tensorCacheUpdate(name, value, override) {
++      step("cache");
++      assert.equal(name, "weight");
++      assert.equal(value, array);
++      assert.equal(override, false);
++    },
++  };
++  return { tvm, rec, buffer, device, calls };
++}
++
++test("uploads the original shard view and synchronizes before cache ownership transfer", async () => {
++  const f = fixture();
++  await uploadRawTensor(f.tvm, f.rec, f.buffer, f.device);
++  assert.deepEqual(f.calls, ["allocate", "copy", "sync", "cache", "dispose"]);
++});
++
++for (const failAt of ["copy", "sync", "cache"]) {
++  test(`disposes the detached tensor after ${failAt} failure`, async () => {
++    const f = fixture(failAt);
++    await assert.rejects(uploadRawTensor(f.tvm, f.rec, f.buffer, f.device), new RegExp(failAt));
++    assert.equal(f.calls.at(-1), "dispose");
++    assert.equal(f.calls.filter((call) => call === "dispose").length, 1);
++    if (failAt !== "cache") assert.ok(!f.calls.includes("cache"));
++  });
++}
++
++test("patches only the pinned dependency and keeps CPU/conversion fallback intact", async () => {
++  const source = await readFile(new URL("./node_modules/@mlc-ai/web-runtime/lib/index.js", import.meta.url), "utf8");
++  const result = patchTensorCacheLoader(source);
++  assert.match(result, /device\.deviceType === DeviceStrToEnum\.webgpu && canDirectUploadTensor\(rec\)/);
++  const originalTail = source.slice(source.indexOf("const rec = shardRecords[j];") + "const rec = shardRecords[j];".length);
++  assert.ok(result.endsWith(originalTail));
++  assert.throws(() => patchTensorCacheLoader(source + "\n"), /pinned TVM runtime changed/);
++  assert.throws(() => patchTensorCacheLoader(result), /pinned TVM runtime changed/);
++  assert.equal(directUploadPlugin().transform(source, "/unrelated/index.js"), null);
++  assert.equal(directUploadPlugin().transform(source, "/node_modules/@mlc-ai/web-runtime/lib/index.js").code, result);
 +});
