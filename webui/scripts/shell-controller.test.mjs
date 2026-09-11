@@ -355,7 +355,7 @@ try {
     shell.dispose();
   });
 
-  test("base models can generate without optional instruments, including on mobile", async () => {
+  test("base models include available SAE features on mobile and work without an SAE", async () => {
     const document = catalogFixture();
     document.models[0].modelType = "base";
     const variant = document.models[0].variants[0];
@@ -369,9 +369,10 @@ try {
     assert.equal(option.modelType, "base");
     assert.match(option.context, /Text completion/);
     assert.deepEqual(option.firstRunPacks.map((pack) => [pack.kind, pack.requiredForSetup, pack.selected]),
-      [["jlens", false, false], ["sae", false, false]]);
+      [["jlens", false, false], ["sae", true, true]]);
     await shell.download(variant.id);
-    assert.ok(!calls.some((call) => call.startsWith("download-pack:")));
+    assert.ok(calls.includes(`download-pack:${variant.id}:base-sae`));
+    assert.ok(!calls.includes(`download-pack:${variant.id}:smollm2-jlens`));
     assert.equal(shell.current().models[0].setupComplete, true);
 
     variant.packs = variant.packs.filter((pack) => pack.kind !== "sae");
@@ -393,12 +394,19 @@ try {
     const variant = document.models[0].variants[0];
     variant.packs.push(optionalInstrumentPack(variant, "oversize-sae", "sae",
       OPTIONAL_PACK_RESIDENT_BUDGET_BYTES, "a".repeat(64)));
-    const shell = createShellController(createBundle({}, document).bundle);
+    const shell = createShellController(createBundle({
+      async check() {
+        const device = capabilities();
+        device.webGpu.limits.maxBufferSize = 64 * 1024 * 1024;
+        device.webGpu.limits.maxStorageBufferBindingSize = 64 * 1024 * 1024;
+        return device;
+      },
+    }, document).bundle);
     await shell.check();
     assert.notEqual(shell.current().models[0].fit, "blocked");
     const lens = shell.current().models[0].firstRunPacks.find((pack) => pack.kind === "jlens");
-    shell.setOptionalPackSelected(variant.id, lens.id, true);
-    assert.throws(() => shell.setOptionalPackSelected(variant.id, "oversize-sae", true));
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, lens.id, true));
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "oversize-sae", false), /SAE is required/);
     shell.setOptionalPackSelected(variant.id, lens.id, false);
     await shell.download(variant.id);
     assert.equal(shell.current().models[0].setupComplete, true);
@@ -959,7 +967,7 @@ try {
     assert.equal(shell.current().models[0].setupComplete, true);
   });
 
-  test("first-run pack choices update exact bytes and skip unselected downloads", async () => {
+  test("available SAE features are required and included in exact download bytes", async () => {
     const document = catalogFixture();
     const variant = document.models[0].variants[0];
     removeFixtureJlens(variant);
@@ -973,23 +981,64 @@ try {
     await shell.check();
 
     assert.equal(shell.current().models[0].remainingDownloadBytes, modelBytes + 100);
-    shell.setOptionalPackSelected(variant.id, "fixture-sae", false);
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "fixture-sae", false), /SAE is required/);
     assert.deepEqual(
       shell.current().models[0].firstRunPacks.map((pack) => [pack.id, pack.selected]),
-      [["fixture-jlens", true], ["fixture-sae", false]],
+      [["fixture-jlens", true], ["fixture-sae", true]],
     );
-    assert.equal(shell.current().models[0].firstRunBytes, modelBytes + 40);
-    assert.equal(shell.current().models[0].remainingDownloadBytes, modelBytes + 40);
+    assert.equal(shell.current().models[0].firstRunBytes, modelBytes + 100);
+    assert.equal(shell.current().models[0].remainingDownloadBytes, modelBytes + 100);
 
     await shell.download(variant.id);
 
     assert.ok(fixture.calls.includes(`download-pack:${variant.id}:fixture-jlens`));
     assert.equal(
       fixture.calls.includes(`download-pack:${variant.id}:fixture-sae`),
-      false,
+      true,
     );
     assert.equal(shell.current().models[0].setupComplete, true);
     assert.equal(shell.current().models[0].remainingDownloadBytes, 0);
+  });
+
+  test("compatible SAE setup is required on iPhone and preview desktop browsers", async () => {
+    for (const signals of [{ appleMobile: true }, { runtimeClass: "desktop-webkit" }, { runtimeClass: "desktop-gecko" }]) {
+      const document = catalogFixture();
+      const variant = document.models[0].variants[0];
+      variant.packs.push(optionalInstrumentPack(variant, "fixture-sae", "sae", 60, "d".repeat(64)));
+      const shell = createShellController(createBundle({
+        async check() { return capabilities({ signals: { ...capabilities().signals, ...signals } }); },
+      }, document).bundle);
+      await shell.check();
+      const model = shell.current().models[0];
+      const sae = model.firstRunPacks.find(pack => pack.kind === "sae");
+      assert.equal(sae.requiredForSetup, true);
+      assert.equal(sae.selected, true);
+      assert.doesNotMatch(model.toolNotice ?? "", /separate download/);
+      assert.throws(() => shell.setOptionalPackSelected(variant.id, sae.id, false), /SAE is required/);
+      shell.dispose();
+    }
+  });
+
+  test("an installed alternative SAE satisfies the required feature setup", async () => {
+    const document = catalogFixture();
+    const variant = document.models[0].variants[0];
+    variant.packs.push(
+      optionalInstrumentPack(variant, "fixture-sae-a", "sae", 40, "c".repeat(64)),
+      optionalInstrumentPack(variant, "fixture-sae-b", "sae", 70, "d".repeat(64)),
+    );
+    const fixture = createBundle({}, document);
+    fixture.emitRuntime({ installedPackIds: ["fixture-sae-b"] });
+    const shell = createShellController(fixture.bundle);
+    await shell.check();
+    assert.deepEqual(shell.current().models[0].firstRunPacks.filter(pack => pack.kind === "sae")
+      .map(pack => [pack.id, pack.requiredForSetup, pack.selected, pack.installed]), [
+        ["fixture-sae-b", true, true, true],
+        ["fixture-sae-a", false, false, false],
+      ]);
+    await shell.download(variant.id);
+    assert.ok(!fixture.calls.some(call => call.includes("download-pack:") && call.includes("fixture-sae")));
+    assert.equal(shell.current().models[0].setupComplete, true);
+    shell.dispose();
   });
 
   test("a model with no released J-lens is blocked before download", async () => {
@@ -1029,6 +1078,9 @@ try {
       [["smollm2-jlens", true], ["fixture-sae-a", true], ["fixture-sae-b", false]],
     );
     shell.setOptionalPackSelected(variant.id, "fixture-sae-b", true);
+    assert.equal(shell.current().models[0].firstRunPacks.find(pack => pack.id === "fixture-sae-b").requiredForSetup, true);
+    assert.equal(shell.current().models[0].firstRunPacks.find(pack => pack.id === "fixture-sae-a").requiredForSetup, false);
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "fixture-sae-b", false), /SAE is required/);
     assert.deepEqual(
       shell.current().models[0].firstRunPacks.map((pack) => [pack.id, pack.selected]),
       [["smollm2-jlens", true], ["fixture-sae-a", false], ["fixture-sae-b", true]],
@@ -1431,7 +1483,6 @@ try {
       shell.current().models[0].firstRunPacks.map((pack) => [pack.id, pack.selected]),
       [
         ["fixture-jlens-resident", true],
-        ["fixture-sae-resident", false],
       ],
     );
     assert.equal(
@@ -1649,13 +1700,13 @@ try {
     assert.equal(shell.current().models[0].setupComplete, false);
     assert.equal(shell.current().models[0].firstRunPacks[0].selected, true);
     assert.equal(shell.current().models[0].firstRunPacks[0].requiredForSetup, true);
-    assert.equal(shell.current().models[0].remainingDownloadBytes, 40);
+    assert.equal(shell.current().models[0].remainingDownloadBytes, 100);
     assert.throws(
       () => shell.setOptionalPackSelected(variant.id, "smollm2-jlens", false),
       /J-lens is required/u,
     );
     assert.equal(shell.current().models[0].setupComplete, false);
-    shell.setOptionalPackSelected(variant.id, "fixture-sae", true);
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "fixture-sae", false), /SAE is required/);
     assert.equal(shell.current().models[0].setupComplete, false);
     assert.equal(shell.current().models[0].remainingDownloadBytes, 100);
     await shell.download(variant.id);

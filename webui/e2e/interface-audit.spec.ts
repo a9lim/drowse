@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { selectWorkspaceView } from "./workbench-navigation";
 import { clickWorkspaceAction } from "./workbench-navigation";
 import { openWorkspaceMenu } from "./workbench-navigation";
@@ -30,6 +31,7 @@ async function openFixtureWorkbench(page: Page): Promise<void> {
   await expect(
     page.getByRole("heading", { name: "Choose your first model" }),
   ).toBeVisible();
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
 }
@@ -295,6 +297,7 @@ test("appearance defaults to dark and persists across every hosted surface", asy
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await openWorkspaceMenu(page);
@@ -371,6 +374,7 @@ test("landing and onboarding retain hierarchy and reflow at 320 px", async ({ pa
   ).toBeVisible();
   await expect(page.getByRole("group", { name: "Appearance" }).locator("button:visible"))
     .toHaveCount(2);
+  await chooseFixtureModel(page);
   await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
   await expectCoherentHeadingOutline(page);
   await expectViewportContainment(page);
@@ -589,6 +593,7 @@ test("the semantic type roles load with deliberate variable-font weights", async
   expect(onboardingType.button.weight).toBe(500);
   expect(onboardingType.data.family).toContain("Martian Mono");
 
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("button", { name: /^Roles / }).click();

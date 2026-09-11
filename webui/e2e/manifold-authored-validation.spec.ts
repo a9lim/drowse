@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
@@ -7,6 +8,7 @@ const drawerStoreUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
 async function openFixtureWorkbench(page: Page): Promise<void> {
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
 }

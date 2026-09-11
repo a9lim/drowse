@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { selectWorkspaceView } from "./workbench-navigation";
 import { clickWorkspaceAction } from "./workbench-navigation";
 import { openWorkspaceMenu } from "./workbench-navigation";
@@ -203,6 +204,7 @@ async function openTranscriptDrawer(page: Page): Promise<Locator> {
 
 async function openFixtureWorkbench(page: Page, extraQuery = ""): Promise<void> {
   await page.goto(`${devUrl}/app?fixture=1${extraQuery}`);
+  await chooseFixtureModel(page);
   await expect(
     page.getByRole("heading", { name: "Choose your first model" }),
   ).toBeVisible();
@@ -219,7 +221,7 @@ async function openFixtureWorkbench(page: Page, extraQuery = ""): Promise<void> 
   await expect(toolPicker.locator(".required-tool", { hasText: "Word insights" }).last()).toBeVisible();
   await expect(toolPicker.getByRole("checkbox", { name: /Word insights/ })).toHaveCount(0);
   await expect(toolPicker.getByRole("checkbox", { name: /R-lens readouts/ })).not.toBeChecked();
-  await expect(toolPicker.getByRole("checkbox", { name: /Feature explorer/ })).toBeChecked();
+  await expect(toolPicker.locator(".required-tool", { hasText: "Feature insights" })).toContainText("SAE");
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await expect(page).toHaveTitle("Drowse");
@@ -915,6 +917,7 @@ test("persistent missing workbench assets stop after one automatic reload and al
 
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
 
   await expect(page.getByText(
@@ -964,6 +967,7 @@ test("landing and onboarding fit a mobile viewport", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Choose your first model" }),
   ).toBeVisible();
+  await chooseFixtureModel(page);
   await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
@@ -1191,24 +1195,24 @@ test("bottom conversation action clears the active path without deleting its bra
   await expect(page.locator(".tree-node-wrap").filter({ hasText: "Keep this branch available" })).toBeVisible();
 });
 
-test("first run includes J-lens while additional model tools remain manageable", async ({ page }) => {
+test("first run includes J-lens and SAE while additional model tools remain manageable", async ({ page }) => {
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+  await chooseFixtureModel(page);
   const toolPicker = page.locator(".tool-picker");
-  const featureChoice = toolPicker.getByRole("checkbox", { name: /Feature explorer/ });
+  const includedSae = toolPicker.locator(".required-tool", { hasText: "Feature insights" });
   const includedJlens = toolPicker.locator(".required-tool", { hasText: "Word insights" });
   await expect(includedJlens).toContainText("J-lens");
   await expect(includedJlens.locator('input[type="checkbox"]')).toHaveCount(0);
-  await expect(featureChoice).toBeChecked();
+  await expect(includedSae).toContainText("SAE");
+  await expect(includedSae.locator('input[type="checkbox"]')).toHaveCount(0);
   await expect(toolPicker.locator(".tool-total")).toContainText("209 B");
 
-  await featureChoice.uncheck();
-  await expect(featureChoice).not.toBeChecked();
-  await expect(toolPicker.locator(".tool-total")).toContainText("155 B");
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([
     "fixture-jlens",
+    "fixture-sae",
     "qwen3-1.7b-fixture",
   ]);
 
@@ -1221,9 +1225,7 @@ test("first run includes J-lens while additional model tools remain manageable",
   await expect(jlensOption.getByRole("button")).toHaveCount(0);
 
   const saeOption = optionalSection.locator('li[data-pack-id="fixture-sae"]');
-  const downloadSae = saeOption.getByRole("button", { name: "Download" });
-  await expect(downloadSae).toBeEnabled();
-  await downloadSae.click();
+  await expect(saeOption.getByRole("button", { name: "Download" })).toHaveCount(0);
   await expect(saeOption.getByText("Ready", { exact: true })).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([
     "fixture-jlens",
@@ -1246,20 +1248,16 @@ test("first run includes J-lens while additional model tools remain manageable",
   const installedSae = downloadedPackRow(drawer, "fixture-sae");
   await attemptPackDeletion(installedSae);
   await page.waitForURL(`${devUrl}/app?fixture=1&reopen=1`);
-  await expect(page.locator(".shell")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([
     "fixture-jlens",
     "fixture-rlens",
     "qwen3-1.7b-fixture",
   ]);
 
-  const reopenedDrawer = await openModelAndStorage(page);
-  const reopenedTools = reopenedDrawer.locator("section.panel", {
-    hasText: "Included files and additions",
-  });
-  const reinstallSae = reopenedTools.locator('li[data-pack-id="fixture-sae"]');
-  await reinstallSae.getByRole("button", { name: "Download" }).click();
-  await expect(reinstallSae.getByText("Ready", { exact: true })).toBeVisible();
+  await chooseFixtureModel(page);
+  await page.getByRole("button", { name: "Add tools and open", exact: true }).click();
+  await expect(page.locator(".shell")).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([
     "fixture-jlens",
     "fixture-rlens",
@@ -1393,6 +1391,7 @@ test("models without an SAE say that no SAE is available", async ({ page }) => {
   await page.goto(`${devUrl}/app?fixture=1&fixtureSae=0`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /Feature explorer/ })).toHaveCount(0);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
 
@@ -1434,6 +1433,7 @@ test("changing models closes the runtime and opens installed model choices", asy
 test("installed standard and R-lens packs swap live without fitting", async ({ page }) => {
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+  await chooseFixtureModel(page);
   const toolPicker = page.locator(".tool-picker");
   const rLensChoice = toolPicker.getByRole("checkbox", { name: /R-lens readouts/ });
   await expect(rLensChoice).not.toBeChecked();

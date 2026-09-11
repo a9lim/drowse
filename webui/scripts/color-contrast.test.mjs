@@ -250,6 +250,9 @@ for (const [name, theme] of Object.entries({ dark, light })) {
   }
   reports.push(expectPair(theme, `${name} disabled`, "--fg-muted", "--glass-strong", 3, 30));
   reports.push(expectPair(theme, `${name} warning copy`, "--warning-ink", "--warning-bg", 7, 75));
+  for (const status of ["success", "warning", "danger"]) {
+    reports.push(expectPair(theme, `${name} device ${status}`, `--${status}-ink`, `--${status}-bg`, 7, 75));
+  }
   for (const surface of ["--warning-action", "--warning-action-hover"]) {
     reports.push(expectPair(theme, `${name} warning action on ${surface}`, "--warning-action-ink", surface, 7, 60));
   }

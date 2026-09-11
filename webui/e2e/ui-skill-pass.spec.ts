@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { selectWorkspaceView } from "./workbench-navigation";
 import { openWorkspaceMenu } from "./workbench-navigation";
 import { setAppearance, returnToChats, showWorkspaceTools, selectLoomView, openTokenDetails } from "./workbench-navigation";
@@ -131,6 +132,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   test.setTimeout(120_000);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A complete local backup");
@@ -549,6 +551,7 @@ test("sampling sliders accept full-height drags and reset to original", async ({
 test("model reset preserves chats and restores defaults after reopening", async ({ page, browserName }) => {
   test.skip(browserName === "webkit", "Persistent worker storage requires OPFS.");
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Keep this conversation after reset.");
@@ -657,6 +660,7 @@ test("Chat controls share the three-tab layout on desktop and phones", async ({ 
 test("Chat controls update the saved name and avatar without leaving the tab", async ({ page, browserName }) => {
   test.skip(browserName === "webkit", "The persistent worker fixture requires OPFS, unavailable in headless WebKit.");
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Save this chat from its controls.");
@@ -810,6 +814,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: width === 1000 ? "light" : "dark" });
     await page.goto(`${devUrl}/app?fixture=1&choose=1`);
+    await chooseFixtureModel(page);
     const openModel = page.getByRole("button", { name: /^(Download and open|Open Drowse)$/ });
     await expect(openModel).toBeEnabled();
     await settled();
@@ -841,6 +846,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await expect(page.locator(".app-shell")).toBeVisible();
     await settled();
     await assertHeader();
+    await chooseFixtureModel(page);
     await page.getByRole("button", { name: /^(Download and open|Open Drowse)$/ }).click();
     await expect(page.locator(".shell")).toBeVisible();
     await settled();
@@ -1786,6 +1792,7 @@ test("tab identity updates each state and releases its animation lifecycle", asy
 test("tab identity follows generation and Loom navigation", async ({ page, browserName }) => {
   test.skip(browserName === "webkit", "Headless WebKit lacks the fixture worker storage required for generation.");
   await page.goto(`${devUrl}/app?fixture=1&fixtureSlow=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page).toHaveTitle("Drowse");
   const icon = page.locator('link[rel="icon"]');
@@ -1921,6 +1928,7 @@ test("generation uses a stationary card glow and follows the active reply until 
   test.skip(browserName === "webkit", "Headless WebKit rejects OPFS; this test needs fixture worker storage.");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(`${devUrl}/app?fixture=1&fixtureSlow=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain how a loom works.");
@@ -2282,6 +2290,7 @@ test("Loom stays accessible while a reply streams", async ({ page, browserName }
     };
   });
   await page.goto(`${devUrl}/app?fixture=1&fixtureSlow=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Keep writing while I explore the branches.");
@@ -2318,6 +2327,7 @@ test("workspace menu returns to chats and restores the current conversation", as
   test.skip(browserName === "webkit", "Headless WebKit rejects OPFS; chat restoration requires persistent worker storage.");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   const home = page.getByRole("button", { name: "Workspace menu", exact: true });
@@ -3333,6 +3343,7 @@ test("passive offline notices stay hidden without moving or overflowing the work
   test.skip(browserName === "webkit", "Headless WebKit rejects OPFS; this reload test requires the persistent worker fixture.");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.addInitScript(() => {
@@ -3371,6 +3382,7 @@ test("template deletion names the saved work and requires confirmation", async (
   test.skip(browserName === "webkit", "Template persistence requires the OPFS-backed worker; WebKit's temporary profile rejects OPFS.");
   await page.setViewportSize({ width: 320, height: 720 });
   await page.goto(`${devUrl}/app?${browserName === "webkit" ? "layoutFixture=setup" : "fixture=1"}`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.evaluate(async (url) => {

@@ -1,10 +1,18 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { flip } from "svelte/animate";
+  import { motionDuration } from "../../lib/motion";
+  import MorphText from "../../lib/ui/MorphText.svelte";
   import { tokenProbabilityRows, visibleTokenText } from "../../lib/tokenProbabilities";
-  import { scoreToRgb as highlightColor, surpriseScore } from "../../lib/tokens";
+  import { probabilityScore, scoreToRgb as highlightColor, surpriseScore } from "../../lib/tokens";
   import type { TokenScore } from "../../lib/types";
 
-  let { tokens, highlights = true }: { tokens: TokenScore[]; highlights?: boolean } = $props();
+  let { tokens, highlights = true, layout = "message", coloring = "surprisal" }: {
+    tokens: TokenScore[];
+    highlights?: boolean;
+    layout?: "message" | "inline";
+    coloring?: string;
+  } = $props();
   let active = $state<number | null>(null);
   let displayed = $state<number | null>(null);
   let anchor: HTMLElement | null = null;
@@ -17,6 +25,16 @@
   const uid = $props.id();
   const token = $derived(displayed === null ? null : tokens[displayed]);
   const rows = $derived(token ? tokenProbabilityRows(token) : []);
+  $effect.pre(() => {
+    tokens;
+    cancelTimers();
+    fade?.cancel();
+    active = null;
+    displayed = null;
+    anchor = null;
+    pinned = false;
+    panel?.hidePopover();
+  });
   const groups = $derived.by(() => {
     const result: Array<{ space: string; pieces: Array<{ text: string; index: number }> }> = [];
     let group = { space: "", pieces: [] as Array<{ text: string; index: number }> };
@@ -136,17 +154,17 @@
   });
 </script>
 
-<h1 class="message-title" aria-label={tokens.map(token => token.text).join("").trim()}><span class="recorded-tokens">
-  {#each [groups.slice(0, 2), groups.slice(2)] as section, sectionIndex}{sectionIndex === 0 ? "" : " "}<span class={sectionIndex === 0 ? "message-prefix" : "message-body"}>{#each section as group, groupIndex}{groupIndex === 0 ? "" : group.space}<span class="word">{#each group.pieces as piece}<button
-    type="button" class="recorded-token" class:highlighted={highlights} class:selected={active === piece.index}
-    style:--token-tint={highlightColor(surpriseScore(tokens[piece.index].logprob), undefined, "surprise")}
-    aria-label={`Inspect token ${visibleTokenText(tokens[piece.index].text)}`}
-    aria-haspopup="dialog" aria-expanded={active === piece.index} aria-controls={active === piece.index ? `${uid}-panel` : undefined}
-    onpointerenter={event => hover(event, piece.index)} onpointerleave={leave}
-    onclick={event => void open(piece.index, event.currentTarget, true, event.detail === 0)}
+{#snippet tokenButton(text: string, index: number)}<button
+    type="button" class="recorded-token" class:highlighted={highlights} class:selected={active === index} class:whitespace={text.trim().length === 0}
+    style:--token-tint={highlightColor(coloring === "probability" ? probabilityScore(tokens[index].logprob) : surpriseScore(tokens[index].logprob), undefined, "surprise")}
+    aria-label={`Inspect token ${visibleTokenText(tokens[index].text)}`}
+    aria-haspopup="dialog" aria-expanded={active === index} aria-controls={active === index ? `${uid}-panel` : undefined}
+    onpointerenter={event => hover(event, index)} onpointerleave={leave}
+    onclick={event => void open(index, event.currentTarget, true, event.detail === 0)}
     onkeydown={move}
-  >{piece.text}</button>{/each}</span>{/each}</span>{/each}
-</span></h1>
+  >{#if layout === "inline"}<MorphText {text} numbers={false} duration={240} />{:else}{text}{/if}</button>{/snippet}
+
+<svelte:element this={layout === "message" ? "h1" : "div"} class="message-title" class:inline={layout === "inline"} aria-label={tokens.map(token => token.text).join("").trim()}><span class="recorded-tokens">{#if layout === "inline"}{#each tokens as piece, index (index)}<span class="inline-piece" animate:flip={{ duration: motionDuration(240) }}>{@render tokenButton(piece.text, index)}</span>{/each}{:else}{#each [groups.slice(0, 2), groups.slice(2)] as section, sectionIndex}{sectionIndex === 0 ? "" : " "}<span class={sectionIndex === 0 ? "message-prefix" : "message-body"}>{#each section as group, groupIndex}{groupIndex === 0 ? "" : group.space}<span class="word">{#each group.pieces as piece}{@render tokenButton(piece.text, piece.index)}{/each}</span>{/each}</span>{/each}{/if}</span></svelte:element>
 
 <svg class="glass-definitions" width="0" height="0" aria-hidden="true" focusable="false">
   <defs>
@@ -186,9 +204,15 @@
   .recorded-token:hover, .recorded-token.selected { box-shadow: 0 0 0 2px var(--accent); }
   .recorded-token:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .recorded-token:active { transform: none; scale: 1; }
+  .inline { text-wrap: pretty; }
+  .inline .recorded-tokens { display: inline; }
+  .inline-piece { display: inline-block; max-width: 100%; vertical-align: baseline; }
+  .inline .recorded-token { display: inline; min-height: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit !important; font-weight: inherit !important; }
+  .inline .recorded-token.whitespace { display: inline-block; min-width: 0.35em; white-space: pre; }
   .glass-definitions { position: absolute; pointer-events: none; }
   .recorded-token-panel { --fg: var(--landing-panel-ink); --fg-dim: var(--landing-panel-muted); position: fixed; inset: auto; margin: 0; box-sizing: border-box; width: min(20rem, calc(100vw - 24px)); padding: var(--space-sm); overflow: auto; overscroll-behavior: contain; border: 0; border-radius: var(--radius-lg); background: var(--recorded-token-panel-bg); color: var(--fg); text-shadow: var(--landing-panel-text-shadow); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font: var(--text-sm)/1.4 var(--font-ui); letter-spacing: normal; }
   .recorded-token-panel[aria-hidden="true"] { pointer-events: none; }
+  .recorded-token-panel { white-space: normal; overflow-wrap: normal; }
   header { display: flex; justify-content: space-between; align-items: start; gap: var(--space-sm); }
   header > div { min-width: 0; }
   .recorded-token-panel h2 { margin: var(--space-xs) 0; font-family: var(--font-mono); font-size: var(--text-md); overflow-wrap: anywhere; text-wrap: balance; }

@@ -2121,10 +2121,10 @@
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-sm);
     width: 100%;
     min-height: var(--control-target);
-    padding: var(--space-2) var(--space-3);
+    padding: calc(2 * var(--space-unit));
     border-radius: var(--radius-lg);
     background: var(--workspace-panel-bg);
     color: var(--fg-dim);

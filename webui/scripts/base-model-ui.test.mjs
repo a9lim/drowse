@@ -326,7 +326,8 @@ try {
   assert.match(logoSource, /\[data-provider="eleutherai"\] \.raster-mark \{ mask-mode: luminance;/,
     "the white-on-black EleutherAI asset must not become a solid alpha-mask square");
   const setupSource = await readFile(new URL("../src/hosted/ui/HostedApp.svelte", import.meta.url), "utf8");
-  assert.match(setupSource, /Compatible J-lens and SAE packs are optional/);
+  assert.match(setupSource, /plus compatible SAE features when available/);
+  assert.match(setupSource, /J-lens packs are optional for base models/);
   assert.doesNotMatch(setupSource, /Each download includes a precomputed J-lens and SAE/);
   console.log("Unified informational home, shared app entry, all eight logos, qualified model identities, and research copy passed");
 } finally {

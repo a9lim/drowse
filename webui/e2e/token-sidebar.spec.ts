@@ -3,6 +3,21 @@ import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
+test("empty token details stay mounted when switching views", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=1");
+  await page.getByRole("button", { name: "Show right sidebar", exact: true }).click();
+  const sidebar = page.locator("#workspace-token-sidebar");
+  const empty = sidebar.locator(".tab-content .empty");
+  await expect(empty).toHaveText("Select a token in your conversation or Loom to see its full details here.");
+  await empty.evaluate(element => element.setAttribute("data-stability-check", "original"));
+  for (const name of [/^logits/i, /^sae/i, /^j-lens/i, /^geometry/i]) {
+    await sidebar.getByRole("button", { name }).click();
+    await expect(sidebar.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true");
+    await expect(empty).toHaveAttribute("data-stability-check", "original");
+  }
+});
+
 test("help icons open on hover, stay readable, and dismiss with Escape", async ({ page }, testInfo) => {
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
   const trigger = page.getByRole("button", { name: "About generation status", exact: true });

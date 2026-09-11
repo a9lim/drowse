@@ -551,7 +551,7 @@
 
   const bodyStateKey = $derived.by(() => {
     const tab = drilldownUi.tab;
-    if (!token || !effCursor) return `${tab}:missing`;
+    if (!token || !effCursor) return params ? "missing:unavailable" : "missing:unselected";
     if (tab === "logits") return `${tab}:ready`;
     const readout = tab === "geometry"
       ? geometryReadout

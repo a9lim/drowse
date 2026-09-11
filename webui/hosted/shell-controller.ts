@@ -467,6 +467,9 @@ export function createShellController(
         }
         nextPacks = model.firstRunPacks.map((candidate) => ({
           ...candidate,
+          requiredForSetup: pack.kind === "sae" && candidate.kind === "sae"
+            ? candidate.id === pack.id
+            : candidate.requiredForSetup,
           selected: candidate.id === pack.id
             ? true
             : pack.kind !== "jlens" && candidate.kind === pack.kind && !candidate.installed
@@ -960,9 +963,6 @@ function modelFromRecommendation(
         capabilities.signals.appleMobile === true
           ? "Live word readouts start off to reduce Safari GPU pressure; turn them on in Model settings when needed."
           : "Live word readouts start off while this browser is in preview; turn them on in Model settings when needed.",
-        ...(compatiblePacks.some((pack) => pack.kind === "sae")
-          ? ["SAE features remain available as a separate download after the model is set up."]
-          : []),
       ]
     : [];
   const toolNotice = runtimeNotices.length > 0
@@ -970,7 +970,10 @@ function modelFromRecommendation(
     : undefined;
   const selectedPackManifests: CatalogInstrumentPack[] = [];
   const orderedPacks = [...compatiblePacks].sort((left, right) =>
-    (left.kind === "jlens" ? 0 : 1) - (right.kind === "jlens" ? 0 : 1)
+    (left.kind === "jlens" ? 0 : 1) - (right.kind === "jlens" ? 0 : 1) ||
+    (left.kind === "sae" && right.kind === "sae"
+      ? Number(installedPackIds.includes(right.id)) - Number(installedPackIds.includes(left.id))
+      : 0)
   );
   const firstRunPacks = orderedPacks.flatMap((pack) => {
     if (
@@ -978,18 +981,19 @@ function modelFromRecommendation(
         pack,
         variant,
         capabilities,
-        [],
+        pack.kind === "sae" && !baseModel && compatibleJlens && jlensHardwareBlock === null
+          ? [compatibleJlens] : [],
       ) !== null
     ) return [];
     const installed = installedPackIds.includes(pack.id);
     const sameKindSelected = selectedPackManifests.some((candidate) =>
       candidate.kind === pack.kind
     );
-    const requiredForSetup = !baseModel && pack.id === compatibleJlens?.id;
+    const requiredForSetup = (!baseModel && pack.id === compatibleJlens?.id) ||
+      (pack.kind === "sae" && !sameKindSelected);
     const selected = installed || (
       (requiredForSetup ||
-        (!baseModel && !recommendation.installed &&
-          !(conservativeRuntime && pack.kind === "sae"))) &&
+        (!baseModel && !recommendation.installed)) &&
       !sameKindSelected &&
       optionalPackHardwareBlock(
         pack,

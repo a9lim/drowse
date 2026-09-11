@@ -130,6 +130,8 @@
   --error-text: #ffc7c4;
   --accent-amber: #e4bb78;   /* pending/edit chrome, anchor rings */
   --accent-yellow: #e4c25c;  /* warning */
+  --success-bg: #123329;
+  --success-ink: #dbffef;
   --warning-bg: #302a14;
   --warning-ink: #fff0ad;
   --warning-border: #756329;
@@ -137,6 +139,7 @@
   --warning-action-hover: #ffe795;
   --warning-action-ink: #302300;
   --danger-bg: #39232d;
+  --danger-ink: #ffe1e1;
   --danger-hover: #462b35;
   --accent-subtle: rgba(197, 179, 255, 0.16); /* accent fill wash */
   --accent-strong: rgba(197, 179, 255, 0.25); /* accent hover */
@@ -386,9 +389,6 @@
   --image-outline: rgba(255, 255, 255, 0.1);
 
   /* Landing artwork preserves its geometry with a dedicated light palette. */
-  --demo-token-likely: #b3f4df;
-  --demo-token-possible: #d3c6ff;
-  --demo-token-unlikely: #ffd2a6;
   --landing-bg: #070a12;
   --landing-panel-bg: rgb(7 10 18 / 24%);
   --recorded-token-panel-bg: rgb(7 10 18 / 55%);
@@ -453,6 +453,8 @@
   --error-text: #a02230;
   --accent-amber: #6d4c17;
   --accent-yellow: #684c00;
+  --success-bg: #e3f4e9;
+  --success-ink: #173e2e;
   --warning-bg: #fff4c2;
   --warning-ink: #493700;
   --warning-border: #c6a33a;
@@ -460,6 +462,7 @@
   --warning-action-hover: #ebc653;
   --warning-action-ink: #302300;
   --danger-bg: #fff0f1;
+  --danger-ink: #591d29;
   --danger-hover: #ffe2e5;
   --accent-subtle: rgba(91, 63, 191, 0.12);
   --accent-strong: rgba(91, 63, 191, 0.2);
@@ -528,9 +531,6 @@
   --selection-bg: rgba(91, 63, 191, 0.18);
   --image-outline: rgba(17, 19, 26, 0.11);
 
-  --demo-token-likely: #075840;
-  --demo-token-possible: #4d2a9c;
-  --demo-token-unlikely: #783904;
   --landing-bg: #f2f4f8;
   --landing-panel-bg: rgb(255 255 255 / 24%);
   --recorded-token-panel-bg: rgb(255 255 255 / 55%);

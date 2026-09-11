@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
@@ -13,6 +14,7 @@ test("changing the model role updates requests, messages, and saved recipes", as
     };
   });
   await page.goto("http://127.0.0.1:4176/app?fixture=1");
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("button", { name: /^Roles / }).click();

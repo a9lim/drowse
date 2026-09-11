@@ -64,7 +64,7 @@ test("base models stay collapsed and explain text completion before selection", 
   await page.keyboard.press("Enter");
   await expect(base).toBeVisible();
   await expect(disclosure).toContainText("They don't follow instructions reliably");
-  await expect(disclosure).toContainText("Each download includes the core pack for generation and concept steering.");
+  await expect(disclosure).toContainText("Each download includes the core pack for generation and concept steering, plus compatible SAE features when available.");
   await base.click();
   await expect(base).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".required-tool").filter({ hasText: "Feature insights" })).toContainText("(SAE)");
@@ -111,6 +111,7 @@ const initialSnapshot: HostedShellSnapshot = {
   download: {
     available: true,
     phase: "downloading",
+    modelVariantId: "model-recommended",
     reason: "Downloading verified files.",
   },
   runtime: {
@@ -124,8 +125,21 @@ const initialSnapshot: HostedShellSnapshot = {
 async function mountHostedApp(
   page: Page,
   retryPersistenceResults: boolean[] = [true],
+  startingSnapshot: HostedShellSnapshot = initialSnapshot,
 ): Promise<void> {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/main.ts", route => route.fulfill({
+    contentType: "application/javascript",
+    body: `
+      import "/@fs/${resolve("src/lib/style/fonts.css")}";
+      import "/@fs/${resolve("src/lib/style/tokens.css")}";
+      import "/@fs/${resolve("src/lib/style/global.css")}";
+      import { initializeTheme } from "/@fs/${resolve("src/lib/theme.ts")}";
+      import { initializeInputModality } from "/@fs/${resolve("src/lib/inputModality.ts")}";
+      initializeTheme();
+      initializeInputModality();
+    `,
+  }));
   await page.goto(`${devUrl}/outside-the-workbench`);
   await page.evaluate(async ({ componentUrl, snapshot, retryResults }) => {
     if (!navigator.storage) {
@@ -204,7 +218,7 @@ async function mountHostedApp(
     };
   }, {
     componentUrl: hostedAppModuleUrl,
-    snapshot: initialSnapshot,
+    snapshot: startingSnapshot,
     retryResults: retryPersistenceResults,
   });
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
@@ -239,6 +253,88 @@ async function expectSafeActionFirst(
   await page.keyboard.press(page.context().browser()?.browserType().name() === "webkit" ? "Alt+Tab" : "Tab");
   await expect(actions.nth(1)).toBeFocused();
 }
+
+test("setup details wait for an explicit model selection and identify the selected model", async ({ page }, testInfo) => {
+  await mountHostedApp(page, [true], {
+    ...initialSnapshot,
+    download: { ...initialSnapshot.download, phase: "idle", modelVariantId: undefined },
+  });
+  await expect(page.locator(".selected-model-details")).toHaveCount(0);
+  await expect(page.locator(".model-grid > button[aria-pressed=true]")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Download and open", exact: true })).toHaveCount(0);
+  await updateSnapshot(page, { headline: "Device check complete" });
+  await expect(page.locator(".selected-model-details")).toHaveCount(0);
+  const first = page.locator(".model-grid > button", { hasText: "recommended model" });
+  const second = page.locator(".model-grid > button", { hasText: "eligible model" });
+  await first.focus();
+  await first.press("Enter");
+  await expect(page.getByRole("heading", { name: "Choose recommended model", exact: true })).toBeVisible();
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
+  await second.click();
+  await expect(page.getByRole("heading", { name: "Choose eligible model", exact: true })).toBeVisible();
+  await expect(first).toHaveAttribute("aria-pressed", "false");
+  await expect(second).toHaveAttribute("aria-pressed", "true");
+  const shadows = await page.locator(".model-grid > button").evaluateAll(buttons => buttons.map(button => getComputedStyle(button).boxShadow));
+  expect(shadows[1]).not.toBe(shadows[0]);
+  await expect(second).toHaveCSS("box-shadow", /28px/);
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await second.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`selected-model-${width}.png`), fullPage: true });
+  }
+});
+
+test("device checks use readable status fills in both themes", async ({ page }, testInfo) => {
+  await mountHostedApp(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const panel = page.locator(".check-panel");
+  for (const theme of ["dark", "light"]) {
+    await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    const fills: string[] = [];
+    for (const [status, states] of [
+      ["ready", ["pass", "pass", "pass"]],
+      ["partial", ["pass", "warn", "fail"]],
+      ["unavailable", ["fail", "fail", "fail"]],
+    ] as const) {
+      await updateSnapshot(page, {
+        phase: status === "unavailable" ? "unsupported" : "supported",
+        checks: states.map((state, index) => ({ id: `check-${index}`, label: `Device requirement ${index + 1}`, detail: "Browser and graphics capability.", state })),
+      });
+      await expect(panel).toHaveAttribute("data-status", status);
+      await expect(panel).toHaveCSS("background-image", "none");
+      if (await panel.locator("details").getAttribute("open") === null) {
+        await panel.locator("summary").click();
+      }
+      await expect(panel.locator(".check-list p").first()).toBeVisible();
+      const token = status === "ready" ? "success" : status === "partial" ? "warning" : "danger";
+      const fill = await page.evaluate(token => getComputedStyle(document.documentElement).getPropertyValue(`--${token}-bg`).trim(), token);
+      const rgb = [1, 3, 5].map(index => parseInt(fill.slice(index, index + 2), 16));
+      await expect(panel).toHaveCSS("background-color", `rgb(${rgb.join(", ")})`);
+      await expect.poll(() => panel.evaluate(element => {
+        const style = getComputedStyle(element);
+        return [...element.querySelectorAll(".check-summary-copy strong, .check-summary-copy small, summary > span:last-child, .check-list h3, .check-list p, .check-label, .recovery p")]
+          .filter(child => getComputedStyle(child).color !== style.color)
+          .map(child => `${child.className}: ${getComputedStyle(child).color} != ${style.color}`);
+      })).toEqual([]);
+      fills.push(await panel.evaluate(element => getComputedStyle(element).backgroundColor));
+      for (const width of [390, 1280]) {
+        await page.setViewportSize({ width, height: 900 });
+        await panel.screenshot({ path: testInfo.outputPath(`device-${theme}-${status}-${width}.png`) });
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      }
+    }
+    expect(new Set(fills).size).toBe(3);
+    await updateSnapshot(page, { phase: "checking" });
+    await expect(panel).toHaveAttribute("data-status", "checking");
+    await expect(panel).toHaveCSS("background-image", "none");
+  }
+  await page.emulateMedia({ contrast: "more" });
+  await expect(panel).toHaveCSS("outline-style", "solid");
+  await page.emulateMedia({ forcedColors: "active" });
+  await expect(panel).toHaveCSS("background-image", "none");
+});
 
 test("tab identity reflects device checks and real setup states", async ({ page }) => {
   await mountHostedApp(page);
@@ -466,7 +562,7 @@ test("model cards show provider logos and catalog-backed SAE availability", asyn
     kind: "sae",
     name: "Gemma Scope SAE",
     bytes: 100_000_000,
-    requiredForSetup: false,
+    requiredForSetup: true,
     selected: true,
     installed: false,
   };
@@ -497,14 +593,17 @@ test("model cards show provider logos and catalog-backed SAE availability", asyn
   );
 
   await gemma.click();
-  await expect(page.getByRole("heading", { name: "Choose this download" })).toBeVisible();
-  await expect(page.getByRole("checkbox", { name: /Gemma Scope features/ })).toBeChecked();
-  await expect(page.locator(".setup-disclosure")).toContainText(
-    "One download installs the model, response controls, and word insights, plus Gemma Scope features, then opens the workbench.",
-  );
-  await expect(page.locator(".setup-disclosure")).toContainText(
-    "You can add or change feature and R-lens packs later.",
-  );
+  await expect(page.getByRole("heading", { name: "Choose Gemma 3 1B", exact: true })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /Gemma Scope features/ })).toHaveCount(0);
+  await expect(page.locator(".required-tool", { hasText: "Feature insights" })).toContainText("Gemma Scope SAE");
+  await expect(page.locator(".setup-disclosure")).toHaveCount(0);
+  await expect(page.locator(".download-gate")).not.toContainText("Ready to download");
+  await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
+  await updateSnapshot(page, {
+    download: { ...initialSnapshot.download, phase: "requesting_persistence", reason: "Ready to download." },
+  });
+  await expect(page.locator(".download-gate")).toContainText("Preparing download");
+  await expect(page.locator(".download-gate")).not.toContainText("Ready to download");
 
   await updateSnapshot(page, {
     models: catalogModels.map((candidate) => ({ ...candidate, firstRunPacks: [] })),
@@ -554,6 +653,7 @@ test("an unverified iPhone model starts one download with storage protection dec
     download: { ...initialSnapshot.download, phase: "idle" },
     storage: { ...initialSnapshot.storage, persisted: false },
   });
+  await page.locator(".model-grid > button", { hasText: "uncertain model" }).click();
   await page.getByRole("button", { name: "Review warning", exact: true }).click();
   await expect(page.locator(".unsafe-warning")).toContainText("Check this model on your device");
   await expect(page.locator(".unsafe-warning")).not.toContainText("may not have enough memory");

@@ -25,7 +25,7 @@
   import { userFacingError } from "../../lib/runtime/userFacingError";
   import { reloadInstructions, appRefreshSafetyMessage } from "../runtime/chunkRecovery";
   import { clearConversationOpen } from "../runtime/entryExperience";
-  import { defaultModelSelection, downloadUnavailableReason, modelsBySize } from "./modelSelection";
+  import { downloadUnavailableReason, modelsBySize } from "./modelSelection";
 
   let {
     controller,
@@ -134,6 +134,15 @@
   const advisoryChecks = $derived(
     snapshot.checks.filter((check) => check.state === "warn").length,
   );
+  const checkStatus = $derived(
+    snapshot.phase === "checking" || snapshot.phase === "idle"
+      ? "checking"
+      : snapshot.checks.length > 0
+        ? passedChecks === snapshot.checks.length
+          ? "ready"
+          : passedChecks > 0 ? "partial" : "unavailable"
+        : snapshot.phase === "supported" ? "ready" : "unavailable",
+  );
   const previewBrowser = $derived(
     runtimeClass === "desktop-webkit"
       ? "Safari preview"
@@ -204,9 +213,6 @@
       : /gemma scope/i.test(pack.name)
         ? "Gemma Scope features"
         : "Feature explorer";
-
-  const packSummaryName = (pack: HostedModelOption["firstRunPacks"][number]) =>
-    /gemma scope/i.test(pack.name) ? "Gemma Scope features" : pack.name;
 
   const packDescription = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.kind === "jlens"
@@ -285,7 +291,8 @@
       appleMobile = capabilities?.signals.appleMobile === true;
       runtimeClass = capabilities?.signals.runtimeClass ?? null;
       if (!selectedModel || !next.models.some((model) => model.id === selectedModel)) {
-        selectedModel = defaultModelSelection(next.models, requestedModelId, next.selectedModelVariantId);
+        const requestedSelection = requestedModelId ?? (next.download.phase !== "idle" ? next.download.modelVariantId : undefined);
+        selectedModel = next.models.find((model) => model.id === requestedSelection)?.id ?? null;
         if (next.models.find((model) => model.id === selectedModel)?.modelType === "base") {
           baseModelsOpen = true;
         }
@@ -465,7 +472,7 @@
       </section>
     {/if}
 
-    <section class="check-panel" data-page-group="1" class:loading-pulse={snapshot.phase === "checking"} aria-label="Device check" aria-busy={snapshot.phase === "checking"}>
+    <section class="check-panel" data-status={checkStatus} data-page-group="1" class:loading-pulse={snapshot.phase === "checking"} aria-label="Device check" aria-busy={snapshot.phase === "checking"}>
       <h2 class="sr-only">Device checks</h2>
       <details use:animatedDetails class="device-details" open={snapshot.phase === "unsupported" || snapshot.phase === "failed"}>
         <summary>
@@ -585,7 +592,7 @@
         {/snippet}
 
         <div class="model-grid">
-          {#each snapshot.models.filter((model) => model.modelType !== "base") as model}
+          {#each modelsBySize(snapshot.models.filter((model) => model.modelType !== "base")) as model}
             {@render modelCard(model)}
           {/each}
         </div>
@@ -597,7 +604,7 @@
             and can produce unreliable or offensive text. Use a chat model for everyday conversations.
           </p>
           {#if snapshot.models.some((model) => model.modelType === "base")}
-            <p class="base-model-description">Each download includes the core pack for generation and concept steering. Compatible J-lens and SAE packs are optional.</p>
+            <p class="base-model-description">Each download includes the core pack for generation and concept steering, plus compatible SAE features when available. J-lens packs are optional for base models.</p>
             <div class="model-grid">
               {#each modelsBySize(snapshot.models.filter((model) => model.modelType === "base")) as model}
                 {@render modelCard(model)}
@@ -623,13 +630,13 @@
           <section class="tool-picker" aria-labelledby="tools-title">
             <div class="tool-picker-heading">
               <div>
-                <h3 id="tools-title">Choose this download</h3>
+                <h3 id="tools-title">Choose {selectedOption.name}</h3>
               </div>
               <InfoTip
                 label="About model tools"
                 text={selectedOption.modelType === "base"
-                  ? "The model can generate text without extra tools. Add compatible word or feature insights now or later."
-                  : "This setup includes response controls and word insights. SAE features are optional. You can change feature and R-lens packs later in the workbench. These packs are already trained."}
+                  ? "This setup includes response controls and compatible SAE features when available. Word insights are optional for base models."
+                  : "This setup includes response controls, word insights, and compatible SAE features when available. These packs are already trained."}
               />
             </div>
             <div class="tool-option required-tool">
@@ -775,15 +782,9 @@
         {#if showDownloadAction}
           <div class="release-gate download-gate" class:loading-pulse={snapshot.download.phase === "requesting_persistence" || snapshot.download.phase === "cancelling" || (snapshot.download.phase === "downloading" && !snapshot.download.progress?.offline && !snapshot.download.progress?.stalled)}>
             <div>
-              <strong><MorphText text={snapshot.download.phase === "installed" ? "Setup complete" : snapshot.download.phase === "requesting_persistence" ? "Preparing download" : snapshot.download.phase === "downloading" ? "Downloading model files" : snapshot.download.phase === "cancelling" ? "Pausing download" : snapshot.download.phase === "paused" ? "Download paused" : snapshot.download.phase === "failed" ? "Download interrupted" : "Ready to download"} /></strong>
-              <p>{snapshot.download.reason}</p>
-              {#if selectedOption}
-                <p class="setup-disclosure">
-                  {selectedOption.modelType === "base"
-                    ? "Download the model and any selected tools, then open the completion workspace."
-                    : `One download installs the model, response controls, and word insights${selectedOption.firstRunPacks.some(pack => pack.selected && !pack.requiredForSetup && !pack.installed) ? `, plus ${selectedOption.firstRunPacks.filter(pack => pack.selected && !pack.requiredForSetup && !pack.installed).map(packSummaryName).join(", ")}` : ""}, then opens the workbench.`}
-                  You can add or change feature and R-lens packs later.
-                </p>
+              {#if snapshot.download.phase !== "idle"}
+              <strong><MorphText text={snapshot.download.phase === "installed" ? "Setup complete" : snapshot.download.phase === "requesting_persistence" ? "Preparing download" : snapshot.download.phase === "downloading" ? "Downloading model files" : snapshot.download.phase === "cancelling" ? "Pausing download" : snapshot.download.phase === "paused" ? "Download paused" : "Download interrupted"} /></strong>
+              {#if snapshot.download.reason !== "Ready to download."}<p>{snapshot.download.reason}</p>{/if}
               {/if}
               {#if storageUnprotected}
                 {@render storageProtectionNotice()}
@@ -946,7 +947,24 @@
   .model-panel { margin-top: var(--space-xl); }
   .check-panel,
   .model-panel { padding: 0; }
-  .check-panel { padding: var(--surface-padding); border-radius: var(--radius-lg); background: var(--surface-card); box-shadow: var(--shadow-card); }
+  .check-panel {
+    --check-bg: var(--bg-alt);
+    --check-ink: var(--fg-strong);
+    padding: var(--surface-padding);
+    border-radius: var(--radius-lg);
+    background: var(--check-bg);
+    color: var(--check-ink);
+    box-shadow: var(--shadow-card);
+  }
+  .check-panel[data-status="ready"] { --check-bg: var(--success-bg); --check-ink: var(--success-ink); }
+  .check-panel[data-status="partial"] { --check-bg: var(--warning-bg); --check-ink: var(--warning-ink); }
+  .check-panel[data-status="unavailable"] { --check-bg: var(--danger-bg); --check-ink: var(--danger-ink); }
+  @media (prefers-contrast: more) {
+    .check-panel { outline: 2px solid var(--check-ink); }
+  }
+  @media (forced-colors: active) {
+    .check-panel[data-status] { --check-bg: Canvas; --check-ink: CanvasText; outline: 1px solid CanvasText; }
+  }
 
   .panel-heading {
     display: flex;
@@ -973,14 +991,14 @@
     justify-content: space-between;
     min-height: 3.5rem;
     padding-block: var(--space-4);
-    color: var(--fg-dim);
+    color: var(--check-ink);
     cursor: pointer;
     font-family: var(--font-structure);
     list-style: none;
   }
   .device-details > summary::-webkit-details-marker { display: none; }
   .device-details > summary span:last-child {
-    color: var(--fg-muted);
+    color: var(--check-ink);
     font-family: var(--font-data);
     font-size: var(--text-xs);
   }
@@ -990,13 +1008,13 @@
     gap: var(--space-sm);
   }
   .check-summary-copy strong {
-    color: var(--fg);
+    color: var(--check-ink);
     font-family: var(--font-structure);
     font-size: var(--text-md);
     font-weight: var(--weight-structure-bold);
   }
   .check-summary-copy small {
-    color: var(--fg-muted);
+    color: var(--check-ink);
     font-family: var(--font-data);
     font-size: var(--text-xs);
   }
@@ -1029,7 +1047,7 @@
     height: 24px;
     border-radius: 50%;
     background: var(--glass-strong);
-    color: var(--fg-muted);
+    color: var(--check-ink);
     font-family: var(--font-mono);
     font-weight: var(--weight-bold);
     transform: scale(1);
@@ -1043,11 +1061,9 @@
   .check-mark.pass { background: color-mix(in srgb, var(--live) 17%, transparent); color: var(--live); }
   .check-mark.fail { background: color-mix(in srgb, var(--accent-red) 17%, transparent); color: var(--accent-red); }
   .check-mark.warn { background: color-mix(in srgb, var(--accent-yellow) 17%, transparent); color: var(--accent-yellow); }
-  .check-list h3 { margin: var(--space-xs) 0 0; color: var(--fg); font-size: var(--text-md); font-weight: var(--weight-medium); }
-  .check-list p { margin: var(--space-xs) 0 0; color: var(--fg-dim); line-height: 1.5; }
-  .check-label { margin-top: var(--space-xs); color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
-  .failed .check-label { color: var(--accent-red); }
-  .warning .check-label { color: var(--accent-yellow); }
+  .check-list h3 { margin: var(--space-xs) 0 0; color: var(--check-ink); font-size: var(--text-md); font-weight: var(--weight-medium); }
+  .check-list p { margin: var(--space-xs) 0 0; color: var(--check-ink); line-height: 1.5; }
+  .check-label { margin-top: var(--space-xs); color: var(--check-ink); font-family: var(--font-mono); font-size: var(--text-xs); }
 
   .recovery,
   .release-gate {
@@ -1061,6 +1077,7 @@
   }
   .recovery p,
   .release-gate p { margin: 0; color: var(--fg-dim); line-height: 1.5; }
+  .recovery p { color: var(--check-ink); }
   .release-gate { padding: var(--surface-padding); border-radius: var(--radius); }
   .recovery > button,
   .release-gate > button {
@@ -1140,9 +1157,11 @@
   .model-grid > button:active:not(:disabled) {
     transform: scale(var(--press-scale));
   }
-  .model-grid > button.selected {
-    background: var(--surface-card);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent), var(--shadow-card);
+  .model-grid > button.selected,
+  .model-grid > button.selected:hover:not(:disabled),
+  .model-grid > button.selected:active:not(:disabled) {
+    background: color-mix(in srgb, var(--pillar-lens) 8%, var(--surface-card));
+    box-shadow: 0 0 0 2px var(--pillar-lens), 0 10px 28px -8px color-mix(in srgb, var(--pillar-lens) 40%, transparent), var(--shadow-card);
   }
   .model-grid > button.blocked {
     background: var(--danger-bg);
@@ -1185,6 +1204,7 @@
   .model-provenance {
     display: flex;
     flex-wrap: wrap;
+    align-items: baseline;
     gap: var(--space-xs);
     margin: var(--space-sm) var(--space-xs) 0;
     color: var(--fg-muted);

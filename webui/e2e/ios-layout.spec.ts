@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { selectWorkspaceView } from "./workbench-navigation";
 import { openWorkspaceMenu } from "./workbench-navigation";
 import { setAppearance, showWorkspaceTools, openTokenDetails, selectLoomView } from "./workbench-navigation";
@@ -60,6 +61,7 @@ test("Weave keeps branch controls reachable on narrow phones and in landscape", 
 
 async function openSetupFixture(page: Page): Promise<void> {
   await page.goto(`${devUrl}/app?layoutFixture=setup`);
+  await chooseFixtureModel(page);
   await expect(page.getByRole("button", { name: "Download and open", exact: true }))
     .toBeVisible();
 }
@@ -164,6 +166,7 @@ test("hosted setup reflows across representative iPhone viewports", async ({ pag
   for (const viewport of [...portraitViewports, ...landscapeViewports]) {
     await page.setViewportSize(viewport);
     await openSetupFixture(page);
+    await chooseFixtureModel(page);
     const action = page.getByRole("button", { name: "Download and open", exact: true });
     await action.scrollIntoViewIfNeeded();
     await expectInsideVisualViewport(action);
