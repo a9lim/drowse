@@ -11,9 +11,9 @@
     "build": "wrangler deploy --dry-run"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.1.5",
+    "@cloudflare/vitest-plugin": "1.1.7",
     "typescript": "7.0.2",
     "vitest": "^4.1.0",
-    "wrangler": "4.129.1"
+    "wrangler": "4.131.0"
   }
 }
