@@ -686,6 +686,12 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
       const turn = _currentWriteTurn();
       if (turn) {
         turn.finishReason = msg.result?.finish_reason ?? "stop";
+        if (msg.result?.applied_steering !== undefined) {
+          turn.appliedSteering = msg.result.applied_steering;
+        }
+        if (msg.result?.measurements?.scores) {
+          turn.aggregateReadings = msg.result.measurements.scores;
+        }
         turn.tokensSoFar = msg.result?.tokens ?? genStatus.tokensSoFar;
         // Logit-pass: per-turn mean chosen-token logprob (response span
         // only).  Null when capture wasn't live; the inline surprise
@@ -946,7 +952,7 @@ async function sendSubmitNow(
     text,
     authored_role: authoredRole,
     generated_role: generatedRole,
-    steering: steering || null,
+    steering,
     sampling,
     thinking: samplingState.thinking ?? false,
     raw: opts.raw ?? false,
@@ -988,8 +994,6 @@ export async function sendGenerate(
   const channel = await ensureRuntimeChannel();
   const steering =
     opts.steering === undefined ? currentSteeringExpression() : opts.steering;
-  const steeringPayload =
-    opts.steering === undefined ? (steering || null) : steering;
   // Build the sampling payload — seed + the advanced extras (penalties,
   // stop, logit-bias, return_top_k).  temperature / top-p / top-k /
   // max-tokens are PATCHed to the session as the user edits them, so the
@@ -1004,7 +1008,7 @@ export async function sendGenerate(
     // A continue: no committed turn, the model speaks next from the
     // anchor node.
     input: null,
-    steering: steeringPayload,
+    steering,
     sampling,
     // Coerce the current family-level automatic setting to explicit ``false`` so the
     // unchecked checkbox really means "no thinking" — the server's

@@ -45,14 +45,14 @@ export default defineConfig({
     },
     {
       name: "webkit-macos",
-      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|desktop-browser-compat|storage-persistence|header-layout|theme-default|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
+      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|desktop-browser-compat|storage-persistence|header-layout|theme-default|theme-morph\.ios-layout|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
       use: {
         ...devices["Desktop Safari"],
       },
     },
     {
       name: "firefox-macos",
-      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|desktop-browser-compat|storage-persistence|header-layout|theme-default|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
+      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|desktop-browser-compat|storage-persistence|header-layout|theme-default|theme-morph\.ios-layout|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
       use: {
         ...desktopFirefox,
       },

@@ -1,5 +1,5 @@
 diff --git a/package-lock.json b/package-lock.json
-index 0070bde..ec5b039 100644
+index 0070bde..8d19783 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,21 +1,21 @@
@@ -7,7 +7,7 @@ index 0070bde..ec5b039 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.38",
++  "version": "0.2.84-drowse.39",
    "lockfileVersion": 3,
    "requires": true,
    "packages": {
@@ -15,7 +15,7 @@ index 0070bde..ec5b039 100644
 -      "name": "@mlc-ai/web-llm",
 -      "version": "0.2.84",
 +      "name": "@drowse/web-llm",
-+      "version": "0.2.84-drowse.38",
++      "version": "0.2.84-drowse.39",
        "license": "Apache-2.0",
        "dependencies": {
 -        "loglevel": "^1.9.1"
@@ -170,7 +170,7 @@ index 0070bde..ec5b039 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..c64c3c4 100644
+index cabfc3d..89bf384 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,12 +1,12 @@
@@ -178,7 +178,7 @@ index cabfc3d..c64c3c4 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.38",
++  "version": "0.2.84-drowse.39",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
@@ -2263,7 +2263,7 @@ index 0000000..b551af2
 +  }
 +}
 diff --git a/src/engine.ts b/src/engine.ts
-index 1934771..9de3869 100644
+index 1934771..01929d6 100644
 --- a/src/engine.ts
 +++ b/src/engine.ts
 @@ -76,11 +76,44 @@ import {
@@ -2319,7 +2319,15 @@ index 1934771..9de3869 100644
  
    // Others
    private logger: (msg: string) => void = log.info;
-@@ -155,6 +189,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -144,6 +178,7 @@ export class MLCEngine implements MLCEngineInterface {
+ 
+   // Signals and flags
+   private interruptSignal = false;
++  private unloadPromise?: Promise<void>;
+   private deviceLostIsError = true; // whether device.lost is due to actual error or model reload
+   private reloadController: AbortController | undefined;
+ 
+@@ -155,6 +190,7 @@ export class MLCEngine implements MLCEngineInterface {
      this.loadedModelIdToChatConfig = new Map<string, ChatConfig>();
      this.loadedModelIdToModelType = new Map<string, ModelType>();
      this.loadedModelIdToLock = new Map<string, CustomLock>();
@@ -2327,7 +2335,7 @@ index 1934771..9de3869 100644
      this.appConfig = engineConfig?.appConfig || prebuiltAppConfig;
      this.setLogLevel(engineConfig?.logLevel || DefaultLogLevel);
      this.setInitProgressCallback(engineConfig?.initProgressCallback);
-@@ -307,7 +342,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -307,7 +343,13 @@ export class MLCEngine implements MLCEngineInterface {
        throw new MissingModelWasmError(modelRecord.model_id);
      }
      const fetchWasmSource = async () => {
@@ -2342,7 +2350,7 @@ index 1934771..9de3869 100644
          // do not cache wasm on local host as we might update code frequently
          return (await fetch(wasmUrl)).arrayBuffer();
        } else if (!wasmUrl.startsWith("http")) {
-@@ -345,7 +386,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -345,7 +387,9 @@ export class MLCEngine implements MLCEngineInterface {
      }
  
      // detect GPU
@@ -2353,7 +2361,7 @@ index 1934771..9de3869 100644
      if (gpuDetectOutput == undefined) {
        throw new WebGPUNotAvailableError();
      }
-@@ -374,6 +417,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -374,11 +418,14 @@ export class MLCEngine implements MLCEngineInterface {
      let deviceLostInReload = false;
      gpuDetectOutput.device.lost.then((info: any) => {
        if (this.deviceLostIsError) {
@@ -2361,7 +2369,15 @@ index 1934771..9de3869 100644
          log.error(
            `Device was lost. This can happen due to insufficient memory or other GPU constraints. ` +
              `Detailed error: ${info}. Please try to reload WebLLM with a less resource-intensive model.`,
-@@ -408,6 +452,11 @@ export class MLCEngine implements MLCEngineInterface {
+         );
+-        this.unload();
++        void this.unload().catch((error) => {
++          log.error("Device-loss cleanup failed", error);
++        });
+         deviceLostInReload = true;
+       }
+     });
+@@ -408,6 +455,11 @@ export class MLCEngine implements MLCEngineInterface {
          tokenizer,
          curModelConfig,
          logitProcessor,
@@ -2373,7 +2389,55 @@ index 1934771..9de3869 100644
        );
      }
      await newPipeline.asyncLoadWebGPUPipelines();
-@@ -462,7 +511,6 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -430,24 +482,38 @@ export class MLCEngine implements MLCEngineInterface {
+   }
+ 
+   async unload() {
+-    this.deviceLostIsError = false; // so that unload() does not trigger device.lost error
+-    // TODO: can optimize by calling dispose() to all pipelines in parallel. However, need to wait
+-    // for all sync() to finish before proceeding (e.g. naive forEach does not work)
+-    for (const entry of Array.from(this.loadedModelIdToPipeline.entries())) {
+-      const pipeline = entry[1];
+-      pipeline.dispose();
+-      // Wait until device is actually destroyed so we can safely set deviceLostIsError back to true
+-      await pipeline.sync();
++    if (this.unloadPromise) return this.unloadPromise;
++    this.unloadPromise = this.unloadOnce();
++    try {
++      await this.unloadPromise;
++    } finally {
++      this.unloadPromise = undefined;
+     }
++  }
++
++  private async unloadOnce() {
++    this.deviceLostIsError = false; // so that unload() does not trigger device.lost error
++    const pipelines = Array.from(this.loadedModelIdToPipeline.values());
+     this.loadedModelIdToPipeline.clear();
+     this.loadedModelIdToChatConfig.clear();
+     this.loadedModelIdToModelType.clear();
+     this.loadedModelIdToLock.clear();
+-    this.deviceLostIsError = true;
+     if (this.reloadController) {
+       this.reloadController.abort("Engine.unload() is called.");
+       this.reloadController = undefined;
+     }
++    try {
++      const results = await Promise.allSettled(
++        pipelines.map(async (pipeline) => {
++          pipeline.dispose();
++          await pipeline.sync();
++        }),
++      );
++      const failure = results.find((result) => result.status === "rejected");
++      if (failure?.status === "rejected") throw failure.reason;
++    } finally {
++      this.deviceLostIsError = true;
++    }
+   }
+ 
+   //---------------------------------------------------
+@@ -462,7 +528,6 @@ export class MLCEngine implements MLCEngineInterface {
      chatConfig: ChatConfig,
      genConfig: GenerationConfig,
    ): Promise<string> {
@@ -2381,7 +2445,7 @@ index 1934771..9de3869 100644
      if (genConfig !== undefined) {
        postInitAndCheckGenerationConfigValues(genConfig);
      }
-@@ -535,41 +583,39 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -535,41 +600,39 @@ export class MLCEngine implements MLCEngineInterface {
      const created = getUnixTimestampSeconds();
      const id = crypto.randomUUID();
      this.interruptSignal = false;
@@ -2449,7 +2513,7 @@ index 1934771..9de3869 100644
        if (isChatCompletion) {
          const chunk: ChatCompletionChunk = {
            id: id,
-@@ -577,6 +623,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -577,6 +640,9 @@ export class MLCEngine implements MLCEngineInterface {
              {
                delta: { content: deltaMessage, role: "assistant" },
                finish_reason: null, // not finished yet
@@ -2459,7 +2523,7 @@ index 1934771..9de3869 100644
                index: 0,
                logprobs: logprobs,
              },
-@@ -593,6 +642,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -593,6 +659,9 @@ export class MLCEngine implements MLCEngineInterface {
              {
                text: deltaMessage,
                finish_reason: null, // not finished yet
@@ -2469,7 +2533,7 @@ index 1934771..9de3869 100644
                index: 0,
                logprobs: logprobs,
              },
-@@ -615,7 +667,12 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -615,7 +684,12 @@ export class MLCEngine implements MLCEngineInterface {
        throw err;
      }
      if (curChunk) {
@@ -2483,7 +2547,7 @@ index 1934771..9de3869 100644
      }
  
      while (!pipeline.stopped()) {
-@@ -633,7 +690,12 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -633,7 +707,12 @@ export class MLCEngine implements MLCEngineInterface {
          throw err;
        }
        if (curChunk) {
@@ -2497,7 +2561,7 @@ index 1934771..9de3869 100644
        }
      }
  
-@@ -645,6 +707,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -645,6 +724,13 @@ export class MLCEngine implements MLCEngineInterface {
      // 3. Last chunk empty marking the end
      // If function calling, use the last chunk to return tool_calls
      let finish_reason = pipeline.getFinishReason()!;
@@ -2511,7 +2575,7 @@ index 1934771..9de3869 100644
      let tool_calls:
        | Array<ChatCompletionChunk.Choice.Delta.ToolCall>
        | undefined;
-@@ -675,6 +744,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -675,6 +761,7 @@ export class MLCEngine implements MLCEngineInterface {
                  }
                : {},
              finish_reason: finish_reason,
@@ -2519,7 +2583,7 @@ index 1934771..9de3869 100644
              index: 0,
            },
          ],
-@@ -690,6 +760,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -690,6 +777,7 @@ export class MLCEngine implements MLCEngineInterface {
            {
              text: "",
              finish_reason: finish_reason,
@@ -2527,7 +2591,7 @@ index 1934771..9de3869 100644
              index: 0,
            },
          ],
-@@ -706,7 +777,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -706,7 +794,7 @@ export class MLCEngine implements MLCEngineInterface {
          "response_format" in request &&
          (request.response_format?.type === "grammar" ||
            request.response_format?.type === "json_object");
@@ -2536,7 +2600,7 @@ index 1934771..9de3869 100644
        const prompt_tokens = pipeline.getCurRoundPrefillTotalTokens();
        const prefill_tokens_per_s = pipeline.getCurRoundPrefillTokensPerSec();
        const decode_tokens_per_s = pipeline.getCurRoundDecodingTokensPerSec();
-@@ -814,6 +885,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -814,6 +902,7 @@ export class MLCEngine implements MLCEngineInterface {
        max_tokens: request.max_tokens,
        stop: request.stop,
        top_p: request.top_p,
@@ -2544,7 +2608,7 @@ index 1934771..9de3869 100644
        temperature: request.temperature,
        logit_bias: request.logit_bias,
        logprobs: request.logprobs,
-@@ -822,6 +894,15 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -822,6 +911,15 @@ export class MLCEngine implements MLCEngineInterface {
        ignore_eos: request.ignore_eos,
        enable_thinking: request.extra_body?.enable_thinking,
        enable_latency_breakdown: request.extra_body?.enable_latency_breakdown,
@@ -2560,7 +2624,7 @@ index 1934771..9de3869 100644
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -842,6 +923,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -842,6 +940,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -2568,7 +2632,7 @@ index 1934771..9de3869 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -889,12 +971,14 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -889,12 +988,14 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -2588,7 +2652,7 @@ index 1934771..9de3869 100644
            message: isFunctionCalling
              ? {
                  content: null,
-@@ -906,7 +990,8 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -906,7 +1007,8 @@ export class MLCEngine implements MLCEngineInterface {
                  role: "assistant",
                },
          });
@@ -2598,7 +2662,7 @@ index 1934771..9de3869 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -997,11 +1082,20 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -997,11 +1099,20 @@ export class MLCEngine implements MLCEngineInterface {
        max_tokens: request.max_tokens,
        stop: request.stop,
        top_p: request.top_p,
@@ -2619,7 +2683,7 @@ index 1934771..9de3869 100644
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -1022,6 +1116,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1022,6 +1133,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -2627,7 +2691,7 @@ index 1934771..9de3869 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -1051,15 +1146,18 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1051,15 +1163,18 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -2652,7 +2716,7 @@ index 1934771..9de3869 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -1302,6 +1400,459 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1302,6 +1417,459 @@ export class MLCEngine implements MLCEngineInterface {
      return selectedPipeline.forwardTokensAndSample(inputIds, isPrefill);
    }
  
@@ -3112,7 +3176,7 @@ index 1934771..9de3869 100644
    /**
     * Get the current generated response.
     *
-@@ -1402,8 +1953,16 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1402,8 +1970,16 @@ export class MLCEngine implements MLCEngineInterface {
        ] as ChatCompletionMessageParam;
        input_str = last_msg.content as string;
        input_role_str =
@@ -10587,7 +10651,7 @@ index 0000000..452db04
 +  });
 +});
 diff --git a/tests/engine_integration.test.ts b/tests/engine_integration.test.ts
-index 43b9e95..c0efb9a 100644
+index 43b9e95..e98dafa 100644
 --- a/tests/engine_integration.test.ts
 +++ b/tests/engine_integration.test.ts
 @@ -32,6 +32,7 @@ jest.mock("../src/llm_chat", () => {
@@ -10702,7 +10766,70 @@ index 43b9e95..c0efb9a 100644
      async runtimeStatsText() {
        return `prefills=${this.prefillCallCount}`;
      }
-@@ -412,6 +458,69 @@ describe("MLCEngine deterministic integration", () => {
+@@ -285,6 +331,62 @@ function createEngineWithPipeline(decodeLimit = 2, modelId = MODEL_ID) {
+   return { engine, pipeline };
+ }
+ 
++test("concurrent device-loss and owner unload share one disposal", async () => {
++  const { engine, pipeline } = createEngineWithPipeline();
++  let finish!: () => void;
++  const settled = new Promise<void>((resolve) => {
++    finish = resolve;
++  });
++  pipeline.dispose = jest.fn();
++  pipeline.sync = jest.fn(() => settled);
++  const deviceLossCleanup = engine.unload();
++  const ownerCleanup = engine.unload();
++  expect(pipeline.dispose).toHaveBeenCalledTimes(1);
++  finish();
++  await Promise.all([deviceLossCleanup, ownerCleanup]);
++  await engine.unload();
++  expect(pipeline.dispose).toHaveBeenCalledTimes(1);
++});
++
++test("a failed GPU sync does not dispose an already-deleted tokenizer again", async () => {
++  const { engine, pipeline } = createEngineWithPipeline();
++  pipeline.dispose = jest.fn();
++  pipeline.sync = jest.fn(async () => {
++    throw new Error("device lost during sync");
++  });
++  await expect(engine.unload()).rejects.toThrow("device lost during sync");
++  await engine.unload();
++  expect(pipeline.dispose).toHaveBeenCalledTimes(1);
++});
++
++test("unload drains every model after a cleanup failure", async () => {
++  const engine = createEngineWithMultiplePipelines();
++  const [pipeline1, pipeline2] = (
++    engine as any
++  ).loadedModelIdToPipeline.values();
++  let finish!: () => void;
++  const settled = new Promise<void>((resolve) => {
++    finish = resolve;
++  });
++  pipeline1.dispose = jest.fn(() => {
++    throw new Error("dispose failed");
++  });
++  pipeline2.dispose = jest.fn();
++  pipeline2.sync = jest.fn(() => settled);
++  const cleanup = engine.unload();
++  const joined = engine.unload();
++  expect(pipeline1.dispose).toHaveBeenCalledTimes(1);
++  expect(pipeline2.dispose).toHaveBeenCalledTimes(1);
++  expect((engine as any).deviceLostIsError).toBe(false);
++  finish();
++  await expect(cleanup).rejects.toThrow("dispose failed");
++  await expect(joined).rejects.toThrow("dispose failed");
++  expect((engine as any).deviceLostIsError).toBe(true);
++  await engine.unload();
++  expect(pipeline1.dispose).toHaveBeenCalledTimes(1);
++  expect(pipeline2.dispose).toHaveBeenCalledTimes(1);
++});
++
+ function createEngineWithMultiplePipelines() {
+   const engine = new MLCEngine({
+     appConfig: {
+@@ -412,6 +514,69 @@ describe("MLCEngine deterministic integration", () => {
      );
    });
  
@@ -10772,7 +10899,7 @@ index 43b9e95..c0efb9a 100644
    test("chatCompletion streaming yields chunks, final delta, and usage data", async () => {
      jest.useFakeTimers().setSystemTime(FIXED_CREATED_DATE);
      const { engine } = createEngineWithPipeline(2);
-@@ -443,6 +552,113 @@ describe("MLCEngine deterministic integration", () => {
+@@ -443,6 +608,113 @@ describe("MLCEngine deterministic integration", () => {
      expect(usageChunk.usage?.prompt_tokens).toBeGreaterThan(0);
    });
  

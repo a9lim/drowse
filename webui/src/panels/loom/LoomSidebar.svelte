@@ -3094,7 +3094,7 @@
   }
   .primary-action:disabled,
   .branch-action:disabled {
-    opacity: 0.42;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .path-stream {
@@ -3423,7 +3423,7 @@
     transform: scale(var(--press-scale));
   }
   .loom-view-controls button:disabled {
-    opacity: 0.35;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .loom-view-controls output {

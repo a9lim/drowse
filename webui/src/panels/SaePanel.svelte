@@ -531,7 +531,7 @@
     background: color-mix(in srgb, var(--pillar-sae) 18%, transparent);
   }
   .add-btn:disabled {
-    opacity: 0.5;
+    opacity: var(--disabled-opacity);
     cursor: default;
   }
   .add-btn:active,

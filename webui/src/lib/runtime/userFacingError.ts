@@ -73,6 +73,8 @@ const MESSAGES: Array<[RegExp, ErrorMessage]> = [
     "That analysis is not available in this browser session. Reopen the model and try again."],
   [/AUTHORING_OPERATION_UNAVAILABLE|FITTING_UNAVAILABLE|BROWSER_(?:AUTHORING|FITTING|FIT_)|HOSTED_(?:JLENS_FITTING|SAE_TRAINING)/u,
     "That building method is not available for this model in the browser."],
+  [/BROWSER_AUTOMATIC_TOPOLOGY_UNAVAILABLE/u,
+    "Choose linear PCA as the fit method. Automatic shape detection is not available in the browser."],
   [/FITTING_|WASM_FITTING/u,
     "Drowse could not finish building that model tool. Check the selected inputs and try again."],
   [/CAPTURE_|MEASUREMENT_|GEOMETRY_|PROBE_|RANK_ONE_CAPTURE|SCALAR_MEASUREMENTS|DROWSE_CAPTURE/u,

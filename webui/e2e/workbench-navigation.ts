@@ -35,7 +35,9 @@ export async function setAppearance(page: Page, name: string): Promise<void> {
   if (openMenu) {
     await openWorkspaceMenu(page);
   }
-  await appearance.getByRole("button", { name, exact: true }).click();
+  if (await page.locator("html").getAttribute("data-theme") !== name.toLowerCase()) {
+    await appearance.getByRole("button", { name: `Switch to ${name.toLowerCase()} theme`, exact: true }).click();
+  }
   if (openMenu) await page.keyboard.press("Escape");
   if (sidebarWasOpen && await page.getByRole("button", { name: "Show left sidebar", exact: true }).isVisible()) {
     await page.getByRole("button", { name: "Show left sidebar", exact: true }).click();

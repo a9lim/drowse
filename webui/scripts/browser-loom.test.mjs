@@ -1416,6 +1416,7 @@ try {
 
   const hookProgram = { hookAbi: "post-block-residual-v4" };
   const compiled = [];
+  const steeringEvents = [];
   const steeringEngine = generation();
   const steeringRuntime = new BrowserLoomRuntime({
     session: session(),
@@ -1434,11 +1435,23 @@ try {
       generated_role: "assistant",
       steering: "0.5 honest",
     },
-    () => {},
+    (event) => steeringEvents.push(event),
   );
   assert.deepEqual(compiled, ["0.5 honest"]);
   assert.equal(steeringEngine.plans[0].hookProgram, hookProgram);
   assert.equal(steeringRuntime.snapshot().tree.nodes[2].applied_steering, "0.5 honest");
+  assert.equal(steeringEvents.at(-1).result.applied_steering, "0.5 honest");
+  const comparisonEvents = [];
+  await steeringRuntime.generate({
+    type: "generate",
+    input: [{ role: "user", content: "Prompt" }],
+    parent_node_id: steeringRuntime.snapshot().tree.nodes[2].id,
+    stateless: true,
+    recipe_override: "unsteered",
+  }, event => comparisonEvents.push(event));
+  assert.equal(comparisonEvents.at(-1).result.applied_steering, null);
+  assert.equal(steeringEngine.plans.at(-1).steeringExpression, null);
+  assert.deepEqual(steeringEngine.plans.at(-1).sampling, steeringEngine.plans[0].sampling);
 
   const validationCompiles = [];
   const validationEngine = generation();
@@ -1746,6 +1759,16 @@ try {
   }, () => {});
   assert.equal(castEngine.plans.at(-1).steeringExpression, null);
   assert.deepEqual(castExpressions, ["0.25 calm", "0.5 direct"]);
+  const clearedEvents = [];
+  await castRuntime.generate({
+    type: "submit",
+    text: "The controls have been cleared",
+    authored_role: "user",
+    generated_role: "assistant",
+    steering: "",
+  }, event => clearedEvents.push(event));
+  assert.equal(castEngine.plans.at(-1).steeringExpression, null);
+  assert.equal(clearedEvents.at(-1).result.applied_steering, null);
 
   const unavailableSteering = new BrowserLoomRuntime({
     session: session(),

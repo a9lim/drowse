@@ -87,7 +87,7 @@
   }
   .sk-btn:disabled {
     cursor: not-allowed;
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
   }
 
   .md {

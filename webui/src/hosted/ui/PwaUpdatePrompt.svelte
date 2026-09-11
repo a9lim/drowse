@@ -394,7 +394,7 @@
 
   button:disabled {
     cursor: wait;
-    opacity: 0.6;
+    opacity: var(--disabled-opacity);
   }
 
   button:focus-visible {

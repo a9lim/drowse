@@ -1631,7 +1631,7 @@ test("theme transitions honor reduced motion and fall back to gradual colors", a
   await page.evaluate(() => Object.defineProperty(document, "startViewTransition", { value: undefined }));
   await page.emulateMedia({ reducedMotion: "no-preference" });
   const fallback = await page.getByRole("group", { name: "Appearance" })
-    .getByRole("button", { name: "Dark", exact: true }).evaluate(button => {
+    .getByRole("button", { name: "Switch to dark theme", exact: true }).evaluate(button => {
       button.click();
       return {
         mode: document.documentElement.dataset.themeTransition,
@@ -1991,7 +1991,7 @@ test("base model disclosure is accessible and unclipped on compact screens", asy
   await expect(disclosure).toContainText("No verified base-model downloads");
   await expect(disclosure.getByRole("button")).toHaveCount(0);
   for (const theme of ["Light", "Dark"]) {
-    const toggle = page.getByRole("button", { name: theme, exact: true });
+    const toggle = page.getByRole("button", { name: `Switch to ${theme.toLowerCase()} theme`, exact: true });
     if (await toggle.isVisible()) await toggle.click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme.toLowerCase());
     for (const width of [320, 390, 1440]) {

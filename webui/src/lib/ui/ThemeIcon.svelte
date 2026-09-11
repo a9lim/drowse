@@ -1,33 +1,47 @@
 <script lang="ts">
+  import { cubicOut } from "svelte/easing";
+  import { prefersReducedMotion, Tween } from "svelte/motion";
+
   interface Props {
     name: "sunny" | "moon";
     class?: string;
   }
 
-  const sunnyPath = [
-    "M12 2c0.414 0 0.75 0.336 0.75 0.75v1.5C12.75 4.664 12.414 5 12 5s-0.75-0.336-0.75-0.75v-1.5C11.25 2.336 11.586 2 12 2z",
-    "m5 10c0 2.761-2.239 5-5 5s-5-2.239-5-5 2.239-5 5-5 5 2.239 5 5z",
-    "m4.25 0.75c0.414 0 0.75-0.336 0.75-0.75s-0.336-0.75-0.75-0.75h-1.5C19.336 11.25 19 11.586 19 12s0.336 0.75 0.75 0.75h1.5z",
-    "M12 19c0.414 0 0.75 0.336 0.75 0.75v1.5c0 0.414-0.336 0.75-0.75 0.75s-0.75-0.336-0.75-0.75v-1.5c0-0.414 0.336-0.75 0.75-0.75z",
-    "m-7.75-6.25C4.664 12.75 5 12.414 5 12s-0.336-0.75-0.75-0.75h-1.5C2.336 11.25 2 11.586 2 12s0.336 0.75 0.75 0.75h1.5z",
-    "M4.22 4.22c0.293-0.293 0.767-0.293 1.06 0l1.5 1.5c0.293 0.293 0.293 0.768 0 1.06-0.293 0.294-0.767 0.294-1.06 0l-1.5-1.5c-0.293-0.292-0.293-0.767 0-1.06z",
-    "m1.06 15.56c-0.293 0.294-0.767 0.294-1.06 0-0.293-0.292-0.293-0.767 0-1.06l1.5-1.5c0.293-0.293 0.767-0.293 1.06 0 0.293 0.293 0.293 0.768 0 1.06l-1.5 1.5z",
-    "m14.5-15.56c-0.293-0.293-0.767-0.293-1.06 0l-1.5 1.5c-0.293 0.293-0.293 0.768 0 1.06 0.293 0.294 0.767 0.294 1.06 0l1.5-1.5c0.293-0.292 0.293-0.767 0-1.06z",
-    "m-1.06 15.56c0.293 0.294 0.767 0.294 1.06 0 0.293-0.292 0.293-0.767 0-1.06l-1.5-1.5c-0.293-0.293-0.767-0.293-1.06 0-0.293 0.293-0.293 0.768 0 1.06l1.5 1.5z",
-  ].join("");
-
-  const moonPath = "M20.026 17.001c-2.762 4.784-8.879 6.423-13.663 3.661-1.302-0.752-2.399-1.77-3.234-2.982-0.28-0.406-0.099-0.966 0.365-1.132 3.767-1.348 5.785-2.91 6.956-5.146C11.682 9.05 12 6.472 11.139 2.94c-0.12-0.489 0.266-0.954 0.769-0.927 1.556 0.083 3.078 0.53 4.457 1.327 4.784 2.762 6.423 8.879 3.66 13.662z";
-
   let { name, class: className = "" }: Props = $props();
+  const clipId = $props.id();
+  const morph = Tween.of(() => name === "moon" ? 1 : 0, {
+    duration: () => prefersReducedMotion.current ? 0 : 320,
+    easing: cubicOut,
+  });
+  const progress = $derived(prefersReducedMotion.current ? (name === "moon" ? 1 : 0) : morph.current);
+  const cutout = $derived(-6 + 14 * progress);
 </script>
 
-<svg class={className} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-  <path d={name === "sunny" ? sunnyPath : moonPath} />
+<svg class={className} viewBox="0 0 24 24" aria-hidden="true" focusable="false" data-theme-icon={name}>
+  <defs>
+    <clipPath id={clipId}>
+      <circle cx="12" cy="12" r={5 + 3 * progress} />
+    </clipPath>
+  </defs>
+  <path
+    class="disc"
+    clip-path={`url(#${clipId})`}
+    fill-rule="evenodd"
+    d={`M0 0h24v24H0z M${cutout - 7} ${cutout}a7 7 0 1 0 14 0a7 7 0 1 0-14 0z`}
+  />
+  <g class="rays" opacity={1 - progress} stroke-linecap="round">
+    {#each [0, 45, 90, 135, 180, 225, 270, 315] as angle}
+      <line
+        x1="12" y1={4 + 3 * progress}
+        x2="12" y2={2 + 5 * progress}
+        transform={`rotate(${angle} 12 12)`}
+      />
+    {/each}
+  </g>
 </svg>
 
 <style>
-  svg {
-    display: block;
-    fill: currentColor;
-  }
+  svg { display: block; overflow: visible; }
+  .disc { fill: currentColor; }
+  .rays { fill: none; stroke: currentColor; stroke-width: 1.5; }
 </style>

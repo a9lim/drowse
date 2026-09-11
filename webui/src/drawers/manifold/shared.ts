@@ -64,9 +64,10 @@ export interface DiscoverTuning {
  *  geometry their concepts want.  pca / spectral pin it for power users. */
 export function defaultTuning(
   maxDimLimit: number | null = getRuntimeManifoldFitMaxIntrinsicDim(),
+  linearOnly = false,
 ): DiscoverTuning {
   return {
-    fitMode: "auto",
+    fitMode: linearOnly ? "pca" : "auto",
     maxDim: maxDimLimit === null
       ? SERVER_DEFAULT_MAX_DIM
       : Math.min(SERVER_DEFAULT_MAX_DIM, maxDimLimit),

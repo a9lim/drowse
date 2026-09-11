@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
@@ -73,7 +74,7 @@ test("humanized public copy stays readable without em dashes", async ({ page }, 
   await expect(page.getByRole("heading", { name: "Test what shapes a reply." })).toBeVisible();
   await expect(page.locator(".capabilities li")).toHaveCount(3);
   for (const theme of ["Light", "Dark"]) {
-    await page.getByRole("button", { name: theme, exact: true }).click();
+    await setAppearance(page, theme);
     for (const width of [320, 390, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       expect(await page.locator("body").innerText()).not.toContain("\u2014");

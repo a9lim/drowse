@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
@@ -266,7 +267,7 @@ test("contact categories, success, and mobile layout are accessible", async ({ p
     await route.fulfill({ status: 200, contentType: "application/json", headers: { "Access-Control-Allow-Origin": dev }, body: JSON.stringify({ status: "sent", reference: body.requestId }) });
   });
   for (const theme of ["dark", "light"]) {
-    await page.getByRole("button", { name: theme === "dark" ? "Dark" : "Light", exact: true }).click();
+    await setAppearance(page, theme);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     for (const width of [320, 390, 768, 1440]) {
       await page.setViewportSize({ width, height: 900 });

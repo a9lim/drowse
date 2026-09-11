@@ -527,7 +527,7 @@
   .storage-protection strong { color: var(--warning-ink); font-size: var(--text-sm); }
   .storage-protection p { margin: var(--space-1) 0 0; color: var(--warning-ink); font-size: var(--text-xs); line-height: 1.4; }
   .storage-protection .quiet-button { color: var(--warning-action-ink); background: var(--warning-action); box-shadow: none; }
-  .storage-protection .quiet-button:hover:not(:disabled) { background: var(--warning-action-hover); }
+  .storage-protection .quiet-button:hover:not(:disabled) { color: var(--warning-action-ink); background: var(--warning-action-hover); }
   .conversation-list { display: grid; gap: var(--space-3); }
   .conversation-card {
     min-width: 0;
@@ -620,7 +620,7 @@
   .danger-button { background: var(--danger-bg); color: var(--accent-red); }
   .danger-button:hover:not(:disabled) { background: var(--danger-hover); }
   .button:active:not(:disabled), .quiet-button:active:not(:disabled), .danger-button:active:not(:disabled) { transform: scale(0.96); }
-  .button:disabled, .quiet-button:disabled, .danger-button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .button:disabled, .quiet-button:disabled, .danger-button:disabled { opacity: var(--disabled-opacity); cursor: not-allowed; }
   .button:focus-visible, .quiet-button:focus-visible, .danger-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
   .rename-field { display: block; min-width: 0; }
   .rename-field input {

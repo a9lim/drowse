@@ -29,8 +29,8 @@
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   import { untrack } from "svelte";
   import ModeTabs from "../lib/builder/ModeTabs.svelte";
-  import { closeDrawer, openDrawer, steerRack } from "../lib/stores.svelte";
-  import { runtimeClient } from "../lib/runtime/client";
+  import { closeDrawer, openDrawer, steerRack, drawerState } from "../lib/stores.svelte";
+  import { manifoldJobs } from "../lib/stores/manifoldJobs.svelte";
   import AuthoredForm from "./manifold/AuthoredForm.svelte";
   import DiscoverForm from "./manifold/DiscoverForm.svelte";
   import TemplatedForm from "./manifold/TemplatedForm.svelte";
@@ -41,8 +41,10 @@
   const returnToToken = $derived((params as { returnToToken?: unknown } | null)?.returnToToken);
 
   type AuthoringMode = "authored" | "discover" | "templated";
-  let authoringMode: AuthoringMode = $state(untrack(() => (params as { mode?: string } | null)?.mode === "discover" ? "discover" : "authored"));
-  const browserMode = runtimeClient.mode !== "http";
+  let authoringMode: AuthoringMode = $state(untrack(() => (params as { mode?: string } | null)?.mode === "authored" ? "authored" : "discover"));
+  let visited = $state<AuthoringMode[]>([]);
+  $effect(() => { if (!visited.includes(authoringMode)) visited = [...visited, authoringMode]; });
+  const busy = $derived(manifoldJobs.current !== null && ["running", "waiting", "cancelling"].includes(manifoldJobs.current.status));
 
   const identity: ManifoldIdentity = $state({
     namespace: "local",
@@ -56,11 +58,11 @@
       return;
     }
     closeDrawer();
-    openDrawer("manifolds");
   }
 
-  function complete(): void {
-    const { namespace, name } = identitySlugs(identity);
+  function complete(result?: { namespace: string; name: string }): void {
+    if (drawerState.open !== "manifold_builder") return;
+    const { namespace, name } = result ?? identitySlugs(identity);
     const created = steerRack.catalog.find(row => row.namespace === namespace && row.name === name);
     const mode = created?.resolved_fit_mode ?? created?.fit_mode;
     openDrawer(mode === "spectral" || mode === "authored" ? "manifolds" : "subspace", { returnToToken });
@@ -77,17 +79,22 @@
     <ModeTabs
       bind:value={authoringMode}
       tabs={[
-        { value: "discover", label: browserMode ? "linear" : "auto" },
-        { value: "templated", label: "template" },
-        { value: "authored", label: "custom" },
+        { value: "discover", label: "Generate examples" },
+        { value: "templated", label: "Use a template" },
+        { value: "authored", label: "Use your examples" },
       ]}
       ariaLabel="Authoring mode"
+      disabled={busy}
     />
+
+    <p class="intro">{authoringMode === "discover" ? "Describe at least two contrasting concepts, such as pirate and assistant. Drowse generates examples and learns a direction you can measure or steer."
+      : authoringMode === "templated" ? "Use a prompt template for categories such as days, months, or directions. Its possible answers become the examples."
+      : "Supply your own labeled examples. Choose coordinates for a scale, or let Drowse find the layout."}</p>
 
     <!-- identity — shared by all three paths -->
     <div class="grid2">
       <label class="field">
-        <span class="label">namespace</span>
+        <span class="label">Folder</span>
         <input
           type="text"
           class="input"
@@ -95,38 +102,42 @@
           placeholder="local"
           autocomplete="off"
           spellcheck="false"
+          disabled={busy}
         />
       </label>
       <label class="field">
-        <span class="label">name *</span>
+        <span class="label">Name (required)</span>
         <input
           type="text"
           class="input"
           bind:value={identity.name}
-          placeholder="circumplex"
+          required
+          placeholder="e.g. pirate"
           autocomplete="off"
           spellcheck="false"
+          disabled={busy}
         />
       </label>
     </div>
     <label class="field">
-      <span class="label">description</span>
+      <span class="label">Description (optional)</span>
       <input
         type="text"
         class="input"
         bind:value={identity.description}
-        placeholder="description"
+        placeholder="What should this concept or scale measure?"
         autocomplete="off"
+        disabled={busy}
       />
     </label>
 
-    {#if authoringMode === "authored"}
-      <AuthoredForm {identity} oncomplete={returnToToken ? complete : undefined} />
-    {:else if authoringMode === "discover"}
-      <DiscoverForm {identity} oncomplete={returnToToken ? complete : undefined} />
-    {:else}
-      <TemplatedForm {identity} oncomplete={returnToToken ? complete : undefined} />
-    {/if}
+    {#each visited as mode (mode)}
+      <div class="authoring-form" hidden={authoringMode !== mode} inert={authoringMode !== mode}>
+        {#if mode === "authored"}<AuthoredForm {identity} oncomplete={complete} />
+        {:else if mode === "discover"}<DiscoverForm {identity} oncomplete={complete} />
+        {:else}<TemplatedForm {identity} oncomplete={complete} />{/if}
+      </div>
+    {/each}
   </div>
 </section>
 
@@ -144,9 +155,13 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--space-sm);
     padding: var(--drawer-gutter-block) var(--drawer-gutter-inline);
   }
   .title {
+    margin: 0;
+    min-width: 0;
+    text-wrap: balance;
     color: var(--accent);
     letter-spacing: 0;
     font-size: var(--text-md);
@@ -161,4 +176,6 @@
     gap: var(--space-4);
     min-height: 0;
   }
+  .intro { margin: 0; color: var(--fg-dim); line-height: 1.5; font-size: var(--text-sm); text-wrap: pretty; }
+  .authoring-form[hidden] { display: none; }
 </style>

@@ -53,7 +53,7 @@
     "generate:brand": "node ./scripts/generate-brand-assets.mjs",
     "test:metadata": "node ./scripts/site-metadata.test.mjs && node ./scripts/sae-descriptions.test.mjs",
     "test:chat-backups": "node ./scripts/chat-backup.test.mjs && node ./scripts/base-model-ui.test.mjs && node ./scripts/persistence-lifecycle.test.mjs",
-    "test:lifecycles": "node ./scripts/frame-queue.test.mjs && node ./scripts/probe-lifecycle.test.mjs && node ./scripts/readout-lifecycle.test.mjs && node ./scripts/rack-fitting.test.mjs",
+    "test:lifecycles": "node ./scripts/frame-queue.test.mjs && node ./scripts/probe-lifecycle.test.mjs && node ./scripts/readout-lifecycle.test.mjs && node ./scripts/rack-fitting.test.mjs && node ./scripts/manifold-progress.test.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json && node ./scripts/check-theme.mjs && node ./scripts/check-runtime-boundary.mjs && npm run test:entry && npm run test:colors && npm run test:interface-policy && npm run test:chat-backups && npm run test:lifecycles && node ./scripts/security-boundaries.test.mjs",
     "check:hosted": "svelte-check --tsconfig ./tsconfig.json && node --check ./scripts/preflight-hosted-distribution.mjs && node --check ./scripts/preflight-hosted-distribution.test.mjs && node --check ./scripts/verify-hosted-deployment.mjs && node --check ./scripts/build-hosted-whitener.mjs && node --check ./scripts/build-hosted-sae.mjs && node --check ./scripts/build-hosted-jlens.mjs && node --check ./scripts/prepare-hosted-candidate-lock.mjs && node ./scripts/prepare-hosted-candidate-lock.test.mjs && node --check ./scripts/capture-hosted-residuals.mjs && node ./scripts/capture-hosted-residuals.test.mjs && node --check ./scripts/browser-instrument-runtime.mjs && node --check ./scripts/browser-full-runtime.mjs && node --check ./scripts/browser-full-runtime-contract.mjs && npm run test:browser-runtime:full:contract && node --check ./scripts/validate-hosted-core-pack.mjs && node --check ./scripts/validate-hosted-instrument-pack.mjs && node ./scripts/hosted-tools.test.mjs && npm run test:preflight-tools && npm run test:release-tools && npm run test:fork-overlays && npm run test:evidence-tools && node --test ./scripts/tool-http-errors.test.mjs && node ./scripts/check-runtime-lock.mjs && node ./scripts/check-runtime-boundary.mjs && npm run test:colors && npm run test:interface-policy",
     "check:theme": "node ./scripts/check-theme.mjs",
@@ -81,7 +81,7 @@
   "dependencies": {
     "@basementstudio/shader-lab": "3.0.2",
     "@blobatar/svelte": "2.7.0",
-    "@drowse/web-llm": "file:../browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.38.tgz",
+    "@drowse/web-llm": "file:../browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.39.tgz",
     "@noble/hashes": "2.3.0",
     "blobatar": "2.7.0",
     "fflate": "0.8.3",

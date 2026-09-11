@@ -245,7 +245,7 @@
   button:hover:not(:disabled) { background: var(--glass-bright); }
   button.primary { background: var(--accent); color: var(--text-on-accent); border-color: transparent; }
   button.primary:hover:not(:disabled) { background: var(--accent); }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button:disabled { opacity: var(--disabled-opacity); cursor: not-allowed; }
   button.quiet { background: transparent; border-color: transparent; }
   :is(button, textarea, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .generation-controls label { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); }

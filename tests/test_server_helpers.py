@@ -18,6 +18,18 @@ from drowse.server.request_helpers import (
 )
 
 
+@pytest.mark.parametrize("expression", [None, "0.5 local/pirate"])
+def test_websocket_done_reports_applied_steering(expression):
+    from drowse.core.results import GenerationResult
+    from drowse.server.ws_models import result_to_json
+
+    result = GenerationResult(
+        text="Hello", tokens=[1], token_count=1, tok_per_sec=1, elapsed=1,
+        applied_steering=expression,
+    )
+    assert result_to_json(result)["applied_steering"] == expression
+
+
 class TestNormalizeStop:
     def test_none_passes_through(self) -> None:
         assert normalize_stop(None) is None

@@ -594,6 +594,7 @@ export interface WSDoneResult {
   text: string;
   tokens: number;
   finish_reason: string;
+  applied_steering?: string | null;
   terminal_reason?: "eos" | "stop_sequence" | "external_stop" | "length";
   usage: {
     prompt_tokens: number;

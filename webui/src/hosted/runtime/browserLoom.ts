@@ -738,6 +738,7 @@ export class BrowserLoomRuntime {
         text: result.text,
         tokens: result.tokens,
         finish_reason: finishReason,
+        applied_steering: node.applied_steering,
         terminal_reason: this.stopRequested
           ? "external_stop"
           : result.terminalReason,

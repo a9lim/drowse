@@ -30,7 +30,8 @@
       const navigationWidth = links.reduce((width, link) => width + link.getBoundingClientRect().width, 0)
         + parseFloat(getComputedStyle(nav).columnGap) * Math.max(0, links.length - 1);
       const required = leading.getBoundingClientRect().width + navigationWidth
-        + appearance.getBoundingClientRect().width + 2 * parseFloat(style.columnGap);
+        + appearance.getBoundingClientRect().width + parseFloat(getComputedStyle(appearance).marginInlineEnd)
+        + 2 * parseFloat(style.columnGap);
       brandCollapsed = required > available + 1;
     };
     const observer = new ResizeObserver(() => {
@@ -71,6 +72,8 @@
 
 <style>
   .page-header {
+    --header-theme-icon-size: 1.5rem;
+    --header-theme-target: max(44px, var(--control-target));
     position: relative;
     z-index: 1;
     display: grid;
@@ -100,7 +103,12 @@
   nav { scrollbar-width: none; }
   nav::-webkit-scrollbar { display: none; }
   nav a[aria-current="page"] { color: var(--accent); }
-  .appearance { display: flex; align-items: center; justify-content: end; }
+  .appearance {
+    display: flex;
+    align-items: center;
+    justify-content: end;
+    margin-inline-end: calc((var(--header-theme-icon-size) - var(--header-theme-target)) / 2);
+  }
   .page-brand { justify-self: start; }
   .page-leading { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
   @media (max-width: 760px) {
@@ -128,9 +136,9 @@
     .page-header:not(.workbench) {
       grid-template-columns: auto minmax(0, 1fr) auto;
       gap: var(--space-xs);
-      padding-inline: max(var(--space-xs), env(safe-area-inset-left)) max(var(--space-xs), env(safe-area-inset-right));
+      padding-inline: max(var(--space-sm), env(safe-area-inset-left)) max(var(--space-sm), env(safe-area-inset-right));
     }
-    .page-header:not(.workbench) nav { justify-content: start; gap: 0; overscroll-behavior-inline: contain; }
+    .page-header:not(.workbench) nav { justify-content: space-between; gap: 0; overscroll-behavior-inline: contain; }
     nav a { font-size: var(--text-sm); padding-inline: calc(var(--space-xs) / 2); }
   }
   .page-header.brand-collapsed { grid-template-columns: minmax(0, 1fr) auto; }

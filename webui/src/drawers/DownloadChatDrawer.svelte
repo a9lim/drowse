@@ -116,5 +116,5 @@
   button:active:not(:disabled) { transform: scale(0.96); }
   button.primary { background: var(--accent); color: var(--bg); }
   button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--fg)); }
-  button:disabled { opacity: 0.45; cursor: default; }
+  button:disabled { opacity: var(--disabled-opacity); cursor: default; }
 </style>

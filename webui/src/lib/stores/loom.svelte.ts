@@ -262,7 +262,7 @@ export function syncChatLogFromTree(preserveLiveTokens = true): void {
         prev.text = node.text;
       }
       prev.generated = node.recipe !== null;
-      prev.appliedSteering = node.applied_steering ?? prev.appliedSteering ?? null;
+      prev.appliedSteering = node.applied_steering ?? null;
       prev.aggregateReadings = node.aggregate_readings ?? prev.aggregateReadings;
       prev.finishReason = node.finish_reason ?? prev.finishReason;
       // Server-shipped node tokens are authoritative. Preserve the live

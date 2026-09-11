@@ -53,7 +53,7 @@
   let autoDomain = $state(false);
   const maxDimLimit = getRuntimeManifoldFitMaxIntrinsicDim();
   const browserMode = runtimeClient.mode !== "http";
-  const tuning = $state(defaultTuning(maxDimLimit));
+  const tuning = $state(defaultTuning(maxDimLimit, browserMode));
   let advancedOpen = $state(false);
   let submitting = $state(false);
   let validationAttempted = $state(false);

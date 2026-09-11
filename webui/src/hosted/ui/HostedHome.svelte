@@ -890,7 +890,7 @@
     transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
   }
   button:active:not(:disabled) { transform: scale(0.96); }
-  button:disabled { opacity: 0.48; }
+  button:disabled { opacity: var(--disabled-opacity); }
   button.primary { color: var(--action-ink); background: var(--control-sheen), var(--action-bg); box-shadow: var(--shadow-control); }
   button.primary:hover:not(:disabled) { background: var(--control-sheen), var(--action-hover); box-shadow: var(--shadow-control-hover); }
   button.secondary { background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control); }
@@ -920,7 +920,7 @@
     background: var(--warning-action);
     box-shadow: none;
   }
-  .storage-notice button.secondary:hover:not(:disabled) { background: var(--warning-action-hover); }
+  .storage-notice button.secondary:hover:not(:disabled) { color: var(--warning-action-ink); background: var(--warning-action-hover); }
   .storage-notice {
     align-items: start;
     background: var(--surface-card);

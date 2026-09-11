@@ -636,7 +636,7 @@
   button.quiet { background: transparent; color: var(--fg-muted); }
   button.danger { color: var(--accent-red); background: var(--danger-bg); }
   button.danger:hover:not(:disabled) { color: var(--accent-red); background: var(--danger-hover); }
-  button:disabled { opacity: 0.48; }
+  button:disabled { opacity: var(--disabled-opacity); }
   code { color: var(--accent-amber); font-family: var(--font-mono); overflow-wrap: anywhere; }
   .facts { display: grid; gap: var(--space-2); margin: var(--space-5) 0 0; }
   .facts.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }

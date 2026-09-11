@@ -50,9 +50,7 @@
     setSubspaceLabel,
   } from "../lib/stores.svelte";
   import {
-    dismissToast,
     pushToast,
-    updateToast,
   } from "../lib/stores/toasts.svelte";
   import type { ManifoldInfo } from "../lib/types";
   import {
@@ -486,21 +484,9 @@
     if (busyKeys.has(key)) return;
     busyKeys.add(key);
     errorMsg = null;
-    const toastId = pushToast(`fitting '${key}'…`, {
-      kind: "info",
-      ttlMs: null,
-    });
     void (async () => {
       try {
-        await apiManifoldFitStream(m.namespace, m.name, {}, (ev) => {
-          if (ev.event === "progress") {
-            const msg =
-              ev.data && typeof ev.data === "object"
-                ? (ev.data as { message?: string }).message
-                : null;
-            if (msg) updateToast(toastId, { detail: msg });
-          }
-        });
+        await apiManifoldFitStream(m.namespace, m.name, {}, () => {});
         detailCache.delete(key);
         detailErrors.delete(key);
         detailRevisions.set(key, (detailRevisions.get(key) ?? 0) + 1);
@@ -510,10 +496,8 @@
           inspectKeys.delete(key);
           await toggleInspect(m);
         }
-        dismissToast(toastId);
         pushToast(`fitted ${key}`, { kind: "info" });
       } catch (e) {
-        dismissToast(toastId);
         if (isFittingCancellation(e)) {
           pushToast(`Fitting ${key} cancelled.`, { kind: "info" });
           return;
@@ -1262,7 +1246,7 @@
     background: var(--glass-strong);
   }
   .act:disabled {
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   /* Steer + probe both ride the family accent so the white/purple split
@@ -1353,7 +1337,7 @@
     outline-offset: -1px;
   }
   .text-input:disabled {
-    opacity: 0.6;
+    opacity: var(--disabled-opacity);
   }
   .attach-form .act.probe {
     align-self: flex-end;
@@ -1401,7 +1385,7 @@
     color: var(--fg);
   }
   .refresh:disabled {
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -1469,7 +1453,7 @@
     background: color-mix(in srgb, var(--family-accent) 16%, var(--glass));
   }
   .node-chip:disabled {
-    opacity: 0.5;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .node-name {

@@ -63,6 +63,8 @@
     unpinComparison,
     probeRack,
     sendSubmit,
+    sendShadowGenerate,
+    currentSteeringExpression,
     sendStop,
     genStatus,
     openDrawer,
@@ -772,10 +774,24 @@
 
   /** Do not open an empty comparison pane merely because the setting is on.
    * It appears when a shadow has started or a completed comparison exists. */
+  let manualComparisonVisible = $state(false);
+  const nextSteering = $derived(currentSteeringExpression());
   const autoRegenActive = $derived(
-    autoRegenState.enabled &&
+    (autoRegenState.enabled || manualComparisonVisible) &&
     (abState.processingAb || chatLog.turns.some((turn) => turn.abPair !== undefined)),
   );
+
+  function compareWithoutSteering(turnIdx: number): void {
+    if (genStatus.active) return;
+    manualComparisonVisible = true;
+    unpinComparison();
+    void sendShadowGenerate(turnIdx, "unsteered");
+  }
+
+  function hideComparison(): void {
+    manualComparisonVisible = false;
+    disableAutoRegen();
+  }
 
   /** A manually pinned Loom branch takes precedence over the automatic
    * comparison while it remains in the authoritative tree. */
@@ -1272,6 +1288,10 @@
               {@render bubble(turn, idx, true)}
             {/each}
           {:else}
+            <header class="pin-header">
+              <span class="pin-tag">Comparison</span>
+              <Button size="sm" variant="flat" onclick={hideComparison}>Hide comparison</Button>
+            </header>
             {#each chatLog.turns as turn, turnIdx (turnIdx)}
               {#if !turn.generated || turn.role === "system"}
                 {@render bubble(turn, turnIdx, false)}
@@ -1456,6 +1476,16 @@
     class:generating={genStatus.active}
     onsubmit={(ev) => { ev.preventDefault(); doSend(); }}
   >
+    <div class="steering-status" aria-label="Steering for next reply">
+      <span>{nextSteering ? "Next reply · Steering" : "Next reply · No steering"}</span>
+      {#if nextSteering}<code>{nextSteering}</code>{/if}
+      <Button size="sm" variant="flat"
+        onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "response" } }))}
+      >Edit steering</Button>
+      {#if !nextSteering && probeRack.entries.size > 0}
+        <span class="probe-note">Probes measure replies. Add steering to change them.</span>
+      {/if}
+    </div>
     <textarea
       class="input field-focus"
       bind:this={textareaRef}
@@ -1577,7 +1607,6 @@
           ariaLabel={`Inspect tokens in ${roleDisplayLabel(turn.role, turn.roleLabel)} message`}
         >inspect tokens</Button>
       {/if}
-      {#if isShadow && !pinnedActive}<span class="who-meta">(unsteered)</span>{/if}
       {#if genStatus.active && (isShadow ? abState.pendingTurnIdx === turnIdx : !abState.processingAb && chatLog.pendingIndex === turnIdx)}
         <span class="who-meta generation-label" role="status"><MorphText text={(turn.tokens?.length ?? 0) > 0 ? "Writing…" : (turn.thinkingTokens?.length ?? 0) > 0 ? "Thinking…" : "Preparing reply…"} numbers={false} /></span>
       {/if}
@@ -1588,6 +1617,25 @@
         >seq ppl <MorphText text={Math.exp(-turn.meanLogprob).toFixed(1)} /></span>
       {/if}
     </div>
+
+    {#if turn.generated && turn.finishReason != null && turn.appliedSteering !== undefined}
+      <div class="steering-status recorded-steering" aria-label="Recorded steering">
+        <span>{turn.appliedSteering ? "Steering recipe" : "No steering"}</span>
+        {#if turn.appliedSteering}<code>{turn.appliedSteering}</code>{/if}
+      </div>
+    {/if}
+    {#if turn.generated && turn.finishReason != null && Object.keys(turn.aggregateReadings ?? {}).length > 0}
+      <details class="recorded-readings">
+        <summary>Recorded probe readings</summary>
+        <dl>
+          {#each Object.entries(turn.aggregateReadings ?? {}) as [name, value] (name)}
+            {#if Number.isFinite(value)}
+              <div><dt>{name}</dt><dd>{value.toLocaleString(undefined, { maximumFractionDigits: 4 })}</dd></div>
+            {/if}
+          {/each}
+        </dl>
+      </details>
+    {/if}
 
     {#if (turn.thinkingTokens?.length ?? 0) > 0 || turn.thinking}
       <div class="thinking-block" class:collapsed={turnCollapsed(turnIdx, turn)}>
@@ -1656,6 +1704,14 @@
         <span class="plain">{plainResponseText(turn)}</span>
       {/if}
     </div>
+    {#if turn.generated && !isShadow && turn.appliedSteering && automaticComparisonAvailable}
+      <div class="reply-actions">
+        <Button size="sm" variant="flat" disabled={genStatus.active}
+          onclick={() => compareWithoutSteering(turnIdx)}
+          title="Replay the preceding messages with the current system prompt and saved sampling settings, with steering removed"
+        >Compare without steering</Button>
+      </div>
+    {/if}
   </div>
   {/if}
 {/snippet}
@@ -1943,6 +1999,31 @@
     font-family: var(--font-data);
     font-size: var(--text-xs);
   }
+  .steering-status {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
+    min-width: 0;
+    color: var(--fg-dim);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .steering-status code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-family: var(--font-data);
+    color: var(--fg);
+  }
+  .recorded-steering { margin-block: var(--space-2); }
+  .reply-actions { margin-top: var(--space-3); }
+  .probe-note { flex-basis: 100%; }
+  .recorded-readings { margin-block: var(--space-2); font-size: var(--text-xs); color: var(--fg-dim); }
+  .recorded-readings summary { cursor: pointer; }
+  .recorded-readings dl { display: grid; gap: var(--space-2); margin-block: var(--space-3); }
+  .recorded-readings dl > div { display: flex; justify-content: space-between; gap: var(--space-3); }
+  .recorded-readings dt { min-width: 0; overflow-wrap: anywhere; }
+  .recorded-readings dd { margin: 0; font-family: var(--font-data); font-variant-numeric: tabular-nums; }
   .prov {
     margin-inline-start: auto;
     color: var(--fg-muted);
@@ -2402,7 +2483,7 @@
   }
   .clear-conversation:disabled {
     cursor: not-allowed;
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
   }
 
   @media (prefers-contrast: more), (forced-colors: active), (prefers-reduced-transparency: reduce) {

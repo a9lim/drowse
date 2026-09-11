@@ -1225,7 +1225,7 @@
   }
   .scrub-btn:disabled {
     color: var(--fg-muted);
-    opacity: 0.35;
+    opacity: var(--disabled-opacity);
     cursor: default;
   }
   .scrub-pos {
@@ -1357,7 +1357,7 @@
     transform: scale(var(--press-scale));
   }
   .branch-point-actions button:disabled {
-    opacity: 0.42;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .replacement-form {

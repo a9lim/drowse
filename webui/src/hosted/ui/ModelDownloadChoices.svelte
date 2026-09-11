@@ -152,7 +152,7 @@
   .model-choice-button:hover:not(:disabled) { background: var(--bg-hover); }
   .installed .model-choice-button:hover:not(:disabled) { background: var(--action-hover); }
   .model-choice-button:disabled { cursor: default; }
-  .model-choice:not(.active) .model-choice-button:disabled { opacity: 0.55; }
+  .model-choice:not(.active) .model-choice-button:disabled { opacity: var(--disabled-opacity); }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .model-choice-copy { min-width: 0; display: grid; gap: var(--space-2); overflow-wrap: anywhere; }
   .model-name { font-weight: var(--weight-medium); color: var(--fg); }
@@ -166,7 +166,7 @@
   .download-detail > span { min-width: 0; overflow-wrap: anywhere; }
   .pause-download { min-height: var(--control-target); padding-inline: var(--space-4); }
   .pause-download:hover:not(:disabled) { background: var(--bg-hover); }
-  .pause-download:disabled { opacity: 0.55; cursor: default; }
+  .pause-download:disabled { opacity: var(--disabled-opacity); cursor: default; }
   .model-warning, .model-error { margin: 0; padding: 0 var(--model-card-padding) var(--model-card-padding); font-size: var(--text-xs); line-height: 1.5; overflow-wrap: anywhere; }
   .model-error { color: var(--accent-red); }
   .installed .model-error { color: var(--action-ink); }

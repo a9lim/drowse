@@ -391,7 +391,7 @@
   .button:active:not(:disabled), .text-button:active:not(:disabled) { transform: scale(0.96); }
   .text-button { padding: var(--space-2); background: transparent; color: var(--fg-dim); }
   .text-button:hover:not(:disabled) { color: var(--fg); background: var(--bg-hover); }
-  .button:disabled, .text-button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .button:disabled, .text-button:disabled { opacity: var(--disabled-opacity); cursor: not-allowed; }
   .button:focus-visible, .text-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
   @media (max-width: 520px) {
     .drawer-shell.embedded { --drawer-gutter-inline: var(--panel-padding); }

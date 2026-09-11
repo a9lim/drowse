@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
@@ -141,7 +142,7 @@ test("keyboard confirmation, device warnings, unavailable models, and first down
 test("two padded 2x2 groups, purple installed cards, readable themes and narrow layouts", async ({ page }, testInfo) => {
   await home(page);
   for (const theme of ["light", "dark"]) {
-    await page.getByRole("button", { name: theme === "light" ? "Light" : "Dark", exact: true }).click();
+    await setAppearance(page, theme);
     for (const width of [1440, 768, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       await expect(page.locator("#new-chat-title")).toHaveCSS("color", theme === "light" ? "rgb(20, 24, 34)" : "rgb(241, 243, 250)");

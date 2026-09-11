@@ -29,7 +29,7 @@
     getRuntimeManifoldFitMaxIntrinsicDim,
   } from "../../lib/runtime/registry";
   import { closeDrawer, openDrawer, refreshManifoldList } from "../../lib/stores.svelte";
-  import { dismissToast, pushToast, updateToast } from "../../lib/stores/toasts.svelte";
+  import { dismissToast, pushToast } from "../../lib/stores/toasts.svelte";
   import type {
     CreateManifoldFromTemplateRequest,
     TemplateSummary,
@@ -52,7 +52,8 @@
   let { identity, oncomplete }: { identity: ManifoldIdentity; oncomplete?: () => void } = $props();
 
   const maxDimLimit = getRuntimeManifoldFitMaxIntrinsicDim();
-  const tuning = $state(defaultTuning(maxDimLimit));
+  const browserMode = runtimeClient.mode !== "http";
+  const tuning = $state(defaultTuning(maxDimLimit, browserMode));
   let templates: TemplateSummary[] = $state([]);
   let loadingTemplates = $state(true);
   let selectedKey = $state("");
@@ -69,7 +70,6 @@
   let fittingActive = $state(false);
   let cancelling = $state(false);
   const hostedController = getHostedController();
-  const browserMode = runtimeClient.mode !== "http";
 
   onMount(async () => {
     try {
@@ -211,10 +211,6 @@
       await apiManifolds.createFromTemplate(req);
       dismissToast(toastId);
       if (alsoFit) {
-        const fitToastId = pushToast(`fitting ${namespace}/${name}…`, {
-          kind: "info",
-          ttlMs: null,
-        });
         progress = "Starting fit…";
         fittingActive = true;
         try {
@@ -230,16 +226,13 @@
                   : null;
               if (msg) {
                 progress = msg;
-                updateToast(fitToastId, { detail: msg });
               }
             },
           );
-          dismissToast(fitToastId);
           pushToast(`fit ${namespace}/${name} (${tuning.fitMode})`, {
             kind: "info",
           });
         } catch (e) {
-          dismissToast(fitToastId);
           if (isFittingCancellation(e)) {
             pushToast(
               `Fit cancelled. ${namespace}/${name} was kept and can be fitted later.`,

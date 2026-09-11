@@ -99,7 +99,7 @@
     background: var(--bg-hover);
   }
   .tab:disabled {
-    opacity: 0.4;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .tab:active:not(:disabled) {

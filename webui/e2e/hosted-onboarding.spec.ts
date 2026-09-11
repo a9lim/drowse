@@ -64,7 +64,6 @@ test("base models stay collapsed and explain text completion before selection", 
   await page.keyboard.press("Enter");
   await expect(base).toBeVisible();
   await expect(disclosure).toContainText("They don't follow instructions reliably");
-  await expect(disclosure).toContainText("Each download includes the core pack for generation and concept steering, plus compatible SAE features when available.");
   await base.click();
   await expect(base).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".required-tool").filter({ hasText: "Feature insights" })).toContainText("(SAE)");

@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import { selectWorkspaceView } from "./workbench-navigation";
 import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
@@ -8,7 +9,7 @@ test("sampling popup stays compact and inside the viewport across themes and siz
   await selectWorkspaceView(page, "Controls");
   for (const theme of ["Light", "Dark"]) {
     await openWorkspaceMenu(page);
-    await page.getByRole("button", { name: theme, exact: true }).click();
+    await setAppearance(page, theme);
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Sampling settings", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Sampling settings", exact: true });

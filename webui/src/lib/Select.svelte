@@ -407,7 +407,7 @@
     background: var(--control-sheen), var(--surface-hi);
   }
   .sk-select-trigger:disabled {
-    opacity: 0.5;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .sk-select-trigger[data-invalid] { border-color: var(--accent-red); }

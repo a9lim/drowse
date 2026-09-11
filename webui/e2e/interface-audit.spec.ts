@@ -248,12 +248,12 @@ test("appearance defaults to dark and persists across every hosted surface", asy
 
   const appearance = page.getByRole("group", { name: "Appearance" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(appearance.getByRole("button", { name: "Dark", exact: true }))
-    .toHaveAttribute("aria-pressed", "true");
-  await appearance.getByRole("button", { name: "Light", exact: true }).click();
+  await expect(appearance.getByRole("button", { name: "Switch to light theme", exact: true }))
+    .toBeVisible();
+  await appearance.getByRole("button", { name: "Switch to light theme", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await expect(appearance.getByRole("button", { name: "Light", exact: true }))
-    .toHaveAttribute("aria-pressed", "true");
+  await expect(appearance.getByRole("button", { name: "Switch to dark theme", exact: true }))
+    .toBeVisible();
   await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#f2f4f8");
 
   const lightContrast = await page.evaluate(() => {
@@ -282,7 +282,7 @@ test("appearance defaults to dark and persists across every hosted surface", asy
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 
-  await appearance.getByRole("button", { name: "Dark", exact: true }).click();
+  await appearance.getByRole("button", { name: "Switch to dark theme", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#0b0e17");
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
@@ -291,9 +291,9 @@ test("appearance defaults to dark and persists across every hosted surface", asy
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   const onboardingAppearance = page.getByRole("group", { name: "Appearance" });
-  await expect(onboardingAppearance.getByRole("button", { name: "Dark", exact: true }))
-    .toHaveAttribute("aria-pressed", "true");
-  await onboardingAppearance.getByRole("button", { name: "Light", exact: true }).click();
+  await expect(onboardingAppearance.getByRole("button", { name: "Switch to light theme", exact: true }))
+    .toBeVisible();
+  await onboardingAppearance.getByRole("button", { name: "Switch to light theme", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
@@ -302,14 +302,14 @@ test("appearance defaults to dark and persists across every hosted surface", asy
   await expect(page.locator(".shell")).toBeVisible();
   await openWorkspaceMenu(page);
   await expect(page.getByRole("group", { name: "Appearance" })
-    .getByRole("button", { name: "Light", exact: true }))
-    .toHaveAttribute("aria-pressed", "true");
+    .getByRole("button", { name: "Switch to dark theme", exact: true }))
+    .toBeVisible();
 
   const workbenchAppearance = page.getByRole("group", { name: "Appearance" });
-  await workbenchAppearance.getByRole("button", { name: "Dark", exact: true }).click();
+  await workbenchAppearance.getByRole("button", { name: "Switch to dark theme", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(page.locator(".shell")).toHaveCSS("background-color", "rgb(11, 14, 23)");
-  await workbenchAppearance.getByRole("button", { name: "Light", exact: true }).click();
+  await workbenchAppearance.getByRole("button", { name: "Switch to light theme", exact: true }).click();
   await expect(page.locator(".shell")).toHaveCSS("background-color", "rgb(242, 244, 248)");
 
   await page.reload();

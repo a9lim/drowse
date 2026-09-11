@@ -147,7 +147,7 @@
   }
   .toggle:disabled {
     cursor: default;
-    opacity: 0.5;
+    opacity: var(--disabled-opacity);
   }
   .sort {
     display: inline-flex;

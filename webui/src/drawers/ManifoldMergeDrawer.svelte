@@ -359,7 +359,7 @@
     filter: brightness(1.1);
   }
   .primary:disabled {
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .secondary {

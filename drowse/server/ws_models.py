@@ -206,6 +206,7 @@ def result_to_json(result: GenerationResult) -> dict[str, Any]:
         "text": result.text,
         "tokens": completion,
         "finish_reason": result.finish_reason,
+        "applied_steering": result.applied_steering,
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion,

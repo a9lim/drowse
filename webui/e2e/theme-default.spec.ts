@@ -20,10 +20,10 @@ test("fresh pages default to dark even on a light system", async ({ page }) => {
 
 test("an explicit light choice survives navigation and reload", async ({ page }) => {
   await page.goto(devUrl);
-  await page.getByRole("button", { name: "Light", exact: true }).click();
+  await page.getByRole("button", { name: "Switch to light theme", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.reload();
-  await expect(page.getByRole("button", { name: "Light", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Switch to dark theme", exact: true })).toBeVisible();
   await page.goto(`${devUrl}/app?layoutFixture=base`);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
@@ -45,7 +45,7 @@ test("cross-tab choices sync and removing a choice restores dark", async ({ page
   const second = await context.newPage();
   await second.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   await second.goto(devUrl);
-  await page.getByRole("button", { name: "Light", exact: true }).click();
+  await page.getByRole("button", { name: "Switch to light theme", exact: true }).click();
   await expect(second.locator("html")).toHaveAttribute("data-theme", "light");
   await page.evaluate(() => localStorage.removeItem("drowse.theme"));
   await expect(second.locator("html")).toHaveAttribute("data-theme", "dark");

@@ -18,9 +18,10 @@
     /** ARIA label for the whole tablist — e.g. "Input mode". */
     ariaLabel?: string;
     onchange?: (value: T) => void;
+    disabled?: boolean;
   }
 
-  let { value = $bindable(), tabs, ariaLabel = "Mode", onchange }: Props = $props();
+  let { value = $bindable(), tabs, ariaLabel = "Mode", onchange, disabled = false }: Props = $props();
 
   function pick(v: T): void {
     if (v === value) return;
@@ -56,6 +57,7 @@
   {#each tabs as tab (tab.value)}
     <button
       type="button"
+      {disabled}
       role="tab"
       class="sk-mode-tab"
       class:active={tab.value === value}
@@ -71,7 +73,7 @@
   .sk-mode-tabs {
     display: flex;
     gap: var(--space-2);
-    padding: var(--space-1);
+    padding: calc(var(--radius-group) - var(--radius-inset));
     background: var(--surface-sheen), var(--glass);
     border: 0;
     border-radius: var(--radius-group);
@@ -91,12 +93,12 @@
     font-family: var(--font-structure);
     font-weight: var(--weight-structure);
     font-size: var(--text-sm);
-    text-transform: lowercase;
+    text-wrap: balance;
     cursor: pointer;
     transition: background var(--dur-fast) var(--ease-out),
       color var(--dur-fast) var(--ease-out);
   }
-  .sk-mode-tab:hover:not(.active) {
+  .sk-mode-tab:hover:not(.active):not(:disabled) {
     color: var(--fg);
     background: var(--bg-hover);
   }
@@ -108,4 +110,5 @@
     outline: 2px solid var(--focus-ring);
     outline-offset: 1px;
   }
+  .sk-mode-tab:disabled { color: var(--fg-muted); cursor: not-allowed; }
 </style>

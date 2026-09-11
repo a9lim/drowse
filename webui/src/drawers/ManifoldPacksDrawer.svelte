@@ -685,7 +685,7 @@
   .file-action.disabled,
   .archive-tools button:disabled {
     cursor: not-allowed;
-    opacity: 0.48;
+    opacity: var(--disabled-opacity);
   }
   .file-action input {
     position: absolute;
@@ -848,7 +848,7 @@
     background: color-mix(in srgb, var(--pillar-manifold) 12%, transparent);
   }
   .act:disabled {
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
 </style>

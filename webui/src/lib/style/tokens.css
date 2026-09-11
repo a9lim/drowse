@@ -51,6 +51,7 @@
   --control-field: 40px;
   --control-option: 40px;
   --control-label-gap: 8px;
+  --disabled-opacity: 0.65;
   --control-neutral-bg: var(--glass-strong);
   --control-neutral-hover: var(--bg-hover);
   --data-mark-radius: 4px;

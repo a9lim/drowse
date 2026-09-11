@@ -604,7 +604,6 @@
             and can produce unreliable or offensive text. Use a chat model for everyday conversations.
           </p>
           {#if snapshot.models.some((model) => model.modelType === "base")}
-            <p class="base-model-description">Each download includes the core pack for generation and concept steering, plus compatible SAE features when available. J-lens packs are optional for base models.</p>
             <div class="model-grid">
               {#each modelsBySize(snapshot.models.filter((model) => model.modelType === "base")) as model}
                 {@render modelCard(model)}

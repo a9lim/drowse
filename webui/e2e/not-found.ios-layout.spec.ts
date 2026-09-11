@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import dataset from "../src/hosted/data/not-found-messages.json" with { type: "json" };
@@ -90,7 +91,7 @@ for (const width of [320, 1440]) {
     });
     await page.goto(url);
     for (const theme of ["dark", "light"]) {
-      await page.getByRole("button", { name: theme === "dark" ? "Dark" : "Light", exact: true }).click();
+      await setAppearance(page, theme);
       for (const message of dataset.messages) {
         const previous = await current(page);
         if (previous.id !== message.id) {
