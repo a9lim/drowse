@@ -1,0 +1,1 @@
+import{J as e}from"./index-client-CDBRPePJ.js";export{e as tick};

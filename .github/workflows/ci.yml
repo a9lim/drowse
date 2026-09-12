@@ -121,6 +121,18 @@ jobs:
         working-directory: webui
       - run: npm run check
         working-directory: webui
+      - name: Allow the pinned Chrome sandbox to create user namespaces
+        working-directory: webui
+        run: |
+          chrome_path="$(node --input-type=module -e 'import puppeteer from "puppeteer"; console.log(await puppeteer.executablePath())')"
+          test -x "$chrome_path"
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            "profile drowse-webmcp-chrome \"$chrome_path\" flags=(unconfined) {" \
+            '  userns,' \
+            '}' | sudo tee /etc/apparmor.d/drowse-webmcp-chrome
+          sudo apparmor_parser -r /etc/apparmor.d/drowse-webmcp-chrome
       - name: Verify native WebMCP with pinned Chrome and Puppeteer
         run: npm run test:webmcp:native
         working-directory: webui

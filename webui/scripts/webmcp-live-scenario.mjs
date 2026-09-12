@@ -19,6 +19,20 @@ export async function runConnectedNativeEvidence(port, url, options) {
   } finally { await browser.disconnect(); }
 }
 
+export async function readConnectedNativeState(port, url) {
+  const browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}` });
+  try {
+    const page = (await browser.pages()).find(page => page.url() === url);
+    assert.ok(page, "The real workbench must have an existing native browser target");
+    const { workspace } = await invoke(page, "drowse_get_state");
+    if (!workspace) return { workspace: null };
+    await group(page, "conversation");
+    const tree = await invoke(page, "drowse_read_tree", { node_id: workspace.active_node_id });
+    return { model_id: workspace.model_id, sampling: workspace.sampling, steering: workspace.steering,
+      probes: workspace.probes, generation: workspace.generation, node: tree.node };
+  } finally { await browser.disconnect(); }
+}
+
 export async function runNativeEvidence(page, { runtime, control = null, disconnect = false }) {
   const evidence = { runtime, native: true, real_model: true, browser: await page.browser().version(),
     scenarios: [], observations: [], started_at: new Date().toISOString() };

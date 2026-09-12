@@ -514,7 +514,7 @@ try {
   const instrumentResult = await attachInstrumentProbes(page, options);
   stage("J-lens and SAE probes attached");
   const onlineGeneration = await generate(page, {
-    prompt: `${PROMPT_SENTINEL}: Reply with the single word blue.`,
+    prompt: `Explain why sailors use maps in one sentence. My private reference is ${PROMPT_SENTINEL}.`,
     maxTokens: options.maxTokens,
   });
   stage("online real-backend generation completed");
@@ -579,7 +579,7 @@ try {
   await clickOpen(page);
   await page.getByRole("textbox", { name: /^Compose as /u }).waitFor({ timeout: options.timeoutMs });
   const offlineGeneration = await generate(page, {
-    prompt: `${PROMPT_SENTINEL}_OFFLINE: Reply with the single word green.`,
+    prompt: `Explain why sailors use a compass in one sentence. My private reference is ${PROMPT_SENTINEL}_OFFLINE.`,
     maxTokens: options.maxTokens,
   });
   offlineWorkbenchArmed = false;
@@ -731,6 +731,11 @@ try {
   process.stdout.write(output);
 } catch (error) {
   if (releaseBrowser?.page && !releaseBrowser.page.isClosed()) {
+    if (nativeWebMcp) {
+      runMeasurements.nativeFailureState = await (await import("./webmcp-live-scenario.mjs"))
+        .readConnectedNativeState(nativeWebMcp.port, releaseBrowser.page.url())
+        .catch(diagnosticError => ({ error: diagnosticError.message }));
+    }
     runMeasurements.pageText = await releaseBrowser.page.locator("body").innerText().catch(() => "");
     if (options.output) {
       await releaseBrowser.page.screenshot({ path: `${resolve(options.output)}.failure.png`, fullPage: true }).catch(() => undefined);
@@ -906,7 +911,7 @@ async function generate(page, { prompt, maxTokens }) {
   requireEqual(await composer.inputValue(), prompt, "composer prompt before generation");
   const statusLocator = page.getByLabel("Generation status", { exact: true });
   const responseLocator = page.locator(".msg .response-body").last();
-  const generatedTurns = page.getByRole("button", { name: /Inspect tokens in .* message/u });
+  const generatedTurns = page.locator(".msg:has(.model-avatar)");
   const previousGeneratedTurns = await generatedTurns.count();
   const previousStatus = await statusLocator.innerText({ timeout: 5_000 }).catch(() => "");
   const previousResponse = await responseLocator.innerText({ timeout: 5_000 }).catch(() => "");
@@ -984,7 +989,11 @@ async function generate(page, { prompt, maxTokens }) {
     "generation stop control stayed enabled after completion",
   );
   response = (await responseLocator.innerText({ timeout: 10_000 })).trim();
-  requireCondition(response.length > 0, "assistant response is empty");
+  if (response.length === 0) {
+    const error = new Error(`generation completed with an empty assistant response; status: ${status}`);
+    error.code = "PRODUCTION_APP_EMPTY_RESPONSE";
+    throw error;
+  }
   status = (await statusLocator.innerText({ timeout: 10_000 })).replaceAll(/\s+/gu, " ").trim();
   const tokensMatch = /([0-9]+) tokens/u.exec(status);
   const speedMatch = /([0-9]+(?:\.[0-9]+)?) tokens\/s/u.exec(status);

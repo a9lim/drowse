@@ -23,6 +23,7 @@ const cert = await readFile(certPath);
 const spki = createHash("sha256").update(createPublicKey(cert).export({ type: "spki", format: "der" })).digest("base64");
 const server = await createServer({
   root, configFile: false, appType: "custom", logLevel: "error",
+  cacheDir: join(tlsDirectory, "vite-cache"),
   optimizeDeps: { noDiscovery: true, include: ["@noble/hashes/sha2.js", "@noble/hashes/utils.js"] },
   server: { host: "127.0.0.1", port: 0, watch: null, https: { key: await readFile(keyPath), cert } },
   plugins: [{ name: "iphone-storage-fixtures", configureServer(server) {

@@ -1,1 +1,0 @@
-import{J as e}from"./index-client-BHOuzh-7.js";export{e as tick};

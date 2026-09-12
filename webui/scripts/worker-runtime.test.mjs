@@ -1277,17 +1277,24 @@ try {
       undefined,
       "test",
     );
+    assert.equal(
+      runtime.sessions.operationStatus,
+      undefined,
+      "the browser fixture must not invent retained HTTP operation receipts",
+    );
     for (const [serviceName, methods] of Object.entries(
       contracts.RUNTIME_SERVICE_METHODS,
     )) {
       const service = runtime[serviceName];
       assert.ok(service, `missing fixture service ${serviceName}`);
       for (const method of Object.keys(methods)) {
-        assert.equal(
-          typeof service[method],
-          "function",
-          `missing fixture method ${serviceName}.${method}`,
-        );
+        if (serviceName !== "sessions" || method !== "operationStatus") {
+          assert.equal(
+            typeof service[method],
+            "function",
+            `missing fixture method ${serviceName}.${method}`,
+          );
+        }
         const requestPayload = { service: serviceName, method, args: [] };
         const route = operationPolicyModule.runtimeServiceRoute(requestPayload);
         assert.ok(route, `missing browser route ${serviceName}.${method}`);
