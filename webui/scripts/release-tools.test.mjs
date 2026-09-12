@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { validateHostedConnectSources } from "./check-runtime-lock.mjs";
+import { releaseRobots } from "./agent-discovery.mjs";
 import {
   accessHeaders,
   assertAccessProtected,
@@ -170,6 +171,18 @@ const candidateHeaders = new Response("", {
 });
 assert.doesNotThrow(() => assertRobotsHeader(candidateHeaders, "candidate"));
 assert.doesNotThrow(() => assertRobotsFile("User-agent: *\nAllow: /\n", "candidate"));
+const releaseRobotsBody = releaseRobots("https://drowse.example");
+assert.doesNotThrow(() => assertRobotsFile(releaseRobotsBody, "release"));
+assert.doesNotThrow(() => assertRobotsFile(releaseRobotsBody.replaceAll("\n", "\r\n"), "release"));
+for (const invalid of [
+  "User-agent: *\nAllow: /\n",
+  "User-agent: *\nAllow: /\n\nSitemap: https://drowse.example/sitemap.xml\n",
+  releaseRobotsBody.replace("ai-train=yes", "ai-train=no"),
+  releaseRobotsBody.replace("/.well-known/ard.json", "/missing.json"),
+  releaseRobotsBody.replace("Allow: /", "Disallow: /"),
+]) assert.throws(() => assertRobotsFile(invalid, "release"));
+assert.doesNotThrow(() => assertRobotsFile("User-agent: *\nDisallow: /\n", "preview"));
+assert.throws(() => assertRobotsFile(releaseRobotsBody, "preview"));
 expectFailure(
   () => assertRobotsHeader(new Response(""), "candidate"),
   /release candidate must be noindex/,

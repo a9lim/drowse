@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { releaseRobots } from "./agent-discovery.mjs";
 
 const usage = `Usage:
   CF_ACCESS_CLIENT_ID=... CF_ACCESS_CLIENT_SECRET=... \\
@@ -284,6 +285,11 @@ export function assertRobotsHeader(response, channel) {
 export function assertRobotsFile(body, channel) {
   const normalized = body.replace(/\r\n/g, "\n").trim();
   if (channel === "preview") assert.equal(normalized, "User-agent: *\nDisallow: /", "preview robots.txt must block indexing");
+  else if (channel === "release") {
+    const origin = /^Sitemap: (https:\/\/[^\s/]+)\/sitemap\.xml$/m.exec(normalized)?.[1];
+    assert.ok(origin, "release robots.txt must declare its public sitemap");
+    assert.equal(normalized, releaseRobots(origin).trim(), "release robots.txt must match the declared content policy and agent catalog");
+  }
   else assert.match(normalized, /^User-agent: \*\nAllow: \/(?:\n\nSitemap: https:\/\/[^\s]+\/sitemap\.xml)?$/, `robots.txt does not match the ${channel} channel`);
 }
 
