@@ -1,7 +1,42 @@
 import { expect, test, type Locator } from "@playwright/test";
 import { openWorkspaceMenu } from "./workbench-navigation";
+import { resolve } from "node:path";
 
 const devUrl = "http://127.0.0.1:4176";
+
+for (const motion of ["reduce", "no-preference"] as const) {
+test(`theme changes update inherited recorded-demo text colors (${motion})`, async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: motion });
+  await page.goto(`${devUrl}/`);
+  await expect(page.locator(".demo-panel .result .morph-source").first()).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    if (motion === "no-preference") {
+      await page.locator(".demo-panel").scrollIntoViewIfNeeded();
+      await expect(page.locator(".demo-panel .morph-text[data-morph-active]").first()).toBeVisible();
+    }
+    for (const theme of ["light", "dark", "light", "dark"]) {
+      await page.evaluate(async ({ url, theme }) => {
+        (await import(url)).setTheme(theme);
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      }, { url: `/@fs${resolve("src/lib/theme.ts")}`, theme });
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.locator("html")).not.toHaveAttribute("data-theme-transition", /.+/);
+      const mismatches = await page.locator(".demo-panel").evaluate(panel => {
+        const expected = getComputedStyle(panel).color;
+        return [...panel.querySelectorAll(".alpha, .alpha .morph-text, .alpha .morph-source, .result, .result .morph-text, .result .morph-source")]
+          .map(element => ({
+            text: element.textContent?.slice(0, 40), actual: getComputedStyle(element).color,
+            expected: element.matches(".morph-text[data-morph-active] > .morph-source") ? "rgba(0, 0, 0, 0)" : expected,
+          }))
+          .filter(item => item.actual !== item.expected);
+      });
+      expect(mismatches, `${theme} ${width}`).toEqual([]);
+    }
+  }
+});
+}
 
 async function expectIcon(button: Locator, theme: "light" | "dark") {
   await expect(button).toHaveAccessibleName(`Switch to ${theme === "dark" ? "light" : "dark"} theme`);

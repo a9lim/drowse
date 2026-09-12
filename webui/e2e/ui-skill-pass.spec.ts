@@ -3320,11 +3320,12 @@ test("mobile hero overlays the orb without selecting the section", async ({ page
       const header = (await page.locator(".page-header").boundingBox())!;
       expect(box.y).toBeGreaterThanOrEqual(header.y + header.height);
       expect(box.y).toBeLessThan(page.viewportSize()!.height * 0.3);
-      expect(await heading.evaluate(element => {
+      expect(await page.locator(".hero").evaluate(element => {
         const style = getComputedStyle(element);
         return style.getPropertyValue("user-select") || style.getPropertyValue("-webkit-user-select");
       })).toBe("none");
-      await heading.click();
+      await heading.click({ clickCount: 3 });
+      expect(await page.evaluate(() => getSelection()?.toString() ?? "")).toBe("");
       expect(await page.locator("main").evaluate(element => element === document.activeElement)).toBe(false);
       await expect(page.locator("main")).toHaveCSS("outline-style", "none");
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
