@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { releaseRobots } from "./agent-discovery.mjs";
 
 const root = resolve("dist-hosted");
 const headersPath = resolve(root, "_headers");
@@ -41,4 +42,4 @@ if (/X-Robots-Tag:\s*noindex/i.test(publicHeaders.split(/\n\s*\n/)[0])) {
   throw new Error("hosted release output still contains a global noindex header");
 }
 await writeFile(headersPath, `${publicHeaders}\n/app\n  X-Robots-Tag: noindex, follow\n\n/app/*\n  X-Robots-Tag: noindex, follow\n`);
-await writeFile(resolve(root, "robots.txt"), `User-agent: *\nAllow: /\n\nSitemap: ${canonical}sitemap.xml\n`);
+await writeFile(resolve(root, "robots.txt"), releaseRobots(canonical));

@@ -87,7 +87,7 @@ const releaseMetadata: Plugin = {
       __DROWSE_SOCIAL_IMAGE__: `${siteOrigin}${socialImagePath}`,
       __DROWSE_ACCENT__: siteAccent,
       __DROWSE_SOCIAL_ALT__: socialImageAlt,
-      __DROWSE_DISCOVERY_METADATA__: `${discoveryMetadata(siteOrigin)}\n${discoveryTags()}`,
+      __DROWSE_DISCOVERY_METADATA__: `${discoveryMetadata(siteOrigin)}\n${discoveryTags("/", siteOrigin)}`,
       __DROWSE_SOURCE_REVISION__: releaseRevision,
       __DROWSE_SOURCE_URL__: sourceUrl,
       __DROWSE_VERSION__: drowseVersion,

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { siteDescription, siteAccent, socialImagePath, socialImageAlt } from "./site-metadata.mjs";
+import { agentCatalogPaths, agentResources, releaseRobots } from "./agent-discovery.mjs";
 
 const root = resolve("dist-hosted");
 const release = process.argv.includes("--release");
@@ -121,7 +122,12 @@ assert.doesNotMatch(serviceWorker, /huggingface|cdn\.hf\.co|model-.*\.safetensor
 if (release) {
   assert.doesNotMatch(headers.split(/\n\s*\n/)[0], /X-Robots-Tag:\s*noindex/i);
   assert.match(headers, /\/app\n  X-Robots-Tag: noindex, follow/);
-  assert.match(robots, /^User-agent: \*\nAllow: \/\n\nSitemap: https:\/\/[^\s]+\/sitemap\.xml\n$/);
+  const origin = new URL(/<link rel="canonical" href="([^"]+)"/.exec(index)[1]).origin;
+  assert.equal(robots, releaseRobots(origin));
+  const resources = agentResources(origin);
+  for (const path of agentCatalogPaths) {
+    assert.equal(await readFile(resolve(root, path.slice(1)), "utf8"), resources.get(path.slice(1)), `${path} must describe the exact released skill`);
+  }
 } else {
   assert.match(headers, /X-Robots-Tag: noindex, nofollow/);
   assert.match(robots, /^User-agent: \*\nDisallow: \/\n$/);

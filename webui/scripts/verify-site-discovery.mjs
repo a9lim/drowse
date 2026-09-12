@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { guidePages } from "./site-content.mjs";
 import { publicPaths, markdownPath } from "./site-publication.mjs";
 import { siteTitle } from "./site-metadata.mjs";
+import { agentCatalogPaths, agentResources, releaseRobots } from "./agent-discovery.mjs";
 
 const target = process.argv[2];
 if (!target) throw new Error("Usage: node scripts/verify-site-discovery.mjs https://drowse.ai [--preview]");
@@ -16,7 +17,7 @@ assert.deepEqual(locations.map(url => url.pathname), publicPaths);
 const publicOrigin = locations[0].origin;
 const robots = await (await fetchPage("/robots.txt")).text();
 assert.match(robots, preview ? /Disallow: \// : /Allow: \//);
-if (!preview) assert.ok(robots.includes(`Sitemap: ${publicOrigin}/sitemap.xml`));
+if (!preview) assert.equal(robots, releaseRobots(publicOrigin));
 
 for (const path of publicPaths) {
   const page = guidePages.find(page => page.path === path);
@@ -32,6 +33,10 @@ for (const path of publicPaths) {
   if (!page) assert.match(html, /data-prerendered/);
   else assert.ok(html.includes(page.heading));
   assert.ok(response.headers.get("Link")?.includes(`${publicOrigin}/llms.txt`));
+  assert.ok(response.headers.get("Link")?.includes(`<${publicOrigin}/.well-known/ai-catalog.json>; rel="ai-catalog"`));
+  assert.match(html, /rel="ai-catalog" href="\/\.well-known\/ai-catalog\.json"/);
+  assert.ok(response.headers.get("Link")?.includes(`<${publicOrigin}/.well-known/ard.json>; rel="ard"`));
+  assert.match(html, /rel="ard" href="\/\.well-known\/ard\.json"/);
   assert.match(response.headers.get("Vary"), /Accept/i);
   const markdown = await fetchPage(path, { headers: { Accept: "text/markdown" } });
   assert.equal(markdown.status, 200, `${path} Markdown`);
@@ -53,12 +58,23 @@ for (const page of guidePages) {
   assert.ok((await response.text()).includes(page.heading));
 }
 const index = await fetchPage("/.well-known/agent-skills/index.json");
+assert.equal(index.status, 200);
 assert.match(index.headers.get("Content-Type"), /application\/json/);
 const { skills } = await index.json();
 for (const skill of skills) {
   const response = await fetchPage(new URL(skill.url, publicOrigin).pathname);
   assert.equal(response.status, 200);
   assert.equal(`sha256:${createHash("sha256").update(Buffer.from(await response.arrayBuffer())).digest("hex")}`, skill.digest);
+}
+const expectedResources = agentResources(publicOrigin);
+for (const path of agentCatalogPaths) {
+  for (const method of ["GET", "HEAD"]) {
+    const response = await fetchPage(path, { method, headers: { Origin: "https://agent.example" } });
+    assert.equal(response.status, 200, `${method} ${path}`);
+    assert.match(response.headers.get("Content-Type"), /^application\/json(?:;|$)/);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(await response.text(), method === "HEAD" ? "" : expectedResources.get(path.slice(1)), `${path} published content`);
+  }
 }
 for (const path of ["/missing-discovery-page", "/learn/missing-discovery-page", "/assets/missing-discovery-file.js"]) {
   assert.equal((await fetchPage(path)).status, 404, `${path} must remain a real 404`);
@@ -68,4 +84,4 @@ const appHtml = await app.text();
 assert.equal(app.status, 200);
 assert.match(appHtml, /name="robots" content="noindex, follow"/);
 assert.doesNotMatch(appHtml, /data-prerendered|rel="canonical"/);
-console.log(`Discovery verification passed: original homepage, no guide pages or visible links, ${guidePages.length} unindexed Markdown resources, Markdown GET/HEAD, sitemap, agent digest, app shell and real 404s (${preview ? "preview" : "release"}).`);
+console.log(`Discovery verification passed: original homepage, no guide pages or visible links, ${guidePages.length} unindexed Markdown resources, Markdown GET/HEAD, sitemap, agent digest, ARD catalogs and CORS, content policy, app shell and real 404s (${preview ? "preview" : "release"}).`);

@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
 
+export const contentSignals = "search=yes, ai-input=yes, ai-train=yes";
+export const agentCatalogPaths = ["/.well-known/ard.json", "/.well-known/ai-catalog.json"];
+
+export function releaseRobots(origin) {
+  const site = origin.replace(/\/$/, "");
+  return `User-agent: *\nAllow: /\nContent-Signal: ${contentSignals}\n\nSitemap: ${site}/sitemap.xml\nAgentmap: ${site}${agentCatalogPaths[0]}\n`;
+}
+
 export function agentResources(origin) {
   const site = origin.replace(/\/$/, "");
   const name = "drowse";
@@ -60,8 +68,30 @@ Keep existing human edits, authentication, download choices, file pickers, and d
       digest: `sha256:${createHash("sha256").update(skill).digest("hex")}`,
     }],
   };
-  return new Map([
+  const resources = new Map([
     [".well-known/agent-skills/index.json", `${JSON.stringify(index, null, 2)}\n`],
     ["skills/drowse/SKILL.md", skill],
   ]);
+  if (site) {
+    const catalog = {
+      specVersion: "1.0",
+      host: { displayName: "Drowse", identifier: site },
+      entries: [{
+        identifier: `urn:air:${new URL(site).hostname}:skill:drowse`,
+        displayName: "Drowse browser-agent skill",
+        type: "text/markdown",
+        url: index.skills[0].url,
+        description: `${description} Requires an open Drowse page and a compatible WebMCP browser; this is not a remote MCP or inference API.`,
+        representativeQueries: [
+          "How can an agent inspect and steer a local language model in Drowse?",
+          "How do I compare baseline and steered generations without overwriting existing settings?",
+          "How can I inspect SAE features and Jacobian-lens predictions in Drowse?",
+        ],
+        metadata: { skillDigest: index.skills[0].digest },
+      }],
+    };
+    const json = `${JSON.stringify(catalog, null, 2)}\n`;
+    for (const path of agentCatalogPaths) resources.set(path.slice(1), json);
+  }
+  return resources;
 }

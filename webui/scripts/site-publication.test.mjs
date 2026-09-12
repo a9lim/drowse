@@ -10,6 +10,7 @@ import { parse as parseYaml } from "yaml";
 import { guidePages, homeSummary } from "./site-content.mjs";
 import { discoveryLinks, discoveryTags, guideMarkdown, markdownPath, publicationAssets, publicPaths, sitePublication } from "./site-publication.mjs";
 import { prefersMarkdown } from "./discovery-worker.mjs";
+import { agentCatalogPaths, contentSignals } from "./agent-discovery.mjs";
 import { prerenderLanding } from "./prerender-hosted.mjs";
 
 const origin = "https://drowse.example";
@@ -70,7 +71,7 @@ test("only the existing homepage appears in the sitemap and every machine-discov
       for (const [, href] of value.matchAll(/\]\(([^)]+)\)/g)) resolves(href, "/" + filename);
     }
   }
-  for (const [, href] of discoveryTags().matchAll(/href="([^"]+)"/g)) resolves(href, "/");
+  for (const [, href] of discoveryTags("/", origin).matchAll(/href="([^"]+)"/g)) resolves(href, "/");
   for (const [, href] of discoveryLinks(origin, "/").matchAll(/<([^>]+)>/g)) resolves(href, "/");
 });
 
@@ -87,6 +88,42 @@ test("agent discovery digest identifies the exact published UTF-8 skill bytes", 
     const metadata = parseYaml(/^---\n([\s\S]*?)\n---\n/.exec(content)[1]);
     assert.equal(metadata.name, skill.name);
     assert.equal(metadata.description, skill.description);
+  }
+});
+
+test("ARD manifests describe the real skill with stable publisher identity and matching content", () => {
+  for (const site of [origin, "https://another.example"]) {
+    const published = publicationAssets(site);
+    const body = published.get(agentCatalogPaths[0].slice(1));
+    assert.equal(body, published.get(agentCatalogPaths[1].slice(1)));
+    const catalog = JSON.parse(body);
+    assert.equal(catalog.specVersion, "1.0");
+    assert.deepEqual(catalog.host, { displayName: "Drowse", identifier: site });
+    assert.equal(catalog.entries.length, 1);
+    for (const entry of catalog.entries) {
+      assert.equal(entry.identifier, `urn:air:${new URL(site).hostname}:skill:drowse`);
+      assert.equal(entry.type, "text/markdown");
+      assert.equal("data" in entry, false);
+      const url = new URL(entry.url);
+      assert.equal(url.origin, site);
+      const skill = published.get(url.pathname.slice(1));
+      assert.match(skill, /^---\nname: drowse\n/);
+      assert.equal(entry.metadata.skillDigest, `sha256:${createHash("sha256").update(skill).digest("hex")}`);
+      assert.ok(entry.representativeQueries.length >= 2 && entry.representativeQueries.length <= 5);
+      assert.equal(new Set(entry.representativeQueries).size, entry.representativeQueries.length);
+      assert.ok(entry.representativeQueries.every(query => typeof query === "string" && query.trim().length > 0));
+      assert.match(entry.description, /not a remote MCP or inference API/);
+    }
+  }
+});
+
+test("origin-less previews do not invent public identities or advertise nonexistent services", () => {
+  const preview = publicationAssets("");
+  for (const path of agentCatalogPaths) assert.equal(preview.has(path.slice(1)), false);
+  assert.doesNotMatch(discoveryTags(), /ai-catalog/);
+  assert.doesNotMatch(discoveryLinks("", "/"), /ai-catalog/);
+  for (const path of [".well-known/api-catalog", ".well-known/openid-configuration", ".well-known/oauth-authorization-server", ".well-known/oauth-protected-resource", ".well-known/mcp/server-card.json", ".well-known/agent-card.json", "auth.md"]) {
+    assert.equal(assets.has(path), false, `${path} must not claim an unimplemented service`);
   }
 });
 
@@ -178,6 +215,8 @@ test("publication keeps previews blocked, machine resources unindexed, and worke
       assert.doesNotMatch(block, /X-Robots-Tag:/);
     } else assert.match(block, /X-Robots-Tag: noindex, follow/);
     if (path.endsWith(".md")) assert.match(block, /Content-Type: text\/markdown; charset=utf-8/);
+    assert.match(block, /Access-Control-Allow-Origin: \*/);
+    if (path.endsWith(".json")) assert.match(block, /Content-Type: application\/json; charset=utf-8/);
   }
   const routes = JSON.parse(built.get("_routes.json"));
   assert.deepEqual(routes.include, ["/"]);
@@ -211,7 +250,7 @@ test("release preparation removes the global preview block while preserving docu
     const blocks = headers.split(/\n\s*\n/);
     assert.doesNotMatch(blocks[0], /X-Robots-Tag:\s*noindex/);
     assert.match(blocks[0], /Content-Security-Policy:/);
-    for (const path of ["/app", "/app/*", "/developers.md", "/llms.txt", "/skills/drowse/SKILL.md", "/.well-known/agent-skills/index.json"]) {
+    for (const path of ["/app", "/app/*", "/developers.md", "/llms.txt", "/skills/drowse/SKILL.md", "/.well-known/agent-skills/index.json", ...agentCatalogPaths]) {
       const block = blocks.find(block => block.trimStart().startsWith(`${path}\n`));
       assert.ok(block, `${path} must retain an indexing policy`);
       assert.match(block, /X-Robots-Tag: noindex, follow/);
@@ -219,9 +258,37 @@ test("release preparation removes the global preview block while preserving docu
     const robots = await readFile(join(output, "robots.txt"), "utf8");
     assert.match(robots, /User-agent: \*\nAllow: \//);
     assert.ok(robots.includes(`Sitemap: ${origin}/sitemap.xml`));
+    assert.ok(robots.includes(`Agentmap: ${origin}/.well-known/ard.json`));
+    assert.match(robots, /^User-agent: \*\nAllow: \/\nContent-Signal: search=yes, ai-input=yes, ai-train=yes\n/);
+    assert.equal(contentSignals, "search=yes, ai-input=yes, ai-train=yes");
     assert.doesNotMatch(robots, /Disallow: \//);
   } finally {
     await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("local catalog GET and HEAD match production content and CORS without intercepting mutations", () => {
+  for (const hook of [sitePublication(origin).configureServer, sitePublication(origin).configurePreviewServer]) {
+    let middleware;
+    hook({ middlewares: { use(handler) { middleware = handler; } } });
+    for (const path of agentCatalogPaths) {
+      for (const method of ["GET", "HEAD"]) {
+        const headers = new Map();
+        let body;
+        middleware({ url: path, method, headers: {} }, {
+          setHeader(name, value) { headers.set(name, value); }, end(value) { body = value; },
+        }, () => assert.fail("Published catalog must be served"));
+        assert.equal(headers.get("Content-Type"), "application/json; charset=utf-8");
+        assert.equal(headers.get("Access-Control-Allow-Origin"), "*");
+        assert.equal(headers.get("X-Robots-Tag"), "noindex, nofollow");
+        assert.equal(body, method === "HEAD" ? undefined : assets.get(path.slice(1)));
+      }
+      let passed = false;
+      middleware({ url: path, method: "POST", headers: {} }, {
+        setHeader() { assert.fail("Mutations must not be intercepted"); }, end() { assert.fail("Mutations must not be intercepted"); },
+      }, () => { passed = true; });
+      assert.ok(passed);
+    }
   }
 });
 
