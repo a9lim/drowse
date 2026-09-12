@@ -489,6 +489,7 @@ try {
   await modelControls.getByRole("button", { name: "Close model", exact: true }).click();
   await waitForReadyPage(page);
   await page.getByText("Installed and verified", { exact: true }).waitFor();
+  await page.locator(".model-grid > button").filter({ hasText: "Installed and verified" }).click();
   const reopenedDocumentMarker = await page.evaluate(() => crypto.randomUUID());
   requireCondition(
     reopenedDocumentMarker !== initialDocumentMarker,

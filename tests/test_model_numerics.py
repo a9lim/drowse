@@ -75,6 +75,17 @@ def test_capture_matches_block_outputs_and_right_padded_single_rows(model: Any):
     for i in range(len(layers)):
         torch.testing.assert_close(actual[i], expected[i], atol=1e-6, rtol=1e-5)
         torch.testing.assert_close(pooled[i], expected[i][[0, 1], [4, 2]], atol=1e-6, rtol=1e-5)
+
+
+def test_right_padded_capture_matches_single_rows_in_float64(model: Any):
+    # Isolate padding correctness from platform-dependent fp32 batched GEMM rounding.
+    model.double()
+    layers = get_layers(model)
+    ids = torch.tensor([[1, 7, 11, 13, 19], [1, 23, 29, 0, 0]])
+    pooled = _capture_all_hidden_states(
+        model, layers, ids, attention_mask=(ids != 0).long(),
+        pool_index=torch.tensor([4, 2]), promote_pooled=False,
+    )
     for row, length in [(0, 5), (1, 3)]:
         single = _capture_all_hidden_states(model, layers, ids[row:row + 1, :length])
         for i in range(len(layers)):
