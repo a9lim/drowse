@@ -9,7 +9,7 @@ const creatorName = "Create a concept or scale";
 async function prepare(page: Page) {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
-  await expect(page.getByRole("navigation", { name: "Workspace", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace", exact: true })).toBeVisible({ timeout: 30_000 });
   await page.evaluate(async url => {
     const registry = await import(url);
     registry.getRuntimeCapabilities().operations.fitting = { available: true, reasons: [] };
@@ -167,7 +167,7 @@ test("creator reflows in both themes and respects keyboard, contrast, and motion
   await fillConcepts(page);
   for (const theme of ["dark", "light"]) {
     await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-    for (const width of [1440, 900, 320]) {
+    for (const width of [1440, 900, 320, 312]) {
       await page.setViewportSize({ width, height: 1000 });
       const panel = page.getByRole("complementary", { name: creatorName, exact: true });
       await expect(panel).toBeVisible();
@@ -177,9 +177,10 @@ test("creator reflows in both themes and respects keyboard, contrast, and motion
       await budget.scrollIntoViewIfNeeded();
       expect(await budget.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `${theme} ${width} budget`).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${theme} ${width} page`).toBe(true);
-      expect(await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button").evaluateAll(buttons => buttons.every(button => {
-        return button.scrollWidth <= button.clientWidth + 1;
-      })), `${theme} ${width} navigation labels`).toBe(true);
+      const overflowingLabels = await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button").evaluateAll(buttons => buttons
+        .filter(button => button.scrollWidth > button.clientWidth + 1)
+        .map(button => ({ label: button.textContent, contentWidth: button.scrollWidth, width: button.clientWidth })));
+      expect(overflowingLabels, `${theme} ${width} navigation labels`).toEqual([]);
       await page.screenshot({ path: testInfo.outputPath(`creator-${theme}-${width}.png`) });
       const axe = await new AxeBuilder({ page }).include(".drawer.docked").withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
       expect(axe.violations, `${theme} ${width}`).toEqual([]);

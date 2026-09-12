@@ -71,26 +71,30 @@ test("workbench menu and appearance drawer use the same theme control", async ({
 for (const fallback of [false, true]) {
   test(`SVG geometry morphs through intermediate states${fallback ? " without view transitions" : " during page transitions"}`, async ({ page }, testInfo) => {
     await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.clock.install();
     await page.goto(`${devUrl}/`);
     if (fallback) await page.evaluate(() => Object.defineProperty(document, "startViewTransition", { value: undefined }));
     const button = page.locator(".theme-toggle button");
     await expectIcon(button, "dark");
-    await button.evaluate(button => {
-      const frames: number[] = [];
-      (window as any).themeMorphFrames = frames;
-      const circle = button.querySelector("clipPath circle")!;
-      const observer = new MutationObserver(() => frames.push(Number(circle.getAttribute("r"))));
-      observer.observe(circle, { attributes: true, attributeFilter: ["r"] });
-      (window as any).stopThemeMorphObservation = () => observer.disconnect();
-    });
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await button.click();
+    await expect(button.locator("svg")).toHaveAttribute("data-theme-icon", "sunny");
+    await page.clock.runFor(160);
+    const sunRadius = Number(await button.locator("clipPath circle").getAttribute("r"));
+    expect(sunRadius).toBeGreaterThan(5);
+    expect(sunRadius).toBeLessThan(8);
+    await page.clock.runFor(400);
     await expectIcon(button, "light");
-    expect(await page.evaluate(() => (window as any).themeMorphFrames.some((r: number) => r > 5 && r < 8))).toBe(true);
     await button.screenshot({ path: testInfo.outputPath(`sun-${fallback}.png`) });
     await button.click();
+    await expect(button.locator("svg")).toHaveAttribute("data-theme-icon", "moon");
+    await page.clock.runFor(160);
+    const moonRadius = Number(await button.locator("clipPath circle").getAttribute("r"));
+    expect(moonRadius).toBeGreaterThan(5);
+    expect(moonRadius).toBeLessThan(8);
+    await page.clock.runFor(400);
     await expectIcon(button, "dark");
     await button.screenshot({ path: testInfo.outputPath(`moon-${fallback}.png`) });
-    await page.evaluate(() => (window as any).stopThemeMorphObservation());
     await page.emulateMedia({ reducedMotion: "reduce" });
     await button.click();
     await expectIcon(button, "light");

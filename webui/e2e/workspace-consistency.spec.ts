@@ -37,26 +37,52 @@ test("chat colors float in one horizontal row without changing card layout", asy
   const cards = page.locator(".chat-card");
   const trigger = cards.first().getByRole("button", { name: /^Color / });
   const popup = page.locator(".accent-popover");
+  const cardLayout = () => cards.evaluateAll(nodes => nodes.map(node => {
+    const box = node.getBoundingClientRect();
+    return { x: box.x + scrollX, y: box.y + scrollY, width: box.width, height: box.height };
+  }));
   for (const mode of ["light", "dark"]) {
     await theme(page, mode);
     for (const width of [1440, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       await trigger.scrollIntoViewIfNeeded();
-      const before = await cards.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON()));
+      if (width === 320) await trigger.evaluate(el => {
+        const viewport = window.visualViewport;
+        const bottom = (viewport?.offsetTop ?? 0) + (viewport?.height ?? innerHeight);
+        window.scrollBy(0, el.getBoundingClientRect().bottom - bottom + 8);
+      });
+      const before = await cardLayout();
       await trigger.click();
       await expect(popup.locator(".accent-surface")).toHaveCSS("opacity", "1");
       await expect(popup.locator(".accent-surface")).toHaveCSS("transition-duration", "0s");
       expect(await popup.evaluate(el => el.matches(":popover-open"))).toBe(true);
-      expect(await cards.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON()))).toEqual(before);
+      expect(await cardLayout()).toEqual(before);
       const positions = await popup.locator(".color-option").evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON()));
       expect(positions).toHaveLength(6);
       expect(new Set(positions.map(position => position.y)).size).toBe(1);
-      await expect.poll(() => popup.evaluate(el => el.getBoundingClientRect().top - el.parentElement!.querySelector("button")!.getBoundingClientRect().bottom)).toBeCloseTo(8, 0);
-      const box = (await popup.boundingBox())!;
-      const anchor = (await trigger.boundingBox())!;
-      expect(box.y).toBeCloseTo(anchor.y + anchor.height + 8, 0);
-      expect(box.x).toBeGreaterThanOrEqual(7.9);
-      expect(box.x + box.width).toBeLessThanOrEqual(width - 7.9);
+      await expect.poll(() => popup.evaluate(el => {
+        const box = el.getBoundingClientRect();
+        const anchor = el.parentElement!.querySelector("button")!.getBoundingClientRect();
+        return box.top < anchor.top ? anchor.top - box.bottom : box.top - anchor.bottom;
+      })).toBeCloseTo(8, 0);
+      const geometry = await popup.evaluate(el => {
+        const box = el.getBoundingClientRect();
+        const anchor = el.parentElement!.querySelector("button")!.getBoundingClientRect();
+        const viewport = window.visualViewport;
+        const left = viewport?.offsetLeft ?? 0;
+        const top = viewport?.offsetTop ?? 0;
+        const right = left + (viewport?.width ?? innerWidth);
+        const bottom = top + (viewport?.height ?? innerHeight);
+        return { box: box.toJSON(), anchor: anchor.toJSON(), left, top, right, bottom };
+      });
+      const { box, anchor, left, top, right, bottom } = geometry;
+      const shouldFlip = anchor.bottom + 8 + box.height > bottom - 8 && anchor.top - box.height - 8 >= top + 8;
+      expect(box.top).toBeCloseTo(shouldFlip ? anchor.top - box.height - 8 : anchor.bottom + 8, 0);
+      if (width === 320) expect(shouldFlip).toBe(true);
+      expect(box.left).toBeGreaterThanOrEqual(left + 7.9);
+      expect(box.right).toBeLessThanOrEqual(right - 7.9);
+      expect(box.top).toBeGreaterThanOrEqual(top + 7.9);
+      expect(box.bottom).toBeLessThanOrEqual(bottom - 7.9);
       expect(await popup.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
       await page.screenshot({ path: testInfo.outputPath(`color-popover-${mode}-${width}.png`), fullPage: true });
       await page.keyboard.press("Escape");

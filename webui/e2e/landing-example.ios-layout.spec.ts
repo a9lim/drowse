@@ -138,6 +138,7 @@ test("saved settings and every inspected step retain the actual recording", asyn
 
 
 test("home token popovers support hover, pinning, keyboard, and setting changes", async ({ page }, testInfo) => {
+  await page.clock.install();
   await page.goto("http://127.0.0.1:4176/");
   const demo = page.getByRole("region", { name: "Recorded Drowse example" });
   await demo.getByRole("button", { name: "Inspect", exact: true }).click();
@@ -145,10 +146,13 @@ test("home token popovers support hover, pinning, keyboard, and setting changes"
   const trigger = demo.locator(".recorded-token").nth(9);
   const panel = demo.getByRole("dialog");
   if (!testInfo.project.name.includes("webkit")) {
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await trigger.hover();
-    await page.waitForTimeout(500);
+    await page.clock.runFor(999);
     await expect(panel).toBeHidden();
+    await page.clock.runFor(1);
     await expect(panel).toBeVisible();
+    await page.clock.resume();
     await expect(trigger).not.toBeFocused();
     await panel.hover();
     await expect(panel).toBeVisible();
@@ -187,11 +191,36 @@ test("Inspect morphs token text when steering changes and honors reduced motion"
   await reply.scrollIntoViewIfNeeded();
   await expect.poll(() => reply.locator("[data-morph-active]").count()).toBeGreaterThan(0);
   const first = await reply.locator(".recorded-token").first().elementHandle();
+  const motion = await reply.evaluateHandle(reply => {
+    const animate = Element.prototype.animate;
+    const animations: Animation[] = [];
+    const started: string[] = [];
+    Element.prototype.animate = function(...args) {
+      const animation = animate.apply(this, args);
+      if (reply.contains(this) && this.closest(".morph-paint")) {
+        started.push(animation.playState);
+        animation.pause();
+        animation.currentTime = Number(animation.effect!.getTiming().duration) / 2;
+        animations.push(animation);
+      }
+      return animation;
+    };
+    return { animations, started, finish() {
+      Element.prototype.animate = animate;
+      animations.forEach(animation => animation.finish());
+    } };
+  });
   await demo.getByRole("slider").fill("5");
   await expect.poll(() => readableText(reply)).toBe(recording.runs[5].text);
   expect(await first!.evaluate(element => element.isConnected)).toBe(true);
-  await expect.poll(() => reply.locator(".morph-paint").evaluateAll(elements => elements.flatMap(element => element.getAnimations({ subtree: true })).filter(animation => animation.playState === "running").length)).toBeGreaterThan(0);
+  await expect.poll(() => motion.evaluate(({ started }) => started.filter(state => state === "running").length)).toBeGreaterThan(0);
+  expect(await motion.evaluate(({ animations }) => animations.some(animation => {
+    const progress = animation.effect!.getComputedTiming().progress;
+    return progress !== null && progress > 0 && progress < 1;
+  }))).toBe(true);
   await expect.poll(() => reply.locator("[data-morph-active]").count()).toBeGreaterThan(0);
+  await motion.evaluate(capture => capture.finish());
+  await motion.dispose();
   await reply.locator(".recorded-token").nth(9).click();
   await expect(demo.getByRole("dialog")).toBeVisible();
   await expect(demo.getByRole("dialog").locator("dl")).toContainText(String(recording.runs[5].tokens[9].tokenId));

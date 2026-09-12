@@ -7,6 +7,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 import { buffer as readStreamBuffer, text as readStreamText } from "node:stream/consumers";
 import { CHAT_ACCENTS } from "../src/lib/chatAccent";
+import { siteTitle } from "../scripts/site-metadata.mjs";
 
 const devUrl = "http://127.0.0.1:4176";
 const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
@@ -1650,8 +1651,11 @@ test("theme transitions honor reduced motion and fall back to gradual colors", a
 
 test("tab identity has static share metadata and branded assets", async ({ page, request }) => {
   const response = await request.get("/");
+  expect(response.status()).toBe(200);
   const html = await response.text();
-  expect(html).toContain("<title>Drowse</title>");
+  expect(html).toContain(`<title>${siteTitle}</title>`);
+  expect(html).toContain(`property="og:title" content="${siteTitle}"`);
+  expect(html).toContain(`name="twitter:title" content="${siteTitle}"`);
   expect(html).toContain('property="og:site_name" content="Drowse"');
   expect(html).toContain('name="twitter:card" content="summary_large_image"');
   expect(html).toContain('property="og:image:width" content="1200"');
@@ -1660,7 +1664,7 @@ test("tab identity has static share metadata and branded assets", async ({ page,
   expect(image.ok()).toBe(true);
   expect(image.headers()["content-type"]).toContain("image/png");
   await page.goto("/");
-  await expect(page).toHaveTitle("Drowse");
+  await expect(page).toHaveTitle(siteTitle);
   await expect(page.locator('link[rel="icon"]')).toHaveCount(1);
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("data-state", "home");
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", /\/icons\/tab-home-(light|dark)\.png/);

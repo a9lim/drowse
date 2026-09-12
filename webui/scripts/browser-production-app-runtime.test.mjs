@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { EventEmitter } from "node:events";
 import {
   classifyInstalledAppState,
   clickOpen,
   createProductionAppCatalog,
   createProductionAppFailureReport,
-  isExpectedOfflineCatalogFailure,
+  isExpectedCatalogRefreshFailure,
   digestCanonical,
   isOfflineServiceWorkerMaintenanceRequest,
   isPublishedSaeDescriptionUrl,
@@ -18,6 +19,7 @@ import {
   parseSingleByteRange,
   requiredFeaturesForQuantization,
   stripHostedDevelopmentFixture,
+  trackIntentionalReload,
   validatorRuntimeLockArguments,
 } from "./browser-production-app-runtime-contract.mjs";
 
@@ -117,10 +119,42 @@ test("offline audit permits only failed refreshes of the exact signed catalog pa
     errorText: "net::ERR_INTERNET_DISCONNECTED",
     phase: "offline",
   };
-  assert.equal(isExpectedOfflineCatalogFailure(request, urls), true);
-  assert.equal(isExpectedOfflineCatalogFailure({ ...request, phase: "load" }, urls), false);
-  assert.equal(isExpectedOfflineCatalogFailure({ ...request, url: "https://example.com/prompt" }, urls), false);
-  assert.equal(isExpectedOfflineCatalogFailure({ ...request, errorText: "net::ERR_FAILED" }, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure(request, urls), true);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...request, phase: "load" }, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...request, url: "https://example.com/prompt" }, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...request, errorText: "net::ERR_FAILED" }, urls), false);
+  const aborted = { ...request, phase: "explicit-unload-reload", errorText: "net::ERR_ABORTED" };
+  assert.equal(isExpectedCatalogRefreshFailure(aborted, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...aborted, intentionalReload: true }, urls), true);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...aborted, intentionalReload: true, url: `${urls.catalogUrl}/weights` }, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...aborted, intentionalReload: true, errorText: "net::ERR_FAILED" }, urls), false);
+});
+
+test("deliberate reload tags old-document requests without excusing later active-document aborts", () => {
+  const page = new EventEmitter();
+  const frame = {};
+  page.mainFrame = () => frame;
+  const tracker = trackIntentionalReload(page);
+  const finished = {}, before = {}, during = {}, after = {};
+  page.emit("request", finished);
+  page.emit("requestfinished", finished);
+  page.emit("request", before);
+  const finish = tracker.begin();
+  page.emit("request", during);
+  page.emit("framenavigated", {});
+  page.emit("framenavigated", frame);
+  page.emit("request", after);
+  page.emit("requestfailed", before);
+  assert.equal(tracker.includes(finished), false);
+  assert.equal(tracker.includes(before), true);
+  assert.equal(tracker.includes(during), true);
+  assert.equal(tracker.includes(after), false);
+  finish();
+  const fallback = tracker.begin();
+  fallback();
+  const stillActive = {};
+  page.emit("request", stillActive);
+  assert.equal(tracker.includes(stillActive), false);
 });
 
 test("production-app arguments require only the four artifact directories", () => {

@@ -83,13 +83,34 @@ export function isOfflineServiceWorkerMaintenanceRequest(request) {
   return request === "GET /sw.js" || /^GET \/workbox-[A-Za-z0-9_-]+\.js$/u.test(request);
 }
 
-export function isExpectedOfflineCatalogFailure(
+export function isExpectedCatalogRefreshFailure(
   request,
   { catalogUrl, signatureUrl },
 ) {
-  return request?.phase === "offline" &&
-    (request.url === catalogUrl || request.url === signatureUrl) &&
-    /^net::ERR_(?:INTERNET_DISCONNECTED|ABORTED)$/u.test(request.errorText ?? "");
+  if (request?.url !== catalogUrl && request?.url !== signatureUrl) return false;
+  if (request.intentionalReload === true && request.errorText === "net::ERR_ABORTED") return true;
+  return request.phase === "offline" && /^net::ERR_(?:INTERNET_DISCONNECTED|ABORTED)$/u.test(request.errorText ?? "");
+}
+
+export function trackIntentionalReload(page) {
+  const inFlight = new Set();
+  const closingRequests = new WeakSet();
+  let closing = false;
+  page.on("request", request => {
+    inFlight.add(request);
+    if (closing) closingRequests.add(request);
+  });
+  page.on("requestfinished", request => inFlight.delete(request));
+  page.on("requestfailed", request => inFlight.delete(request));
+  page.on("framenavigated", frame => { if (frame === page.mainFrame()) closing = false; });
+  return {
+    begin() {
+      closing = true;
+      for (const request of inFlight) closingRequests.add(request);
+      return () => { closing = false; };
+    },
+    includes: request => closingRequests.has(request),
+  };
 }
 
 export function isPublishedSaeDescriptionUrl(url, modelId) {

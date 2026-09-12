@@ -2187,7 +2187,10 @@ test("loom projections stay synchronized across path, options, and starred point
   await expect(saved.locator("[data-saved-node]")).toHaveCount(1);
   await expect(saved).toContainText(fixtureResponse);
   await saved.getByRole("button", { name: "Remove" }).click();
-  await expect(page.getByText("Nothing saved yet", { exact: true })).toBeVisible();
+  await expect(saved).toHaveCount(0);
+  const emptySaved = page.locator(".saved-projection .projection-empty");
+  await expect(emptySaved).toBeVisible();
+  await expect(emptySaved).toContainText("Nothing saved yet");
 
   await page.getByRole("button", { name: /^Map/ }).click();
   await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-nodes", "4");

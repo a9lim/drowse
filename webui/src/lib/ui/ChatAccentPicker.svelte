@@ -32,7 +32,7 @@
     const bottom = y + (viewport?.height ?? window.innerHeight);
     const popupWidth = Math.min(432, width - 16);
     const left = Math.max(x + 8, Math.min(rect.left, x + width - popupWidth - 8));
-    const height = surface?.scrollHeight ?? 0;
+    const height = surface?.offsetHeight ?? 0;
     const flip = rect.bottom + 8 + height > bottom - 8 && rect.top - height - 8 >= y + 8;
     const top = flip ? rect.top - height - 8 : rect.bottom + 8;
     const bounds = popover.getBoundingClientRect();

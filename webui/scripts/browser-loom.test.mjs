@@ -2551,6 +2551,24 @@ try {
     assert.equal(savedPromptRuntime.snapshot().session.config.system_prompt, "Different current instruction.");
   }
 
+  for (const defaultPrompt of [null, "", "Standing instruction."]) {
+    for (const requestedPrompt of [undefined, null, "", "Speak like a pirate."]) {
+      const promptEngine = generation();
+      const promptRuntime = new BrowserLoomRuntime({
+        session: session({ system_prompt: defaultPrompt }), generation: promptEngine,
+        createId: ids("request-prompt"),
+      });
+      await promptRuntime.generate({ type: "generate", input: "Hello", stateless: false }, () => {});
+      await promptRuntime.generate({ type: "generate", input: "Why use maps?", stateless: false,
+        append_same_role: false, ...(requestedPrompt === undefined ? {} : { system_prompt: requestedPrompt }) }, () => {});
+      const expected = requestedPrompt === undefined ? defaultPrompt : requestedPrompt;
+      assert.equal(promptRuntime.snapshot().tree.nodes.at(-1).recipe.system_prompt, expected,
+        "new comparison branches preserve explicit null/empty/text or the exact omitted default");
+      assert.deepEqual(promptEngine.plans.at(-1).input.messages.filter(row => row.role === "system").map(row => row.content), expected ? [expected] : []);
+      assert.equal(promptRuntime.snapshot().session.config.system_prompt, defaultPrompt);
+    }
+  }
+
   console.log("Browser authoritative loom checks passed");
 } finally {
   await server.close();

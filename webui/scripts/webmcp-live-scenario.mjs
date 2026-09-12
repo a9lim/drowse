@@ -46,6 +46,8 @@ export async function runNativeEvidence(page, { runtime, control = null, disconn
   evidence.model_capabilities = initial.workspace.role_capabilities;
   evidence.source = initial.onboarding?.runtime ?? null;
   const before = await invoke(page, "drowse_read_workspace");
+  const promptReference = await invoke(page, "drowse_explain_control", { control: "system_prompt" });
+  const defaultSystemPrompt = promptReference.session_defaults.system_prompt;
   await group(page, "chat");
   await invoke(page, "drowse_set_sampling", { temperature: 0, max_tokens: 32, seed: 1729, return_top_k: 3 });
 
@@ -78,8 +80,8 @@ export async function runNativeEvidence(page, { runtime, control = null, disconn
       for (const id of comparison.node_ids ?? []) {
         const row = await invoke(page, "drowse_read_tree", { node_id: id });
         const condition = conditions.find(item => item.label === comparison.label);
-        const expectedPrompt = Object.hasOwn(condition, "system_prompt") ? condition.system_prompt : (before.sampling.system_prompt || null);
-        assert.equal(row.node.recipe.system_prompt, expectedPrompt, "The branch must retain its effective prompt for replay");
+        const expectedPrompt = Object.hasOwn(condition, "system_prompt") ? condition.system_prompt : defaultSystemPrompt;
+        assert.equal(row.node.recipe.system_prompt, expectedPrompt, `${comparison.label}: the branch must retain its effective prompt for replay`);
         evidence.observations.push({ condition: comparison.label, node: row.node });
       }
     }

@@ -13,7 +13,7 @@ test("first-visit model setup caches the engine for a fresh worker during an ori
   expect(engineName).toBeTruthy();
   const workerUrl = new URL(`/assets/${workerName}`, outageOrigin.url).href;
   const engineUrl = new URL(`/assets/${engineName}`, outageOrigin.url).href;
-  await page.goto(outageOrigin.url);
+  await page.goto(`${outageOrigin.url}/app`);
   const firstWorker = await startWorker(page);
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller)), {
     timeout: 120_000,
@@ -50,6 +50,6 @@ test("first-visit model setup caches the engine for a fresh worker during an ori
   await expect.poll(() => page.evaluate(async url => Boolean(await caches.match(url, { ignoreVary: true })), engineUrl)).toBe(true);
   await outageOrigin.disconnect();
   const offlinePage = await context.newPage();
-  await offlinePage.goto(`${outageOrigin.url}/?outage=1`, { waitUntil: "domcontentloaded" });
+  await offlinePage.goto(`${outageOrigin.url}/app?outage=1`, { waitUntil: "domcontentloaded" });
   await importEngine(await startWorker(offlinePage));
 });

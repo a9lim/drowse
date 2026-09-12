@@ -573,7 +573,7 @@
               onclick={() => selectWorkspace("conversation")}
             >
               <FluentIcon name="conversation" size={16} />
-              <span class="nav-copy"><span class="wide-label">{sessionState.info?.is_base_model ? "Completion" : "Conversation"}</span>
+              <span class="nav-copy wide-label"><span>{sessionState.info?.is_base_model ? "Completion" : "Conversation"}</span>
                 <span class="nav-description" id="workspace-conversation-description" aria-hidden="true">Write and inspect text</span></span>
               <span class="short-label">{sessionState.info?.is_base_model ? "Text" : "Chat"}</span>
             </button>
@@ -1467,7 +1467,7 @@
     .app-sidebar { padding-inline: max(var(--space-xs), env(safe-area-inset-left)) max(var(--space-xs), env(safe-area-inset-right)); }
     .workspace-navigation { justify-content: center; gap: 0; }
     .workspace-nav { width: 100%; grid-template-columns: minmax(0, 1fr) max-content minmax(0, 1fr) minmax(0, 1fr); }
-    .workspace-nav button { padding-inline: var(--space-1); }
+    .workspace-nav button { padding-inline: calc(var(--space-1) / 2); }
     .workspace-nav :global(.fluent-icon) { display: none; }
   }
 

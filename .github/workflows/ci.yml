@@ -119,8 +119,6 @@ jobs:
       - name: Install the pinned Playwright browsers
         run: npx playwright install --with-deps chromium webkit firefox
         working-directory: webui
-      - run: npm run check
-        working-directory: webui
       - name: Allow the pinned Chrome sandbox to create user namespaces
         working-directory: webui
         run: |
@@ -133,6 +131,8 @@ jobs:
             '  userns,' \
             '}' | sudo tee /etc/apparmor.d/drowse-webmcp-chrome
           sudo apparmor_parser -r /etc/apparmor.d/drowse-webmcp-chrome
+      - run: npm run check
+        working-directory: webui
       - name: Verify native WebMCP with pinned Chrome and Puppeteer
         run: npm run test:webmcp:native
         working-directory: webui

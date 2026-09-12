@@ -23,7 +23,7 @@ import {
   waitForVisibleChoice,
   createProductionAppCatalog,
   createProductionAppFailureReport,
-  isExpectedOfflineCatalogFailure,
+  isExpectedCatalogRefreshFailure,
   isOfflineServiceWorkerMaintenanceRequest,
   isPublishedSaeDescriptionUrl,
   isVerifiedLocalArtifactAbort,
@@ -31,6 +31,7 @@ import {
   parseBrowserProductionAppArguments,
   parseSingleByteRange,
   stripHostedDevelopmentFixture,
+  trackIntentionalReload,
   validatorRuntimeLockArguments,
 } from "./browser-production-app-runtime-contract.mjs";
 import {
@@ -307,6 +308,7 @@ try {
   });
   const context = releaseBrowser.context;
   const page = releaseBrowser.page;
+  const intentionalReload = trackIntentionalReload(page);
   browser = context.browser();
   if (browser === null) throw new Error("persistent release browser is unavailable");
   page.setDefaultTimeout(30_000);
@@ -341,6 +343,7 @@ try {
       errorText: request.failure()?.errorText ?? "unknown",
       stage: currentStage,
       phase: routePhase,
+      intentionalReload: intentionalReload.includes(request),
     });
   });
   page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
@@ -486,8 +489,11 @@ try {
   await page.getByRole("group", { name: "Controls section" })
     .getByRole("button", { name: "Model", exact: true }).click();
   const modelControls = page.getByRole("region", { name: "Model controls", exact: true });
-  await modelControls.getByRole("button", { name: "Close model", exact: true }).click();
-  await waitForReadyPage(page);
+  const finishReload = intentionalReload.begin();
+  try {
+    await modelControls.getByRole("button", { name: "Close model", exact: true }).click();
+    await waitForReadyPage(page);
+  } finally { finishReload(); }
   await page.getByText("Installed and verified", { exact: true }).waitFor();
   await page.locator(".model-grid > button").filter({ hasText: "Installed and verified" }).click();
   const reopenedDocumentMarker = await page.evaluate(() => crypto.randomUUID());
@@ -605,6 +611,9 @@ try {
     "artifact requests after installed unload/reload and offline reopen",
   );
 
+  const webmcp = nativeWebMcp ? await (await import("./webmcp-live-scenario.mjs"))
+    .runConnectedNativeEvidence(nativeWebMcp.port, page.url(), { runtime: "browser", control: CORE_GEOMETRY_SELECTOR }) : undefined;
+  if (webmcp) runMeasurements.webmcp = webmcp;
   const promptUploads = requestBodies.filter(({ postData }) => postData.includes(PROMPT_SENTINEL));
   const verifiedLocalArtifactAborts = failedRequests.filter((request) =>
     isVerifiedLocalArtifactAbort({
@@ -615,13 +624,14 @@ try {
     })
   );
   const verifiedLocalArtifactAbortSet = new Set(verifiedLocalArtifactAborts);
-  const expectedOfflineCatalogFailureSet = new Set(
+  const expectedCatalogFailureSet = new Set(
     failedRequests.filter((request) =>
-      isExpectedOfflineCatalogFailure(request, { catalogUrl, signatureUrl })
+      isExpectedCatalogRefreshFailure(request, { catalogUrl, signatureUrl })
     ),
   );
   runMeasurements.verifiedLocalArtifactAborts = verifiedLocalArtifactAborts.length;
   runMeasurements.offlineCatalogRefreshes = offlineCatalogRefreshes.length;
+  runMeasurements.expectedCatalogRefreshFailures = [...expectedCatalogFailureSet];
   const unexpectedOfflineServerRequests = offlineServerRequests.filter(
     (request) => !isOfflineServiceWorkerMaintenanceRequest(request),
   );
@@ -634,7 +644,7 @@ try {
     failedRequests: failedRequests.filter(
       (request) =>
         !verifiedLocalArtifactAbortSet.has(request) &&
-        !expectedOfflineCatalogFailureSet.has(request) &&
+        !expectedCatalogFailureSet.has(request) &&
         !(isDescriptionRequest(request.url) && (request.errorText === "net::ERR_ABORTED" ||
           (request.phase === "offline" && request.errorText === "net::ERR_INTERNET_DISCONNECTED"))),
     ),
@@ -649,9 +659,6 @@ try {
   for (const [name, entries] of Object.entries(audit)) {
     if (entries.length > 0) throw new Error(`${name} is non-empty: ${JSON.stringify(entries)}`);
   }
-  const webmcp = nativeWebMcp ? await (await import("./webmcp-live-scenario.mjs"))
-    .runConnectedNativeEvidence(nativeWebMcp.port, page.url(), { runtime: "browser", control: CORE_GEOMETRY_SELECTOR }) : undefined;
-
   const report = {
     schemaVersion: 1,
     toolVersion: BROWSER_PRODUCTION_APP_TOOL_VERSION,
@@ -723,6 +730,7 @@ try {
       offlineServerRequests: offlineServerRequests.length,
       offlineWorkbenchRequests: offlineWorkbenchRequests.length,
       offlineCatalogRefreshes: offlineCatalogRefreshes.length,
+      expectedCatalogRefreshFailures: [...expectedCatalogFailureSet],
     },
     audit,
   };
