@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   classifyInstalledAppState,
+  clickOpen,
   createProductionAppCatalog,
   createProductionAppFailureReport,
   isExpectedOfflineCatalogFailure,
@@ -19,6 +20,26 @@ import {
   stripHostedDevelopmentFixture,
   validatorRuntimeLockArguments,
 } from "./browser-production-app-runtime-contract.mjs";
+
+test("model opening respects automatic loading and uses explicit controls only when needed", async () => {
+  for (const state of ["loading", "ready", "direct", "warning"]) {
+    const clicks = [];
+    const locator = (name, visible) => ({
+      waitFor: async () => { if (!visible) throw Error(`${name} is not visible`); },
+      click: async () => { clicks.push(name); },
+    });
+    const page = {
+      locator: selector => selector === ".shell" ? locator("ready", state === "ready")
+        : selector === ".runtime-gate.loading-pulse" ? locator("loading", state === "loading")
+        : { innerText: async () => state },
+      getByRole: (_, { name }) => name === "Open Drowse" ? locator("open", state === "direct")
+        : name === "Review warning" ? locator("warning", state === "warning")
+        : locator("override", state === "warning"),
+    };
+    await clickOpen(page);
+    assert.deepEqual(clicks, state === "direct" ? ["open"] : state === "warning" ? ["warning", "override"] : []);
+  }
+});
 
 test("provider metadata access is limited to the selected model's exact public SAE dictionary", () => {
   const url = "https://www.neuronpedia.org/api/feature/gemma-3-1b-it/13-gemmascope-2-res-16k/396";

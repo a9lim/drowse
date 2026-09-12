@@ -482,3 +482,36 @@ function nonnegativeInteger(value, label) {
     throw new Error(`${label} must be a non-negative integer`);
   }
 }
+
+export async function clickOpen(page) {
+  const choice = await waitForVisibleChoice(page, [
+    ["ready", page.locator(".shell")],
+    ["loading", page.locator(".runtime-gate.loading-pulse")],
+    ["direct", page.getByRole("button", { name: "Open Drowse", exact: true })],
+    ["warning", page.getByRole("button", { name: "Review warning", exact: true })],
+  ], "model open control");
+  if (choice.name === "ready" || choice.name === "loading") return;
+  await choice.locator.click();
+  if (choice.name === "warning") {
+    const override = await waitForVisibleChoice(page, [
+      ["override", page.getByRole("button", {
+        name: /^(Load anyway|Retry this model)$/u,
+      })],
+    ], "unsafe model-load confirmation");
+    await override.locator.click();
+  }
+}
+
+export async function waitForVisibleChoice(page, choices, label, timeoutMs = 30_000) {
+  try {
+    return await Promise.any(choices.map(async ([name, locator]) => {
+      await locator.waitFor({ state: "visible", timeout: timeoutMs });
+      return { name, locator };
+    }));
+  } catch (error) {
+    const body = (await page.locator("body").innerText().catch(() => ""))
+      .replaceAll(/\s+/gu, " ")
+      .slice(0, 2_000);
+    throw new Error(`${label} did not appear; page text: ${body}`, { cause: error });
+  }
+}

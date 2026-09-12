@@ -19,6 +19,8 @@ import { build as viteBuild, createServer as createViteServer } from "vite";
 import {
   BROWSER_PRODUCTION_APP_TOOL_VERSION,
   classifyInstalledAppState,
+  clickOpen,
+  waitForVisibleChoice,
   createProductionAppCatalog,
   createProductionAppFailureReport,
   isExpectedOfflineCatalogFailure,
@@ -454,9 +456,11 @@ try {
   await verifyFirstRunPacks(page);
   stage(`${options.modelId} ${options.contextTokens}-token profile selected`);
   routePhase = "download";
+  const downloadStartedAt = Date.now();
   await clickDownload(page);
   stage("signed setup download started");
   await waitForAuthoritativeInstalledState(page, catalog.variantId, "signed setup completion", options.timeoutMs);
+  runMeasurements.setupDownloadMs = Date.now() - downloadStartedAt;
   stage("signed setup installed and verified");
   const downloadedHashes = new Set(artifactRequests.map((request) => request.sha256));
   const missingHashes = [...expectedHashes].filter((hash) => !downloadedHashes.has(hash));
@@ -464,10 +468,12 @@ try {
   artifactRequestsAtInstall ??= artifactRequests.length;
 
   routePhase = "load";
+  const modelLoadStartedAt = Date.now();
   await clickOpen(page);
   stage("real backend load started");
   await page.locator(".shell").waitFor({ timeout: options.timeoutMs });
   await page.getByRole("textbox", { name: /^Compose as /u }).waitFor({ timeout: options.timeoutMs });
+  runMeasurements.initialModelLoadMs = Date.now() - modelLoadStartedAt;
   requireEqual(artifactRequestsOutsideDownload.length, 0, "artifact requests during model load");
   requireCondition((await page.title()).includes("Drowse"), "workbench title");
   stage("real Drowse workbench opened");
@@ -684,6 +690,8 @@ try {
     },
     measurements: {
       environment,
+      setupDownloadMs: runMeasurements.setupDownloadMs,
+      initialModelLoadMs: runMeasurements.initialModelLoadMs,
       signedFiles: artifactEntries.length,
       uniqueSignedHashes: expectedHashes.size,
       artifactRequests: artifactRequests.length,
@@ -1198,37 +1206,6 @@ async function withTimeout(operation, timeoutMs, label) {
   }
 }
 
-async function clickOpen(page) {
-  const choice = await waitForVisibleChoice(page, [
-    ["ready", page.locator(".shell")],
-    ["direct", page.getByRole("button", { name: "Open Drowse", exact: true })],
-    ["warning", page.getByRole("button", { name: "Review warning", exact: true })],
-  ], "model open control");
-  if (choice.name === "ready") return;
-  await choice.locator.click();
-  if (choice.name === "warning") {
-    const override = await waitForVisibleChoice(page, [
-      ["override", page.getByRole("button", {
-        name: /^(Load anyway|Retry this model)$/u,
-      })],
-    ], "unsafe model-load confirmation");
-    await override.locator.click();
-  }
-}
-
-async function waitForVisibleChoice(page, choices, label, timeoutMs = 30_000) {
-  try {
-    return await Promise.any(choices.map(async ([name, locator]) => {
-      await locator.waitFor({ state: "visible", timeout: timeoutMs });
-      return { name, locator };
-    }));
-  } catch (error) {
-    const body = (await page.locator("body").innerText().catch(() => ""))
-      .replaceAll(/\s+/gu, " ")
-      .slice(0, 2_000);
-    throw new Error(`${label} did not appear; page text: ${body}`, { cause: error });
-  }
-}
 
 async function persistentStorageInventory(page) {
   return page.evaluate(async () => ({
