@@ -9,6 +9,11 @@ const storesUrl = moduleUrl("src/lib/stores.svelte.ts");
 
 test.describe.configure({ mode: "parallel" });
 
+async function openPage(page: Page, path: string) {
+  await page.goto(`${devUrl}${path}`);
+  await page.evaluate(async () => { await import("/main.ts"); });
+}
+
 async function setTheme(page: Page, theme: string) {
   await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), {
     url: moduleUrl("src/lib/theme.ts"), theme,
@@ -73,11 +78,12 @@ async function expectActionContrast(button: Locator, label: string) {
 }
 
 async function mountStorageHome(page: Page) {
-  await page.goto(`${devUrl}/outside-the-workbench`);
+  await openPage(page, "/outside-the-workbench");
   await page.evaluate(async ({ componentUrl, libraryUrl }) => {
-    const [{ default: HostedHome }, { mount }, { conversationLibrary }] = await Promise.all([
-      import(componentUrl), import("/e2e/svelte-runtime.ts"), import(libraryUrl),
+    const [{ default: HostedHome }, { mount, unmount }, { conversationLibrary }, { default: app }] = await Promise.all([
+      import(componentUrl), import("/e2e/svelte-runtime.ts"), import(libraryUrl), import("/main.ts"),
     ]);
+    await unmount(app);
     conversationLibrary.listSummaries = async () => ({ conversations: [], issues: [] });
     document.body.replaceChildren();
     const target = document.createElement("div");
@@ -163,6 +169,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function auditSurface(page: Page, testInfo: TestInfo, theme: string, name: string, selector = "body") {
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await page.mouse.move(0, 0);
   const result = await new AxeBuilder({ page }).include(selector).withRules(["color-contrast"]).analyze();
   const summarize = ({ nodes }: any) => nodes.map((node: any) => ({ target: node.target, html: node.html, failure: node.failureSummary }));
@@ -177,7 +184,7 @@ async function auditSurface(page: Page, testInfo: TestInfo, theme: string, name:
 }
 
 async function populatedWorkbench(page: Page, theme: string) {
-  await page.goto(`${devUrl}/app?layoutFixture=instruments`);
+  await openPage(page, "/app?layoutFixture=instruments");
   await expect(page.locator(".shell")).toBeVisible();
   await setTheme(page, theme);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A contrast check with a populated conversation.");
@@ -187,12 +194,13 @@ async function populatedWorkbench(page: Page, theme: string) {
 
 for (const theme of ["dark", "light"]) {
   test(`disabled button labels remain discernible in ${theme}`, async ({ page }, testInfo) => {
-    await page.goto(`${devUrl}/outside-the-workbench`);
+    await openPage(page, "/outside-the-workbench");
     await setTheme(page, theme);
     await page.evaluate(async ({ buttonUrl, numberUrl }) => {
-      const [{ mount, createRawSnippet }, { default: Button }, { default: NumberInput }] = await Promise.all([
-        import("/e2e/svelte-runtime.ts"), import(buttonUrl), import(numberUrl),
+      const [{ mount, unmount, createRawSnippet }, { default: Button }, { default: NumberInput }, { default: app }] = await Promise.all([
+        import("/e2e/svelte-runtime.ts"), import(buttonUrl), import(numberUrl), import("/main.ts"),
       ]);
+      await unmount(app);
       document.body.replaceChildren();
       const target = document.createElement("main");
       target.style.cssText = "display:flex;flex-wrap:wrap;gap:16px;padding:24px;background:var(--bg-alt)";
@@ -221,7 +229,7 @@ for (const theme of ["dark", "light"]) {
     for (const surface of ["chats", "saved-chats"]) {
       if (surface === "chats") await mountStorageHome(page);
       else {
-        await page.goto(`${devUrl}/app?layoutFixture=instruments`);
+        await openPage(page, "/app?layoutFixture=instruments");
         await expect(page.locator(".shell")).toBeVisible();
         await page.evaluate(async ({ storesUrl, workspaceUrl }) => {
           const stores = await import(storesUrl);
@@ -253,7 +261,11 @@ for (const theme of ["dark", "light"]) {
 
   for (const path of ["/", "/credits", "/contact", "/missing-page", "/app?layoutFixture=setup"]) {
     test(`public text retains contrast in ${theme}: ${path}`, async ({ page }, testInfo) => {
-      await page.goto(`${devUrl}${path}`);
+      await openPage(page, path);
+      if (path.includes("layoutFixture=setup")) {
+        await expect(page.locator('.page-route:not([data-route="resolving"])')).toBeVisible();
+      }
+      await expect(page.locator("main")).toBeVisible();
       await setTheme(page, theme);
       await page.evaluate(() => document.fonts.ready);
       for (const width of [390, 1440]) {
@@ -295,7 +307,7 @@ for (const theme of ["dark", "light"]) {
   }
   test(`base completion text retains contrast in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(`${devUrl}/app?layoutFixture=base`);
+    await openPage(page, "/app?layoutFixture=base");
     await expect(page.locator(".shell")).toBeVisible();
     await setTheme(page, theme);
     await auditSurface(page, testInfo, theme, "Base completion");
