@@ -24,6 +24,7 @@
     ariaLabel?: string;
     type?: "button" | "submit";
     onclick?: (ev: MouseEvent) => void;
+    onmousedown?: (ev: MouseEvent) => void;
   }
 
   let {
@@ -38,6 +39,7 @@
     ariaLabel,
     type = "button",
     onclick,
+    onmousedown,
   }: Props = $props();
 </script>
 
@@ -55,6 +57,7 @@
   aria-busy={busy || undefined}
   {type}
   {onclick}
+  {onmousedown}
 >
   {@render children()}
 </button>

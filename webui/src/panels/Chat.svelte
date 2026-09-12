@@ -1533,6 +1533,7 @@
       <span>{nextSteering ? "Next reply · Steering" : "Next reply · No steering"}</span>
       {#if nextSteering}<code>{nextSteering}</code>{/if}
       <Button size="sm" variant="flat"
+        onmousedown={(event) => { if (event.button === 0) event.preventDefault(); }}
         onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "response" } }))}
       >Edit steering</Button>
       {#if !nextSteering && probeRack.entries.size > 0}

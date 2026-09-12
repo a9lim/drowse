@@ -91,7 +91,43 @@ export function assertCatalogSequenceFloor(sequence, minimumAcceptedSequence) {
   }
 }
 
-export async function preflightArtifact(file, allowedOrigins, timeoutMs, fetcher = fetch) {
+class TransientDownloadError extends Error {
+  constructor(message, retryAfterMs) {
+    super(message);
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+export function retryAfterMilliseconds(value, now = Date.now()) {
+  if (value === null || value.trim() === "") return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1_000 : null;
+  const deadline = Date.parse(value);
+  return Number.isFinite(deadline) ? Math.max(0, deadline - now) : null;
+}
+
+export async function preflightArtifact(
+  file, allowedOrigins, timeoutMs, fetcher = fetch,
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await verifyArtifact(file, allowedOrigins, timeoutMs, fetcher);
+    } catch (error) {
+      const transient = error instanceof TransientDownloadError || [
+        "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
+        "UND_ERR_BODY_TIMEOUT", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN",
+      ].includes(error?.cause?.code ?? error?.code);
+      if (!transient || attempt === 2) throw error;
+      const delay = error.retryAfterMs ?? 5_000 * 2 ** attempt;
+      if (delay > Math.min(timeoutMs, 300_000)) throw error;
+      console.warn(`Retrying ${file.path} after a transient download failure in ${delay} ms (${attempt + 1}/2)`);
+      await wait(delay);
+    }
+  }
+}
+
+async function verifyArtifact(file, allowedOrigins, timeoutMs, fetcher) {
   const end = Math.min(file.bytes, 8 * 1024 * 1024) - 1;
   const rangeResponse = await fetchChecked(file.url, allowedOrigins, timeoutMs, {
     Range: `bytes=0-${end}`,
@@ -151,6 +187,15 @@ export async function fetchChecked(
       headers: { Origin: PREFLIGHT_ORIGIN, ...extraHeaders },
       signal: AbortSignal.timeout(timeoutMs),
     });
+    if (response.status === 429 || response.status === 503) {
+      const retryAfterMs = retryAfterMilliseconds(response.headers.get("Retry-After"));
+      await response.body?.cancel().catch(() => undefined);
+      const location = new URL(current);
+      throw new TransientDownloadError(
+        `${location.origin}${location.pathname} returned HTTP ${response.status}`,
+        retryAfterMs,
+      );
+    }
     const allowedOrigin = response.headers.get("Access-Control-Allow-Origin");
     if (allowedOrigin !== "*" && allowedOrigin !== PREFLIGHT_ORIGIN) {
       await response.body?.cancel().catch(() => undefined);

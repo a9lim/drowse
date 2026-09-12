@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 const registryUrl = `/@fs${resolve("src/lib/runtime/registry.ts")}`;
 const drawersUrl = `/@fs${resolve("src/lib/stores/drawers.svelte.ts")}`;
+const themeUrl = `/@fs${resolve("src/lib/theme.ts")}`;
 const creatorName = "Create a concept or scale";
 
 async function prepare(page: Page) {
@@ -166,7 +167,9 @@ test("creator reflows in both themes and respects keyboard, contrast, and motion
   await prepare(page);
   await fillConcepts(page);
   for (const theme of ["dark", "light"]) {
-    await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: themeUrl, theme });
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await expect(page.locator("html")).toHaveCSS("color-scheme", theme);
     for (const width of [1440, 900, 320, 312]) {
       await page.setViewportSize({ width, height: 1000 });
       const panel = page.getByRole("complementary", { name: creatorName, exact: true });
@@ -175,6 +178,8 @@ test("creator reflows in both themes and respects keyboard, contrast, and motion
       expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `${theme} ${width} panel`).toBe(true);
       const budget = page.getByRole("radiogroup", { name: "Example budget" });
       await budget.scrollIntoViewIfNeeded();
+      const foreground = await page.locator("body").evaluate(el => getComputedStyle(el).color);
+      for (const heading of await budget.locator("strong").all()) await expect(heading).toHaveCSS("color", foreground);
       expect(await budget.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `${theme} ${width} budget`).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${theme} ${width} page`).toBe(true);
       const overflowingLabels = await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button").evaluateAll(buttons => buttons

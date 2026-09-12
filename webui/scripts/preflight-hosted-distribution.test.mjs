@@ -4,6 +4,7 @@ import {
   assertCatalogSequenceFloor,
   fetchChecked,
   preflightArtifact,
+  retryAfterMilliseconds,
   validatedApprovedUrl,
 } from "./preflight-hosted-distribution.mjs";
 
@@ -64,6 +65,71 @@ function validArtifactFetcher(bytes, override = {}) {
     });
   };
 }
+
+test("honors numeric and dated server retry instructions", () => {
+  const now = Date.parse("2026-09-12T10:00:00Z");
+  assert.equal(retryAfterMilliseconds("20", now), 20_000);
+  assert.equal(retryAfterMilliseconds("Sat, 12 Sep 2026 10:00:30 GMT", now), 30_000);
+  assert.equal(retryAfterMilliseconds("Sat, 12 Sep 2026 09:59:00 GMT", now), 0);
+  for (const value of [null, "", "bad", "-1"]) assert.equal(retryAfterMilliseconds(value, now), null);
+});
+
+test("retries rate limiting then requires complete range and hash verification", async () => {
+  const bytes = Uint8Array.of(1, 2, 3, 4, 5, 6);
+  const valid = validArtifactFetcher(bytes);
+  const delays = [];
+  let calls = 0;
+  await preflightArtifact(artifact(bytes), new Set(), 30_000, async (url, init) => {
+    calls += 1;
+    if (calls === 1) return new Response(null, { status: 429, headers: { "Retry-After": "7" } });
+    return valid(url, init);
+  }, async delay => { delays.push(delay); });
+  assert.equal(calls, 3);
+  assert.deepEqual(delays, [7_000]);
+});
+
+test("discards interrupted bodies and hashes the full retry from the start", async () => {
+  const bytes = Uint8Array.of(1, 2, 3, 4, 5, 6);
+  const valid = validArtifactFetcher(bytes);
+  const delays = [];
+  let calls = 0;
+  await preflightArtifact(artifact(bytes), new Set(), 30_000, async (url, init) => {
+    calls += 1;
+    if (calls === 2) return corsResponse(new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes.subarray(0, 2));
+        controller.error(new TypeError("terminated", { cause: { code: "UND_ERR_SOCKET" } }));
+      },
+    }), { headers: { "Content-Length": "6", "Access-Control-Expose-Headers": "Content-Length" } });
+    return valid(url, init);
+  }, async delay => { delays.push(delay); });
+  assert.equal(calls, 4);
+  assert.deepEqual(delays, [5_000]);
+});
+
+test("bounds transient retries and never retries integrity or origin failures", async () => {
+  const bytes = Uint8Array.of(1, 2, 3, 4, 5, 6);
+  const delays = [];
+  let calls = 0;
+  await assert.rejects(() => preflightArtifact(artifact(bytes), new Set(), 30_000, async () => {
+    calls += 1;
+    return new Response(null, { status: 503 });
+  }, async delay => { delays.push(delay); }), /HTTP 503/);
+  assert.equal(calls, 3);
+  assert.deepEqual(delays, [5_000, 10_000]);
+  const noWait = () => { throw new Error("must not retry"); };
+  await assert.rejects(() => preflightArtifact(
+    { ...artifact(bytes), sha256: "0".repeat(64) }, new Set(), 30_000,
+    validArtifactFetcher(bytes), noWait,
+  ), /SHA-256 preflight/);
+  await assert.rejects(() => preflightArtifact(artifact(bytes), new Set(), 30_000,
+    async () => corsResponse(null, { status: 302, headers: { Location: "https://unapproved.test/weights" } }),
+    noWait,
+  ), /unapproved URL/);
+  await assert.rejects(() => preflightArtifact(artifact(bytes), new Set(), 30_000,
+    async () => new Response(null, { status: 429, headers: { "Retry-After": "600" } }), noWait,
+  ), /HTTP 429/);
+});
 
 test("follows only approved HTTPS redirect chains", async () => {
   const calls = [];

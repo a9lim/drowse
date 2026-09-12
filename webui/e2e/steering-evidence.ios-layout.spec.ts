@@ -5,6 +5,19 @@ import { resolve } from "node:path";
 const storesUrl = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
 const registryUrl = `/@fs${resolve("src/lib/runtime/registry.ts")}`;
 
+test("Edit steering supports Enter and Space activation", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
+  const edit = page.getByRole("button", { name: "Edit steering", exact: true });
+  for (const key of ["Enter", "Space"]) {
+    await edit.focus();
+    await edit.press(key);
+    await expect(page.getByRole("group", { name: "Response guidance type" })).toBeVisible();
+    await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button", { name: /^(Chat|Conversation)$/ }).click();
+    await expect(edit).toBeVisible();
+  }
+});
+
 test("chat records steering, compares the saved recipe, and clears inherited steering", async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -63,7 +76,12 @@ test("chat records steering, compares the saved recipe, and clears inherited ste
   await expect(recorded.last()).toHaveText("No steering");
   expect(await page.evaluate(() => (window as any).steeringRequests.filter((request: any) => request.type === "submit").at(-1).steering)).toBe("");
   await expect(recorded.first()).toContainText("0.5 fixture/calm.focused");
+  await page.locator("#conversation-composer").evaluate(form => {
+    if (document.activeElement instanceof HTMLElement && form.contains(document.activeElement)) document.activeElement.blur();
+  });
+  await expect(page.locator(".input-actions-reveal")).toBeHidden();
   await page.getByRole("button", { name: "Edit steering", exact: true }).click();
+  await expect(page.locator(".workspace-frame")).toHaveAttribute("data-page", "3");
   await expect(page.getByRole("group", { name: "Response guidance type" })).toBeVisible();
   expect(errors).toEqual([]);
 });
