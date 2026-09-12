@@ -188,7 +188,8 @@ export async function fetchChecked(
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (response.status === 429 || response.status === 503) {
-      const retryAfterMs = retryAfterMilliseconds(response.headers.get("Retry-After"));
+      const retryAfterMs = retryAfterMilliseconds(response.headers.get("Retry-After"))
+        ?? (response.status === 429 ? 300_000 : null);
       await response.body?.cancel().catch(() => undefined);
       const location = new URL(current);
       throw new TransientDownloadError(

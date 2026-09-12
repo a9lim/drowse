@@ -140,13 +140,13 @@ test("failed fits retry saved examples and cancellation restores usable controls
   await expect(page.getByRole("textbox", { name: "Name (required)", exact: true })).toBeEnabled();
 });
 
-test("every available directory tool opens in the side panel and can become a dialog", async ({ page }) => {
+for (const group of [0, 1, 2, 3]) test(`every available directory tool opens in the side panel and can become a dialog (group ${group + 1}/4)`, async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await prepare(page);
   await page.getByRole("button", { name: "Close drawer", exact: true }).click();
   const directory = page.locator(".tool-directory");
-  const labels = await directory.locator("button:not(:disabled)").allTextContents();
-  for (const label of labels) {
+  const labels = (await directory.locator("button:not(:disabled)").allTextContents()).sort();
+  for (const label of labels.filter((_, index) => index % 4 === group)) {
     await directory.locator("button:not(:disabled)").filter({ hasText: label.trim() }).first().click();
     const panel = page.locator(".drawer.docked:not(.token-details):not([hidden])");
     await expect(panel, label).toBeVisible();

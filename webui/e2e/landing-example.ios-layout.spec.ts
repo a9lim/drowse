@@ -225,11 +225,33 @@ test("Inspect morphs token text when steering changes and honors reduced motion"
   await expect(demo.getByRole("dialog")).toBeVisible();
   await expect(demo.getByRole("dialog").locator("dl")).toContainText(String(recording.runs[5].tokens[9].tokenId));
   await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect.poll(() => page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
+  await expect.poll(() => reply.locator(".recorded-token").first().evaluate(element =>
+    Math.max(...getComputedStyle(element).transitionDuration.split(",").map(value => Number.parseFloat(value))),
+  )).toBeLessThanOrEqual(0.00001);
+  const reducedMotion = await reply.evaluateHandle(reply => {
+    const animate = Element.prototype.animate;
+    const durations: number[] = [];
+    Element.prototype.animate = function(...args) {
+      const animation = animate.apply(this, args);
+      if (reply.contains(this)) durations.push(Number(animation.effect!.getTiming().duration));
+      return animation;
+    };
+    return { durations, restore() { Element.prototype.animate = animate; } };
+  });
   await demo.getByRole("slider").fill("6");
   await expect(demo.getByRole("dialog")).toBeHidden();
   await expect.poll(() => readableText(reply)).toBe(recording.runs[6].text);
   await expect(reply.locator("[data-morph-active]")).toHaveCount(0);
-  expect(await reply.evaluate(element => element.getAnimations({ subtree: true }).filter(animation => animation.playState === "running").length)).toBe(0);
+  await expect(reply.locator(".morph-paint > *")).toHaveCount(0);
+  await expect.poll(() => reply.evaluate(element => element.getAnimations({ subtree: true })
+    .filter(animation => animation.playState === "running").map(animation => ({
+      target: (animation.effect as KeyframeEffect).target?.className,
+      duration: animation.effect!.getTiming().duration,
+    })))).toEqual([]);
+  expect(await reducedMotion.evaluate(({ durations }) => durations.filter(duration => duration > 0))).toEqual([]);
+  await reducedMotion.evaluate(capture => capture.restore());
+  await reducedMotion.dispose();
 });
 
 test("reply motion resizes the unchanged panel and honors reduced motion", async ({ page }, testInfo) => {
@@ -293,14 +315,16 @@ test("reply motion resizes the unchanged panel and honors reduced motion", async
   await expect(panel).toHaveCSS("background-color", background);
 });
 
-test("home containers share readable type and larger controls without text shadows", async ({ page }, testInfo) => {
-  await page.goto("http://127.0.0.1:4176/");
-  const demo = page.getByRole("region", { name: "Recorded Drowse example" });
-  const slider = demo.getByRole("slider");
-  for (const width of [320, 390, 1440]) {
-    await page.setViewportSize({ width, height: 1000 });
-    for (const theme of ["dark", "light"]) {
-      await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+for (const width of [320, 390, 1440]) {
+  for (const theme of ["dark", "light"]) {
+    test(`home containers share readable type and larger controls without text shadows at ${width}px in ${theme}`, async ({ page }, testInfo) => {
+      await page.addInitScript(theme => localStorage.setItem("drowse.theme", theme), theme);
+      await page.setViewportSize({ width, height: 1000 });
+      await page.goto("http://127.0.0.1:4176/");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.locator("html")).toHaveCSS("color-scheme", theme);
+      const demo = page.getByRole("region", { name: "Recorded Drowse example" });
+      const slider = demo.getByRole("slider");
       await demo.scrollIntoViewIfNeeded();
       await expect(demo.locator(".context")).toHaveCSS("font-size", "16px");
       const prose = await page.locator(".capabilities li p, .model-group > p, .model-row strong, .capability-demo .context, .capability-demo .result")
@@ -331,6 +355,6 @@ test("home containers share readable type and larger controls without text shado
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         await page.locator(".demo-panel").screenshot({ path: testInfo.outputPath(`harmony-${width}-${theme}-${mode}.png`) });
       }
-    }
+    });
   }
-});
+}

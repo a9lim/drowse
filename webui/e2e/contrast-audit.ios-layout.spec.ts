@@ -1,11 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { resolve } from "node:path";
 import { selectWorkspaceView } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const moduleUrl = (path: string) => `/@fs${resolve(path)}`;
 const storesUrl = moduleUrl("src/lib/stores.svelte.ts");
+
+test.describe.configure({ mode: "parallel" });
 
 async function setTheme(page: Page, theme: string) {
   await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), {
@@ -160,6 +162,29 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+async function auditSurface(page: Page, testInfo: TestInfo, theme: string, name: string, selector = "body") {
+  await page.mouse.move(0, 0);
+  const result = await new AxeBuilder({ page }).include(selector).withRules(["color-contrast"]).analyze();
+  const summarize = ({ nodes }: any) => nodes.map((node: any) => ({ target: node.target, html: node.html, failure: node.failureSummary }));
+  const violations = result.violations.flatMap(summarize);
+  const controls = await auditActionStates(page, selector, `${theme} ${name}`);
+  await testInfo.attach("contrast-surface-audit", {
+    body: JSON.stringify({ name, violations, incomplete: result.incomplete.flatMap(summarize), controls }, null, 2),
+    contentType: "application/json",
+  });
+  expect.soft(violations, name).toEqual([]);
+  console.log(`${theme}: ${name} (${violations.length} contrast failures)`);
+}
+
+async function populatedWorkbench(page: Page, theme: string) {
+  await page.goto(`${devUrl}/app?layoutFixture=instruments`);
+  await expect(page.locator(".shell")).toBeVisible();
+  await setTheme(page, theme);
+  await page.getByRole("textbox", { name: /^Compose as / }).fill("A contrast check with a populated conversation.");
+  await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
+  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+}
+
 for (const theme of ["dark", "light"]) {
   test(`disabled button labels remain discernible in ${theme}`, async ({ page }, testInfo) => {
     await page.goto(`${devUrl}/outside-the-workbench`);
@@ -226,59 +251,53 @@ for (const theme of ["dark", "light"]) {
     await testInfo.attach("rendered-warning-contrast", { body: JSON.stringify(reports, null, 2), contentType: "application/json" });
   });
 
-  test(`public pages and workbench text retain contrast in ${theme}`, async ({ page }, testInfo) => {
-    test.setTimeout(240_000);
-    page.setDefaultTimeout(10_000);
-    const reports: unknown[] = [];
-    async function audit(name: string, selector = "body") {
-      await page.mouse.move(0, 0);
-      const result = await new AxeBuilder({ page }).include(selector).withRules(["color-contrast"]).analyze();
-      const summarize = ({ nodes }: any) => nodes.map((node: any) => ({ target: node.target, html: node.html, failure: node.failureSummary }));
-      const violations = result.violations.flatMap(summarize);
-      const controls = await auditActionStates(page, selector, `${theme} ${name}`);
-      reports.push({ name, violations, incomplete: result.incomplete.flatMap(summarize), controls });
-      expect.soft(violations, name).toEqual([]);
-      console.log(`${theme}: ${name} (${violations.length} contrast failures)`);
-    }
-    for (const path of ["/", "/credits", "/contact", "/missing-page", "/app?layoutFixture=setup"]) {
+  for (const path of ["/", "/credits", "/contact", "/missing-page", "/app?layoutFixture=setup"]) {
+    test(`public text retains contrast in ${theme}: ${path}`, async ({ page }, testInfo) => {
       await page.goto(`${devUrl}${path}`);
       await setTheme(page, theme);
       await page.evaluate(() => document.fonts.ready);
       for (const width of [390, 1440]) {
         await page.setViewportSize({ width, height: 900 });
-        await audit(`${path} ${width}`);
+        await auditSurface(page, testInfo, theme, `${path} ${width}`);
       }
-    }
+    });
+  }
+  test(`chats and storage notice retain contrast in ${theme}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
     await mountStorageHome(page);
     await setTheme(page, theme);
-    await audit("Chats and storage notice");
-    await page.goto(`${devUrl}/app?layoutFixture=instruments`);
-    await expect(page.locator(".shell")).toBeVisible();
-    await setTheme(page, theme);
-    await page.getByRole("textbox", { name: /^Compose as / }).fill("A contrast check with a populated conversation.");
-    await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
-    for (const width of [390, 1440]) {
-      await page.setViewportSize({ width, height: 900 });
-      for (const view of ["Chat", "Loom", "Controls"]) {
+    await auditSurface(page, testInfo, theme, "Chats and storage notice");
+  });
+  for (const view of ["Chat", "Loom", "Controls"]) {
+    test(`${view} text retains contrast in ${theme}`, async ({ page }, testInfo) => {
+      await populatedWorkbench(page, theme);
+      for (const width of [390, 1440]) {
+        await page.setViewportSize({ width, height: 900 });
         await selectWorkspaceView(page, view === "Chat" ? /^(Chat|Conversation)$/ : view);
-        await audit(`${view} ${width}`);
+        await auditSurface(page, testInfo, theme, `${view} ${width}`);
       }
-    }
-    for (const name of ["appearance", "local_runtime", "help", "feedback", "cast", "advanced_sampling", "system_prompt", "save_conversation", "load_conversation", "download_chat", "transcript", "manifold_pack", "manifold_builder", "manifold_merge", "template_lab", "health", "subspace", "manifolds", "compare", "correlation", "token_drilldown", "node_compare"]) {
+    });
+  }
+  for (const name of ["appearance", "local_runtime", "help", "feedback", "cast", "advanced_sampling", "system_prompt", "save_conversation", "load_conversation", "download_chat", "transcript", "manifold_pack", "manifold_builder", "manifold_merge", "template_lab", "health", "subspace", "manifolds", "compare", "correlation", "token_drilldown", "node_compare"]) {
+    test(`${name} dialog text retains contrast in ${theme}`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await populatedWorkbench(page, theme);
+      await selectWorkspaceView(page, "Controls");
       await page.evaluate(async ({ url, name }) => {
         const stores = await import(url);
         if (["manifold_builder", "template_lab", "health"].includes(name)) stores.drawerState.open = name;
         else stores.openDrawer(name, name === "token_drilldown" ? { turnIdx: 1, tokenIdx: 0 } : undefined);
       }, { url: storesUrl, name });
       await expect(page.locator('.drawer[role="dialog"]')).toBeVisible();
-      await audit(name, '.drawer[role="dialog"]');
+      await auditSurface(page, testInfo, theme, name, '.drawer[role="dialog"]');
       await page.evaluate(async url => (await import(url)).closeDrawer(), storesUrl);
-    }
+    });
+  }
+  test(`base completion text retains contrast in ${theme}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`${devUrl}/app?layoutFixture=base`);
     await expect(page.locator(".shell")).toBeVisible();
     await setTheme(page, theme);
-    await audit("Base completion");
-    await testInfo.attach("contrast-surface-audit", { body: JSON.stringify(reports, null, 2), contentType: "application/json" });
+    await auditSurface(page, testInfo, theme, "Base completion");
   });
 }

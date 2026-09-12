@@ -107,6 +107,24 @@ test("discards interrupted bodies and hashes the full retry from the start", asy
   assert.deepEqual(delays, [5_000]);
 });
 
+test("waits a full rate-limit window when the CDN omits Retry-After", async () => {
+  const bytes = Uint8Array.of(1, 2, 3, 4, 5, 6);
+  const valid = validArtifactFetcher(bytes);
+  const delays = [];
+  let calls = 0;
+  await preflightArtifact(artifact(bytes), new Set(), 600_000, async (url, init) => {
+    calls += 1;
+    if (calls <= 2) return new Response(null, { status: 429 });
+    return valid(url, init);
+  }, async delay => { delays.push(delay); });
+  assert.equal(calls, 4);
+  assert.deepEqual(delays, [300_000, 300_000]);
+  await assert.rejects(() => preflightArtifact(artifact(bytes), new Set(), 30_000,
+    async () => new Response(null, { status: 429 }),
+    async () => { throw new Error("must not exceed the timeout"); },
+  ), /HTTP 429/);
+});
+
 test("bounds transient retries and never retries integrity or origin failures", async () => {
   const bytes = Uint8Array.of(1, 2, 3, 4, 5, 6);
   const delays = [];
