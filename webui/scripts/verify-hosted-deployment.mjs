@@ -502,7 +502,7 @@ async function main() {
   }
   assertChannelHtml(rootHtml, options.channel, options.revision);
   assertChannelHtml(appHtml, options.channel, options.revision);
-  for (const path of ["/credits", "/credits/", "/contact", "/contact/"]) {
+  for (const path of ["/app/", "/app/routing-probe", "/credits", "/credits/", "/contact", "/contact/"]) {
     const response = await fetchRoute(origin, path, headers);
     assertMime(response, "text/html");
     assertSecurityHeaders(response, distributionLock);

@@ -17,6 +17,17 @@ const assets = publicationAssets(origin);
 const built = new Map();
 await sitePublication(origin).generateBundle.call({ emitFile({ fileName, source }) { built.set(fileName, source); } });
 const { default: worker } = await import(`data:text/javascript;base64,${Buffer.from(built.get("_worker.js")).toString("base64")}`);
+test("app rewrites use the canonical asset URL without leaking Pages HTML redirects", async () => {
+  const redirects = await readFile(new URL("../public-hosted/_redirects", import.meta.url), "utf8");
+  const rules = redirects.trim().split("\n").map(line => line.split(/\s+/));
+  assert.deepEqual(rules.map(([path]) => path), ["/app", "/app/", "/credits", "/credits/", "/contact", "/contact/", "/app/*"]);
+  for (const [, target, status] of rules) {
+    assert.equal(status, "200");
+    assert.equal(target, "/app-shell");
+    assert.doesNotMatch(target, /\.html$/);
+  }
+});
+
 test("machine-readable documentation preserves its source content without creating visible guide pages", () => {
   assert.deepEqual(publicPaths, ["/"]);
   assert.ok(![...assets.keys()].some(path => path.endsWith(".html")));

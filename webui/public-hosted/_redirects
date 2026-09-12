@@ -1,7 +1,7 @@
-/app /app-shell.html 200
-/app/ /app-shell.html 200
-/credits /app-shell.html 200
-/credits/ /app-shell.html 200
-/contact /app-shell.html 200
-/contact/ /app-shell.html 200
-/app/* /app-shell.html 200
+/app /app-shell 200
+/app/ /app-shell 200
+/credits /app-shell 200
+/credits/ /app-shell 200
+/contact /app-shell 200
+/contact/ /app-shell 200
+/app/* /app-shell 200

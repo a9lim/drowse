@@ -15,7 +15,7 @@ assert.match(notFound, /name="robots" content="noindex, follow"/);
 assert.doesNotMatch(notFound, /rel="canonical"|application\/ld\+json|data-prerendered/);
 assert.match(index, /data-prerendered/);
 assert.doesNotMatch(index, /class="site-guides|<a[^>]*href="\/(?:learn|developers|about|privacy)/);
-assert.equal(redirects.trim(), "/app /app-shell.html 200\n/app/ /app-shell.html 200\n/credits /app-shell.html 200\n/credits/ /app-shell.html 200\n/contact /app-shell.html 200\n/contact/ /app-shell.html 200\n/app/* /app-shell.html 200");
+assert.equal(redirects.trim(), "/app /app-shell 200\n/app/ /app-shell 200\n/credits /app-shell 200\n/credits/ /app-shell 200\n/contact /app-shell 200\n/contact/ /app-shell 200\n/app/* /app-shell 200");
 const serviceWorker = await readFile(resolve(root, "sw.js"), "utf8");
 assert.match(serviceWorker, /\.clientsClaim\(\)/u, "first-visit model code must be controlled and cached without a reload");
 const offlineRuntimeManifest = JSON.parse(await readFile(resolve(root, "runtime-assets.json"), "utf8"));
