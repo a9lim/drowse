@@ -68,10 +68,10 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
-    "@playwright/test": "1.62.1",
+    "@playwright/test": "1.63.0",
     "@sveltejs/vite-plugin-svelte": "7.0.0",
     "@tsconfig/svelte": "5.0.8",
-    "playwright": "1.62.1",
+    "playwright": "1.63.0",
     "puppeteer": "25.10.0",
     "svelte": "5.55.8",
     "svelte-check": "4.4.6",
