@@ -56,7 +56,9 @@ class WSGenerateMessage(NativeRequest):
     """
 
     type: Literal["generate"]
+    request_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     input: str | list[WSInputMessage] | None = None
+    system_prompt: str | None = None
     steering: str | None = None
     sampling: WSSamplingParams | None = None
     thinking: bool | None = None
@@ -140,7 +142,9 @@ class WSSubmitMessage(NativeRequest):
     """
 
     type: Literal["submit"]
+    request_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     text: str | None = None
+    system_prompt: str | None = None
     authored_role: Literal["user", "assistant"] | None = None
     generated_role: Literal["user", "assistant"] | None = None
     steering: str | None = None

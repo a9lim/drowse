@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { onMount as onInterfaceMount } from "svelte";
+  import { registerInterfaceController } from "../../lib/workspaceController";
+  import { templatedDraftSchema } from "../../lib/interfaceSchemas";
+  import { ToolError } from "../../lib/webmcp/types";
+
   import MorphText from "../../lib/ui/MorphText.svelte";
   // Derive a manifold from a standalone template.
   //
@@ -268,6 +273,20 @@
       progress = "";
     }
   }
+
+  onInterfaceMount(() => registerInterfaceController("manifold_templated", {
+    schema: templatedDraftSchema,
+    read: () => ({ busy: submitting || fittingActive || cancelling, values: { selected_key: selectedKey, max_dim: maxDim, also_fit: alsoFit, advanced_open: advancedOpen, tuning }, validation, available_templates: options, loading_templates: loadingTemplates }),
+    update: async (change) => {
+      if (submitting || fittingActive || cancelling) throw new ToolError("BUSY", "Wait for this interface operation to finish.");
+      if (change.selected_key && !options.some(option => option.value === change.selected_key)) throw new ToolError("NOT_FOUND", "Choose a template from available_templates.");
+      if (change.selected_key !== undefined) selectedKey = change.selected_key as string;
+      if (change.max_dim !== undefined) maxDim = change.max_dim as number | null;
+      if (change.also_fit !== undefined) alsoFit = change.also_fit as boolean;
+      if (change.advanced_open !== undefined) advancedOpen = change.advanced_open as boolean;
+      if (change.tuning) Object.assign(tuning, change.tuning);
+    },
+  }));
 </script>
 
 <div

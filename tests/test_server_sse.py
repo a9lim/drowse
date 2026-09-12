@@ -9,9 +9,11 @@ from typing import Any
 import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect
 
 import drowse.server.sse as sse_module
 from drowse.server.sse import ProgressCallback, progress_sse_response, sse_or_json
+from drowse.server.operation_ledger import register_operation_routes
 
 
 def _client_for(
@@ -238,3 +240,91 @@ class TestSseOrJson:
             text = b"".join(resp.iter_bytes()).decode("utf-8")
         assert "event: error" in text
         assert '"code": "PoisednessError"' in text
+
+
+def test_retained_operation_survives_transport_disconnect_without_reexecution() -> None:
+    async def exercise() -> None:
+        app = FastAPI()
+        register_operation_routes(app)
+        session = _FakeSession()
+        release = asyncio.Event()
+        entered = asyncio.Event()
+        calls = 0
+
+        async def job(progress: ProgressCallback) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            progress("working")
+            entered.set()
+            await release.wait()
+            return {"completed": True, "artifact": "local/example"}
+
+        def request() -> Request:
+            async def receive() -> dict[str, Any]:
+                return {"type": "http.request", "body": b'{"name":"example"}', "more_body": False}
+            return Request({
+                "type": "http", "method": "POST", "path": "/drowse/v1/manifolds/generate",
+                "app": app, "headers": [(b"accept", b"text/event-stream"), (b"x-drowse-request-id", b"owned-job")],
+                "asgi": {"spec_version": "2.4"},
+            }, receive)
+
+        initial = request()
+        response = await sse_or_json(initial, session, job, error_message="failed", log_message="test")
+        await entered.wait()
+        assert session.lock.locked()
+        with pytest.raises(HTTPException) as duplicate:
+            await sse_or_json(request(), session, job, error_message="failed", log_message="test")
+        assert duplicate.value.status_code == 409
+
+        async def send(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.body":
+                raise OSError("Browser transport disconnected")
+
+        with pytest.raises(ClientDisconnect):
+            await response(initial.scope, initial.receive, send)
+        assert session.lock.locked(), "the actual worker owns the lock after transport teardown"
+        assert app.state.operation_ledger.get("owned-job")["state"] == "running"
+        assert len(app.state.operation_tasks) == 1
+        task = next(iter(app.state.operation_tasks))
+        release.set()
+        await task
+        receipt = app.state.operation_ledger.get("owned-job")
+        assert receipt["state"] == "completed"
+        assert receipt["result"] == {"completed": True, "artifact": "local/example"}
+        assert receipt["progress"] == ["working"]
+        assert not session.lock.locked()
+        assert calls == 1
+
+    asyncio.run(exercise())
+
+
+def test_retained_json_receipt_keeps_result_and_scrubs_untyped_errors() -> None:
+    app = FastAPI()
+    register_operation_routes(app)
+    session = _FakeSession()
+    calls = 0
+
+    @app.post("/drowse/v1/test/score")
+    async def score(request: Request) -> Any:
+        async def job(_progress: ProgressCallback) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            if (await request.json()).get("fail"):
+                raise RuntimeError("secret /private/model/path")
+            return {"contexts": [{"value": "Mon", "prob_sum": 0.2}]}
+        return await sse_or_json(request, session, job, error_message="scoring failed", log_message="test scoring failed")
+
+    with TestClient(app) as client:
+        result = client.post("/drowse/v1/test/score", json={}, headers={"X-Drowse-Request-Id": "score-receipt"})
+        assert result.status_code == 200
+        receipt = client.get("/drowse/v1/operations/score-receipt").json()
+        assert receipt["state"] == "completed"
+        assert receipt["result"] == result.json()
+        assert client.post("/drowse/v1/test/score", json={}, headers={"X-Drowse-Request-Id": "score-receipt"}).status_code == 409
+        failure = client.post("/drowse/v1/test/score", json={"fail": True}, headers={"X-Drowse-Request-Id": "failed-receipt"})
+        assert failure.status_code == 500
+        failed = client.get("/drowse/v1/operations/failed-receipt").json()
+        assert failed["state"] == "failed"
+        assert failed["error"]["message"] == "scoring failed"
+        assert "secret" not in str(failed)
+        assert calls == 2

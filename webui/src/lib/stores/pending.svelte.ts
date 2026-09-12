@@ -28,6 +28,17 @@ export interface PendingActionsState {
 export const pendingActions: PendingActionsState = $state({ queue: [] });
 
 let _pendingCounter = 0;
+let dispatchReservations = 0;
+
+export function reservePendingGeneration(): () => void {
+  dispatchReservations += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    dispatchReservations -= 1;
+  };
+}
 
 /** Next queue-item id.  Exported because the WS submit path builds its own
  *  ``PendingAction`` (it needs the item before deciding whether to queue
@@ -67,6 +78,7 @@ export function enqueuePending(
  *  one item per ``done`` so a send-then-send pair runs in order
  *  rather than racing the WS. */
 export async function drainNextPendingAction(): Promise<void> {
+  if (dispatchReservations > 0 || genStatus.active) return;
   if (pendingActions.queue.length === 0) return;
   // Reconcile the input-history pull state before mutating the queue:
   // a drained head whose slot the user is editing would otherwise
@@ -88,6 +100,8 @@ export async function drainNextPendingAction(): Promise<void> {
         text: `pending ${item.label} failed: ${String(e)}`,
       },
     ];
+    await drainNextPendingAction();
+    return;
   }
   if (!item.awaitsGen) {
     // Instant mutation finished — chain into the next item so the
@@ -98,7 +112,9 @@ export async function drainNextPendingAction(): Promise<void> {
 
 /** Remove one pending item by id (GUI per-bubble ``×``). */
 export function cancelPendingAction(id: string): void {
+  const item = pendingActions.queue.find((action) => action.id === id);
   pendingActions.queue = pendingActions.queue.filter((p) => p.id !== id);
+  item?.onCancel?.();
 }
 
 /** Apply immediately if no gen is in flight AND the queue is empty;
@@ -122,7 +138,7 @@ export function cancelPendingAction(id: string): void {
  *  to the send is preserved. */
 const RACK_COALESCE_KEY = "rack";
 export function enqueueOrApply(label: string, apply: () => void): void {
-  if (!(genStatus.active || pendingActions.queue.length > 0)) {
+  if (!isPendingBusy()) {
     apply();
     return;
   }
@@ -153,7 +169,7 @@ export function enqueueOrApply(label: string, apply: () => void): void {
 /** Are we busy enough that fresh submissions should queue instead of fire?
  *  Busy means a generation is running or earlier items await their turn. */
 export function isPendingBusy(): boolean {
-  return genStatus.active || pendingActions.queue.length > 0;
+  return dispatchReservations > 0 || genStatus.active || pendingActions.queue.length > 0;
 }
 
 /** Predict the post-queue active-node-is-user-role flag.  Walks the

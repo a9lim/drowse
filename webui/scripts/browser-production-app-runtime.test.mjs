@@ -50,8 +50,9 @@ test("authoritative installed app state accepts verified onboarding or the exact
 test("production requirements select features from compute dtype", () => {
   assert.deepEqual(requiredFeaturesForQuantization("q4f16_1"), ["shader-f16"]);
   assert.deepEqual(requiredFeaturesForQuantization("q4f32_1"), []);
+  assert.deepEqual(requiredFeaturesForQuantization("q0f32"), []);
   assert.throws(
-    () => requiredFeaturesForQuantization("q0f32"),
+    () => requiredFeaturesForQuantization("q8f16"),
     /unsupported browser quantization/,
   );
 });
@@ -278,6 +279,22 @@ test("production-app catalog closes the runtime lock and pack bindings", () => {
   assert.equal(qwen4.document.models[0].variants[0].tier, "quality");
   assert.equal(qwen4.document.models[0].variants[0].id, "qwen3-4b-q4f16_1");
   assert.deepEqual(qwen4.document.models[0].variants[0].requirements.features, ["shader-f16"]);
+  const unquantizedGemma = createProductionAppCatalog({
+    runtimeLock: { runtimeAbi: "drowse-web-runtime-v1", hookAbi: "post-block-residual-v4" },
+    lock: { ...lock, id: "gemma3-270m-instruct", quantization: "q0f32", thinkingProfile: null },
+    revision,
+    modelFiles: modelFiles.map((file) => file.role === "weight" ? { ...file, bytes: 671_088_640 } : file),
+    coreFiles: files("core_pack", "7".repeat(64)),
+    jlensFiles: files("instrument", "8".repeat(64)),
+    saeFiles: files("instrument", "9".repeat(64)),
+    contextTokens: 2048,
+    issuedAt: "2026-08-29T00:00:00.000Z",
+    expiresAt: "2026-08-30T00:00:00.000Z",
+  }).document.models[0].variants[0];
+  assert.equal(unquantizedGemma.id, "gemma3-270m-instruct-q0f32");
+  assert.deepEqual(unquantizedGemma.requirements.features, []);
+  assert.equal(unquantizedGemma.requirements.limits.maxBufferSize, 1_073_741_824);
+  assert.equal(unquantizedGemma.requirements.limits.maxStorageBufferBindingSize, 1_073_741_824);
 });
 
 test("temporary production entry strips only the guarded development fixture", () => {

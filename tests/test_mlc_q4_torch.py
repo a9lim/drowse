@@ -53,6 +53,22 @@ def test_dequantize_q4_group_layout() -> None:
     np.testing.assert_allclose(decoded[0], (values.astype(np.float32) - 7) * 0.5)
 
 
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires Apple Metal")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_metal_linear_row_batches_preserve_exact_fma_results(dtype: torch.dtype):
+    generator = torch.Generator().manual_seed(812)
+    inputs = torch.randn(2, 40, 64, generator=generator, dtype=dtype).to("mps")
+    weight = torch.randn(96, 64, generator=generator, dtype=dtype).to("mps")
+    reference = torch.empty(2, 40, 96, dtype=dtype, device="mps")
+    shader = _MODULE._mlc_metal_linear()
+    kernel = shader.exact_f16_linear if dtype == torch.float16 else shader.exact_f32_linear
+    kernel(reference, inputs, weight, 64, 96)
+    linear = _MODULE.MlcLinear(torch.nn.Parameter(weight, requires_grad=False), None)
+    actual = linear(inputs)
+    torch.mps.synchronize()
+    torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+
+
 def test_tensor_cache_reads_exact_shard_extent(tmp_path: Path) -> None:
     values = np.array([1.5, -2.0], dtype=np.float16)
     (tmp_path / "params_shard_0.bin").write_bytes(values.tobytes())
@@ -195,6 +211,7 @@ def test_build_transformers_model_binds_exact_special_token_ids(
     class FakeModel:
         def __init__(self, config: FakeConfig) -> None:
             self.config = config
+            self.lm_head = types.SimpleNamespace()
 
         def load_state_dict(
             self,
@@ -273,6 +290,7 @@ def test_build_transformers_model_binds_exact_special_token_ids(
     assert model.config.bos_token_id == 2
     assert model.config.eos_token_id == [1, 7]
     assert model.config.pad_token_id == 0
+    assert model.lm_head.output_dtype == torch.float32
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -352,6 +370,18 @@ def test_browser_residual_correction_preserves_gradient_and_replaces_value() -> 
     result.sum().backward()
     torch.testing.assert_close(values.grad, torch.ones_like(values))
     corrector.close()
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_tied_mlc_head_accumulates_and_returns_fp32(device: str) -> None:
+    if device == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("MPS unavailable")
+    weight = torch.nn.Parameter(torch.ones((1, 3), dtype=torch.float16, device=device))
+    values = torch.tensor([[2048, 1, -2048]], dtype=torch.float16, device=device)
+    head = _MODULE.MlcLinear(weight, None, output_dtype=torch.float32)
+    result = head(values)
+    assert result.dtype == torch.float32
+    torch.testing.assert_close(result.cpu(), torch.tensor([[1.0]]), rtol=0, atol=0)
 
 
 def test_browser_residual_correction_rejects_partial_or_nonfinite_rows() -> None:

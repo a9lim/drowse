@@ -19,7 +19,7 @@ test("mobile navigation fits, matches surface radii, and restores screen space",
       const navigation = page.getByRole("navigation", { name: "Workspace", exact: true });
       await expect(navigation).toBeVisible();
       const buttons = page.locator(".workspace-navigation > .mobile-navigation-action, .workspace-nav button");
-      await expect(buttons).toHaveCount(5);
+      await expect(buttons).toHaveCount(6);
       const boxes = await buttons.evaluateAll(elements => elements.map(element => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);

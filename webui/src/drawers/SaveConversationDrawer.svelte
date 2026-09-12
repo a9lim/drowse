@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { objectSchema, ToolError } from "../lib/webmcp/types";
+
   import MorphText from "../lib/ui/MorphText.svelte";
   import { Blobatar } from "@blobatar/svelte";
   import { onMount } from "svelte";
   import ChatAccentPicker from "../lib/ui/ChatAccentPicker.svelte";
-  import type { ChatAccent } from "../lib/chatAccent";
+  import { CHAT_ACCENTS, type ChatAccent } from "../lib/chatAccent";
 
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   import {
@@ -25,14 +28,17 @@
   import { downloadPreparedChatBackup, encodeChatBackup } from "../lib/chatBackup";
   import { userFacingError } from "../lib/runtime/userFacingError";
   import { pushToast } from "../lib/stores/toasts.svelte";
-  import { flushConversationAutosave } from "../lib/stores/savedConversations.svelte";
+  import { flushConversationAutosave, onConversationLibraryChanged } from "../lib/stores/savedConversations.svelte";
 
   let { embedded = false }: { params?: unknown; embedded?: boolean } = $props();
 
+  let draftBaseline = $state("");
   let current: SavedConversationRecord | null = $state(null);
   let name = $state("");
   let avatarSeed = $state(randomAvatarSeed());
   let accent: ChatAccent = $state("purple");
+  const metadataDirty = $derived(draftBaseline !== "" && JSON.stringify([name, avatarSeed, accent]) !== draftBaseline);
+
   let error = $state<string | null>(null);
   let loading = $state(true);
   let saving = $state(false);
@@ -42,6 +48,7 @@
   onMount(() => {
     void initialize();
   });
+  onMount(() => onConversationLibraryChanged(() => { if (!saving && !metadataDirty) return initialize(); }));
 
   async function initialize(): Promise<void> {
     loading = true;
@@ -79,6 +86,7 @@
     } catch (cause) {
       error = userFacingError(cause, "This conversation is not ready to save yet.");
     } finally {
+      draftBaseline = JSON.stringify([name, avatarSeed, accent]);
       loading = false;
     }
   }
@@ -103,6 +111,7 @@
         ? await conversationLibrary.update(activeId, { name, avatarSeed, accent, snapshot })
         : await conversationLibrary.create({ name, avatarSeed, accent, snapshot });
       current = record;
+      draftBaseline = JSON.stringify([record.name, record.avatarSeed, record.accent ?? "purple"]);
       name = record.name;
       avatarSeed = record.avatarSeed;
       savedConversationState.activeId = record.id;
@@ -153,6 +162,17 @@
       error = userFacingError(cause, "A backup copy could not be created.");
     } finally { saving = false; }
   }
+
+  onMount(() => registerInterfaceController("chat_identity", {
+    schema: objectSchema({ name: { type: "string", maxLength: 120 }, avatar_seed: { type: "string", maxLength: 256 }, accent: { type: "string", enum: CHAT_ACCENTS.map(row => row.id) } }),
+    read: () => ({ busy: loading || saving, dirty: metadataDirty, chat_id: current?.id ?? savedConversationState.activeId, values: { name, avatar_seed: avatarSeed, accent } }),
+    update: change => {
+      if (loading || saving) throw new ToolError("BUSY", "Wait for the saved-chat form.");
+      if (change.name !== undefined) name = change.name as string;
+      if (change.avatar_seed !== undefined) avatarSeed = change.avatar_seed as string;
+      if (change.accent !== undefined) accent = change.accent as ChatAccent;
+    },
+  }));
 </script>
 
 <section class="drawer-shell" class:embedded aria-label={embedded ? "Save and name chat" : "Save conversation drawer"}>

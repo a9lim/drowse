@@ -1,6 +1,11 @@
 import type { RuntimeMode } from "./contracts";
 
 export const SAMPLING_TEMPERATURE_MAX = 3.4028234663852886e38;
+export const SAMPLING_SEED_MAX = Number.MAX_SAFE_INTEGER;
+
+export function samplingSeedMinimum(mode: RuntimeMode): number {
+  return mode === "http" ? Number.MIN_SAFE_INTEGER : 0;
+}
 
 // Actual candidate counts are bounded by the loaded vocabulary in the sampler.
 export const HTTP_RETURN_TOP_K_MAX = Number.MAX_SAFE_INTEGER;

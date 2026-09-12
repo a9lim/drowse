@@ -50,6 +50,8 @@ const SECONDARY_KEY_ID = "production-app-next";
 const GENERATION_TIMEOUT_MS = 5 * 60_000;
 const SERVICE_WORKER_TIMEOUT_MS = 30_000;
 const options = parseBrowserProductionAppArguments(process.argv.slice(2));
+const nativeWebMcp = process.env.DROWSE_WEBMCP_NATIVE_EVIDENCE === "1"
+  ? await (await import("./webmcp-live-scenario.mjs")).nativeEvidenceBrowserOptions() : null;
 const isDescriptionRequest = (url) => isPublishedSaeDescriptionUrl(url, options.modelId);
 const webuiRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(webuiRoot, "..");
@@ -292,8 +294,10 @@ try {
       ]
     : [];
   launchArgs.push(`--ignore-certificate-errors-spki-list=${certificateSpkiSha256}`);
+  if (nativeWebMcp) launchArgs.push(...nativeWebMcp.args);
   releaseBrowser = await launchReleaseToolContext({
     channel: options.browserChannel,
+    ...(nativeWebMcp ? { executablePath: nativeWebMcp.executablePath } : {}),
     headless: !options.headed,
     args: launchArgs,
     serviceWorkers: "allow",
@@ -447,7 +451,7 @@ try {
   await modelButton.waitFor({ timeout: 30_000 });
   requireEqual(await modelButtons.count(), 1, "production catalog model choice count");
   await modelButton.click();
-  await selectAllFirstRunPacks(page, 1);
+  await verifyFirstRunPacks(page);
   stage(`${options.modelId} ${options.contextTokens}-token profile selected`);
   routePhase = "download";
   await clickDownload(page);
@@ -638,6 +642,8 @@ try {
   for (const [name, entries] of Object.entries(audit)) {
     if (entries.length > 0) throw new Error(`${name} is non-empty: ${JSON.stringify(entries)}`);
   }
+  const webmcp = nativeWebMcp ? await (await import("./webmcp-live-scenario.mjs"))
+    .runConnectedNativeEvidence(nativeWebMcp.port, page.url(), { runtime: "browser", control: CORE_GEOMETRY_SELECTOR }) : undefined;
 
   const report = {
     schemaVersion: 1,
@@ -688,6 +694,7 @@ try {
       jlensBytes: sumBytes(sets.jlens.files),
       saeBytes: sumBytes(sets.sae.files),
       plainConversation: runMeasurements.plainConversation,
+      ...(webmcp ? { webmcp } : {}),
       descriptionRequests,
       expectedResourceErrors,
       onlineGeneration,
@@ -1028,19 +1035,16 @@ async function clickDownload(page) {
   }
 }
 
-async function selectAllFirstRunPacks(page, expectedCount) {
+async function verifyFirstRunPacks(page) {
   const picker = page.locator(".tool-picker");
   await picker.waitFor({ state: "visible", timeout: 30_000 });
   const checkboxes = picker.getByRole("checkbox");
   requireEqual(
     await checkboxes.count(),
-    expectedCount,
+    0,
     "published optional first-run pack choices",
   );
-  for (let index = 0; index < expectedCount; index += 1) {
-    const checkbox = checkboxes.nth(index);
-    if (!(await checkbox.isChecked())) await checkbox.check();
-  }
+  requireEqual(await picker.locator(".required-tool").count(), 3, "included core, J-lens and SAE setup packs");
 }
 
 async function waitForReadyPage(page) {

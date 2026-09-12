@@ -19,6 +19,7 @@ export interface RuntimeServiceOperationPolicy {
 
 export const RUNTIME_SERVICE_ROUTES = Object.freeze({
   sessions: Object.freeze({
+    operationStatus: "model",
     list: "model",
     get: "model",
     patch: "model",

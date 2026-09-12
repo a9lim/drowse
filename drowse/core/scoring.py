@@ -172,9 +172,6 @@ def score_choices(
             out = _call_model(
                 model, input_ids=input_ids, attention_mask=attn, use_cache=False,
             )
-            # fp32 vocab reduction — the project-wide norm/softmax invariant.
-            logits = out.logits.float()                  # [n, max_len, V]
-            norm = torch.logsumexp(logits, dim=-1)        # [n, max_len]
             for r, i in enumerate(chunk):
                 s = seqs[i]
                 cut, L = cuts[i], len(seqs[i])
@@ -184,13 +181,15 @@ def score_choices(
                     span_ids.append(())
                     continue
                 tok = torch.tensor(s[cut:L], dtype=torch.long, device=device)  # [m]
-                pos = torch.arange(cut - 1, L - 1, device=device)              # [m]
-                chosen = logits[r, pos, :].gather(1, tok[:, None]).squeeze(1)  # [m]
-                lp = chosen - norm[r, pos]
+                # Normalize only completion producers, in fp32, without subtracting
+                # two large uncentered values to recover a small log probability.
+                logp = torch.log_softmax(out.logits[r, cut - 1:L - 1], dim=-1, dtype=torch.float32)
+                lp = logp.gather(1, tok[:, None]).squeeze(1)
                 sum_lps.append(float(lp.sum().item()))
                 n_toks.append(int(tok.numel()))
                 span_ids.append(tuple(int(t) for t in s[cut:L]))
-            del out, logits, norm
+                del logp, lp
+            del out
 
     mean_lps = [sl / nt if nt else sl for sl, nt in zip(sum_lps, n_toks)]
     # Degenerate candidates (no distinct completion token — an empty-string
@@ -208,7 +207,7 @@ def score_choices(
         ]
         if all(m == float("-inf") for m in masked):
             return [0.0] * len(masked)
-        return [float(p) for p in torch.softmax(torch.tensor(masked), dim=0).tolist()]
+        return [float(p) for p in torch.softmax(torch.tensor(masked, dtype=torch.float32), dim=0).tolist()]
 
     prob_sum = _restricted_softmax(sum_lps)
     prob_mean = _restricted_softmax(mean_lps)

@@ -233,7 +233,9 @@ class GenerationResult:
     # and OpenAI ``logprobs`` was set to 0). Inner-tuple shape replaces the
     # legacy ``list[tuple[int, float]]`` pair shape; renderers that consume
     # this field read ``alt.text`` directly rather than re-decoding.
-    logprobs: list[tuple[int, float, list[TokenAlt]]] | None = None
+    # A forced token outside the sampler's support has zero probability;
+    # its non-finite logprob is represented by None on the JSON-safe surface.
+    logprobs: list[tuple[int, float | None, list[TokenAlt]]] | None = None
     # Steering expression applied to this generation, stringified via
     # :func:`drowse.core.steering_expr.format_expr` for round-trip
     # reproduction.  ``None`` when no steering was active.  Receipts /

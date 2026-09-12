@@ -223,6 +223,7 @@ def create_sae_pack(args, model: dict) -> None:
         "d_model": hidden_size,
         "d_sae": feature_count,
         "activation": "jump_relu",
+        "apply_b_dec_to_input": False,
         "tensor_file": tensor_path.name,
         "tensor_sha256": tensor_digest,
         "corpus_spec": f"provider:{provider_repository}",

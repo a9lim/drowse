@@ -11,6 +11,7 @@ import {
 } from "../src/hosted/runtime/chunkRecovery";
 import { initializeTheme } from "../src/lib/theme";
 import { initializeInputModality } from "../src/lib/inputModality";
+import { startWebMcp } from "../src/lib/webmcp";
 import "../src/lib/style/fonts.css";
 import "../src/lib/style/tokens.css";
 import "../src/lib/style/global.css";
@@ -19,6 +20,7 @@ const target = document.getElementById("app");
 if (!target) throw new Error("drowse hosted: #app element missing in index.html");
 initializeTheme();
 initializeInputModality();
+startWebMcp(true);
 const path = window.location.pathname.replace(/\/+$/, "") || "/";
 if (path !== "/") {
   const robots = document.createElement("meta");
@@ -42,7 +44,7 @@ try {
       import("../src/hosted/runtime/fixtureHostedRuntime"),
       import("./shell-controller"),
     ]);
-    controller = createShellController(createFixtureHostedRuntime());
+    controller = createShellController(createFixtureHostedRuntime(searchParams.get("fixtureInstruments") === "1"));
   }
   if (
     import.meta.env.DEV &&
@@ -102,8 +104,10 @@ try {
 let app = null;
 if (component) {
   completeChunkRecovery("bootstrap");
+  if (target.hasAttribute("data-prerendered")) target.replaceChildren();
   app = mount(component, { target, props });
 } else if (bootstrapError) {
+  if (target.hasAttribute("data-prerendered")) target.replaceChildren();
   const message = document.createElement("main");
   const heading = document.createElement("h1");
   const detail = document.createElement("p");

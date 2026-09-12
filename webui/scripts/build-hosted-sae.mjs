@@ -124,6 +124,7 @@ if (options.releaseCorpus !== null) {
     kind: "sae",
     corpusBytes,
     runtimeLock,
+    modelLock: lock,
   });
 }
 const runtimeIdentity = {

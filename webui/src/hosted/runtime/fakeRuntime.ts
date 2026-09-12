@@ -1,3 +1,4 @@
+import { RuntimeRequestJournal, replayRequest } from "../../lib/runtime/requestJournal";
 import type {
   CatalogInstrumentPack,
   InstalledInstrumentPackActivationRequest,
@@ -66,6 +67,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
   private session: SessionInfo;
   private loom: LoomTreeJSON;
   private readonly generation: DeterministicGenerationPort;
+  private activeLoom: BrowserLoomRuntime | null = null;
   private readonly sourcesByFamily: Record<"lens" | "sae", InstrumentSourceJSON[]> = {
     lens: [],
     sae: [],
@@ -274,15 +276,20 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     emit: (message: WSServerMessage) => void | Promise<void>,
   ): Promise<void> {
     const runtime = this.createLoomRuntime();
-    await runtime.generate(request, async (message) => {
+    this.activeLoom = runtime;
+    try {
+      await runtime.generate(request, async (message) => {
+        this.applySnapshot(runtime.snapshot());
+        await emit(message);
+      });
       this.applySnapshot(runtime.snapshot());
-      await emit(message);
-    });
-    this.applySnapshot(runtime.snapshot());
+    } finally {
+      this.activeLoom = null;
+    }
   }
 
   stopGeneration(): Promise<void> {
-    return this.generation.stop();
+    return this.activeLoom?.stop() ?? this.generation.stop();
   }
 
   private createLoomRuntime(): BrowserLoomRuntime {
@@ -1046,6 +1053,9 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
 }
 
 class FakeEventChannel implements RuntimeEventChannel {
+  private readonly journal = new RuntimeRequestJournal();
+
+  async requestStatus(id: string) { return this.journal.get(id); }
   private readonly runGeneration: (
     request: WSSubmitRequest | WSGenerateRequest,
     emit: (message: WSServerMessage) => void | Promise<void>,
@@ -1055,6 +1065,7 @@ class FakeEventChannel implements RuntimeEventChannel {
   private readonly stateListeners = new Set<(state: RuntimeEventChannelState) => void>();
   private openState = false;
   private running = false;
+  private activeRequestId: string | undefined;
 
   constructor(
     runGeneration: FakeEventChannel["runGeneration"],
@@ -1087,7 +1098,16 @@ class FakeEventChannel implements RuntimeEventChannel {
   send(message: WSClientMessage): void {
     if (!this.openState) throw new Error("Fake runtime event channel is not open");
     if (message.type === "stop") {
-      void this.stop();
+      if (message.request_id === undefined || message.request_id === this.activeRequestId) {
+        void this.stop();
+      }
+      return;
+    }
+    const admission = this.journal.claim(message);
+    if (admission !== "new") {
+      if (admission === "conflict") this.emit({ type: "error", request_id: message.request_id,
+        code: "REQUEST_ID_CONFLICT", message: "This request ID belongs to different inputs" });
+      else replayRequest(this.journal.get(message.request_id!), event => this.emit(event));
       return;
     }
     if (this.running) {
@@ -1095,19 +1115,40 @@ class FakeEventChannel implements RuntimeEventChannel {
         type: "error",
         code: "GENERATION_BUSY",
         message: "The fixture is already generating",
+        ...(message.request_id ? { request_id: message.request_id } : {}),
       });
+      if (message.request_id) this.emit({ type: "request_complete", request_id: message.request_id,
+        state: "failed", completed_siblings: 0 });
       return;
     }
     this.running = true;
+    this.activeRequestId = message.request_id;
+    let completedSiblings = 0;
+    let terminal: "completed" | "cancelled" | "failed" = "completed";
     queueMicrotask(() => {
-      void this.runGeneration(message, (event) => this.emit(event))
-        .catch((error) => this.emit({
-          type: "error",
-          code: readErrorCode(error),
-          message: error instanceof Error ? error.message : String(error),
-        }))
+      void this.runGeneration(message, (event) => {
+        if (event.type === "done") {
+          completedSiblings += 1;
+          if (event.result.finish_reason === "cancelled" || event.result.terminal_reason === "external_stop") {
+            terminal = "cancelled";
+          }
+        } else if (event.type === "error") terminal = "failed";
+        this.emit(message.request_id ? { ...event, request_id: message.request_id } : event);
+      })
+        .catch((error) => {
+          terminal = "failed";
+          this.emit({
+            type: "error",
+            code: readErrorCode(error),
+            message: error instanceof Error ? error.message : String(error),
+            ...(message.request_id ? { request_id: message.request_id } : {}),
+          });
+        })
         .finally(() => {
           this.running = false;
+          this.activeRequestId = undefined;
+          if (message.request_id) this.emit({ type: "request_complete", request_id: message.request_id,
+            state: terminal, completed_siblings: completedSiblings });
         });
     });
   }
@@ -1132,6 +1173,7 @@ class FakeEventChannel implements RuntimeEventChannel {
   }
 
   private emit(message: WSServerMessage): void {
+    this.journal.observe(message);
     for (const listener of this.listeners) listener(message);
   }
 }

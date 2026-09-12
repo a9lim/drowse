@@ -704,15 +704,17 @@ imported by the PWA nor exposed through its worker protocol. The browser can
 download, validate, activate, read, probe, gate, and steer with compatible
 precomputed SAE and J-lens packs entirely on the GPU.
 
-This is currently a fail-closed release foundation, not a production browser
-runtime. The runtime and distribution locks remain `feasibility-required`, the
-catalog trust root is not provisioned, and the deterministic fixture backend is
-limited to tests and local UI development. A release build must reject that
-state. No hosted path may substitute cloud inference or CPU-only inference when
+The runtime and distribution locks are `verified`, with pinned runtime artifacts
+and provisioned catalog signing keys. The deterministic fixture backend remains
+limited to tests and local UI development. Release checks reject unverified locks,
+missing trust roots, and incompatible artifact closures. These release checks do
+not certify numerical accuracy across every model, device, or prompt; model-specific
+validation evidence remains separate. No hosted path may substitute cloud inference
+or CPU-only inference when
 WebGPU, the pinned Drowse MLC backend, verified artifacts, or a compatible device
 is unavailable.
 
-The feasibility runtime now accepts a caller-owned, read-only artifact cache.
+The browser runtime accepts a caller-owned, read-only artifact cache.
 Drowse validates the MLC configuration, tokenizer, `tensor-cache.json`, exact
 weight-shard closure, model library, and signed sizes before creating the
 engine. WebLLM reads those verified OPFS `File` objects directly and cannot
@@ -729,14 +731,15 @@ syntax, including projections, ablations, manifold positions, phase windows,
 probe gates, SAE selectors, and J-lens selectors. Python and TypeScript consume
 the same accept/reject fixture. Parsing does not imply execution support: each
 expression is reduced to an explicit hook-feature requirement set before GPU
-program compilation. The current `standard-v3` feasibility library implements
+program compilation. The `standard-v3` library profile implements
 structured affine and curved programs, exact geometry reads, precomputed SAE
 steering/readout, and exact full-vocabulary J-lens steering/readout. The worker
 still validates the library feature manifest, runtime identity, model profile,
 and required instrument packs before every program is installed; unsupported
-or incompatible combinations fail before generation. Production downloads
-remain disabled until the runtime lock, immutable model closure, signed catalog,
-and distribution origins are complete.
+or incompatible combinations fail before generation. Production downloads require
+the verified runtime lock, immutable model closure, signed catalog, and allowed
+distribution origins; the checked-in distribution lock provisions these origins
+and trust keys.
 
 ## 11. J-lens and SAE lifecycle
 

@@ -7,10 +7,10 @@ import os
 import threading
 import warnings
 import weakref
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, cast
+from typing import Any, Callable, Iterable, Iterator, cast
 
 import torch
 import torch.nn as nn
@@ -27,6 +27,7 @@ _MODEL_FINGERPRINT_CACHE: "weakref.WeakKeyDictionary[Any, tuple[object, str, str
     weakref.WeakKeyDictionary()
 )
 _MODEL_FINGERPRINT_LOCK = threading.Lock()
+_MODEL_LOAD_LOCK = threading.RLock()
 _SOURCE_FINGERPRINT_VERSION = 1
 
 
@@ -1203,6 +1204,24 @@ def _resolve_load_plan(
     )
 
 
+@contextmanager
+def _model_load_environment(device: str) -> Iterator[None]:
+    # Transformers' concurrent dtype/device copies can segfault on MPS.
+    # Scope its supported synchronous-loading flag to the load, not inference.
+    with _MODEL_LOAD_LOCK:
+        previous = os.environ.get("HF_DEACTIVATE_ASYNC_LOAD")
+        if device == "mps":
+            os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+        try:
+            yield
+        finally:
+            if device == "mps":
+                if previous is None:
+                    os.environ.pop("HF_DEACTIVATE_ASYNC_LOAD", None)
+                else:
+                    os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = previous
+
+
 def _load_with_fallbacks(plan: LoadPlan) -> Any:
     """One ``from_pretrained`` attempt plus the attn / dtype retries.
 
@@ -1211,21 +1230,22 @@ def _load_with_fallbacks(plan: LoadPlan) -> Any:
     already-narrowed kwargs rather than repeating a known-bad attempt.
     """
     load_kwargs = plan.load_kwargs
-    try:
-        return AutoModelForCausalLM.from_pretrained(plan.model_id, **load_kwargs)
-    except ValueError as e:
-        if "does not support an attention implementation" not in str(e):
-            raise
-        log.info("attn_implementation %r unsupported, falling back to eager",
-                 load_kwargs.get("attn_implementation"))
-        load_kwargs["attn_implementation"] = "eager"
-        return AutoModelForCausalLM.from_pretrained(plan.model_id, **load_kwargs)
-    except Exception:
-        if plan.quantize is not None:
-            raise
-        fallback = torch.float16 if plan.device == "cuda" else torch.float32
-        load_kwargs["dtype"] = fallback
-        return AutoModelForCausalLM.from_pretrained(plan.model_id, **load_kwargs)
+    with _model_load_environment(plan.device):
+        try:
+            return AutoModelForCausalLM.from_pretrained(plan.model_id, **load_kwargs)
+        except ValueError as e:
+            if "does not support an attention implementation" not in str(e):
+                raise
+            log.info("attn_implementation %r unsupported, falling back to eager",
+                     load_kwargs.get("attn_implementation"))
+            load_kwargs["attn_implementation"] = "eager"
+            return AutoModelForCausalLM.from_pretrained(plan.model_id, **load_kwargs)
+        except Exception:
+            if plan.quantize is not None:
+                raise
+            fallback = torch.float16 if plan.device == "cuda" else torch.float32
+            load_kwargs["dtype"] = fallback
+            return AutoModelForCausalLM.from_pretrained(plan.model_id, **load_kwargs)
 
 
 def _materialize_model(plan: LoadPlan) -> Any:
@@ -1435,12 +1455,13 @@ def get_layers(model: PreTrainedModel) -> nn.ModuleList:
 
 
 def get_unembedding(model: PreTrainedModel) -> torch.Tensor:
-    """Return the unembedding matrix ``W_U``, shape ``[vocab, hidden]``.
+    """Return the unembedding matrix ``W_U``, shape ``[vocab, head_width]``.
 
     Uses the HF-standard ``get_output_embeddings()`` (the lm_head module,
     whether or not its weight is tied to the input embedding). Nothing else in
     drowse touches the unembedding outside the model's own forward; this
-    accessor exists for the Jacobian lens readout.
+    accessor exists for the Jacobian lens readout. Projected OPT models have
+    a head width distinct from the residual width; see get_output_projection.
     """
     out = model.get_output_embeddings()
     weight = getattr(out, "weight", None)
@@ -1453,7 +1474,47 @@ def get_unembedding(model: PreTrainedModel) -> torch.Tensor:
     return weight
 
 
-_FINAL_NORM_ATTRS = ("norm", "final_layernorm", "ln_f", "final_norm")
+_FINAL_NORM_ATTRS = ("norm", "final_layernorm", "final_layer_norm", "ln_f", "final_norm")
+
+
+def get_logit_softcap(model: PreTrainedModel) -> float | None:
+    return getattr(_text_config(model), "final_logit_softcapping", None)
+
+
+def get_output_projection(model: PreTrainedModel) -> torch.Tensor | None:
+    if model.config.model_type == "opt":
+        projection = model.model.decoder.project_out
+        return projection.weight if projection is not None else None
+    return None
+
+
+class LogitReadout(nn.Module):
+    """The model's final-residual-to-logits path, without another forward."""
+
+    def __init__(self, model: PreTrainedModel):
+        super().__init__()
+        self.norm = get_final_norm(model)
+        self.head = cast(nn.Module, model.get_output_embeddings())
+        self.projection = model.model.decoder.project_out if model.config.model_type == "opt" else None
+        self.softcap = get_logit_softcap(model)
+        self.scale = model.logit_scale if model.config.model_type in {"cohere", "cohere2"} else 1.0
+        if model.config.model_type == "falcon_h1":
+            self.scale = model.model.lm_head_multiplier
+        self.divisor = model.config.logits_scaling if model.config.model_type in {"granite", "granitemoe"} else 1.0
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        weight = cast(torch.Tensor, self.head.weight)
+        hidden = self.norm(hidden.to(weight.dtype))
+        if self.projection is not None:
+            hidden = self.projection(hidden)
+        logits = self.head(hidden)
+        if self.scale != 1.0:
+            logits = logits * self.scale
+        if self.divisor != 1.0:
+            logits = logits / self.divisor
+        if self.softcap is not None:
+            logits = (logits / self.softcap).tanh() * self.softcap
+        return logits
 
 
 def get_final_norm(model: PreTrainedModel) -> nn.Module:
@@ -1473,6 +1534,8 @@ def get_final_norm(model: PreTrainedModel) -> nn.Module:
                 cand = getattr(module, attr, None)
                 if isinstance(cand, nn.Module):
                     return cand
+            if model.config.model_type == "opt" and module.final_layer_norm is None:
+                return nn.Identity()
     raise ValueError(
         f"model_type {model.config.model_type!r}: no final norm found next to "
         f"the layer list (tried attributes {', '.join(_FINAL_NORM_ATTRS)})"

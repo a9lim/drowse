@@ -6,6 +6,7 @@
   import PageHeader from "./PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
   import ModelProviderLogo from "./ModelProviderLogo.svelte";
+  import { siteTitle } from "../../../scripts/site-metadata.mjs";
 
   let plainBackground = $state(false);
 
@@ -60,7 +61,7 @@
   ];
 </script>
 
-<TabIdentity />
+<TabIdentity title={siteTitle} />
 
 <a class="skip-link" href="#main">Skip to content</a>
 
@@ -330,7 +331,8 @@
     border-radius: var(--radius-lg);
     background: var(--landing-panel-bg);
     color: var(--fg);
-    text-shadow: var(--landing-panel-text-shadow);
+    font: var(--weight-reading) var(--text-md)/1.5 var(--font-reading);
+    text-shadow: none;
     -webkit-backdrop-filter: blur(1px);
     backdrop-filter: blur(1px);
   }
@@ -360,7 +362,7 @@
   .capabilities li p {
     margin: 0;
     color: var(--fg-dim);
-    line-height: 1.55;
+    line-height: 1.6;
     text-wrap: pretty;
   }
 
@@ -397,15 +399,12 @@
   }
 
   .model-row strong {
-    font-family: var(--font-structure);
-    font-size: var(--text-lg);
-    font-weight: var(--weight-structure-bold);
-    letter-spacing: -0.02em;
-    line-height: 1.4;
+    font: inherit;
+    font-weight: var(--weight-reading-medium);
   }
 
   .model-copy { display: grid; gap: var(--space-xs); min-width: 0; }
-  .model-copy > span { color: var(--fg-muted); font-size: var(--text-sm); line-height: 1.4; }
+  .model-copy > span { color: var(--fg-muted); font-size: var(--text-sm); line-height: 1.6; }
   .model-row:last-child .model-copy { align-self: end; }
   .model-row:last-child .model-copy > span {
     text-box-edge: cap alphabetic;

@@ -30,6 +30,7 @@ there is no automatic cross-session persistence.
 from __future__ import annotations
 
 import gzip
+from enum import Enum
 import json
 import os
 import re
@@ -173,6 +174,14 @@ _TREE_FIELDS = frozenset({
 TokenScoreDict = dict
 
 
+class InheritSystemPrompt(Enum):
+    """Legacy recipes without a captured system prompt inherit the session."""
+    VALUE = "session_default"
+
+
+INHERIT_SYSTEM_PROMPT = InheritSystemPrompt.VALUE
+
+
 @dataclass
 class Recipe:
     """Reproducibility receipt for an assistant node.
@@ -193,6 +202,10 @@ class Recipe:
     # hashes (e.g. for synthetic test probes).
     probes: list[str] = field(default_factory=list)
     probe_hashes: dict[str, str] = field(default_factory=dict)
+    system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT
+
+    def resolved_system_prompt(self, default: str | None) -> str | None:
+        return default if isinstance(self.system_prompt, InheritSystemPrompt) else self.system_prompt
 
     def to_dict(self) -> dict[str, Any]:
         sampling = None
@@ -213,6 +226,7 @@ class Recipe:
             "seed": self.seed,
             "probes": list(self.probes),
             "probe_hashes": dict(self.probe_hashes),
+            **({} if isinstance(self.system_prompt, InheritSystemPrompt) else {"system_prompt": self.system_prompt}),
         }
 
     @classmethod
@@ -227,7 +241,9 @@ class Recipe:
         fields so a bad key raises :class:`LoomTreeError` rather than a bare
         ``TypeError`` out of the constructor.
         """
-        _require_fields(data, _RECIPE_FIELDS, "recipe")
+        _require_fields(data, _RECIPE_FIELDS, "recipe", optional=frozenset({"system_prompt"}))
+        if "system_prompt" in data and data["system_prompt"] is not None and not isinstance(data["system_prompt"], str):
+            raise LoomTreeError("recipe system_prompt must be a string or null")
         sampling = None
         s = data["sampling"]
         if s is not None:
@@ -251,6 +267,7 @@ class Recipe:
             seed=data["seed"],
             probes=list(data["probes"]),
             probe_hashes=dict(data["probe_hashes"]),
+            system_prompt=data.get("system_prompt", INHERIT_SYSTEM_PROMPT),
         )
 
     # ------------------------------------------------------------------
@@ -286,6 +303,7 @@ class Recipe:
             seed=override.seed if override.seed is not None else self.seed,
             probes=list(self.probes),
             probe_hashes=dict(self.probe_hashes),
+            system_prompt=self.system_prompt if isinstance(override.system_prompt, InheritSystemPrompt) else override.system_prompt,
         )
 
     def invert_steering(self) -> "Recipe":
@@ -400,6 +418,7 @@ class Recipe:
             seed=self.seed,
             probes=list(self.probes),
             probe_hashes=out,
+            system_prompt=self.system_prompt,
         )
 
 

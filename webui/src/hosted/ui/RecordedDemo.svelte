@@ -34,13 +34,13 @@
     <SegmentedTabs items={options} bind:value={mode} ariaLabel="Example capability" />
   </header>
   <p class="context">{promptPreview}</p>
-  <div class="mode-stage">
-  {#key mode}
-  <div class="mode-content" transition:pageTransition={{}}>
     <div class="alpha"><span>Welcoming influence</span><span><MorphText text={`${alphaLabel(run.alpha)} · α ${run.alpha.toFixed(2)}`} /></span></div>
     <Slider value={setting} min={0} max={recording.runs.length - 1} step={1} oninput={value => setting = value}
       ariaLabel="Recorded welcoming setting" title={`${alphaLabel(run.alpha)}, alpha ${run.alpha.toFixed(2)}`} displayValue={`α ${run.alpha.toFixed(2)}`} />
     <div class="scale-labels" aria-hidden="true"><span>Detached</span><span>Unsteered</span><span>Welcoming</span></div>
+  <div class="mode-stage">
+  {#key mode}
+  <div class="mode-content" transition:pageTransition={{}}>
     {#if mode === "steering"}
       <p class="result"><DemoReply text={run.text} /></p>
     {:else}
@@ -59,20 +59,22 @@
 </section>
 
 <style>
-  .capability-demo { min-width: 0; transition: height 280ms cubic-bezier(0.2, 0, 0, 1); }
+  .capability-demo { min-width: 0; font: var(--weight-reading) var(--text-md)/1.6 var(--font-reading); text-shadow: none; transition: height 280ms cubic-bezier(0.2, 0, 0, 1); }
   .demo-content { display: flow-root; }
   .mode-stage { position: relative; }
   .mode-content { display: flow-root; }
   header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
   .inspect-hint, .scale-labels { color: var(--fg-muted); font-size: var(--text-sm); line-height: 1.6; }
-  .context { max-width: 70ch; font-size: var(--text-lg); line-height: 1.6; margin: 0 0 24px; text-wrap: pretty; }
+  .context { max-width: 70ch; font: inherit; margin: 0 0 24px; text-wrap: pretty; }
   .alpha, .scale-labels { display: flex; justify-content: space-between; gap: 16px; font-variant-numeric: tabular-nums; }
-  .alpha { flex-wrap: wrap; align-items: baseline; row-gap: var(--space-2); margin-bottom: calc(var(--space-8) + var(--space-2)); line-height: 1.6; -webkit-user-select: none; user-select: none; }
+  .alpha { flex-wrap: wrap; align-items: baseline; row-gap: var(--space-2); font-size: var(--text-sm); margin-bottom: calc(var(--space-8) + var(--space-2)); line-height: 1.6; -webkit-user-select: none; user-select: none; }
   .alpha > span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
   .alpha :global(.morph-paint) { overflow: visible; }
-  .capability-demo :global(.slider-bubble) { white-space: nowrap; }
+  .capability-demo :global(.slider-bubble) { font-family: var(--font-reading); white-space: nowrap; }
+  .capability-demo :global(.sk-tabs .tab) { min-width: 80px; min-height: 48px; padding: 8px 16px; font-family: var(--font-reading) !important; font-size: var(--text-md); font-weight: var(--weight-reading-medium); line-height: 1.5; letter-spacing: normal; }
+  .capability-demo :global(.recorded-token-panel) { text-shadow: none; }
   .scale-labels { -webkit-user-select: none; user-select: none; }
-  .result { max-width: 70ch; font-family: var(--font-reading); font-size: var(--text-lg); font-weight: var(--weight-bold); line-height: 1.85; text-wrap: pretty; overflow-wrap: anywhere; margin: 24px 0 0; white-space: pre-wrap; }
+  .result { max-width: 70ch; font: inherit; font-weight: var(--weight-bold); text-wrap: pretty; overflow-wrap: anywhere; margin: 24px 0 0; white-space: pre-wrap; }
   .inspect-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); margin-top: var(--space-6); }
   .inspect-hint { margin: 0; }
   .token-text { margin-block: var(--space-4) var(--space-6); white-space: normal; }
@@ -80,8 +82,7 @@
     .capability-demo { transition: none; }
   }
   @media (max-width: 700px) {
-    header :global(.sk-tabs) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
-    header :global(.tab) { padding-inline: 8px; letter-spacing: 0; }
-    .alpha span:last-child { font-size: var(--text-sm); }
+    .capability-demo :global(.sk-tabs) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+    .capability-demo :global(.sk-tabs .tab) { padding-inline: 16px; }
   }
 </style>

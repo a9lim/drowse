@@ -1036,8 +1036,12 @@ def test_generate_stream_live_readouts_false_suppresses_readout_flags() -> None:
     assert events[0].measurements is envelope
 
 
+@pytest.mark.parametrize("capture_logprobs", [False, True])
+@pytest.mark.parametrize("token_logprobs", [(None,), (-0.4,), (None, -0.4)])
 def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
     monkeypatch: pytest.MonkeyPatch,
+    capture_logprobs: bool,
+    token_logprobs: tuple[float | None, ...],
 ) -> None:
     import threading
 
@@ -1061,13 +1065,13 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
         gen_config=GenerationConfig(
             max_new_tokens=1, temperature=0.0, top_p=1.0, top_k=None,
         ),
-        lp_count=None,
+        lp_count=0 if capture_logprobs else None,
         seed=None,
         stop_list=None,
         logit_bias=None,
         presence_penalty=0.0,
         frequency_penalty=0.0,
-        logprobs_list=None,
+        logprobs_list=[] if capture_logprobs else None,
     )
     session._whitener = None
     session._seat_stop_augmentation = lambda stop_list, **_kwargs: stop_list
@@ -1141,18 +1145,20 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
         **_kwargs: Any,
     ) -> tuple[list[int], float]:
         assert effective_tap is not None
-        effective_tap("x", False, 1, None, None, None)
+        for lp in token_logprobs:
+            effective_tap("x", False, 1, lp, None, None)
         observed_payloads.append(session._last_token_probe_payload)
         return [1], 0.1
 
     session._run_generation_loop = _run_generation_loop
-    session._finalize_generation = lambda *_args, **_kwargs: GenerationResult(
-        text="x",
-        tokens=[1],
-        token_count=1,
-        tok_per_sec=10.0,
-        elapsed=0.1,
-    )
+    final_values: dict[str, Any] = {}
+
+    def _finalize(*_args: Any, **kwargs: Any) -> GenerationResult:
+        final_values.update(kwargs)
+        return GenerationResult(text="x", tokens=[1], token_count=1, tok_per_sec=10., elapsed=.1,
+                                logprobs=kwargs["logprobs_list"])
+
+    session._finalize_generation = _finalize
     session._end_capture = lambda: None
     session._active_gen_reservation = None
 
@@ -1174,7 +1180,14 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
     )
 
     assert result.text == "x"
-    assert seen_tokens == ["x"]
+    assert seen_tokens == ["x"] * len(token_logprobs)
+    assert result.logprobs == ([(1, lp, []) for lp in token_logprobs] if capture_logprobs else None)
+    if None in token_logprobs:
+        assert final_values["mean_logprob"] is None
+        assert final_values["mean_surprise"] is None
+    else:
+        assert final_values["mean_logprob"] == pytest.approx(-0.4)
+        assert final_values["mean_surprise"] == pytest.approx(0.4)
     assert observed_payloads == [None]
     assert payload_builder_calls == 0
 

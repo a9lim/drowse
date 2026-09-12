@@ -82,7 +82,7 @@ def register_session_routes(app: FastAPI) -> None:
                 req.max_tokens if req.max_tokens is not None else config.max_new_tokens
             ),
             system_prompt=(
-                req.system_prompt if req.system_prompt is not None else config.system_prompt
+                req.system_prompt if "system_prompt" in req.model_fields_set else config.system_prompt
             ),
             thinking=req.thinking if req.thinking is not None else config.thinking,
         )

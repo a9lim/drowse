@@ -110,7 +110,7 @@
   "baseModels": {
     "gpt2": {
       "modelAdapterFiles": {
-        "base_model_adapters.py": "eed323ea949e87c537ca7b1c49c3db2841f26711cadd3921e3d46a5cd45eaca7"
+        "base_model_adapters.py": "8056482704d65958065f8c32ff46be798c84bb0b49acb636affab7f9555f6fd5"
       },
       "modelSourceFiles": {
         "python/mlc_llm/model/gpt2/gpt2_loader.py": "d9e91af06a275b8b4e6b2419e51c9670702fddfb3ad9e3fecdf63901310e4c36",
@@ -119,7 +119,7 @@
     },
     "gpt_neox": {
       "modelAdapterFiles": {
-        "base_model_adapters.py": "eed323ea949e87c537ca7b1c49c3db2841f26711cadd3921e3d46a5cd45eaca7"
+        "base_model_adapters.py": "8056482704d65958065f8c32ff46be798c84bb0b49acb636affab7f9555f6fd5"
       },
       "modelSourceFiles": {
         "python/mlc_llm/model/gpt_neox/gpt_neox_loader.py": "0440155050e86cba299b8b6ce18cc016dfcc25e790e3cfdc3b209f86b99cd3c9",
@@ -128,7 +128,7 @@
     },
     "qwen3_5": {
       "modelAdapterFiles": {
-        "base_model_adapters.py": "eed323ea949e87c537ca7b1c49c3db2841f26711cadd3921e3d46a5cd45eaca7",
+        "base_model_adapters.py": "8056482704d65958065f8c32ff46be798c84bb0b49acb636affab7f9555f6fd5",
         "qwen35_adapter.py": "02f78f5acc870f27d46efd1dea5551dbddf67cd5e18b7280cb71fb0ef0b77fdf",
         "hybrid_state_kernels.py": "7075a4b80b11093503ca5048074095eb41c39cade72edf4fa6a0f69b2fdfb8a3"
       },

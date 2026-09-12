@@ -195,6 +195,7 @@ export class HostedRuntimeWorker {
   private admittedDownloadRequestId: string | null = null;
   private cancelAdmittedDownload = false;
   private admittedGenerationRequestId: string | null = null;
+  private admittedGenerationPublicId: string | null = null;
   private cancelAdmittedGeneration = false;
   private admittedFittingRequestId: string | null = null;
   private cancelAdmittedFitting = false;
@@ -314,6 +315,7 @@ export class HostedRuntimeWorker {
           return;
         }
         this.admittedGenerationRequestId = request.requestId;
+        this.admittedGenerationPublicId = request.payload.request_id ?? null;
         this.generationMutationAdmission = deferredVoid();
       }
       const fittingRequest = request.command === "request" &&
@@ -370,6 +372,7 @@ export class HostedRuntimeWorker {
             }
             if (this.admittedGenerationRequestId === request.requestId) {
               this.admittedGenerationRequestId = null;
+              this.admittedGenerationPublicId = null;
               this.cancelAdmittedGeneration = false;
             }
             if (this.admittedFittingRequestId === request.requestId) {
@@ -465,6 +468,11 @@ export class HostedRuntimeWorker {
           await this.handleFittingCancel(request.requestId);
           return;
         case "stop":
+          if (request.payload?.requestId !== undefined &&
+            request.payload.requestId !== this.admittedGenerationPublicId) {
+            this.success(request.requestId, undefined);
+            return;
+          }
           if (this.admittedGenerationRequestId !== null) {
             this.cancelAdmittedGeneration = true;
           }
@@ -1544,7 +1552,10 @@ export class HostedRuntimeWorker {
         const queuedEvent = eventQueue.then(async () => {
           if (queuedFailure !== null) return;
           try {
-            await this.emitModelMessage(message, requestId, protocol);
+            await this.emitModelMessage(
+              request.request_id === undefined ? message : { ...message, request_id: request.request_id },
+              requestId, protocol,
+            );
           } catch (error) {
             queuedFailure = error;
             void this.modelBackend.stop().catch(() => undefined);
@@ -1599,6 +1610,9 @@ export class HostedRuntimeWorker {
     requestId: string,
     protocol: GenerationProtocolState,
   ): Promise<void> {
+    if (message.type === "request_complete") {
+      throw generationProtocolViolation("Request completion belongs to the transport");
+    }
     if (message.type === "error") {
       protocol.terminalError = true;
       throw runtimeFailure(
@@ -2800,8 +2814,11 @@ function validRequest(value: unknown): value is WorkerRequest {
     case "storage":
     case "unload":
     case "takeover":
-    case "stop":
       return payload === undefined;
+    case "stop":
+      return payload === undefined || (isRecord(payload) &&
+        Object.keys(payload).every((key) => key === "requestId") &&
+        typeof payload.requestId === "string" && payload.requestId.length > 0 && payload.requestId.length <= 128);
     case "catalog":
       return isRecord(payload) &&
         Object.keys(payload).every((key) =>

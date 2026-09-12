@@ -6,7 +6,7 @@
   "hookAbi": "post-block-residual-v4",
   "exactReadoutAbi": "exact-readout-v1",
   "toolchain": {
-    "forkManifestSha256": "0dd76f395b3fb5124198bdf322a73dc7e923dff37e53753c5e7515a26a97a479",
+    "forkManifestSha256": "94e4231cd3d338b7271d66388384aee5fdbf816e38900aca3e3008db454db31f",
     "mlcLlmFork": {
       "repository": "https://github.com/a9lim/mlc-llm-polythetic",
       "commit": null
@@ -58,9 +58,9 @@
       "sourceRepository": "unsloth/gemma-3-270m-it",
       "sourceRevision": "23cf460f6bb16954176b3ddcc8d4f250501458a9",
       "convertedRepository": "logitsml/drowse-web-gemma3-270m",
-      "convertedRevision": "e7b9809ed77aa0a436eb45fe288f85f43c04acd3",
-      "manifestSha256": "e263fb91a0e5c84b8c42860ba1bcce89792aa8b94c988a031175edfd89c4c73b",
-      "librarySha256": "defe198ff9242afa2658e4a1b89469090388616fa2844825bb4ad65adeb9d8ee",
+      "convertedRevision": "3e1d604dbc4d6587f0df8bb09f021f1eff6aec8c",
+      "manifestSha256": "f5fa544c45399f5551ea4f01010540036bfa02b51487bcc50094c36426fb4586",
+      "librarySha256": "4ae2284dab2453d23971bd3081683f90bbc57b742360cf5cdb8dace9abfcd780",
       "tokenizerSha256": "4667f2089529e8e7657cfb6d1c19910ae71ff5f28aa7ab2ff2763330affad795",
       "chatTemplateSha256": "be2182df1ad0ea735d336418896eb06e5cc2f59136e7aaeac5de2ec2197742ac",
       "hiddenSize": 640,
@@ -84,7 +84,7 @@
         16,
         17
       ],
-      "quantization": "q4f32_1",
+      "quantization": "q0f32",
       "contextProfiles": [
         2048,
         4096
@@ -98,9 +98,9 @@
       "sourceRepository": "unsloth/gemma-3-1b-it",
       "sourceRevision": "5b11413a10db4e486ef16a20101fd028f8f2499c",
       "convertedRepository": "logitsml/drowse-web-gemma3-1b",
-      "convertedRevision": "e3cbfd8a6690d342adcbe5cd7e3db3a6c8bf39c5",
-      "manifestSha256": "fb734fe82387af6ef6046ce3fc0bf3f0815d127db08b1d273ae4447f94f02745",
-      "librarySha256": "cb77ab6d01e93e2e0f00b9f4a76cd8088f7661cde162088e2aab66c64c7dc7fc",
+      "convertedRevision": "4891d37fe4f26a16e246134e51ec5dcef2f1121e",
+      "manifestSha256": "40ef8d47203ef0f1e768b819cd84bc60a146a97d63cb4883d3563cbacbdc9df4",
+      "librarySha256": "83ba8e0a9bd86e9d62437e8d7b51125ae48be42dcde7c0f8283f8819d6ed73f2",
       "tokenizerSha256": "4667f2089529e8e7657cfb6d1c19910ae71ff5f28aa7ab2ff2763330affad795",
       "chatTemplateSha256": "a622f3103725cffe1f19deed01e8675cea4443bc3eff27680f9484e5dc4acf7b",
       "hiddenSize": 1152,
@@ -132,7 +132,7 @@
         24,
         25
       ],
-      "quantization": "q4f16_1",
+      "quantization": "q4f32_1",
       "contextProfiles": [
         2048,
         4096
@@ -146,9 +146,9 @@
       "sourceRepository": "unsloth/gemma-3-4b-it",
       "sourceRevision": "bf46152c47f5dd20b896357cb51abc4c03b8ee8c",
       "convertedRepository": "logitsml/drowse-web-gemma3-4b",
-      "convertedRevision": "d01e3c0c289998dcd66ddd2985e7eb2646602cf6",
+      "convertedRevision": "a4186633865c32c001321c7f59119c2242cda21e",
       "manifestSha256": "f19b31f7138a587ff9bebe2c39527c7eae829ff8bbcd56db1d1ae0913ac159a0",
-      "librarySha256": "6358b87a42c9990ec5fd99eb8bd83745510a7f4b203b4626e974bcbb44a18ef9",
+      "librarySha256": "7937326b8429e01e5e39354c7f4fcf57eec3843f0e7297c32ae655888c3e623b",
       "tokenizerSha256": "4667f2089529e8e7657cfb6d1c19910ae71ff5f28aa7ab2ff2763330affad795",
       "chatTemplateSha256": "8925eabb556c1897ca1bed405f0612e735a56afcd4d77e76eb90fd771e706f9c",
       "hiddenSize": 2560,
@@ -212,9 +212,9 @@
       "sourceRepository": "Qwen/Qwen3-4B",
       "sourceRevision": "1cfa9a7208912126459214e8b04321603b3df60c",
       "convertedRepository": "logitsml/drowse-web-qwen3-4b",
-      "convertedRevision": "29c31a7f840c534c591ea406840ca1580ec7e928",
-      "manifestSha256": "b6e26392cf28f3c8b966af21efb9e987cd8e612edcad2544d2da78de20bc514a",
-      "librarySha256": "655cdccbd8430fdbf2ab8dd9a02f78eb43a239846aaed1d6f535d09267914a51",
+      "convertedRevision": "7af57a07cb2ff2f4245ad8617fb204a1144906b3",
+      "manifestSha256": "b19c107ebd7d637bd89dad4882e7972dd7a81ab04f2ce1960bc1dfc1dd266204",
+      "librarySha256": "94993fd70d3090f73a2bdb52f064c5d5008420fde0ef53a556a1dbf65feaeea5",
       "tokenizerSha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
       "chatTemplateSha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
       "hiddenSize": 2560,
@@ -256,7 +256,7 @@
         34,
         35
       ],
-      "quantization": "q4f16_1",
+      "quantization": "q4f32_1",
       "contextProfiles": [
         2048,
         4096
@@ -280,9 +280,9 @@
       "sourceRepository": "Qwen/Qwen3-1.7B",
       "sourceRevision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
       "convertedRepository": "logitsml/drowse-web-qwen3-1.7b",
-      "convertedRevision": "f784cfc985e9ec6e74eb91fb77b8fa528872a887",
-      "manifestSha256": "d53616eb7675cbb603d6ae3471e3ab426b821ae3e2a1573f2e2265457addae49",
-      "librarySha256": "b45a60b6692ce2fdd09824eafb4f45d144aed151577602193beb946686a4b03a",
+      "convertedRevision": "6ce859176cf7d69f59f7cee2fe7d5ddb9b6fdff6",
+      "manifestSha256": "8eab009068b10b93d819c14dff5c04c3866feb690d5a981d163eb8eee64ff956",
+      "librarySha256": "e0e5b4b0c33f4df380b925167c61ca2f8ca0e67967488ab791d1adb64b8cd362",
       "tokenizerSha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
       "chatTemplateSha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
       "hiddenSize": 2048,
@@ -316,7 +316,7 @@
         26,
         27
       ],
-      "quantization": "q4f16_1",
+      "quantization": "q4f32_1",
       "contextProfiles": [
         2048,
         4096
@@ -365,9 +365,9 @@
       "sourceRepository": "EleutherAI/pythia-70m-deduped",
       "sourceRevision": "e93a9faa9c77e5d09219f6c868bfc7a1bd65593c",
       "convertedRepository": "logitsml/drowse-web-pythia-70m-base",
-      "convertedRevision": "b312ef57bd3852969fd43c8254ceb93b79317d27",
+      "convertedRevision": "a90f700ebb1a302bdf1f1122c013f75ad7c0b87e",
       "manifestSha256": "587eee3dadf689c9354c76452e618a14df7c6ad50b0ea88b3e68dcca9ed4872d",
-      "librarySha256": "f44343c7f80be8c1a9aa058f57ee21aa0882cbbba13060b59f91916fcffb83f2",
+      "librarySha256": "c8efeec167e6e8a1f1a21518d4bcd7dbbf55fd0068dfb31f571f4ac366634fa9",
       "tokenizerSha256": "c24618a1b3e6a38167beff1c72cffd126c3a66254347304b50547d12c5f25624",
       "chatTemplateSha256": "70e38394e494931c6f773ba41e19460dd4436526b852207367f04341b4066d3f",
       "hiddenSize": 512,

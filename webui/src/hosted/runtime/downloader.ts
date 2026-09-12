@@ -37,7 +37,7 @@ const ETA_TICK_MS = 1_000;
 const MAX_CURRENT_OBJECT_RESTARTS = 3;
 const RESERVATION_LEASE_MS = 2 * 60 * 1_000;
 const RESERVATION_HEARTBEAT_MS = 30_000;
-const DEFAULT_DURABLE_CHECKPOINT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_DURABLE_CHECKPOINT_BYTES = 64 * 1024 * 1024;
 const DEFAULT_DURABLE_CHECKPOINT_INTERVAL_MS = 10_000;
 
 export type ArtifactDownloadErrorCode =
@@ -1207,7 +1207,7 @@ export class VerifiedArtifactDownloader {
                 );
               }
               durableOffset = offset;
-              durableAt = checkpointAt;
+              durableAt = this.wallNow();
             }
           }
         }

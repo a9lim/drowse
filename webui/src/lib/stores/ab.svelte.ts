@@ -148,6 +148,10 @@ export async function sendShadowGenerate(
 
 let scheduledComparison: ReturnType<typeof setTimeout> | null = null;
 
+export function comparisonPending(): boolean {
+  return scheduledComparison !== null || abState.processingAb;
+}
+
 /** Start a comparison after the just-finished generation has completely
  * released the runtime. Worker and fixture transports acknowledge a request
  * just after emitting ``done``; sending synchronously from that event races

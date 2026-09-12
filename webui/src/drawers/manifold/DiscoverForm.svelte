@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { onMount as onInterfaceMount } from "svelte";
+  import { registerInterfaceController } from "../../lib/workspaceController";
+  import { discoverDraftSchema } from "../../lib/interfaceSchemas";
+  import { ToolError } from "../../lib/webmcp/types";
+
   import MorphText from "../../lib/ui/MorphText.svelte";
   // Auto-generated authoring: hand the model a flat concept list, the
   // K-tuple generator produces per-concept corpora against the shared
@@ -289,6 +294,24 @@
     } catch (e) { error = `Could not add the probe: ${describeError(e)}`; }
     finally { attaching = false; }
   }
+
+  onInterfaceMount(() => registerInterfaceController("manifold_discover", {
+    schema: discoverDraftSchema,
+    read: () => ({ busy: submitting || attaching || anotherJob, values: { concepts_text: conceptsText, kind, custom_system: customSystem, samples_per_prompt: samplesPerPrompt, role_per_node: rolePerNode, force, sae_release: saeRelease, also_fit: alsoFit, advanced_open: advancedOpen, tuning }, validation, examples_per_concept: examplesPerConcept, total_examples: totalExamples }),
+    update: async (change) => {
+      if (submitting || attaching || anotherJob) throw new ToolError("BUSY", "Wait for this interface operation to finish.");
+      if (change.concepts_text !== undefined) conceptsText = change.concepts_text as string;
+      if (change.kind !== undefined) kind = change.kind as DiscoverKind;
+      if (change.custom_system !== undefined) customSystem = change.custom_system as string;
+      if (change.samples_per_prompt !== undefined) { samplesPerPrompt = change.samples_per_prompt as number; budget = String(samplesPerPrompt); }
+      if (change.role_per_node !== undefined) rolePerNode = change.role_per_node as boolean;
+      if (change.force !== undefined) force = change.force as boolean;
+      if (change.sae_release !== undefined) saeRelease = change.sae_release as string;
+      if (change.also_fit !== undefined) alsoFit = change.also_fit as boolean;
+      if (change.advanced_open !== undefined) advancedOpen = change.advanced_open as boolean;
+      if (change.tuning) Object.assign(tuning, change.tuning);
+    },
+  }));
 </script>
 
 <div

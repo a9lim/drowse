@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { geometryViewSchema } from "../lib/interfaceSchemas";
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { ToolError } from "../lib/webmcp/types";
+  import { onMount as onInterfaceMount } from "svelte";
+
   import MorphText from "../lib/ui/MorphText.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   import { animatedDetails } from "../lib/animatedDetails";
@@ -352,6 +357,22 @@
   const intrinsicLabel = $derived(
     activeGeom ? `intrinsic dim ${activeGeom.intrinsic_dim}` : "",
   );
+
+  onInterfaceMount(() => registerInterfaceController("probe_geometry", {
+    schema: geometryViewSchema,
+    read: () => ({ values: { layer: selectedLayer, zoom: orbit.zoom, quaternion: orbit.q }, available_layers: layerList.map(row => row.layer), can_rotate: canOrbit, loading }),
+    update: (change) => {
+      const layer = change.layer as number | undefined;
+      if (layer !== undefined && !layerList.some(row => row.layer === layer)) throw new ToolError("NOT_FOUND", "Choose a layer from available_layers.");
+      const target = layer === undefined ? activeGeom : geom?.layers[String(layer)];
+      if (!target) throw new ToolError("NOT_READY", "Wait for this probe's geometry to load.");
+      if ((change.rotate || change.zoom !== undefined) && target.rank < 3) throw new ToolError("UNAVAILABLE", "Orbit and zoom controls require geometry of rank 3 or greater.");
+      if (layer !== undefined) selectedLayer = layer;
+      if (change.reset) resetView();
+      if (change.zoom !== undefined) orbit.zoom = change.zoom as number;
+      if (change.rotate) { const delta = change.rotate as { dx: number; dy: number }; rotateBy(delta.dx, delta.dy); }
+    },
+  }));
 </script>
 
 <svelte:window onkeydown={onKeydown} />

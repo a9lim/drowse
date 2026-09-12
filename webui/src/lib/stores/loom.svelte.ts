@@ -491,7 +491,7 @@ export function applyTreeDelta(ev: {
 }
 
 /** Bootstrap fetch of the required tree surface. */
-export async function refreshLoomTree(): Promise<void> {
+export async function refreshLoomTree(strict = false): Promise<void> {
   // Streaming events already maintain the map; a queued read would wait for
   // the entire reply and can time out in the browser runtime.
   if (genStatus.active && loomTree.loaded) return;
@@ -505,6 +505,7 @@ export async function refreshLoomTree(): Promise<void> {
     // fatal-error state.
     if (!loomTree.loaded) loomTree.error = msg;
     pushToast(`tree: ${msg}`, { kind: "error" });
+    if (strict) throw e;
   }
 }
 

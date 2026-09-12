@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { chatViewSchema } from "../lib/interfaceSchemas";
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { ToolError } from "../lib/webmcp/types";
+  import { onMount as onInterfaceMount } from "svelte";
+
   import { createTokenArrival } from "../lib/tokenArrival";
   const arrivals = createTokenArrival();
   $effect.pre(() => {
@@ -36,6 +41,7 @@
   // fall-through when no probe is selected.
 
   import { onMount, tick, untrack } from "svelte";
+  import { registerComposerController } from "../lib/workspaceController";
   import { SvelteMap } from "svelte/reactivity";
   import { fly, slide } from "svelte/transition";
   import StatusFooter from "./StatusFooter.svelte";
@@ -127,6 +133,7 @@
   let composerHeight: number | null = $state(null);
   let composerMaxHeight = $state(420);
   let composerManuallySized = $state(false);
+  let composerPointerHeld = $state(false);
   let resizeStart = $state<{
     pointerId: number;
     y: number;
@@ -461,6 +468,21 @@
   );
   let thinkingOpen = $state(false);
   let thinkingDraft = $state("");
+
+  onMount(() => registerComposerController({
+    read: () => ({ text: input, authoredRole, generatedRole, authoredThinking: thinkingDraft }),
+    update: async (change) => {
+      if (change.text !== undefined) input = change.text;
+      if (change.authoredRole !== undefined) authoredRole = change.authoredRole;
+      if (change.generatedRole !== undefined) continuationRole = change.generatedRole ?? "none";
+      if (change.authoredThinking !== undefined) {
+        thinkingDraft = change.authoredThinking;
+        thinkingOpen = thinkingDraft.length > 0;
+      }
+      await tick();
+      autosize();
+    },
+  }));
 
   const hasText = $derived(input.trim() !== "");
   const appendSelected = $derived(generatedRole === null);
@@ -1002,6 +1024,21 @@
     if (!window.matchMedia("(pointer: coarse)").matches) textareaRef?.focus();
     updateComposerBounds();
     let resizeFrame = 0;
+    let releaseComposerFrame = 0;
+    const holdComposer = (event: PointerEvent) => {
+      if (event.button !== 0 || !textareaRef?.closest("form")?.contains(document.activeElement)) return;
+      cancelAnimationFrame(releaseComposerFrame);
+      composerPointerHeld = true;
+    };
+    const releaseComposer = () => {
+      if (!composerPointerHeld) return;
+      cancelAnimationFrame(releaseComposerFrame);
+      releaseComposerFrame = requestAnimationFrame(() => { composerPointerHeld = false; });
+    };
+    document.addEventListener("pointerdown", holdComposer, true);
+    window.addEventListener("pointerup", releaseComposer);
+    window.addEventListener("pointercancel", releaseComposer);
+    window.addEventListener("blur", releaseComposer);
     const scheduleComposerBounds = () => {
       if (resizeFrame) return;
       resizeFrame = requestAnimationFrame(() => {
@@ -1017,6 +1054,11 @@
     return () => {
       observer?.disconnect();
       cancelAnimationFrame(resizeFrame);
+      cancelAnimationFrame(releaseComposerFrame);
+      document.removeEventListener("pointerdown", holdComposer, true);
+      window.removeEventListener("pointerup", releaseComposer);
+      window.removeEventListener("pointercancel", releaseComposer);
+      window.removeEventListener("blur", releaseComposer);
       cancelAnimationFrame(_scrollFrame);
       _scrollFrame = 0;
       window.visualViewport?.removeEventListener("resize", scheduleComposerBounds);
@@ -1106,6 +1148,16 @@
       .map(({ tok }) => tok.text)
       .join("");
   }
+
+  onInterfaceMount(() => registerInterfaceController("chat", {
+    schema: chatViewSchema,
+    read: () => ({ values: { comparison_visible: pinnedActive || autoRegenActive }, comparison_available: chatLog.turns.some(turn => turn.abPair !== undefined) }),
+    update: (change) => {
+      if (change.comparison_visible === true && !pinnedActive && !chatLog.turns.some(turn => turn.abPair !== undefined)) throw new ToolError("NOT_FOUND", "Generate or pin a comparison before showing it.");
+      if (change.comparison_visible === false) { hideComparison(); unpinComparison(); }
+      if (change.comparison_visible === true) manualComparisonVisible = true;
+    },
+  }));
 </script>
 
 <div class="chat-panel">
@@ -1472,6 +1524,7 @@
   <form
     id="conversation-composer"
     class="input-row"
+    class:pointer-held={composerPointerHeld}
     class:has-draft={hasText}
     class:generating={genStatus.active}
     onsubmit={(ev) => { ev.preventDefault(); doSend(); }}
@@ -1556,7 +1609,7 @@
   <span class="role-chip">
     {#if turn.role === "assistant"}
       {#if interactive}
-        <button type="button" class="model-avatar" aria-label="Edit name and avatar"
+        <button type="button" class="model-avatar" aria-label="Edit chat name and avatar"
           onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "chat" } }))}>
           <Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={40} background="circle" alt="" />
         </button>
@@ -2438,7 +2491,7 @@
   }
   .input-actions :global(button) { white-space: nowrap; }
   .input-actions :global(button:focus-visible) { outline-offset: -2px; }
-  .input-row:not(:focus-within):not(.has-draft):not(.generating) .input-actions-reveal {
+  .input-row:not(:focus-within):not(.pointer-held):not(.has-draft):not(.generating) .input-actions-reveal {
     grid-template-rows: 0fr;
     margin-top: 0;
     opacity: 0;
@@ -2669,11 +2722,18 @@
     .chat:not(:has(.chat-header)) > .log { grid-row: 1; min-height: 24px; }
     .chat:not(:has(.chat-header)) > .composer-resizer-shell { grid-column: 2; grid-row: 2; }
     .chat:not(:has(.chat-header)) > :global(.status-footer) { grid-column: 1; grid-row: 2; }
+    .chat:not(:has(.chat-header)):has(.turn-plan-summary) {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) 5.5rem;
+    }
+    .chat:not(:has(.chat-header)):has(.turn-plan-summary) > .composer-resizer-shell { grid-column: 3; }
+    .chat:not(:has(.chat-header)):has(.turn-plan-summary) > .turn-plan-shell { grid-column: 2; grid-row: 2; }
     .input-row {
       grid-template-columns: minmax(0, 1fr) max-content;
       align-items: end;
       padding: var(--space-1);
     }
+    .input-row > .steering-status { grid-column: 1 / -1; }
+    .input-actions-reveal { margin-top: 0; }
   }
 
   @media (max-width: 760px), (max-height: 600px) {

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal, cast
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from drowse.io.templates import (
     AmbiguousTemplateError,
@@ -26,7 +26,7 @@ from drowse.io.templates import (
     template_dir,
 )
 from drowse.server.streaming import run_in_thread
-from drowse.server.app import acquire_session_lock
+from drowse.server.sse import ProgressCallback, sse_or_json
 from drowse.server.native_common import NativeRequest
 from drowse.server.response_models import (
     ScoreTemplateResponse,
@@ -134,25 +134,28 @@ def register_template_routes(app: FastAPI) -> None:
 
     @app.post("/drowse/v1/templates/{namespace}/{name}/score")
     async def score_template_route(
-        namespace: str, name: str, req: ScoreTemplateRequest,
+        namespace: str, name: str, req: ScoreTemplateRequest, request: Request,
     ) -> ScoreTemplateResponse:
         try:
             tmpl = resolve_template(f"{namespace}/{name}")
         except (TemplateNotFoundError, AmbiguousTemplateError) as e:
             raise HTTPException(404, str(e)) from e
 
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+        async def score(_progress: ProgressCallback) -> ScoreTemplateResponse:
             try:
                 per_ctx = await run_in_thread(
                     session.score_template, tmpl, steering=req.steering,
                 )
             except Exception as e:  # steering-expr / scoring failure → 400
                 raise HTTPException(400, f"scoring failed: {type(e).__name__}") from e
-        return {
-            "template": tmpl.name,
-            "namespace": namespace,
-            "steering": req.steering,
-            "contexts": [sc.to_dict() for sc in per_ctx],
-        }
+            return {
+                "template": tmpl.name,
+                "namespace": namespace,
+                "steering": req.steering,
+                "contexts": [sc.to_dict() for sc in per_ctx],
+            }
+
+        return cast(ScoreTemplateResponse, await sse_or_json(
+            request, session, score,
+            error_message="scoring failed", log_message="template scoring failed",
+        ))

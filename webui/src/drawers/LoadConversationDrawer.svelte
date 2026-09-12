@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onConversationLibraryChanged } from "../lib/stores/savedConversations.svelte";
   import BaseModelTag from "../lib/ui/BaseModelTag.svelte";
   import { chatAccentStyle } from "../lib/chatAccent";
   import { flushConversationAutosave } from "../lib/stores/savedConversations.svelte";
@@ -93,6 +94,8 @@
       persistenceRequesting = false;
     }
   }
+
+  onMount(() => onConversationLibraryChanged(refresh));
 
   async function refresh(): Promise<void> {
     loading = true;

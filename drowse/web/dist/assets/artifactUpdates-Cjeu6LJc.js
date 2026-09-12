@@ -1,0 +1,1 @@
+var e=new Set;function t(t){return e.add(t),()=>{e.delete(t)}}async function n(t){await Promise.all([...e].map(e=>e(t)))}export{t as n,n as t};

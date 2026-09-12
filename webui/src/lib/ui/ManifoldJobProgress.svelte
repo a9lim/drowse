@@ -1,7 +1,6 @@
 <script lang="ts">
   import { elapsedLabel, etaLabel, remainingWorkMs } from "../manifoldProgress";
-  import { manifoldJobs, dismissManifoldJob } from "../stores/manifoldJobs.svelte";
-  import { getHostedController } from "../runtime/registry";
+  import { manifoldJobs, dismissManifoldJob, cancelManifoldJob } from "../stores/manifoldJobs.svelte";
   import { openDrawer } from "../stores/drawers.svelte";
   import { pushToast } from "../stores/toasts.svelte";
   import { describeError } from "../runtime/errors";
@@ -31,21 +30,15 @@
   });
 
   async function cancel(): Promise<void> {
-    const current = manifoldJobs.current;
-    const controller = getHostedController();
-    if (!current || !controller || current.status !== "running") return;
-    manifoldJobs.current = { ...current, status: "cancelling" };
-    try { await controller.cancelFitting(); }
+    try { await cancelManifoldJob(); }
     catch (error) {
-      if (manifoldJobs.current?.id === current.id && manifoldJobs.current.status === "cancelling") {
-        manifoldJobs.current = { ...manifoldJobs.current, status: "running" };
-      }
       pushToast(`Could not cancel: ${describeError(error)}`, { kind: "error" });
     }
   }
 
   function openResult(): void {
     if (!job) return;
+    if (job.phase === "scoring") { openDrawer("template_lab"); return; }
     const item = steerRack.catalog.find(row => row.namespace === job.namespace && row.name === job.name);
     const fit = item?.resolved_fit_mode ?? item?.fit_mode;
     openDrawer(fit === "spectral" || fit === "authored" ? "manifolds" : "subspace");
@@ -73,10 +66,10 @@
     {#if job.error}<p class="job-error">{job.error}</p>{/if}
     <div class="job-footer">
       <p>{busy ? job.phase === "generating" && job.fitAfterwards ? "Step 1 of 2 · Fitting follows. Keep this tab open; you can use other tools." : job.fitAfterwards ? "Step 2 of 2 · Keep this tab open. You can use other tools." : "Keep this tab open. You can move between tools while this runs."
-        : job.status === "complete" ? job.phase === "generating" ? "Examples saved. Fit them from the concept library when ready." : "Saved and ready to steer or probe."
+        : job.status === "complete" ? job.phase === "generating" ? "Examples saved. Fit them from the concept library when ready." : job.phase === "scoring" ? "Choice scoring is complete. Inspect the returned sum and mean probabilities." : job.phase === "installing" ? "Artifact installed. Inspect its model fits before steering or probing." : "Saved and ready to steer or probe."
         : "Saved concept groups are kept. Reopen the creator or library to try again."}</p>
       <div class="job-actions">
-        {#if busy && getHostedController()}
+        {#if busy && job.cancellable}
           <Button size="sm" disabled={job.status !== "running"} onclick={() => void cancel()}>Cancel</Button>
         {:else if !busy}
           <Button size="sm" onclick={openResult}>Open library</Button>

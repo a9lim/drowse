@@ -121,6 +121,9 @@ jobs:
         working-directory: webui
       - run: npm run check
         working-directory: webui
+      - name: Verify native WebMCP with pinned Chrome and Puppeteer
+        run: npm run test:webmcp:native
+        working-directory: webui
       - run: npm run check:hosted
         working-directory: webui
       - run: npm run test:hosted

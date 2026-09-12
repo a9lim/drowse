@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { onMount as onInterfaceMount } from "svelte";
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { manifoldIdentitySchema } from "../lib/interfaceSchemas";
+  import { ToolError } from "../lib/webmcp/types";
+
   // Manifold authoring shell — reached from "+ build manifold" in the
   // rack drawer.
   //
@@ -41,7 +46,7 @@
   const returnToToken = $derived((params as { returnToToken?: unknown } | null)?.returnToToken);
 
   type AuthoringMode = "authored" | "discover" | "templated";
-  let authoringMode: AuthoringMode = $state(untrack(() => (params as { mode?: string } | null)?.mode === "authored" ? "authored" : "discover"));
+  let authoringMode: AuthoringMode = $state(untrack(() => ["authored", "templated"].includes((params as { mode?: string } | null)?.mode ?? "") ? (params as { mode: AuthoringMode }).mode : "discover"));
   let visited = $state<AuthoringMode[]>([]);
   $effect(() => { if (!visited.includes(authoringMode)) visited = [...visited, authoringMode]; });
   const busy = $derived(manifoldJobs.current !== null && ["running", "waiting", "cancelling"].includes(manifoldJobs.current.status));
@@ -67,6 +72,16 @@
     const mode = created?.resolved_fit_mode ?? created?.fit_mode;
     openDrawer(mode === "spectral" || mode === "authored" ? "manifolds" : "subspace", { returnToToken });
   }
+
+  onInterfaceMount(() => registerInterfaceController("manifold_builder", {
+    schema: manifoldIdentitySchema,
+    read: () => ({ busy: busy, values: { mode: authoringMode, ...identity } }),
+    update: async (change) => {
+      if (busy) throw new ToolError("BUSY", "Wait for this interface operation to finish.");
+      if (change.mode !== undefined) authoringMode = change.mode as AuthoringMode;
+      for (const key of ["namespace", "name", "description"] as const) if (change[key] !== undefined) identity[key] = change[key] as string;
+    },
+  }));
 </script>
 
 <section class="drawer-shell" aria-label="Build manifold">

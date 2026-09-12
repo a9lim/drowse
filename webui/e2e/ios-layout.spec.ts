@@ -137,6 +137,7 @@ async function expectConversationUsable(page: Page, minimumLogHeight: number): P
 
   await composer.focus();
   await expect(page.locator(".turn-plan-summary")).toBeVisible();
+  await expectInsideVisualViewport(page.locator("#conversation-composer > .steering-status"));
   await expectInsideVisualViewport(composer);
   await expectInsideVisualViewport(send);
   await expectInsideVisualViewport(stop);

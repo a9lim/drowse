@@ -1309,7 +1309,16 @@ export function measurementEnvelope(
       const slot = layerIndex * probeCount + probeIndex;
       if (hookProgram.probeKind[slot] === 0) continue;
       const value = values[slot];
-      if (!Number.isFinite(value)) continue;
+      if (
+        !Number.isFinite(value) ||
+        probe.family === "lens" && (value < 0 || value > 1) ||
+        probe.family === "sae" && value < 0
+      ) {
+        throw generationError(
+          "INVALID_HOOK_MEASUREMENTS",
+          `The browser model returned an invalid ${probe.family} reading at layer ${schema.layerMap[layerIndex]}`,
+        );
+      }
       readings.push({
         layer: schema.layerMap[layerIndex],
         depth: normalizedLayerDepth(
@@ -1322,15 +1331,15 @@ export function measurementEnvelope(
     if (readings.length === 0) return;
     const aggregateValue = readings.reduce((sum, item) => sum + item.value, 0) /
       readings.length;
-    scores[probe.name] = round6(aggregateValue);
+    scores[probe.name] = probe.family === "geometry" ? round6(aggregateValue) : aggregateValue;
     gateScores[probe.name] = aggregateValue;
     const perLayer = Object.fromEntries(
-      readings.map((item) => [String(item.layer), round6(item.value)]),
+      readings.map((item) => [String(item.layer), probe.family === "geometry" ? round6(item.value) : item.value]),
     );
     for (const reading of readings) {
       const layer = String(reading.layer);
       const row = perLayerScores[layer] ?? {};
-      row[probe.name] = round6(reading.value);
+      row[probe.name] = probe.family === "geometry" ? round6(reading.value) : reading.value;
       perLayerScores[layer] = row;
     }
     if (probe.family === "geometry") {
@@ -1340,7 +1349,7 @@ export function measurementEnvelope(
     if (probe.family === "sae" && probe.featureId !== undefined) {
       const maxAct = probe.maxAct ?? null;
       saeReadings[probe.name] = {
-        value: round6(aggregateValue),
+        value: aggregateValue,
         unit: maxAct === null ? "raw_activation" : "activation_over_max",
         per_layer: perLayer,
         depth: scalarDepthSummary(
@@ -1353,7 +1362,7 @@ export function measurementEnvelope(
     }
     if (probe.family === "lens" && probe.tokenId !== undefined) {
       lensReadings[probe.name] = {
-        value: round6(aggregateValue),
+        value: aggregateValue,
         unit: "mean_token_probability",
         per_layer: perLayer,
         depth: scalarDepthSummary(
@@ -2596,7 +2605,7 @@ function readSamplerLogprob(
 
 function isLogprob(value: unknown): value is number {
   return typeof value === "number" &&
-    (Number.isFinite(value) || value === Number.NEGATIVE_INFINITY);
+    value <= 0 && (Number.isFinite(value) || value === Number.NEGATIVE_INFINITY);
 }
 
 function readUsage(value: unknown): {

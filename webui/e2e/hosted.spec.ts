@@ -8,6 +8,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { text as readStreamText } from "node:stream/consumers";
 import { test as pwaTest } from "./pwa-update-fixture";
 import { resolve } from "node:path";
+import { siteTitle } from "../scripts/site-metadata.mjs";
 
 const devUrl = "http://127.0.0.1:4176";
 const fixtureResponse = "This is a deterministic local Drowse runtime fixture.";
@@ -747,7 +748,7 @@ test("landing page routes into the hosted app", async ({ page }) => {
 
   await page.goto("/");
 
-  await expect(page).toHaveTitle("Drowse");
+  await expect(page).toHaveTitle(siteTitle);
   await expect(
     page.getByRole("heading", { name: /See inside your model/ }),
   ).toBeVisible();
@@ -775,6 +776,7 @@ test("model storage notice retries protection without repeating instructions or 
   });
   await openFixtureWorkbench(page);
   await page.goto(`${devUrl}/app?fixture=1&choose=1`);
+  await chooseFixtureModel(page);
   const notice = page.getByRole("status", { name: "Storage protection", exact: true });
   await expect(notice).toHaveCount(1);
   await notice.getByRole("button", { name: "Protect storage", exact: true }).click();
@@ -1633,7 +1635,13 @@ test("geometry measurements populate and completed timing stays frozen", async (
 
 test("comparison controls appear only when usable and auto-compare completes", async ({ page }) => {
   const pageErrors: string[] = [];
+  const lifecycleWarnings: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "warning" && message.text().includes("[svelte]")) {
+      lifecycleWarnings.push(message.text());
+    }
+  });
   await page.goto(devUrl);
   await page.evaluate(() => {
     localStorage.setItem("drowse.chat.v4.fixture/drowse-tiny", JSON.stringify({
@@ -1706,6 +1714,7 @@ test("comparison controls appear only when usable and auto-compare completes", a
     };
   }, toastModuleUrl)).toEqual({ active: false, processing: false, pendingTurn: null });
   expect(pageErrors).toEqual([]);
+  expect(lifecycleWarnings).toEqual([]);
 });
 
 test("fixture survives repeated generation, stop, and reload cycles", async ({ page }) => {
@@ -2375,7 +2384,7 @@ test("custom roles can be entered directly, configured, and used for generation"
   await drawer.getByRole("button", { name: /^assistant\b/i }).click();
   await drawer.getByRole("button", { name: /^critic\b/i }).click();
   await expect(note).toHaveValue("Reviews the response carefully");
-  await expect(drawer.getByRole("status")).toHaveText("Saved");
+  await expect(drawer.getByRole("status").filter({ hasText: /^Saved$/ })).toHaveText("Saved");
   await page.getByRole("button", { name: "Close drawer" }).click();
   await expect(generatedRole).toHaveValue("critic");
 
@@ -2599,6 +2608,7 @@ test("a busy owner explicitly approves takeover before generation is stopped", a
   await openFixtureWorkbench(page, "&fixtureSlow=1");
   const requester = await context.newPage();
   await requester.goto(`${devUrl}/app?fixture=1&choose=1`);
+  await chooseFixtureModel(requester);
   await expect(
     requester.getByRole("heading", { name: "Models" }),
   ).toBeVisible();

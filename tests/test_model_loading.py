@@ -5,6 +5,8 @@ AutoModelForCausalLM calls and inspect the load_kwargs `load_model` passes.
 """
 from __future__ import annotations
 
+import os
+
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +17,39 @@ import pytest
 import torch
 
 from drowse.core import model as model_mod
+
+
+@pytest.mark.parametrize("previous", [None, "0", "1"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_mps_loading_is_synchronous_and_restores_environment(
+    monkeypatch: pytest.MonkeyPatch, previous: str | None, fails: bool,
+):
+    if previous is None:
+        monkeypatch.delenv("HF_DEACTIVATE_ASYNC_LOAD", raising=False)
+    else:
+        monkeypatch.setenv("HF_DEACTIVATE_ASYNC_LOAD", previous)
+    plan = _plan(_FakeConfig("gpt_neox"), device="mps")
+
+    def load(_model_id: str, **_kwargs: Any):
+        assert os.environ["HF_DEACTIVATE_ASYNC_LOAD"] == "1"
+        if fails:
+            raise ValueError("bad weights")
+        return "loaded"
+
+    monkeypatch.setattr(model_mod.AutoModelForCausalLM, "from_pretrained", load)
+    if fails:
+        with pytest.raises(ValueError, match="bad weights"):
+            model_mod._load_with_fallbacks(plan)
+    else:
+        assert model_mod._load_with_fallbacks(plan) == "loaded"
+    assert os.environ.get("HF_DEACTIVATE_ASYNC_LOAD") == previous
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_non_mps_loading_keeps_async_setting(monkeypatch: pytest.MonkeyPatch, device: str):
+    monkeypatch.delenv("HF_DEACTIVATE_ASYNC_LOAD", raising=False)
+    with model_mod._model_load_environment(device):
+        assert "HF_DEACTIVATE_ASYNC_LOAD" not in os.environ
 
 
 def test_local_model_file_hash_cache_is_bounded(

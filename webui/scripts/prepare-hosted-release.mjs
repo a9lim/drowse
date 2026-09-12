@@ -37,8 +37,8 @@ const publicHeaders = headers.replace(/^\s*X-Robots-Tag: noindex, nofollow\s*$/m
 if (publicHeaders === headers) {
   throw new Error("preview noindex header was missing from the hosted build");
 }
-if (/X-Robots-Tag:\s*noindex/i.test(publicHeaders)) {
-  throw new Error("hosted release output still contains a noindex header");
+if (/X-Robots-Tag:\s*noindex/i.test(publicHeaders.split(/\n\s*\n/)[0])) {
+  throw new Error("hosted release output still contains a global noindex header");
 }
 await writeFile(headersPath, `${publicHeaders}\n/app\n  X-Robots-Tag: noindex, follow\n\n/app/*\n  X-Robots-Tag: noindex, follow\n`);
 await writeFile(resolve(root, "robots.txt"), `User-agent: *\nAllow: /\n\nSitemap: ${canonical}sitemap.xml\n`);

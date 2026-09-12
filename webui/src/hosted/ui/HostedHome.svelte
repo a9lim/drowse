@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onConversationLibraryChanged } from "../../lib/stores/savedConversations.svelte";
+  import { registerHomeController } from "../../lib/homeController";
   import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import BaseModelTag from "../../lib/ui/BaseModelTag.svelte";
@@ -225,6 +227,25 @@
       model.id === record.modelId || model.modelId === record.modelId
     ) ?? null;
   }
+
+  onMount(() => onConversationLibraryChanged(refreshChats));
+  onMount(() => registerHomeController({
+    metadataDraft: () => editingId ? { id: editingId, name: editingName, dirty: editingName !== conversations.find(row => row.id === editingId)?.name } : null,
+    metadataState: () => conversations.map(row => [row.id, row.metadataVersion]),
+    busy: () => openingId !== null || changingId !== null || importing || downloadBusy || recovering,
+    open: async (id) => {
+      if (openingId !== null || changingId !== null || importing || downloadBusy || recovering) throw new Error("Finish the current chat or model operation before opening another chat.");
+      const record = summarizeConversation(await conversationLibrary.get(id));
+      const model = modelForConversation(record);
+      if (!model?.setupComplete || model.fit === "blocked" || !snapshot.runtime.available) {
+        onChooseModels(model?.id, record);
+        return { state: "model_required", chat_id: id, model_id: record.modelId, model_variant_id: model?.id ?? null };
+      }
+      await openConversation(record);
+      if (error) throw new Error(error);
+      return { state: "opening", chat_id: id, model_id: record.modelId, model_variant_id: model.id };
+    },
+  }));
 
   async function refreshChats(): Promise<void> {
     loading = true;

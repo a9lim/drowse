@@ -29,6 +29,119 @@ HEARTBEAT_SECONDS = 15.0
 MAX_PROGRESS_MESSAGES = 256
 
 
+async def _retained_response(
+    request: Request, session: Any, job: ProgressJob, request_id: str, *,
+    error_message: str, log_message: str, error_formatter: ErrorFormatter | None,
+    json_errors: JsonErrorMap, json_progress_key: str | None,
+    logger: logging.Logger | None,
+) -> Any:
+    from drowse.server.app import acquire_session_lock
+
+    ledger = request.app.state.operation_ledger
+    ledger.start(request_id, request.url.path, await request.json(), getattr(session, "model_id", None))
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(maxsize=MAX_PROGRESS_MESSAGES)
+    messages: deque[str] = deque(maxlen=MAX_PROGRESS_MESSAGES)
+    pending: deque[str] = deque(maxlen=MAX_PROGRESS_MESSAGES)
+    pending_lock = threading.Lock()
+    scheduled = False
+    streaming = "text/event-stream" in request.headers.get("accept", "")
+
+    def flush() -> None:
+        nonlocal scheduled
+        with pending_lock:
+            batch = list(pending)
+            pending.clear()
+            scheduled = False
+        for message in batch:
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait(("progress", {"message": message}))
+
+    def progress(message: str) -> None:
+        nonlocal scheduled
+        ledger.progress(request_id, message)
+        with pending_lock:
+            messages.append(message)
+            pending.append(message)
+            if scheduled:
+                return
+            scheduled = True
+        loop.call_soon_threadsafe(flush)
+
+    async def run() -> tuple[bool, Any]:
+        try:
+            if streaming:
+                async with session.lock:
+                    ledger.running(request_id)
+                    payload = await job(progress)
+            else:
+                async with acquire_session_lock(session) as acquired:
+                    if not acquired:
+                        raise HTTPException(503, "session locked")
+                    ledger.running(request_id)
+                    payload = await job(progress)
+            if not streaming and json_progress_key is not None and isinstance(payload, dict):
+                payload[json_progress_key] = list(messages)
+            ledger.complete(request_id, payload)
+            terminal = ("done", payload)
+        except asyncio.CancelledError:
+            ledger.interrupt(request_id, "The server stopped observing this operation before completion was recorded.")
+            raise
+        except Exception as error:
+            formatted = None
+            if error_formatter is not None:
+                try:
+                    formatted = error_formatter(error)
+                except Exception:
+                    (logger or logging.getLogger("drowse.api")).exception("%s (error formatter crashed)", log_message)
+            if isinstance(error, HTTPException):
+                formatted = {"message": str(error.detail), "code": "HTTPException", "status": error.status_code}
+            elif formatted is None:
+                for types, status in json_errors:
+                    if isinstance(error, types):
+                        formatted = {"message": str(error), "code": type(error).__name__, "status": status}
+                        break
+            if formatted is not None and "status" not in formatted:
+                for types, status in json_errors:
+                    if isinstance(error, types):
+                        formatted["status"] = status
+                        break
+            if formatted is None:
+                (logger or logging.getLogger("drowse.api")).exception(log_message)
+                formatted = {"message": error_message, "code": type(error).__name__, "status": 500}
+            ledger.fail(request_id, formatted)
+            terminal = ("error", formatted)
+        flush()
+        if queue.full():
+            queue.get_nowait()
+        queue.put_nowait(terminal)
+        return terminal[0] == "done", terminal[1]
+
+    task = asyncio.create_task(run())
+    tasks = request.app.state.operation_tasks
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    if not streaming:
+        ok, payload = await finish_worker(task)
+        if not ok:
+            raise HTTPException(payload.get("status", 400), payload["message"])
+        return payload
+
+    async def observe():
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
+            except (TimeoutError, asyncio.TimeoutError):
+                yield ": heartbeat\n\n"
+                continue
+            yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
+            if kind in {"done", "error"}:
+                return
+
+    return ClosingStreamingResponse(observe(), media_type="text/event-stream")
+
+
 def progress_sse_response(
     lock: Any,
     job: ProgressJob,
@@ -165,6 +278,15 @@ async def sse_or_json(
     key — the SSE branch already streams them as ``progress`` frames.
     """
     from drowse.server.app import acquire_session_lock
+
+    request_id = request.headers.get("x-drowse-request-id")
+    if request_id:
+        return await _retained_response(
+            request, session, job, request_id,
+            error_message=error_message, log_message=log_message,
+            error_formatter=error_formatter, json_errors=json_errors,
+            json_progress_key=json_progress_key, logger=logger,
+        )
 
     accept = request.headers.get("accept", "application/json")
     if "text/event-stream" in accept:

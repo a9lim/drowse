@@ -107,6 +107,7 @@ if (options.releaseCorpus !== null) {
     corpusBytes,
     wordsBytes,
     runtimeLock,
+    modelLock: lock,
   });
 }
 const artifactsManifest = JSON.parse(

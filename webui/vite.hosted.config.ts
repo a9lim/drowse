@@ -1,10 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig, type Plugin } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
-import { siteName, siteDescription, siteAccent, socialImagePath, socialImageAlt, publicOrigin, discoveryMetadata } from "./scripts/site-metadata.mjs";
+import { siteTitle, siteDescription, siteAccent, socialImagePath, socialImageAlt, publicOrigin, discoveryMetadata } from "./scripts/site-metadata.mjs";
+import { sitePublication, discoveryTags } from "./scripts/site-publication.mjs";
+import { prerenderLanding } from "./scripts/prerender-hosted.mjs";
 
 const fromRoot = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 const releaseBuild = process.env.npm_lifecycle_event === "build:hosted:release";
@@ -34,7 +37,7 @@ const sourceUrl = releaseBuild
   : sourceRepositoryUrl;
 const pageDescription = siteDescription;
 const manifestDescription = siteDescription;
-const pageTitle = siteName;
+const pageTitle = siteTitle;
 const siteOrigin = publicOrigin(process.env.DROWSE_PUBLIC_ORIGIN);
 const projectLicense = await readFile(fromRoot("../LICENSE"), "utf8");
 const isolationHeaders = {
@@ -57,8 +60,25 @@ const https =
       }
     : undefined;
 
+let isBuild = false;
+let landingBody = "";
+let landingStyle = "";
 const releaseMetadata: Plugin = {
   name: "drowse-hosted-release-metadata",
+  configResolved(config) { isBuild = config.command === "build"; },
+  async buildStart() {
+    if (!isBuild) return;
+    const prerendered = await prerenderLanding({
+      define: {
+        __DROWSE_HOSTED_RELEASE__: JSON.stringify(releaseBuild),
+        __DROWSE_SOURCE_REVISION__: JSON.stringify(releaseRevision),
+        __DROWSE_SOURCE_URL__: JSON.stringify(sourceUrl),
+      },
+      assetUrl: (filename: string, source: Buffer) => `/${this.getFileName(this.emitFile({ type: "asset", name: basename(filename), source }))}`,
+    });
+    landingBody = prerendered.body;
+    landingStyle = this.getFileName(this.emitFile({ type: "asset", name: "landing-prerender.css", source: prerendered.css }));
+  },
   transformIndexHtml(html) {
     const replacements: Record<string, string> = {
       __DROWSE_HOSTED_CHANNEL__: releaseBuild ? "release" : "preview",
@@ -67,7 +87,7 @@ const releaseMetadata: Plugin = {
       __DROWSE_SOCIAL_IMAGE__: `${siteOrigin}${socialImagePath}`,
       __DROWSE_ACCENT__: siteAccent,
       __DROWSE_SOCIAL_ALT__: socialImageAlt,
-      __DROWSE_DISCOVERY_METADATA__: discoveryMetadata(siteOrigin),
+      __DROWSE_DISCOVERY_METADATA__: `${discoveryMetadata(siteOrigin)}\n${discoveryTags()}`,
       __DROWSE_SOURCE_REVISION__: releaseRevision,
       __DROWSE_SOURCE_URL__: sourceUrl,
       __DROWSE_VERSION__: drowseVersion,
@@ -80,13 +100,14 @@ const releaseMetadata: Plugin = {
     for (const [placeholder, value] of Object.entries(replacements)) {
       transformed = transformed.replaceAll(placeholder, value);
     }
+    if (landingBody) {
+      transformed = transformed.replace('<div id="app"></div>', `<div id="app" data-prerendered>${landingBody}</div>`)
+        .replace("</head>", `<link rel="stylesheet" href="/${landingStyle}" data-prerender-style />\n</head>`);
+    }
     if (transformed.includes("__DROWSE_")) {
       throw new Error("Hosted index contains an unresolved Drowse metadata placeholder");
     }
     return transformed;
-  },
-  generateBundle() {
-    if (siteOrigin) this.emitFile({ type: "asset", fileName: "sitemap.xml", source: `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${siteOrigin}/</loc></url></urlset>` });
   },
 };
 
@@ -104,7 +125,16 @@ const notFoundPage: Plugin = {
   generateBundle(_, bundle) {
     const index = bundle["index.html"];
     if (!index || index.type !== "asset") throw new Error("Hosted index is missing");
-    this.emitFile({ type: "asset", fileName: "404.html", source: index.source });
+    const shell = String(index.source)
+      .replace(/<body>[\s\S]*<\/body>/, '<body><div id="app"></div></body>')
+      .replace(/<link rel="canonical"[^>]*>/g, "")
+      .replace(/<meta property="og:url"[^>]*>/g, "")
+      .replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/g, "")
+      .replace(/<link[^>]*data-prerender-style[^>]*>/g, "")
+      .replace(/<title>[^<]*<\/title>/, "<title>Drowse</title>")
+      .replace("<head>", '<head>\n<meta name="robots" content="noindex, follow" />');
+    this.emitFile({ type: "asset", fileName: "app-shell.html", source: shell });
+    this.emitFile({ type: "asset", fileName: "404.html", source: shell.replace("<title>Drowse</title>", "<title>Page not found · Drowse</title>") });
   },
 };
 
@@ -140,6 +170,7 @@ export default defineConfig({
   },
   plugins: [
     releaseMetadata,
+    sitePublication(siteOrigin),
     projectLicenseAsset,
     notFoundPage,
     offlineRuntimeAssets,
@@ -189,6 +220,7 @@ export default defineConfig({
         ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^v$/],
         globPatterns: ["**/*.{css,html,js,json,mp4,png,svg,wasm,woff2}", "images/ethereal-orb.jpg", "LICENSE"],
         globIgnores: [
+          "_worker.js", "_routes.json", "404.html", "skills/**", ".well-known/**",
           "assets/App-*.css",
           "assets/App-*.js",
           "assets/browser.worker-*.js",
@@ -207,7 +239,8 @@ export default defineConfig({
             : entry),
           warnings: [],
         })],
-        navigateFallback: "/index.html",
+        navigateFallback: "/app-shell.html",
+        navigateFallbackAllowlist: [/^\/(?:app(?:\/[^?]*)?|credits\/?|contact\/?)(?:\?.*)?$/],
         navigateFallbackDenylist: [/[?&]app-recovery=/],
         runtimeCaching: [
           {

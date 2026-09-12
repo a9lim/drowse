@@ -1298,7 +1298,8 @@ Scoring runs against the **raw** model distribution (plain `log_softmax`,
 temperature 1, no top-k/p), so the probabilities are the model's beliefs, not a
 sampler reshaping. One batched teacher-forced forward per `_SCORE_BATCH` (16)
 chunk — vocab is ~256k, so an unbounded batch would blow memory — with
-`logsumexp` + a gather avoiding a second vocab-sized tensor. `_shared_prefix_len`
+stable fp32 `log_softmax` + a gather over completion-producing positions only,
+avoiding normalization or fp32 copies of unused prompt logits. `_shared_prefix_len`
 recovers each completion span, absorbing the boundary-token merge. `steering=`
 wraps the forward in `session.steering(...)`: the distributional before/after.
 `score_template(session, template, *, steering)` runs it over a

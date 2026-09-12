@@ -482,15 +482,17 @@ test("geometry setup offers clear actions and preserves the current token", asyn
 
   // Simulate successful authoring; the layout fixture never trains model weights.
   await page.evaluate(async url => {
-    const { apiManifolds } = await import(url);
+    const { getRuntimeClient } = await import(url);
+    const { manifolds } = getRuntimeClient();
     (window as any).__conceptCalls = [];
-    apiManifolds.generate = async (request: unknown) => { (window as any).__conceptCalls.push(request); };
-    apiManifolds.fit = async (namespace: string, name: string) => { (window as any).__conceptCalls.push({ namespace, name }); };
-  }, servicesUrl);
+    manifolds.generate = async (request: unknown) => { (window as any).__conceptCalls.push(request); };
+    manifolds.fit = async (namespace: string, name: string) => { (window as any).__conceptCalls.push({ namespace, name }); };
+  }, `/@fs${resolve("src/lib/runtime/registry.ts")}`);
   await sheet.getByRole("button", { name: "Create a concept", exact: true }).click();
-  await builder.getByRole("textbox", { name: "name *", exact: true }).fill("Test Concept");
-  await builder.getByRole("textbox", { name: /^concepts/ }).fill("formal\ncasual");
-  await builder.getByRole("button", { name: "generate + fit", exact: true }).click();
+  await builder.getByRole("textbox", { name: "Name (required)", exact: true }).fill("Test Concept");
+  await builder.getByRole("textbox", { name: "Concepts (at least 2)", exact: false }).fill("formal\ncasual");
+  await builder.getByRole("button", { name: "Generate and fit", exact: true }).click();
+  await builder.getByRole("button", { name: "Open library", exact: true }).click();
   await expect(rack).toBeVisible();
   expect(await page.evaluate(() => (window as any).__conceptCalls)).toEqual([
     expect.objectContaining({ namespace: "local", name: "test_concept", concepts: ["formal", "casual"] }),
@@ -819,9 +821,9 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await expect(openModel).toBeEnabled();
     await settled();
     await page.evaluate(() => document.fonts.ready);
-    const modelLogo = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
+    const modelLogo = await page.locator(".page-brand").evaluate(el => ({ ...el.getBoundingClientRect().toJSON(), y: el.getBoundingClientRect().y + scrollY }));
     const assertHeader = async () => {
-      const logo = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
+      const logo = await page.locator(".page-brand").evaluate(el => ({ ...el.getBoundingClientRect().toJSON(), y: el.getBoundingClientRect().y + scrollY }));
       const inWorkbench = await page.locator(".shell").isVisible();
       const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
       expect(Math.abs(logo.width - modelLogo.width * (compact ? 5 / 6 : 1))).toBeLessThanOrEqual(1);
@@ -1502,17 +1504,17 @@ test("dialog containers stay unselected while controls retain keyboard focus", a
   await openDrawer(page, "help");
   const dialog = page.getByRole("dialog", { name: "Help and shortcuts", exact: true });
   await expect(dialog).toBeVisible();
-  const close = dialog.getByRole("button", { name: /close/i }).first();
+  const firstControl = dialog.getByRole("button", { name: "Side panel", exact: true });
   for (const theme of ["dark", "light"]) {
     await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
     await dialog.focus();
     await expect(dialog).toHaveCSS("outline-style", "none");
     await page.keyboard.press("Tab");
-    await expect(close).toBeFocused();
-    await expect(close).toHaveCSS("outline-style", "solid");
-    await expect(close).toHaveCSS("outline-width", "2px");
+    await expect(firstControl).toBeFocused();
+    await expect(firstControl).toHaveCSS("outline-style", "solid");
+    await expect(firstControl).toHaveCSS("outline-width", "2px");
     await dialog.screenshot({ path: testInfo.outputPath(`dialog-focus-${theme}.png`) });
-    await dialog.click({ position: { x: 20, y: 20 } });
+    await dialog.getByRole("heading").first().click();
     await expect(dialog).toHaveCSS("outline-style", "none");
   }
   const copyable = dialog.locator(".intro p").first();
@@ -1529,8 +1531,8 @@ test("dialog containers stay unselected while controls retain keyboard focus", a
   await page.emulateMedia({ forcedColors: "active" });
   await dialog.focus();
   await page.keyboard.press("Tab");
-  await expect(close).toBeFocused();
-  await expect(close).toHaveCSS("outline-style", "solid");
+  await expect(firstControl).toBeFocused();
+  await expect(firstControl).toHaveCSS("outline-style", "solid");
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
@@ -2758,14 +2760,14 @@ for (const theme of ["light", "dark"] as const) {
     for (const name of ["help", "cast", "advanced_sampling", "system_prompt", "save_conversation", "load_conversation", "transcript", "manifold_pack", "manifold_builder", "manifold_merge", "template_lab", "health", "subspace", "manifolds", "compare", "correlation", "token_drilldown"]) {
       await openDrawer(page, name, name === "token_drilldown" ? { turnIdx: 1, tokenIdx: 0 } : undefined);
       const drawer = page.getByRole("dialog").last();
-      for (const disclosure of await drawer.locator('.sk-disclosure-trigger').all()) {
+      for (const disclosure of await drawer.locator('.sk-disclosure-trigger:visible').all()) {
         if (await disclosure.getAttribute("aria-expanded") === "false") await disclosure.click();
       }
       await audit(`Drawer, ${name}`, name === "token_drilldown" ? "[role='dialog']:has([data-token-details-scroll])" : ".drawer[role='dialog']");
       if (name === "manifold_builder") {
-        for (const mode of ["linear", "template", "custom"]) {
+        for (const mode of ["Generate examples", "Use a template", "Use your examples"]) {
           await drawer.getByRole("tab", { name: mode, exact: true }).click();
-          if (mode === "custom") await drawer.getByRole("button", { name: "+ add node", exact: true }).click();
+          if (mode === "Use your examples") await drawer.getByRole("button", { name: "+ add node", exact: true }).click();
           await audit(`Authoring, ${mode}`, ".drawer[role='dialog']");
         }
       }

@@ -4,7 +4,7 @@
   "status": "verified",
   "catalogUrl": "https://huggingface.co/logitsml/drowse-web-catalog/resolve/main/catalog.json",
   "signatureUrl": "https://huggingface.co/logitsml/drowse-web-catalog/resolve/main/catalog.sig.json",
-  "minimumAcceptedSequence": 7,
+  "minimumAcceptedSequence": 9,
   "publicKeys": [
     {
       "keyId": "drowse-2026-09-current",

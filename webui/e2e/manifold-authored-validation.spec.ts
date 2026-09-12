@@ -21,6 +21,7 @@ async function openManifoldBuilder(page: Page) {
   }, drawerStoreUrl);
   const dialog = page.getByRole("dialog", { name: "Create a concept or scale" });
   await expect(dialog).toBeVisible();
+  await dialog.getByRole("tab", { name: "Use your examples", exact: true }).click();
   return dialog;
 }
 
@@ -28,7 +29,7 @@ test("custom manifold validation waits for submit and focuses each blocking fiel
   await openFixtureWorkbench(page);
   const dialog = await openManifoldBuilder(page);
   const build = dialog.getByRole("button", { name: "build", exact: true });
-  const name = dialog.getByLabel("name *");
+  const name = dialog.getByLabel("Name (required)", { exact: true });
 
   await expect(build).toBeEnabled();
   await expect(dialog.getByText(/Check these details before you build/i)).toHaveCount(0);

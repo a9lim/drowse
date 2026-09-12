@@ -66,7 +66,7 @@ test("clicking or keyboard-activating the model picture opens the name and avata
   await conversation(page);
   const before = await page.locator(".response-body").allTextContents();
   for (const activate of ["click", "Enter", "Space"]) {
-    const picture = page.getByRole("button", { name: "Edit name and avatar", exact: true });
+    const picture = page.getByRole("button", { name: "Edit chat name and avatar", exact: true });
     if (activate === "click") await picture.click();
     else {
       await page.keyboard.press("Tab");

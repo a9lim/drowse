@@ -1,0 +1,1 @@
+var e=null,t=null,n=null;function r(t){if(e&&e!==t)throw Error(`A Drowse runtime is already installed`);e=t}function i(){if(!e)throw Error(`Drowse runtime has not been installed`);return e}function a(){return t}function o(){return t?.limits?.manifoldFitMaxIntrinsicDim??null}function s(){return n}export{r as a,o as i,a as n,i as r,s as t};

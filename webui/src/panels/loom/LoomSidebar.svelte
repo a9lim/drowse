@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { loomViewSchema } from "../../lib/interfaceSchemas";
+  import { registerInterfaceController } from "../../lib/workspaceController";
+  import { ToolError } from "../../lib/webmcp/types";
+  import { onMount as onInterfaceMount } from "svelte";
+
   import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import { slidingSelection } from "../../lib/slidingSelection";
@@ -1864,6 +1869,22 @@
       restoreModalBackground();
     };
   });
+
+  onInterfaceMount(() => registerInterfaceController("loom", {
+    schema: loomViewSchema,
+    read: () => ({ values: { zoom: camera.zoom, camera: { x: camera.x, y: camera.y }, collapsed_ids: [...collapsedIds] }, search: { count: searchResults.length, index: searchIndex, node_id: searchNodeId }, visible: active }),
+    update: async (change) => {
+      if (change.collapsed_ids && (change.collapsed_ids as string[]).some(id => !loomTree.nodes.has(id))) throw new ToolError("NOT_FOUND", "A collapsed node is no longer in this tree.");
+      if ((change.zoom !== undefined || change.camera || change.search_match) && (!active || !viewportEl || viewportSize().width === 0)) throw new ToolError("NOT_READY", "Open the visible Loom map before adjusting its camera.");
+      if (change.camera && graph.nodes.length === 0) throw new ToolError("NOT_FOUND", "The Loom map has no nodes to frame.");
+      if (change.search_match && !searchResults.length) throw new ToolError("NOT_FOUND", "This search has no matching nodes.");
+      if (change.collapsed_ids !== undefined) { collapsedIds.clear(); for (const id of change.collapsed_ids as string[]) collapsedIds.add(id); }
+      if (change.zoom !== undefined) zoomView(change.zoom as number, undefined, false);
+      if (change.camera === "fit") fitView(false);
+      if (change.camera === "current") centerCurrent();
+      if (change.search_match) { if (change.search_match === "first") searchNodeId = null; await showSearchMatch(change.search_match === "previous" ? -1 : change.search_match === "next" ? 1 : 0); }
+    },
+  }));
 </script>
 
 <svelte:window onclick={onWindowClick} onkeydown={onWindowKey} onresize={positionOpenMenu} />

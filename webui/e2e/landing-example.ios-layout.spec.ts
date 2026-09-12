@@ -263,3 +263,45 @@ test("reply motion resizes the unchanged panel and honors reduced motion", async
   await expect(demo.locator("[data-morph-active]")).toHaveCount(0);
   await expect(panel).toHaveCSS("background-color", background);
 });
+
+test("home containers share readable type and larger controls without text shadows", async ({ page }, testInfo) => {
+  await page.goto("http://127.0.0.1:4176/");
+  const demo = page.getByRole("region", { name: "Recorded Drowse example" });
+  const slider = demo.getByRole("slider");
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+      await demo.scrollIntoViewIfNeeded();
+      await expect(demo.locator(".context")).toHaveCSS("font-size", "16px");
+      const prose = await page.locator(".capabilities li p, .model-group > p, .model-row strong, .capability-demo .context, .capability-demo .result")
+        .evaluateAll(elements => elements.map(el => {
+          const style = getComputedStyle(el);
+          return [style.fontFamily, style.fontSize];
+        }));
+      expect(new Set(prose.map(style => JSON.stringify(style))).size).toBe(1);
+      await slider.evaluate(el => { el.dataset.stableControl = "original"; });
+      for (const mode of ["Inspect", "Steer"]) {
+        await demo.getByRole("button", { name: mode, exact: true }).click();
+        await expect(slider).toHaveAttribute("data-stable-control", "original");
+        await expect(demo.locator(".mode-content")).toHaveCount(1);
+        const buttons = await demo.locator(".sk-tabs .tab").evaluateAll(elements => elements.map(el => {
+          const rect = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+          return { width: rect.width, height: rect.height, size: style.fontSize, spacing: style.letterSpacing };
+        }));
+        for (const button of buttons) {
+          expect(button.height).toBeGreaterThanOrEqual(48);
+          expect(button.width).toBeGreaterThanOrEqual(80);
+          expect(button.size).toBe("16px");
+          expect(button.spacing).toBe("normal");
+        }
+        const shadows = await page.locator(".capabilities ol > li, .capabilities ol > li *, .model-group, .model-group *, .demo-panel, .demo-panel *")
+          .evaluateAll(elements => [...new Set(elements.map(el => getComputedStyle(el).textShadow))]);
+        expect(shadows).toEqual(["none"]);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await page.locator(".demo-panel").screenshot({ path: testInfo.outputPath(`harmony-${width}-${theme}-${mode}.png`) });
+      }
+    }
+  }
+});

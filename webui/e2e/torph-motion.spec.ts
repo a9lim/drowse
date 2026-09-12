@@ -107,7 +107,7 @@ test("landing demonstration remains labeled and usable at phone widths", async (
   await page.goto(`${dev}/`);
   await page.setViewportSize({width:320,height:900});
   const demo=page.getByRole("region", {name:"Recorded Drowse example"});
-  await expect(demo).toContainText("Recorded preset");
+  await expect(demo).toContainText("Welcoming influence");
   await demo.getByRole("slider", {name:"Recorded welcoming setting"}).focus();
   await demo.getByRole("slider", {name:"Recorded welcoming setting"}).press("End");
   await expect.poll(() => demo.locator(".result").evaluate(element => {
@@ -115,8 +115,10 @@ test("landing demonstration remains labeled and usable at phone widths", async (
     copy.querySelectorAll('[aria-hidden="true"]').forEach(node => node.remove());
     return copy.textContent;
   })).toContain("Come find us sometime");
-  await demo.getByRole("button", {name:"Compare",exact:true}).click();
-  await demo.getByRole("button", {name:"Inspect toward welcoming reply"}).click();
+  await demo.getByRole("button", {name:"Inspect",exact:true}).click();
+  await expect.poll(async () => (await demo.locator(".token-text .morph-source").allTextContents()).join(""))
+    .toContain("Come find us sometime");
+  await demo.getByRole("slider", {name:"Recorded welcoming setting"}).press("ArrowLeft");
   await expect.poll(async () => (await demo.locator(".token-text .morph-source").allTextContents()).join(""))
     .toContain("moving can be a big change");
   expect(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth+1)).toBe(true);

@@ -531,7 +531,7 @@ def _render_logprobs_completions(result: GenerationResult, session: DrowseSessio
         return None
     tok = session.tokenizer
     tokens: list[str] = []
-    token_logprobs: list[float] = []
+    token_logprobs: list[float | None] = []
     top_logprobs: list[dict[str, float]] = []
     text_offset: list[int] = []
     offset = 0

@@ -3,6 +3,8 @@
   import { onDestroy, onMount, tick, type Component } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { createShellController } from "../../../hosted/shell-controller";
+  import { mountHostedWebMcp } from "../../lib/webmcp";
+  import { registerPageActions } from "../../lib/webmcp/lifecycle";
   import {
     installHostedController,
     installRuntimeCapabilities,
@@ -349,6 +351,24 @@
 
   onMount(() => {
     if (!appController) return;
+    const disposeTools = mountHostedWebMcp(appController);
+    const disposeActions = registerPageActions({
+      state: () => ({ route, recovery: runtimeRecovery ?? workbenchError }),
+      home: () => Workbench ? returnToChats("chats") : showHome(),
+      models: () => Workbench ? returnToChats("models") : showModels(),
+      leave: async url => {
+        returningHome = true;
+        try {
+          await appController.prepareForReload();
+          await flushConversationAutosave();
+          window.setTimeout(() => window.location.assign(url), 0);
+        } catch (error) {
+          returningHome = false;
+          throw error;
+        }
+      },
+      retry: retryWorkbench, allowTakeover, denyTakeover,
+    });
     const unsubscribe = appController.subscribe((snapshot) => {
       shellSnapshot = snapshot;
       if (snapshot.runtime.phase === "ready") {
@@ -370,7 +390,7 @@
       }
     });
     void resolveEntryView();
-    return unsubscribe;
+    return () => { unsubscribe(); disposeTools(); disposeActions(); };
   });
 
   onDestroy(() => {

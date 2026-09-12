@@ -56,6 +56,9 @@ test("base models stay collapsed and explain text completion before selection", 
   });
   const disclosure = page.locator("details.base-models");
   const summary = disclosure.locator("summary");
+  await expect(summary).toHaveText("Base models Text completion");
+  await expect(summary).toHaveCSS("font-size", "24px");
+  await expect(summary.locator(".base-models-note")).toHaveCSS("font-size", "16px");
   const base = disclosure.getByRole("button", { name: /Base model fixture/ });
   await expect(disclosure).not.toHaveAttribute("open", "");
   await expect(base).not.toBeVisible();
@@ -127,7 +130,7 @@ async function mountHostedApp(
   startingSnapshot: HostedShellSnapshot = initialSnapshot,
 ): Promise<void> {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.route("**/main.ts", route => route.fulfill({
+  await page.route("**/main.ts*", route => route.fulfill({
     contentType: "application/javascript",
     body: `
       import "/@fs/${resolve("src/lib/style/fonts.css")}";

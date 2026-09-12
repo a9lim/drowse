@@ -327,6 +327,7 @@ export class BrowserLoomRuntime {
       request, this.session, this.tree, selectedParentId, this.maxOutputTokens,
     );
     const effectiveSteering = settings.steering;
+    const effectiveSystemPrompt = rawCompletion ? null : settings.systemPrompt;
     const sampling = settings.sampling;
     validateResolvedSamplingCapabilities(this.session, sampling, rawCompletion);
     const hookProgram = effectiveSteering || this.instruments?.hasLiveReadout()
@@ -470,6 +471,7 @@ export class BrowserLoomRuntime {
         effectiveThinking,
         this.session.probes,
         currentProbeHashes,
+        effectiveSystemPrompt,
       );
       const prefix = fork !== null
         ? savedTokenPrefix(fork.source, fork.forcedPrefix)
@@ -561,7 +563,7 @@ export class BrowserLoomRuntime {
             request,
             this.tree,
             continuation?.parentId ?? generatedParentId,
-            this.session.config.system_prompt,
+            effectiveSystemPrompt,
             stateless,
             roleLabel("user", siblingSampling),
           ),
@@ -1145,6 +1147,7 @@ export class BrowserLoomRuntime {
         steering: source.recipe.steering?.trim() || null,
         sampling,
         thinking: source.recipe.thinking ?? false,
+        systemPrompt: source.recipe.system_prompt === undefined ? this.session.config.system_prompt : source.recipe.system_prompt,
       },
     };
   }
@@ -1209,7 +1212,7 @@ export class BrowserLoomRuntime {
           { type: "generate", input: null, raw: this.session.is_base_model || request.options.raw || false },
           this.tree,
           node.parent_id!,
-          this.session.config.system_prompt,
+          settings.systemPrompt,
         ),
         sampling: settings.sampling,
         readoutTopK: request.options.topK,
@@ -1382,7 +1385,7 @@ export class BrowserLoomRuntime {
         { type: "generate", input: null, raw: this.session.is_base_model === true },
         this.tree,
         node.parent_id!,
-        this.session.config.system_prompt,
+        settings.systemPrompt,
       ),
       sampling: settings.sampling,
       thinking: settings.thinking,
@@ -2036,7 +2039,7 @@ function cancelledGenerationResult(
   const logprobs = responseRows
     .map((row) => row.logprob)
     .filter((value): value is number => value !== null && Number.isFinite(value));
-  const meanLogprob = logprobs.length === 0
+  const meanLogprob = logprobs.length === 0 || logprobs.length !== responseRows.length
     ? null
     : logprobs.reduce((sum, value) => sum + value, 0) / logprobs.length;
   const allRows = [...(node.thinking_tokens ?? []), ...responseRows];
@@ -2254,6 +2257,7 @@ function recipe(
   thinking: boolean,
   probes: readonly string[],
   probeHashes: Readonly<Record<string, string>>,
+  systemPrompt?: string | null,
 ): RecipeJSON {
   const recipeSampling: RecipeSamplingJSON = {
     temperature: sampling.temperature ?? null,
@@ -2277,6 +2281,7 @@ function recipe(
   return {
     steering,
     sampling: recipeSampling,
+    ...(systemPrompt === undefined ? {} : { system_prompt: systemPrompt }),
     thinking,
     seed: recipeSampling.seed,
     probes: [...probes],
@@ -2315,6 +2320,7 @@ function replaySettings(
     steering: steered ? stamped.steering?.trim() || null : null,
     sampling,
     thinking: stamped.thinking ?? false,
+    systemPrompt: stamped.system_prompt === undefined ? session.config.system_prompt : stamped.system_prompt,
   };
 }
 
@@ -2384,6 +2390,7 @@ function resolveSteering(request: string | null | undefined, fallback: string | 
 }
 
 interface ResolvedGenerationSettings {
+  systemPrompt: string | null;
   steering: string | null;
   sampling: WSSampling;
   thinking: boolean;
@@ -2397,6 +2404,7 @@ interface TokenForkContext {
 }
 
 interface PartialRecipe {
+  system_prompt?: string | null;
   steering: string | null;
   sampling: RecipeSamplingJSON | null;
   thinking: boolean | null;
@@ -2410,6 +2418,7 @@ function resolveGenerationSettings(
   parentId: string,
   maxOutputTokens: number,
 ): ResolvedGenerationSettings {
+  let systemPrompt = request.system_prompt === undefined ? session.config.system_prompt : request.system_prompt;
   const castRecipe = request.raw ? null : generationCastRecipe(request, tree);
   const castSampling = castRecipe?.sampling === null || castRecipe?.sampling === undefined
     ? null
@@ -2433,7 +2442,7 @@ function resolveGenerationSettings(
     session.config.thinking ?? session.supports_thinking;
   const requestedOverride = request.recipe_override;
   if (requestedOverride === null || requestedOverride === undefined) {
-    return { steering, sampling, thinking };
+    return { steering, sampling, thinking, systemPrompt };
   }
 
   const anchor = anchorRecipe(tree, parentId);
@@ -2444,6 +2453,8 @@ function resolveGenerationSettings(
     thinking: modifier.thinking !== null ? modifier.thinking : anchor.thinking,
     seed: modifier.seed !== null ? modifier.seed : anchor.seed,
   };
+  if (anchor.system_prompt !== undefined) systemPrompt = anchor.system_prompt;
+  if (modifier.system_prompt !== undefined) systemPrompt = modifier.system_prompt;
   if (overlaid.steering !== null) steering = overlaid.steering.trim() || null;
   if (overlaid.sampling !== null) {
     sampling = effectiveSampling(
@@ -2454,7 +2465,7 @@ function resolveGenerationSettings(
   }
   if (overlaid.thinking !== null) thinking = overlaid.thinking;
   if (overlaid.seed !== null) sampling = { ...sampling, seed: overlaid.seed };
-  return { steering, sampling, thinking };
+  return { steering, sampling, thinking, systemPrompt };
 }
 
 function generationCastRecipe(
@@ -2514,6 +2525,7 @@ function anchorRecipe(tree: LoomTreeJSON, parentId: string): PartialRecipe {
         sampling: node.recipe.sampling,
         thinking: node.recipe.thinking,
         seed: node.recipe.seed,
+        ...(node.recipe.system_prompt === undefined ? {} : { system_prompt: node.recipe.system_prompt }),
       };
     }
     node = node.parent_id === null ? undefined : byId.get(node.parent_id);

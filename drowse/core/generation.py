@@ -1462,13 +1462,11 @@ def generate_steered(
                     next_cache_pos += 1
                 logits = outputs.logits[:, -1, :]
                 # Steering can push hidden states past fp16 range, cascading
-                # to inf/NaN logits.  nan_to_num clears NaN/inf first;
-                # clamp then bounds any remaining finite outliers.  These are
-                # two vocab-width kernels per token, only needed when steering
-                # is actually applied — the unsteered path skips them.
+                # to inf/NaN logits. Keep finite logits unchanged: softmax
+                # subtracts its maximum, and clipping a large common offset
+                # would flatten valid distributions (e.g. Pythia).
                 if steering_active:
                     logits.nan_to_num_(nan=0.0, posinf=100.0, neginf=-100.0)
-                    logits.clamp_(-100.0, 100.0)
 
                 # Presence + frequency penalty (applied to raw logits,
                 # before temperature, per OpenAI semantics).
@@ -1501,9 +1499,8 @@ def generate_steered(
                 # point — only the token *fed back* into the model changes.
                 # ``chosen_pos`` is retargeted into the candidate pool so
                 # the logprob/top-alts capture below describes the forced
-                # token; an id outside the top-k pool (rare — forced ids
-                # were originally sampled, so almost always in-pool) falls
-                # back to a direct tensor build + full-softmax logprob.
+                # token. An id outside the sampler's support has zero
+                # probability; never substitute a raw-model probability.
                 forced_in_pool = True
                 if (forced_prefix is not None
                         and len(generated_ids) < len(forced_prefix)):
@@ -1524,22 +1521,20 @@ def generate_steered(
                 float_parts = []
                 id_parts = [next_token.reshape(-1)]
                 if logprobs is not None or want_ppl:
-                    cand_logp = cand_probs.clamp_min(
+                    finite_logp = cand_probs.clamp_min(
                         torch.finfo(torch.float32).tiny,
                     ).log()
                     if want_ppl:
-                        float_parts.append((-(cand_probs * cand_logp)).sum().reshape(1))
+                        float_parts.append((-(cand_probs * finite_logp)).sum().reshape(1))
                     if logprobs is not None:
+                        cand_logp = finite_logp.masked_fill(cand_probs <= 0, float("-inf"))
                         selected_logp = (
                             cand_logp.index_select(0, chosen_pos)
-                            if forced_in_pool else torch.log_softmax(
-                                logits.float(), dim=-1,
-                            )[0].index_select(0, next_token.reshape(-1))
+                            if forced_in_pool else torch.full_like(cand_logp[:1], float("-inf"))
                         )
                         float_parts.append(selected_logp)
                         if logprobs > 0:
-                            masked = cand_logp.masked_fill(cand_probs <= 0, float("-inf"))
-                            tlv, tpos = masked.topk(min(logprobs, cand_logp.numel()))
+                            tlv, tpos = cand_logp.topk(min(logprobs, cand_logp.numel()))
                             id_parts.append(cand_ids.index_select(0, tpos))
                             float_parts.append(tlv)
                 if float_parts:
@@ -1557,7 +1552,8 @@ def generate_steered(
                     else:
                         current_perplexity = None
                     if logprobs is not None:
-                        chosen_logprob = float(host_values[offset])
+                        selected_value = float(host_values[offset])
+                        chosen_logprob = selected_value if math.isfinite(selected_value) else None
                         offset += 1
                         if logprobs > 0:
                             top_alts = [

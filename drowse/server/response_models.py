@@ -185,6 +185,7 @@ class RecipeJSON(TypedDict):
     seed: int | None
     probes: list[str]
     probe_hashes: dict[str, str]
+    system_prompt: NotRequired[str | None]
 
 
 class CastMemberJSON(TypedDict):

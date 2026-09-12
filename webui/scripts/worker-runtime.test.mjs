@@ -2387,6 +2387,34 @@ try {
     await runtime.dispose();
   });
 
+  test("fake runtime correlates every sibling and ignores a stale scoped stop", async () => {
+    const runtime = new fakeRuntimeModule.DeterministicFakeRuntime({
+      response: "fixture answer", tokenDelayMs: 5,
+    });
+    const messages = [];
+    runtime.events.subscribe((message) => messages.push(message));
+    await runtime.events.open();
+    runtime.events.send({ type: "submit", text: "fixture prompt", authored_role: "user",
+      generated_role: "assistant", n: 2, request_id: "fixture-fan" });
+    await waitFor(() => messages.some((message) => message.type === "started"));
+    runtime.events.send({ type: "stop", request_id: "old-job" });
+    await waitFor(() => messages.some((message) => message.type === "request_complete"));
+    assert.equal(messages.some((message) => message.type === "error"), false);
+    assert.ok(messages.every((message) => message.request_id === "fixture-fan"));
+    assert.deepEqual(messages.filter((message) => message.type === "done").map((message) => message.sibling_index), [0, 1]);
+    assert.deepEqual(messages.at(-1), { type: "request_complete", request_id: "fixture-fan",
+      state: "completed", completed_siblings: 2 });
+    messages.length = 0;
+    runtime.events.send({ type: "submit", text: "cancel prompt", authored_role: "user",
+      generated_role: "assistant", n: 2, request_id: "fixture-cancel" });
+    await waitFor(() => messages.some((message) => message.type === "token"));
+    runtime.events.send({ type: "stop", request_id: "fixture-cancel" });
+    await waitFor(() => messages.some((message) => message.type === "request_complete"));
+    assert.deepEqual(messages.at(-1), { type: "request_complete", request_id: "fixture-cancel",
+      state: "cancelled", completed_siblings: 1 });
+    await runtime.dispose();
+  });
+
   test("fake runtime exposes only its installed catalog instrument packs", async () => {
     const runtime = new fakeRuntimeModule.DeterministicFakeRuntime({
       instrumentPacks: [
@@ -4071,16 +4099,24 @@ try {
 
     scope.send(request("stopped-generation", "generate", {
       type: "generate",
+      request_id: "public-generation",
       stateless: true,
     }));
     await waitFor(() => generationStarted);
-    scope.send(request("stop-active-generation", "stop", undefined));
+    scope.send(request("stop-old-generation", "stop", { requestId: "old-generation" }));
+    assert.equal((await response(scope, "stop-old-generation")).ok, true);
+    assert.equal(stopReason, null, "scoped stop cannot stop a different request");
+    scope.send(request("stop-active-generation", "stop", { requestId: "public-generation" }));
     assert.equal((await response(scope, "stop-active-generation")).ok, true);
     assert.equal((await response(scope, "stopped-generation")).ok, true);
     assert.equal(stopReason, "user");
     assert.equal(scope.loadRecords.length, 1);
     assert.equal(scope.loadRecords[0].prefillTokensPerSecond, null);
     assert.equal(scope.loadRecords[0].decodeTokensPerSecond, null);
+    const correlated = scope.messages.filter(message => message.kind === "event" &&
+      ["started", "token", "done"].includes(message.event));
+    assert.ok(correlated.length >= 3);
+    assert.ok(correlated.every(message => message.payload.request_id === "public-generation"));
   });
 
   test("worker never records performance from a failed generation", async () => {

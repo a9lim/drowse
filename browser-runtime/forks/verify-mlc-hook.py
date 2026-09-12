@@ -1465,6 +1465,13 @@ def strip_gpu_thread_bindings(module, tvm):
 
     def lower(function):
         # Resolve block axes before moving a phase across its thread loop.
+        def cast_bound_axes(node):
+            if isinstance(node, tir.SBlockRealize):
+                values = [tir.Cast(axis.var.ty.dtype, value)
+                          for axis, value in zip(node.block.iter_vars, node.iter_values)]
+                return tir.SBlockRealize(values, node.predicate, node.block)
+            return None
+        function = function.with_body(tir.stmt_functor.ir_transform(function.body, None, cast_bound_axes))
         one = tvm.IRModule({"main": function})
         one = tvm.s_tir.transform.ConvertBlocksToOpaque()(one)
         function = one["main"]
@@ -1505,7 +1512,18 @@ def strip_gpu_thread_bindings(module, tvm):
             if isinstance(node,tir.Evaluate):
                 return tir.Evaluate(0)
             if isinstance(node,tir.SeqStmt):
-                return tir.SeqStmt([phases(s) for s in node.seq])
+                result, pending = [], []
+                for statement in node.seq:
+                    if has_sync(statement):
+                        if pending:
+                            result.append(lane_loop(pending[0] if len(pending) == 1 else tir.SeqStmt(pending)))
+                            pending = []
+                        result.append(phases(statement))
+                    else:
+                        pending.append(statement)
+                if pending:
+                    result.append(lane_loop(pending[0] if len(pending) == 1 else tir.SeqStmt(pending)))
+                return result[0] if len(result) == 1 else tir.SeqStmt(result)
             if isinstance(node,tir.For):
                 return serial_loop(node,phases(node.body))
             if isinstance(node,tir.IfThenElse):

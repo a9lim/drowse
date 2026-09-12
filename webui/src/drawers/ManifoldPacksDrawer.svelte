@@ -12,6 +12,7 @@
   // install). It is reachable from the command palette.
 
   import { onMount } from "svelte";
+  import { onArtifactUpdate } from "../lib/artifactUpdates";
   import { ApiError, apiManifoldInstallStream, apiManifolds } from "../lib/runtime/services";
   import { runtimeClient } from "../lib/runtime/client";
   import { userFacingError } from "../lib/runtime/userFacingError";
@@ -314,6 +315,10 @@
 
   // The store keeps the local catalog hot — refresh on mount in case
   // we landed here without having visited ManifoldDrawer first.
+  onMount(() => onArtifactUpdate(async (area) => {
+    if (area === "manifolds") await refreshLocalPacks();
+  }));
+
   onMount(() => {
     void refreshManifoldList();
     void refreshLocalPacks();

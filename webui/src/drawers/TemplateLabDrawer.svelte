@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { onMount as onInterfaceMount } from "svelte";
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { templateDraftSchema } from "../lib/interfaceSchemas";
+  import { ToolError } from "../lib/webmcp/types";
+
   import TemplatePreview from "../lib/ui/TemplatePreview.svelte";
   import MorphText from "../lib/ui/MorphText.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
@@ -24,6 +29,7 @@
   import { getHostedController } from "../lib/runtime/registry";
   import { apiTemplates, describeError } from "../lib/runtime/services";
   import { validateTemplateDraft } from "../lib/templates";
+  import { onArtifactUpdate } from "../lib/artifactUpdates";
   import { closeDrawer } from "../lib/stores.svelte";
   import { pushToast } from "../lib/stores/toasts.svelte";
   import SegmentedTabs from "../lib/ui/SegmentedTabs.svelte";
@@ -73,6 +79,9 @@
     }
   }
   onMount(loadTemplates);
+  onMount(() => onArtifactUpdate(async (area) => {
+    if (area === "templates") await loadTemplates();
+  }));
 
   // ----- score tab -----------------------------------------------------
   let selectedKey = $state("");
@@ -277,6 +286,23 @@
       deleting = false;
     }
   }
+
+  onInterfaceMount(() => registerInterfaceController("template_lab", {
+    schema: templateDraftSchema,
+    read: () => ({ busy: building || scoring || deleting || cancellingScore, dirty: !!bName || bSlot !== "[DAY]" || !!bValuesText || JSON.stringify(bContexts) !== JSON.stringify([{ turns: [{ role: "user", content: "" }], assistant: "" }]), values: { tab, selected_key: selectedKey, steering: steerExpr, score_by: scoreBy, name: bName, slot: bSlot, values_text: bValuesText, contexts: bContexts }, validation: buildValidation, available_templates: templates.map(row => `${row.namespace}/${row.name}`), loading }),
+    update: async (change) => {
+      if (building || scoring || deleting || cancellingScore) throw new ToolError("BUSY", "Wait for this interface operation to finish.");
+      if (change.selected_key && !templates.some(template => `${template.namespace}/${template.name}` === change.selected_key)) throw new ToolError("NOT_FOUND", "Choose a template from available_templates.");
+      if (change.tab !== undefined) tab = change.tab as Tab;
+      if (change.selected_key !== undefined) selectedKey = change.selected_key as string;
+      if (change.steering !== undefined) steerExpr = change.steering as string;
+      if (change.score_by !== undefined) scoreBy = change.score_by as "sum" | "mean";
+      if (change.name !== undefined) bName = change.name as string;
+      if (change.slot !== undefined) bSlot = change.slot as string;
+      if (change.values_text !== undefined) bValuesText = change.values_text as string;
+      if (change.contexts !== undefined) bContexts = structuredClone(change.contexts) as TemplateContextSpec[];
+    },
+  }));
 </script>
 
 <section class="drawer-shell" aria-label="Template lab">

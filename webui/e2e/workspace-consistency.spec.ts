@@ -184,8 +184,7 @@ test("models and saved chats share large headings with roomier library cards and
       }
     }
     if (surface === "models") {
-      const index = await card.evaluate(el => Array.from(el.parentElement!.children).indexOf(el));
-      const selection = page.locator(".model-grid > button").nth(index);
+      const selection = page.locator('.model-grid > button:not(:disabled):not([aria-disabled="true"])').first();
       await selection.click();
       await expect(selection).toHaveAttribute("aria-pressed", "true");
       await page.keyboard.press("Tab");

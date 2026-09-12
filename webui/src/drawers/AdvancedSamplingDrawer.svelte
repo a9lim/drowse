@@ -14,9 +14,12 @@
   import InfoTip from "../lib/ui/InfoTip.svelte";
   import Disclosure from "../lib/Disclosure.svelte";
   import { getRuntimeClient } from "../lib/runtime/registry";
+  import { SAMPLING_HELP } from "../lib/parameterHelp";
   import {
     BROWSER_SAMPLING_TOP_K_MAX,
     SAMPLING_TEMPERATURE_MAX,
+    SAMPLING_SEED_MAX,
+    samplingSeedMinimum,
     clampTokenAlternativeCount,
     tokenAlternativeLimit,
   } from "../lib/runtime/samplingCapabilities";
@@ -38,20 +41,13 @@
   const runtimeMode = getRuntimeClient().mode;
   const alternativesMax = tokenAlternativeLimit(runtimeMode);
   const alternativesAvailable = alternativesMax > 0;
-  const TOP_K_MIN = 1;
+  const TOP_K_MIN = 0;
   const TOP_K_MAX = BROWSER_SAMPLING_TOP_K_MAX;
   const PENALTY_MIN = -2;
   const PENALTY_MAX = 2;
   let technicalOpen = $state(false);
 
-  const HELP = {
-    temperature: "Temperature controls randomness. Enter a value above the slider's usual range here. Zero selects the most likely token.",
-    topK: "Top K limits sampling to the K most likely next tokens, up to the full model vocabulary. Larger pools can be slower. Leave it blank to use Drowse's default of 1,024.",
-    frequencyPenalty: "Frequency penalty reduces the probability of tokens in proportion to how often they have already appeared.",
-    presencePenalty: "Presence penalty reduces the probability of any token that has already appeared, regardless of frequency.",
-    returnTopK: "Return top K retains alternative tokens from the sampling pool so you can inspect or branch from them later. Large counts increase memory use and saved-chat size. Browser instrument readouts remain limited to eight entries.",
-    seed: "Seed fixes the random-number sequence so repeated runs are easier to compare.",
-  } as const;
+  const HELP = { ...SAMPLING_HELP, temperature: SAMPLING_HELP.advancedTemperature };
 
   function onTopK(raw: number | null): void {
     if (raw === null) {
@@ -190,8 +186,8 @@
           <span class="setting-label">Seed <InfoTip text={HELP.seed} label="About Seed" /></span>
           <NumberInput
             value={samplingState.seed}
-            min={runtimeMode === "http" ? Number.MIN_SAFE_INTEGER : 0}
-            max={Number.MAX_SAFE_INTEGER}
+            min={samplingSeedMinimum(runtimeMode)}
+            max={SAMPLING_SEED_MAX}
             step={1}
             placeholder="Not fixed"
             allowEmpty

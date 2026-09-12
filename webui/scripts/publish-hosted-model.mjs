@@ -6,13 +6,14 @@ import { createReadStream } from "node:fs";
 import { lstat, opendir, readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import {
   sameThinkingProfile,
   structuredHookProfile,
   thinkingProfile,
 } from "./hosted-model-profiles.mjs";
 import { uploadCommitRevision } from "./hugging-face-upload.mjs";
+import { loadExpectedBuildToolchain } from "./hosted-model-closure.mjs";
 
 const exec = promisify(execFile);
 const runtimeLockUrl = new URL("../../browser-runtime/runtime-lock.json", import.meta.url);
@@ -29,7 +30,9 @@ export function parseArguments(args) {
   return { modelId: values[0], directory: resolve(values[1]), upload };
 }
 
-export async function validatePublishDirectory(directory, model, runtime) {
+export async function validatePublishDirectory(directory, model, runtime, {
+  allowLegacyBranding = false, allowStaleToolchain = false,
+} = {}) {
   await requireDirectory(directory);
   const manifest = JSON.parse(await readFile(resolve(directory, "hosted-artifacts.json"), "utf8"));
   if (
@@ -45,10 +48,14 @@ export async function validatePublishDirectory(directory, model, runtime) {
     ...("modelType" in manifest ? ["modelType"] : []),
   ];
   const hookProfile = structuredHookProfile(manifest.structuredHookProfile);
+  const legacyBrand = allowLegacyBranding && runtime.runtimeAbi === "drowse-web-runtime-v1"
+    ? ["saklas", "polythetic"].find((brand) => manifest.runtimeAbi === `${brand}-web-runtime-v1`)
+    : undefined;
+  const expectedRuntime = legacyBrand === undefined ? runtime : { ...runtime, runtimeAbi: manifest.runtimeAbi };
   thinkingProfile(manifest.thinkingProfile);
   if (
     Object.keys(manifest).sort().join("\0") !== manifestKeys.sort().join("\0") ||
-    manifest.runtimeAbi !== runtime.runtimeAbi || manifest.hookAbi !== runtime.hookAbi ||
+    manifest.runtimeAbi !== expectedRuntime.runtimeAbi || manifest.hookAbi !== runtime.hookAbi ||
     hookProfile !== model.structuredHookProfile ||
     (manifest.modelType ?? "chat") !== (model.modelType ?? "chat") ||
     !sameThinkingProfile(manifest.thinkingProfile, model.thinkingProfile)
@@ -93,7 +100,7 @@ export async function validatePublishDirectory(directory, model, runtime) {
   ) {
     throw new Error("hosted model metadata differs from the runtime lock");
   }
-  await validateRuntimeMetadata(directory, manifest, model, runtime);
+  await validateRuntimeMetadata(directory, manifest, model, expectedRuntime, legacyBrand ?? "drowse", allowStaleToolchain);
   const declared = new Set(manifest.files.map((file) => file.path));
   const entries = [];
   for await (const entry of await opendir(directory)) entries.push(entry);
@@ -121,11 +128,11 @@ export async function validatePublishDirectory(directory, model, runtime) {
   return manifest;
 }
 
-async function validateRuntimeMetadata(directory, manifest, model, runtime) {
+async function validateRuntimeMetadata(directory, manifest, model, runtime, brand, allowStaleToolchain) {
   const [config, tensorCache, build] = await Promise.all([
     readFile(resolve(directory, "mlc-chat-config.json"), "utf8").then(JSON.parse),
     readFile(resolve(directory, "tensor-cache.json"), "utf8").then(JSON.parse),
-    readFile(resolve(directory, "drowse-build.json"), "utf8").then(JSON.parse),
+    readFile(resolve(directory, `${brand}-build.json`), "utf8").then(JSON.parse),
   ]);
   const configModel = config.model_config;
   const configModelShape = configModel?.text_config ?? configModel;
@@ -154,6 +161,12 @@ async function validateRuntimeMetadata(directory, manifest, model, runtime) {
   ) {
     throw new Error("Drowse build metadata differs from the runtime lock");
   }
+  if (!allowStaleToolchain) {
+    const expected = await loadExpectedBuildToolchain(runtime.toolchain?.forkManifestSha256, model.architecture);
+    if (!isDeepStrictEqual(build.toolchain, expected)) {
+      throw new Error("Drowse build toolchain is stale or differs from the runtime lock");
+    }
+  }
   if (model.modelType === "base") {
     const prefix = config.drowse_completion_prefix_token_ids;
     if (
@@ -177,11 +190,28 @@ async function validateRuntimeMetadata(directory, manifest, model, runtime) {
     new Set(weightRecords).size !== weightRecords.length ||
     model.layerMap.some((layer, index) => layer !== index) ||
     tensorCache.records.some((record) =>
-      typeof record?.dataPath !== "string" || !weights.has(record.dataPath) ||
+      typeof record?.dataPath !== "string" || basename(record.dataPath) !== record.dataPath ||
+      !weights.has(record.dataPath) ||
       weights.get(record.dataPath).bytes !== record.nbytes
     )
   ) {
     throw new Error("tensor-cache.json does not close the published weight shards");
+  }
+  if (tensorCache.metadata?.ParamBytes !== undefined) {
+    const dtypeBytes = { float16: 2, float32: 4, int32: 4, uint32: 4 };
+    const parameterBytes = tensorCache.records.reduce((sum, shard) => sum +
+      (shard.records ?? []).reduce((subtotal, tensor) => subtotal +
+        (dtypeBytes[tensor.dtype] ?? NaN) *
+          (tensor.shape ?? []).reduce((size, dimension) => size * dimension, 1), 0), 0);
+    if (tensorCache.metadata.ParamBytes !== parameterBytes) {
+      throw new Error("tensor-cache.json parameter byte count is stale");
+    }
+  }
+  for (const record of tensorCache.records) {
+    if (record.md5sum !== undefined && (
+      !/^[0-9a-f]{32}$/.test(record.md5sum) ||
+      await fileDigest(resolve(directory, record.dataPath), "md5") !== record.md5sum
+    )) throw new Error(`tensor-cache.json shard checksum differs for ${record.dataPath}`);
   }
 }
 
@@ -229,7 +259,11 @@ async function modelInfo(repository) {
 }
 
 async function sha256(path) {
-  const digest = createHash("sha256");
+  return fileDigest(path, "sha256");
+}
+
+async function fileDigest(path, algorithm) {
+  const digest = createHash(algorithm);
   for await (const chunk of createReadStream(path)) digest.update(chunk);
   return digest.digest("hex");
 }

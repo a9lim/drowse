@@ -33,6 +33,8 @@ from drowse.core.token_callback import TokenConsumer, TokenConsumerOptions
 from drowse.core.steering import Steering
 from drowse.server.app import acquire_session_lock, ws_auth_ok
 from drowse.server.native_common import SINGLE_SESSION_ID
+from drowse.server.native_common import resolve_session_id
+from drowse.server.request_ledger import RequestLedger
 from drowse.server.request_helpers import merge_steering, parse_request_steering
 from drowse.server.streaming import finish_worker
 from drowse.server.tree_models import cast_json, node_json
@@ -59,7 +61,7 @@ JSONObject = dict[str, JSONValue]
 
 @dataclass(frozen=True)
 class _Stop:
-    pass
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,7 @@ class _Disconnect:
 @dataclass(frozen=True)
 class _InvalidInbound:
     message: str
+    request_id: str | None = None
 
 
 _Inbound = (
@@ -85,7 +88,7 @@ class _InboundBuffer:
     def __init__(self) -> None:
         self.pending: deque[tuple[_Inbound, int]] = deque()
         self.pending_bytes = 0
-        self.stop = False
+        self.stop: _Stop | None = None
         self.terminal: _Disconnect | None = None
         self.changed = asyncio.Event()
         self.closed = asyncio.Event()
@@ -94,7 +97,8 @@ class _InboundBuffer:
         if self.terminal is not None:
             return False
         if isinstance(message, _Stop):
-            self.stop = True
+            if self.stop is None or self.stop.request_id is not None:
+                self.stop = message
         else:
             if len(self.pending) >= MAX_WS_PENDING_MESSAGES or self.pending_bytes + size > MAX_WS_PENDING_BYTES:
                 return False
@@ -116,8 +120,9 @@ class _InboundBuffer:
             if self.terminal is not None:
                 return self.terminal
             if self.stop and (control_only or not self.pending):
-                self.stop = False
-                return _Stop()
+                stop = self.stop
+                self.stop = None
+                return stop
             if self.pending and not control_only:
                 message, size = self.pending.popleft()
                 self.pending_bytes -= size
@@ -250,6 +255,12 @@ class _AuthoredTurn:
 def register_ws_stream(app: FastAPI) -> None:
     """Mount the bidirectional WebSocket token+probe co-stream."""
     session = app.state.session
+    ledger = RequestLedger()
+
+    @app.get("/drowse/v1/sessions/{session_id}/requests/{request_id}")
+    def request_status(session_id: str, request_id: str) -> dict[str, Any]:
+        resolve_session_id(session_id)
+        return ledger.get(request_id)
 
     @app.websocket("/drowse/v1/sessions/{session_id}/stream")
     async def session_stream(websocket: WebSocket, session_id: str):
@@ -284,6 +295,7 @@ def register_ws_stream(app: FastAPI) -> None:
                         incoming.close(1009, "message too large")
                         return
                     message: _Inbound
+                    raw = None
                     try:
                         raw = json.loads(frame)
                         if not isinstance(raw, dict):
@@ -295,11 +307,21 @@ def register_ws_stream(app: FastAPI) -> None:
                                 else WSGenerateMessage(**raw)
                             )
                         elif raw.get("type") == "stop":
-                            message = _Stop()
+                            request_id = raw.get("request_id")
+                            if request_id is not None and (
+                                not isinstance(request_id, str) or not request_id or len(request_id) > 128
+                            ):
+                                message = _InvalidInbound("stop request_id must be a nonempty string of at most 128 characters")
+                            else:
+                                message = _Stop(request_id)
                         else:
                             message = _InvalidInbound("unknown message type")
                     except ValidationError as exc:
-                        message = _InvalidInbound(_validation_message(exc))
+                        request_id = raw.get("request_id") if isinstance(raw, dict) else None
+                        message = _InvalidInbound(
+                            _validation_message(exc),
+                            request_id if isinstance(request_id, str) and len(request_id) <= 128 else None,
+                        )
                     except (ValueError, RecursionError):
                         message = _InvalidInbound("invalid JSON message")
                     if not incoming.put(message, size):
@@ -437,7 +459,7 @@ def register_ws_stream(app: FastAPI) -> None:
                 if isinstance(msg, (WSGenerateMessage, WSSubmitMessage)):
                     request_task = asyncio.create_task(_ws_handle_generate(
                         session, msg, app.state.default_steering, incoming,
-                        _send_json, _wait_for_tree_finalization,
+                        _send_json, _wait_for_tree_finalization, ledger,
                     ))
                     finished, _ = await asyncio.wait(
                         {request_task, closed_task}, return_when=asyncio.FIRST_COMPLETED,
@@ -452,9 +474,17 @@ def register_ws_stream(app: FastAPI) -> None:
                 elif isinstance(msg, _Stop):
                     continue
                 else:
-                    await _send_json(_error_frame(
+                    frame = _error_frame(
                         msg.message, code="ValidationError", status=400,
-                    ))
+                    )
+                    if msg.request_id is not None:
+                        frame["request_id"] = msg.request_id
+                    await _send_json(frame)
+                    if msg.request_id is not None:
+                        await _send_json({
+                            "type": "request_complete", "request_id": msg.request_id,
+                            "state": "failed", "completed_siblings": 0,
+                        })
         except WebSocketDisconnect:
             return
         except Exception as e:
@@ -522,6 +552,7 @@ def _normalize_submit(
         return (
             WSGenerateMessage(
                 type="generate",
+                request_id=submit.request_id,
                 parent_node_id=submit.parent_node_id,
                 sampling=submit.sampling,
                 raw=submit.raw,
@@ -532,10 +563,12 @@ def _normalize_submit(
     return (
         WSGenerateMessage(
             type="generate",
+            request_id=submit.request_id,
             input=None,
             steering=submit.steering,
             sampling=submit.sampling,
             thinking=submit.thinking,
+            **cast(dict[str, Any], {"system_prompt": submit.system_prompt} if "system_prompt" in submit.model_fields_set else {}),
             stateless=False,
             raw=submit.raw,
             parent_node_id=submit.parent_node_id,
@@ -631,6 +664,87 @@ async def _ws_handle_generate(
     incoming: _InboundBuffer,
     send_json: Callable[[JSONObject], Awaitable[None]],
     wait_for_tree_finalization: Callable[[str], Awaitable[None]],
+    ledger: RequestLedger | None = None,
+) -> None:
+    if msg.request_id is None:
+        await _ws_dispatch_generate(
+            session, msg, default_steering, incoming, send_json, wait_for_tree_finalization,
+        )
+        return
+    request_id = msg.request_id
+    if ledger is not None:
+        admission = ledger.claim(request_id, msg.model_dump(mode="json", exclude_unset=True))
+        if admission != "new":
+            status = ledger.get(request_id)
+            if admission == "existing" and status["state"] in ("completed", "cancelled", "failed"):
+                for frame in status["results"]:
+                    await send_json(frame)
+                if "error" in status:
+                    await send_json(status["error"])
+                await send_json({"type": "request_complete", "request_id": request_id,
+                                 "state": status["state"], "completed_siblings": len(status["results"])})
+            else:
+                await send_json({"type": "error", "request_id": request_id,
+                                 "code": "REQUEST_ID_CONFLICT" if admission == "conflict" else "REQUEST_RECONCILE_REQUIRED",
+                                 "message": "This request ID was already admitted; query its recorded status before retrying."})
+            return
+    state = "completed"
+    completed = 0
+
+    async def correlated_send(frame: JSONObject) -> None:
+        nonlocal state, completed
+        if frame.get("type") == "error":
+            state = "failed"
+        elif frame.get("type") == "done":
+            completed += 1
+            result = frame.get("result")
+            if isinstance(result, dict) and result.get("finish_reason") == "cancelled":
+                state = "cancelled"
+        correlated = {**frame, "request_id": request_id}
+        if ledger is not None and frame.get("type") in ("done", "error"):
+            ledger.observe(request_id, correlated)
+        await send_json(correlated)
+
+    def record_only(frame: JSONObject) -> None:
+        if ledger is not None:
+            ledger.observe(request_id, {**frame, "request_id": request_id})
+
+    try:
+        await _ws_dispatch_generate(
+            session, msg, default_steering, incoming, correlated_send, wait_for_tree_finalization, record_only,
+        )
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        if ledger is not None:
+            ledger.settle_disconnected(request_id, msg.n)
+        raise
+    except Exception as exc:
+        _logger.exception("correlated native generation failed")
+        status, message = exc.user_message() if isinstance(exc, DrowseError) else (
+            500, "Generation failed. Check the server log for details.",
+        )
+        try:
+            await correlated_send(_error_frame(message, code=type(exc).__name__, status=status))
+        except BaseException:
+            if ledger is not None:
+                ledger.interrupt(request_id)
+            raise
+    terminal_frame: JSONObject = {
+        "type": "request_complete", "request_id": request_id,
+        "state": state, "completed_siblings": completed,
+    }
+    if ledger is not None:
+        ledger.observe(request_id, terminal_frame)
+    await send_json(terminal_frame)
+
+
+async def _ws_dispatch_generate(
+    session: DrowseSession,
+    msg: WSGenerateMessage | WSSubmitMessage,
+    default_steering: "Steering | None",
+    incoming: _InboundBuffer,
+    send_json: Callable[[JSONObject], Awaitable[None]],
+    wait_for_tree_finalization: Callable[[str], Awaitable[None]],
+    record_event: Callable[[JSONObject], None] | None = None,
 ) -> None:
     """Validate one inbound turn and dispatch it to its mode handler.
 
@@ -687,6 +801,7 @@ async def _ws_handle_generate(
     await _ws_stream_generation(
         session, msg, steering, sampling, authored,
         incoming, send_json, wait_for_tree_finalization,
+        record_event,
     )
 
 
@@ -699,6 +814,7 @@ async def _ws_stream_generation(
     incoming: _InboundBuffer,
     send_json: Callable[[JSONObject], Awaitable[None]],
     wait_for_tree_finalization: Callable[[str], Awaitable[None]],
+    record_event: Callable[[JSONObject], None] | None = None,
 ) -> None:
     """Run one generate turn and stream token/done/error events.
 
@@ -894,6 +1010,8 @@ async def _ws_stream_generation(
                                 "on_token": _on_token,
                                 "parent_node_id": effective_parent,
                             }
+                            if "system_prompt" in msg.model_fields_set:
+                                gen_kwargs["system_prompt"] = msg.system_prompt
                             if _recipe_override is not None:
                                 gen_kwargs["recipe_override"] = _recipe_override
                             if msg.generate_seat is not None:
@@ -944,8 +1062,11 @@ async def _ws_stream_generation(
                         incoming_msg = client_get.result()
                         if isinstance(incoming_msg, _Disconnect):
                             raise WebSocketDisconnect(code=incoming_msg.code)
-                        cancelled.set()
-                        stop_signaled = True
+                        if isinstance(incoming_msg, _Stop) and (
+                            incoming_msg.request_id is None or incoming_msg.request_id == msg.request_id
+                        ):
+                            cancelled.set()
+                            stop_signaled = True
                         client_get = asyncio.create_task(incoming.get(control_only=True))
                     if token_get in finished:
                         item = token_get.result()
@@ -955,18 +1076,34 @@ async def _ws_stream_generation(
                             await send_json(item.payload)
                             token_get = asyncio.create_task(token_queue.get())
             finally:
+                worker_was_complete = worker_task.done()
                 cancelled.set()
                 token_queue.close()
                 with CancelScope(shield=True):
                     # A stop racing the final token must still abort the fan.
                     if client_get.done() and not client_get.cancelled():
-                        stop_signaled = True
+                        pending_control = client_get.result()
+                        if isinstance(pending_control, _Stop) and (
+                            pending_control.request_id is None or pending_control.request_id == msg.request_id
+                        ):
+                            stop_signaled = True
                     client_get.cancel()
                     token_get.cancel()
                     try:
                         await asyncio.gather(client_get, token_get, return_exceptions=True)
                     finally:
                         await finish_worker(worker_task)
+                        if not done and record_event is not None:
+                            if result_holder:
+                                recovered = result_to_json(result_holder[0])
+                                if not worker_was_complete and recovered.get("finish_reason") == "stop":
+                                    recovered["finish_reason"] = "cancelled"
+                                record_event({"type": "done", "result": recovered,
+                                              "node_id": current_node_holder[0], "sibling_index": sibling_idx,
+                                              "sibling_count": n})
+                            elif error_holder:
+                                record_event(_error_frame("Generation failed. Check the server log for details.",
+                                                          code=type(error_holder[0]).__name__, status=500))
 
             if error_holder and not result_holder:
                 exc = error_holder[0]
@@ -1040,18 +1177,18 @@ async def _ws_stream_generation(
                 mean_surprise_out = node.mean_surprise
             result_json["mean_logprob"] = mean_logprob_out
             result_json["mean_surprise"] = mean_surprise_out
+            receipt: JSONObject = {
+                "type": "done", "result": result_json, "node_id": current_node_holder[0],
+                "sibling_index": sibling_idx, "sibling_count": n,
+            }
+            if record_event is not None:
+                record_event(receipt)
             if (
                 finalized_node_id is not None
                 and int(session.tree.rev) > tree_rev_before_generation
             ):
                 await wait_for_tree_finalization(finalized_node_id)
-            await send_json({
-                "type": "done",
-                "result": result_json,
-                "node_id": current_node_holder[0],
-                "sibling_index": sibling_idx,
-                "sibling_count": n,
-            })
+            await send_json(receipt)
 
             # Mid-batch stop honors the batch plan: cancel the currently
             # streaming sibling and skip every remaining queued sibling.

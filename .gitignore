@@ -77,6 +77,10 @@ scripts/experiments/
 *-fixes*.md
 /browser-runtime/BASE_MODELS.md
 /webui/GEO-SCHEMA-REPORT.md
+/webui/.wrangler/
+/webui/docs/*-REVIEW.md
+/webui/docs/*-REPORT.md
+/webui/docs/*-20??-??-??.*
 /docs/cloudflare-configuration-20??-??-??.md
 /docs/*-20??-??-??.md
 /legacy/

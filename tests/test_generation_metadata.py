@@ -1,3 +1,4 @@
+import json
 import math
 from types import SimpleNamespace
 from typing import Any, cast
@@ -6,6 +7,7 @@ import pytest
 import torch
 
 from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
+from drowse.core.results import GenerationResult
 from tests.conftest import FakeLogitsModel
 
 
@@ -21,6 +23,35 @@ class MetadataTokenizer:
 
     def batch_decode(self, rows: Any):
         return [self.decode(row) for row in rows]
+
+
+def test_missing_token_logprob_stays_null_in_api_responses():
+    from drowse.server.app import _render_logprobs_chat, _render_logprobs_completions
+
+    result = GenerationResult(text="02", tokens=[0, 2], token_count=2, tok_per_sec=1, elapsed=2,
+        logprobs=[(0, -0.5, []), (2, None, [])])
+    session = cast(Any, SimpleNamespace(tokenizer=MetadataTokenizer()))
+    chat = _render_logprobs_chat(result, session)
+    completion = _render_logprobs_completions(result, session)
+    assert chat is not None and completion is not None
+    assert [row["logprob"] for row in chat["content"]] == [-0.5, None]
+    assert completion["token_logprobs"] == [-0.5, None]
+    json.dumps([chat, completion], allow_nan=False)
+
+
+@pytest.mark.parametrize("offset", [-1000., 0., 1000.])
+@pytest.mark.parametrize("steering_active", [False, True])
+def test_finite_logit_offsets_do_not_change_sampling(offset: float, steering_active: bool):
+    logits = torch.tensor([[[2., 1., 0., -3.]]]) + offset
+    model = FakeLogitsModel(lambda _ids: logits.clone(), with_past_key_values=True,
+        config=SimpleNamespace(vocab_size=4), generation_config=SimpleNamespace(eos_token_id=3))
+    events = []
+    generate_steered(cast(Any, model), cast(Any, MetadataTokenizer()), torch.tensor([[0]]),
+        GenerationConfig(max_new_tokens=1, top_p=1., top_k=4), GenerationState(),
+        forced_prefix=[0], logprobs=4, steering_active=steering_active, on_token=lambda *event: events.append(event))
+    expected = torch.tensor([2., 1., 0., -3.]).log_softmax(-1)
+    assert events[0][3] == pytest.approx(float(expected[0]), abs=1e-6)
+    assert [alt.logprob for alt in events[0][4]] == pytest.approx(expected.tolist(), abs=1e-6)
 
 
 @pytest.mark.parametrize("count", [257, 4096, 262144])
@@ -68,8 +99,8 @@ def test_generation_metadata_preserves_probability_units(
     _, _, token_id, selected, alternatives, perplexity, _ = events[0]
     assert token_id == forced
     support = [1.0] if top_p < 1 else [math.e / (math.e + 1), 1 / (math.e + 1)]
-    expected_selected = math.log(support[0]) if forced == 0 else -math.log(sum(math.exp(x) for x in [2, 1, 0, -3]))
-    if logprobs is None:
+    expected_selected = math.log(support[0]) if forced == 0 else None
+    if logprobs is None or expected_selected is None:
         assert selected is None
     else:
         assert selected == pytest.approx(expected_selected, abs=2e-6)

@@ -16,6 +16,8 @@
   // the loom remains a separate workspace for navigating branches.
 
   import { onMount, tick } from "svelte";
+  import { registerWorkspaceController } from "./lib/workspaceController";
+  import { mountWorkspaceWebMcp, refreshWebMcp } from "./lib/webmcp";
   import { sessionState } from "./lib/stores/session.svelte";
   import { attachPersistence } from "./lib/stores/persistence.svelte";
   import { fade, fly } from "svelte/transition";
@@ -103,6 +105,15 @@
   type BootStatus = "loading" | "ready" | "failed";
   type WorkspaceView = "conversation" | "branches" | "controls" | "tools";
   let bootStatus: BootStatus = $state("loading");
+  const webMcpModelId = $derived(sessionState.info?.model_id);
+  const webMcpInstruments = $derived(JSON.stringify(sessionState.info?.instruments));
+  $effect(() => {
+    if (bootStatus === "ready" && webMcpModelId) return mountWorkspaceWebMcp();
+  });
+  $effect(() => {
+    webMcpInstruments;
+    refreshWebMcp();
+  });
   $effect(() => {
     if (bootStatus === "ready") return attachPersistence();
   });
@@ -202,6 +213,20 @@
     workspaceView = view;
     if (toolTakesWorkspace) closeDrawer();
   }
+
+  onMount(() => registerWorkspaceController({
+    read: () => ({ view: workspaceView, section: controlsSection, leftSidebar: leftSidebarVisible, headersVisible }),
+    navigate: async (change) => {
+      if (change.section !== undefined) controlsSection = change.section;
+      if (change.view !== undefined) selectWorkspace(change.view);
+      if (change.leftSidebar !== undefined) leftSidebarVisible = change.leftSidebar;
+      if (change.headersVisible !== undefined) {
+        if (workspaceView === "branches") loomToolsVisible = change.headersVisible;
+        else conversationToolsVisible = change.headersVisible;
+      }
+      await tick();
+    },
+  }));
 
   function onWorkspaceRequest(event: Event): void {
     const requested = (event as CustomEvent<

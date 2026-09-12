@@ -3,11 +3,13 @@
 `prepare_hosted_release_corpus.py` produces the bounded JSON inputs consumed by
 the hosted SAE and J-lens builders. It is deliberately offline and fail closed:
 the exact source snapshot, pinned license evidence, project word seeds, and all
-release tokenizers must match the manifest before it writes anything. The
-closure follows the launch-model lock exactly: Gemma 3 270M, Qwen3-1.7B, and
-Qwen3-4B. Qwen3-0.6B and SmolLM2 are not launch models. Gemma uses published
-provider J-lens and Gemma Scope SAE packs; browser release tooling does not fit
-either instrument.
+release tokenizers must match the manifest before it writes anything. Each
+declared tokenizer must match its entry in the runtime lock, and the target
+model must be explicitly covered. The checked-in corpus sources name
+Qwen3-1.7B and Qwen3-4B; adding another catalog model does not implicitly extend
+that corpus evidence. Gemma uses published provider J-lens and Gemma Scope SAE
+packs rather than these local fitting corpora. Release validation also binds
+each local J-lens vocabulary row to the recorded token ID for the target model.
 
 An approved run emits:
 

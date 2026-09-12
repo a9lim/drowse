@@ -423,10 +423,10 @@ export class HostedControllerImpl implements HostedController {
   }
 
   private async unloadWorker(): Promise<void> {
-    await this.cancelDownloadIfActive();
-    await this.cancelFittingIfActive();
-    await this.stopGenerationIfActive();
     try {
+      await this.cancelDownloadIfActive();
+      await this.cancelFittingIfActive();
+      await this.stopGenerationIfActive();
       await this.transport.call("unload", undefined);
     } catch (error) {
       this.transport.terminateWithFailure(

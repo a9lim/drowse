@@ -363,7 +363,7 @@ test("landing and onboarding retain hierarchy and reflow at 320 px", async ({ pa
     document.documentElement.style.scrollbarGutter = "stable";
   });
   await expect(page.getByRole("group", { name: "Appearance" }).locator("button:visible"))
-    .toHaveCount(2);
+    .toHaveCount(1);
   await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
   await expectCoherentHeadingOutline(page);
   await expectViewportContainment(page);
@@ -373,7 +373,7 @@ test("landing and onboarding retain hierarchy and reflow at 320 px", async ({ pa
     page.getByRole("heading", { name: "Choose your first model" }),
   ).toBeVisible();
   await expect(page.getByRole("group", { name: "Appearance" }).locator("button:visible"))
-    .toHaveCount(2);
+    .toHaveCount(1);
   await chooseFixtureModel(page);
   await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
   await expectCoherentHeadingOutline(page);

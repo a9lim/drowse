@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { onMount as onInterfaceMount } from "svelte";
+  import { registerInterfaceController } from "../../lib/workspaceController";
+  import { authoredDraftSchema } from "../../lib/interfaceSchemas";
+  import { ToolError } from "../../lib/webmcp/types";
+
   import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import { slide } from "svelte/transition";
@@ -456,6 +461,24 @@
   function errorText(e: unknown): string {
     return userFacingError(e, "Unable to build this direction. Check the highlighted fields and try again.");
   }
+
+  onInterfaceMount(() => registerInterfaceController("manifold_authored", {
+    schema: authoredDraftSchema,
+    read: () => ({ busy: submitting, values: { auto_domain: autoDomain, domain_kind: domainKind, box_dim: boxDim, sphere_dim: sphereDim, axes: axisDrafts, nodes, tuning, advanced_open: advancedOpen }, validation }),
+    update: async (change) => {
+      if (submitting) throw new ToolError("BUSY", "Wait for this interface operation to finish.");
+      if (browserMode && ["klein", "projective"].includes(change.domain_kind as string)) throw new ToolError("UNAVAILABLE", "This domain is supported by the HTTP runtime only.");
+      if (change.auto_domain !== undefined) autoDomain = change.auto_domain as boolean;
+      if (change.domain_kind !== undefined) domainKind = change.domain_kind as DomainKind;
+      if (change.box_dim !== undefined) boxDim = change.box_dim as number;
+      if (change.sphere_dim !== undefined) sphereDim = change.sphere_dim as number;
+      if (change.axes !== undefined) axisDrafts = structuredClone(change.axes) as AxisDraft[];
+      if (change.nodes !== undefined) nodes = structuredClone(change.nodes) as NodeDraft[];
+      if (change.tuning) Object.assign(tuning, change.tuning);
+      if (change.advanced_open !== undefined) advancedOpen = change.advanced_open as boolean;
+      if (change.nodes === undefined && ["domain_kind", "box_dim", "sphere_dim"].some(key => change[key] !== undefined)) reshapeNodeCoords();
+    },
+  }));
 </script>
 
 <div class="form-stack" bind:this={formRegion}>

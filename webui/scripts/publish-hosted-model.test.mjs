@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -8,6 +8,7 @@ import {
   validatePublishDirectory,
 } from "./publish-hosted-model.mjs";
 import { structuredHookProfile, thinkingProfile } from "./hosted-model-profiles.mjs";
+import { expectedBuildToolchain } from "./hosted-model-closure.mjs";
 
 assert.equal(structuredHookProfile("standard-v1"), "standard-v1");
 assert.equal(structuredHookProfile("standard-v2"), "standard-v2");
@@ -42,7 +43,15 @@ try {
   const prefillChunkSize = 2048;
   const weight = "weight";
   const tensorCache = JSON.stringify({
-    records: [{ dataPath: "params_shard_0.bin", nbytes: Buffer.byteLength(weight) }],
+    metadata: { ParamBytes: 8 },
+    records: [{
+      dataPath: "params_shard_0.bin", nbytes: Buffer.byteLength(weight),
+      md5sum: createHash("md5").update(weight).digest("hex"),
+      records: [
+        { name: "scale", dtype: "float32", shape: [1], format: "f32-to-bf16", byteOffset: 0, nbytes: 2 },
+        { name: "packed", dtype: "uint32", shape: [1], format: "raw", byteOffset: 2, nbytes: 4 },
+      ],
+    }],
   });
   const config = JSON.stringify({
     model_type: "qwen3",
@@ -62,7 +71,8 @@ try {
     new URL("../../browser-runtime/forks/licenses/Apache-2.0.txt", import.meta.url),
     "utf8",
   );
-  const buildToolchain = { fixture: true };
+  const forkBytes = await readFile(new URL("../../browser-runtime/forks/manifest.json", import.meta.url));
+  const buildToolchain = expectedBuildToolchain(JSON.parse(forkBytes), "qwen3");
   const sourceReadme = "---\nlicense: apache-2.0\n---\n# Fixture source\n";
   const licenseMetadata = JSON.stringify({
     schemaVersion: 1,
@@ -158,6 +168,7 @@ try {
   const runtime = {
     runtimeAbi: manifest.runtimeAbi,
     hookAbi: manifest.hookAbi,
+    toolchain: { forkManifestSha256: createHash("sha256").update(forkBytes).digest("hex") },
   };
   assert.equal((await validatePublishDirectory(directory, model, runtime)).files.length, 10);
   manifest.thinkingProfile = {
@@ -185,6 +196,61 @@ try {
     /no weight records/,
   );
   await writeFile(join(directory, "tensor-cache.json"), tensorCache);
+  for (const stale of [
+    { records: [{ dataPath: "params_shard_0.bin", nbytes: Buffer.byteLength(weight), md5sum: "0".repeat(32) }] },
+    { ...JSON.parse(tensorCache), metadata: { ParamBytes: 1 } },
+  ]) {
+    await writeFile(join(directory, "tensor-cache.json"), JSON.stringify(stale));
+    await assert.rejects(() => validatePublishDirectory(directory, model, runtime), /shard checksum differs|parameter byte count is stale/);
+  }
+  await writeFile(join(directory, "tensor-cache.json"), tensorCache);
+  const buildEntry = files.find((file) => file.path === "drowse-build.json");
+  const originalBuildEntry = { ...buildEntry };
+  const staleBuild = JSON.parse(build);
+  staleBuild.toolchain.mlcOverlayFiles["python/mlc_llm/model/gemma3/gemma3_model.py"] = "0".repeat(64);
+  const staleBytes = JSON.stringify(staleBuild);
+  await writeFile(join(directory, "drowse-build.json"), staleBytes);
+  Object.assign(buildEntry, { bytes: Buffer.byteLength(staleBytes),
+    sha256: createHash("sha256").update(staleBytes).digest("hex") });
+  await writeFile(join(directory, "hosted-artifacts.json"), JSON.stringify(manifest));
+  await assert.rejects(() => validatePublishDirectory(directory, model, runtime), /build toolchain is stale/);
+  assert.equal((await validatePublishDirectory(directory, model, runtime,
+    { allowStaleToolchain: true })).files.length, 10);
+  await writeFile(join(directory, "drowse-build.json"), build);
+  Object.assign(buildEntry, originalBuildEntry);
+  await writeFile(join(directory, "hosted-artifacts.json"), JSON.stringify(manifest));
+  for (const brand of ["saklas", "polythetic"]) {
+    manifest.runtimeAbi = `${brand}-web-runtime-v1`;
+    const legacyBuild = JSON.stringify({ ...JSON.parse(build), runtimeAbi: manifest.runtimeAbi });
+    await rename(join(directory, "drowse-build.json"), join(directory, `${brand}-build.json`));
+    await writeFile(join(directory, `${brand}-build.json`), legacyBuild);
+    Object.assign(buildEntry, {
+      path: `${brand}-build.json`, bytes: Buffer.byteLength(legacyBuild),
+      sha256: createHash("sha256").update(legacyBuild).digest("hex"),
+    });
+    await writeFile(join(directory, "hosted-artifacts.json"), JSON.stringify(manifest));
+    await assert.rejects(() => validatePublishDirectory(directory, model, runtime), /ABI differs/);
+    assert.equal((await validatePublishDirectory(directory, model, runtime, { allowLegacyBranding: true })).files.length, 10);
+    await assert.rejects(
+      () => validatePublishDirectory(directory, model, { ...runtime, hookAbi: "wrong" }, { allowLegacyBranding: true }),
+      /ABI differs/,
+    );
+    await writeFile(join(directory, `${brand}-build.json`), `${legacyBuild} `);
+    await assert.rejects(
+      () => validatePublishDirectory(directory, model, runtime, { allowLegacyBranding: true }),
+      /size differs|digest differs/,
+    );
+    await rename(join(directory, `${brand}-build.json`), join(directory, "drowse-build.json"));
+    await writeFile(join(directory, "drowse-build.json"), build);
+    Object.assign(buildEntry, originalBuildEntry);
+  }
+  manifest.runtimeAbi = "unknown-web-runtime-v1";
+  await writeFile(join(directory, "hosted-artifacts.json"), JSON.stringify(manifest));
+  await assert.rejects(
+    () => validatePublishDirectory(directory, model, runtime, { allowLegacyBranding: true }), /ABI differs/,
+  );
+  manifest.runtimeAbi = runtime.runtimeAbi;
+  await writeFile(join(directory, "hosted-artifacts.json"), JSON.stringify(manifest));
   await writeFile(join(directory, "tokenizer.json"), "changed");
   await assert.rejects(
     () => validatePublishDirectory(directory, model, runtime),

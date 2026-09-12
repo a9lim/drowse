@@ -44,9 +44,11 @@ test("feedback opens below Help, traps focus, validates, and preserves a closed 
   const dialog = page.getByRole("dialog", { name: "Submit Feedback", exact: true });
   expect(await page.locator(".sidebar-links button").last().evaluate(button => button.previousElementSibling?.textContent)).toContain("Help and shortcuts");
   await expect(dialog.getByRole("link", { name: /Contact us/ })).toHaveAttribute("href", "/contact");
-  await expect(page.getByRole("button", { name: "Close feedback" })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Side panel", exact: true })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  expect(await dialog.evaluate(node => node.contains(document.activeElement))).toBe(true);
+  await expect(dialog.getByRole("link", { name: "contact@drowse.ai", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Side panel", exact: true })).toBeFocused();
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Title", exact: true })).toBeFocused();
   await expect(page.getByText("Add a short title.")).toBeVisible();

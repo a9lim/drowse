@@ -1975,9 +1975,10 @@ def test_register_jlens_direction_registers_profile() -> None:
         unembed: torch.Tensor,
         *,
         layers: list[int] | None = None,
+        output_projection: torch.Tensor | None = None,
     ) -> dict[int, torch.Tensor]:
         seen_layers.append(layers)
-        return real_token_direction(token_id, unembed, layers=layers)
+        return real_token_direction(token_id, unembed, layers=layers, output_projection=output_projection)
 
     lens.token_direction = _spy_token_direction  # type: ignore[method-assign]
     name = s.register_jlens_direction("g")  # 'g' round-trips in the toy vocab
@@ -2409,9 +2410,10 @@ class _TreeStubSession(_StubSession):
         assistant_role: str | None = None,
         to_device: bool = True,
         gen_seat: str = "assistant",
+        system_prompt: Any = None,
     ) -> torch.Tensor:
         self.prepare_calls.append({
-            "input": input, "raw": raw, "thinking": thinking,
+            "input": input, "raw": raw, "thinking": thinking, "system_prompt": system_prompt,
             "parent_node_id": parent_node_id,
             "user_role": user_role, "assistant_role": assistant_role,
             "gen_seat": gen_seat,
@@ -2444,7 +2446,7 @@ def test_jlens_token_readout_shape_and_position() -> None:
     s = _TreeStubSession()
     s.fit_jlens(_PROMPTS)
     raw_ids = s._tokenizer.encode("abcdefg")
-    node_id = _tree_with_assistant(s, raw_ids)
+    node_id = _tree_with_assistant(s, raw_ids, Recipe(system_prompt="Saved pirate instruction"))
 
     seen_lens: list[tuple[int, int | None]] = []
     import drowse.core.capture as _vectors
@@ -2492,6 +2494,7 @@ def test_jlens_token_readout_shape_and_position() -> None:
     assert s.prepare_calls[0]["input"] is None
     assert s.prepare_calls[0]["raw"] is False
     assert s.prepare_calls[0]["gen_seat"] == "assistant"
+    assert s.prepare_calls[0]["system_prompt"] == "Saved pirate instruction"
     node = s.tree.get(node_id)
     assert s.prepare_calls[0]["parent_node_id"] == node.parent_id
 

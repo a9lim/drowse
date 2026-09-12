@@ -799,6 +799,29 @@ try {
   assert.equal(zeroProbabilityResult.meanLogprob, null);
   assert.equal(zeroProbabilityResult.meanSurprise, null);
 
+  for (const invalidLogprob of [0.01, Number.POSITIVE_INFINITY, Number.NaN]) {
+    for (const field of ["token", "alternative", "replay"]) {
+      const row = { token: "x", token_id: 1, logprob: -1 };
+      if (field === "token") row.logprob = invalidLogprob;
+      if (field === "alternative") row.top_logprobs = [{ token: "y", token_id: 2, logprob: invalidLogprob }];
+      if (field === "replay") row.drowse_replay = {
+        emitted_token_id: 1, sampled_token_id: 1, forced_token_id: null,
+        selected_logprobs: [{ token_id: 1, logprob: invalidLogprob }],
+        argmax: { token_id: 1, logprob: -1 },
+        top_logprobs: [{ token_id: 1, logprob: -1 }],
+      };
+      await assert.rejects(streamWebLlmGeneration({
+        ...drowseEngineMethods,
+        chat: { completions: { async create() {
+          return from([{ choices: [{ index: 0, delta: { content: "x" }, finish_reason: "stop", logprobs: { content: [row] } }] }]);
+        } } },
+      }, hooks, {
+        input: { kind: "chat", messages: [{ role: "user", content: "test" }] },
+        sampling: { temperature: 1, return_top_k: 2 },
+      }, () => undefined), (error) => error.code === "INVALID_GENERATION_CHUNK", `${field} must reject invalid log-probabilities`);
+    }
+  }
+
   let unsupportedCreateCalled = false;
   let unsupportedClearCalled = false;
   await assert.rejects(
@@ -1423,6 +1446,38 @@ try {
   });
   assert.equal(oriented.instruments.lens.readout, undefined);
   assert.equal(oriented.instruments.sae.readout, undefined);
+
+  const preciseProgram = {
+    format: "drowse-structured-v2", layerCount: 2,
+    probeKind: Uint32Array.of(3, 2, 3, 2),
+    measurementSchema: {
+      layerMap: [0, 1], modelLayerCount: 2,
+      probes: [
+        { name: "jlens/rare", family: "lens", tokenId: 17 },
+        { name: "sae/8", family: "sae", featureId: 8 },
+      ],
+      lensSource: "fixture-lens", saeSource: "fixture-sae",
+    },
+  };
+  const preciseValues = Float32Array.of(1e-8, 1.2345678, 3e-8, 2.3456789);
+  const precise = measurementEnvelope(preciseProgram, preciseValues, null);
+  for (const [index, family, name] of [[0, "lens", "jlens/rare"], [1, "sae", "sae/8"]]) {
+    const expected = (preciseValues[index] + preciseValues[index + 2]) / 2;
+    assert.equal(precise.scores[name], expected, "stored scores retain measured precision");
+    assert.equal(precise.instruments[family].readings[name].value, expected);
+    assert.equal(precise.instruments[family].readings[name].per_layer["0"], preciseValues[index]);
+    assert.equal(precise.per_layer_scores["0"][name], preciseValues[index]);
+  }
+  for (const [index, invalid] of [[0, NaN], [2, Infinity], [1, -Infinity], [0, -0.1], [2, 1.1], [3, -0.1]]) {
+    const invalidValues = preciseValues.slice();
+    invalidValues[index] = invalid;
+    assert.throws(() => measurementEnvelope(preciseProgram, invalidValues, null),
+      (error) => error.code === "INVALID_HOOK_MEASUREMENTS", "invalid layers must not silently change the average");
+  }
+  const inactiveProgram = { ...preciseProgram, probeKind: Uint32Array.of(0, 2, 3, 2) };
+  const inactiveValues = preciseValues.slice();
+  inactiveValues[0] = NaN;
+  assert.equal(measurementEnvelope(inactiveProgram, inactiveValues, null).scores["jlens/rare"], preciseValues[2]);
 
   const exactReadoutProgram = compileStructuredHookProgram(
     1,

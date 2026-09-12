@@ -19,7 +19,7 @@ from drowse.server.request_helpers import (
 
 
 @pytest.mark.parametrize("expression", [None, "0.5 local/pirate"])
-def test_websocket_done_reports_applied_steering(expression):
+def test_websocket_done_reports_applied_steering(expression: str | None):
     from drowse.core.results import GenerationResult
     from drowse.server.ws_models import result_to_json
 

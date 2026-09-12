@@ -76,14 +76,6 @@ const runtimeIdentity = {
   layerMap: [...lock.layerMap],
 };
 
-const vite = await createViteServer({
-  root: webuiRoot,
-  configFile: false,
-  appType: "custom",
-  logLevel: "silent",
-  publicDir: resolve(webuiRoot, "public-hosted"),
-  server: { middlewareMode: true, hmr: false, watch: null },
-});
 const server = createHttpServer(async (request, response) => {
   for (const [name, value] of Object.entries({
     "Cross-Origin-Opener-Policy": "same-origin",
@@ -136,6 +128,14 @@ const server = createHttpServer(async (request, response) => {
       500,
     );
   }
+});
+const vite = await createViteServer({
+  root: webuiRoot,
+  configFile: false,
+  appType: "custom",
+  logLevel: "silent",
+  publicDir: resolve(webuiRoot, "public-hosted"),
+  server: { middlewareMode: true, watch: null, hmr: { server } },
 });
 await new Promise((resolvePromise, reject) => {
   server.once("error", reject);

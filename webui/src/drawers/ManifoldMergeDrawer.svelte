@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { onMount as onInterfaceMount } from "svelte";
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { mergeDraftSchema } from "../lib/interfaceSchemas";
+  import { ToolError } from "../lib/webmcp/types";
+
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   import Select from "../lib/Select.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
@@ -114,6 +119,18 @@
   onMount(() => {
     void refreshManifoldList();
   });
+
+  onInterfaceMount(() => registerInterfaceController("manifold_merge", {
+    schema: mergeDraftSchema,
+    read: () => ({ busy: merging, values: { sources: [...selected], target_name: targetName, fit_mode: fitMode }, available_sources: discoverManifolds.map(rowKey), can_submit: canSubmit }),
+    update: async (change) => {
+      if (merging) throw new ToolError("BUSY", "Wait for this interface operation to finish.");
+      if (change.sources && (change.sources as string[]).some(key => !discoverManifolds.some(row => rowKey(row) === key))) throw new ToolError("NOT_FOUND", "Choose merge sources from available_sources.");
+      if (change.sources !== undefined) { selected.clear(); for (const key of change.sources as string[]) selected.add(key); }
+      if (change.target_name !== undefined) targetName = change.target_name as string;
+      if (change.fit_mode !== undefined) fitMode = change.fit_mode as typeof fitMode;
+    },
+  }));
 </script>
 
 <section class="drawer-shell" aria-label="Combine response controls">

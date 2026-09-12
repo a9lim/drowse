@@ -674,14 +674,15 @@ function validateCastMember(value: unknown): asserts value is CastMemberJSON {
 
 function validateRecipe(value: unknown): asserts value is RecipeJSON {
   assertPlainObject(value, "Recipe");
-  assertExactKeys(value, [
+  assertKeys(value, [
     "probe_hashes",
     "probes",
     "sampling",
     "seed",
     "steering",
     "thinking",
-  ], "Recipe");
+  ], ["system_prompt"], "Recipe");
+  if (value.system_prompt !== undefined) validateNullableString(value.system_prompt, "recipe system prompt", 1024 * 1024);
   validateNullableString(value.steering, "recipe steering", 64 * 1024);
   if (value.sampling !== null) validateRecipeSampling(value.sampling);
   if (value.thinking !== null && typeof value.thinking !== "boolean") {

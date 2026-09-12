@@ -1,0 +1,1 @@
+import{t as e}from"./artifactUpdates-Cjeu6LJc.js";export{e as notifyArtifactUpdate};

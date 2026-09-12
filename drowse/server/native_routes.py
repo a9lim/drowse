@@ -8,6 +8,10 @@ from fastapi import FastAPI
 def register_drowse_routes(app: FastAPI) -> None:
     """Mount the native ``/drowse/v1/*`` tree onto ``app``."""
 
+    from drowse.server.operation_ledger import register_operation_routes
+
+    register_operation_routes(app)
+
     from drowse.server.manifold_routes import register_manifold_routes
 
     register_manifold_routes(app)

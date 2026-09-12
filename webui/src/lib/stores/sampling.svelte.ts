@@ -170,6 +170,10 @@ type SessionDefaultsPatch = Partial<{
 let pendingDefaults: SessionDefaultsPatch = {};
 let savingDefaults: Promise<void> | null = null;
 
+export function sessionDefaultsPending(): boolean {
+  return savingDefaults !== null;
+}
+
 export function patchSessionDefaults(body: SessionDefaultsPatch): Promise<void> {
   const patch = body.max_tokens === undefined
     ? body
@@ -189,7 +193,18 @@ async function persistDefaults(): Promise<void> {
   while (Object.keys(pendingDefaults).length > 0) {
     const patch = pendingDefaults;
     pendingDefaults = {};
-    const info = await apiSessions.patch(patch);
+    let info;
+    try {
+      info = await apiSessions.patch(patch);
+    } catch (error) {
+      const previous = sessionState.info?.config;
+      for (const key of Object.keys(patch) as (keyof SessionDefaultsPatch)[]) {
+        if (previous && !(key in pendingDefaults) && samplingState[key] === patch[key]) {
+          Object.assign(samplingState, { [key]: previous[key] });
+        }
+      }
+      throw error;
+    }
     sessionState.info = info;
     sessionState.lastRefresh = Date.now();
     if (Object.keys(pendingDefaults).length === 0) hydrateSamplingFromInfo();

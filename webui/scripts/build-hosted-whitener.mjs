@@ -23,6 +23,7 @@ import {
 } from "./release-tool-storage-quota.mjs";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { verifyArtifactFile } from "./verify-artifact-file.mjs";
+import { validatePublishDirectory } from "./publish-hosted-model.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 if (options.help) {
@@ -76,9 +77,7 @@ await requireFile(modelLibraryPath, "model library");
 await requireFile(webLlmPath, "WebLLM bundle");
 await requireMissing(outputDirectory, "output directory");
 
-const artifactsManifest = JSON.parse(
-  await readFile(resolve(modelDirectory, "hosted-artifacts.json"), "utf8"),
-);
+const artifactsManifest = await validatePublishDirectory(modelDirectory, lock, runtimeLock);
 const executionProfiles = lockedModelExecutionProfiles(lock, artifactsManifest);
 if (
   artifactsManifest.runtimeAbi !== runtimeLock.runtimeAbi ||
@@ -146,8 +145,8 @@ const captureRequest = {
   artifactProducer,
 };
 
-let tensorBytes = null;
-let manifoldBytes = null;
+const tensorBytesByContext = new Map();
+const manifoldBytesByContext = new Map();
 let completeManualRun;
 const manualRun = options.manualBrowser
   ? new Promise((resolvePromise) => { completeManualRun = resolvePromise; })
@@ -212,11 +211,19 @@ const server = createHttpServer(async (request, response) => {
       return send(response, await readFile(path), contentType(path));
     }
     if (request.method === "POST" && url.pathname === "/output") {
-      tensorBytes = await readBoundedBody(request, 512 * 1024 * 1024);
+      const context = Number(url.searchParams.get("context"));
+      if (!lock.contextProfiles.includes(context) || tensorBytesByContext.has(context)) {
+        return send(response, "invalid or repeated context", "text/plain", 400);
+      }
+      tensorBytesByContext.set(context, await readBoundedBody(request, 512 * 1024 * 1024));
       return send(response, "ok", "text/plain");
     }
     if (request.method === "POST" && url.pathname === "/manifold-output") {
-      manifoldBytes = await readBoundedBody(request, 2 * 1024 * 1024 * 1024);
+      const context = Number(url.searchParams.get("context"));
+      if (!lock.contextProfiles.includes(context) || manifoldBytesByContext.has(context)) {
+        return send(response, "invalid or repeated context", "text/plain", 400);
+      }
+      manifoldBytesByContext.set(context, await readBoundedBody(request, 2 * 1024 * 1024 * 1024));
       return send(response, "ok", "text/plain");
     }
     vite.middlewares(request, response);
@@ -325,17 +332,9 @@ try {
   await new Promise((resolvePromise) => server.close(resolvePromise));
 }
 
-if (tensorBytes === null) throw new Error("browser whitener did not return a tensor payload");
-const tensorsSha256 = sha256(tensorBytes);
-if (result.tensorsSha256 !== tensorsSha256) {
-  throw new Error("browser whitener tensor digest changed during transfer");
-}
-if (manifoldBytes === null || sha256(manifoldBytes) !== result.manifoldSha256) {
-  throw new Error("browser manifold digest changed during transfer");
-}
 if (
   result.runtimeIdentitySha256 !== runtimeIdentityDigest(runtimeIdentity) ||
-  JSON.stringify(Object.keys(result.ridgePerLayer).map(Number)) !== JSON.stringify(lock.layerMap)
+  !Array.isArray(result.contexts) || result.contexts.length !== lock.contextProfiles.length
 ) {
   throw new Error("browser whitener metadata does not match the runtime lock");
 }
@@ -345,6 +344,16 @@ try {
   for (const contextTokens of lock.contextProfiles) {
     const context = result.contexts.find((candidate) => candidate.contextTokens === contextTokens);
     if (!context) throw new Error(`browser whitener omitted context ${contextTokens}`);
+    const tensorBytes = tensorBytesByContext.get(contextTokens);
+    const manifoldBytes = manifoldBytesByContext.get(contextTokens);
+    if (!tensorBytes || sha256(tensorBytes) !== context.tensorsSha256 ||
+        !manifoldBytes || sha256(manifoldBytes) !== context.manifoldSha256 ||
+        context.bindingSha256 !== sha256(canonicalJson({
+          runtimeIdentitySha256: result.runtimeIdentitySha256, contextTokens,
+        })) ||
+        JSON.stringify(Object.keys(context.ridgePerLayer).map(Number)) !== JSON.stringify(lock.layerMap)) {
+      throw new Error(`browser core pack identity or payload differs for context ${contextTokens}`);
+    }
     const directory = resolve(stage, String(contextTokens));
     await mkdir(directory, { recursive: true });
     await writeFile(resolve(directory, "neutral-whitener.safetensors"), tensorBytes);
@@ -354,16 +363,13 @@ try {
       context_binding_sha256: context.bindingSha256,
       hidden_size: lock.hiddenSize,
       layer_map: lock.layerMap,
-      tensors_sha256: tensorsSha256,
-      ridge_per_layer: result.ridgePerLayer,
+      tensors_sha256: context.tensorsSha256,
+      ridge_per_layer: context.ridgePerLayer,
     }, null, 2)}\n`);
+    const manifoldDirectory = resolve(stage, "manifolds", String(contextTokens));
+    await mkdir(manifoldDirectory, { recursive: true });
+    await writeFile(resolve(manifoldDirectory, `${manifold.namespace}-${manifold.name}.drowse`), manifoldBytes);
   }
-  const directory = resolve(stage, "manifolds");
-  await mkdir(directory, { recursive: true });
-  await writeFile(
-    resolve(directory, `${manifold.namespace}-${manifold.name}.drowse`),
-    manifoldBytes,
-  );
   await rename(stage, outputDirectory);
 } catch (error) {
   await rm(stage, { recursive: true, force: true });
@@ -378,11 +384,10 @@ process.stdout.write(`${JSON.stringify({
   hiddenSize: lock.hiddenSize,
   layers: lock.layerMap.length,
   runtimeIdentitySha256: result.runtimeIdentitySha256,
-  tensorsSha256,
   contexts: result.contexts,
   manifold: {
     identity: `${manifold.namespace}/${manifold.name}`,
-    sha256: result.manifoldSha256,
+    sha256ByContext: Object.fromEntries(result.contexts.map(context => [context.contextTokens, context.manifoldSha256])),
   },
 }, null, 2)}\n`);
 

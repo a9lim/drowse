@@ -8,6 +8,7 @@
   import TabIdentity from "../../lib/ui/TabIdentity.svelte";
   import { setupTabState } from "../../lib/tabIdentity";
   import { onMount } from "svelte";
+  import { registerModelPicker } from "../../lib/webmcp/lifecycle";
   import { fade, fly } from "svelte/transition";
   import InfoTip from "../../lib/ui/InfoTip.svelte";
   import PageHeader from "./PageHeader.svelte";
@@ -109,7 +110,7 @@
   const displayDetail = $derived(
     snapshot.phase === "supported" && snapshot.models.some((model) => model.fit !== "blocked")
       ? firstRun
-        ? "Choose a model to download to this device. The workbench opens when setup finishes."
+        ? "The workbench opens automatically after download and setup."
         : "Open an installed model or download another one. Your saved chats are kept separately."
       : snapshot.detail,
   );
@@ -284,6 +285,10 @@
   };
 
   onMount(() => {
+    const disposeModelPicker = registerModelPicker(id => {
+      selectedModel = id;
+      if (snapshot.models.find(model => model.id === id)?.modelType === "base") baseModelsOpen = true;
+    });
     snapshot = controller.current();
     const unsubscribe = controller.subscribe((next) => {
       snapshot = next;
@@ -299,7 +304,7 @@
       }
       void openInstalledModel(next);
     });
-    return () => unsubscribe();
+    return () => { unsubscribe(); disposeModelPicker(); };
   });
 
   const etaLabel = (progress = snapshot.download.progress) => {
@@ -598,7 +603,7 @@
         </div>
 
         <details use:animatedDetails class="base-models" bind:open={baseModelsOpen}>
-          <summary>Base models <span class="base-models-note">Advanced · text completion</span></summary>
+          <summary>Base models <span class="base-models-note">Text completion</span></summary>
           <p class="base-model-warning">
             Base models predict what comes next in a piece of text. They don't follow instructions reliably
             and can produce unreliable or offensive text. Use a chat model for everyday conversations.
@@ -1113,6 +1118,9 @@
   .delete-model { color: var(--accent-red); background: var(--control-sheen), var(--surface-hi); }
   .base-models { margin-block: var(--space-7); }
   .base-models > summary {
+    min-height: 56px;
+    font-size: var(--text-lg);
+    line-height: 1.4;
     padding-block: var(--space-5);
     cursor: pointer;
     color: var(--fg);
@@ -1122,7 +1130,7 @@
     display: inline-block;
     margin-inline-start: var(--space-4);
     color: var(--fg-muted);
-    font-size: var(--text-sm);
+    font-size: var(--text-md);
     font-weight: var(--weight-normal);
   }
   .base-model-warning,

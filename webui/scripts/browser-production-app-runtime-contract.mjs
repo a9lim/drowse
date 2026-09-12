@@ -67,7 +67,7 @@ export function classifyInstalledAppState({
 
 export function requiredFeaturesForQuantization(quantization) {
   if (quantization === "q4f16_1") return ["shader-f16"];
-  if (quantization === "q4f32_1") return [];
+  if (quantization === "q4f32_1" || quantization === "q0f32") return [];
   throw new Error(`unsupported browser quantization ${quantization}`);
 }
 
@@ -285,6 +285,9 @@ export function createProductionAppCatalog({
     files: saeFiles,
   });
   const variantId = `${lock.id}-${lock.quantization}`;
+  const weightBufferBytes = 2 ** Math.ceil(Math.log2(Math.max(
+    134_217_728, ...modelFiles.filter((file) => file.role === "weight").map((file) => file.bytes),
+  )));
   const document = {
     schemaVersion: 1,
     sequence: 1,
@@ -309,8 +312,8 @@ export function createProductionAppCatalog({
         requirements: {
           features: requiredFeaturesForQuantization(lock.quantization),
           limits: {
-            maxBufferSize: 134_217_728,
-            maxStorageBufferBindingSize: 134_217_728,
+            maxBufferSize: weightBufferBytes,
+            maxStorageBufferBindingSize: weightBufferBytes,
             maxStorageBuffersPerShaderStage: 10,
             maxComputeWorkgroupStorageSize: 32_768,
             ...(lock.structuredHookProfile === "standard-v3"

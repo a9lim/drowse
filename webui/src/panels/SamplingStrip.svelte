@@ -28,6 +28,7 @@
   import InfoTip from "../lib/ui/InfoTip.svelte";
   import { getRuntimeCapabilities, getHostedController } from "../lib/runtime/registry";
   import { outputTokenLimitForSignals } from "../lib/runtime/outputTokenPolicy";
+  import { SAMPLING_HELP } from "../lib/parameterHelp";
 
   // ------------------------------------------------------------------- consts
 
@@ -47,12 +48,7 @@
   const TOP_P_STEP = 0.01;
   const MAX_TOK_MIN = 1;
 
-  const HELP = {
-    temperature: "Temperature controls randomness. Higher values vary the token choices. Lower values make them more predictable.",
-    topP: "Top P limits sampling to the smallest set of tokens whose probabilities add up to this value. Lower values narrow the choices.",
-    maxTokens: "Max tokens is the maximum number of tokens the model may generate. A token is usually a word or part of a word.",
-    thinking: "When supported, Thinking lets the model use a separate reasoning phase before it writes the visible reply.",
-  } as const;
+  const HELP = SAMPLING_HELP;
 
   function describedBy(node: HTMLElement, id: string) {
     let descriptionId = id;

@@ -370,7 +370,7 @@ def _branch_inputs(session: "DrowseSession", node_id: str) -> _ReplayBranch:
     else:
         thinking = bool(stamped_thinking)
 
-    system_prompt = session.config.system_prompt or None
+    system_prompt = recipe.resolved_system_prompt(session.config.system_prompt) if recipe is not None else session.config.system_prompt
     prepare_input = getattr(session, "_prepare_input", None)
     if callable(prepare_input):
         # Rebuild the exact prompt that opened this generated node.  Recipe
@@ -386,6 +386,7 @@ def _branch_inputs(session: "DrowseSession", node_id: str) -> _ReplayBranch:
             ),
             gen_seat=node.role,
             to_device=False,
+            system_prompt=system_prompt,
         )
     else:
         # Lightweight test/third-party sessions predating the native prompt
@@ -593,7 +594,6 @@ def _replay_branch_logprobs(
 
                     logits = outputs.logits[:, -1, :]
                     logits.nan_to_num_(nan=0.0, posinf=100.0, neginf=-100.0)
-                    logits.clamp_(-100.0, 100.0)
 
                     if penalty_state is not None:
                         penalty_state.apply(

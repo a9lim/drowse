@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import os
@@ -83,7 +84,7 @@ THINKING_DELIMITERS = ("<think>", "</think>")
 PRODUCTION_QUANTIZATIONS = ("q4f16_1", "q4f32_1", "q0f32")
 PRODUCTION_ARCHITECTURES = ("qwen3", "llama", "gemma3_text", "gpt2", "gpt_neox", "qwen3_5")
 BASE_ADAPTER_DIGESTS = {
-    "base_model_adapters.py": "eed323ea949e87c537ca7b1c49c3db2841f26711cadd3921e3d46a5cd45eaca7",
+    "base_model_adapters.py": "8056482704d65958065f8c32ff46be798c84bb0b49acb636affab7f9555f6fd5",
 }
 HYBRID_ADAPTER_DIGESTS = {
     **BASE_ADAPTER_DIGESTS,
@@ -265,6 +266,8 @@ def convert(args, mlc_repository: Path, tvm_repository: Path) -> None:
     try:
         config = source / "config.json"
         model = MODELS[args.architecture]
+        if args.architecture == "gemma3_text":
+            model = gemma_conversion_model(model)
         quantization = QUANTIZATION[args.quantization]
         convert_weight(
             config=config,
@@ -289,6 +292,19 @@ def convert(args, mlc_repository: Path, tvm_repository: Path) -> None:
         shutil.rmtree(stage, ignore_errors=True)
         raise
     print(json.dumps(output_summary(output), sort_keys=True))
+
+
+def gemma_conversion_model(model):
+    loader = model.source["huggingface-safetensor"]
+
+    def precise_mapping(config, quantization):
+        mapping = loader(config, quantization)
+        for name, transform in mapping.map_func.items():
+            if name.endswith(("layernorm.weight", "q_norm.weight", "k_norm.weight", "model.norm.weight")):
+                mapping.map_func[name] = lambda value, transform=transform: transform(value.astype("float32"))
+        return mapping
+
+    return dataclasses.replace(model, source={**model.source, "huggingface-safetensor": precise_mapping})
 
 
 def validate_source(source: Path, expected_revision: str, architecture: str) -> None:
@@ -667,6 +683,8 @@ def write_build_manifest(args, source: Path, output: Path) -> None:
         manifest["stateAbi"] = "kv-rnn-v1"
     if args.quantization == "q0f32":
         manifest["weightEncoding"] = "raw"
+    if args.architecture == "gemma3_text":
+        manifest["conversionPolicy"] = {"rmsNormOffset": "float32-before-add-one-v1"}
     manifest["files"] = artifact_files(output)
     (output / "drowse-build.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -889,6 +907,10 @@ def verify_build_manifest(
     if quantization == "q0f32":
         if manifest.get("weightEncoding") != "raw":
             raise SystemExit("q0f32 build manifest must declare lossless raw storage")
+        if architecture == "gemma3_text" and manifest.get("conversionPolicy") != {
+            "rmsNormOffset": "float32-before-add-one-v1"
+        }:
+            raise SystemExit("Gemma q0f32 requires the source-preserving normalization conversion")
         validate_weight_encoding(model, quantization)
     if architecture in BASE_MODEL_SOURCE_DIGESTS and manifest.get("modelType") != "base":
         raise SystemExit("base model build manifest lacks explicit classification")

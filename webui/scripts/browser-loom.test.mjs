@@ -1843,6 +1843,32 @@ try {
   assert.equal(failedTree.nodes.length, 2);
   assert.equal(failedTree.active_node_id, failedTree.nodes[1].id);
 
+  {
+    const engine = cancellableGeneration("reject");
+    const stream = engine.streamGeneration.bind(engine);
+    engine.streamGeneration = (plan, onToken) => stream(plan, async token => {
+      await onToken({ ...token, text: "Unknown ", logprob: null });
+      await onToken({ ...token, rawIndex: 1 });
+    });
+    const runtime = new BrowserLoomRuntime({
+      session: session(), generation: engine, createId: ids("cancel-unknown-score"),
+    });
+    const events = [];
+    const pending = runtime.generate({
+      type: "submit", text: "Keep incomplete score provenance",
+      authored_role: "user", generated_role: "assistant",
+    }, event => events.push(event));
+    await engine.started;
+    await runtime.stop();
+    await pending;
+    const node = runtime.snapshot().tree.nodes.at(-1);
+    assert.equal(node.text, "Unknown Partial");
+    assert.deepEqual(node.tokens.map(row => row.logprob), [null, -0.4]);
+    assert.equal(node.mean_logprob, null, "an incomplete distribution must not become a finite mean");
+    assert.equal(node.mean_surprise, null);
+    assert.equal(events.find(event => event.type === "done").result.mean_logprob, null);
+  }
+
   for (const mode of ["resolve", "reject"]) {
     const engine = cancellableGeneration(mode);
     const runtime = new BrowserLoomRuntime({
@@ -2503,6 +2529,27 @@ try {
     canonicalBrowserTree(sharedLoomRuntime.snapshot().tree),
     sharedLoomFixture.expected.final,
   );
+
+  for (const capturedPrompt of [undefined, null, "", "Speak like a pirate."]) {
+    const capturedTree = structuredClone(exactReplayRuntime.snapshot().tree);
+    const source = capturedTree.nodes.find(node => node.id === branchA.id);
+    if (capturedPrompt === undefined) delete source.recipe.system_prompt;
+    else source.recipe.system_prompt = capturedPrompt;
+    const savedPromptRuntime = new BrowserLoomRuntime({
+      session: session({ system_prompt: "Different current instruction." }),
+      initialTree: capturedTree,
+      generation: exactReplayEngine,
+      createId: ids("captured-prompt"),
+      compileSteering() { return { hookAbi: "post-block-residual-v4", activeRole: "pirate" }; },
+    });
+    const firstPlan = exactReplayEngine.plans.length;
+    await savedPromptRuntime.generate({ type: "generate", fork_node_id: branchA.id, fork_raw_index: 1, fork_alt_token_id: 42 }, () => {});
+    const expected = capturedPrompt === undefined ? "Different current instruction." : capturedPrompt;
+    const rendered = exactReplayEngine.plans[firstPlan].input.messages.filter(row => row.role === "system").map(row => row.content);
+    assert.deepEqual(rendered, expected ? [expected] : [], "token fork uses captured instructions, including explicit null/empty and legacy inheritance");
+    assert.equal(savedPromptRuntime.snapshot().tree.nodes.at(-1).recipe.system_prompt, expected);
+    assert.equal(savedPromptRuntime.snapshot().session.config.system_prompt, "Different current instruction.");
+  }
 
   console.log("Browser authoritative loom checks passed");
 } finally {

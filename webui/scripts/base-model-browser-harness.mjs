@@ -9,12 +9,14 @@ import { resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 
 const [modelPath, libraryPath, portText = "4198", ...options] = process.argv.slice(2);
-if (!modelPath || !libraryPath) throw new Error("Usage: base-model-browser-harness.mjs MODEL_DIRECTORY LIBRARY [PORT] [--lifecycle] [--repeat N] [--branch-rounds N] [--diagnostic] [--fp32-replay]");
-let lifecycle = false, diagnostic = false, fp32Replay = false, promptRepeats = 0, branchRounds = 1;
+if (!modelPath || !libraryPath) throw new Error("Usage: base-model-browser-harness.mjs MODEL_DIRECTORY LIBRARY [PORT] [--lifecycle] [--repeat N] [--branch-rounds N] [--diagnostic] [--fp32-replay] [--probability-trace] [--decode-capture]");
+let lifecycle = false, diagnostic = false, fp32Replay = false, probabilityTrace = false, decodeCapture = false, promptRepeats = 0, branchRounds = 1;
 for (let index = 0; index < options.length; index++) {
   if (options[index] === "--lifecycle") lifecycle = true;
   else if (options[index] === "--diagnostic") diagnostic = true;
   else if (options[index] === "--fp32-replay") fp32Replay = true;
+  else if (options[index] === "--probability-trace") probabilityTrace = true;
+  else if (options[index] === "--decode-capture") { decodeCapture = true; probabilityTrace = true; }
   else if (options[index] === "--repeat") {
     promptRepeats = Number(options[++index]);
     if (!Number.isSafeInteger(promptRepeats) || promptRepeats < 0 || promptRepeats > 4096) throw new Error("Invalid prompt repetition count");
@@ -78,6 +80,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method !== "GET") { response.writeHead(405).end(); return; }
+    if (pathname === "/favicon.ico") { response.writeHead(204).end(); return; }
     if (pathname === "/") {
       response.setHeader("Content-Type", "text/html; charset=utf-8");
       response.end(page());
@@ -139,7 +142,7 @@ stop.onclick = () => engine?.interruptGenerate();
 run.onclick = async () => {
   run.disabled = true; stop.disabled = false; output.textContent = "";
   const report = { startedAt: new Date().toISOString(), userAgent: navigator.userAgent, prompt: document.querySelector("#prompt").value, steps: [] };
-  let firstLogits, generatedIds = [], forcedEos = null;
+  let firstLogits, generatedIds = [], logitsTrace = [], forcedEos = null;
   try {
     if (!navigator.gpu) throw new Error("WebGPU unavailable");
     const adapter = await navigator.gpu.requestAdapter();
@@ -171,11 +174,12 @@ run.onclick = async () => {
     const processor = {
       processLogits(logits) {
         if (!firstLogits) firstLogits = Array.from(logits);
+        if (${probabilityTrace} && logitsTrace.length < 24) logitsTrace.push(Array.from(logits));
         if (forcedEos !== null) { logits.fill(-1e30); logits[forcedEos] = 0; }
         return logits;
       },
       processSampledToken(token) { generatedIds.push(token); },
-      resetState() { firstLogits = undefined; generatedIds = []; }
+      resetState() { firstLogits = undefined; generatedIds = []; logitsTrace = []; }
     };
     engine = new MLCEngine({
       appConfig: { artifactCache, gpuAdapter: adapter, model_list: [{ model: new URL(modelBase, location.origin).href, model_id: "local-base", model_lib: new URL("/model-lib.wasm", location.origin).href }] },
@@ -186,13 +190,41 @@ run.onclick = async () => {
     report.profile = await engine.getDrowseStructuredHookProfile();
     report.inputIds = [...promptPrefixTokenIds, ...await engine.tokenizeDrowseText(report.prompt)];
     const options = { prompt: report.prompt, max_tokens: 24, temperature: 0, top_p: 1, seed: 11 };
+    const decodeHosts = [];
+    let restoreDecodeCapture;
+    if (${decodeCapture}) {
+      const pipeline = engine.loadedModelIdToPipeline.get("local-base");
+      const prefill = pipeline.invokePrefill, decode = pipeline.invokeDecode;
+      const captureForward = (embeddings, length) => {
+        const positions = pipeline.tvm.empty([length], "int32", pipeline.device).copyFrom(Int32Array.from({ length }, (_, index) => index));
+        const result = pipeline.invokeDrowseCapture(embeddings, length, positions);
+        const captures = result.get(pipeline.drowseOutputOffset());
+        const host = pipeline.tvm.empty(captures.shape, "float32", pipeline.tvm.cpu());
+        host.copyFrom(captures);
+        decodeHosts.push(pipeline.tvm.detachFromCurrentScope(host));
+        return result;
+      };
+      pipeline.invokePrefill = (embeddings, length) => captureForward(embeddings, length);
+      pipeline.invokeDecode = embeddings => captureForward(embeddings, 1);
+      restoreDecodeCapture = () => { pipeline.invokePrefill = prefill; pipeline.invokeDecode = decode; };
+    }
     status.textContent = "Generating";
-    const stream = await engine.completions.create({ ...options, stream: true });
-    for await (const chunk of stream) output.textContent += chunk.choices[0]?.text ?? "";
+    try {
+      const stream = await engine.completions.create({ ...options, stream: true });
+      for await (const chunk of stream) output.textContent += chunk.choices[0]?.text ?? "";
+      if (${decodeCapture}) {
+        await engine.loadedModelIdToPipeline.get("local-base").device.sync();
+        report.decodeCaptures = decodeHosts.map(host => ({ shape: host.shape, values: Array.from(host.toArray()) }));
+      }
+    } finally {
+      restoreDecodeCapture?.();
+      for (const host of decodeHosts) host.dispose();
+    }
     report.completion = output.textContent;
     report.generatedIds = [...generatedIds];
     report.usage = await engine.runtimeStatsText();
     report.firstLogits = firstLogits;
+    if (${probabilityTrace}) report.logitsTrace = logitsTrace;
     if (!firstLogits?.length || firstLogits.some(v => !Number.isFinite(v))) throw new Error("Non-finite or missing model logits");
     report.steps.push("finite generation logits");
     status.textContent = "Capturing residuals";
@@ -215,12 +247,30 @@ run.onclick = async () => {
       if (!${diagnostic}) throw new Error("Repeated capture changed residuals");
       (report.diagnosticFailures ??= []).push("repeat capture exceeds declared numerical bounds");
     } else report.steps.push("repeat capture parity");
+    if (${probabilityTrace}) {
+      const traceIds = [...report.inputIds, ...report.generatedIds.slice(0, -1)];
+      const tracePositions = report.generatedIds.map((_, index) => report.inputIds.length - 1 + index);
+      const traceCapture = await engine.captureDrowseResiduals(traceIds, tracePositions);
+      report.probabilityTraceCapture = { ...traceCapture, values: Array.from(traceCapture.values) };
+    }
     status.textContent = "Checking generation after capture";
     const repeated = await engine.completions.create(options);
     report.repeatCompletion = repeated.choices[0].text;
     report.repeatGeneratedIds = [...generatedIds];
     if (report.repeatCompletion !== report.completion || JSON.stringify(report.generatedIds) !== JSON.stringify(report.repeatGeneratedIds)) {
       throw new Error("Greedy generation changed after capture");
+    }
+    if (${decodeCapture}) {
+      if (report.logitsTrace.length !== logitsTrace.length) throw new Error("Decode capture changed the logit trace length");
+      report.decodeCaptureObservationMaxAbs = 0;
+      for (let step = 0; step < logitsTrace.length; step++) {
+        if (report.logitsTrace[step].length !== logitsTrace[step].length) throw new Error("Decode capture changed the vocabulary size");
+        for (let token = 0; token < logitsTrace[step].length; token++) {
+          report.decodeCaptureObservationMaxAbs = Math.max(report.decodeCaptureObservationMaxAbs, Math.abs(report.logitsTrace[step][token] - logitsTrace[step][token]));
+        }
+      }
+      if (report.decodeCaptureObservationMaxAbs !== 0) throw new Error("Decode capture changed generation logits");
+      report.steps.push("decode capture preserves generation logits exactly");
     }
     report.steps.push("generation after capture parity");
     if (lifecycle) {
@@ -332,7 +382,7 @@ run.onclick = async () => {
     report.finishedAt = new Date().toISOString();
     if (report.diagnosticFailures?.length && report.status === "passed-smoke-only") report.status = "diagnostic-only";
     const saved = await (await fetch("/report", { method: "POST", body: JSON.stringify(report) })).json();
-    const { firstLogits, capture, repeatCapture, branchReplayCapture, branchRecoveryCapture, explicitResetCapture, ...summary } = report;
+    const { firstLogits, logitsTrace, probabilityTraceCapture, decodeCaptures, capture, repeatCapture, branchReplayCapture, branchRecoveryCapture, explicitResetCapture, ...summary } = report;
     reportView.textContent = JSON.stringify({ ...summary, captureShape: capture ? [capture.layerCount, capture.positionCount, capture.hiddenSize] : null, reportFile: saved.file }, null, 2);
     status.textContent = report.status;
     run.disabled = false; stop.disabled = true;

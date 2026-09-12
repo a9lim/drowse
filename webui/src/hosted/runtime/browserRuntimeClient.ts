@@ -1,3 +1,4 @@
+import { RuntimeRequestJournal, replayRequest } from "../../lib/runtime/requestJournal";
 import type {
   RuntimeClient,
   RuntimeEventChannel,
@@ -359,6 +360,9 @@ export class BrowserRuntimeClient implements RuntimeClient {
 }
 
 class BrowserRuntimeEventChannel implements RuntimeEventChannel {
+  private readonly journal = new RuntimeRequestJournal();
+
+  async requestStatus(id: string) { return this.journal.get(id); }
   private readonly transport: WorkerRpcTransport;
   private readonly listeners = new Set<(message: WSServerMessage) => void>();
   private readonly stateListeners = new Set<(state: RuntimeEventChannelState) => void>();
@@ -373,6 +377,7 @@ class BrowserRuntimeEventChannel implements RuntimeEventChannel {
     this.transport = transport;
     this.unsubscribeEvents = transport.subscribe((event) => this.onWorkerEvent(event));
     this.unsubscribeFailures = transport.subscribeFailure((reason) => {
+      this.journal.interruptRunning();
       this.terminalFailure = reason;
       if (!this.openState) {
         this.listeners.clear();
@@ -412,15 +417,49 @@ class BrowserRuntimeEventChannel implements RuntimeEventChannel {
   send(message: WSClientMessage): void {
     if (!this.openState) throw new Error("Runtime event channel is not open");
     if (message.type === "stop") {
-      void this.stop().catch((error) => {
-        this.emit({ type: "error", message: error.message, code: "WORKER_STOP_FAILED" });
+      const stop = message.request_id === undefined
+        ? this.stop()
+        : this.transport.call("stop", { requestId: message.request_id });
+      void stop.catch((error) => {
+        this.emit({ type: "error", message: error.message, code: "WORKER_STOP_FAILED",
+          ...(message.request_id === undefined ? {} : { request_id: message.request_id }) });
       });
       return;
     }
+    const admission = this.journal.claim(message);
+    if (admission !== "new") {
+      if (admission === "conflict") this.emit({ type: "error", request_id: message.request_id,
+        code: "REQUEST_ID_CONFLICT", message: "This request ID belongs to different inputs" });
+      else replayRequest(this.journal.get(message.request_id!), event => this.emit(event));
+      return;
+    }
     const command = message.type;
-    void this.transport.call(command, message).catch((error) => {
-      this.emit(wsErrorFrom(error, "WORKER_REQUEST_FAILED"));
+    let completed = 0;
+    let cancelled = false;
+    const unsubscribe = message.request_id === undefined ? () => {} : this.subscribe((event) => {
+      if (event.type === "done" && event.request_id === message.request_id) {
+        completed += 1;
+        cancelled ||= event.result.finish_reason === "cancelled";
+      }
     });
+    void this.transport.call(command, message).then(() => {
+      if (message.request_id !== undefined) {
+        const recorded = this.journal.get(message.request_id);
+        completed = recorded.results.length;
+        cancelled ||= recorded.results.some(row => row.result.finish_reason === "cancelled");
+      }
+      if (message.request_id !== undefined) this.emit({
+        type: "request_complete", request_id: message.request_id,
+        state: cancelled ? "cancelled" : "completed", completed_siblings: completed,
+      });
+    }).catch((error) => {
+      this.emit({ ...wsErrorFrom(error, "WORKER_REQUEST_FAILED"),
+        ...(message.request_id === undefined ? {} : { request_id: message.request_id }) });
+      if (message.request_id !== undefined && this.journal.get(message.request_id).state !== "interrupted") this.emit({
+        type: "request_complete", request_id: message.request_id,
+        state: "failed", completed_siblings: completed,
+      });
+    }).finally(unsubscribe);
   }
 
   async stop(): Promise<void> {
@@ -444,6 +483,7 @@ class BrowserRuntimeEventChannel implements RuntimeEventChannel {
 
   dispose(): void {
     if (this.disposed) return;
+    this.journal.interruptRunning();
     this.close();
     this.disposed = true;
     this.unsubscribeEvents();
@@ -456,6 +496,7 @@ class BrowserRuntimeEventChannel implements RuntimeEventChannel {
   }
 
   private onWorkerEvent(event: WorkerEventEnvelope): void {
+    if (event.event === "done") this.journal.observe(event.payload as WSServerMessage);
     if (!this.openState) return;
     if (
       event.event === "started" ||
@@ -489,6 +530,7 @@ class BrowserRuntimeEventChannel implements RuntimeEventChannel {
   }
 
   private emit(message: WSServerMessage): void {
+    this.journal.observe(message);
     for (const listener of this.listeners) listener(message);
   }
 

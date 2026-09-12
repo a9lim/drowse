@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { onMount as onInterfaceMount } from "svelte";
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { profileCompareViewSchema } from "../lib/interfaceSchemas";
+  import { ToolError } from "../lib/webmcp/types";
+
   import MorphText from "../lib/ui/MorphText.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Pairwise compare drawer — cross-layer cosine matrix between two
@@ -134,6 +139,17 @@
   const matrix = $derived(data?.matrix ?? null);
   const layersA = $derived<number[]>(data?.layers_a ?? []);
   const layersB = $derived<number[]>(data?.layers_b ?? []);
+
+  onInterfaceMount(() => registerInterfaceController("profile_compare", {
+    schema: profileCompareViewSchema,
+    read: () => ({ busy: false, values: { profile_a: conceptA, profile_b: conceptB }, available_profiles: names, loading, error }),
+    update: async (change) => {
+      if (false) throw new ToolError("BUSY", "Wait for this interface operation to finish.");
+      for (const key of ["profile_a", "profile_b"]) if (change[key] !== undefined && !names.includes(change[key] as string)) throw new ToolError("NOT_FOUND", "Choose a profile from available_profiles.");
+      if (change.profile_a !== undefined) conceptA = change.profile_a as string;
+      if (change.profile_b !== undefined) conceptB = change.profile_b as string;
+    },
+  }));
 </script>
 
 <svelte:window onkeydown={onKeydown} />

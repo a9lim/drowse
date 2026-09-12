@@ -1,6 +1,7 @@
 <script lang="ts">
   import MorphText from "../../lib/ui/MorphText.svelte";
   import { onDestroy, onMount } from "svelte";
+  import { registerUpdateActions } from "../../lib/webmcp/lifecycle";
   import { fly } from "svelte/transition";
   import { registerSW } from "virtual:pwa-register";
   import { userFacingError } from "../../lib/runtime/userFacingError";
@@ -46,6 +47,10 @@
     window.addEventListener("focus", refreshUpdateNotice);
     document.addEventListener("visibilitychange", refreshUpdateNotice);
     navigator.serviceWorker?.addEventListener("controllerchange", updateControlled);
+    return registerUpdateActions({
+      state: () => ({ available: updateAvailable, applying, error: registrationError }),
+      apply: applyUpdate, remindLater,
+    });
   });
 
   onDestroy(() => {

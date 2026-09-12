@@ -2474,6 +2474,52 @@ try {
     assert.equal(store.installs.length, 1);
   });
 
+  for (const checkpointPolicy of ["bytes", "time"]) {
+    test(`artifact downloader bounds ${checkpointPolicy} checkpoints independently of slow disk work`, async () => {
+      const fixture = downloadCatalogFixture();
+      const store = new FakeContentStore();
+      const originalOpenWrite = store.openWrite.bind(store);
+      const checkpoints = [];
+      let now = 0;
+      store.openWrite = async (sha256, offset) => {
+        const writer = await originalOpenWrite(sha256, offset);
+        now += 20_000;
+        return {
+          get offset() { return writer.offset; },
+          write: (chunk) => {
+            if (checkpointPolicy === "time") now += 6_000;
+            return writer.write(chunk);
+          },
+          checkpoint: async () => {
+            checkpoints.push({ sha256, offset: writer.offset });
+            now += 20_000;
+            return writer.checkpoint();
+          },
+        };
+      };
+      const instance = new downloader.VerifiedArtifactDownloader(store, {
+        scheduler: noIntervalScheduler,
+        maxParallelDownloads: 1,
+        chunkBytes: 1,
+        ...(checkpointPolicy === "bytes" ? { durableCheckpointBytes: 2 } : {}),
+        durableCheckpointIntervalMs: 10_000,
+        wallNow: () => now,
+        fetch: async (url) => fullResponse(
+          url === fixture.baseFile.url ? fixture.base : fixture.core,
+        ),
+      });
+      await instance.download(fixture.catalog, fixture.variant.id, {
+        checkQuota: () => true,
+      });
+      assert.deepEqual(
+        checkpoints.filter(({ sha256 }) => sha256 === fixture.baseFile.sha256)
+          .map(({ offset }) => offset),
+        [2, 4, 6],
+      );
+      assert.equal(store.installs.length, 1);
+    });
+  }
+
   test("artifact downloader pauses an offline fetch and resumes the same object", async () => {
     const fixture = downloadCatalogFixture();
     const store = new FakeContentStore();
@@ -3786,6 +3832,54 @@ try {
     assert.equal(controller.snapshot.lifecycle, "failed");
     assert.equal(ownership.isOwner, false);
   });
+
+  for (const [operation, command] of [
+    ["download", "cancel"], ["fitting", "cancel_fitting"], ["generation", "stop"],
+  ]) {
+    test(`unload terminates the worker before releasing ownership when ${command} fails`, async () => {
+      const worker = new FakeWorker();
+      const transport = new browser.WorkerRpcTransport(worker, { requestTimeoutMs: 0 });
+      const terminatedAtRelease = [];
+      const ownership = {
+        isOwner: true,
+        acquire: async () => true,
+        release() { terminatedAtRelease.push(worker.terminated); this.isOwner = false; },
+        close() {},
+      };
+      const controller = new hostedController.HostedControllerImpl(transport, {
+        ownershipFactory: () => ownership,
+      });
+      const loading = controller.load("fixture-variant", 2048);
+      const load = await waitFor(() => worker.posted[0]);
+      worker.emit({ protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+        kind: "response", requestId: load.requestId, ok: true, result: undefined });
+      await loading;
+      worker.emit({ protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+        kind: "event", requestId: null, sequence: 1, generationId: null, event: "status",
+        payload: { ...controller.snapshot, lifecycle: "ready", modelVariantId: "fixture-variant",
+          [operation]: { phase: "running", startedAt: 1, finishedAt: null, error: null } },
+      });
+      try {
+        const unloading = controller.unload();
+        const rejected = assert.rejects(unloading, /fixture cancellation failed/);
+        const cancellation = await waitFor(() => worker.posted[1]);
+        assert.equal(cancellation.command, command);
+        worker.emit({ protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+          kind: "response", requestId: cancellation.requestId, ok: false,
+          error: { code: "CANCELLATION_FAILED", message: "fixture cancellation failed",
+            recoverable: true, status: 500 },
+        });
+        await rejected;
+        assert.equal(worker.terminated, true);
+        assert.deepEqual(terminatedAtRelease, [true]);
+        assert.equal(ownership.isOwner, false);
+        assert.equal(controller.snapshot.lifecycle, "failed");
+        assert.equal(worker.posted.some(({ command }) => command === "unload"), false);
+      } finally {
+        transport.dispose();
+      }
+    });
+  }
 
   test("destructive controller failures publish the final internal state", async () => {
     const worker = new FakeWorker();

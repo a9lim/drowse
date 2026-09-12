@@ -110,126 +110,126 @@ self.onmessage = async (event: MessageEvent<BuildRequest>) => {
         );
       }
     }
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) throw new Error("no WebGPU adapter was returned");
     const identitySha256 = runtimeIdentitySha256(event.data.runtimeIdentity);
     const contexts = event.data.contexts.map((contextTokens) => ({
       contextTokens,
       bindingSha256: contextBindingSha256(identitySha256, contextTokens),
     }));
-    await runtime.load({
-      model: { id: event.data.modelId, modelType: event.data.modelType },
-      variant: {
-        id: `${event.data.modelId}-${event.data.quantization}`,
-        structuredHookProfile: event.data.structuredHookProfile,
-        thinkingProfile: event.data.thinkingProfile,
-        runtimeIdentity: event.data.runtimeIdentity,
-        runtimeIdentitySha256: identitySha256,
-        contextProfiles: contexts,
-        requirements: {
-          features: event.data.requiredFeatures,
-          limits: {
-            maxStorageBufferBindingSize: 134217728,
-            maxComputeWorkgroupSizeX: 256,
-            maxComputeInvocationsPerWorkgroup: 256,
+    const fittedContexts = [];
+    for (const context of contexts) {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) throw new Error("no WebGPU adapter was returned");
+      await runtime.load({
+        model: { id: event.data.modelId, modelType: event.data.modelType },
+        variant: {
+          id: `${event.data.modelId}-${event.data.quantization}`,
+          structuredHookProfile: event.data.structuredHookProfile,
+          thinkingProfile: event.data.thinkingProfile,
+          runtimeIdentity: event.data.runtimeIdentity,
+          runtimeIdentitySha256: identitySha256,
+          contextProfiles: contexts,
+          requirements: {
+            features: event.data.requiredFeatures,
+            limits: {
+              maxStorageBufferBindingSize: 134217728,
+              maxComputeWorkgroupSizeX: 256,
+              maxComputeInvocationsPerWorkgroup: 256,
+            },
           },
         },
-      },
-      contextTokens: Math.max(...event.data.contexts),
-      adapter,
-      artifacts,
-      signal: new AbortController().signal,
-      onDeviceLost() {},
-    } as never);
-    const prepared = await runtime.prepareCaptureRows(event.data.rows);
-    if (prepared.length !== event.data.rows.length) {
-      throw new Error("capture renderer returned the wrong neutral row count");
-    }
-    const rows = event.data.rows.length;
-    const columns = event.data.runtimeIdentity.hiddenSize;
-    const layerMap = event.data.runtimeIdentity.layerMap;
-    const matrices = layerMap.map(() => new Float64Array(rows * columns));
-    for (let row = 0; row < prepared.length; row += 1) {
-      const capture = await runtime.capturePreparedRow(prepared[row]);
-      if (
-        capture.layerCount !== layerMap.length || capture.hiddenSize !== columns ||
-        capture.values.length !== layerMap.length * columns
-      ) throw new Error("runtime returned an incompatible neutral activation row");
+        contextTokens: context.contextTokens,
+        adapter,
+        artifacts,
+        signal: new AbortController().signal,
+        onDeviceLost() {},
+      } as never);
+      const prepared = await runtime.prepareCaptureRows(event.data.rows);
+      if (prepared.length !== event.data.rows.length) {
+        throw new Error("capture renderer returned the wrong neutral row count");
+      }
+      const rows = event.data.rows.length;
+      const columns = event.data.runtimeIdentity.hiddenSize;
+      const layerMap = event.data.runtimeIdentity.layerMap;
+      const matrices = layerMap.map(() => new Float64Array(rows * columns));
+      for (let row = 0; row < prepared.length; row += 1) {
+        const capture = await runtime.capturePreparedRow(prepared[row]);
+        if (
+          capture.layerCount !== layerMap.length || capture.hiddenSize !== columns ||
+          capture.values.length !== layerMap.length * columns
+        ) throw new Error("runtime returned an incompatible neutral activation row");
+        for (let slot = 0; slot < layerMap.length; slot += 1) {
+          const start = slot * columns;
+          matrices[slot].set(capture.values.subarray(start, start + columns), row * columns);
+        }
+        self.postMessage({ type: "progress", completed: row + 1, total: rows });
+      }
+      const tensors: Record<string, { shape: number[]; data: Float32Array }> = {};
+      const ridgePerLayer: Record<string, number> = {};
+      const whiteners = new Map<number, SerializedMahalanobisWhitener>();
       for (let slot = 0; slot < layerMap.length; slot += 1) {
-        const start = slot * columns;
-        matrices[slot].set(capture.values.subarray(start, start + columns), row * columns);
+        const layer = layerMap[slot];
+        const fit = fitting.fitMahalanobisWhitener(matrices[slot], rows, columns, 1);
+        try {
+          const rank = fit.rank;
+          const mean = fit.mean();
+          const basis = fit.basis();
+          const eigenvalues = fit.eigenvalues();
+          const inverseScales = fit.inverseScales();
+          tensors[`layer_${layer}.mean`] = {
+            shape: [columns], data: Float32Array.from(mean),
+          };
+          tensors[`layer_${layer}.basis`] = {
+            shape: [rank, columns], data: Float32Array.from(basis),
+          };
+          tensors[`layer_${layer}.eigenvalues`] = {
+            shape: [rank], data: Float32Array.from(eigenvalues),
+          };
+          tensors[`layer_${layer}.inverse_scales`] = {
+            shape: [rank], data: Float32Array.from(inverseScales),
+          };
+          ridgePerLayer[String(layer)] = fit.ridge;
+          whiteners.set(layer, {
+            columns,
+            rank,
+            ridge: fit.ridge,
+            mean,
+            basis,
+            eigenvalues,
+            inverseScales,
+          });
+        } finally {
+          fit.free();
+        }
       }
-      self.postMessage({ type: "progress", completed: row + 1, total: rows });
+      const tensorBytes = encodeFp32Safetensors(tensors, {
+        path: "neutral-whitener.safetensors",
+      });
+      const tensorPayload = tensorBytes as Uint8Array<ArrayBuffer>;
+      const tensorsSha256 = [...new Uint8Array(
+        await crypto.subtle.digest("SHA-256", tensorPayload),
+      )].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      const response = await fetch(`/output?context=${context.contextTokens}`, { method: "POST", body: tensorPayload });
+      if (!response.ok) throw new Error("failed to return the fitted neutral whitener");
+      const manifoldSha256 = await fitCoreManifold(
+        runtime,
+        event.data.manifold,
+        event.data.runtimeIdentity,
+        identitySha256,
+        context.bindingSha256,
+        context.contextTokens,
+        whiteners,
+        event.data.baselinePrompts,
+        event.data.artifactProducer,
+      );
+      await runtime.unload();
+      fittedContexts.push({ ...context, ridgePerLayer, tensorsSha256, manifoldSha256 });
     }
-    const tensors: Record<string, { shape: number[]; data: Float32Array }> = {};
-    const ridgePerLayer: Record<string, number> = {};
-    const whiteners = new Map<number, SerializedMahalanobisWhitener>();
-    for (let slot = 0; slot < layerMap.length; slot += 1) {
-      const layer = layerMap[slot];
-      const fit = fitting.fitMahalanobisWhitener(matrices[slot], rows, columns, 1);
-      try {
-        const rank = fit.rank;
-        const mean = fit.mean();
-        const basis = fit.basis();
-        const eigenvalues = fit.eigenvalues();
-        const inverseScales = fit.inverseScales();
-        tensors[`layer_${layer}.mean`] = {
-          shape: [columns], data: Float32Array.from(mean),
-        };
-        tensors[`layer_${layer}.basis`] = {
-          shape: [rank, columns], data: Float32Array.from(basis),
-        };
-        tensors[`layer_${layer}.eigenvalues`] = {
-          shape: [rank], data: Float32Array.from(eigenvalues),
-        };
-        tensors[`layer_${layer}.inverse_scales`] = {
-          shape: [rank], data: Float32Array.from(inverseScales),
-        };
-        ridgePerLayer[String(layer)] = fit.ridge;
-        whiteners.set(layer, {
-          columns,
-          rank,
-          ridge: fit.ridge,
-          mean,
-          basis,
-          eigenvalues,
-          inverseScales,
-        });
-      } finally {
-        fit.free();
-      }
-    }
-    const tensorBytes = encodeFp32Safetensors(tensors, {
-      path: "neutral-whitener.safetensors",
-    });
-    const tensorPayload = tensorBytes as Uint8Array<ArrayBuffer>;
-    const tensorsSha256 = [...new Uint8Array(
-      await crypto.subtle.digest("SHA-256", tensorPayload),
-    )].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    const response = await fetch("/output", { method: "POST", body: tensorPayload });
-    if (!response.ok) throw new Error("failed to return the fitted neutral whitener");
-    const manifoldSha256 = await fitCoreManifold(
-      runtime,
-      event.data.manifold,
-      event.data.runtimeIdentity,
-      identitySha256,
-      contexts.find(
-        (context) => context.contextTokens === Math.max(...event.data.contexts),
-      )!.bindingSha256,
-      whiteners,
-      event.data.baselinePrompts,
-      event.data.artifactProducer,
-    );
-    await runtime.unload();
     runtime = null;
     self.postMessage({
       type: "done",
       result: {
         runtimeIdentitySha256: identitySha256,
-        contexts,
-        ridgePerLayer,
-        tensorsSha256,
-        manifoldSha256,
+        contexts: fittedContexts,
       },
     });
   } catch (error) {
@@ -247,6 +247,7 @@ async function fitCoreManifold(
   runtimeIdentity: RuntimeIdentity,
   identitySha256: string,
   contextBindingSha256: string,
+  contextTokens: number,
   whiteners: ReadonlyMap<number, SerializedMahalanobisWhitener>,
   baselinePrompts: string[],
   artifactProducer: BuildRequest["artifactProducer"],
@@ -294,9 +295,10 @@ async function fitCoreManifold(
     preparedRows: rendered.preparedRows,
     layerMap: runtimeIdentity.layerMap,
   });
+  const fittingWorker = new BrowserFittingWorkerClient({ requestTimeoutMs: 30 * 60_000 });
   const coordinator = new BrowserFittingCoordinator(
     new BrowserActivationSpool(),
-    new BrowserFittingWorkerClient({ requestTimeoutMs: 30 * 60_000 }),
+    fittingWorker,
   );
   const foundation = await coordinator.captureTopologyFoundation({
     descriptor,
@@ -317,7 +319,7 @@ async function fitCoreManifold(
         total: progress.total,
       });
     },
-  });
+  }).finally(() => fittingWorker.dispose());
   if (foundation.finalAffineLayers === null || foundation.anchoredNodeCoordinates === null) {
     throw new Error("core PCA fitting returned incomplete geometry");
   }
@@ -350,7 +352,7 @@ async function fitCoreManifold(
   const archive = await browserFittedFlatDiscoverPack(packInput);
   const bytes = new Uint8Array(await archive.arrayBuffer());
   const archiveSha256 = bytesToHex(sha256(bytes));
-  const response = await fetch("/manifold-output", { method: "POST", body: bytes });
+  const response = await fetch(`/manifold-output?context=${contextTokens}`, { method: "POST", body: bytes });
   if (!response.ok) throw new Error("failed to return the fitted core manifold");
   return archiveSha256;
 }

@@ -20,6 +20,7 @@
   // and explicit edits do.
 
   import { onMount, tick } from "svelte";
+  import { registerRawBufferController } from "../lib/workspaceController";
   import StatusFooter from "./StatusFooter.svelte";
   import PendingBubbles from "./PendingBubbles.svelte";
   import {
@@ -131,8 +132,35 @@
     selection = { start: textareaRef.selectionStart, end: textareaRef.selectionEnd, text: draft, nodeId: activeLeaf };
   }
 
-  async function completeFromSelection(recomplete = false): Promise<void> {
-    if (!selectionCurrent || !selection || genStatus.active || committing || preparingSelection || dirty || pendingActions.queue.length || !loomTree.root_id) return;
+  onMount(() => registerRawBufferController({
+    read: () => ({ text: draft, dirty, busy: committing || preparingSelection, selection: selection ? { start: selection.start, end: selection.end } : null }),
+    update: async (change) => {
+      editError = null;
+      if (change.text !== undefined) {
+        editedTokenViews = change.text === bufferText ? null : projectEditedTokens(editedTokenViews ?? tokenViews, change.text);
+        draft = change.text;
+        dirty = draft !== bufferText;
+        committing = false;
+        mode = "edit";
+      }
+      if (change.selection !== undefined) selection = { ...change.selection, text: draft, nodeId: activeLeaf };
+      await tick();
+      if (selection && textareaRef) textareaRef.setSelectionRange(selection.start, selection.end);
+    },
+    save: async () => {
+      await appendEdit();
+      if (editError) throw new Error(editError);
+    },
+    revert: revertEdit,
+    prepareSelection: async (recomplete) => {
+      const point = await completeFromSelection(recomplete, false);
+      if (!point) throw new Error("Select a committed completion point before continuing. Save any draft edit first.");
+      return point;
+    },
+  }));
+
+  async function completeFromSelection(recomplete = false, generate = true): Promise<{ parent_node_id: string } | null> {
+    if (!selectionCurrent || !selection || genStatus.active || committing || preparingSelection || dirty || pendingActions.queue.length || !loomTree.root_id) return null;
     const offset = recomplete ? selection.start : selection.end;
     const original = draft;
     const originalNodeId = activeLeaf;
@@ -159,11 +187,14 @@
       scrolledUp = false;
       committing = true;
       submissionFinishedAt = genStatus.finishedAt;
-      await sendGenerate({ raw: true, parent_node_id: parentNodeId, append_same_role: false, n: 1 });
+      if (generate) await sendGenerate({ raw: true, parent_node_id: parentNodeId, append_same_role: false, n: 1 });
+      else { committing = false; dirty = false; }
+      return { parent_node_id: parentNodeId };
     } catch (error) {
       if (loomTree.root_id !== originalRootId) {
         committing = false;
-        return;
+        if (!generate) throw error;
+        return null;
       }
       draft = original;
       if (originalNodeId) {
@@ -175,6 +206,8 @@
         }
       }
       restoreFailedEdit(error);
+      if (!generate) throw error;
+      return null;
     } finally {
       preparingSelection = false;
     }
