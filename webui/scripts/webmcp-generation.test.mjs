@@ -10,6 +10,42 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 try {
   const { JobRegistry } = await server.ssrLoadModule("/src/lib/webmcp/jobs.ts");
   const { awaitGenerationReceipt } = await server.ssrLoadModule("/src/lib/webmcp/generationReceipt.ts");
+  const bounded = new JobRegistry();
+  const firstBounded = bounded.start("generate", () => new Promise(() => {}), { requestId: "capacity-retry" });
+  for (let index = 1; index < 128; index += 1) bounded.start("generate", () => new Promise(() => {}));
+  let overflowExecuted = false;
+  assert.throws(() => bounded.start("generate", async () => { overflowExecuted = true; }),
+    error => error.code === "JOB_CAPACITY");
+  assert.equal(bounded.list().length, 128, "capacity rejection does not add an orphan record");
+  assert.equal(bounded.start("generate", async () => assert.fail("duplicate must not execute"), {
+    requestId: "capacity-retry",
+  }).id, firstBounded.id, "request reconciliation remains available at capacity");
+  await bounded.cancel(firstBounded.id);
+  const replacement = bounded.start("generate", async () => "replacement");
+  await flush();
+  assert.equal(overflowExecuted, false);
+  assert.equal(bounded.get(replacement.id).state, "completed", "terminal jobs release active capacity");
+  const cancellingBounded = bounded.start("generate", () => new Promise(() => {}));
+  await flush();
+  assert.equal((await bounded.cancel(cancellingBounded.id)).state, "cancelling");
+  assert.throws(() => bounded.start("generate", async () => {}), error => error.code === "JOB_CAPACITY",
+    "cancellation must settle before it releases running job capacity");
+  bounded.interrupt("test cleanup");
+
+  const closureJobs = new JobRegistry();
+  const terminalCancel = () => assert.fail("terminal callback must never run");
+  const completedClosure = closureJobs.start("completed", async () => ({ exact: [1, 2, 3] }), { cancel: terminalCancel });
+  const failedClosure = closureJobs.start("failed", async () => { throw new Error("failure"); }, { cancel: terminalCancel });
+  const cancelledClosure = closureJobs.start("cancelled", async () => assert.fail("queued cancellation must skip work"), { cancel: terminalCancel });
+  await closureJobs.cancel(cancelledClosure.id);
+  await flush();
+  const interruptedClosure = closureJobs.start("interrupted", () => new Promise(() => {}), { cancel: terminalCancel });
+  await flush();
+  closureJobs.interrupt("workspace changed");
+  for (const item of [completedClosure, failedClosure, cancelledClosure, interruptedClosure]) {
+    assert.equal(closureJobs.records.get(item.id).cancel, undefined, "terminal records release context-owning cancellation callbacks");
+  }
+  assert.deepEqual(closureJobs.get(completedClosure.id).result, { exact: [1, 2, 3] });
   const jobs = new JobRegistry(2);
   let calls = 0;
   const queued = jobs.start("generate", async () => { calls += 1; }, { requestId: "same" });
@@ -79,9 +115,68 @@ try {
   recoveredLarge.attachPersistence(storage, "test");
   assert.deepEqual(recoveredLarge.get(large.id).result.node_ids, ["retrieve-full-node"]);
   assert.ok(recoveredLarge.get(large.id).persistedDetailOmissions.length > 0, "large receipts retain ownership and retrieval pointers with explicit omissions");
+  const compactJobs = new JobRegistry();
+  let compactBytes;
+  compactJobs.attachPersistence({ getItem: () => null, setItem: (_, value) => { compactBytes = value; } }, "compact");
+  const fullResult = { text: "r".repeat(40000), measurements: { hidden: [1, 2, 3] }, raw_token_ids: [4, 5],
+    scores: Array.from({ length: 70 }, (_, index) => index), tokens: [{ token: "full" }], nested: { tokens: 7 } };
+  const compactJob = compactJobs.start("research", async () => fullResult);
+  await flush();
+  const fullSnapshot = compactJobs.get(compactJob.id);
+  const expectedCompactBytes = JSON.stringify([{ ...fullSnapshot,
+    result: { text: `${"r".repeat(4096)}\n[Persisted preview truncated; retrieve the complete output from its conversation node or artifact.]`,
+      scores: fullResult.scores.slice(0, 64), nested: { tokens: 7 } },
+    persistedDetailOmissions: ["job.result.text", "job.result.measurements", "job.result.raw_token_ids", "job.result.scores", "job.result.tokens"],
+  }]);
+  assert.equal(compactBytes, expectedCompactBytes, "compaction preserves the exact persisted JSON contract");
+  const originalClone = globalThis.structuredClone;
+  let persistenceClones = 0;
+  try {
+    globalThis.structuredClone = (...args) => { persistenceClones++; return originalClone(...args); };
+    compactJobs.setCancellable(compactJob.id, fullSnapshot.cancellable);
+  } finally { globalThis.structuredClone = originalClone; }
+  assert.equal(persistenceClones, 0, "persistence must not clone full research results before compacting them");
+  assert.equal(compactBytes, expectedCompactBytes);
+  assert.deepEqual(compactJobs.get(compactJob.id), fullSnapshot, "compaction must not mutate the complete in-memory research result");
+  assert.deepEqual(compactJobs.get(compactJob.id).result, fullResult);
   const quota = new JobRegistry();
   quota.attachPersistence({ getItem: () => null, setItem: () => { throw new Error("quota"); } }, "quota");
   assert.match(quota.persistenceError, /could not be saved/);
+  const clearing = new JobRegistry();
+  const clearStored = new Map([["saved-chat-library", "untouched"], ["other-app", "untouched"]]);
+  const clearStorage = { getItem: key => clearStored.get(key) ?? null, setItem: (key, value) => clearStored.set(key, value) };
+  clearing.attachPersistence(clearStorage, "jobs-to-clear");
+  let finishCleared, clearedSignal, lateProgress;
+  const clearedJob = clearing.start("generate", ({ signal, progress }) => {
+    clearedSignal = signal; lateProgress = progress;
+    return new Promise(resolve => { finishCleared = resolve; });
+  }, { requestId: "reusable-after-clear", recovery: { prompt: "private prompt" } });
+  await flush();
+  let queuedAfterClear = false;
+  clearing.start("queued", async () => { queuedAfterClear = true; });
+  clearing.clear();
+  assert.equal(clearedSignal.aborted, true);
+  assert.deepEqual(clearing.list(), []);
+  assert.deepEqual(JSON.parse(clearStored.get("jobs-to-clear")), []);
+  assert.throws(() => clearing.checkpoint(clearedJob.id, { private: "late checkpoint" }), error => error.code === "JOB_NOT_FOUND");
+  lateProgress({ private: "late progress" });
+  finishCleared({ private: "late output" });
+  await flush();
+  assert.equal(queuedAfterClear, false, "clear prevents admitted but unstarted jobs from running");
+  assert.deepEqual(clearing.list(), [], "late completion cannot restore erased history");
+  assert.deepEqual(JSON.parse(clearStored.get("jobs-to-clear")), []);
+  const afterClear = new JobRegistry();
+  afterClear.attachPersistence(clearStorage, "jobs-to-clear");
+  assert.deepEqual(afterClear.list(), []);
+  const newRequest = clearing.start("generate", async () => ({ fresh: true }), { requestId: "reusable-after-clear" });
+  assert.notEqual(newRequest.id, clearedJob.id, "clear also forgets request-to-job ownership");
+  await flush();
+  assert.deepEqual(clearing.get(newRequest.id).result, { fresh: true });
+  assert.equal(clearStored.get("saved-chat-library"), "untouched");
+  assert.equal(clearStored.get("other-app"), "untouched");
+  assert.throws(() => quota.clear(), error => error.code === "JOB_STORAGE_UNAVAILABLE");
+  assert.match(quota.persistenceError, /could not be cleared/);
+  assert.deepEqual(quota.list(), [], "a storage failure does not retain private in-memory history");
   let finishDownload;
   const cancelFailure = jobs.start("download", () => new Promise(resolve => { finishDownload = resolve; }), {
     cancel: () => { throw new Error("cannot stop"); },

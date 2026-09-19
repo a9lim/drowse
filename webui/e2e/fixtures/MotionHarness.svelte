@@ -7,6 +7,9 @@
   import TraceDetail from "../../src/lib/charts/TraceDetail.svelte";
   import TemplatePreview from "../../src/lib/ui/TemplatePreview.svelte";
   import ManifoldMiniMap from "../../src/panels/manifold/ManifoldMiniMap.svelte";
+  import ProbeReadingRow from "../../src/panels/rack/ProbeReadingRow.svelte";
+  import RackCard from "../../src/panels/rack/RackCard.svelte";
+  import Bar from "../../src/lib/charts/Bar.svelte";
   let text = $state("Ready");
   let value = $state<number | null>(12);
   let slider = $state(.5);
@@ -14,6 +17,7 @@
   let identity = $state("one");
   let rtl = $state(false);
   let multiline = $state(false);
+  let reading = $state("0.031");
   const cells = [{layer: 1, value: .1, title: "Layer 1 · 0.1"}, {layer: 5, value: .8, title: "Layer 5 · 0.8"}, {layer: 9, value: null, title: "Layer 9 · unavailable"}];
 </script>
 <section data-testid="motion-harness" dir={rtl ? "rtl" : "ltr"}>
@@ -31,6 +35,20 @@
   <TraceDetail points={[.1, .7, null, -.2]} />
   <TemplatePreview sentence="Today is [DAY]." slot="[DAY]" values={["Monday", "Tuesday"]} />
   <ManifoldMiniMap info={{family:"geometry", name:"example", manifold:"local/example", top_n:2, layers:[1], node_labels:["calm", "alert"], node_count:2, domain:{type:"box", axes:[{name:"x",lo:-1,hi:1},{name:"y",lo:-1,hi:1}]}, intrinsic_dim:2, feature_space:"residual", is_affine:true, node_coords:[[-1,0],[1,0]]}} trajectory={[]} settled={null} />
+  <input aria-label="Reading value" bind:value={reading} />
+  <div class="reading-card" data-testid="reading-card">
+    <RackCard accent="--pillar-lens">
+      {#snippet statline()}J-lens reading{/snippet}
+      {#snippet body()}
+        <ProbeReadingRow ariaLabel="Harness reading">
+          {#snippet left()}<span>strength</span>{/snippet}
+          {#snippet bar()}<Bar percentage value={0.031} max={1} color="var(--pillar-lens)" />{/snippet}
+          {#snippet middle()}<span>1/8 layers</span>{/snippet}
+          {#snippet right()}<span class="reading-value"><MorphText text={reading} /></span>{/snippet}
+        </ProbeReadingRow>
+      {/snippet}
+    </RackCard>
+  </div>
   <div style="height:1200px"></div>
   <p data-testid="offscreen"><MorphText {text} /></p>
 </section>
@@ -38,4 +56,7 @@
   section { padding: 16px; background: var(--bg); color: var(--fg); max-width: 520px; margin: auto; }
   input, button { min-height: 44px; max-width: 100%; }
   .clip { overflow: hidden; border-radius: 8px; }
+  .reading-card { max-width: 100%; font-family: var(--font-mono); }
+  .reading-card :global(.reading) { font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+  .reading-value { color: var(--pillar-lens); }
 </style>

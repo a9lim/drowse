@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, FiniteFloat, NonNegativeInt, model_validator
 from pydantic_core import PydanticCustomError
 
 from drowse.core.results import GenerationResult
@@ -14,15 +14,15 @@ from drowse.server.native_common import NativeRequest
 
 
 class WSSamplingParams(NativeRequest):
-    temperature: float | None = None
-    top_p: float | None = None
+    temperature: FiniteFloat | None = None
+    top_p: FiniteFloat | None = Field(default=None, ge=0, le=1)
     top_k: int | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=0)
     seed: int | None = None
     stop: list[str] | None = None
-    logit_bias: dict[int, float] | None = None
-    presence_penalty: float = 0.0
-    frequency_penalty: float = 0.0
+    logit_bias: dict[NonNegativeInt, FiniteFloat] | None = None
+    presence_penalty: FiniteFloat = 0.0
+    frequency_penalty: FiniteFloat = 0.0
     return_top_k: int = 0
     return_probe_readings: bool = True
     persist_per_layer_scores: bool = False
@@ -65,7 +65,7 @@ class WSGenerateMessage(NativeRequest):
     stateless: bool = True
     raw: bool = False
     parent_node_id: str | None = None
-    n: int = Field(default=1, ge=1)
+    n: int = Field(default=1, ge=1, le=1024)
     append_same_role: bool = True
     recipe_override: str | None = None
     fork_node_id: str | None = None
@@ -157,7 +157,7 @@ class WSSubmitMessage(NativeRequest):
     # reject a bad fan width at parse time, because ``_normalize_submit``
     # forwards this value into a ``WSGenerateMessage`` construction that is
     # not inside the handler's error-frame guard.
-    n: int = Field(default=1, ge=1)
+    n: int = Field(default=1, ge=1, le=1024)
     recipe_override: str | None = None
 
 

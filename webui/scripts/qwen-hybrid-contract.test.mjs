@@ -19,7 +19,8 @@ const names = [
   "invokePrefill", "invokeDecode", "invokeDrowseCapture",
   "invokeDrowseRankOneCaptureV1", "captureDrowseTokenChunk",
   "captureDrowseRankOneTokenChunkV1", "resetDrowseCaptureState",
-  "embedAndForward",
+  "embedAndForward", "embedAndForwardChunk", "applyDrowsePositionControls",
+  "updateDrowseStructuredControls",
 ];
 const methods = names.map((name) => {
   const method = pipeline.members.find((node) => node.name?.getText(parsed) === name);
@@ -34,6 +35,60 @@ const compiled = ts.transpileModule(`${asyncHelper?.getText(parsed) ?? ""}\nclas
 const Consumer = new Function(`${compiled}; return Consumer;`)();
 console.log(JSON.stringify({ sourceSha256: createHash("sha256").update(source).digest("hex"),
   sourcePath, validation: "consumer-contract-with-fake-device", gpuInference: false }));
+
+test("all 256 position masks preserve absolute boundaries and intersect dynamic controls at every batch size", async () => {
+  let cases = 0;
+  for (let mask = 0; mask < 256; mask++) for (const chunkSize of [1, 2, 3, 8]) {
+    for (const structured of [false, true]) {
+      const start = 13 + mask % 5;
+      const spans = [];
+      for (let position = 0; position < 8; position++) {
+        if (!(mask & (1 << position))) continue;
+        const left = position;
+        while (position < 7 && mask & (1 << (position + 1))) position++;
+        spans.push([start + left, start + position + 1]);
+      }
+      const consumer = new Consumer();
+      let affine = [1, 0], curve = [0, 1];
+      let baseAffine = [1, 0], baseCurve = [0, 1];
+      const observed = [];
+      Object.assign(consumer, {
+        filledKVCacheLength: start, prefillChunkSize: chunkSize,
+        drowsePositionSpans: spans, drowsePositionActive: true,
+        drowsePositionEnabled: Uint32Array.of(1, 0),
+        drowsePositionAffine: Uint32Array.of(1, 0), drowsePositionCurve: Uint32Array.of(0, 1),
+        drowseProgram: structured ? undefined : { enabled: { copyFrom(value) { affine = [...value]; } } },
+        drowseStructuredProgram: structured ? {} : undefined,
+        async writeDrowseStructuredControls(a, c) { affine = [...a]; if (c !== undefined) curve = [...c]; },
+        async embedAndForwardChunk(parts, length) {
+          for (const token of parts.flat()) {
+            const offset = this.filledKVCacheLength++ - start;
+            const selected = !!(mask & (1 << offset));
+            assert.deepEqual(affine, selected ? baseAffine : [0, 0], `affine mask=${mask} position=${offset}`);
+            if (structured) assert.deepEqual(curve, selected ? baseCurve : [0, 0], `curve mask=${mask} position=${offset}`);
+            observed.push(token);
+          }
+          assert.equal(length, parts.flat().length);
+          return { dispose() {} };
+        },
+      });
+      for (let offset = 0; offset < 8;) {
+        const count = offset < 4 ? Math.min(4 - offset, chunkSize) : 1;
+        if (structured) {
+          baseAffine = [offset % 2, offset % 3 === 0 ? 1 : 0];
+          baseCurve = [offset % 3 === 1 ? 1 : 0, offset % 2 === 0 ? 1 : 0];
+          await consumer.updateDrowseStructuredControls(Uint32Array.from(baseAffine), Uint32Array.from(baseCurve));
+        }
+        await consumer.embedAndForward([Array.from({ length: count }, (_, i) => offset + i)], count);
+        offset += count;
+      }
+      assert.deepEqual(observed, [0, 1, 2, 3, 4, 5, 6, 7]);
+      assert.equal(consumer.filledKVCacheLength, start + 8);
+      cases++;
+    }
+  }
+  assert.equal(cases, 2048);
+});
 
 function fixture(kind, abi = "batch") {
   const consumer = new Consumer();

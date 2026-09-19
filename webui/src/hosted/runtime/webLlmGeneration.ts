@@ -18,6 +18,7 @@ import {
   type StructuredHookProgramBuffers,
 } from "./structuredHookProgram";
 import { isRoleSlug } from "./roleSlug";
+import { normalizeSteeringPositions, type SteeringPositionSelection } from "../../lib/runtime/steeringPositions";
 
 export const BROWSER_EXACT_READOUT_TOP_K_CAPACITY = 8;
 
@@ -36,7 +37,7 @@ export type WebLlmGenerationInput =
     }
   | { kind: "raw"; prompt: string };
 
-export interface WebLlmGenerationPlan {
+export interface WebLlmGenerationPlan extends SteeringPositionSelection {
   input: WebLlmGenerationInput;
   sampling?: WSSampling | null;
   thinking?: boolean | null;
@@ -109,6 +110,7 @@ export interface WebLlmReplayScore {
 }
 
 export interface WebLlmRuntimeCapabilities {
+  positionSpans?: boolean;
   topK: boolean;
   forcedReplay: boolean;
   replayScoring: boolean;
@@ -242,6 +244,18 @@ export async function streamWebLlmGeneration(
   plan: WebLlmGenerationPlan,
   onToken: (token: WebLlmGeneratedToken) => void | Promise<void>,
 ): Promise<WebLlmGenerationResult> {
+  const selection = plan.position_spans !== undefined || plan.position_indices !== undefined
+    ? plan : plan.hookProgram ?? {};
+  const spans = normalizeSteeringPositions(selection);
+  if (spans !== undefined && !plan.hookProgram) {
+    throw generationError("STEERING_PROGRAM_REQUIRED", "Position targeting requires a compiled steering program");
+  }
+  if (plan.hookProgram && (spans !== undefined ||
+    plan.hookProgram.position_spans !== undefined || plan.hookProgram.position_indices !== undefined)) {
+    plan = { ...plan, hookProgram: {
+      ...plan.hookProgram, position_spans: spans, position_indices: undefined,
+    } };
+  }
   if (plan.hookProgram && isStructuredProgram(plan.hookProgram)) {
     plan = { ...plan, hookProgram: {
       ...plan.hookProgram,
@@ -646,6 +660,9 @@ export async function readWebLlmRuntimeCapabilities(
     );
   }
   const capabilities = await engine.getDrowseRuntimeCapabilities();
+  if (capabilities?.positionSpans !== undefined && typeof capabilities.positionSpans !== "boolean") {
+    throw generationError("INVALID_DROWSE_CAPABILITIES", "The browser model runtime returned invalid position-targeting capabilities");
+  }
   for (const key of [
     "topK",
     "forcedReplay",
@@ -710,13 +727,14 @@ async function assertWebLlmGenerationCapabilities(
       plan.input.messages.some((message) => message.name != null);
   const needsUserSeat = plan.generationSeat === "user";
   const needsSceneStitching = requiresSceneStitching(plan);
+  const needsPositions = plan.hookProgram?.position_spans != null;
   if (
     !needsTopK &&
     !needsForcedReplay &&
     !needsReplayScoring &&
     !needsNamedRoles &&
     !needsUserSeat &&
-    !needsSceneStitching
+    !needsSceneStitching && !needsPositions
   ) {
     return;
   }
@@ -727,6 +745,12 @@ async function assertWebLlmGenerationCapabilities(
     code: string;
     message: string;
   }> = [
+    {
+      needed: needsPositions,
+      supported: capabilities.positionSpans === true,
+      code: "STEERING_POSITIONS_UNAVAILABLE",
+      message: "This browser runtime does not support position-targeted steering; reload the updated app",
+    },
     {
       needed: needsTopK,
       supported: capabilities.topK,

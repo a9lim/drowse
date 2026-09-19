@@ -474,6 +474,16 @@ export interface WSGenerateRequest {
    *  conversation replay the unsteered shadow uses. */
   input?: string | WSInputMessage[] | null;
   steering?: string | null;
+  /** Browser runtime only: absolute input-token ranges [start, end).
+   * Includes template/BOS tokens; mutually exclusive with position_indices.
+   * Nonnegative integers, no overlap; adjacent ranges are merged. At most
+   * 4096 ranges (not 4096 tokens). [] disables injection; null clears targeting.
+   * Applied to input residuals: position p influences prediction p+1 and can
+   * causally affect later tokens. Intersects the expression's phase/gates.
+   * Saved recipes and token forks retain normalized spans. Python requests
+   * and tree imports reject this browser-only extension. */
+  position_spans?: [number, number][] | null;
+  position_indices?: number[] | null;
   sampling?: WSSampling | null;
   thinking?: boolean | null;
   /** Mirrors the native generate frame: omitted means stateless. Stateful
@@ -517,6 +527,9 @@ export interface WSSubmitRequest {
   authored_role?: ChatRole | null;
   generated_role?: ChatRole | null;
   steering?: string | null;
+  /** Browser runtime only; same position contract as WSGenerateRequest. */
+  position_spans?: [number, number][] | null;
+  position_indices?: number[] | null;
   sampling?: WSSampling | null;
   thinking?: boolean | null;
   authored_thinking?: string | null;

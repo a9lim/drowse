@@ -1,7 +1,107 @@
 import { selectWorkspaceView } from "./workbench-navigation";
 import { openWorkspaceMenu } from "./workbench-navigation";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { resolve } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
+
+async function badgeFixture(page: Page, action: "install" | "status" | "complete" | "capturedText", count = 0, fail = false) {
+  return page.evaluate(async ({ url, action, count, fail }) => (await import(url))[action](count, fail), {
+    url: `/@fs${resolve("e2e/fixtures/TokenBadges.ts")}`, action, count, fail,
+  });
+}
+
+test("token badges follow captured and replayed results without inventing zero counts", async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
+  await expect(page.getByRole("textbox", { name: /^Compose as / })).toBeVisible();
+  await badgeFixture(page, "install");
+  const captured = await badgeFixture(page, "capturedText");
+  const sheet = page.locator("[data-token-details-scroll]");
+  const tabs = sheet.getByRole("group", { name: "Token detail view", exact: true });
+  const tab = (name: string) => tabs.getByRole("button", { name, exact: true });
+  const badge = (name: string) => tab(name).locator(".meta");
+  for (const [name, count] of [["j-lens", 8], ["sae", 3], ["geometry", 2]] as const) {
+    await tab(name).click();
+    await expect(badge(name)).toHaveText("…");
+    await expect.poll(async () => (await badgeFixture(page, "status")).pending.length).toBe(1);
+    await badgeFixture(page, "complete", count);
+    await expect(badge(name)).toHaveText(String(count));
+    if (name === "j-lens") await expect(sheet).toContainText("8 layers × 1 ranks");
+  }
+  await tab("logits").click();
+  for (const [name, count] of [["j-lens", 8], ["sae", 3], ["geometry", 2], ["logits", 1]] as const) {
+    await expect(badge(name)).toHaveText(String(count));
+  }
+  await tabs.screenshot({ path: info.outputPath("replayed-badges.png") });
+  await sheet.getByRole("button", { name: "Next token", exact: true }).click();
+  for (const [name, count] of [["j-lens", 2], ["sae", 3], ["geometry", 1], ["logits", 0]] as const) {
+    await expect(badge(name)).toHaveText(String(count));
+  }
+  expect((await badgeFixture(page, "status")).calls).toBe(3);
+  await tab("j-lens").click();
+  await sheet.getByRole("button", { name: "Steering on", exact: true }).click();
+  await expect(badge("j-lens")).toHaveText("…");
+  await expect.poll(async () => (await badgeFixture(page, "status")).pending).toEqual([
+    { family: "lens", rawIndex: 1, steered: false },
+  ]);
+  await badgeFixture(page, "complete", 5);
+  await expect(badge("j-lens")).toHaveText("5");
+  await sheet.getByRole("button", { name: "Steering off", exact: true }).click();
+  await expect(badge("j-lens")).toHaveText("2");
+  expect(await badgeFixture(page, "capturedText")).toBe(captured);
+  await sheet.getByRole("button", { name: "Previous token", exact: true }).click();
+  await expect(badge("j-lens")).toHaveText("8");
+  expect((await badgeFixture(page, "status")).calls).toBe(4);
+  await sheet.getByRole("button", { name: "Next token", exact: true }).click();
+  await sheet.getByRole("button", { name: "Next token", exact: true }).click();
+  await expect(badge("j-lens")).toHaveText("…");
+  for (const name of ["sae", "geometry", "logits"]) await expect(badge(name)).toHaveCount(0);
+  await expect.poll(async () => (await badgeFixture(page, "status")).pending.length).toBe(1);
+  await badgeFixture(page, "complete", 0, true);
+  await expect(badge("j-lens")).toHaveCount(0);
+  await expect(sheet).toContainText("Fixture replay failed");
+  await tab("logits").click();
+  await tab("j-lens").click();
+  await expect(badge("j-lens")).toHaveText("…");
+  await expect.poll(async () => (await badgeFixture(page, "status")).pending.length).toBe(1);
+  await badgeFixture(page, "complete", 0);
+  await expect(badge("j-lens")).toHaveText("0");
+  await sheet.getByRole("button", { name: "Next token", exact: true }).click();
+  for (const name of ["j-lens", "sae", "geometry", "logits"]) await expect(badge(name)).toHaveCount(0);
+  expect((await badgeFixture(page, "status")).calls).toBe(6);
+  expect(errors).toEqual([]);
+});
+
+test("late badge results cannot leak into another token and remain cached on return", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
+  await expect(page.getByRole("textbox", { name: /^Compose as / })).toBeVisible();
+  await badgeFixture(page, "install");
+  const sheet = page.locator("[data-token-details-scroll]");
+  const tabs = sheet.getByRole("group", { name: "Token detail view", exact: true });
+  const lens = tabs.getByRole("button", { name: "j-lens", exact: true });
+  const sae = tabs.getByRole("button", { name: "sae", exact: true });
+  await expect(lens.locator(".meta")).toHaveText("…");
+  await sae.click();
+  await expect(sae.locator(".meta")).toHaveText("…");
+  await sheet.getByRole("button", { name: "Next token", exact: true }).click();
+  await expect(lens.locator(".meta")).toHaveText("2");
+  await expect(sae.locator(".meta")).toHaveText("3");
+  await badgeFixture(page, "complete", 8);
+  await expect.poll(async () => (await badgeFixture(page, "status")).pending).toEqual([
+    { family: "sae", rawIndex: 0, steered: true },
+  ]);
+  await badgeFixture(page, "complete", 9);
+  await expect(lens.locator(".meta")).toHaveText("2");
+  await expect(sae.locator(".meta")).toHaveText("3");
+  await sheet.getByRole("button", { name: "Previous token", exact: true }).click();
+  await expect(sae.locator(".meta")).toHaveText("9");
+  await lens.click();
+  await expect(lens.locator(".meta")).toHaveText("8");
+  expect((await badgeFixture(page, "status")).calls).toBe(2);
+});
 
 test("empty token details stay mounted when switching views", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });

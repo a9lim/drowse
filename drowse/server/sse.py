@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
+from drowse.core.errors import DrowseError
 from drowse.server.streaming import ClosingStreamingResponse, finish_worker
 
 ProgressCallback = Callable[[str], None]
@@ -110,6 +111,19 @@ async def _retained_response(
             if formatted is None:
                 (logger or logging.getLogger("drowse.api")).exception(log_message)
                 formatted = {"message": error_message, "code": type(error).__name__, "status": 500}
+            cause = error.__cause__ if isinstance(error, HTTPException) else error
+            if isinstance(cause, DrowseError):
+                if cause.__cause__ is not None:
+                    (logger or logging.getLogger("drowse.api")).error(log_message, exc_info=error)
+                status, formatted["message"] = cause.user_message()
+                if not isinstance(error, HTTPException):
+                    formatted["status"] = status
+            elif isinstance(cause, OSError):
+                (logger or logging.getLogger("drowse.api")).error(log_message, exc_info=error)
+                formatted["message"] = {
+                    404: "Requested artifact not found",
+                    409: "An artifact already exists at the destination",
+                }.get(formatted.get("status", 500), "Filesystem operation failed. Check the server log for details.")
             ledger.fail(request_id, formatted)
             terminal = ("error", formatted)
         flush()

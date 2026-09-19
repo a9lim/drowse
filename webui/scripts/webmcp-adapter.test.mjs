@@ -107,5 +107,93 @@ try {
   liveState.filter.expression = "new human edit";
   assert.equal(plainResult.data.filter.expression, "pirate", "Returned settings are a stable result snapshot");
   reloaded.dispose(); interruptedPage.dispose();
+  const saturated = new WebMcpAdapter({ provider: null, context });
+  let unblock;
+  const executions = [];
+  await saturated.setTools([{ ...base, name: "queued", inputSchema: objectSchema({ index: { type: "integer" } }, ["index"]),
+    execute: async input => {
+      executions.push(input.index);
+      if (input.index === -1) await new Promise(resolve => { unblock = resolve; });
+      return input.index;
+    } }]);
+  const blocker = saturated.execute("queued", { index: -1 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const queuedCalls = Array.from({ length: 129 }, (_, index) => saturated.execute("queued", { index, request_id: `queued-${index}` }));
+  const repeatedQueued = saturated.execute("queued", { index: 0, request_id: "queued-0" });
+  unblock();
+  await blocker;
+  const queuedResults = await Promise.all(queuedCalls);
+  assert.deepEqual(await repeatedQueued, queuedResults[0]);
+  assert.equal(executions.filter(index => index === 0).length, 1, "An active queued receipt must never be evicted and execute twice");
+  assert.equal(queuedResults.filter(result => result.ok).length, 127, "Active and queued mutations have a shared admission limit");
+  assert.equal(queuedResults.filter(result => result.error?.code === "tool_busy").length, 2);
+  assert.equal((await saturated.execute("queued", { index: 200, request_id: "after-drain" })).ok, true, "Queue capacity is released when calls settle");
+  saturated.dispose();
+  const byteBounded = new WebMcpAdapter({ provider: null, context });
+  let releaseBytes;
+  const byteExecutions = [];
+  await byteBounded.setTools([{ ...base, name: "payload", inputSchema: objectSchema({ index: { type: "integer" }, payload: { type: "string" } }, ["index"]),
+    execute: async input => {
+      byteExecutions.push(input.index);
+      if (input.index === -1) await new Promise(resolve => { releaseBytes = resolve; });
+      if (input.index === 0) throw Error("Expected test failure");
+      return input.index;
+    } }]);
+  const byteBlocker = byteBounded.execute("payload", { index: -1 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const cancelled = new AbortController();
+  const payload = "x".repeat(1536 * 1024);
+  const byteCalls = Array.from({ length: 6 }, (_, index) => byteBounded.execute("payload", { index, payload, request_id: `bytes-${index}` }, index === 4 ? cancelled.signal : undefined));
+  assert.equal((await byteCalls[5]).error.code, "tool_busy", "Queued payload bytes are bounded before the call-count limit");
+  cancelled.abort();
+  releaseBytes();
+  await byteBlocker;
+  const byteResults = await Promise.all(byteCalls);
+  assert.equal(byteResults[0].error.code, "action_failed");
+  assert.equal(byteResults[4].error.code, "cancelled");
+  assert.deepEqual(byteExecutions, [-1, 0, 1, 2, 3], "Cancelled and rejected calls must not execute");
+  assert.equal((await byteBounded.execute("payload", { index: 6, payload })).ok, true, "Errors and cancellation release queue capacity");
+  byteBounded.dispose();
+  const disposable = new WebMcpAdapter({ provider: null, context });
+  let finishDisposedRead, disposedSignal;
+  await disposable.setTools([{ ...long, execute: (_input, ctx) => {
+    disposedSignal = ctx.signal;
+    return new Promise(resolve => { finishDisposedRead = resolve; });
+  } }]);
+  const disposedRead = disposable.execute("long", {});
+  disposable.dispose();
+  assert.equal(disposedSignal.aborted, true, "Disposal cancels ordinary tool contexts as well as jobs");
+  finishDisposedRead({ private: "sensitive ".repeat(2000) });
+  assert.equal((await disposedRead).error.code, "cancelled");
+  assert.equal(disposable.results.size, 0, "Late completions cannot repopulate disposed caches");
+
+  const clearStorage = new Map([["unrelated", "keep"]]);
+  const cleared = new WebMcpAdapter({ provider: null, context, requestStorage: {
+    getItem: key => clearStorage.get(key) ?? null, setItem: (key, value) => clearStorage.set(key, value),
+  } });
+  let finishClearedWrite, clearedSignal, clearExecutions = 0;
+  await cleared.setTools([{ ...mutation, execute: (_input, ctx) => {
+    clearExecutions++;
+    clearedSignal = ctx.signal;
+    return new Promise(resolve => { finishClearedWrite = resolve; });
+  } }, long, cleared.resultTool()]);
+  const oldResult = await cleared.execute("long", {});
+  const clearedWrite = cleared.execute("change", { value: 1, request_id: "clear-running" });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const clearedQueued = cleared.execute("change", { value: 2, request_id: "clear-queued" });
+  cleared.clearRetainedData();
+  assert.equal(clearedSignal.aborted, true);
+  finishClearedWrite({ private: "never persist after clear" });
+  assert.equal((await clearedWrite).error.code, "reconcile_required", "A late mutation must not falsely promise rollback");
+  assert.equal((await clearedQueued).error.code, "cancelled");
+  assert.equal(clearExecutions, 1, "Cleared queued mutations must not run");
+  assert.equal(cleared.calls.size, 0);
+  assert.equal(cleared.results.size, 0);
+  assert.equal(clearStorage.get("drowse.webmcp.requests.v1"), "[]", "Late mutations cannot restore cleared receipts");
+  assert.equal(clearStorage.get("unrelated"), "keep");
+  assert.equal((await cleared.execute("drowse_read_result", { result_id: oldResult.result_id })).error.code, "not_found");
+  await cleared.setTools([mutation]);
+  assert.equal((await cleared.execute("change", { value: 2, request_id: "new-after-clear" })).ok, true, "Fresh actions still work after clearing data");
+  cleared.dispose();
   console.log("WebMCP adapter: schema validation, capabilities, stale state, idempotency, cancellation, pagination and native lifetime isolation passed");
 } finally { await server.close(); }

@@ -15,12 +15,13 @@ server route layer composes them with ``manifolds_dir`` /
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from drowse.core.errors import DrowseError
-from drowse.io.atomic import write_bytes_atomic
+from drowse.io.atomic import copy_file_atomic, write_bytes_atomic
 from drowse.io.hf import (
     HFError,
     _hf_api,
@@ -270,17 +271,12 @@ def _install_manifold(tmp_dir: Path, target_folder: Path, _coord: str) -> None:
                 entry.name in _ALLOWED_ROOT
                 or entry.suffix in _ALLOWED_SUFFIXES
             ):
-                write_bytes_atomic(
-                    target_folder / entry.name, entry.read_bytes(),
-                )
+                copy_file_atomic(entry, target_folder / entry.name)
         elif entry.is_dir() and entry.name == "nodes":
             (target_folder / "nodes").mkdir(parents=True, exist_ok=True)
             for child in sorted(entry.iterdir()):
                 if child.is_file() and child.suffix == ".json":
-                    write_bytes_atomic(
-                        target_folder / "nodes" / child.name,
-                        child.read_bytes(),
-                    )
+                    copy_file_atomic(child, target_folder / "nodes" / child.name)
 
 
 # ---------------------------------------------------------------------- push --
@@ -458,18 +454,12 @@ def push_manifold(
                 mf = ManifoldFolder.load(folder)  # runs integrity check
 
                 # Always stage the corpus: manifold.json + the full nodes/ tree.
-                write_bytes_atomic(
-                    staging / "manifold.json",
-                    (folder / "manifold.json").read_bytes(),
-                )
+                copy_file_atomic(folder / "manifold.json", staging / "manifold.json")
                 nodes_src = folder / "nodes"
                 if nodes_src.is_dir():
                     for child in sorted(nodes_src.iterdir()):
                         if child.is_file() and child.suffix == ".json":
-                            write_bytes_atomic(
-                                staging / "nodes" / child.name,
-                                child.read_bytes(),
-                            )
+                            copy_file_atomic(child, staging / "nodes" / child.name)
                 # Stage the fitted tensors that survive the model/variant
                 # filter, each with its sidecar.
                 from drowse.io.manifold_tensors import load_manifold
@@ -503,9 +493,9 @@ def push_manifold(
                     # current corpus beside a stale fitted tensor whose old
                     # bytes still pass the folder hash map.
                     load_manifold(ts)
-                    write_bytes_atomic(staging / ts.name, ts.read_bytes())
+                    copy_file_atomic(ts, staging / ts.name)
                     kept_stems.append(ts.stem)
-                    write_bytes_atomic(staging / sc.name, sc.read_bytes())
+                    copy_file_atomic(sc, staging / sc.name)
 
         # Re-hash the staged copy so the uploaded manifest matches the
         # bytes we upload (a model/variant filter changes the file set).
@@ -728,6 +718,36 @@ class ManifoldInstallConflict(RuntimeError, DrowseError):
         return (409, str(self) or self.__class__.__name__)
 
 
+def _install_destination(namespace: str, name: str) -> Path:
+    from drowse.io.manifold_authoring import RESERVED_NAMESPACES
+    from drowse.io.paths import manifold_dir, manifolds_dir
+
+    for label, component in (("namespace", namespace), ("name", name)):
+        if not NAME_REGEX.fullmatch(component):
+            raise ValueError(
+                f"install target {label} {component!r} doesn't match NAME_REGEX "
+                f"{NAME_REGEX.pattern}"
+            )
+    if namespace in RESERVED_NAMESPACES:
+        raise ValueError(f"install target namespace {namespace!r} is reserved")
+    target = manifold_dir(namespace, name)
+    if not target.resolve(strict=False).is_relative_to(manifolds_dir().resolve(strict=False)):
+        raise ValueError("install target resolves outside the manifold directory")
+    return target
+
+
+def _validate_local_install_tree(source: Path) -> None:
+    if source.is_symlink():
+        raise ValueError(f"local manifold source {source} is a symbolic link")
+    for root, directories, files in os.walk(source, followlinks=False):
+        for name in directories + files:
+            path = Path(root) / name
+            if path.is_symlink():
+                raise ValueError(f"local manifold source {path} is a symbolic link")
+            if not path.is_dir() and not path.is_file():
+                raise ValueError(f"local manifold source {path} is not a regular file or directory")
+
+
 def install_manifold(
     target: str,
     as_: Optional[str] = None,
@@ -750,8 +770,6 @@ def install_manifold(
     SSE client can show more than a spinner while a multi-hundred-megabyte
     repo lands.
     """
-    from drowse.io.paths import manifold_dir
-
     from drowse.io.selectors import invalidate as invalidate_selector_index
 
     _report(on_progress, f"Resolving {target}...")
@@ -788,12 +806,7 @@ def install_manifold(
     else:
         dst_ns, dst_name = "local", name
 
-    if not NAME_REGEX.match(dst_name):
-        raise ValueError(
-            f"install target name {dst_name!r} doesn't match NAME_REGEX "
-            f"{NAME_REGEX.pattern}"
-        )
-    dst = manifold_dir(dst_ns, dst_name)
+    dst = _install_destination(dst_ns, dst_name)
     if dst.exists() and not force:
         raise ManifoldInstallConflict(
             f"{dst} already exists; pass force=True or as_=<ns>/<name> to relocate"
@@ -810,9 +823,8 @@ def _install_local_manifold(
     on_progress: ProgressCallback | None = None,
 ) -> Path:
     """Validate and copy a local manifold folder into the cache."""
-    from drowse.io.paths import manifold_dir
-
     _report(on_progress, f"Validating {src.name}...")
+    _validate_local_install_tree(src)
     try:
         ManifoldFolder.load(src)
     except ManifoldFormatError as e:
@@ -825,15 +837,12 @@ def _install_local_manifold(
     else:
         dst_ns, dst_name = "local", src.name
 
-    if not NAME_REGEX.match(dst_name):
-        raise ValueError(
-            f"install target name {dst_name!r} doesn't match NAME_REGEX"
-        )
-
-    dst = manifold_dir(dst_ns, dst_name)
-    same_path = (
-        src.expanduser().resolve() == dst.expanduser().resolve(strict=False)
-    )
+    dst = _install_destination(dst_ns, dst_name)
+    source_resolved = src.expanduser().resolve()
+    destination_resolved = dst.expanduser().resolve(strict=False)
+    same_path = source_resolved == destination_resolved
+    if not same_path and destination_resolved.is_relative_to(source_resolved):
+        raise ValueError("local manifold install destination is inside the source")
     from drowse.io.manifold_folder import _locked_manifest
     from drowse.io.staging import stage_verify_swap
 
@@ -863,7 +872,8 @@ def _install_local_manifold(
 
             def _build(staging: Path) -> None:
                 _report(on_progress, f"Staging {src.name}...")
-                shutil.copytree(source_path, staging, dirs_exist_ok=True)
+                shutil.copytree(source_path, staging, dirs_exist_ok=True, symlinks=True)
+                _validate_local_install_tree(staging)
                 try:
                     staged = ManifoldFolder.load(staging)
                 except ManifoldFormatError as exc:
@@ -903,12 +913,11 @@ def _install_local_manifold(
                     return _swap()
             return _swap()
 
-    source_resolved = src.expanduser().resolve()
     reserved = {
         dst.with_name(dst.name + ".staging").resolve(strict=False),
         dst.with_name(dst.name + ".bak").resolve(strict=False),
     }
-    if source_resolved in reserved:
+    if any(source_resolved.is_relative_to(path) for path in reserved):
         import tempfile
 
         # Snapshot reserved-sibling sources before recovery/staging cleanup can
@@ -916,6 +925,7 @@ def _install_local_manifold(
         # worth the extra copy; normal installs still stream source→staging once.
         with tempfile.TemporaryDirectory(prefix="drowse-local-install-") as tmp:
             snapshot = Path(tmp) / src.name
-            shutil.copytree(src, snapshot)
+            shutil.copytree(src, snapshot, symlinks=True)
+            _validate_local_install_tree(snapshot)
             return _install_from(snapshot)
     return _install_from(src)

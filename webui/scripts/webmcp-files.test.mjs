@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 
 const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), appType: "custom", logLevel: "silent", server: { middlewareMode: true, watch: null } });
 try {
-  const { FileTransfers, createFileTools, getTransferredFile } = await server.ssrLoadModule("/src/lib/webmcp/files.ts");
+  const { FileTransfers, createFileTools, getTransferredFile, addTransferredFile } = await server.ssrLoadModule("/src/lib/webmcp/files.ts");
+  const { clearDrowseLocalData } = await server.ssrLoadModule("/src/lib/runtime/localData.ts");
   const transfers = new FileTransfers();
   for (const name of ["../backup.json", "folder/file", "bad\u0000name", "folder\\file"]) assert.throws(() => transfers.begin(name, 1), /filename/i);
   assert.throws(() => transfers.begin("file", -1), /size|files/i);
@@ -22,6 +23,7 @@ try {
   assert.equal(finished.state, "complete");
   assert.equal(await transfers.get(file.file_id).text(), bytes.toString());
   assert.deepEqual(await transfers.finish(file.file_id), finished);
+  assert.deepEqual(await transfers.write(file.file_id, 0, bytes.toString("base64")), finished, "Completed transfers still support identical chunk retries");
   const mismatch = transfers.begin("bad", 1, undefined, "0".repeat(64));
   await transfers.write(mismatch.file_id, 0, "YQ==");
   await assert.rejects(() => transfers.finish(mismatch.file_id), /checksum/);
@@ -47,6 +49,16 @@ try {
   assert.equal(first.next_offset, 7);
   await assert.rejects(() => call("drowse_read_file", { file_id: upload.file_id, offset: bytes.length + 1 }), /exceeds/);
   await call("drowse_delete_file", { file_id: upload.file_id });
+  const originalStream = File.prototype.stream;
+  try {
+    File.prototype.stream = () => { throw Error("Injected file read failure"); };
+    const failing = new FileTransfers();
+    await assert.rejects(() => failing.add(new Blob([bytes]), "failed.bin"), /Injected file read failure/);
+    assert.deepEqual(failing.list(), [], "Failed exports must not retain an unreachable transfer or consume capacity");
+  } finally { File.prototype.stream = originalStream; }
+  const privateFile = await addTransferredFile(new Blob([bytes]), "private-backup.json");
+  clearDrowseLocalData({ length: 0, key: () => null, removeItem: () => {} });
+  assert.throws(() => getTransferredFile(privateFile.file_id), /expired/, "Clearing app data releases private agent-transfer files too");
   transfers.clear();
   console.log("WebMCP file transfer: 65 MiB uploads, byte offsets, checksums, identical retries, conflict rejection and typed import handles passed");
 } finally { await server.close(); }

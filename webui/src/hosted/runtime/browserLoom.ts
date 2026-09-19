@@ -5,6 +5,7 @@ import {
 } from "../../lib/runtime/outputTokenPolicy";
 import { blake2b } from "@noble/hashes/blake2.js";
 import { SAMPLING_TEMPERATURE_MAX } from "../../lib/runtime/samplingCapabilities";
+import { normalizeSteeringPositions, type SteeringPositionSpan, type SteeringPositionSelection } from "../../lib/runtime/steeringPositions";
 import type {
   ChatRole,
   LoomNodeJSON,
@@ -333,6 +334,13 @@ export class BrowserLoomRuntime {
     const hookProgram = effectiveSteering || this.instruments?.hasLiveReadout()
       ? await this.preflightGenerationSteering(effectiveSteering ?? "")
       : null;
+    if (settings.positionSpans !== undefined && effectiveSteering) {
+      if (this.runtimeCapabilities?.positionSpans !== true) {
+        throw loomError("STEERING_POSITIONS_UNAVAILABLE", "This browser runtime does not support position-targeted steering; reload the updated app");
+      }
+    } else if (!effectiveSteering) {
+      settings.positionSpans = undefined;
+    }
     const activeRole = activeAssistantRole(hookProgram);
     const currentProbeHashes = await this.resolveProbeHashes();
     const siblingCount = fork === null ? request.n ?? 1 : 1;
@@ -472,6 +480,7 @@ export class BrowserLoomRuntime {
         this.session.probes,
         currentProbeHashes,
         effectiveSystemPrompt,
+        settings.positionSpans,
       );
       const prefix = fork !== null
         ? savedTokenPrefix(fork.source, fork.forcedPrefix)
@@ -572,6 +581,7 @@ export class BrowserLoomRuntime {
           generationSeat: rawCompletion ? null : role,
           generationRoleName: rawCompletion ? null : generationHeaderRoleLabel,
           steeringExpression: effectiveSteering,
+          position_spans: settings.positionSpans,
           hookProgram,
           maxOutputTokens: this.maxOutputTokens,
           ...(fork === null ? {} : { measurementStartRawIndex: prefix!.length }),
@@ -1145,6 +1155,7 @@ export class BrowserLoomRuntime {
       forcedPrefix,
       settings: {
         steering: source.recipe.steering?.trim() || null,
+        positionSpans: normalizeSteeringPositions(source.recipe),
         sampling,
         thinking: source.recipe.thinking ?? false,
         systemPrompt: source.recipe.system_prompt === undefined ? this.session.config.system_prompt : source.recipe.system_prompt,
@@ -1220,6 +1231,7 @@ export class BrowserLoomRuntime {
         generationSeat: this.session.is_base_model || request.options.raw ? null : node.role as ChatRole,
         generationRoleName: this.session.is_base_model || request.options.raw ? null : node.role_label,
         steeringExpression: settings.steering,
+        position_spans: settings.positionSpans,
         hookProgram,
         maxOutputTokens: this.maxOutputTokens,
         replay: { forcedPrefixTokenIds: forcedPrefix },
@@ -1392,6 +1404,7 @@ export class BrowserLoomRuntime {
       generationSeat: this.session.is_base_model ? null : node.role as ChatRole,
       generationRoleName: this.session.is_base_model ? null : node.role_label,
       steeringExpression: settings.steering,
+      position_spans: settings.positionSpans,
       hookProgram,
       maxOutputTokens: this.maxOutputTokens,
       replay: { forcedPrefixTokenIds: forcedPrefix, scoreTokenIds },
@@ -2258,6 +2271,7 @@ function recipe(
   probes: readonly string[],
   probeHashes: Readonly<Record<string, string>>,
   systemPrompt?: string | null,
+  positionSpans?: SteeringPositionSpan[],
 ): RecipeJSON {
   const recipeSampling: RecipeSamplingJSON = {
     temperature: sampling.temperature ?? null,
@@ -2282,6 +2296,7 @@ function recipe(
     steering,
     sampling: recipeSampling,
     ...(systemPrompt === undefined ? {} : { system_prompt: systemPrompt }),
+    ...(positionSpans === undefined ? {} : { position_spans: positionSpans.map(([start, end]) => [start, end] as [number, number]) }),
     thinking,
     seed: recipeSampling.seed,
     probes: [...probes],
@@ -2318,6 +2333,7 @@ function replaySettings(
   };
   return {
     steering: steered ? stamped.steering?.trim() || null : null,
+    positionSpans: steered ? normalizeSteeringPositions(stamped) : undefined,
     sampling,
     thinking: stamped.thinking ?? false,
     systemPrompt: stamped.system_prompt === undefined ? session.config.system_prompt : stamped.system_prompt,
@@ -2390,6 +2406,7 @@ function resolveSteering(request: string | null | undefined, fallback: string | 
 }
 
 interface ResolvedGenerationSettings {
+  positionSpans?: SteeringPositionSpan[];
   systemPrompt: string | null;
   steering: string | null;
   sampling: WSSampling;
@@ -2404,6 +2421,7 @@ interface TokenForkContext {
 }
 
 interface PartialRecipe {
+  position_spans?: SteeringPositionSpan[] | null;
   system_prompt?: string | null;
   steering: string | null;
   sampling: RecipeSamplingJSON | null;
@@ -2427,6 +2445,10 @@ function resolveGenerationSettings(
     ? castRecipe?.steering
     : request.steering;
   let steering = resolveSteering(requestedSteering, session.default_steering);
+  let positionSpans = normalizeSteeringPositions(
+    request.position_spans !== undefined || request.position_indices !== undefined
+      ? request : castRecipe ?? {},
+  );
   let sampling = effectiveSampling(
     session,
     mergeCastSampling(castSampling, request.sampling),
@@ -2442,11 +2464,14 @@ function resolveGenerationSettings(
     session.config.thinking ?? session.supports_thinking;
   const requestedOverride = request.recipe_override;
   if (requestedOverride === null || requestedOverride === undefined) {
-    return { steering, sampling, thinking, systemPrompt };
+    return { steering, sampling, thinking, systemPrompt, positionSpans };
   }
 
   const anchor = anchorRecipe(tree, parentId);
   const modifier = recipeModifier(requestedOverride, anchor);
+  positionSpans = normalizeSteeringPositions(
+    modifier.position_spans !== undefined ? modifier : anchor,
+  );
   const overlaid: PartialRecipe = {
     steering: modifier.steering !== null ? modifier.steering : anchor.steering,
     sampling: modifier.sampling !== null ? modifier.sampling : anchor.sampling,
@@ -2465,7 +2490,7 @@ function resolveGenerationSettings(
   }
   if (overlaid.thinking !== null) thinking = overlaid.thinking;
   if (overlaid.seed !== null) sampling = { ...sampling, seed: overlaid.seed };
-  return { steering, sampling, thinking, systemPrompt };
+  return { steering, sampling, thinking, systemPrompt, positionSpans };
 }
 
 function generationCastRecipe(
@@ -2522,6 +2547,7 @@ function anchorRecipe(tree: LoomTreeJSON, parentId: string): PartialRecipe {
     if (node.recipe !== null) {
       return {
         steering: node.recipe.steering,
+        position_spans: node.recipe.position_spans,
         sampling: node.recipe.sampling,
         thinking: node.recipe.thinking,
         seed: node.recipe.seed,
@@ -2572,11 +2598,12 @@ function partialRecipe(
     sampling: value.sampling ?? null,
     thinking: value.thinking ?? null,
     seed: value.seed ?? null,
+    ...(value.position_spans === undefined ? {} : { position_spans: value.position_spans }),
   };
 }
 
 function partialRecipeRecord(value: Record<string, unknown>): PartialRecipe {
-  const allowed = new Set(["steering", "sampling", "thinking", "seed"]);
+  const allowed = new Set(["steering", "sampling", "thinking", "seed", "position_spans", "position_indices"]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
     throw loomError("INVALID_RECIPE_OVERRIDE", "Partial recipe contains unknown fields");
   }
@@ -2588,7 +2615,11 @@ function partialRecipeRecord(value: Record<string, unknown>): PartialRecipe {
   if (value.sampling !== null && value.sampling !== undefined) {
     sampling = parseRecipeSamplingRecord(requireRecord(value.sampling, "recipe sampling"));
   }
-  return { steering, sampling, thinking, seed };
+  const hasPositions = value.position_spans !== undefined || value.position_indices !== undefined;
+  const positionSpans = normalizeSteeringPositions(value as SteeringPositionSelection);
+  return { steering, sampling, thinking, seed,
+    ...(hasPositions ? { position_spans: positionSpans ?? null } : {}),
+  };
 }
 
 function parsePartialRecipeExpression(value: string): PartialRecipe {
@@ -2934,6 +2965,13 @@ function approximateReplayKl(
 }
 
 function validateGenerationRequest(request: WSSubmitRequest | WSGenerateRequest): void {
+  const spans = normalizeSteeringPositions(request);
+  if (spans !== undefined && (
+    request.type === "generate" && request.fork_node_id != null ||
+    request.type === "submit" && request.generated_role == null
+  )) {
+    throw loomError("INVALID_STEERING_POSITIONS", "Position targeting requires generation; token forks inherit their source recipe positions");
+  }
   for (const [label, role] of [
     ["user", request.sampling?.user_role],
     ["assistant", request.sampling?.assistant_role],

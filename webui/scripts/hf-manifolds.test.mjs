@@ -198,6 +198,100 @@ try {
     );
   });
 
+  test("rejected metadata responses cancel their bodies and release readers", async () => {
+    for (const fixture of [
+      { headers: { "Content-Length": String(2 * 1024 * 1024 + 1) }, expected: /too large/ },
+      { url: "https://untrusted.example/models", expected: /untrusted origin/ },
+      { status: 503, expected: /HTTP 503/ },
+      { bytes: new Uint8Array(2 * 1024 * 1024 + 1), expected: /too large/ },
+    ]) {
+      const stream = streamResponse(fixture);
+      const client = new BrowserHfManifoldClient({ fetchImpl: async () => stream.response });
+      await assert.rejects(client.search("portable"), fixture.expected);
+      assert.equal(stream.cancelled(), 1);
+      assert.equal(stream.response.body.locked, false);
+    }
+  });
+
+  test("successful metadata reads release their reader", async () => {
+    const body = response([], "https://huggingface.co/api/models");
+    const client = new BrowserHfManifoldClient({ fetchImpl: async () => body });
+    assert.deepEqual((await client.search("portable")).results, []);
+    assert.equal(body.body.locked, false);
+  });
+
+  test("archive failures cancel network streams and delete temporary files", async () => {
+    for (const failure of ["write", "progress"]) {
+      const stream = streamResponse({ bytes: new Uint8Array([1, 2, 3]) });
+      await withDownloadStorage({ failure }, async (storage) => {
+        const client = archiveClient(BrowserHfManifoldClient, stream.response);
+        await assert.rejects(client.withArchive("fixture/portable", {
+          onProgress() { if (failure === "progress") throw new Error("progress failed"); },
+        }, async () => assert.fail("failed downloads must not be consumed")), /failed/);
+        assert.equal(stream.cancelled(), 1);
+        assert.equal(stream.response.body.locked, false);
+        assert.equal(storage.aborts, 1);
+        assert.equal(storage.files.size, 0);
+      });
+    }
+  });
+
+  test("archive output-open failures delete temporary files without downloading", async () => {
+    await withDownloadStorage({ failure: "open" }, async (storage) => {
+      const client = archiveClient(BrowserHfManifoldClient, null);
+      await assert.rejects(client.withArchive("fixture/portable", {}, async () => null), /open failed/);
+      assert.equal(storage.files.size, 0);
+    });
+  });
+
+  test("archive cancellation also reaches a queued storage lock", async () => {
+    const controller = new AbortController();
+    await withDownloadStorage({}, async (storage) => {
+      navigator.locks.request = async (_name, options) => {
+        assert.equal(options.signal, controller.signal);
+        controller.abort();
+        options.signal.throwIfAborted();
+      };
+      const client = archiveClient(BrowserHfManifoldClient, null);
+      await assert.rejects(client.withArchive("fixture/portable", {
+        signal: controller.signal,
+      }, async () => assert.fail("cancelled downloads must not be consumed")), { name: "AbortError" });
+      assert.equal(storage.files.size, 0);
+    });
+  });
+
+  test("abort while waiting for an archive chunk cancels the reader", async () => {
+    const controller = new AbortController();
+    const stream = streamResponse({ bytes: new Uint8Array([1, 2, 3]) });
+    await withDownloadStorage({}, async (storage) => {
+      const client = archiveClient(BrowserHfManifoldClient, stream.response);
+      await assert.rejects(client.withArchive("fixture/portable", {
+        signal: controller.signal,
+        onProgress() { queueMicrotask(() => controller.abort()); },
+      }, async () => assert.fail("cancelled downloads must not be consumed")), { name: "AbortError" });
+      assert.equal(stream.cancelled(), 1);
+      assert.equal(stream.response.body.locked, false);
+      assert.equal(storage.files.size, 0);
+    });
+  });
+
+  test("successful archives preserve bytes and release temporary resources", async () => {
+    const body = new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Length": "3" } });
+    Object.defineProperty(body, "url", { value: "https://huggingface.co/fixture/portable/archive" });
+    await withDownloadStorage({}, async (storage) => {
+      const client = archiveClient(BrowserHfManifoldClient, body);
+      const result = await client.withArchive("fixture/portable", {}, async ({ file }) => {
+        assert.deepEqual(new Uint8Array(await file.arrayBuffer()), new Uint8Array([1, 2, 3]));
+        return "installed";
+      });
+      assert.equal(result, "installed");
+      assert.equal(body.body.locked, false);
+      assert.equal(storage.closes, 1);
+      assert.equal(storage.aborts, 0);
+      assert.equal(storage.files.size, 0);
+    });
+  });
+
   let passed = 0;
   for (const { name, run } of tests) {
     await run();
@@ -217,4 +311,63 @@ function response(value, url, headers = {}) {
   });
   Object.defineProperty(result, "url", { value: url });
   return result;
+}
+
+function streamResponse({ bytes, headers, url = "https://huggingface.co/api/models", status = 200 } = {}) {
+  let cancelled = 0;
+  const body = new ReadableStream({
+    start(controller) { if (bytes) controller.enqueue(bytes); },
+    cancel() { cancelled += 1; },
+  });
+  const result = new Response(body, { status, headers });
+  Object.defineProperty(result, "url", { value: url });
+  return { response: result, cancelled: () => cancelled };
+}
+
+function archiveClient(Client, archive) {
+  return new Client({ fetchImpl: async (input) => {
+    const url = new URL(input);
+    if (url.pathname.startsWith("/api/models/")) return response({
+      id: "fixture/portable", sha, tags: ["drowse-manifold"],
+      siblings: [{ rfilename: "portable.drowse", size: 3 }],
+    }, url.href);
+    assert.ok(archive, "archive must not be fetched before the file is open");
+    return archive;
+  } });
+}
+
+async function withDownloadStorage({ failure }, run) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const state = { files: new Map(), aborts: 0, closes: 0 };
+  const directory = {
+    async getDirectoryHandle() { return directory; },
+    async getFileHandle(name) {
+      const parts = [];
+      state.files.set(name, parts);
+      return {
+        async createWritable() {
+          if (failure === "open") throw new Error("open failed");
+          return {
+            async write(bytes) {
+              if (failure === "write") throw new Error("write failed");
+              parts.push(new Uint8Array(bytes));
+            },
+            async abort() { state.aborts += 1; },
+            async close() { state.closes += 1; },
+          };
+        },
+        async getFile() { return new File(parts, name); },
+      };
+    },
+    async removeEntry(name) { state.files.delete(name); },
+  };
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
+    storage: { async getDirectory() { return directory; } },
+    locks: { async request(_name, _options, operation) { return operation({}); } },
+  } });
+  try { await run(state); }
+  finally {
+    if (previous) Object.defineProperty(globalThis, "navigator", previous);
+    else delete globalThis.navigator;
+  }
 }

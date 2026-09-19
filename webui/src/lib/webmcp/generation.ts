@@ -11,6 +11,7 @@ import { currentSteeringExpression } from "../stores/steering.svelte";
 import { ensureRuntimeChannel, onWsMessage } from "../stores/ws.svelte";
 import { cancelPendingAction, drainNextPendingAction, isPendingBusy, pendingActions, reservePendingGeneration } from "../stores/pending.svelte";
 import type { ChatRole, SessionInfo, WSGenerateRequest, WSSampling, WSSubmitRequest } from "../types";
+import { normalizeSteeringPositions, type SteeringPositionSelection } from "../runtime/steeringPositions";
 import { awaitGenerationReceipt, type GenerationReceipt } from "./generationReceipt";
 import { objectSchema, ToolError, type AppTool, type InputSchema, type ToolContext } from "./types";
 
@@ -56,6 +57,11 @@ const commonFields: Record<string, InputSchema> = {
   request_id: { type: "string", minLength: 1, maxLength: 128, description: "Reuse this ID only to reconcile the same operation without generating twice." },
   parent_node_id: { type: "string", minLength: 1, description: "Fixed conversation anchor. Omitted freezes the current active node now." },
   steering: { type: "string", description: "Full validated Drowse expression; empty string explicitly disables steering. Omitted snapshots the visible rack/expression." },
+  position_spans: { type: ["array", "null"], maxItems: 4096,
+    items: { type: "array", minItems: 2, maxItems: 2, items: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER } },
+    description: "Browser only: non-overlapping absolute input-token [start,end) ranges, including BOS/chat headers. One shared steering program applies throughout each span, combined with its phase/gates. Empty disables injection; null clears targeting. Mutually exclusive with position_indices." },
+  position_indices: { type: ["array", "null"], maxItems: 4096, items: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER - 1 },
+    description: "Browser only: unique absolute input-token positions. Alternative to position_spans; the same steering program is shared, not separate vectors per position." },
   sampling: samplingSchema,
   n: { type: "integer", minimum: 1, maximum: 32, description: "Number of sibling generations; multiplies generation work." },
 };
@@ -155,6 +161,11 @@ function start(input: Record<string, unknown>, context: ToolContext, raw: boolea
   const prior = previousJob(input, context, kind);
   if (prior) return prior;
   const info = requireWorkspace(context);
+  const hasPositions = input.position_spans !== undefined || input.position_indices !== undefined;
+  if (hasPositions && context.runtime!.mode !== "browser") {
+    throw new ToolError("STEERING_POSITIONS_UNAVAILABLE", "Position-targeted steering is currently available only in the browser runtime");
+  }
+  const positionSpans = normalizeSteeringPositions(input as SteeringPositionSelection);
   if (!raw && info.is_base_model) {
     throw new ToolError("RAW_MODEL", "This is a base model. Use drowse_raw_continue; system prompts and chat roles do not apply.");
   }
@@ -191,6 +202,7 @@ function start(input: Record<string, unknown>, context: ToolContext, raw: boolea
     type: "submit", text, authored_role: authoredRole, generated_role: generatedRole,
     parent_node_id: input.parent_node_id as string | undefined ?? loomTree.active_node_id,
     steering: input.steering as string | undefined ?? currentSteeringExpression(),
+    ...(hasPositions ? { position_spans: positionSpans ?? null } : {}),
     sampling, thinking: raw ? false : input.thinking as boolean | undefined ?? samplingState.thinking ?? false,
     raw, n: generatedRole === null ? 1 : input.n as number | undefined ?? 1,
     ...(draft?.authoredThinking ? { authored_thinking: draft.authoredThinking } : {}),
@@ -215,6 +227,7 @@ function start(input: Record<string, unknown>, context: ToolContext, raw: boolea
         throw new ToolError("COMPARISON_PARENT_ROLE", "A condition with new text requires an assistant/root anchor.");
       }
       return { type: "generate", input: condition.text ?? text, parent_node_id: payload.parent_node_id,
+        ...(hasPositions ? { position_spans: positionSpans ?? null } : {}),
         steering: condition.steering, sampling: conditionSampling, thinking: condition.thinking ?? payload.thinking,
         raw, n: 1, stateless: false, append_same_role: false };
     });

@@ -1,7 +1,9 @@
 import type { HostedShellController } from "../../hosted/ui/types";
 import { getHostedController, getRuntimeCapabilities, getRuntimeClient } from "../runtime/registry";
+import { registerDrowseLocalDataClearer } from "../runtime/localData";
 import { WebMcpAdapter, nativeModelContext } from "./adapter";
 import { JobRegistry } from "./jobs";
+import { REQUEST_RECEIPTS_KEY } from "./requests";
 import { createPublicTools } from "./publicTools";
 import { createHostedTools } from "./hostedTools";
 import { createHomeTools, homeRevision } from "./homeTools";
@@ -12,8 +14,21 @@ import { catalogueInterfaces, catalogueServices, INTERFACE_FAMILIES } from "./ca
 import { pageActions, updateActions } from "./lifecycle";
 import { objectSchema, ToolError, type AppTool, type ToolContext } from "./types";
 
+const JOB_HISTORY_KEY = "drowse.webmcp.jobs.v1";
 const jobs = new JobRegistry();
 let adapter: WebMcpAdapter | null = null;
+registerDrowseLocalDataClearer(() => {
+  let failed = false;
+  try { jobs.clear(); } catch { failed = true; }
+  try { adapter?.clearRetainedData(); } catch { failed = true; }
+  try {
+    const storage = typeof window === "undefined" ? undefined : window.sessionStorage;
+    if (storage) for (const key of [JOB_HISTORY_KEY, REQUEST_RECEIPTS_KEY]) {
+      try { storage.removeItem(key); } catch { failed = true; }
+    }
+  } catch { failed = true; }
+  if (failed) throw new Error("Agent operation history could not be cleared. Restore browser storage access and retry.");
+});
 let hostedSite = false;
 let shell: HostedShellController | null = null;
 let workspace: { read: () => unknown; revision: () => string; idle: () => void; session: () => SessionInfo | null; reconcile: (id: string, context: ToolContext) => Promise<unknown>; tools: AppTool[] } | null = null;
@@ -124,7 +139,7 @@ export function startWebMcp(isHosted: boolean): void {
   let requestStorage: Storage | undefined;
   try {
     requestStorage = window.sessionStorage;
-    if (!persistenceAttached) { jobs.attachPersistence(requestStorage, "drowse.webmcp.jobs.v1"); persistenceAttached = true; }
+    if (!persistenceAttached) { jobs.attachPersistence(requestStorage, JOB_HISTORY_KEY); persistenceAttached = true; }
   } catch { jobs.persistenceError = "Browser storage is unavailable. Operation receipts cannot survive this page closing or reloading."; }
   adapter = new WebMcpAdapter({ provider, context, revision, requestStorage, visible: tool => tool.scope === "public" || alwaysVisible.has(tool.name) || tool.group === selectedGroup });
   foundation = [...foundationTools(), adapter.resultTool()];

@@ -322,7 +322,12 @@ export class BrowserContentStore implements ContentAddressedStore {
         throw new Error(`Stored object size ${file.size} does not match checkpoint ${offset}`);
       }
       const writable = await handle.createWritable({ keepExistingData: true });
-      await writable.seek(offset);
+      try {
+        await writable.seek(offset);
+      } catch (error) {
+        await writable.abort(error).catch(() => undefined);
+        throw error;
+      }
       return new BrowserContentWriteSession(
         database,
         record,
@@ -940,7 +945,12 @@ class BrowserContentWriteSession implements ContentWriteSession {
   }
 
   private async finish(): Promise<number> {
-    await this.writable.close();
+    try {
+      await this.writable.close();
+    } catch (error) {
+      await this.writable.abort(error).catch(() => undefined);
+      throw error;
+    }
     const file = await this.handle.getFile();
     if (file.size !== this.currentOffset) {
       throw new Error(
@@ -1401,6 +1411,11 @@ async function truncateTo(
   size: number,
 ): Promise<void> {
   const writable = await handle.createWritable({ keepExistingData: size > 0 });
-  await writable.truncate(size);
-  await writable.close();
+  try {
+    await writable.truncate(size);
+    await writable.close();
+  } catch (error) {
+    await writable.abort(error).catch(() => undefined);
+    throw error;
+  }
 }

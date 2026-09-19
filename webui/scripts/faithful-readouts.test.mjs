@@ -52,7 +52,24 @@ try {
   assert.equal(requests.length, 3, "only the fresh result is reused");
 
   const { ReplayReadout } = await server.ssrLoadModule("/src/drawers/token/readout.svelte.ts");
+  const { readoutBadge } = await server.ssrLoadModule("/src/drawers/token/drilldown.svelte.ts");
   const view = new ReplayReadout();
+  const captured = { layers: [0, 5] };
+  const count = data => data.layers.length;
+  assert.equal(readoutBadge(view, null, true, count), undefined, "missing is not measured zero");
+  assert.equal(readoutBadge(view, captured, true, count), "2", "inactive captured tabs retain their counts");
+  assert.equal(readoutBadge(view, captured, false, count), undefined, "counterfactuals cannot borrow captured counts");
+  view.adopt({ layers: [] }, "test-source");
+  assert.equal(readoutBadge(view, captured, true, count), "0", "a completed empty readout is zero");
+  view.adopt({ layers: [0, 5, 10, 15, 19, 24, 29, 34] }, "test-source");
+  assert.equal(readoutBadge(view, captured, true, count), "8", "displayed results take precedence over capture");
+  view.clear();
+  view.loading = true;
+  assert.equal(readoutBadge(view, captured, true, count), "…", "pending is not a measured count");
+  view.loading = false;
+  view.error = "failed";
+  assert.equal(readoutBadge(view, captured, true, count), undefined, "errors cannot masquerade as captured counts");
+  view.clear();
   let attempts = 0;
   replay = async () => {
     if (++attempts === 1) throw new Error("temporary read failure");

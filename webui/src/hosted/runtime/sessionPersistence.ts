@@ -1,3 +1,4 @@
+import { normalizeSteeringPositions } from "../../lib/runtime/steeringPositions";
 import type {
   CastMemberJSON,
   LoomNodeJSON,
@@ -681,7 +682,11 @@ function validateRecipe(value: unknown): asserts value is RecipeJSON {
     "seed",
     "steering",
     "thinking",
-  ], ["system_prompt"], "Recipe");
+  ], ["system_prompt", "position_spans"], "Recipe");
+  if (value.position_spans !== undefined) {
+    if (value.position_spans === null) throw invalid("Recipe position spans must be an array");
+    normalizeSteeringPositions(value as unknown as { position_spans: [number, number][] });
+  }
   if (value.system_prompt !== undefined) validateNullableString(value.system_prompt, "recipe system prompt", 1024 * 1024);
   validateNullableString(value.steering, "recipe steering", 64 * 1024);
   if (value.sampling !== null) validateRecipeSampling(value.sampling);

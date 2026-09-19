@@ -216,6 +216,17 @@ self.onmessage = async (event) => {
       onDeviceLost() {},
     });
     const loadedEngine = runtime.requireEngine();
+    if (${options.positionSpans}) {
+      stage = "position-spans";
+      self.postMessage({ type: "stage", stage });
+      const { verifySteeringPositions } = await import("/scripts/browser-steering-positions.ts");
+      const result = await verifySteeringPositions(runtime, manifest, { arithmeticOnly: ${options.positionSpansArithmetic} });
+      await runtime.unload();
+      postMessage({ type: "done", result: { ...result, adapter: {
+        vendor: adapter.info?.vendor, architecture: adapter.info?.architecture,
+      } } });
+      return;
+    }
     if (${options.benchmark}) {
       stage = "benchmark";
       self.postMessage({ type: "stage", stage });
@@ -351,6 +362,8 @@ function createThinkingHookProgram(manifest) {
 function parseArguments(args) {
   const result = {
     benchmark: false,
+    positionSpans: false,
+    positionSpansArithmetic: false,
     browserChannel: "chrome",
     contextTokens: 4096,
     id: null,
@@ -364,6 +377,11 @@ function parseArguments(args) {
   };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
+    if (argument === "--position-spans" || argument === "--position-spans-arithmetic") {
+      result.positionSpans = true;
+      result.positionSpansArithmetic = argument === "--position-spans-arithmetic";
+      continue;
+    }
     if (argument === "--benchmark") {
       result.benchmark = true;
       continue;

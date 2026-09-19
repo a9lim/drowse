@@ -33,6 +33,7 @@ interface JobRecord {
 
 const terminal = (state: JobState): boolean =>
   state === "completed" || state === "cancelled" || state === "failed" || state === "interrupted";
+const MAX_ACTIVE_JOBS = 128;
 
 export class JobRegistry {
   private readonly records = new Map<string, JobRecord>();
@@ -52,6 +53,9 @@ export class JobRegistry {
       const prior = this.require(priorId);
       if (prior.snapshot.kind !== kind) throw new Error("The request ID already belongs to another operation");
       return this.copy(prior);
+    }
+    if ([...this.records.values()].filter(record => !terminal(record.snapshot.state)).length >= MAX_ACTIVE_JOBS) {
+      throw Object.assign(new Error("The agent job queue is full. Wait for active jobs to finish or cancel an owned job before retrying."), { code: "JOB_CAPACITY" });
     }
     const id = `job-${crypto.randomUUID()}`;
     const record: JobRecord = {
@@ -190,6 +194,27 @@ export class JobRegistry {
     this.prune();
   }
 
+  clear(): void {
+    for (const record of this.records.values()) {
+      if (!terminal(record.snapshot.state)) {
+        record.snapshot.state = "interrupted";
+        record.snapshot.finishedAt = Date.now();
+        record.controller.abort(new DOMException("Local operation history was cleared", "AbortError"));
+      }
+      delete record.cancel;
+    }
+    this.records.clear();
+    this.requests.clear();
+    this.persistenceError = null;
+    if (this.persistence) {
+      try { this.persistence.storage.setItem(this.persistence.key, "[]"); }
+      catch {
+        this.persistenceError = "Operation history could not be cleared. Restore browser storage access and retry.";
+        throw Object.assign(new Error(this.persistenceError), { code: "JOB_STORAGE_UNAVAILABLE" });
+      }
+    }
+  }
+
   private require(id: string): JobRecord {
     const record = this.records.get(id);
     if (!record) throw Object.assign(new Error("This job is unknown or no longer retained"), { code: "JOB_NOT_FOUND" });
@@ -200,6 +225,7 @@ export class JobRegistry {
 
   private prune(): void {
     const finished = [...this.records.values()].filter((record) => terminal(record.snapshot.state));
+    for (const record of finished) delete record.cancel;
     for (const record of finished.slice(0, Math.max(0, finished.length - this.retention))) {
       this.records.delete(record.snapshot.id);
       if (record.snapshot.requestId !== undefined) this.requests.delete(record.snapshot.requestId);
@@ -210,7 +236,7 @@ export class JobRegistry {
   private persist(): void {
     if (!this.persistence) return;
     try {
-      const snapshots = this.list().map(compactSnapshot);
+      const snapshots = [...this.records.values()].map(record => compactSnapshot(record.snapshot));
       let serialized = JSON.stringify(snapshots);
       while (serialized.length > 3 * 1024 * 1024) {
         const oldest = snapshots.findIndex(snapshot => terminal(snapshot.state));

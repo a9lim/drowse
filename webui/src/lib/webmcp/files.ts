@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2.js";
+import { registerDrowseLocalDataClearer } from "../runtime/localData";
 import { objectSchema, ToolError, type AppTool } from "./types";
 
 export interface FileDescriptor {
@@ -40,7 +41,7 @@ export class FileTransfers {
     const bytes = Uint8Array.from(atob(base64), character => character.charCodeAt(0));
     if (!bytes.length || bytes.length > CHUNK_BYTES || offset + bytes.length > record.descriptor.size) throw new ToolError("INVALID_CHUNK", "The chunk is empty or exceeds the declared file size.");
     if (offset < record.descriptor.received_bytes) {
-      const existing = new Uint8Array(await new Blob(record.parts).slice(offset, offset + bytes.length).arrayBuffer());
+      const existing = new Uint8Array(await (record.file ?? new Blob(record.parts)).slice(offset, offset + bytes.length).arrayBuffer());
       if (existing.length === bytes.length && existing.every((value, i) => value === bytes[i])) return { ...record.descriptor };
       throw new ToolError("CHUNK_CONFLICT", "This byte range was already uploaded with different content.");
     }
@@ -60,6 +61,7 @@ export class FileTransfers {
     const checksum = Array.from(hash.digest(), byte => byte.toString(16).padStart(2, "0")).join("");
     if (record.expectedHash && record.expectedHash !== checksum) throw new ToolError("CHECKSUM_MISMATCH", "The uploaded file does not match its expected SHA-256 checksum.");
     record.file = file;
+    record.parts = [];
     record.descriptor.sha256 = checksum;
     record.descriptor.state = "complete";
     return { ...record.descriptor };
@@ -70,7 +72,12 @@ export class FileTransfers {
     const record = this.require(descriptor.file_id);
     record.parts = [blob];
     record.descriptor.received_bytes = blob.size;
-    return this.finish(descriptor.file_id);
+    try {
+      return await this.finish(descriptor.file_id);
+    } catch (error) {
+      this.records.delete(descriptor.file_id);
+      throw error;
+    }
   }
 
   get(id: string): File {
@@ -92,6 +99,7 @@ export class FileTransfers {
 }
 
 const transfers = new FileTransfers();
+registerDrowseLocalDataClearer(() => transfers.clear());
 export const getTransferredFile = (id: string): File => transfers.get(id);
 export const addTransferredFile = (blob: Blob, name: string): Promise<FileDescriptor> => transfers.add(blob, name);
 export function downloadTransferredFile(id: string): FileDescriptor {

@@ -1,0 +1,1 @@
+var e=new Set;function t(t){return e.add(t),()=>e.delete(t)}export{t};

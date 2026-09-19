@@ -375,12 +375,12 @@ def test_push_manifold_stages_one_locked_source_snapshot(
     tensor = next(folder.glob("*.safetensors"))
     old_tensor = tensor.read_bytes()
     staged = _capture_push_staging(monkeypatch)
-    real_write = hfm.write_bytes_atomic
+    real_copy = hfm.copy_file_atomic
     manifest_copied = threading.Event()
     continue_snapshot = threading.Event()
 
-    def pause_after_manifest(path: Path, data: bytes) -> None:
-        real_write(path, data)
+    def pause_after_manifest(source: Path, path: Path) -> None:
+        real_copy(source, path)
         path = Path(path)
         if (
             path.name == "manifold.json"
@@ -389,7 +389,7 @@ def test_push_manifold_stages_one_locked_source_snapshot(
             manifest_copied.set()
             assert continue_snapshot.wait(2.0)
 
-    monkeypatch.setattr(hfm, "write_bytes_atomic", pause_after_manifest)
+    monkeypatch.setattr(hfm, "copy_file_atomic", pause_after_manifest)
     push_errors: list[BaseException] = []
     mutation_errors: list[BaseException] = []
     push_done = threading.Event()
@@ -451,11 +451,11 @@ def test_push_manifold_freezes_candidates_before_staging(
 
     folder = _author_fake_manifold(tmp_path, monkeypatch)
     staged = _capture_push_staging(monkeypatch)
-    real_write = hfm.write_bytes_atomic
+    real_copy = hfm.copy_file_atomic
     injected: list[Path] = []
 
-    def inject_after_manifest(path: Path, data: bytes) -> None:
-        real_write(path, data)
+    def inject_after_manifest(source: Path, path: Path) -> None:
+        real_copy(source, path)
         path = Path(path)
         if (
             not injected
@@ -466,7 +466,7 @@ def test_push_manifold_freezes_candidates_before_staging(
                 folder, "new/model", publish_manifest=False,
             ))
 
-    monkeypatch.setattr(hfm, "write_bytes_atomic", inject_after_manifest)
+    monkeypatch.setattr(hfm, "copy_file_atomic", inject_after_manifest)
     hfm.push_manifold(folder, "alice/mood", dry_run=True)
 
     new_tensor = injected[0]

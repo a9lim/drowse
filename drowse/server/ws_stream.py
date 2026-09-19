@@ -35,7 +35,7 @@ from drowse.server.app import acquire_session_lock, ws_auth_ok
 from drowse.server.native_common import SINGLE_SESSION_ID
 from drowse.server.native_common import resolve_session_id
 from drowse.server.request_ledger import RequestLedger
-from drowse.server.request_helpers import merge_steering, parse_request_steering
+from drowse.server.request_helpers import merge_steering, parse_request_steering, validate_logit_bias
 from drowse.server.streaming import finish_worker
 from drowse.server.tree_models import cast_json, node_json
 from drowse.server.ws_events import build_token_event
@@ -674,6 +674,14 @@ async def _ws_handle_generate(
     request_id = msg.request_id
     if ledger is not None:
         admission = ledger.claim(request_id, msg.model_dump(mode="json", exclude_unset=True))
+        if admission == "full":
+            await send_json({**_error_frame(
+                "Too many active generation requests; wait for one to finish.",
+                code="REQUEST_QUEUE_FULL", status=503,
+            ), "request_id": request_id})
+            await send_json({"type": "request_complete", "request_id": request_id,
+                             "state": "failed", "completed_siblings": 0})
+            return
         if admission != "new":
             status = ledger.get(request_id)
             if admission == "existing" and status["state"] in ("completed", "cancelled", "failed"):
@@ -775,6 +783,7 @@ async def _ws_dispatch_generate(
 
     sampling = build_sampling_config(msg.sampling)
     try:
+        validate_logit_bias(sampling, session)
         req_steering, explicit_clear = parse_request_steering(msg.steering)
         thinking_override: bool | None = None
         if req_steering is not None and req_steering.thinking is not None:

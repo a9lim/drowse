@@ -1,5 +1,5 @@
 diff --git a/package-lock.json b/package-lock.json
-index 0070bde..8d19783 100644
+index 0070bde..2b279d6 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,21 +1,21 @@
@@ -7,7 +7,7 @@ index 0070bde..8d19783 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.39",
++  "version": "0.2.84-drowse.40",
    "lockfileVersion": 3,
    "requires": true,
    "packages": {
@@ -15,7 +15,7 @@ index 0070bde..8d19783 100644
 -      "name": "@mlc-ai/web-llm",
 -      "version": "0.2.84",
 +      "name": "@drowse/web-llm",
-+      "version": "0.2.84-drowse.39",
++      "version": "0.2.84-drowse.40",
        "license": "Apache-2.0",
        "dependencies": {
 -        "loglevel": "^1.9.1"
@@ -170,7 +170,7 @@ index 0070bde..8d19783 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..89bf384 100644
+index cabfc3d..c629895 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,12 +1,12 @@
@@ -178,7 +178,7 @@ index cabfc3d..89bf384 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.39",
++  "version": "0.2.84-drowse.40",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
@@ -906,14 +906,58 @@ index 0000000..74d754a
 +}
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
-index 0000000..b551af2
+index 0000000..6343676
 --- /dev/null
 +++ b/src/drowse.ts
-@@ -0,0 +1,1352 @@
+@@ -0,0 +1,1398 @@
 +export const DROWSE_HOOK_ABI = "post-block-residual-v4" as const;
 +export const DROWSE_EXACT_READOUT_ABI = "exact-readout-v1" as const;
 +
++export type DrowsePositionSpan = [number, number];
++
++export interface DrowsePositionSelection {
++  position_spans?: readonly (readonly [number, number])[] | null;
++  position_indices?: readonly number[] | null;
++}
++
++/** Absolute input-token positions, zero-based and end-exclusive. */
++export function normalizeDrowsePositionSelection(
++  selection: DrowsePositionSelection,
++): DrowsePositionSpan[] | undefined {
++  const { position_spans: spans, position_indices: indices } = selection;
++  if (spans != null && indices != null) {
++    throw new TypeError("position_spans and position_indices are mutually exclusive");
++  }
++  const value = spans ?? indices;
++  if (value == null) return undefined;
++  if (!Array.isArray(value) || value.length > 4096) {
++    throw new TypeError("Steering positions must be an array of at most 4096 entries");
++  }
++  const ranges: DrowsePositionSpan[] = [];
++  for (const item of value) {
++    const pair = spans != null ? item : [item, (item as number) + 1];
++    if (!Array.isArray(pair) || pair.length !== 2 ||
++      !Number.isSafeInteger(pair[0]) || !Number.isSafeInteger(pair[1]) ||
++      pair[0] < 0 || pair[1] <= pair[0]) {
++      throw new TypeError("Steering positions must be non-negative integers with start < end");
++    }
++    ranges.push([pair[0], pair[1]]);
++  }
++  ranges.sort((left, right) => left[0] - right[0]);
++  const merged: DrowsePositionSpan[] = [];
++  for (const [start, end] of ranges) {
++    const previous = merged[merged.length - 1];
++    if (previous && start < previous[1]) {
++      throw new TypeError("Steering positions must not overlap or repeat");
++    }
++    if (previous && start === previous[1]) previous[1] = end;
++    else merged.push([start, end]);
++  }
++  return merged;
++}
++
 +export interface DrowseRuntimeCapabilities {
++  positionSpans?: boolean;
 +  topK: boolean;
 +  forcedReplay: boolean;
 +  replayScoring: boolean;
@@ -1005,7 +1049,7 @@ index 0000000..b551af2
 +  maxSaeFeaturesPerChunk: number;
 +}
 +
-+export interface DrowseRankOneProgram {
++export interface DrowseRankOneProgram extends DrowsePositionSelection {
 +  hookAbi: typeof DROWSE_HOOK_ABI;
 +  hiddenSize: number;
 +  layerCount: number;
@@ -1176,7 +1220,7 @@ index 0000000..b551af2
 +  damping: 670,
 +} as const;
 +
-+export interface DrowseStructuredProgram {
++export interface DrowseStructuredProgram extends DrowsePositionSelection {
 +  hookAbi: typeof DROWSE_HOOK_ABI;
 +  format: DrowseStructuredHookFormat;
 +  hiddenSize: number;
@@ -1515,6 +1559,7 @@ index 0000000..b551af2
 +  expectedHiddenSize: number,
 +  expectedLayerCount: number,
 +): void {
++  normalizeDrowsePositionSelection(program);
 +  if (program.hookAbi !== DROWSE_HOOK_ABI) {
 +    throw new TypeError(
 +      `Unsupported Drowse hook ABI ${String(program.hookAbi)}`,
@@ -1725,6 +1770,7 @@ index 0000000..b551af2
 +  expectedHiddenSize: number,
 +  expectedLayerCount: number,
 +): void {
++  normalizeDrowsePositionSelection(program);
 +  if (
 +    program.hookAbi !== DROWSE_HOOK_ABI ||
 +    (program.format !== DROWSE_STRUCTURED_HOOK_FORMAT &&
@@ -3288,10 +3334,10 @@ index 0000000..52f4053
 +  return required;
 +}
 diff --git a/src/index.ts b/src/index.ts
-index d583419..146eb24 100644
+index d583419..fb1f1af 100644
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -32,6 +32,69 @@ export {
+@@ -32,6 +32,72 @@ export {
  
  export { MLCEngine, CreateMLCEngine } from "./engine";
  
@@ -3336,6 +3382,9 @@ index d583419..146eb24 100644
 +  validateDrowseCapturePositions,
 +  validateDrowseCaptureRows,
 +  validateDrowseRankOneProgram,
++  normalizeDrowsePositionSelection,
++  DrowsePositionSelection,
++  DrowsePositionSpan,
 +  validateDrowseJlensDictionary,
 +  validateDrowseSaeDictionary,
 +  validateDrowseStructuredProgram,
@@ -3362,7 +3411,7 @@ index d583419..146eb24 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..34a2209 100644
+index 616cff4..a8b0c8e 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
 @@ -1,4 +1,6 @@
@@ -3395,12 +3444,14 @@ index 616cff4..34a2209 100644
    RangeError,
    WindowSizeConfigurationError,
    WindowSizeSpecificationError,
-@@ -30,6 +35,50 @@ import {
+@@ -30,6 +35,52 @@ import {
    TextCompletionExpectsKVEmptyError,
    CannotFindImageEmbedError,
  } from "./error";
 +import {
 +  DrowseRankOneProgram,
++  DrowsePositionSpan,
++  normalizeDrowsePositionSelection,
 +  DrowseStructuredProgram,
 +  packDrowseCurveParameters,
 +  packDrowseGeometryHeader,
@@ -3446,7 +3497,7 @@ index 616cff4..34a2209 100644
  
  type ImageURL = ChatCompletionContentPartImage.ImageURL;
  
-@@ -47,6 +96,418 @@ type VMFunctionAvailability = {
+@@ -47,6 +98,418 @@ type VMFunctionAvailability = {
  
  type VMFunctionRegistry = Record<string, tvmjs.PackedFunc | undefined>;
  
@@ -3865,7 +3916,7 @@ index 616cff4..34a2209 100644
  type ResolvedModelABI = {
    kvStateKind: Exclude<KVStateKind, "none">;
    prefillABI: ComputeABIKind;
-@@ -67,6 +528,25 @@ export class LLMChatPipeline {
+@@ -67,6 +530,25 @@ export class LLMChatPipeline {
    private vm: tvmjs.VirtualMachine;
    private prefill: tvmjs.PackedFunc;
    private decoding: tvmjs.PackedFunc;
@@ -3891,7 +3942,7 @@ index 616cff4..34a2209 100644
    private resolvedModelABI!: ResolvedModelABI;
    private kvStateKind: KVStateKind = "kv_cache";
    private image_embed: tvmjs.PackedFunc | undefined;
-@@ -94,7 +574,34 @@ export class LLMChatPipeline {
+@@ -94,7 +576,39 @@ export class LLMChatPipeline {
    private prefillLogitPositionHost = new Int32Array(1);
    private maxHistorySize = 1;
    private logitsOnCPU?: tvmjs.Tensor = undefined;
@@ -3902,6 +3953,11 @@ index 616cff4..34a2209 100644
 +  private drowseCurveActiveStaging?: Float32Array;
 +  private drowseProgram?: DrowseRankOneBuffers;
 +  private drowseStructuredProgram?: DrowseStructuredBuffers;
++  private drowsePositionSpans?: DrowsePositionSpan[];
++  private drowsePositionActive = true;
++  private drowsePositionEnabled?: Uint32Array;
++  private drowsePositionAffine?: Uint32Array;
++  private drowsePositionCurve?: Uint32Array;
 +  private drowseStructuredMode?: "structured" | "curved";
 +  private drowseAffineAlongHost?: Float32Array;
 +  private drowseCurveParametersHost?: Float32Array;
@@ -3926,7 +3982,7 @@ index 616cff4..34a2209 100644
  
    // meta data
    private bosTokenId = 1;
-@@ -109,8 +616,12 @@ export class LLMChatPipeline {
+@@ -109,8 +623,12 @@ export class LLMChatPipeline {
    // states
    private outputMessage = "";
    private outputIds: Array<number> = [];
@@ -3939,7 +3995,7 @@ index 616cff4..34a2209 100644
    // frequency of appeared token ids till now (refresh after PrefillStep); token_id mapped to freq
    private appearedTokensFreq = new Map<number, number>();
    private imageDataCache = new Map<string, ImageData>();
-@@ -130,6 +641,10 @@ export class LLMChatPipeline {
+@@ -130,6 +648,10 @@ export class LLMChatPipeline {
    private curRoundPrefillTotalTokens = 0;
    private curRoundDecodingTotalTime = 0;
    private curRoundPrefillTotalTime = 0;
@@ -3950,7 +4006,7 @@ index 616cff4..34a2209 100644
  
    // additional stats, reset at every prefillStep()
    public curRoundLatencyBreakdown: LatencyBreakdown = {
-@@ -181,12 +696,14 @@ export class LLMChatPipeline {
+@@ -181,12 +703,14 @@ export class LLMChatPipeline {
      tokenizer: Tokenizer,
      config: ChatConfig,
      logitProcessor?: LogitProcessor,
@@ -3965,7 +4021,7 @@ index 616cff4..34a2209 100644
      this.fullVocabSize = this.config.vocab_size;
      this.bitmaskSize = Math.ceil(this.fullVocabSize / 32);
  
-@@ -233,6 +750,31 @@ export class LLMChatPipeline {
+@@ -233,6 +757,31 @@ export class LLMChatPipeline {
        "batch_prefill",
        "decode",
        "batch_decode",
@@ -3997,7 +4053,7 @@ index 616cff4..34a2209 100644
        "create_tir_paged_kv_cache",
        "create_rnn_state",
        "sample_with_top_p",
-@@ -244,6 +786,7 @@ export class LLMChatPipeline {
+@@ -244,6 +793,7 @@ export class LLMChatPipeline {
        "apply_logit_bias_inplace",
        "softmax_with_temperature",
      ]);
@@ -4005,7 +4061,7 @@ index 616cff4..34a2209 100644
  
      const fgetMetadata = this.vm.getFunction("_metadata");
      const ret_value = fgetMetadata();
-@@ -253,9 +796,15 @@ export class LLMChatPipeline {
+@@ -253,9 +803,15 @@ export class LLMChatPipeline {
  
      const vmFunctionAvailability =
        LLMChatPipeline.getVMFunctionAvailability(vmFunctionRegistry);
@@ -4021,7 +4077,7 @@ index 616cff4..34a2209 100644
      );
      const stateKinds: string[] = [];
      if (this.resolvedModelABI.needsKVCache) {
-@@ -287,6 +836,132 @@ export class LLMChatPipeline {
+@@ -287,6 +843,132 @@ export class LLMChatPipeline {
          vmFunctionRegistry,
        ),
      );
@@ -4154,7 +4210,7 @@ index 616cff4..34a2209 100644
      if (this.resolvedModelABI.prefillABI === "batch") {
        log.info("Using batch_prefill kernel.");
      }
-@@ -489,6 +1164,32 @@ export class LLMChatPipeline {
+@@ -489,6 +1171,32 @@ export class LLMChatPipeline {
      this.params.dispose();
      this.decoding.dispose();
      this.prefill.dispose();
@@ -4187,31 +4243,65 @@ index 616cff4..34a2209 100644
      this.embed.dispose();
      this.image_embed?.dispose();
      this.prefillLogitPositions?.dispose();
-@@ -507,6 +1208,1761 @@ export class LLMChatPipeline {
+@@ -507,84 +1215,1888 @@ export class LLMChatPipeline {
      this.grammarCompiler?.dispose();
    }
  
+-  /**
+-   * Get the current message.
+-   */
+-  getMessage() {
+-    return this.outputMessage;
 +  supportsDrowseRankOneHooks(): boolean {
 +    return (
 +      this.drowsePrefill !== undefined && this.drowseDecoding !== undefined
 +    );
-+  }
-+
+   }
+ 
+-  /**
+-   * Reset the runtime statistics
+-   */
+-  resetRuntimeStats() {
+-    this.prefillTotalTime = 0;
+-    this.prefillTotalTokens = 0;
+-    this.decodingTotalTime = 0;
+-    this.decodingTotalTokens = 0;
 +  supportsDrowseStructuredHooks(): boolean {
 +    return (
 +      this.drowseHookProfile !== undefined &&
 +      this.drowseStructuredPrefill !== undefined &&
 +      this.drowseStructuredDecoding !== undefined
 +    );
-+  }
-+
+   }
+ 
+-  /**
+-   * Reset the chat history
+-   */
+-  resetChat(keepStats = false) {
+-    this.tvm.beginScope();
+-    this.conversation.reset();
+-    if (!keepStats) {
+-      this.resetRuntimeStats();
+-    }
+-    this.resetKVCache();
+-    this.filledKVCacheLength = 0;
+-    this.logitProcessor?.resetState();
+-    this.tvm.endScope();
 +  supportsDrowseCurvedHooks(): boolean {
 +    return (
 +      this.drowseCurvedPrefill !== undefined &&
 +      this.drowseCurvedDecoding !== undefined
 +    );
-+  }
-+
+   }
+ 
+-  /**
+-   * Reset KV Cache
+-   */
+-  resetKVCache() {
+-    const states = this.getActiveKVStates();
+-    for (const state of states) {
+-      this.fclearKVCaches(state);
+-      this.fKVCacheAddSequence!(state, new tvmjs.Scalar(0, "int64"));
 +  supportsDrowseResidualCapture(): boolean {
 +    return (
 +      this.drowseCapturePrefill !== undefined &&
@@ -4228,6 +4318,7 @@ index 616cff4..34a2209 100644
 +
 +  getDrowseRuntimeCapabilities(): DrowseRuntimeCapabilities {
 +    return {
++      positionSpans: true,
 +      topK: true,
 +      forcedReplay: true,
 +      replayScoring: true,
@@ -4243,7 +4334,13 @@ index 616cff4..34a2209 100644
 +      throw new Error(
 +        "The compiled model does not expose a Drowse hook profile",
 +      );
-+    }
+     }
+-    if (this.slidingWindowSize != -1 && this.kvCache !== undefined) {
+-      this.fKVCacheEnableSlidingWindowForSeq(
+-        this.kvCache,
+-        new tvmjs.Scalar(0, "int64"),
+-        new tvmjs.Scalar(this.slidingWindowSize, "int32"),
+-        new tvmjs.Scalar(this.attentionSinkSize, "int32"),
 +    this.tvm.beginScope();
 +    try {
 +      const profile = this.drowseHookProfile();
@@ -4254,19 +4351,29 @@ index 616cff4..34a2209 100644
 +        new Int32Array(host.toArray()),
 +        this.requireModelDimension("num_hidden_layers"),
 +        this.requireModelDimension("hidden_size"),
-+      );
+       );
 +    } finally {
 +      this.tvm.endScope();
-+    }
-+  }
-+
+     }
+   }
+ 
+-  /**
+-   * @returns Whether stop is triggered.
+-   */
+-  stopped(): boolean {
+-    return this.stopTriggered;
 +  tokenizeDrowseText(text: string): number[] {
 +    if (typeof text !== "string") {
 +      throw new TypeError("Drowse tokenizer input must be a string");
 +    }
 +    return Array.from(this.tokenizer.encode(text));
-+  }
-+
+   }
+ 
+-  /**
+-   * @returns Finish reason; undefined if generation not started/stopped yet.
+-   */
+-  getFinishReason(): ChatCompletionFinishReason | undefined {
+-    return this.finishReason;
 +  decodeDrowseTokens(tokenIds: readonly number[]): string {
 +    if (
 +      !Array.isArray(tokenIds) ||
@@ -4280,8 +4387,14 @@ index 616cff4..34a2209 100644
 +      throw new TypeError("Drowse tokenizer IDs must be inside the vocabulary");
 +    }
 +    return this.tokenizer.decode(Int32Array.from(tokenIds));
-+  }
-+
+   }
+ 
+-  /**
+-   * @returns tokenLogprobArray for this current round of autoregressive generation.
+-   * Updated upon each sampled token, cleared upon each prefillStep().
+-   */
+-  getTokenLogprobArray(): Array<ChatCompletionTokenLogprob> {
+-    return this.tokenLogprobArray;
 +  prepareDrowseCaptureRows(
 +    rows: DrowseCaptureRow[],
 +    specialTokenIds: number[],
@@ -4349,8 +4462,13 @@ index 616cff4..34a2209 100644
 +      while (position > 0 && special.has(inputIds[position])) position -= 1;
 +      return { inputIds, position };
 +    });
-+  }
-+
+   }
+ 
+-  /**
+-   * @returns the number of tokens decoded for a single request or a single choice in the request.
+-   */
+-  getCurRoundDecodingTotalTokens(): number {
+-    return this.curRoundDecodingTotalTokens;
 +  async captureDrowseResiduals(
 +    inputIds: number[],
 +    positions: number[],
@@ -4482,12 +4600,15 @@ index 616cff4..34a2209 100644
 +      for (
 +        let chunkStart = 0;
 +        chunkStart < inputIds.length;
-+        chunkStart += this.prefillChunkSize
 +      ) {
++        const span = this.drowsePositionSpans?.find((range) => range[1] > chunkStart);
++        const active = span !== undefined && chunkStart >= span[0];
++        const boundary = span === undefined ? Infinity : active ? span[1] : span[0];
 +        const chunk = inputIds.slice(
 +          chunkStart,
-+          chunkStart + this.prefillChunkSize,
++          Math.min(chunkStart + this.prefillChunkSize, boundary),
 +        );
++        if (this.drowsePositionSpans !== undefined) await this.applyDrowsePositionControls(active);
 +        const selected: Array<{ outputIndex: number; localPosition: number }> =
 +          [];
 +        for (
@@ -4503,6 +4624,7 @@ index 616cff4..34a2209 100644
 +            });
 +          }
 +        }
++        chunkStart += chunk.length;
 +        if (selected.length === 0) {
 +          this.tvm.beginScope();
 +          try {
@@ -4603,6 +4725,10 @@ index 616cff4..34a2209 100644
 +    }
 +    this.disposeDrowseProgram();
 +    this.drowseProgram = next;
++    this.drowsePositionSpans = normalizeDrowsePositionSelection(program);
++    if (this.drowsePositionSpans !== undefined) {
++      this.drowsePositionEnabled = new Uint32Array(program.enabled);
++    }
 +  }
 +
 +  async setDrowseStructuredProgram(
@@ -4839,9 +4965,29 @@ index 616cff4..34a2209 100644
 +    this.drowseAffineAlongHost = new Float32Array(program.affineAlong);
 +    this.drowseCurveParametersHost = nextCurveParametersHost;
 +    this.drowseProbeKindHost = new Uint32Array(program.probeKind);
++    this.drowsePositionSpans = normalizeDrowsePositionSelection(program);
++    if (this.drowsePositionSpans !== undefined) {
++      this.drowsePositionAffine = new Uint32Array(program.affineActive);
++      this.drowsePositionCurve = new Uint32Array(program.curveActive);
++    }
 +  }
 +
 +  async updateDrowseStructuredControls(
++    affineActive: Uint32Array,
++    curveActive?: Uint32Array,
++  ): Promise<void> {
++    const active = this.drowsePositionSpans === undefined || this.drowsePositionActive;
++    await this.writeDrowseStructuredControls(
++      active ? affineActive : new Uint32Array(affineActive.length),
++      curveActive === undefined ? undefined : active ? curveActive : new Uint32Array(curveActive.length),
++    );
++    if (this.drowsePositionSpans !== undefined) {
++      this.drowsePositionAffine = new Uint32Array(affineActive);
++      if (curveActive !== undefined) this.drowsePositionCurve = new Uint32Array(curveActive);
++    }
++  }
++
++  private async writeDrowseStructuredControls(
 +    affineActive: Uint32Array,
 +    curveActive?: Uint32Array,
 +  ): Promise<void> {
@@ -5890,6 +6036,11 @@ index 616cff4..34a2209 100644
 +  }
 +
 +  private disposeDrowseProgram(): void {
++    this.drowsePositionSpans = undefined;
++    this.drowsePositionActive = true;
++    this.drowsePositionEnabled = undefined;
++    this.drowsePositionAffine = undefined;
++    this.drowsePositionCurve = undefined;
 +    this.resetDrowseReadbackState();
 +    this.drowseJlensChunks = undefined;
 +    this.drowseSaeReadoutActive = false;
@@ -5946,60 +6097,103 @@ index 616cff4..34a2209 100644
 +    this.drowseMeasurementBundleHost = undefined;
 +  }
 +
-   /**
-    * Get the current message.
-    */
-@@ -514,6 +2970,11 @@ export class LLMChatPipeline {
-     return this.outputMessage;
-   }
- 
++  /**
++   * Get the current message.
++   */
++  getMessage() {
++    return this.outputMessage;
++  }
++
 +  /** Return the monotonically decoded generated tokens before stop-string trimming. */
 +  getDrowseRawMessage(): string {
 +    return this.drowseRawMessage;
 +  }
 +
-   /**
-    * Reset the runtime statistics
-    */
-@@ -535,6 +2996,7 @@ export class LLMChatPipeline {
-     }
-     this.resetKVCache();
-     this.filledKVCacheLength = 0;
++  /**
++   * Reset the runtime statistics
++   */
++  resetRuntimeStats() {
++    this.prefillTotalTime = 0;
++    this.prefillTotalTokens = 0;
++    this.decodingTotalTime = 0;
++    this.decodingTotalTokens = 0;
++  }
++
++  /**
++   * Reset the chat history
++   */
++  resetChat(keepStats = false) {
++    this.tvm.beginScope();
++    this.conversation.reset();
++    if (!keepStats) {
++      this.resetRuntimeStats();
++    }
++    this.resetKVCache();
++    this.filledKVCacheLength = 0;
 +    this.outputPrefix = "";
-     this.logitProcessor?.resetState();
-     this.tvm.endScope();
-   }
-@@ -543,6 +3005,7 @@ export class LLMChatPipeline {
-    * Reset KV Cache
-    */
-   resetKVCache() {
++    this.logitProcessor?.resetState();
++    this.tvm.endScope();
++  }
++
++  /**
++   * Reset KV Cache
++   */
++  resetKVCache() {
 +    this.drowseCachedInputIds = [];
-     const states = this.getActiveKVStates();
-     for (const state of states) {
-       this.fclearKVCaches(state);
-@@ -572,6 +3035,10 @@ export class LLMChatPipeline {
-     return this.finishReason;
-   }
- 
++    const states = this.getActiveKVStates();
++    for (const state of states) {
++      this.fclearKVCaches(state);
++      this.fKVCacheAddSequence!(state, new tvmjs.Scalar(0, "int64"));
++    }
++    if (this.slidingWindowSize != -1 && this.kvCache !== undefined) {
++      this.fKVCacheEnableSlidingWindowForSeq(
++        this.kvCache,
++        new tvmjs.Scalar(0, "int64"),
++        new tvmjs.Scalar(this.slidingWindowSize, "int32"),
++        new tvmjs.Scalar(this.attentionSinkSize, "int32"),
++      );
++    }
++  }
++
++  /**
++   * @returns Whether stop is triggered.
++   */
++  stopped(): boolean {
++    return this.stopTriggered;
++  }
++
++  /**
++   * @returns Finish reason; undefined if generation not started/stopped yet.
++   */
++  getFinishReason(): ChatCompletionFinishReason | undefined {
++    return this.finishReason;
++  }
++
 +  getDrowseFinishReason(): DrowseGenerationFinishReason | undefined {
 +    return this.drowseFinishReason;
 +  }
 +
-   /**
-    * @returns tokenLogprobArray for this current round of autoregressive generation.
-    * Updated upon each sampled token, cleared upon each prefillStep().
-@@ -587,6 +3054,10 @@ export class LLMChatPipeline {
-     return this.curRoundDecodingTotalTokens;
-   }
- 
-+  getCurRoundDrowseCompletionTokens(): number {
-+    return this.curRoundDrowseCompletionTokens;
++  /**
++   * @returns tokenLogprobArray for this current round of autoregressive generation.
++   * Updated upon each sampled token, cleared upon each prefillStep().
++   */
++  getTokenLogprobArray(): Array<ChatCompletionTokenLogprob> {
++    return this.tokenLogprobArray;
 +  }
 +
++  /**
++   * @returns the number of tokens decoded for a single request or a single choice in the request.
++   */
++  getCurRoundDecodingTotalTokens(): number {
++    return this.curRoundDecodingTotalTokens;
++  }
++
++  getCurRoundDrowseCompletionTokens(): number {
++    return this.curRoundDrowseCompletionTokens;
+   }
+ 
    /**
-    * @returns the number of tokens decoded for a single request or a single choice in the request.
-    */
-@@ -721,13 +3192,17 @@ export class LLMChatPipeline {
+@@ -721,13 +3233,17 @@ export class LLMChatPipeline {
     */
    async prefillStep(
      inp: string,
@@ -6020,7 +6214,7 @@ index 616cff4..34a2209 100644
        );
      }
      if (this.resetStatsPerPrefill) {
-@@ -738,8 +3213,10 @@ export class LLMChatPipeline {
+@@ -738,8 +3254,10 @@ export class LLMChatPipeline {
  
      // cleanup the per convo states
      this.outputIds = [];
@@ -6031,7 +6225,7 @@ index 616cff4..34a2209 100644
      this.tokenLogprobArray = [];
      this.curRoundDecodingTotalTokens = 0;
      this.curRoundPrefillTotalTokens = 0;
-@@ -747,6 +3224,10 @@ export class LLMChatPipeline {
+@@ -747,6 +3265,10 @@ export class LLMChatPipeline {
      this.curRoundDecodingTotalTime = 0;
      this.curRoundGrammarInitTotalTime = 0;
      this.curRoundGrammarPerTokenTotalTime = 0;
@@ -6042,7 +6236,7 @@ index 616cff4..34a2209 100644
  
      this.curRoundLatencyBreakdown = {
        logitProcessorTime: [],
-@@ -758,6 +3239,8 @@ export class LLMChatPipeline {
+@@ -758,6 +3280,8 @@ export class LLMChatPipeline {
      };
  
      this.stopTriggered = false;
@@ -6051,7 +6245,7 @@ index 616cff4..34a2209 100644
      const conversation = this.conversation;
  
      // -1. Instantiate grammar matcher according to generation config. This step is overlapped
-@@ -835,17 +3318,28 @@ export class LLMChatPipeline {
+@@ -835,17 +3359,28 @@ export class LLMChatPipeline {
        conversation.prompt = inp;
      } else {
        conversation.appendMessage(msgRole, inp, inp_role_str);
@@ -6084,7 +6278,7 @@ index 616cff4..34a2209 100644
        }
      }
      const [inputData, promptLen, getEmbedSize] = await this.getInputData();
-@@ -944,8 +3438,9 @@ export class LLMChatPipeline {
+@@ -944,8 +3479,9 @@ export class LLMChatPipeline {
      }
      this.stopTriggered = true;
      this.finishReason = "abort";
@@ -6095,7 +6289,7 @@ index 616cff4..34a2209 100644
      }
    }
  
-@@ -999,9 +3494,11 @@ export class LLMChatPipeline {
+@@ -999,9 +3535,11 @@ export class LLMChatPipeline {
      if (stopTokens.includes(nextToken)) {
        this.stopTriggered = true;
        this.finishReason = "stop";
@@ -6107,7 +6301,7 @@ index 616cff4..34a2209 100644
        // Update token appearance frequency
        const curFreq = this.appearedTokensFreq.get(nextToken);
        if (curFreq !== undefined) {
-@@ -1013,6 +3510,7 @@ export class LLMChatPipeline {
+@@ -1013,6 +3551,7 @@ export class LLMChatPipeline {
  
      // Stop condition 2: stop string; update `this.outputMessage` subsequently
      let outputMessage = this.tokenizer.decode(new Int32Array(this.outputIds));
@@ -6115,7 +6309,7 @@ index 616cff4..34a2209 100644
      let stopPos = -1;
      for (const stopStr of stopStrs) {
        // Stop at the first stopStr we find
-@@ -1021,32 +3519,36 @@ export class LLMChatPipeline {
+@@ -1021,32 +3560,36 @@ export class LLMChatPipeline {
          outputMessage = outputMessage.substring(0, stopPos);
          this.stopTriggered = true;
          this.finishReason = "stop";
@@ -6154,10 +6348,60 @@ index 616cff4..34a2209 100644
        }
      }
    }
-@@ -1227,7 +3729,15 @@ export class LLMChatPipeline {
+@@ -1227,7 +3770,65 @@ export class LLMChatPipeline {
    private async embedAndForward(
      inputData: Array<Array<number> | ImageURL>,
      inputDataLen: number,
++    useDrowseProgram = true,
++  ): Promise<tvmjs.Tensor> {
++    const spans = useDrowseProgram ? this.drowsePositionSpans : undefined;
++    if (spans === undefined) {
++      return this.embedAndForwardChunk(inputData, inputDataLen, useDrowseProgram);
++    }
++    if (inputData.some((part) => !Array.isArray(part))) {
++      throw new TypeError("Position-targeted steering requires text-only input");
++    }
++    const tokens = inputData.length === 1 ? inputData[0] as number[] : (inputData as number[][]).flat();
++    if (tokens.length !== inputDataLen || inputDataLen < 1) {
++      throw new TypeError("Position-targeted steering requires a non-empty token sequence");
++    }
++    let offset = 0;
++    while (offset < tokens.length) {
++      const position = this.filledKVCacheLength;
++      const span = spans.find((range) => range[1] > position);
++      const active = span !== undefined && position >= span[0];
++      const boundary = span === undefined ? Infinity : active ? span[1] : span[0];
++      const length = Math.min(tokens.length - offset, boundary - position, this.prefillChunkSize);
++      await this.applyDrowsePositionControls(active);
++      const logits = await this.embedAndForwardChunk(
++        [tokens.slice(offset, offset + length)], length, useDrowseProgram,
++      );
++      offset += length;
++      if (offset === tokens.length) return logits;
++      logits.dispose();
++    }
++    throw new Error("Position-targeted steering produced no forward chunks");
++  }
++
++  private async applyDrowsePositionControls(active: boolean): Promise<void> {
++    if (active === this.drowsePositionActive) return;
++    if (this.drowseProgram !== undefined) {
++      const enabled = this.drowsePositionEnabled!;
++      this.drowseProgram.enabled.copyFrom(active ? new Int32Array(enabled) : new Int32Array(enabled.length));
++    } else if (this.drowseStructuredProgram !== undefined) {
++      const affine = this.drowsePositionAffine!;
++      const curve = this.drowsePositionCurve!;
++      await this.writeDrowseStructuredControls(
++        active ? affine : new Uint32Array(affine.length),
++        active ? curve : new Uint32Array(curve.length),
++      );
++    }
++    this.drowsePositionActive = active;
++  }
++
++  private async embedAndForwardChunk(
++    inputData: Array<Array<number> | ImageURL>,
++    inputDataLen: number,
 +    useDrowseProgram = true,
    ): Promise<tvmjs.Tensor> {
 +    if (
@@ -6170,7 +6414,7 @@ index 616cff4..34a2209 100644
      if (inputDataLen > this.prefillChunkSize) {
        throw new Error(
          "InternalError: expect inputDataLen <= this.prefillChunkSize.",
-@@ -1238,51 +3748,129 @@ export class LLMChatPipeline {
+@@ -1238,51 +3839,129 @@ export class LLMChatPipeline {
  
      // 1. Embed all inputData
      this.tvm.beginScope();
@@ -6341,7 +6585,7 @@ index 616cff4..34a2209 100644
      this.tvm.attachToCurrentScope(logits);
      return logits;
    }
-@@ -1292,7 +3880,14 @@ export class LLMChatPipeline {
+@@ -1292,7 +3971,14 @@ export class LLMChatPipeline {
      names: string[],
    ): VMFunctionRegistry {
      const registry: VMFunctionRegistry = {};
@@ -6357,7 +6601,7 @@ index 616cff4..34a2209 100644
        try {
          const func = vm.getFunction(name) as unknown;
          if (typeof func === "function") {
-@@ -1305,6 +3900,17 @@ export class LLMChatPipeline {
+@@ -1305,6 +3991,17 @@ export class LLMChatPipeline {
      return registry;
    }
  
@@ -6375,7 +6619,7 @@ index 616cff4..34a2209 100644
    private static getRequiredVMFunctionByName(
      name: string,
      registry: VMFunctionRegistry,
-@@ -1365,6 +3971,7 @@ export class LLMChatPipeline {
+@@ -1365,6 +4062,7 @@ export class LLMChatPipeline {
    private static resolveModelABI(
      kvStateKind: KVStateKind,
      availability: VMFunctionAvailability,
@@ -6383,7 +6627,7 @@ index 616cff4..34a2209 100644
    ): ResolvedModelABI {
      const hasSingleKernelPair = availability.prefill && availability.decode;
      const hasBatchKernelPair =
-@@ -1450,6 +4057,17 @@ export class LLMChatPipeline {
+@@ -1450,6 +4148,17 @@ export class LLMChatPipeline {
      }
  
      // kv_cache
@@ -6401,7 +6645,7 @@ index 616cff4..34a2209 100644
      if (hasSingleKernelPair) {
        return {
          kvStateKind,
-@@ -1525,14 +4143,267 @@ export class LLMChatPipeline {
+@@ -1525,14 +4234,267 @@ export class LLMChatPipeline {
      return states;
    }
  
@@ -6670,7 +6914,7 @@ index 616cff4..34a2209 100644
          this.params,
        );
      }
-@@ -1549,27 +4420,42 @@ export class LLMChatPipeline {
+@@ -1549,27 +4511,42 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -6717,7 +6961,7 @@ index 616cff4..34a2209 100644
          this.params,
        );
      }
-@@ -1577,20 +4463,73 @@ export class LLMChatPipeline {
+@@ -1577,20 +4554,73 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -6793,7 +7037,7 @@ index 616cff4..34a2209 100644
    // NOTE: caller must call device.sync()
    private updateLogitsOnCPU(logits: tvmjs.Tensor): tvmjs.Tensor {
      if (this.logitsOnCPU == undefined) {
-@@ -1610,7 +4549,7 @@ export class LLMChatPipeline {
+@@ -1610,7 +4640,7 @@ export class LLMChatPipeline {
      logitsOnGPU: tvmjs.Tensor,
      genConfig?: GenerationConfig,
    ) {
@@ -6802,7 +7046,7 @@ index 616cff4..34a2209 100644
      // Also load other genConfig items like logit_bias. Consume all fields of `genConfig` here.
      function _hasValue(value: any): boolean {
        // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
-@@ -1618,6 +4557,7 @@ export class LLMChatPipeline {
+@@ -1618,6 +4648,7 @@ export class LLMChatPipeline {
      }
      let temperature: number = this.config.temperature;
      let top_p: number = this.config.top_p;
@@ -6810,7 +7054,7 @@ index 616cff4..34a2209 100644
      let repetition_penalty: number = this.config.repetition_penalty;
      let frequency_penalty: number = this.config.frequency_penalty;
      let presence_penalty: number = this.config.presence_penalty;
-@@ -1633,6 +4573,9 @@ export class LLMChatPipeline {
+@@ -1633,6 +4664,9 @@ export class LLMChatPipeline {
        if (_hasValue(genConfig.top_p)) {
          top_p = genConfig.top_p!;
        }
@@ -6820,7 +7064,7 @@ index 616cff4..34a2209 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,11 +4618,14 @@ export class LLMChatPipeline {
+@@ -1675,11 +4709,14 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -6838,7 +7082,7 @@ index 616cff4..34a2209 100644
      }
      if (repetition_penalty <= 0) {
        throw new MinValueError("repetition_penalty", 0);
-@@ -1894,13 +4840,38 @@ export class LLMChatPipeline {
+@@ -1894,13 +4931,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -6881,7 +7125,7 @@ index 616cff4..34a2209 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +4884,131 @@ export class LLMChatPipeline {
+@@ -1913,79 +4975,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
@@ -7063,7 +7307,7 @@ index 616cff4..34a2209 100644
    }
  
    /**
-@@ -2028,20 +5051,37 @@ export class LLMChatPipeline {
+@@ -2028,20 +5142,37 @@ export class LLMChatPipeline {
        if (this.filledKVCacheLength !== 0) {
          throw new TextCompletionExpectsKVEmptyError();
        }
@@ -7112,7 +7356,7 @@ index 616cff4..34a2209 100644
      }
  
      // 1.5. Preload image dimensions to compute per-image embed sizes
-@@ -2082,7 +5122,7 @@ export class LLMChatPipeline {
+@@ -2082,7 +5213,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -7121,7 +7365,7 @@ index 616cff4..34a2209 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2116,6 +5156,23 @@ export class LLMChatPipeline {
+@@ -2116,6 +5247,23 @@ export class LLMChatPipeline {
          }
        }
      }
@@ -7145,7 +7389,7 @@ index 616cff4..34a2209 100644
      // Deal with last curTokens
      if (curTokens.length !== 0) {
        ret.push([...curTokens]);
-@@ -2186,50 +5243,51 @@ export class LLMChatPipeline {
+@@ -2186,50 +5334,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -7213,7 +7457,7 @@ index 616cff4..34a2209 100644
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +5342,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +5433,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }
@@ -8743,10 +8987,10 @@ index 8fa04b2..92ae4af 100644
    type ImageURL = ChatCompletionContentPartImage.ImageURL;
 diff --git a/tests/drowse_pipeline.test.ts b/tests/drowse_pipeline.test.ts
 new file mode 100644
-index 0000000..02b47b8
+index 0000000..4b174d4
 --- /dev/null
 +++ b/tests/drowse_pipeline.test.ts
-@@ -0,0 +1,1131 @@
+@@ -0,0 +1,1132 @@
 +import { jest, test, expect } from "@jest/globals";
 +
 +import {
@@ -8823,6 +9067,7 @@ index 0000000..02b47b8
 +  };
 +
 +  expect(result.getDrowseRuntimeCapabilities()).toEqual({
++    positionSpans: true,
 +    topK: true,
 +    forcedReplay: true,
 +    replayScoring: true,
@@ -9877,6 +10122,143 @@ index 0000000..02b47b8
 +  await result.computeDrowseSaeTopFeatures(tensor());
 +  expect(result.tvm.beginScope).not.toHaveBeenCalled();
 +  expect(result.drowseSaeReadoutAccumulate).not.toHaveBeenCalled();
++});
+diff --git a/tests/drowse_positions.test.ts b/tests/drowse_positions.test.ts
+new file mode 100644
+index 0000000..b2baade
+--- /dev/null
++++ b/tests/drowse_positions.test.ts
+@@ -0,0 +1,131 @@
++import { expect, jest, test } from "@jest/globals";
++import { normalizeDrowsePositionSelection } from "../src/drowse";
++import { LLMChatPipeline } from "../src/llm_chat";
++
++test("position selection is compact, immutable, exclusive, and half-open", () => {
++  const spans = [[20, 1000000], [0, 2], [2, 5]] as [number, number][];
++  expect(normalizeDrowsePositionSelection({ position_spans: spans })).toEqual([[0, 5], [20, 1000000]]);
++  expect(spans).toEqual([[20, 1000000], [0, 2], [2, 5]]);
++  expect(normalizeDrowsePositionSelection({ position_indices: [4, 1, 2] })).toEqual([[1, 3], [4, 5]]);
++  expect(normalizeDrowsePositionSelection({ position_spans: [] })).toEqual([]);
++  expect(normalizeDrowsePositionSelection({ position_spans: null })).toBeUndefined();
++  for (const selection of [
++    { position_spans: [], position_indices: [] },
++    { position_spans: [[0, 3], [2, 4]] },
++    { position_spans: [[0, 3], [0, 3]] },
++    { position_spans: [[2, 2]] },
++    { position_spans: [[-1, 2]] },
++    { position_spans: [[0.5, 2]] },
++    { position_spans: [[0, Infinity]] },
++    { position_spans: [[0, 2, 3]] },
++    { position_spans: "0:2" },
++    { position_spans: new Array(4097).fill([0, 1]) },
++    { position_indices: [1, 1] },
++    { position_indices: [true] },
++    { position_indices: ["1"] },
++    { position_indices: [Number.MAX_SAFE_INTEGER] },
++  ]) expect(() => normalizeDrowsePositionSelection(selection as any)).toThrow();
++});
++
++function pipeline(spans?: [number, number][]): any {
++  const result = Object.create(LLMChatPipeline.prototype) as any;
++  Object.assign(result, {
++    filledKVCacheLength: 0,
++    prefillChunkSize: 4,
++    drowsePositionSpans: spans,
++    drowsePositionActive: true,
++    drowsePositionEnabled: Uint32Array.of(1, 0),
++    drowseProgram: { enabled: { copyFrom: jest.fn() } },
++  });
++  const calls: { start: number; tokens: number[]; active: boolean; dispose: any }[] = [];
++  result.calls = calls;
++  result.embedAndForwardChunk = jest.fn(async (parts: number[][], length: number) => {
++    const dispose = jest.fn();
++    calls.push({ start: result.filledKVCacheLength, tokens: parts.flat(), active: result.drowsePositionActive, dispose });
++    result.filledKVCacheLength += length;
++    return { dispose };
++  });
++  return result;
++}
++
++test("prefill and decode use exact absolute ranges across chunk boundaries", async () => {
++  const result = pipeline([[1, 3], [5, 7], [9, 10]]);
++  await result.embedAndForward([[0, 1, 2, 3]], 4);
++  await result.embedAndForward([[4, 5, 6, 7]], 4);
++  for (const token of [8, 9, 10]) await result.embedAndForward([[token]], 1);
++  expect(result.calls.map(({ start, tokens, active }: any) => [start, tokens, active])).toEqual([
++    [0, [0], false], [1, [1, 2], true], [3, [3], false],
++    [4, [4], false], [5, [5, 6], true], [7, [7], false],
++    [8, [8], false], [9, [9], true], [10, [10], false],
++  ]);
++  expect(result.drowseProgram.enabled.copyFrom.mock.calls.map(([value]: any) => [...value])).toEqual([
++    [0, 0], [1, 0], [0, 0], [1, 0], [0, 0], [1, 0], [0, 0],
++  ]);
++  expect(result.calls[0].dispose).toHaveBeenCalledTimes(1);
++  expect(result.calls[2].dispose).not.toHaveBeenCalled();
++});
++
++test("absent selection leaves batching unchanged; empty and future selections do not steer", async () => {
++  const plain = pipeline();
++  const parts = [[1, 2], [3, 4]];
++  await plain.embedAndForward(parts, 4);
++  expect(plain.embedAndForwardChunk).toHaveBeenCalledWith(parts, 4, true);
++  expect(plain.drowseProgram.enabled.copyFrom).not.toHaveBeenCalled();
++  for (const spans of [[], [[100, 200]]] as [number, number][][]) {
++    const result = pipeline(spans);
++    await result.embedAndForward([[1, 2, 3, 4]], 4);
++    expect(result.calls).toHaveLength(1);
++    expect(result.calls[0].active).toBe(false);
++  }
++});
++
++test("unsteered captures bypass selection and image inputs fail closed", async () => {
++  const result = pipeline([[1, 2]]);
++  await result.embedAndForward([[0, 1, 2]], 3, false);
++  expect(result.drowseProgram.enabled.copyFrom).not.toHaveBeenCalled();
++  expect(result.embedAndForwardChunk).toHaveBeenCalledWith([[0, 1, 2]], 3, false);
++  await expect(result.embedAndForward([{ url: "image" }], 1)).rejects.toThrow(/text-only/);
++  await expect(result.embedAndForward([[1]], 2)).rejects.toThrow(/token sequence/);
++});
++
++test("phase and probe-gate controls are ANDed with spans, never replaced", async () => {
++  const result = pipeline([[1, 3]]);
++  result.drowseProgram = undefined;
++  result.drowseStructuredProgram = {};
++  result.drowsePositionAffine = Uint32Array.of(1, 0);
++  result.drowsePositionCurve = Uint32Array.of(0, 1);
++  result.writeDrowseStructuredControls = jest.fn(async () => {});
++  await result.applyDrowsePositionControls(false);
++  const affine = Uint32Array.of(0, 1);
++  const curve = Uint32Array.of(1, 0);
++  await result.updateDrowseStructuredControls(affine, curve);
++  affine.fill(0);
++  curve.fill(0);
++  await result.applyDrowsePositionControls(true);
++  expect(result.writeDrowseStructuredControls.mock.calls.map(([a, c]: any) => [[...a], [...c]])).toEqual([
++    [[0, 0], [0, 0]], [[0, 0], [0, 0]], [[0, 1], [1, 0]],
++  ]);
++  await result.updateDrowseStructuredControls(Uint32Array.of(0, 0));
++  await result.applyDrowsePositionControls(false);
++  await result.applyDrowsePositionControls(true);
++  expect(result.writeDrowseStructuredControls).toHaveBeenLastCalledWith(Uint32Array.of(0, 0), Uint32Array.of(1, 0));
++});
++
++test("reset and failed forwards do not reuse stale positional activation", async () => {
++  const result = pipeline([[0, 1]]);
++  await result.embedAndForward([[0, 1]], 2);
++  expect(result.drowsePositionActive).toBe(false);
++  result.filledKVCacheLength = 0;
++  await result.embedAndForward([[0]], 1);
++  expect(result.calls.at(-1).active).toBe(true);
++  result.embedAndForwardChunk.mockRejectedValueOnce(new Error("device lost"));
++  await expect(result.embedAndForward([[1]], 1)).rejects.toThrow("device lost");
++  result.drowseProgram = undefined;
++  result.resetDrowseReadbackState = jest.fn();
++  result.disposeDrowseProgram();
++  expect(result.drowsePositionSpans).toBeUndefined();
++  expect(result.drowsePositionEnabled).toBeUndefined();
++  expect(result.drowsePositionAffine).toBeUndefined();
++  expect(result.drowsePositionCurve).toBeUndefined();
++  expect(result.drowsePositionActive).toBe(true);
 +});
 diff --git a/tests/drowse.test.ts b/tests/drowse.test.ts
 new file mode 100644

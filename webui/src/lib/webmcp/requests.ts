@@ -3,14 +3,16 @@ import { ToolError } from "./types";
 
 type StoragePort = Pick<Storage, "getItem" | "setItem">;
 interface Receipt { fingerprint: string; state: "pending" | "complete"; result?: unknown }
-const KEY = "drowse.webmcp.requests.v1";
+export const REQUEST_RECEIPTS_KEY = "drowse.webmcp.requests.v1";
+
+export function requestFingerprint(input: string): string {
+  return Array.from(sha256(new TextEncoder().encode(input)), byte => byte.toString(16).padStart(2, "0")).join("");
+}
 
 export class MutationReceipts {
   constructor(private readonly storage: StoragePort) {}
 
-  fingerprint(input: string): string {
-    return Array.from(sha256(new TextEncoder().encode(input)), byte => byte.toString(16).padStart(2, "0")).join("");
-  }
+  clear(): void { this.write(new Map()); }
 
   get(key: string, fingerprint: string): Receipt | null {
     const receipt = this.read().get(key);
@@ -35,7 +37,7 @@ export class MutationReceipts {
 
   private read(): Map<string, Receipt> {
     try {
-      const raw = this.storage.getItem(KEY);
+      const raw = this.storage.getItem(REQUEST_RECEIPTS_KEY);
       if (!raw) return new Map();
       const rows: unknown = JSON.parse(raw);
       if (!Array.isArray(rows) || rows.length > 128 || rows.some(row => !Array.isArray(row) || typeof row[0] !== "string" || !row[1] || typeof row[1].fingerprint !== "string" || !["pending", "complete"].includes(row[1].state))) throw Error("Invalid receipt data");
@@ -47,7 +49,7 @@ export class MutationReceipts {
 
   private write(receipts: Map<string, Receipt>): void {
     while (receipts.size > 128) receipts.delete(receipts.keys().next().value!);
-    try { this.storage.setItem(KEY, JSON.stringify([...receipts])); }
+    try { this.storage.setItem(REQUEST_RECEIPTS_KEY, JSON.stringify([...receipts])); }
     catch { throw new ToolError("REQUEST_STORAGE_UNAVAILABLE", "Request recovery storage could not be saved. Inspect current state and jobs before retrying."); }
   }
 }

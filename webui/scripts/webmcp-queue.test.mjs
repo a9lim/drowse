@@ -71,17 +71,32 @@ try {
     throw new Error("fixture job did not settle");
   };
   const generationTool = tools.find(row => row.name === "drowse_start_generation");
+  const positionContext = { ...context, runtime: new Proxy(runtime, {
+    get(target, key) { return key === "mode" ? "browser" : Reflect.get(target, key); },
+  }) };
   validateInput(generationTool.inputSchema, { sampling: { seed: Number.MIN_SAFE_INTEGER } });
   validateInput(generationTool.inputSchema, { sampling: { seed: Number.MAX_SAFE_INTEGER } });
+  validateInput(generationTool.inputSchema, { position_spans: [[1, 3], [5, 8]] });
+  assert.throws(() => validateInput(generationTool.inputSchema, { position_spans: [[1, 2, 3]] }),
+    error => error.code === "invalid_input");
+  assert.throws(() => generationTool.execute({ position_spans: [[1, 3]], position_indices: [1] }, positionContext),
+    error => error.code === "INVALID_STEERING_POSITIONS");
+  assert.throws(() => generationTool.execute({ position_spans: [[1, 3], [2, 4]] }, positionContext),
+    error => error.code === "INVALID_STEERING_POSITIONS");
+  assert.throws(() => generationTool.execute({ position_spans: [[1, 3]] }, {
+    ...context, runtime: { ...runtime, mode: "http" },
+  }), error => error.code === "STEERING_POSITIONS_UNAVAILABLE");
   assert.throws(() => generationTool.execute({ sampling: { seed: -1 } }, context), error => error.code === "INVALID_SEED");
   const forkTool = tools.find(row => row.name === "drowse_fork_token");
   assert.throws(() => validateInput(forkTool.inputSchema, { node_id: "source", raw_index: 0, alternative_token_id: 1,
     seed: Number.MAX_SAFE_INTEGER }), error => error.code === "invalid_input", "fork overrides retain their actual 31-bit protocol limit");
   const generation = await complete(generationTool.execute({ text: "fixture prompt", n: 2,
-    sampling: { seed: Number.MAX_SAFE_INTEGER } }, context));
+    position_spans: [[3, 5], [1, 3]],
+    sampling: { seed: Number.MAX_SAFE_INTEGER } }, positionContext));
   assert.equal(generation.state, "completed", JSON.stringify(generation));
   assert.equal(generation.result.results.length, 2);
   assert.equal(generation.result.requested_settings.steering, "");
+  assert.deepEqual(generation.result.requested_settings.position_spans, [[1, 5]]);
   assert.equal(generation.result.requested_settings.sampling.seed, Number.MAX_SAFE_INTEGER);
   assert.ok(generation.result.effective.every(row => row.recipe.seed >= 0 && row.recipe.seed <= 2147483647), "fans derive a 31-bit seed per sibling without changing the requested seed receipt");
   assert.ok(generation.result.effective.every(row => row.source === "finalized_node" && row.applied_steering === null));

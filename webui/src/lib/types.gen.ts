@@ -574,6 +574,7 @@ export interface RecipeJSON {
   probes: string[];
   probe_hashes: Record<string, string>;
   system_prompt?: string | null;
+  position_spans?: [number, number][];
 }
 
 /**

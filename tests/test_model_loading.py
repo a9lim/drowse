@@ -29,19 +29,20 @@ def test_mps_loading_is_synchronous_and_restores_environment(
     else:
         monkeypatch.setenv("HF_DEACTIVATE_ASYNC_LOAD", previous)
     plan = _plan(_FakeConfig("gpt_neox"), device="mps")
+    loaded = _FakeModel("sdpa")
 
     def load(_model_id: str, **_kwargs: Any):
         assert os.environ["HF_DEACTIVATE_ASYNC_LOAD"] == "1"
         if fails:
             raise ValueError("bad weights")
-        return "loaded"
+        return loaded, {"missing_keys": []}
 
     monkeypatch.setattr(model_mod.AutoModelForCausalLM, "from_pretrained", load)
     if fails:
         with pytest.raises(ValueError, match="bad weights"):
             model_mod._load_with_fallbacks(plan)
     else:
-        assert model_mod._load_with_fallbacks(plan) == "loaded"
+        assert model_mod._load_with_fallbacks(plan) is loaded
     assert os.environ.get("HF_DEACTIVATE_ASYNC_LOAD") == previous
 
 
@@ -118,6 +119,9 @@ class _FakeModel(SimpleNamespace):
     def parameters(self):
         return iter([torch.zeros(1)])
 
+    def named_parameters(self):
+        return iter([])
+
 
 def _captured_load_kwargs(device: str, model_type: str = "deepseek_v2"):
     """Run load_model with a mocked transformers stack; return the kwargs
@@ -125,9 +129,9 @@ def _captured_load_kwargs(device: str, model_type: str = "deepseek_v2"):
     cfg = _FakeConfig(model_type)
     captured: dict[str, Any] = {}
 
-    def _fake_from_pretrained(model_id: str, **kwargs: Any) -> _FakeModel:
+    def _fake_from_pretrained(model_id: str, **kwargs: Any):
         captured.update(kwargs)
-        return _FakeModel(kwargs.get("attn_implementation", "sdpa"))
+        return _FakeModel(kwargs.get("attn_implementation", "sdpa")), {"missing_keys": []}
 
     with (
         patch.object(model_mod, "AutoTokenizer") as mock_tok,
@@ -171,9 +175,9 @@ def test_mla_in_text_config_also_triggers():
     cfg = _FakeConfig(model_type="some_vlm", text_model_type="deepseek_v2")
     captured: dict[str, Any] = {}
 
-    def _fake_from_pretrained(model_id: str, **kwargs: Any) -> _FakeModel:
+    def _fake_from_pretrained(model_id: str, **kwargs: Any):
         captured.update(kwargs)
-        return _FakeModel(kwargs.get("attn_implementation", "sdpa"))
+        return _FakeModel(kwargs.get("attn_implementation", "sdpa")), {"missing_keys": []}
 
     with (
         patch.object(model_mod, "AutoTokenizer") as mock_tok,
@@ -218,7 +222,7 @@ def _captured_tokenizer_kwargs(model_id: str, model_type: str = "qwen3"):
     ):
         mock_tok.from_pretrained.side_effect = _fake_tok_from_pretrained
         mock_cfg.from_pretrained.return_value = cfg
-        mock_model.from_pretrained.return_value = _FakeModel("sdpa")
+        mock_model.from_pretrained.return_value = _FakeModel("sdpa"), {"missing_keys": []}
         model_mod.load_model(model_id, device="cpu")
 
     return captured
@@ -317,7 +321,7 @@ def _run_load_with_compile(
     ):
         mock_tok.from_pretrained.return_value = SimpleNamespace()
         mock_cfg.from_pretrained.return_value = cfg
-        mock_model.from_pretrained.return_value = base_model
+        mock_model.from_pretrained.return_value = base_model, {"missing_keys": []}
         ret_model, _tok = model_mod.load_model(
             "fake/repo", device=device, compile=compile,
             compile_mode=compile_mode,
@@ -355,7 +359,7 @@ def test_compile_off_by_default():
     ):
         mock_tok.from_pretrained.return_value = SimpleNamespace()
         mock_cfg.from_pretrained.return_value = cfg
-        mock_model.from_pretrained.return_value = base_model
+        mock_model.from_pretrained.return_value = base_model, {"missing_keys": []}
         model_mod.load_model("fake/repo", device="cuda")
 
     assert not mock_compile.called, (
@@ -417,7 +421,7 @@ def test_compile_probe_failure_falls_back_to_eager():
         _w.simplefilter("always")
         mock_tok.from_pretrained.return_value = SimpleNamespace()
         mock_cfg.from_pretrained.return_value = cfg
-        mock_model.from_pretrained.return_value = base_model
+        mock_model.from_pretrained.return_value = base_model, {"missing_keys": []}
         ret_model, _tok = model_mod.load_model(
             "fake/repo", device="cuda", compile=True,
         )
@@ -685,9 +689,9 @@ def _routing_calls(
     ``(text_extractor_called, from_pretrained_called)``."""
     fp_called = {"v": False}
 
-    def _fake_from_pretrained(model_id: str, **kwargs: Any) -> _FakeModel:
+    def _fake_from_pretrained(model_id: str, **kwargs: Any):
         fp_called["v"] = True
-        return _FakeModel(kwargs.get("attn_implementation", "sdpa"))
+        return _FakeModel(kwargs.get("attn_implementation", "sdpa")), {"missing_keys": []}
 
     def _fake_extractor(*args: Any, **kwargs: Any) -> _FakeModel:
         if extractor_raises:
@@ -925,7 +929,7 @@ def test_load_with_fallbacks_narrows_attn_then_dtype_in_place():
         calls.append(dict(kwargs))
         if len(calls) == 1:
             raise ValueError("model does not support an attention implementation")
-        return _FakeModel(kwargs["attn_implementation"])
+        return _FakeModel(kwargs["attn_implementation"]), {"missing_keys": []}
 
     with patch.object(model_mod, "AutoModelForCausalLM") as mock_model:
         mock_model.from_pretrained.side_effect = _first_attn_then_ok

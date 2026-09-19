@@ -1228,6 +1228,24 @@ class TestPrefill:
 
 
 class TestCommit:
+    @pytest.mark.parametrize("message_type", ["generate", "submit"])
+    @pytest.mark.parametrize("field,value", [
+        ("position_spans", [[1, 4]]),
+        ("position_indices", [1, 2, 3]),
+    ])
+    def test_browser_position_targeting_is_rejected_before_native_generation(
+        self, session_and_client: Any, message_type: str, field: str, value: list[int] | list[list[int]],
+    ):
+        session, client = session_and_client
+        before = session.tree.to_dict()
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
+            ws.send_json({"type": message_type, field: value})
+            msg = ws.receive_json()
+        assert msg["type"] == "error"
+        assert msg["status"] == 400
+        assert field in msg["message"]
+        assert session.tree.to_dict() == before
+
     def test_generate_rejects_the_retired_commit_vocabulary(
         self, session_and_client: Any,
     ):

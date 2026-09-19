@@ -69,7 +69,7 @@
     ReplayReadout,
     type GeometryTokenReadout,
   } from "./token/readout.svelte";
-  import { availableDrilldownTab, drilldownUi, type DrilldownTab } from "./token/drilldown.svelte";
+  import { availableDrilldownTab, drilldownUi, readoutBadge, type DrilldownTab } from "./token/drilldown.svelte";
   import TokenRibbon from "./token/TokenRibbon.svelte";
   import GeometryTab from "./token/GeometryTab.svelte";
   import LogitsTab from "./token/LogitsTab.svelte";
@@ -471,37 +471,37 @@
 
   // ---- tabs ----------------------------------------------------------
 
-  const tabItems = $derived<Array<{
+  const tabItems = $derived.by<Array<{
     value: DrilldownTab;
     label: string;
-    meta: string;
+    meta?: string;
     color?: string;
     title: string;
-  }>>([
+  }>>(() => [
     {
       value: "geometry",
       label: "geometry",
-      meta: String(Object.keys(token?.measurements?.instruments.geometry?.readings ?? {}).length),
+      meta: readoutBadge(geometryReadout, capturedGeometryData, geometrySteered, data => Object.keys(data.readings).length),
       color: "var(--fg-dim)",
       title: "activation geometry",
     },
     {
       value: "logits",
       label: "logits",
-      meta: String(token?.topAlts?.length ?? 0),
+      meta: token?.topAlts ? String(token.topAlts.length) : undefined,
       title: "sampling alternatives",
     },
     {
       value: "sae",
       label: "sae",
-      meta: String(token?.measurements?.instruments.sae?.readout?.features.length ?? 0),
+      meta: readoutBadge(saeReadout, capturedSaeData, saeSteered, data => data.features.length),
       color: "var(--pillar-sae)",
       title: "sparse features",
     },
     {
       value: "lens",
       label: "j-lens",
-      meta: String(token?.measurements?.instruments.lens?.readout?.layers.length ?? 0),
+      meta: readoutBadge(lensReadout, capturedLensData, lensSteered, data => data.layers.length),
       color: "var(--pillar-lens)",
       title: "workspace readout",
     },
@@ -580,6 +580,25 @@
   let lensSteered = $state(true);
   let saeSteered = $state(true);
   let geometrySteered = $state(true);
+
+  $effect(() => {
+    void token;
+    void loomNodeId;
+    void lensSteered;
+    lensReadout.clear();
+  });
+  $effect(() => {
+    void token;
+    void loomNodeId;
+    void saeSteered;
+    saeReadout.clear();
+  });
+  $effect(() => {
+    void token;
+    void loomNodeId;
+    void geometrySteered;
+    geometryReadout.clear();
+  });
 
   /** ≥1 attached Monitor probe (anything in the rack that isn't a lens
    *  or SAE readout probe) — the geometry replay 400s on an empty roster. */

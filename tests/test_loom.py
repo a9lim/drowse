@@ -65,6 +65,12 @@ def test_fresh_tree_has_synthetic_root():
     assert t.children_of[t.root_id] == []
 
 
+def test_browser_position_receipt_is_not_silently_replayed_without_targeting():
+    receipt = {**Recipe(steering="0.3 honest").to_dict(), "position_spans": [[1, 4]]}
+    with pytest.raises(LoomTreeError, match="position_spans"):
+        Recipe.from_dict(receipt)
+
+
 def test_add_user_turn_anchors_under_active():
     t = LoomTree()
     uid = t.add_user_turn("hello")

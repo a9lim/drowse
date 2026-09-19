@@ -206,7 +206,7 @@ def _resolve_options(
             return default
         try:
             value = float(raw)
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
             raise OllamaBadRequest(
                 f"Ollama option '{name}' must be a finite number"
             ) from e
@@ -220,8 +220,11 @@ def _resolve_options(
         if raw is None:
             return None
         try:
-            return int(raw)
-        except (TypeError, ValueError) as e:
+            value = int(raw)
+            if isinstance(raw, float) and raw != value:
+                raise ValueError
+            return value
+        except (TypeError, ValueError, OverflowError) as e:
             raise OllamaBadRequest(
                 f"Ollama option '{name}' must be an integer"
             ) from e
@@ -233,6 +236,8 @@ def _resolve_options(
 
     temperature = _number_option("temperature")
     top_p = _number_option("top_p")
+    if top_p is not None and not 0 <= top_p <= 1:
+        raise OllamaBadRequest("Ollama option 'top_p' must be between 0 and 1")
     top_k_raw = opts.get("top_k")
     top_k = _int_option("top_k", top_k_raw)
     if top_k is not None and top_k <= 0:
@@ -242,7 +247,7 @@ def _resolve_options(
         if "num_predict" in opts
         else body.get("num_predict")
     )
-    seed = opts.get("seed")
+    seed = _int_option("seed", opts.get("seed"))
     presence_penalty = _number_option("presence_penalty", 0.0) or 0.0
     frequency_penalty = _number_option("frequency_penalty", 0.0) or 0.0
     repeat_raw = opts.get("repeat_penalty")
@@ -253,7 +258,7 @@ def _resolve_options(
                 raise ValueError
             if rp > 1.0:
                 presence_penalty = math.log(rp)
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
             raise OllamaBadRequest(
                 "Ollama option 'repeat_penalty' must be a finite number"
             ) from e

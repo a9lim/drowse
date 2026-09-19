@@ -1,0 +1,1 @@
+import{a as e,i as t,n}from"./files-BEUW0jjp.js";export{n as addTransferredFile,t as downloadTransferredFile,e as getTransferredFile};

@@ -1,6 +1,6 @@
 import { ToolError, objectSchema, type AppTool, type InputSchema, type ToolContext } from "./types";
 import { validateInput } from "./validation";
-import { MutationReceipts } from "./requests";
+import { MutationReceipts, requestFingerprint } from "./requests";
 
 export interface ModelContextProvider {
   registerTool(tool: {
@@ -30,13 +30,17 @@ function canonicalInput(value: unknown): unknown {
 export class WebMcpAdapter {
   private tools = new Map<string, AppTool>();
   private registrations = new Map<string, { lifetime: AbortController; tool: AppTool }>();
-  private calls = new Map<string, { input: string; result: Promise<unknown> }>();
+  private calls = new Map<string, { input: string; result: Promise<unknown>; pending: boolean }>();
+  private pendingCalls = 0;
+  private pendingInputCharacters = 0;
   private results = new Map<string, string>();
   private resultBytes = 0;
   private mutationTail: Promise<unknown> = Promise.resolve();
   private refreshTail: Promise<void> = Promise.resolve();
   private disposed = false;
   private lifetime = new AbortController();
+  private actionLifetime = new AbortController();
+  private dataEpoch = 0;
   readonly errors = new Map<string, string>();
   private receipts: MutationReceipts | null;
 
@@ -132,6 +136,8 @@ export class WebMcpAdapter {
   }
 
   async execute(name: string, value: unknown, signal = new AbortController().signal): Promise<unknown> {
+    const epoch = this.dataEpoch;
+    signal = AbortSignal.any([signal, this.lifetime.signal, this.actionLifetime.signal]);
     try {
       if (this.disposed) throw new ToolError("unavailable", "This page's tools have been disposed. Discover tools again.");
       const tool = this.tools.get(name);
@@ -141,7 +147,7 @@ export class WebMcpAdapter {
       const serialized = JSON.stringify(canonicalInput(input));
       if (serialized.length > 2 * 1024 * 1024) throw new ToolError("invalid_input", "Use the file import interface for inputs larger than 2 MiB.");
       const key = !tool.annotations.readOnlyHint && typeof input.request_id === "string" ? `${name}:${input.request_id}` : null;
-      const fingerprint = key && this.receipts ? this.receipts.fingerprint(serialized) : null;
+      const fingerprint = key ? requestFingerprint(serialized) : null;
       const run = async () => {
         signal.throwIfAborted();
         if (this.disposed || this.tools.get(name) !== tool) throw new ToolError("unavailable", "The page or runtime changed. Discover tools again.");
@@ -151,38 +157,63 @@ export class WebMcpAdapter {
         if (input.expected_revision !== undefined && input.expected_revision !== this.options.revision?.()) {
           throw new ToolError("stale_state", "The workspace changed. Read its current state before applying this change.");
         }
-        if (key && fingerprint) this.receipts!.start(key, fingerprint);
+        if (key && fingerprint) this.receipts?.start(key, fingerprint);
         delete input.expected_revision;
         let output: unknown;
         try {
           const result = await tool.execute(input, context);
+          if (this.disposed || epoch !== this.dataEpoch) throw new DOMException("The page context changed during this action.", "AbortError");
           output = this.bound({ ok: true, data: result ?? null, ...(this.options.revision ? { revision: this.options.revision() } : {}) });
-        } catch (error) { output = this.bound({ ok: false, error: actionError(error) }); }
-        if (key && fingerprint) this.receipts!.finish(key, fingerprint, output);
+        } catch (error) {
+          output = this.disposed || epoch !== this.dataEpoch
+            ? { ok: false, error: { code: tool.annotations.readOnlyHint ? "cancelled" : "reconcile_required", message: "The page context changed during this action. It may have completed; read current state before retrying." } }
+            : this.bound({ ok: false, error: actionError(error) });
+        }
+        if (key && fingerprint && !this.disposed && epoch === this.dataEpoch) this.receipts?.finish(key, fingerprint, output);
         return output;
       };
       if (tool.annotations.readOnlyHint) return await run();
       const prior = key ? this.calls.get(key) : null;
       if (prior) {
-        if (prior.input !== serialized) throw new ToolError("request_conflict", "This request ID was already used with different inputs.");
+        if (prior.input !== fingerprint) throw new ToolError("request_conflict", "This request ID was already used with different inputs.");
         return await prior.result;
       }
-      const recovered = key && fingerprint ? this.receipts!.get(key, fingerprint) : null;
+      const recovered = key && fingerprint ? this.receipts?.get(key, fingerprint) : null;
       if (recovered) {
         if (recovered.state === "complete") return recovered.result;
         const job = this.options.context(signal).jobs.list().find(item => item.requestId === input.request_id);
         if (job) return this.bound({ ok: true, data: job, recovered: true, revision: this.options.revision?.() });
         throw new ToolError("reconcile_required", "This request was admitted before the page changed. Inspect current state or jobs to determine its outcome; it will not be automatically repeated.", { request_id: input.request_id, action: name });
       }
-      const result = this.mutationTail.then(run);
+      const inputCharacters = serialized.length;
+      if (this.pendingCalls >= 128 || this.pendingInputCharacters + inputCharacters > 8 * 1024 * 1024) {
+        throw new ToolError("tool_busy", "The agent mutation queue is full. Wait for pending actions to finish before retrying.");
+      }
+      this.pendingCalls++;
+      this.pendingInputCharacters += inputCharacters;
+      let call: { input: string; result: Promise<unknown>; pending: boolean } | undefined;
+      const result = this.mutationTail.then(run).finally(() => {
+        this.pendingCalls--;
+        this.pendingInputCharacters -= inputCharacters;
+        if (call) call.pending = false;
+        this.trimCalls();
+      });
       this.mutationTail = result.catch(() => undefined);
-      if (key) {
-        this.calls.set(key, { input: serialized, result });
-        if (this.calls.size > 128) this.calls.delete(this.calls.keys().next().value!);
+      if (key && fingerprint) {
+        call = { input: fingerprint, result, pending: true };
+        this.calls.set(key, call);
+        this.trimCalls();
       }
       return await result;
     } catch (error) {
       return this.bound({ ok: false, error: actionError(error) });
+    }
+  }
+
+  private trimCalls(): void {
+    for (const [key, call] of this.calls) {
+      if (this.calls.size <= 128) break;
+      if (!call.pending) this.calls.delete(key);
     }
   }
 
@@ -215,6 +246,16 @@ export class WebMcpAdapter {
         return { encoding: "json", text: result.slice(offset, end), next_offset: end < result.length ? end : null, characters: result.length };
       },
     };
+  }
+
+  clearRetainedData(): void {
+    this.dataEpoch++;
+    this.actionLifetime.abort();
+    this.actionLifetime = new AbortController();
+    this.results.clear();
+    this.calls.clear();
+    this.resultBytes = 0;
+    this.receipts?.clear();
   }
 
   dispose(): void {

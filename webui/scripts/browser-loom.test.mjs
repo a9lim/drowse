@@ -54,6 +54,7 @@ try {
     runtimeCapabilities() {
       return {
         topK: true,
+        positionSpans: true,
         forcedReplay: options.forcedReplay ?? true,
         replayScoring: false,
         tokenizer: true,
@@ -883,6 +884,7 @@ try {
   branchA.recipe = {
     ...branchA.recipe,
     steering: "left:role-pirate",
+    position_spans: [[1, 3], [5, 7]],
     thinking: false,
     seed: 7,
     sampling: {
@@ -945,6 +947,7 @@ try {
     runtimeCapabilities() {
       return {
         topK: true,
+        positionSpans: true,
         forcedReplay: true,
         replayScoring: true,
         tokenizer: true,
@@ -1123,6 +1126,7 @@ try {
   assert.equal(unsteeredReplayPlan.measurementTargetRawIndex, 0);
   assert.equal(unsteeredReplayPlan.thinking, false);
   assert.equal(unsteeredReplayPlan.steeringExpression, null);
+  assert.equal(unsteeredReplayPlan.position_spans, undefined);
   assert.equal(unsteeredReplayPlan.generationSeat, "assistant");
   assert.equal(unsteeredReplayPlan.generationRoleName, "pirate");
   assert.deepEqual(
@@ -1156,6 +1160,7 @@ try {
   });
   assert.equal(rawReplay.measurements.instruments.lens.binding.steering, "left:role-pirate");
   const rawReplayPlan = exactReplayEngine.plans[1];
+  assert.deepEqual(rawReplayPlan.position_spans, [[1, 3], [5, 7]]);
   assert.deepEqual(rawReplayPlan.input, { kind: "raw", prompt: "Question" });
   assert.deepEqual(rawReplayPlan.replay.forcedPrefixTokenIds, [10, 11]);
   assert.equal(rawReplayPlan.readoutTopK, 1);
@@ -1213,6 +1218,7 @@ try {
   assert.equal(forkPlan.sampling.persist_subspace_coords, false);
   assert.equal(forkPlan.sampling.return_top_k, 5);
   assert.equal(forkPlan.steeringExpression, "left:role-pirate");
+  assert.deepEqual(forkPlan.position_spans, [[1, 3], [5, 7]]);
   assert.equal(forkPlan.generationSeat, "assistant");
   assert.equal(forkPlan.generationRoleName, "pirate");
   const forked = exactReplayRuntime.snapshot().tree.nodes.at(-1);
@@ -1434,11 +1440,14 @@ try {
       authored_role: "user",
       generated_role: "assistant",
       steering: "0.5 honest",
+      position_spans: [[5, 7], [1, 3], [3, 4]],
     },
     (event) => steeringEvents.push(event),
   );
   assert.deepEqual(compiled, ["0.5 honest"]);
   assert.equal(steeringEngine.plans[0].hookProgram, hookProgram);
+  assert.deepEqual(steeringEngine.plans[0].position_spans, [[1, 4], [5, 7]]);
+  assert.deepEqual(steeringRuntime.snapshot().tree.nodes[2].recipe.position_spans, [[1, 4], [5, 7]]);
   assert.equal(steeringRuntime.snapshot().tree.nodes[2].applied_steering, "0.5 honest");
   assert.equal(steeringEvents.at(-1).result.applied_steering, "0.5 honest");
   const comparisonEvents = [];
@@ -1451,7 +1460,36 @@ try {
   }, event => comparisonEvents.push(event));
   assert.equal(comparisonEvents.at(-1).result.applied_steering, null);
   assert.equal(steeringEngine.plans.at(-1).steeringExpression, null);
+  assert.equal(steeringEngine.plans.at(-1).position_spans, undefined);
   assert.deepEqual(steeringEngine.plans.at(-1).sampling, steeringEngine.plans[0].sampling);
+
+  const spansParent = steeringRuntime.snapshot().tree.nodes[2].id;
+  for (const [override, expected] of [
+    ["inverted", [[1, 4], [5, 7]]],
+    [{ position_indices: [8, 9, 11] }, [[8, 10], [11, 12]]],
+    [{ position_spans: null }, undefined],
+    [{ position_spans: [] }, []],
+  ]) {
+    const events = [];
+    await steeringRuntime.generate({ type: "generate", input: "Prompt", stateless: true,
+      parent_node_id: spansParent, recipe_override: override }, event => events.push(event));
+    assert.equal(events.some(event => event.type === "error"), false, JSON.stringify(events));
+    assert.deepEqual(steeringEngine.plans.at(-1).position_spans, expected);
+  }
+  for (const selection of [
+    { position_spans: [[1, 3]], position_indices: [1] },
+    { position_spans: [[1, 3], [2, 4]] },
+    { position_indices: [2, 2] },
+  ]) {
+    const before = steeringRuntime.snapshot().tree;
+    const planCount = steeringEngine.plans.length;
+    const events = [];
+    await assert.rejects(steeringRuntime.generate({ type: "submit", text: "Must not append", authored_role: "user",
+      generated_role: "assistant", steering: "0.5 honest", ...selection }, event => events.push(event)),
+    error => error.code === "INVALID_STEERING_POSITIONS");
+    assert.deepEqual(steeringRuntime.snapshot().tree, before);
+    assert.equal(steeringEngine.plans.length, planCount);
+  }
 
   const validationCompiles = [];
   const validationEngine = generation();
