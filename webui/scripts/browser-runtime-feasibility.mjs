@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
 import { chromium } from "playwright";
+import { releaseToolBrowserOptions, releaseToolGpuArgs } from "./release-tool-storage-quota.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 const webllmPath = resolve(options.webllm);
@@ -102,15 +103,11 @@ if (address === null || typeof address === "string")
   throw new Error("failed to bind test server");
 const origin = `http://127.0.0.1:${address.port}`;
 
-const browser = await chromium.launch({
+const browser = await chromium.launch(releaseToolBrowserOptions({
   headless: !options.headed,
   ...(options.browserChannel ? { channel: options.browserChannel } : {}),
-  args: [
-    "--enable-unsafe-webgpu",
-    "--use-angle=metal",
-    "--disable-gpu-sandbox",
-  ],
-});
+  args: releaseToolGpuArgs(),
+}));
 try {
   const page = await browser.newPage();
   const webGpuErrors = [];

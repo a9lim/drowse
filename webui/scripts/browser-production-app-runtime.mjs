@@ -42,6 +42,7 @@ import { lockedModelExecutionProfiles } from "./hosted-model-profiles.mjs";
 import {
   grantReleaseToolStorageQuota,
   launchReleaseToolContext,
+  releaseToolGpuArgs,
 } from "./release-tool-storage-quota.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -290,11 +291,7 @@ try {
   };
 
   const launchArgs = options.browserFlags === "compatibility"
-    ? [
-        "--enable-unsafe-webgpu",
-        "--disable-gpu-sandbox",
-        ...(process.platform === "darwin" ? ["--use-angle=metal"] : []),
-      ]
+    ? releaseToolGpuArgs({ headless: !options.headed })
     : [];
   launchArgs.push(`--ignore-certificate-errors-spki-list=${certificateSpkiSha256}`);
   if (nativeWebMcp) launchArgs.push(...nativeWebMcp.args);
@@ -871,6 +868,15 @@ async function assertTokenInstrumentReadouts(page) {
   await drawer.waitFor();
   const tabs = drawer.getByRole("group", { name: "Token detail view" });
 
+  await tabs.getByRole("button", { name: "j-lens", exact: true }).click();
+  const lensMatrix = drawer.getByRole("slider", { name: "Vocabulary matrix cell", exact: true });
+  await lensMatrix.waitFor();
+  await lensMatrix.press("Home");
+  const lensCell = await lensMatrix.getAttribute("aria-valuetext");
+  requireCondition(typeof lensCell === "string" && /logprob=/u.test(lensCell), "token J-lens readout returned no vocabulary scores");
+  const lensLayerCount = await lensMatrix.locator("tbody tr").count();
+  requireCondition(lensLayerCount > 0, "token J-lens readout returned no layers");
+
   await tabs.getByRole("button", { name: "sae", exact: true }).click();
   const saeFeatures = drawer.getByRole("list", { name: "Top SAE features" });
   await saeFeatures.waitFor();
@@ -892,7 +898,7 @@ async function assertTokenInstrumentReadouts(page) {
   );
 
   await drawer.getByRole("button", { name: "Close drawer", exact: true }).click();
-  return { saeFeatureCount, geometryProbe: CORE_GEOMETRY_SELECTOR };
+  return { lensCell, lensLayerCount, saeFeatureCount, geometryProbe: CORE_GEOMETRY_SELECTOR };
 }
 
 async function finiteAriaMeasurement(root, pattern) {

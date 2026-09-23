@@ -21,6 +21,7 @@ import { digestCanonical } from "./check-runtime-lock.mjs";
 import {
   grantReleaseToolStorageQuota,
   launchReleaseToolContext,
+  releaseToolGpuArgs,
 } from "./release-tool-storage-quota.mjs";
 
 const OFFLINE_NETWORK_QUIET_MS = 250;
@@ -247,11 +248,7 @@ try {
   const origin = `http://127.0.0.1:${address.port}`;
   const launchArgs =
     options.browserFlags === "compatibility"
-      ? [
-          "--enable-unsafe-webgpu",
-          "--disable-gpu-sandbox",
-          ...(process.platform === "darwin" ? ["--use-angle=metal"] : []),
-        ]
+      ? releaseToolGpuArgs({ headless: !options.headed })
       : [];
   browser = await launchReleaseToolContext({
     headless: !options.headed,

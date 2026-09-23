@@ -20,6 +20,7 @@ import { lockedModelExecutionProfiles } from "./hosted-model-profiles.mjs";
 import {
   grantReleaseToolStorageQuota,
   launchReleaseToolContext,
+  releaseToolGpuArgs,
 } from "./release-tool-storage-quota.mjs";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { verifyArtifactFile } from "./verify-artifact-file.mjs";
@@ -252,9 +253,7 @@ const browser = options.manualBrowser ? null : await launchReleaseToolContext({
   headless: true,
   channel: options.browserChannel,
   args: [
-    "--enable-unsafe-webgpu",
-    "--use-angle=metal",
-    "--disable-gpu-sandbox",
+    ...releaseToolGpuArgs(),
     "--unlimited-storage",
   ],
 });

@@ -509,6 +509,43 @@ try {
     assert.equal(checkedAdapter.state.deviceRequests, 1);
     assert.equal(loadAdapter.state.deviceRequests, 0);
 
+    const retryChecked = makeHardwareAdapter("fixture");
+    const retryLoad = makeHardwareAdapter("fixture");
+    let retryRequests = 0;
+    globalThis.navigator.gpu.requestAdapter = async (options) => {
+      assert.deepEqual(options, { powerPreference: "high-performance" });
+      retryRequests += 1;
+      return [null, retryChecked.adapter, null, retryLoad.adapter][retryRequests - 1];
+    };
+    const retryChecker = new capabilityModule.BrowserCapabilityChecker();
+    assert.equal((await retryChecker.check()).supported, true);
+    assert.equal(await retryChecker.adapterForLoad(), retryLoad.adapter);
+    assert.equal(retryRequests, 4);
+    assert.equal(retryChecked.state.deviceRequests, 1);
+    assert.equal(retryLoad.state.deviceRequests, 0);
+
+    let missingRequests = 0;
+    globalThis.navigator.gpu.requestAdapter = async () => { missingRequests += 1; return null; };
+    const missing = await new capabilityModule.BrowserCapabilityChecker().check();
+    assert.equal(missing.supported, false);
+    assert.ok(missing.issues.some(({ code }) => code === "WEBGPU_ADAPTER_MISSING"));
+    assert.equal(missingRequests, 3);
+
+    let failedRequests = 0;
+    globalThis.navigator.gpu.requestAdapter = async () => { failedRequests += 1; throw new Error("GPU failed"); };
+    const failed = await new capabilityModule.BrowserCapabilityChecker().check();
+    assert.ok(failed.issues.some(({ code }) => code === "WEBGPU_ADAPTER_FAILED"));
+    assert.equal(failedRequests, 1);
+
+    const software = makeHardwareAdapter("software");
+    software.adapter.info.isFallbackAdapter = true;
+    let softwareRequests = 0;
+    globalThis.navigator.gpu.requestAdapter = async () => ++softwareRequests === 1 ? null : software.adapter;
+    const softwareCapabilities = await new capabilityModule.BrowserCapabilityChecker().check();
+    assert.equal(softwareCapabilities.supported, false);
+    assert.ok(softwareCapabilities.issues.some(({ code }) => code === "SOFTWARE_ADAPTER"));
+    assert.equal(softwareRequests, 2);
+
     const changedChecked = makeHardwareAdapter("fixture-a");
     const changedLoad = makeHardwareAdapter("fixture-b");
     let changedRequests = 0;
@@ -562,7 +599,12 @@ try {
     } finally {
       restoreIsolation();
     }
-    globalThis.navigator.gpu.requestAdapter = () => new Promise(() => {});
+    let timeoutRequests = 0;
+    let resolveLateAdapter;
+    globalThis.navigator.gpu.requestAdapter = () => {
+      timeoutRequests += 1;
+      return new Promise((resolve) => { resolveLateAdapter = resolve; });
+    };
     const timedOut = await new capabilityModule.BrowserCapabilityChecker({
       adapterTimeoutMs: 1,
     }).check();
@@ -572,6 +614,9 @@ try {
           code === "WEBGPU_ADAPTER_TIMEOUT" && severity === "hard",
       ),
     );
+    resolveLateAdapter(null);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(timeoutRequests, 1, "timed out requests must not schedule background retries");
   } finally {
     for (const restoreGlobal of restore.reverse()) restoreGlobal();
   }

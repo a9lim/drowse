@@ -26,6 +26,7 @@ import {
 import {
   grantReleaseToolStorageQuota,
   launchReleaseToolContext,
+  releaseToolGpuArgs,
 } from "./release-tool-storage-quota.mjs";
 import { verifyArtifactFile } from "./verify-artifact-file.mjs";
 
@@ -225,7 +226,7 @@ try {
   browser = await launchReleaseToolContext({
     headless: true,
     channel: options.browserChannel,
-    args: ["--enable-unsafe-webgpu", "--use-angle=metal", "--disable-gpu-sandbox"],
+    args: releaseToolGpuArgs(),
   });
   const page = browser.page;
   page.setDefaultTimeout(options.timeoutMs);

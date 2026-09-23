@@ -7,6 +7,7 @@ import { createServer as createViteServer } from "vite";
 import {
   grantReleaseToolStorageQuota,
   launchReleaseToolContext,
+  releaseToolGpuArgs,
 } from "./release-tool-storage-quota.mjs";
 
 const options = parseArguments(process.argv.slice(2));
@@ -75,7 +76,7 @@ const origin = `http://127.0.0.1:${address.port}`;
 const browser = await launchReleaseToolContext({
   headless: true,
   channel: options.browserChannel,
-  args: ["--enable-unsafe-webgpu", "--use-angle=metal", "--disable-gpu-sandbox"],
+  args: releaseToolGpuArgs(),
 });
 try {
   const page = browser.page;

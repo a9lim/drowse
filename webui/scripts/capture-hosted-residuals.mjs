@@ -23,6 +23,7 @@ import { validatePublishDirectory } from "./publish-hosted-model.mjs";
 import {
   grantReleaseToolStorageQuota,
   launchReleaseToolContext,
+  releaseToolGpuArgs,
 } from "./release-tool-storage-quota.mjs";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { validateBrowserFullRuntimeModelClosure } from "./browser-full-runtime-contract.mjs";
@@ -199,7 +200,7 @@ const origin = `http://127.0.0.1:${address.port}`;
 const browser = await launchReleaseToolContext({
   headless: true,
   channel: options.browserChannel,
-  args: ["--enable-unsafe-webgpu", "--use-angle=metal", "--disable-gpu-sandbox"],
+  args: releaseToolGpuArgs(),
 });
 let result;
 try {

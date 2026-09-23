@@ -40,6 +40,7 @@ interface Request {
   diagnosticFamily: "combined" | "jlens" | "sae";
   jlensWord: string;
   saeFeature: number;
+  steeringParityTokens: number;
   stepTimeoutMs: number;
 }
 
@@ -529,6 +530,63 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       timings.priorStepGatedGenerationMs = gated.elapsedMs;
     }
 
+    const steeringParity = event.data.steeringParityTokens > 0 ? await timedStep(
+      "jlens_steering_parity",
+      event.data.stepTimeoutMs,
+      async () => {
+        const prompt = "<start_of_turn>user\nDescribe a fruit in one short sentence.<end_of_turn>\n<start_of_turn>model\n";
+        const chatArtifact = modelArtifacts.find((entry) => entry.manifest.role === "chat_template")!;
+        const chatConfig = JSON.parse(await chatArtifact.file.text());
+        const prefix = chatConfig.drowse_completion_prefix_token_ids ?? [];
+        const inputIds = [...prefix, ...await runtime!.tokenizeText(prompt)];
+        const tokenIds = await runtime!.tokenizeText(event.data.jlensWord);
+        if (tokenIds.length !== 1) throw new Error("steering regression requires a single-token word");
+        const cases = [];
+        for (const coefficient of [0, 0.05, 0.1, 0.3, 0]) {
+          const expression = coefficient === 0 ? "" : `${coefficient} jlens/${event.data.jlensWord}@both`;
+          await compiler.prepareJlensSelectors(expression, runtime!);
+          const program = requireStructured(compiler.compile(expression));
+          if (program.curveActive.some(Boolean) || program.affineKappa.some(Boolean)) {
+            throw new Error("steering regression only accepts constant additive programs");
+          }
+          const offsets = Array.from({ length: program.layerCount }, (_, layer) => {
+            const values = new Float32Array(program.hiddenSize);
+            for (let group = 0; group < program.profile.maxAffineGroups; group += 1) {
+              const slot = layer * program.profile.maxAffineGroups + group;
+              if (!program.affineActive[slot]) continue;
+              for (let axis = 0; axis < program.profile.maxRank; axis += 1) {
+                const axisSlot = slot * program.profile.maxRank + axis;
+                const scale = program.affineAlong[slot] * program.affineTarget[axisSlot];
+                for (let column = 0; column < program.hiddenSize; column += 1) {
+                  values[column] += scale * program.affineBasis[axisSlot * program.hiddenSize + column];
+                }
+              }
+            }
+            return Array.from(values);
+          });
+          const tokens: Array<{ tokenId: number | null; text: string; logprob: number; topAlts: unknown }> = [];
+          await runtime!.requireEngine().resetChat();
+          const generation = await runtime!.streamGeneration({
+            input: { kind: "raw", prompt },
+            sampling: { max_tokens: event.data.steeringParityTokens, seed: 1, temperature: 0, return_top_k: 8 },
+            thinking: false,
+            steeringExpression: expression || null,
+            hookProgram: program,
+            onRawToken({ tokenId, text, logprob, topAlts }) { tokens.push({ tokenId, text, logprob, topAlts }); },
+          }, () => undefined);
+          if (inputIds.length !== generation.usage.promptTokens || tokens.length === 0) {
+            throw new Error("steering regression prompt or token capture mismatch");
+          }
+          cases.push({ coefficient, expression, offsets, tokens, finishReason: generation.finishReason });
+        }
+        if (JSON.stringify(cases[0].tokens) !== JSON.stringify(cases.at(-1)!.tokens)) {
+          throw new Error("removing steering did not restore the deterministic baseline");
+        }
+        return { prompt, inputIds, targetTokenId: tokenIds[0], cases };
+      },
+      () => runtime!.stop(),
+    ) : null;
+
     const unloaded = await timedStep("unload", event.data.stepTimeoutMs, () =>
       runtime!.unload(),
     );
@@ -539,6 +597,9 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       result: {
         releaseEvidence: false,
         runtimeIdentitySha256: fingerprint,
+        runtimeIdentity: event.data.runtimeIdentity,
+        contextTokens: event.data.contextTokens,
+        steeringParity: steeringParity?.value ?? null,
         structuredHookProfile: event.data.structuredHookProfile,
         exactReadoutAbi: "exact-readout-v1",
         layers: event.data.runtimeIdentity.layerMap.length,

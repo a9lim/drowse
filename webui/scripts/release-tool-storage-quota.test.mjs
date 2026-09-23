@@ -1,8 +1,27 @@
 import assert from "node:assert/strict";
 import {
   grantReleaseToolStorageQuota,
+  releaseToolBrowserOptions,
+  releaseToolGpuArgs,
   releaseToolQuotaBytes,
 } from "./release-tool-storage-quota.mjs";
+
+assert.deepEqual(releaseToolGpuArgs({ platform: "darwin" }), [
+  "--enable-unsafe-webgpu", "--use-angle=metal",
+]);
+assert.deepEqual(releaseToolGpuArgs({ platform: "linux" }), [
+  "--enable-unsafe-webgpu", "--use-angle=vulkan", "--enable-features=Vulkan",
+  "--disable-vulkan-surface",
+]);
+assert.deepEqual(releaseToolGpuArgs({ platform: "linux", headless: false }), [
+  "--enable-unsafe-webgpu", "--use-angle=vulkan", "--enable-features=Vulkan",
+]);
+assert.deepEqual(releaseToolGpuArgs({ platform: "win32" }), ["--enable-unsafe-webgpu"]);
+assert.deepEqual(releaseToolBrowserOptions({ args: [] }), {
+  args: [], chromiumSandbox: true, ignoreDefaultArgs: ["--enable-unsafe-swiftshader"],
+});
+assert.deepEqual(releaseToolBrowserOptions({ ignoreDefaultArgs: ["--foo"] }).ignoreDefaultArgs,
+  ["--foo", "--enable-unsafe-swiftshader"]);
 
 assert.equal(releaseToolQuotaBytes([{ bytes: 1 }]), 8 * 1024 ** 3);
 assert.equal(

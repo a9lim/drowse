@@ -236,8 +236,11 @@ try {
   sessionState.info = { model_id: "fixture/instruct", is_base_model: false };
   assert.match(render(SteeringRack, { props: { family: "subspace" } }).body, /Add a direction to steer the next reply/);
   assert.match(render(ProbeRack, { props: { family: "subspace" } }).body, /Readings observe the reply/);
-  assert.match(render(JLensMissingState, { props: { modelId: "fixture/instruct" } }).body, /download this one again/);
-  console.log("Completion-specific controls and optional J-lens copy passed; instruct wording preserved");
+  const missingLens = render(JLensMissingState, { props: { modelId: "fixture/instruct" } }).body;
+  assert.match(missingLens, /download or update the compatible pack/);
+  assert.match(missingLens, /Open Models/);
+  assert.doesNotMatch(missingLens, /download this one again/);
+  console.log("Completion-specific controls, optional base J-lens, and pack recovery copy passed");
 
   const { default: Landing } = await server.ssrLoadModule("/src/hosted/ui/Landing.svelte");
   const landing = render(Landing).body;

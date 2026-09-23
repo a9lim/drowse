@@ -50,6 +50,11 @@ test("provider metadata access is limited to the selected model's exact public S
     assert.equal(isPublishedSaeDescriptionUrl(invalid, "gemma3-1b-instruct"), false);
   }
   assert.equal(isPublishedSaeDescriptionUrl(url, "gemma3-270m-instruct"), false);
+  const gemma4Url = "https://www.neuronpedia.org/api/feature/gemma-3-4b-it/17-gemmascope-2-res-16k/153";
+  assert.equal(isPublishedSaeDescriptionUrl(gemma4Url, "gemma3-4b-instruct"), true);
+  assert.equal(isPublishedSaeDescriptionUrl(gemma4Url, "gemma3-1b-instruct"), false);
+  assert.equal(isPublishedSaeDescriptionUrl(gemma4Url + "?prompt=hello", "gemma3-4b-instruct"), false);
+  assert.equal(isPublishedSaeDescriptionUrl(gemma4Url.replace("/153", "/16384"), "gemma3-4b-instruct"), false);
 });
 
 test("authoritative installed app state accepts verified onboarding or the exact loaded model", () => {
@@ -334,6 +339,21 @@ test("production-app catalog closes the runtime lock and pack bindings", () => {
   assert.equal(qwen4.document.models[0].variants[0].tier, "quality");
   assert.equal(qwen4.document.models[0].variants[0].id, "qwen3-4b-q4f16_1");
   assert.deepEqual(qwen4.document.models[0].variants[0].requirements.features, ["shader-f16"]);
+  const gemma4 = createProductionAppCatalog({
+    runtimeLock: { runtimeAbi: "drowse-web-runtime-v1", hookAbi: "post-block-residual-v4" },
+    lock: { ...lock, id: "gemma3-4b-instruct", quantization: "q4f32_1", thinkingProfile: null },
+    revision, modelFiles,
+    coreFiles: files("core_pack", "7".repeat(64)),
+    jlensFiles: files("instrument", "8".repeat(64)),
+    saeFiles: files("instrument", "9".repeat(64)),
+    contextTokens: 2048,
+    issuedAt: "2026-08-29T00:00:00.000Z",
+    expiresAt: "2026-08-30T00:00:00.000Z",
+  }).document.models[0];
+  assert.equal(gemma4.displayName, "Gemma 3 4B");
+  assert.equal(gemma4.variants[0].tier, "quality");
+  assert.equal(gemma4.variants[0].packs.length, 3);
+  assert.deepEqual(gemma4.variants[0].requirements.features, []);
   const unquantizedGemma = createProductionAppCatalog({
     runtimeLock: { runtimeAbi: "drowse-web-runtime-v1", hookAbi: "post-block-residual-v4" },
     lock: { ...lock, id: "gemma3-270m-instruct", quantization: "q0f32", thinkingProfile: null },

@@ -384,7 +384,12 @@
   onMount(() => {
     void runBootstrap();
     window.addEventListener("drowse:workspace", onWorkspaceRequest);
-    return () => window.removeEventListener("drowse:workspace", onWorkspaceRequest);
+    const onModelsRequest = () => void returnHome("models");
+    window.addEventListener("drowse:models", onModelsRequest);
+    return () => {
+      window.removeEventListener("drowse:workspace", onWorkspaceRequest);
+      window.removeEventListener("drowse:models", onModelsRequest);
+    };
   });
 
   // Global keyboard accelerators. Esc stops generation; Cmd/Ctrl-Enter is
@@ -604,6 +609,11 @@
             aria-current={workspaceView === "tools" ? "page" : undefined} onclick={() => selectWorkspace("tools")}
           ><FluentIcon name="controls" size={16} /><span class="nav-copy"><span>Tools</span><span class="nav-description" aria-hidden="true">Create, inspect, and customize</span></span></button>
 
+          {#if runtimeClient.mode !== "http" && !compactNavigation}
+            <button type="button" class="workspace-parent" disabled={returningHome} onclick={() => void returnHome("models")}
+              aria-describedby="workspace-models-description"
+            ><FluentIcon name="models" size={16} /><span class="nav-copy"><span>Models</span><span class="nav-description" id="workspace-models-description" aria-hidden="true">Switch models and feature packs</span></span></button>
+          {/if}
         </nav>
         {#if compactNavigation}
           <button type="button" class="sidebar-toggle mobile-navigation-action" bind:this={collapseNavigationButton}
@@ -611,7 +621,6 @@
             onclick={() => void setMobileNavigation(false)}><FluentIcon name="up" /></button>
         {/if}
         <nav class="sidebar-links" aria-label="Library and tools">
-          {#if runtimeClient.mode !== "http"}<button type="button" disabled={returningHome} onclick={() => void returnHome("models")}><FluentIcon name="models" /><span>Models</span></button>{/if}
           <span class="sidebar-label">Workspace</span>
           <button type="button" onclick={() => openToolInSidebar("manifold_builder")}><FluentIcon name="controls" /><span>Create a concept or scale</span></button>
           {#if workspaceView !== "controls"}

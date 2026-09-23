@@ -8,6 +8,7 @@
     useLensSource,
   } from "../../lib/stores.svelte";
   import InstrumentSourceSection from "../../panels/rack/InstrumentSourceSection.svelte";
+  import InstrumentPackRecovery from "./InstrumentPackRecovery.svelte";
 
   const fitted = $derived(sessionState.info?.jlens_fitted === true);
   const allowSourceSwitch = $derived(
@@ -36,10 +37,11 @@
   providerOptions={[]}
   providerPlaceholder="compatible J-lens pack"
   onfetch={() => undefined}
-  unavailableMessage={sessionState.info?.is_base_model
-    ? "Word insights are optional for base models. This view needs a compatible J-lens pack; text completion works without it."
-    : "Word insights are missing. Switch models, then download this one again."}
   localActionLabel=""
   localActionDisabled
   onlocal={() => undefined}
-/>
+>
+  {#snippet messages()}
+    {#if !fitted}<InstrumentPackRecovery kind="jlens" />{/if}
+  {/snippet}
+</InstrumentSourceSection>

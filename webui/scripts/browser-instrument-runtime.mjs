@@ -8,6 +8,7 @@ import { lockedModelExecutionProfiles } from "./hosted-model-profiles.mjs";
 import {
   grantReleaseToolStorageQuota,
   launchReleaseToolContext,
+  releaseToolGpuArgs,
 } from "./release-tool-storage-quota.mjs";
 import { verifyArtifactFile } from "./verify-artifact-file.mjs";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
@@ -148,11 +149,7 @@ const origin = `http://127.0.0.1:${address.port}`;
 const browser = await launchReleaseToolContext({
   headless: true,
   channel: options.browserChannel,
-  args: [
-    "--enable-unsafe-webgpu",
-    "--use-angle=metal",
-    "--disable-gpu-sandbox",
-  ],
+  args: releaseToolGpuArgs(),
 });
 try {
   const page = browser.page;
@@ -270,6 +267,7 @@ try {
         diagnosticFamily: options.diagnosticFamily,
         jlensWord: options.jlensWord,
         saeFeature: options.saeFeature,
+        steeringParityTokens: options.steeringParityTokens,
         stepTimeoutMs: options.stepTimeoutMs,
       },
     },
@@ -355,6 +353,7 @@ function parseArguments(args) {
     output: null,
     runtimeLock: null,
     saeFeature: 17,
+    steeringParityTokens: 0,
     stepTimeoutMs: 300_000,
     timeoutMs: 1_200_000,
   };
@@ -374,6 +373,7 @@ function parseArguments(args) {
     "--output": "output",
     "--runtime-lock": "runtimeLock",
     "--sae-feature": "saeFeature",
+    "--steering-parity-tokens": "steeringParityTokens",
     "--step-timeout-ms": "stepTimeoutMs",
     "--timeout-ms": "timeoutMs",
   };
@@ -393,6 +393,7 @@ function parseArguments(args) {
       "contextTokens",
       "jlensLayerLimit",
       "saeFeature",
+      "steeringParityTokens",
       "stepTimeoutMs",
       "timeoutMs",
     ].includes(field)
@@ -424,6 +425,10 @@ function parseArguments(args) {
   }
   if (!Number.isSafeInteger(result.saeFeature) || result.saeFeature < 0)
     throw new Error("invalid SAE feature");
+  if (!Number.isSafeInteger(result.steeringParityTokens) || result.steeringParityTokens < 0 || result.steeringParityTokens > 128)
+    throw new Error("invalid steering parity token count");
+  if (result.steeringParityTokens > 0 && (result.modelId !== "gemma3-1b-instruct" || result.diagnosticFamily === "sae"))
+    throw new Error("the steering regression requires Gemma 3 1B and its J-lens");
   if (
     !Number.isSafeInteger(result.stepTimeoutMs) ||
     result.stepTimeoutMs < 10_000

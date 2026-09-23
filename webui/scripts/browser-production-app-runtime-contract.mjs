@@ -30,6 +30,12 @@ const PRODUCTION_APP_MODEL_METADATA = Object.freeze({
     languages: Object.freeze(["en"]),
     license: "Gemma",
   }),
+  "gemma3-4b-instruct": Object.freeze({
+    displayName: "Gemma 3 4B",
+    tier: "quality",
+    languages: Object.freeze(["en"]),
+    license: "Gemma",
+  }),
   "qwen3-1.7b": Object.freeze({
     displayName: "Qwen3 1.7B",
     tier: "balanced",
@@ -117,6 +123,7 @@ export function isPublishedSaeDescriptionUrl(url, modelId) {
   const dictionary = {
     "gemma3-270m-instruct": "gemma-3-270m-it/12-gemmascope-2-res-16k",
     "gemma3-1b-instruct": "gemma-3-1b-it/13-gemmascope-2-res-16k",
+    "gemma3-4b-instruct": "gemma-3-4b-it/17-gemmascope-2-res-16k",
   }[modelId];
   if (!dictionary || typeof url !== "string") return false;
   const prefix = `https://www.neuronpedia.org/api/feature/${dictionary}/`;

@@ -1238,6 +1238,7 @@ function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckI
     : capabilities.storage.availableBytes === null ? "warn" : "pass";
   const runtimePrerequisites = capabilities.dedicatedWorker && capabilities.webAssembly;
   const runtimeReady = capabilities.operations.generation.available;
+  const runtimeDeviceBlocked = capabilities.issues.some((issue) => issue.severity === "hard");
   return [
     {
       id: "secure",
@@ -1294,11 +1295,13 @@ function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckI
     {
       id: "runtime",
       label: "Local model engine",
-      state: runtimePrerequisites ? runtimeReady ? "pass" : "warn" : "fail",
+      state: !runtimePrerequisites || runtimeDeviceBlocked ? "fail" : runtimeReady ? "pass" : "warn",
       detail: runtimePrerequisites
-        ? runtimeReady
-          ? "The tested local engine is ready to load a model."
-          : "This development build can show the interface, but its local model engine has not passed release checks yet."
+        ? runtimeDeviceBlocked
+          ? "The local model engine cannot run until the failed device checks are resolved."
+          : runtimeReady
+            ? "The tested local engine is ready to load a model."
+            : "The local model engine is unavailable in this build."
         : "This browser is missing features needed to run the model away from the main interface.",
     },
   ];

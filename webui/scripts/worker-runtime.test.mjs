@@ -918,7 +918,7 @@ try {
       selectedModelVariantId: variant.id,
       listInstalls({ installs }) {
         reads += 1;
-        if (reads === 2) throw new Error("fixture pack metadata refresh failed");
+        if (reads === 3) throw new Error("fixture pack metadata refresh failed");
         return structuredClone(installs);
       },
     });
@@ -938,22 +938,22 @@ try {
     assert.equal(status.download.phase, "failed");
   });
 
-  test("worker reconciles a same-ID pack against the current signed manifest", async () => {
+  for (const kind of ["sae", "jlens"]) test(`worker hides a stale same-ID ${kind} until it matches the current signed manifest`, async () => {
     const optionalPack = {
-      id: "smollm2-sae-current",
-      kind: "sae",
-      displayName: "SmolLM2 current SAE",
+      id: `smollm2-${kind}-current`,
+      kind,
+      displayName: `SmolLM2 current ${kind}`,
       ...optionalPackProvenance,
       bytes: 96,
       required: false,
       runtimeIdentitySha256: variant.runtimeIdentitySha256,
       compatibleContextBindingSha256: [variant.contextProfiles[0].bindingSha256],
       files: [{
-        path: "packs/sae-current.safetensors",
+        path: `packs/${kind}-current.safetensors`,
         role: "instrument",
         url: variant.files[0].url.replace(
           "weights/params.bin",
-          "packs/sae-current.safetensors",
+          `packs/${kind}-current.safetensors`,
         ),
         revision: variant.files[0].revision,
         bytes: 96,
@@ -1003,7 +1003,26 @@ try {
         },
       ],
     });
-    await prepareDownload(scope);
+    scope.send(request("unreconciled-pack-storage", "storage"));
+    assert.equal((await response(scope, "unreconciled-pack-storage")).ok, true);
+    assert.deepEqual(scope.messages.findLast(
+      (message) => message.kind === "event" && message.event === "status",
+    ).payload.installedPackIds, [optionalPack.id]);
+    await prepareCapabilities(scope);
+    scope.send(request("current-pack-catalog", "catalog", {}));
+    assert.equal((await response(scope, "current-pack-catalog")).ok, true);
+    assert.deepEqual(scope.messages.findLast(
+      (message) => message.kind === "event" && message.event === "status",
+    ).payload.installedPackIds, [], "catalog refresh must immediately reconcile pack versions");
+    scope.send(request("stale-pack-storage", "storage"));
+    assert.equal((await response(scope, "stale-pack-storage")).ok, true);
+    const staleStatus = scope.messages.findLast(
+      (message) => message.kind === "event" && message.event === "status",
+    ).payload;
+    assert.deepEqual(staleStatus.installedModelVariantIds, [variant.id]);
+    assert.deepEqual(staleStatus.installedPackIds, []);
+    assert.deepEqual(scope.installs.find((install) => install.id === optionalPack.id).objectHashes,
+      ["d".repeat(64)], "catalog reconciliation must not delete the previous pack");
     scope.send(request("download-current-pack", "download_pack", {
       modelVariantId: variant.id,
       packId: optionalPack.id,
@@ -1012,6 +1031,10 @@ try {
 
     assert.equal(completed.ok, true);
     assert.equal(downloadCalls, 1);
+    const currentStatus = scope.messages.findLast(
+      (message) => message.kind === "event" && message.event === "status",
+    ).payload;
+    assert.deepEqual(currentStatus.installedPackIds, [optionalPack.id]);
     assert.deepEqual(
       scope.installs.find((install) => install.id === optionalPack.id).objectHashes,
       [optionalPack.files[0].sha256],
@@ -1046,6 +1069,7 @@ try {
     let reportPreflight;
     const preflightStarted = new Promise((resolve) => (reportPreflight = resolve));
     const preflightRelease = new Promise((resolve) => (releasePreflight = resolve));
+    let blockPreflight = false;
     const scope = harness({
       async download() { return result; },
       async downloadPack() { assert.fail("cancelled preflight must not download"); },
@@ -1054,12 +1078,15 @@ try {
       catalog: packCatalog,
       selectedModelVariantId: variant.id,
       async listInstalls({ installs }) {
-        reportPreflight();
-        await preflightRelease;
+        if (blockPreflight) {
+          reportPreflight();
+          await preflightRelease;
+        }
         return structuredClone(installs);
       },
     });
     await prepareDownload(scope);
+    blockPreflight = true;
     scope.send(request("pack-preflight", "download_pack", {
       modelVariantId: variant.id,
       packId: optionalPack.id,
@@ -1385,7 +1412,7 @@ try {
       installs: [],
       listInstalls({ installs }) {
         reads += 1;
-        if (reads === 1) throw new Error("fixture metadata refresh failed");
+        if (reads === 2) throw new Error("fixture metadata refresh failed");
         return structuredClone(installs);
       },
     });

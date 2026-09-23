@@ -603,6 +603,32 @@ try {
     assert.equal(runtime.detail, "The tested local engine is ready to load a model.");
   });
 
+  for (const code of ["WEBGPU_UNAVAILABLE", "WEBGPU_ADAPTER_MISSING", "OPFS_READ_WRITE_FAILED"]) {
+    test(`${code} does not mislabel a verified engine as a development build`, async () => {
+      const failure = { code, message: "Device check failed", severity: "hard" };
+      const { bundle } = createBundle({
+        async check() {
+          const base = capabilities();
+          return capabilities({
+            supported: false,
+            issues: [failure],
+            operations: {
+              ...base.operations,
+              generation: { available: false, reasons: [failure] },
+            },
+          });
+        },
+      });
+      const shell = createShellController(bundle);
+      await shell.check();
+      const runtime = shell.current().checks.find(({ id }) => id === "runtime");
+      assert.equal(runtime.state, "fail");
+      assert.equal(runtime.detail, "The local model engine cannot run until the failed device checks are resolved.");
+      assert.doesNotMatch(runtime.detail, /development|release checks/);
+      assert.equal(shell.current().runtime.available, false);
+    });
+  }
+
   test("data saver suppresses the pre-download network estimate", async () => {
     navigator.connection.saveData = true;
     try {

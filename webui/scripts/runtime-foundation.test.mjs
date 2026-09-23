@@ -899,6 +899,36 @@ try {
     }
   });
 
+  test("missing WebGPU explains Linux Chromium flags without disabling the sandbox", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    try {
+      for (const userAgent of [
+        "X11; Linux x86_64 Chrome/153.0",
+        "X11; Linux x86_64 Chromium/153.0",
+        "X11; Linux x86_64 Chrome/153.0 Edg/153.0",
+        "X11; Linux x86_64 Firefox/155.0",
+        "Linux; Android 16 Chrome/153.0",
+        "Macintosh Chrome/153.0",
+        "Windows NT 10.0 Chrome/153.0",
+      ]) {
+        Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent } });
+        const linuxChromium = userAgent.includes("X11") && !userAgent.includes("Firefox");
+        for (const code of ["WEBGPU_UNAVAILABLE", "WEBGPU_ADAPTER_MISSING"]) {
+          const message = userErrors.userFacingError({ code });
+          assert.equal(message.includes("--use-angle=vulkan"), linuxChromium);
+          assert.equal(message.includes("Keep the browser sandbox enabled"), linuxChromium);
+          assert.doesNotMatch(message, /--no-sandbox|--disable-gpu-sandbox/);
+        }
+        for (const code of ["WEBGPU_CALIBRATION_FAILED", "WEBGPU_DEVICE_LOST", "WEBGPU_FEATURE_MISSING"]) {
+          assert.doesNotMatch(userErrors.userFacingError({ code }), /--use-angle=vulkan/);
+        }
+      }
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor);
+      else delete globalThis.navigator;
+    }
+  });
+
   test("persistent storage requests protection while the user gesture is active", async () => {
     let requests = 0;
     const order = [];

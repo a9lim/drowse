@@ -193,12 +193,13 @@
 
   async function returnToChats(destination: "chats" | "models" = "chats"): Promise<void> {
     if (returningHome) return;
+    const modelVariantId = shellSnapshot?.runtime.modelVariantId ?? shellSnapshot?.selectedModelVariantId;
     returningHome = true;
     try {
       await appController.prepareForReload();
       await flushConversationAutosave();
       Workbench = null;
-      if (destination === "models") showModels();
+      if (destination === "models") showModels(modelVariantId ?? undefined);
       else showHome();
       await tick();
       document.querySelector<HTMLElement>(destination === "models" ? ".app-shell h1" : ".home-shell h1")?.focus({ preventScroll: true });

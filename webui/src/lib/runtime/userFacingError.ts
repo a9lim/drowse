@@ -1,4 +1,4 @@
-import { WINDOWS_GPU_GUIDANCE, WINDOWS_INTEL_GEN9_BLOCK } from "./gpuRecovery";
+import { linuxChromiumWebGpuHint, WINDOWS_GPU_GUIDANCE, WINDOWS_INTEL_GEN9_BLOCK } from "./gpuRecovery";
 
 type ErrorMessage = string | ((raw: string) => string);
 
@@ -15,6 +15,13 @@ const MESSAGES: Array<[RegExp, ErrorMessage]> = [
   [/WEBGPU_LIMIT_TOO_LOW/u, webGpuLimitMessage],
   [/WEBGPU_FEATURE_(?:MISSING|UNAVAILABLE)/u,
     "This browser’s graphics support is missing a feature this model needs. Update your browser and graphics driver, then run the device check again. If it still fails, use another supported browser."],
+  [/^WEBGPU_(?:UNAVAILABLE|ADAPTER_MISSING)$/u,
+    () => {
+      const hint = typeof navigator === "undefined" ? null : linuxChromiumWebGpuHint(navigator.userAgent);
+      return hint
+        ? `Drowse could not find compatible hardware-accelerated graphics. ${hint}`
+        : "Drowse could not confirm compatible hardware-accelerated graphics. Update your browser and graphics driver, then run the device check again.";
+    }],
   [/WEBGPU_(?:UNAVAILABLE|ADAPTER_|CALIBRATION_|LIMIT_UNAVAILABLE)|SOFTWARE_ADAPTER|ADAPTER_KIND_UNKNOWN/u,
     "Drowse could not confirm compatible hardware-accelerated graphics. Update your browser and graphics driver, then run the device check again."],
   [/WEBGPU_(?:DEVICE|OUT_OF_MEMORY)|GPU_DEVICE|DEVICE_LOST/u,
