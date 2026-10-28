@@ -72,7 +72,7 @@ drowse experiment naturalness <model> "<prompt>" --manifold F -S EXPR [--max-tok
 drowse template create <name> --slot TOKEN --values V... --contexts FILE [--description TEXT] [-f]
 drowse template ls [-j] | show <name> [-j] | rm <name> [-y]
 drowse template score <name> -m MODEL [-S EXPR] [--by sum|mean] [-j]   # restricted-choice value distribution
-drowse lens fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K] [--prompt-batch B] [--standard] [-f]   # per-model R-lens by default (backward passes; resumes; --standard fits local:default instead)
+drowse lens fit <model> [--corpus FILE | --hf-corpus REPO[:CONFIG][@REV] [--text-field F]] [--prompts N] [--seq-len T] [--dim-batch K] [--prompt-batch B] [--standard] [-f]   # per-model R-lens by default (backward passes; resumes; --standard fits local:default instead)
 drowse lens fetch <model> [neuronpedia|workspace-r|workspace-j] | ls <model> | show <model> [source] | use <model> <source> | rm <model> [source] [-y]
 drowse lens top <model> "<prompt>" [-k K] [--layers L1,L2] [--position P] [-j]   # workspace readout on a raw prompt
 drowse lens decompose <selector> -m MODEL [-k K] [--layers L1,L2] [-j]   # J-space share + tokens of a direction
@@ -329,7 +329,8 @@ passes in drowse; resumable, checkpointed, OOM-adaptive — see
 `core/AGENTS.md`). The fit is compute-bound; `--layers` restriction is the one
 real wall-time lever. ~100 prompts is usable, 1000 is paper-parity; the default
 corpus is a commit-pinned FineWeb-Edu stream via the optional `datasets`
-dependency (`pip install 'drowse.ai[hf]'`).
+dependency (`pip install 'drowse.ai[hf]'`), and `--hf-corpus` streams any other
+Hub dataset the same way (`io/lens.py::HfLensCorpus`).
 
 Three read surfaces over either source, plus local fit and external fetch:
 

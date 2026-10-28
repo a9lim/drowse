@@ -30,7 +30,7 @@ from drowse.io.lens import (
     promote_lens_checkpoint,
     save_lens,
     save_lens_checkpoint_accumulator,
-    stream_default_lens_corpus,
+    stream_lens_corpus,
 )
 from drowse.io.paths import safe_model_id
 
@@ -87,8 +87,8 @@ def test_default_corpus_cancel_does_not_wait_for_blocked_provider(
     receiver = EmptyReceiver()
     monkeypatch.setattr(
         lens_io,
-        "_start_default_lens_corpus_process",
-        lambda _n: (process, receiver),
+        "_start_lens_corpus_process",
+        lambda _n, _corpus: (process, receiver),
     )
 
     def request_cancel() -> None:
@@ -98,7 +98,7 @@ def test_default_corpus_cancel_does_not_wait_for_blocked_provider(
     threading.Thread(target=request_cancel, daemon=True).start()
     started = time.monotonic()
     with pytest.raises(JacobianLensCancelled, match="streaming its corpus"):
-        stream_default_lens_corpus(1, cancel_event=cancelled)
+        stream_lens_corpus(1, cancel_event=cancelled)
     assert time.monotonic() - started < 1.0
     assert process.terminated and process.joined
     assert receiver.closed
@@ -142,12 +142,12 @@ def test_default_corpus_cancel_wins_a_simultaneously_ready_result(
     receiver = ReadyReceiver()
     monkeypatch.setattr(
         lens_io,
-        "_start_default_lens_corpus_process",
-        lambda _n: (FinishedProcess(), receiver),
+        "_start_lens_corpus_process",
+        lambda _n, _corpus: (FinishedProcess(), receiver),
     )
 
     with pytest.raises(JacobianLensCancelled, match="streaming its corpus"):
-        stream_default_lens_corpus(1, cancel_event=cancelled)
+        stream_lens_corpus(1, cancel_event=cancelled)
     assert receiver.closed
 
 
@@ -1038,3 +1038,200 @@ def test_checkpoint_progress_requires_consumed_prefix_identity() -> None:
     sidecar["consumed_prefix_sha256"] = None
     sidecar_path.write_text(json.dumps(sidecar))
     assert load_lens_checkpoint(_MODEL) is None
+
+
+# ------------------------------------------------- Hugging Face lens corpora --
+
+_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_hf_corpus_spec_records_repo_config_commit_and_preprocessing() -> None:
+    from drowse.io.lens import (
+        DEFAULT_LENS_CORPUS,
+        LENS_CORPUS_PREPROCESS_VERSION,
+        LENS_DOC_CHARS,
+        HfLensCorpus,
+    )
+
+    tail = f";preprocess={LENS_CORPUS_PREPROCESS_VERSION};doc_chars={LENS_DOC_CHARS}"
+    corpus = HfLensCorpus.parse(f"HuggingFaceFW/dclm_100BT-shuffled:default@{_SHA}")
+    assert corpus.pinned
+    assert corpus.spec == f"hf:HuggingFaceFW/dclm_100BT-shuffled/default@{_SHA}{tail}"
+    # The default corpus keeps the exact spec its existing fits recorded.
+    assert DEFAULT_LENS_CORPUS == HfLensCorpus.parse("HuggingFaceFW/fineweb-edu:sample-10BT")
+    assert HfLensCorpus("HuggingFaceFW/fineweb-edu", "sample-10BT", _SHA).spec == (
+        f"hf:HuggingFaceFW/fineweb-edu/sample-10BT@{_SHA}{tail}"
+    )
+    # A non-default column is part of the corpus identity.
+    other_field = HfLensCorpus.parse(f"o/r:c@{_SHA}", text_field="content")
+    assert other_field.spec == f"hf:o/r/c@{_SHA}{tail};text_field=content"
+
+
+def test_hf_corpus_parse_round_trips_and_rejects_malformed_specs() -> None:
+    from drowse.io.lens import HfLensCorpus
+
+    assert HfLensCorpus.parse("org/data") == HfLensCorpus("org/data")
+    assert HfLensCorpus.parse("org/data@v1.0") == HfLensCorpus("org/data", None, "v1.0")
+    # Branch names may contain slashes (e.g. the Hub's parquet conversion).
+    parquet = HfLensCorpus.parse("org/data:cfg@refs/convert/parquet")
+    assert parquet == HfLensCorpus("org/data", "cfg", "refs/convert/parquet")
+    for raw in ("org/data", "org/data:cfg", f"org/data:cfg@{_SHA}", "org/data@main"):
+        assert str(HfLensCorpus.parse(raw)) == raw
+    for unpinned in ("org/data", "org/data:cfg", f"org/data@{_SHA}", "org/data:cfg@main"):
+        corpus = HfLensCorpus.parse(unpinned)
+        assert not corpus.pinned
+        with pytest.raises(ValueError, match="not pinned"):
+            _ = corpus.spec
+    for bad in ("", "  ", ":cfg", "org/data:", "org/data@", "org/data@main:cfg", "org data"):
+        with pytest.raises(ValueError, match="REPO"):
+            HfLensCorpus.parse(bad)
+    with pytest.raises(ValueError, match="text field"):
+        HfLensCorpus.parse("org/data", text_field="")
+
+
+def test_lens_corpus_options_default_and_text_field_needs_hub_corpus() -> None:
+    from drowse.io.lens import DEFAULT_LENS_CORPUS, HfLensCorpus, lens_corpus_from_options
+
+    assert lens_corpus_from_options(None, None) is DEFAULT_LENS_CORPUS
+    assert lens_corpus_from_options("org/data", None) == HfLensCorpus("org/data")
+    assert lens_corpus_from_options("org/data", "body").text_field == "body"
+    with pytest.raises(ValueError, match="text field"):
+        lens_corpus_from_options(None, "body")
+
+
+def test_pin_resolves_revision_to_a_commit_and_names_the_default_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import datasets
+    import huggingface_hub
+
+    from drowse.io.lens import HfLensCorpus, pin_lens_corpus
+
+    asked: list[tuple[str, str | None]] = []
+
+    class FakeApi:
+        def dataset_info(self, repo: str, revision: str | None = None) -> Any:
+            asked.append((repo, revision))
+            return type("Info", (), {"sha": _SHA})()
+
+    def fake_builder(repo: str, revision: str | None = None) -> Any:
+        assert revision == _SHA  # the config is read at the pinned commit
+        config = type("Config", (), {"name": "default"})()
+        return type("Builder", (), {"config": config})()
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", FakeApi)
+    monkeypatch.setattr(datasets, "load_dataset_builder", fake_builder)
+    pinned = pin_lens_corpus(HfLensCorpus("org/data", None, "main", "body"))
+    assert pinned == HfLensCorpus("org/data", "default", _SHA, "body")
+    assert asked == [("org/data", "main")]
+    # Pinning is idempotent and makes no further Hub call.
+    assert pin_lens_corpus(pinned) is pinned
+    assert asked == [("org/data", "main")]
+
+
+def test_read_lens_documents_skips_empty_text_without_counting_it() -> None:
+    from drowse.core.jlens import JacobianLensError
+    from drowse.io.lens import LENS_DOC_CHARS, _read_lens_documents
+
+    rows = [
+        {"text": ""}, {"text": "  first  "}, {"text": None}, {"text": " \n\t"},
+        {"text": "second"}, {"text": "x" * (LENS_DOC_CHARS + 10)}, {"text": "fourth"},
+    ]
+    assert _read_lens_documents(rows, 2) == ["first", "second"]
+    assert _read_lens_documents(rows, 3)[-1] == "x" * LENS_DOC_CHARS
+    assert _read_lens_documents(rows, 99) == [
+        "first", "second", "x" * LENS_DOC_CHARS, "fourth",
+    ]
+    assert _read_lens_documents([{"body": " b ", "text": "t"}], 1, "body") == ["b"]
+    with pytest.raises(JacobianLensError, match="no 'body' field.*text"):
+        _read_lens_documents([{"text": "t"}], 1, "body")
+    with pytest.raises(JacobianLensError, match="holds list, not text"):
+        _read_lens_documents([{"text": ["a", "b"]}], 1)
+
+
+def _fake_hub_dataset(
+    monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Serve ``rows`` as every streamed dataset, recording each open."""
+    import datasets
+
+    opened: list[dict[str, Any]] = []
+
+    def fake_load_dataset(repo: str, **kwargs: Any) -> Any:
+        opened.append({"repo": repo, **kwargs})
+        return iter(rows)
+
+    monkeypatch.setattr(datasets, "load_dataset", fake_load_dataset)
+    return opened
+
+
+def test_hf_corpus_read_is_the_pinned_train_split_by_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from drowse.io.lens import HfLensCorpus, _collect_lens_corpus
+
+    rows = [{"text": t} for t in ("a doc", "", "b doc", None, "c doc", "d doc")]
+    opened = _fake_hub_dataset(monkeypatch, rows)
+    corpus = HfLensCorpus("org/shuffled", "default", _SHA)
+    small, small_spec = _collect_lens_corpus(2, corpus)
+    large, large_spec = _collect_lens_corpus(4, corpus)
+    assert small == ["a doc", "b doc"]
+    assert large == ["a doc", "b doc", "c doc", "d doc"]
+    assert large[: len(small)] == small
+    assert small_spec == large_spec == corpus.spec
+    assert opened == [{
+        "repo": "org/shuffled", "name": "default", "split": "train",
+        "streaming": True, "revision": _SHA,
+    }] * 2
+
+
+def test_corpus_stream_terminates_a_worker_stuck_after_its_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a cancel event the read still runs in the worker, and a worker
+    that never exits (pyarrow's pool after an early-stopped stream) is
+    terminated once its result arrives."""
+    import drowse.io.lens as lens_io
+    from drowse.io.lens import HfLensCorpus
+
+    corpus = HfLensCorpus("org/data", "default", _SHA)
+
+    class StuckProcess:
+        terminated = False
+
+        def is_alive(self) -> bool:
+            return not self.terminated
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            raise AssertionError("terminate suffices")
+
+        def join(self, timeout: float = 0) -> None:
+            del timeout
+
+    class ResultReceiver:
+        closed = False
+
+        def poll(self, timeout: float) -> bool:
+            del timeout
+            return True
+
+        def recv(self) -> object:
+            return ("ok", (["doc"], corpus.spec))
+
+        def close(self) -> None:
+            self.closed = True
+
+    process, receiver = StuckProcess(), ResultReceiver()
+    started: list[tuple[int, HfLensCorpus]] = []
+
+    def start(n: int, started_corpus: HfLensCorpus) -> tuple[Any, Any]:
+        started.append((n, started_corpus))
+        return process, receiver
+
+    monkeypatch.setattr(lens_io, "_start_lens_corpus_process", start)
+    assert stream_lens_corpus(5, corpus) == (["doc"], corpus.spec)
+    assert started == [(5, corpus)]
+    assert process.terminated and receiver.closed

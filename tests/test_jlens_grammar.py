@@ -298,7 +298,10 @@ def test_lens_noop_preflight_requires_exact_model_source(
 ) -> None:
     from drowse.io.lens import lens_paths
 
-    expected_spec = "hf:repo/config@dataset-rev-a"
+    from drowse.io.lens import HfLensCorpus
+
+    corpus = HfLensCorpus("repo", "config", "a" * 40)
+    expected_spec = corpus.spec
     tensor_path, sidecar_path = lens_paths("toy/model")
     tensor_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path = sidecar_path.parent / "jlens.layer-0.gen-test.safetensors"
@@ -328,35 +331,37 @@ def test_lens_noop_preflight_requires_exact_model_source(
         "drowse.core.model.model_source_fingerprint",
         lambda *_args, **_kwargs: "source-a",
     )
-    monkeypatch.setattr(
-        "drowse.io.lens.resolved_default_lens_corpus_spec",
-        lambda: ("dataset-rev-a", expected_spec),
-    )
     args = argparse.Namespace(
         force=False, model="toy/model", quantize=None, device="cpu",
         seq_len=None, corpus=None, prompts=100,
     )
-    assert _try_lens_fit_noop_preflight(args, [0])
+    assert _try_lens_fit_noop_preflight(args, [0], hf_corpus=corpus)
     shard_path.write_bytes(b"corrupt")
-    assert not _try_lens_fit_noop_preflight(args, [0])
+    assert not _try_lens_fit_noop_preflight(args, [0], hf_corpus=corpus)
     shard_path.write_bytes(b"lens")
     sidecar["model_source_fingerprint"] = "source-b"
-    assert not _try_lens_fit_noop_preflight(args, [0])
+    assert not _try_lens_fit_noop_preflight(args, [0], hf_corpus=corpus)
 
 
-def test_lens_noop_preflight_rejects_changed_default_dataset_revision(
+def test_lens_noop_preflight_rejects_changed_dataset_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.lens import lens_paths
+    from drowse.io.lens import HfLensCorpus, lens_paths
 
-    tensor_path, _ = lens_paths("toy/model")
+    old = HfLensCorpus("repo", "config", "0" * 40)
+    new = HfLensCorpus("repo", "config", "1" * 40)
+
+    tensor_path, sidecar_path = lens_paths("toy/model")
     tensor_path.parent.mkdir(parents=True, exist_ok=True)
-    tensor_path.write_bytes(b"lens")
-    sidecar = {
+    shard_path = sidecar_path.parent / "jlens.layer-0.gen-test.safetensors"
+    shard_path.write_bytes(b"lens")
+    sidecar: dict[str, object] = {
+        "format_version": 4,
         "source_layers": [0], "model_layer_count": 2,
         "model_source_fingerprint": "source-a",
-        "tensor_sha256": hashlib.sha256(b"lens").hexdigest(),
-        "seq_len": 128, "corpus_spec": "hf:repo/config@old",
+        "tensor_files": {"0": shard_path.name},
+        "tensor_sha256": {"0": hashlib.sha256(b"lens").hexdigest()},
+        "seq_len": 128, "corpus_spec": old.spec,
         "raw_prompt_count": 100, "usable_prompt_count": 100,
         "n_prompts": 100, "d_model": 6,
     }
@@ -371,15 +376,21 @@ def test_lens_noop_preflight_rejects_changed_default_dataset_revision(
         "drowse.core.model.model_source_fingerprint",
         lambda *_args, **_kwargs: "source-a",
     )
-    monkeypatch.setattr(
-        "drowse.io.lens.resolved_default_lens_corpus_spec",
-        lambda: ("new", "hf:repo/config@new"),
-    )
     args = argparse.Namespace(
         force=False, model="toy/model", quantize=None, device="cpu",
         seq_len=None, corpus=None, prompts=100,
     )
-    assert not _try_lens_fit_noop_preflight(args, [0])
+    assert _try_lens_fit_noop_preflight(args, [0], hf_corpus=old)
+    assert not _try_lens_fit_noop_preflight(args, [0], hf_corpus=new)
+    # Another dataset, or the same one read from another column, is another
+    # corpus even at the recorded commit.
+    assert not _try_lens_fit_noop_preflight(
+        args, [0], hf_corpus=HfLensCorpus("other/repo", "config", "0" * 40),
+    )
+    assert not _try_lens_fit_noop_preflight(
+        args, [0],
+        hf_corpus=HfLensCorpus("repo", "config", "0" * 40, "content"),
+    )
 
 
 def test_lens_noop_preflight_holds_fit_lock_during_sidecar_read(
