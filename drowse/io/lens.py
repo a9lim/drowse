@@ -30,8 +30,9 @@ import threading
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
-from collections.abc import Callable, Iterable, Mapping
-from typing import Any, cast
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Any, Protocol, cast, overload
 
 import torch
 from safetensors import safe_open
@@ -1423,6 +1424,12 @@ _DATASETS_MISSING = (
     "dependency — `pip install 'drowse.ai[hf]'`, or supply a corpus "
     "file (one document per line)"
 )
+_SOURCE_OPTIONS = ("text_field", "files", "seed", "weight")
+#: Streams an interleave reads at once.  Opening a Hub data file costs one
+#: round trip plus its first row group (seconds each), so a read spread over
+#: dozens of files is latency-bound; every stream's documents are fixed by
+#: its own position in the data, so the concurrency never changes the result.
+_CORPUS_READ_THREADS = 8
 
 
 @dataclass(frozen=True)
@@ -1430,8 +1437,11 @@ class HfLensCorpus:
     """A Hugging Face dataset read as a lens-fit corpus.
 
     The corpus is the first N non-empty ``text_field`` values of the train
-    split, each stripped and sliced to :data:`LENS_DOC_CHARS`.  The first N
-    documents of a longer read are exactly those of a shorter one, so a fit
+    split, each stripped and sliced to :data:`LENS_DOC_CHARS`.  With
+    ``files=K`` they come round-robin from K of the split's data files
+    instead, ordered by a ``seed``-keyed hash of their paths, which spreads a
+    sample over a dataset whose rows are not shuffled.  Either way the first
+    N documents of a longer read are exactly those of a shorter one, so a fit
     grows or resumes by token-id prefix; on a globally shuffled dataset the
     head is a random sample and growing a fit adds a nested one.  ``revision``
     is any branch, tag, or commit until :func:`pin_lens_corpus` fixes it to a
@@ -1443,24 +1453,18 @@ class HfLensCorpus:
     config: str | None = None
     revision: str | None = None
     text_field: str = "text"
+    files: int | None = None
+    seed: int = 0
 
-    @classmethod
-    def parse(cls, raw: str, *, text_field: str = "text") -> "HfLensCorpus":
-        """Parse ``REPO[:CONFIG][@REV]``, the CLI and fit-route spelling."""
-        head, at, revision = raw.strip().partition("@")
-        repo, colon, config = head.partition(":")
-        if (
-            not repo or any(ch.isspace() for ch in repo)
-            or (colon and not config) or (at and not revision)
-            or ":" in revision
-        ):
-            raise ValueError(
-                f"bad Hugging Face corpus {raw!r} (want REPO[:CONFIG][@REV], "
-                "e.g. HuggingFaceFW/dclm_100BT-shuffled)"
-            )
-        if not text_field:
+    def __post_init__(self) -> None:
+        if not self.text_field:
             raise ValueError("the corpus text field must not be empty")
-        return cls(repo, config or None, revision or None, text_field)
+        if self.files is not None and self.files < 1:
+            raise ValueError("files must be at least 1")
+        if self.seed < 0:
+            raise ValueError("seed must not be negative")
+        if self.seed and self.files is None:
+            raise ValueError("seed applies only with files=K")
 
     @property
     def pinned(self) -> bool:
@@ -1473,7 +1477,8 @@ class HfLensCorpus:
         """Provenance recorded as the fit's ``corpus_spec``.
 
         ``hf:REPO/CONFIG@COMMIT;preprocess=…;doc_chars=…``, plus
-        ``;text_field=…`` when the text is not in ``text``, so the default
+        ``;text_field=…`` when the text is not in ``text`` and
+        ``;files=…;seed=…`` for a read spread over files, so the default
         corpus keeps the spec its existing fits recorded.
         """
         if not self.pinned:
@@ -1484,6 +1489,8 @@ class HfLensCorpus:
         )
         if self.text_field != "text":
             spec += f";text_field={self.text_field}"
+        if self.files is not None:
+            spec += f";files={self.files};seed={self.seed}"
         return spec
 
     def __str__(self) -> str:
@@ -1492,8 +1499,53 @@ class HfLensCorpus:
             text += f":{self.config}"
         if self.revision is not None:
             text += f"@{self.revision}"
+        if self.text_field != "text":
+            text += f",text_field={self.text_field}"
+        if self.files is not None:
+            text += f",files={self.files},seed={self.seed}"
         return text
 
+
+@dataclass(frozen=True)
+class LensCorpusMix:
+    """Several Hub corpora interleaved by integer weight.
+
+    Documents are drawn by smooth weighted round-robin, ties going to the
+    earlier corpus, so weights 3,1 read A A B A A A B A …; a corpus that runs
+    out leaves the schedule.  The schedule never depends on N, so the mix
+    keeps the prefix property of its parts and a fit on it resumes and grows
+    the same way.
+    """
+
+    parts: tuple[HfLensCorpus, ...]
+    weights: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.parts) < 2 or len(self.weights) != len(self.parts):
+            raise ValueError("a corpus mix needs one weight per corpus, ≥ 2")
+        if any(weight < 1 for weight in self.weights):
+            raise ValueError("corpus weights must be at least 1")
+
+    @property
+    def pinned(self) -> bool:
+        return all(part.pinned for part in self.parts)
+
+    @property
+    def spec(self) -> str:
+        """``mix:W*SPEC|W*SPEC…``, each part's own spec in schedule order."""
+        return "mix:" + "|".join(
+            f"{weight}*{part.spec}"
+            for part, weight in zip(self.parts, self.weights)
+        )
+
+    def __str__(self) -> str:
+        return " + ".join(
+            f"{part},weight={weight}"
+            for part, weight in zip(self.parts, self.weights)
+        )
+
+
+LensCorpus = HfLensCorpus | LensCorpusMix
 
 #: Default web-text corpus for a lens fit — the paper-parity pretraining-like
 #: sample.  Shared by CLI ``lens fit`` / ``sae train`` and the server's fit and
@@ -1501,29 +1553,98 @@ class HfLensCorpus:
 DEFAULT_LENS_CORPUS = HfLensCorpus("HuggingFaceFW/fineweb-edu", "sample-10BT")
 
 
-def lens_corpus_from_options(
-    hf_corpus: str | None, text_field: str | None,
-) -> HfLensCorpus:
-    """The Hub corpus a fit streams: ``hf_corpus`` when given, else the default.
+def parse_lens_corpus(sources: Sequence[str] | None) -> LensCorpus:
+    """The corpus named by CLI ``--hf-corpus`` values or the fit route's list.
 
-    Raises ``ValueError`` for a malformed spec, or a text field without one.
+    Each source is ``REPO[:CONFIG][@REV][,KEY=VALUE…]`` with keys
+    ``text_field`` (default ``text``), ``files`` (spread the read over that
+    many data files), ``seed`` (their order, default 0), and ``weight`` (a mix
+    member's share, default 1).  Several sources make a
+    :class:`LensCorpusMix`; none is the default corpus.  Raises
+    ``ValueError`` for a malformed source.
     """
-    if hf_corpus is None:
-        if text_field is not None:
-            raise ValueError("a corpus text field needs a Hugging Face corpus")
+    if not sources:
         return DEFAULT_LENS_CORPUS
-    return HfLensCorpus.parse(
-        hf_corpus, text_field="text" if text_field is None else text_field,
+    parsed = [_parse_source(raw) for raw in sources]
+    if len(parsed) == 1:
+        corpus, weight = parsed[0]
+        if weight is not None:
+            raise ValueError("weight applies only to a mix of several corpora")
+        return corpus
+    return LensCorpusMix(
+        tuple(corpus for corpus, _weight in parsed),
+        tuple(1 if weight is None else weight for _corpus, weight in parsed),
     )
 
 
-def pin_lens_corpus(corpus: HfLensCorpus = DEFAULT_LENS_CORPUS) -> HfLensCorpus:
-    """Fix ``corpus`` to an immutable Hub commit and a named config.
+def _parse_source(raw: str) -> tuple[HfLensCorpus, int | None]:
+    source, *options = raw.strip().split(",")
+    head, at, revision = source.partition("@")
+    repo, colon, config = head.partition(":")
+    if (
+        not repo or any(ch.isspace() for ch in source)
+        or (colon and not config) or (at and not revision)
+        or ":" in revision
+    ):
+        raise ValueError(
+            f"bad Hugging Face corpus {raw!r} (want "
+            "REPO[:CONFIG][@REV][,KEY=VALUE…], e.g. "
+            "HuggingFaceFW/dclm_100BT-shuffled)"
+        )
+    values: dict[str, str] = {}
+    for option in options:
+        key, eq, value = option.partition("=")
+        if key not in _SOURCE_OPTIONS or not eq or not value or key in values:
+            raise ValueError(
+                f"bad corpus option {option!r} in {raw!r} (want KEY=VALUE, "
+                f"KEY one of {', '.join(_SOURCE_OPTIONS)}, each at most once)"
+            )
+        values[key] = value
+    try:
+        ints = {
+            key: int(values[key])
+            for key in ("files", "seed", "weight") if key in values
+        }
+    except ValueError:
+        raise ValueError(
+            f"files, seed, and weight take integers, in {raw!r}"
+        ) from None
+    weight = ints.get("weight")
+    if weight is not None and weight < 1:
+        raise ValueError("corpus weights must be at least 1")
+    corpus = HfLensCorpus(
+        repo, config or None, revision or None,
+        values.get("text_field", "text"), ints.get("files"),
+        ints.get("seed", 0),
+    )
+    if "seed" in ints and corpus.files is None:
+        raise ValueError("seed applies only with files=K")
+    return corpus, weight
 
-    An already pinned corpus is returned as is, without a Hub call.  An
+
+@overload
+def pin_lens_corpus(corpus: HfLensCorpus = ...) -> HfLensCorpus: ...
+
+
+@overload
+def pin_lens_corpus(corpus: LensCorpusMix) -> LensCorpusMix: ...
+
+
+def pin_lens_corpus(corpus: LensCorpus = DEFAULT_LENS_CORPUS) -> LensCorpus:
+    """Fix ``corpus`` (each part of a mix) to a Hub commit and named config.
+
+    An already pinned source is returned as is, without a Hub call.  An
     omitted config resolves to the dataset's default at that commit, which
     needs the optional ``datasets`` dependency.
     """
+    if isinstance(corpus, LensCorpusMix):
+        return replace(
+            corpus, parts=tuple(_pin_source(part) for part in corpus.parts),
+        )
+    return _pin_source(corpus)
+
+
+def _pin_source(corpus: HfLensCorpus) -> HfLensCorpus:
     from drowse.core.jlens import JacobianLensError
 
     if corpus.pinned:
@@ -1560,11 +1681,9 @@ def pin_lens_corpus(corpus: HfLensCorpus = DEFAULT_LENS_CORPUS) -> HfLensCorpus:
     return replace(corpus, config=str(config), revision=str(revision))
 
 
-
-
 def stream_lens_corpus(
     n: int,
-    corpus: HfLensCorpus = DEFAULT_LENS_CORPUS,
+    corpus: LensCorpus = DEFAULT_LENS_CORPUS,
     *,
     cancel_event: threading.Event | None = None,
 ) -> tuple[list[str], str]:
@@ -1633,25 +1752,172 @@ def stream_lens_corpus(
 
 
 def _collect_lens_corpus(
-    n: int, corpus: HfLensCorpus,
+    n: int, corpus: LensCorpus,
 ) -> tuple[list[str], str]:
     """Direct provider read; runs inside the isolated corpus worker."""
     from drowse.core.jlens import JacobianLensError
 
     try:
-        from datasets import load_dataset
+        import datasets  # noqa: F401 — fail early with the install hint
     except ImportError as e:
         raise JacobianLensError(_DATASETS_MISSING) from e
 
     pinned = pin_lens_corpus(corpus)
-    try:
-        stream = load_dataset(
-            pinned.repo, name=pinned.config, split="train", streaming=True,
-            revision=pinned.revision,
+    return _document_stream(pinned).prefix(n), pinned.spec
+
+
+class _DocumentStream(Protocol):
+    def prefix(self, n: int) -> list[str]:
+        """The stream's first ``n`` documents, fewer once it runs dry."""
+        ...
+
+
+def _document_stream(corpus: LensCorpus) -> _DocumentStream:
+    if isinstance(corpus, LensCorpusMix):
+        return _Interleave(
+            [_document_stream(part) for part in corpus.parts], corpus.weights,
         )
+    if corpus.files is None:
+        return _Documents(corpus)
+    files = _spread_files(corpus)
+    return _Interleave(
+        [_Documents(corpus, data_file) for data_file in files], [1] * len(files),
+    )
+
+
+def _spread_files(corpus: HfLensCorpus) -> list[str]:
+    """The first ``files`` train data files of a pinned source, in the order
+    of a ``seed``-keyed hash of their repository paths."""
+    from datasets import load_dataset_builder
+
+    from drowse.core.jlens import JacobianLensError
+
+    try:
+        data_files = load_dataset_builder(
+            corpus.repo, name=corpus.config, revision=corpus.revision,
+        ).config.data_files
+        urls = [str(url) for url in (data_files or {}).get("train", [])]
     except Exception as exc:
-        raise JacobianLensError(f"could not open {pinned}: {exc}") from exc
-    return _read_lens_documents(stream, n, pinned.text_field), pinned.spec
+        raise JacobianLensError(
+            f"could not list the train files of {corpus}: {exc}"
+        ) from exc
+    if not urls:
+        raise JacobianLensError(f"{corpus} has no train data files to spread over")
+    marker = f"@{corpus.revision}/"
+    paths = [url.split(marker, 1)[1] if marker in url else url for url in urls]
+    paths.sort(
+        key=lambda path: hashlib.sha256(
+            f"{corpus.seed}:{path}".encode("utf-8")
+        ).digest()
+    )
+    assert corpus.files is not None
+    return paths[: corpus.files]
+
+
+class _Documents:
+    """A pinned source's non-empty documents, from its whole train split or
+    one of its data files; a longer request rereads from the start."""
+
+    def __init__(self, corpus: HfLensCorpus, data_file: str | None = None) -> None:
+        self._corpus = corpus
+        self._data_file = data_file
+        self._docs: list[str] = []
+        self._exhausted = False
+
+    def prefix(self, n: int) -> list[str]:
+        if len(self._docs) < n and not self._exhausted:
+            self._docs = _read_lens_documents(
+                self._rows(), n, self._corpus.text_field,
+            )
+            self._exhausted = len(self._docs) < n
+        return self._docs[:n]
+
+    def _rows(self) -> Iterable[Mapping[str, Any]]:
+        from datasets import load_dataset
+
+        from drowse.core.jlens import JacobianLensError
+
+        corpus = self._corpus
+        extra: dict[str, Any] = {}
+        where = str(corpus)
+        if self._data_file is not None:
+            extra["data_files"] = {"train": [self._data_file]}
+            where = f"{self._data_file} of {corpus}"
+        try:
+            return load_dataset(
+                corpus.repo, name=corpus.config, split="train", streaming=True,
+                revision=corpus.revision, **extra,
+            )
+        except Exception as exc:
+            raise JacobianLensError(f"could not open {where}: {exc}") from exc
+
+
+class _Interleave:
+    """Document streams merged by :func:`_weighted_schedule`."""
+
+    def __init__(
+        self, streams: Sequence[_DocumentStream], weights: Sequence[int],
+    ) -> None:
+        self._streams = list(streams)
+        self._weights = list(weights)
+
+    def prefix(self, n: int) -> list[str]:
+        # Schedule assuming every stream is long enough; a stream that comes
+        # up short is capped at what it has and the schedule is redrawn, which
+        # equals drawing lazily and dropping a stream when it runs dry.
+        from concurrent.futures import ThreadPoolExecutor
+
+        caps: dict[int, int] = {}
+        while True:
+            order = _weighted_schedule(self._weights, n, caps)
+            counts = Counter(order)
+            with ThreadPoolExecutor(
+                max_workers=max(1, min(_CORPUS_READ_THREADS, len(counts))),
+                thread_name_prefix="drowse-lens-corpus",
+            ) as pool:
+                docs = dict(zip(counts, pool.map(
+                    lambda item: self._streams[item[0]].prefix(item[1]),
+                    counts.items(),
+                )))
+            short = {k: len(docs[k]) for k, c in counts.items() if len(docs[k]) < c}
+            if not short:
+                break
+            caps.update(short)
+        taken = Counter[int]()
+        merged: list[str] = []
+        for k in order:
+            merged.append(docs[k][taken[k]])
+            taken[k] += 1
+        return merged
+
+
+def _weighted_schedule(
+    weights: Sequence[int], n: int, caps: Mapping[int, int],
+) -> list[int]:
+    """The stream index of each of the first ``n`` merged documents.
+
+    Smooth weighted round-robin: each pick credits every live stream with its
+    weight, takes the stream with the most credit (the earlier on a tie), and
+    charges it the live total.  A stream that has given ``caps[k]`` documents
+    is dry: it leaves the schedule and the pick is retaken among the rest.
+    """
+    credit = [0] * len(weights)
+    taken = [0] * len(weights)
+    live = list(range(len(weights)))
+    order: list[int] = []
+    while len(order) < n and live:
+        for k in live:
+            credit[k] += weights[k]
+        while live:
+            best = max(live, key=lambda k: (credit[k], -k))
+            if best in caps and taken[best] >= caps[best]:
+                live.remove(best)
+                continue
+            credit[best] -= sum(weights[k] for k in live)
+            taken[best] += 1
+            order.append(best)
+            break
+    return order
 
 
 def _read_lens_documents(
@@ -1687,7 +1953,7 @@ def _read_lens_documents(
     return docs
 
 
-def _lens_corpus_process(n: int, corpus: HfLensCorpus, sender: Any) -> None:
+def _lens_corpus_process(n: int, corpus: LensCorpus, sender: Any) -> None:
     """Spawn target that transports only JSON/pickle-safe result payloads."""
     from drowse.core.jlens import JacobianLensError
 
@@ -1709,7 +1975,7 @@ def _lens_corpus_process(n: int, corpus: HfLensCorpus, sender: Any) -> None:
 
 
 def _start_lens_corpus_process(
-    n: int, corpus: HfLensCorpus,
+    n: int, corpus: LensCorpus,
 ) -> tuple[Any, Any]:
     """Start a spawn-only provider process, safe beside initialized MPS."""
     import multiprocessing

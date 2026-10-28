@@ -342,7 +342,7 @@ exits 2.
 `top`/`rm` (the artifact is per-model); `decompose` takes a selector positional
 and a required `-m`.
 
-- `fit <model> [--corpus FILE | --hf-corpus REPO[:CONFIG][@REV] [--text-field F]]
+- `fit <model> [--corpus FILE | --hf-corpus REPO[:CONFIG][@REV][,KEY=VALUE…] …]
   [--prompts N] [--seq-len T] [--dim-batch K]
   [--prompt-batch B] [--checkpoint-every N] [--layers …] [--standard] [-f] [-d] [-q]`.
   Defaults: 100 prompts, seq-len 128, dim-batch 8, prompt-batch 4 (2 on MPS),
@@ -357,14 +357,22 @@ and a required `-m`.
   `file:<name>`. Otherwise the fit streams a Hub corpus
   (`io.lens.HfLensCorpus`) via the optional `datasets` dependency: the default
   web-text sample (FineWeb-Edu `sample-10BT`), or `--hf-corpus`, the first N
-  non-empty `--text-field` values (default `text`) of a dataset's train split.
-  `_pinned_lens_hf_corpus` pins it once per fit (REV, default `main`, to its
-  commit; an omitted CONFIG to the dataset's default), and the pinned
-  `hf:REPO/CONFIG@COMMIT;preprocess=…;doc_chars=…[;text_field=…]` spec is both
-  the recorded `corpus_spec` and the no-op preflight's corpus identity. The
-  docs are the same for any N up to the first N, so a larger `--prompts` tops
-  up by token-id prefix; spell REV as the recorded commit to grow a fit after
-  the dataset moves. The read runs in a spawned worker that is terminated once
+  non-empty `text_field=F` values (default `text`) of a dataset's train split.
+  `files=K` reads them round-robin from K of the split's data files instead,
+  ordered by a `seed=S` (default 0) hash of their repository paths, which
+  spreads a sample over a dataset whose rows are not shuffled (most Chinese
+  web corpora on the Hub are ordered by crawl or score band). Repeating
+  `--hf-corpus` mixes corpora (`io.lens.LensCorpusMix`) by smooth weighted
+  round-robin over `weight=W` (default 1; ties to the earlier flag; a corpus
+  that runs dry drops out). `_pinned_lens_hf_corpus` pins every source once
+  per fit (REV, default `main`, to its commit; an omitted CONFIG to the
+  dataset's default), and the pinned spec — `hf:REPO/CONFIG@COMMIT;preprocess=…;
+  doc_chars=…[;text_field=…][;files=…;seed=…]`, or `mix:W*SPEC|W*SPEC…` — is
+  both the recorded `corpus_spec` and the no-op preflight's corpus identity.
+  No schedule depends on N, so the first N documents of a longer read are
+  those of a shorter one and a larger `--prompts` tops up by token-id prefix;
+  spell REV as the recorded commit to grow a fit after the dataset moves. The
+  read runs in a spawned worker that is terminated once
   it reports, because pyarrow can block interpreter exit after a stream stops
   early. `--layers`
   accepts explicit indices, `workspace`, or `all`; `sample` is rejected because

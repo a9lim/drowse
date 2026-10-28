@@ -12,7 +12,7 @@ from drowse.cli.parsers import _LENS_VERBS
 from drowse.cli.runners.shared import _print_verb_menu, _drowse_error_exit
 
 if TYPE_CHECKING:
-    from drowse.io.lens import HfLensCorpus
+    from drowse.io.lens import LensCorpus
 
 
 #: Documents are sliced to this many characters before tokenization — the fit
@@ -43,24 +43,19 @@ def _parse_layer_list(raw: "str | None") -> "list[int] | str | None":
     return layers
 
 
-def _pinned_lens_hf_corpus(args: argparse.Namespace) -> "HfLensCorpus | None":
+def _pinned_lens_hf_corpus(args: argparse.Namespace) -> "LensCorpus | None":
     """The Hub corpus ``lens fit`` streams, pinned once for the whole fit.
 
-    ``--hf-corpus`` names it (``--text-field`` picks its column); unset, it is
-    the default web-text sample. ``None`` for ``--corpus FILE``.
+    ``--hf-corpus`` names it, and repeating it names a weighted mix; unset, it
+    is the default web-text sample. ``None`` for ``--corpus FILE``.
     """
     from drowse.core.jlens import JacobianLensError
-    from drowse.io.lens import lens_corpus_from_options, pin_lens_corpus
+    from drowse.io.lens import parse_lens_corpus, pin_lens_corpus
 
-    hf_corpus = getattr(args, "hf_corpus", None)
-    text_field = getattr(args, "text_field", None)
-    if text_field is not None and hf_corpus is None:
-        print("lens fit: --text-field applies to --hf-corpus", file=sys.stderr)
-        sys.exit(2)
     if args.corpus is not None:
         return None
     try:
-        corpus = lens_corpus_from_options(hf_corpus, text_field)
+        corpus = parse_lens_corpus(getattr(args, "hf_corpus", None))
     except ValueError as e:
         print(f"lens fit: {e}", file=sys.stderr)
         sys.exit(2)
@@ -72,7 +67,7 @@ def _pinned_lens_hf_corpus(args: argparse.Namespace) -> "HfLensCorpus | None":
 
 
 def _load_lens_corpus(
-    args: argparse.Namespace, hf_corpus: "HfLensCorpus | None",
+    args: argparse.Namespace, hf_corpus: "LensCorpus | None",
 ) -> tuple[list[str], str]:
     """Return ``(documents, corpus_spec)`` for ``lens fit``.
 
@@ -147,7 +142,7 @@ def _try_lens_fit_noop_preflight(
     requested_layers: "list[int] | str | None",
     *,
     docs: list[str] | None = None,
-    hf_corpus: "HfLensCorpus | None" = None,
+    hf_corpus: "LensCorpus | None" = None,
 ) -> bool:
     """Serialize the complete model-free proof/reap/report transaction."""
     if args.force:
@@ -169,7 +164,7 @@ def _try_lens_fit_noop_preflight_locked(
     requested_layers: "list[int] | str | None",
     *,
     docs: list[str] | None = None,
-    hf_corpus: "HfLensCorpus | None" = None,
+    hf_corpus: "LensCorpus | None" = None,
 ) -> bool:
     """Prove an existing fit is exact without loading model weights.
 

@@ -475,13 +475,13 @@ class TestPreparations:
     def test_lens_fit_streams_the_requested_hub_corpus(
         self, session_and_client: Any, monkeypatch: Any,
     ) -> None:
-        from drowse.io.lens import HfLensCorpus
+        from drowse.io.lens import HfLensCorpus, LensCorpusMix
 
         session, client = session_and_client
-        streamed: list[tuple[int, HfLensCorpus]] = []
+        streamed: list[tuple[int, Any]] = []
 
         def _stream(
-            n: int, corpus: HfLensCorpus, *, cancel_event: Any = None,
+            n: int, corpus: Any, *, cancel_event: Any = None,
         ) -> tuple[list[str], str]:
             streamed.append((n, corpus))
             return ["a long enough prompt."], "hf:org/data/cfg@sha"
@@ -491,7 +491,10 @@ class TestPreparations:
             f"{_BASE}/lens/preparations",
             json={
                 "operation": "fit", "prompts": 3, "layers": "workspace",
-                "hf_corpus": "org/data:cfg@main", "text_field": "body",
+                "hf_corpus": [
+                    "org/data:cfg@main,text_field=body,weight=2",
+                    "org/zh:cmn,files=8,seed=1",
+                ],
             },
         )
         assert resp.status_code == 202
@@ -500,7 +503,10 @@ class TestPreparations:
             if client.get(f"{_BASE}/lens/preparations").json()["state"] != "running":
                 break
             time.sleep(0.01)
-        assert streamed == [(3, HfLensCorpus("org/data", "cfg", "main", "body"))]
+        assert streamed == [(3, LensCorpusMix((
+            HfLensCorpus("org/data", "cfg", "main", "body"),
+            HfLensCorpus("org/zh", "cmn", files=8, seed=1),
+        ), (2, 1)))]
         assert session.fit_jlens.call_args.kwargs["corpus_spec"] == (
             "hf:org/data/cfg@sha"
         )
@@ -510,8 +516,11 @@ class TestPreparations:
     ) -> None:
         _session, client = session_and_client
         for fields, needle in (
-            ({"hf_corpus": "org/data@"}, "REPO"),
-            ({"text_field": "body"}, "text field"),
+            ({"hf_corpus": ["org/data@"]}, "REPO"),
+            ({"hf_corpus": ["org/data,weight=2"]}, "only to a mix"),
+            ({"hf_corpus": "org/data"}, "hf_corpus"),
+            ({"hf_corpus": []}, "hf_corpus"),
+            ({"text_field": "body"}, "text_field"),
         ):
             resp = client.post(
                 f"{_BASE}/lens/preparations",
