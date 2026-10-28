@@ -562,7 +562,15 @@ stay valid), `"relp"` takes `method = "relp_cotangent_sum"` plus the rule set.
 `_load_sidecar_at` accepts either canonical policy and pins `method` to the
 sidecar's own policy; the session's resume predicates compare the *requested*
 policy for equality, so a RelP fit can never resume or extend a standard
-artifact (or vice versa).
+artifact (or vice versa). Every writer threads `backward_rules` explicitly (the
+private writers have no default) and `save_lens` /
+`save_lens_checkpoint_accumulator` reject a name/rules mismatch, so only a RelP
+fit writes `local/relp`. That invariant lets the loader repair pre-2026-10-28
+R-lenses, whose checkpoint writer dropped the rules: a `local/relp` pointer
+labelled with the standard policy is relabelled with the pinned
+`_PRE_FIX_RELP_RULES` policy and, once fully validated, rewritten in place under
+the artifact lock it already holds (same shards, so GC and concurrent fits are
+unaffected). Such checkpoints then resume and such finals no-op as intended.
 
 The sidecar records the estimator settings (`method`, `n_prompts`, `d_model`,
 `source_layers`, `seq_len`, `dim_batch`, `skip_first_positions`), the corpus spec

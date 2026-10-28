@@ -255,7 +255,7 @@ def _run_lens_fit(args: argparse.Namespace) -> None:
             backward_rules=(
                 "relp" if getattr(args, "relp", False) else "standard"
             ),
-            on_progress=lambda m: print(f"  {m}"),
+            on_progress=lambda m: print(f"  {m}", flush=True),
         )
     name = _lens_fit_name(args)
     _ts_path, sidecar_path = lens_paths(args.model, name)

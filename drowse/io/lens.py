@@ -331,6 +331,41 @@ def lens_estimator_policy(
     return policy
 
 
+def _require_name_matches_rules(name: str, backward_rules: str) -> None:
+    """Only a RelP fit writes ``local/relp``, and it writes nowhere else.
+
+    The pre-fix relabel in :func:`_load_sidecar_at` reads the ``relp`` name as
+    proof of a RelP fit, so writers must never break that correspondence.
+    """
+    if (name == "relp") != (backward_rules == "relp"):
+        raise ValueError(
+            f"lens name {name!r} does not match backward_rules "
+            f"{backward_rules!r}: the RelP fit lives at local/relp and only there"
+        )
+
+
+# Before 2026-10-28 the checkpoint writer dropped ``backward_rules``, so every
+# RelP checkpoint, and every final promoted from one, recorded the standard
+# policy. Those fits ran these rules (RELP_RULES had not changed since RelP
+# landed); pinning them here keeps the relabel exact if RELP_RULES moves on.
+_PRE_FIX_RELP_RULES = {
+    "ln_rule": True,
+    "identity_rule": True,
+    "half_rule": True,
+    "half_rule_beta": 0.5,
+    "include_qk_norms": False,
+}
+
+
+def _is_pre_fix_relp_sidecar(anchor: Path, sidecar: Mapping[str, Any]) -> bool:
+    return (
+        anchor.parent.name == "relp"
+        and anchor.parent.parent.name == "local"
+        and sidecar.get("method") == _LENS_METHOD
+        and sidecar.get("estimator_policy") == lens_estimator_policy()
+    )
+
+
 def _load_sidecar_at(
     model_id: str, tensor_anchor: Path, sc_path: Path, *, label: str,
 ) -> dict[str, Any] | None:
@@ -344,6 +379,17 @@ def _load_sidecar_at(
         ts_path = _sidecar_tensor_path(tensor_anchor, sidecar)
         if not ts_path.exists():
             return None
+        relabelled = _is_pre_fix_relp_sidecar(tensor_anchor, sidecar)
+        if relabelled:
+            sidecar = {
+                **sidecar,
+                "method": _RELP_METHOD,
+                "estimator_policy": {
+                    **sidecar["estimator_policy"],
+                    "method": _RELP_METHOD,
+                    "backward_rules": dict(_PRE_FIX_RELP_RULES),
+                },
+            }
         version = sidecar.get("format_version")
         if (
             not isinstance(version, int)
@@ -479,10 +525,37 @@ def _load_sidecar_at(
                         raise ValueError(f"{key} shape does not match sidecar")
                     if view.get_dtype() != "F32":
                         raise ValueError(f"{key} is not float32")
+        if relabelled:
+            _persist_relabel(sc_path, sidecar, label=label, model_id=model_id)
         return sidecar
     except Exception as exc:
         log.warning("Corrupt %s sidecar for %s; ignoring: %s", label, model_id, exc)
         return None
+
+
+def _persist_relabel(
+    sc_path: Path, sidecar: Mapping[str, Any], *, label: str, model_id: str,
+) -> None:
+    """Rewrite a validated pre-fix RelP pointer with its true policy.
+
+    Every caller of :func:`_load_sidecar_at` holds the pointer's artifact
+    lock, which is what every pointer writer holds, and the new pointer
+    names the same immutable shards, so the swap is safe against concurrent
+    fits and generation GC. A failed write still returns the relabelled view.
+    """
+    try:
+        write_json_atomic(sc_path, dict(sidecar))
+        fsync_directory(sc_path.parent)
+    except OSError as exc:
+        log.warning(
+            "could not persist the RelP relabel of %s for %s: %s",
+            label, model_id, exc,
+        )
+        return
+    log.info(
+        "relabelled pre-fix %s for %s with its RelP estimator policy",
+        label, model_id,
+    )
 
 
 def load_local_lens_sidecar(
@@ -548,6 +621,7 @@ def save_lens(
     durable artifact (the missing-layer top-up path). Valid v6 shard pointers
     are carried forward; every other layer is converted and written anew.
     """
+    _require_name_matches_rules(name, backward_rules)
     anchor, sc_path = _lens_anchor_paths(model_id, name)
     with lens_fit_lock(model_id, name):
         path = _save_lens_at(
@@ -606,11 +680,13 @@ def save_lens_checkpoint_accumulator(
     ``base_n_prompts=0`` and can therefore survive any number of interruptions
     without depending on a separate full artifact.
     """
+    _require_name_matches_rules(name, backward_rules)
     anchor, sc_path = _checkpoint_anchor_paths(model_id, name)
     total_prompts = int(n_prompts) + (base.n_prompts if base is not None else 0)
     with lens_fit_lock(model_id, name), artifact_lock(anchor):
         return _save_lens_components(
             sums, total_prompts, d_model, anchor, sc_path,
+            backward_rules=backward_rules,
             corpus_spec=corpus_spec,
             corpus_sha256=corpus_sha256,
             seq_len=seq_len,
@@ -644,7 +720,7 @@ def _save_lens_at(
     ts_path: Path,
     sc_path: Path,
     *,
-    backward_rules: str = "standard",
+    backward_rules: str,
     corpus_spec: str,
     corpus_sha256: str,
     seq_len: int,
@@ -692,7 +768,7 @@ def _save_lens_components(
     ts_path: Path,
     sc_path: Path,
     *,
-    backward_rules: str = "standard",
+    backward_rules: str,
     corpus_spec: str,
     corpus_sha256: str,
     seq_len: int,
