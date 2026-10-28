@@ -467,10 +467,14 @@ Preparation operation names match the CLI verbs exactly on both surfaces.
 - `POST/GET/DELETE .../instruments/{family}/preparations` — the unified
   background-job resource, polled, never SSE. POST body `{operation, …fields}`
   (202); fields are re-parsed into the per-operation model, with a flattened
-  `"field: message"` string on rejection (400). GET returns the running-or-last
-  job in one shape: `{state: idle|running|done|error, operation, progress:
-  {current, total, unit} | null, message, error, started_at, finished_at,
-  cancellable, …extras}` — fit `unit="prompts"`, train `unit="tokens"`,
+  `"field: message"` string on rejection (400). Lens `fit` takes the CLI's
+  fields (`prompts`, `seq_len`, `prompt_batch`, `layers`, `force`, `relp`)
+  plus `hf_corpus` (`REPO[:CONFIG][@REV]`) and `text_field`, parsed before the
+  job starts (400 when malformed); unset, the default web-text corpus. Hub
+  pinning and streaming run in the cancellable spawned corpus worker. GET
+  returns the running-or-last job in one shape: `{state:
+  idle|running|done|error, operation, progress: {current, total, unit} |
+  null, message, error, started_at, finished_at, cancellable, …extras}` — fit `unit="prompts"`, train `unit="tokens"`,
   fetch/load `progress: null` plus a message; extras are lens `live_layers` /
   `source`, sae `release` / `name` / `info`. Group exclusions 409. DELETE:
   lens cancels a running fit (a fetch is not cancellable, so a fetch-only or

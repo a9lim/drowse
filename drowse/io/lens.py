@@ -24,10 +24,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import struct
 import threading
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
@@ -1412,71 +1413,188 @@ def remove_lens(model_id: str, name: str = "default") -> bool:
         return removed
 
 
-#: Default web-text corpus for a lens fit (repo, config) — the paper-parity
-#: pretraining-like sample.  Shared by CLI ``lens fit`` and the server's
-#: ``POST .../lens/fit`` route.
-DEFAULT_LENS_CORPUS = ("HuggingFaceFW/fineweb-edu", "sample-10BT")
 #: Documents are sliced to this many characters before tokenization — the fit
 #: truncates to ``seq_len`` tokens anyway, so tokenizing a full web page is
 #: waste.
 LENS_DOC_CHARS = 4000
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+_DATASETS_MISSING = (
+    "Hugging Face lens corpora stream via the optional `datasets` "
+    "dependency — `pip install 'drowse.ai[hf]'`, or supply a corpus "
+    "file (one document per line)"
+)
 
 
-def resolved_default_lens_corpus_spec() -> tuple[str, str]:
-    """Return the default dataset's immutable Hub revision and corpus spec."""
-    from drowse.core.jlens import JacobianLensError
+@dataclass(frozen=True)
+class HfLensCorpus:
+    """A Hugging Face dataset read as a lens-fit corpus.
 
-    repo, config = DEFAULT_LENS_CORPUS
-    try:
-        from huggingface_hub import HfApi
+    The corpus is the first N non-empty ``text_field`` values of the train
+    split, each stripped and sliced to :data:`LENS_DOC_CHARS`.  The first N
+    documents of a longer read are exactly those of a shorter one, so a fit
+    grows or resumes by token-id prefix; on a globally shuffled dataset the
+    head is a random sample and growing a fit adds a nested one.  ``revision``
+    is any branch, tag, or commit until :func:`pin_lens_corpus` fixes it to a
+    commit and names the config, which makes :attr:`spec` the recorded
+    provenance.
+    """
 
-        revision = HfApi().dataset_info(repo).sha
-    except Exception as exc:
-        raise JacobianLensError(
-            f"could not resolve an immutable revision for {repo}: {exc}"
-        ) from exc
-    if not revision:
-        raise JacobianLensError(
-            f"Hugging Face returned no immutable dataset revision for {repo}"
+    repo: str
+    config: str | None = None
+    revision: str | None = None
+    text_field: str = "text"
+
+    @classmethod
+    def parse(cls, raw: str, *, text_field: str = "text") -> "HfLensCorpus":
+        """Parse ``REPO[:CONFIG][@REV]``, the CLI and fit-route spelling."""
+        head, at, revision = raw.strip().partition("@")
+        repo, colon, config = head.partition(":")
+        if (
+            not repo or any(ch.isspace() for ch in repo)
+            or (colon and not config) or (at and not revision)
+            or ":" in revision
+        ):
+            raise ValueError(
+                f"bad Hugging Face corpus {raw!r} (want REPO[:CONFIG][@REV], "
+                "e.g. HuggingFaceFW/dclm_100BT-shuffled)"
+            )
+        if not text_field:
+            raise ValueError("the corpus text field must not be empty")
+        return cls(repo, config or None, revision or None, text_field)
+
+    @property
+    def pinned(self) -> bool:
+        return self.config is not None and bool(
+            _COMMIT_SHA.fullmatch(self.revision or "")
         )
-    return (
-        str(revision),
-        f"hf:{repo}/{config}@{revision};preprocess="
-        f"{LENS_CORPUS_PREPROCESS_VERSION};doc_chars={LENS_DOC_CHARS}",
+
+    @property
+    def spec(self) -> str:
+        """Provenance recorded as the fit's ``corpus_spec``.
+
+        ``hf:REPO/CONFIG@COMMIT;preprocess=…;doc_chars=…``, plus
+        ``;text_field=…`` when the text is not in ``text``, so the default
+        corpus keeps the spec its existing fits recorded.
+        """
+        if not self.pinned:
+            raise ValueError(f"{self} is not pinned to a config and commit")
+        spec = (
+            f"hf:{self.repo}/{self.config}@{self.revision};preprocess="
+            f"{LENS_CORPUS_PREPROCESS_VERSION};doc_chars={LENS_DOC_CHARS}"
+        )
+        if self.text_field != "text":
+            spec += f";text_field={self.text_field}"
+        return spec
+
+    def __str__(self) -> str:
+        text = self.repo
+        if self.config is not None:
+            text += f":{self.config}"
+        if self.revision is not None:
+            text += f"@{self.revision}"
+        return text
+
+
+#: Default web-text corpus for a lens fit — the paper-parity pretraining-like
+#: sample.  Shared by CLI ``lens fit`` / ``sae train`` and the server's fit and
+#: train routes.
+DEFAULT_LENS_CORPUS = HfLensCorpus("HuggingFaceFW/fineweb-edu", "sample-10BT")
+
+
+def lens_corpus_from_options(
+    hf_corpus: str | None, text_field: str | None,
+) -> HfLensCorpus:
+    """The Hub corpus a fit streams: ``hf_corpus`` when given, else the default.
+
+    Raises ``ValueError`` for a malformed spec, or a text field without one.
+    """
+    if hf_corpus is None:
+        if text_field is not None:
+            raise ValueError("a corpus text field needs a Hugging Face corpus")
+        return DEFAULT_LENS_CORPUS
+    return HfLensCorpus.parse(
+        hf_corpus, text_field="text" if text_field is None else text_field,
     )
 
 
-def stream_default_lens_corpus(
+def pin_lens_corpus(corpus: HfLensCorpus = DEFAULT_LENS_CORPUS) -> HfLensCorpus:
+    """Fix ``corpus`` to an immutable Hub commit and a named config.
+
+    An already pinned corpus is returned as is, without a Hub call.  An
+    omitted config resolves to the dataset's default at that commit, which
+    needs the optional ``datasets`` dependency.
+    """
+    from drowse.core.jlens import JacobianLensError
+
+    if corpus.pinned:
+        return corpus
+    try:
+        from huggingface_hub import HfApi
+
+        revision = HfApi().dataset_info(
+            corpus.repo, revision=corpus.revision,
+        ).sha
+    except Exception as exc:
+        raise JacobianLensError(
+            f"could not resolve an immutable revision for {corpus}: {exc}"
+        ) from exc
+    if not revision:
+        raise JacobianLensError(
+            f"Hugging Face returned no immutable dataset revision for {corpus}"
+        )
+    config = corpus.config
+    if config is None:
+        try:
+            from datasets import load_dataset_builder
+        except ImportError as e:
+            raise JacobianLensError(_DATASETS_MISSING) from e
+        try:
+            config = load_dataset_builder(
+                corpus.repo, revision=revision,
+            ).config.name
+        except Exception as exc:
+            raise JacobianLensError(
+                f"could not resolve the default config of {corpus}; name one "
+                f"as REPO:CONFIG ({exc})"
+            ) from exc
+    return replace(corpus, config=str(config), revision=str(revision))
+
+
+
+
+def stream_lens_corpus(
     n: int,
+    corpus: HfLensCorpus = DEFAULT_LENS_CORPUS,
     *,
     cancel_event: threading.Event | None = None,
 ) -> tuple[list[str], str]:
-    """Stream ``n`` documents from the default web-text corpus.
+    """Stream the first ``n`` documents of a Hub corpus (default web text).
 
     Returns ``(documents, corpus_spec)``.  Needs the optional ``datasets``
     dependency (``pip install 'drowse.ai[hf]'``); raises
     :class:`~drowse.core.jlens.JacobianLensError` without it so both the CLI
-    and the fit route surface the same actionable message.  When a cancellation
-    event is supplied, Hub resolution and streaming run in an isolated spawned
-    process.  A blocked provider read can therefore be terminated without
-    trapping the server in ``cancelling…`` or leaving provider threads behind.
+    and the fit route surface the same actionable message.  Hub resolution and
+    streaming always run in an isolated spawned process, which is terminated
+    once it has sent its result.  A cancellation event can therefore abandon a
+    blocked provider read without trapping the server in ``cancelling…``, and
+    no caller inherits the provider's threads: after a stream stops early,
+    pyarrow's I/O pool can block interpreter exit forever (every time on
+    ``HuggingFaceFW/dclm_100BT-shuffled``), even though the read returned.
     """
     from drowse.core.jlens import JacobianLensCancelled, JacobianLensError
 
-    # CLI callers do not have a cancellation event and retain the direct,
-    # traceback-preserving path.  The server path must be able to return even
-    # if the provider is blocked inside dataset resolution or ``next(stream)``.
-    if cancel_event is None:
-        return _collect_default_lens_corpus(n)
-    if cancel_event.is_set():
+    def cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    if cancelled():
         raise JacobianLensCancelled(
             "Jacobian-lens fit cancelled while preparing its corpus"
         )
 
-    process, receiver = _start_default_lens_corpus_process(n)
+    process, receiver = _start_lens_corpus_process(n, corpus)
     try:
         while True:
-            if cancel_event.is_set():
+            if cancelled():
                 raise JacobianLensCancelled(
                     "Jacobian-lens fit cancelled while streaming its corpus"
                 )
@@ -1484,7 +1602,7 @@ def stream_default_lens_corpus(
             # A click that lands while ``poll`` is waiting must win over a
             # simultaneously-ready result; once the user asks to cancel, do
             # not unexpectedly advance into the hours-long estimator phase.
-            if cancel_event.is_set():
+            if cancelled():
                 raise JacobianLensCancelled(
                     "Jacobian-lens fit cancelled while streaming its corpus"
                 )
@@ -1496,11 +1614,11 @@ def stream_default_lens_corpus(
                 if kind == "typed_error":
                     raise JacobianLensError(str(payload[1]))
                 raise RuntimeError(
-                    f"default lens corpus worker failed ({payload[1]})"
+                    f"lens corpus worker failed ({payload[1]})"
                 )
             if not process.is_alive():
                 raise RuntimeError(
-                    "default lens corpus worker exited without a result"
+                    "lens corpus worker exited without a result"
                 )
     finally:
         receiver.close()
@@ -1514,44 +1632,71 @@ def stream_default_lens_corpus(
             process.join(timeout=0)
 
 
-def _collect_default_lens_corpus(n: int) -> tuple[list[str], str]:
-    """Direct provider read, used by CLI and the isolated server worker."""
+def _collect_lens_corpus(
+    n: int, corpus: HfLensCorpus,
+) -> tuple[list[str], str]:
+    """Direct provider read; runs inside the isolated corpus worker."""
     from drowse.core.jlens import JacobianLensError
 
     try:
         from datasets import load_dataset
     except ImportError as e:
-        raise JacobianLensError(
-            "the default lens corpus streams via the optional `datasets` "
-            "dependency — `pip install 'drowse.ai[hf]'`, or supply a corpus "
-            "file (one document per line)"
-        ) from e
+        raise JacobianLensError(_DATASETS_MISSING) from e
 
-    repo, config = DEFAULT_LENS_CORPUS
-    revision, corpus_spec = resolved_default_lens_corpus_spec()
-    stream = load_dataset(
-        repo, name=config, split="train", streaming=True, revision=revision,
-    )
+    pinned = pin_lens_corpus(corpus)
+    try:
+        stream = load_dataset(
+            pinned.repo, name=pinned.config, split="train", streaming=True,
+            revision=pinned.revision,
+        )
+    except Exception as exc:
+        raise JacobianLensError(f"could not open {pinned}: {exc}") from exc
+    return _read_lens_documents(stream, n, pinned.text_field), pinned.spec
+
+
+def _read_lens_documents(
+    rows: Iterable[Mapping[str, Any]], n: int, text_field: str = "text",
+) -> list[str]:
+    """The first ``n`` non-empty ``text_field`` values of ``rows``.
+
+    Each is stripped and sliced to :data:`LENS_DOC_CHARS`; empty, blank, and
+    null values are skipped and do not count toward ``n``.
+    """
+    from drowse.core.jlens import JacobianLensError
+
     docs: list[str] = []
-    for row in stream:
-        text = str(row.get("text", "")).strip()
+    for row in rows:
+        if text_field not in row:
+            raise JacobianLensError(
+                f"corpus rows have no {text_field!r} field "
+                f"(fields: {', '.join(map(str, row))})"
+            )
+        value = row[text_field]
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise JacobianLensError(
+                f"corpus field {text_field!r} holds "
+                f"{type(value).__name__}, not text"
+            )
+        text = value.strip()
         if text:
             docs.append(text[:LENS_DOC_CHARS])
         if len(docs) >= n:
             break
-    return docs, corpus_spec
+    return docs
 
 
-def _default_lens_corpus_process(n: int, sender: Any) -> None:
+def _lens_corpus_process(n: int, corpus: HfLensCorpus, sender: Any) -> None:
     """Spawn target that transports only JSON/pickle-safe result payloads."""
     from drowse.core.jlens import JacobianLensError
 
     try:
-        payload: tuple[str, object] = ("ok", _collect_default_lens_corpus(n))
+        payload: tuple[str, object] = ("ok", _collect_lens_corpus(n, corpus))
     except JacobianLensError as exc:
         payload = ("typed_error", str(exc))
     except BaseException as exc:  # noqa: BLE001 — preserve worker liveness
-        log.exception("default lens corpus worker failed")
+        log.exception("lens corpus worker failed")
         payload = ("error", type(exc).__name__)
     try:
         sender.send(payload)
@@ -1563,15 +1708,17 @@ def _default_lens_corpus_process(n: int, sender: Any) -> None:
         sender.close()
 
 
-def _start_default_lens_corpus_process(n: int) -> tuple[Any, Any]:
+def _start_lens_corpus_process(
+    n: int, corpus: HfLensCorpus,
+) -> tuple[Any, Any]:
     """Start a spawn-only provider process, safe beside initialized MPS."""
     import multiprocessing
 
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
-        target=_default_lens_corpus_process,
-        args=(n, sender),
+        target=_lens_corpus_process,
+        args=(n, corpus, sender),
         name="drowse-jlens-corpus",
     )
     process.start()

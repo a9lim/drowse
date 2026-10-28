@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import drowse.cli.runners as _pkg
 from drowse.cli.parsers import _LENS_VERBS
 from drowse.cli.runners.shared import _print_verb_menu, _drowse_error_exit
+
+if TYPE_CHECKING:
+    from drowse.io.lens import HfLensCorpus
 
 
 #: Documents are sliced to this many characters before tokenization — the fit
@@ -39,17 +43,48 @@ def _parse_layer_list(raw: "str | None") -> "list[int] | str | None":
     return layers
 
 
-def _load_lens_corpus(args: argparse.Namespace) -> tuple[list[str], str]:
+def _pinned_lens_hf_corpus(args: argparse.Namespace) -> "HfLensCorpus | None":
+    """The Hub corpus ``lens fit`` streams, pinned once for the whole fit.
+
+    ``--hf-corpus`` names it (``--text-field`` picks its column); unset, it is
+    the default web-text sample. ``None`` for ``--corpus FILE``.
+    """
+    from drowse.core.jlens import JacobianLensError
+    from drowse.io.lens import lens_corpus_from_options, pin_lens_corpus
+
+    hf_corpus = getattr(args, "hf_corpus", None)
+    text_field = getattr(args, "text_field", None)
+    if text_field is not None and hf_corpus is None:
+        print("lens fit: --text-field applies to --hf-corpus", file=sys.stderr)
+        sys.exit(2)
+    if args.corpus is not None:
+        return None
+    try:
+        corpus = lens_corpus_from_options(hf_corpus, text_field)
+    except ValueError as e:
+        print(f"lens fit: {e}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        return pin_lens_corpus(corpus)
+    except JacobianLensError as e:
+        print(f"lens fit: {e}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _load_lens_corpus(
+    args: argparse.Namespace, hf_corpus: "HfLensCorpus | None",
+) -> tuple[list[str], str]:
     """Return ``(documents, corpus_spec)`` for ``lens fit``.
 
-    ``--corpus FILE`` reads one document per line (a JSON object line with a
-    ``text`` field also works). Unset, streams the default web-text sample
-    via the optional ``datasets`` dependency.
+    ``--corpus FILE`` (``hf_corpus`` is ``None``) reads one document per line
+    (a JSON object line with a ``text`` field also works). Otherwise streams
+    the first documents of ``hf_corpus`` via the optional ``datasets``
+    dependency.
     """
     import json as _json
 
     n = int(args.prompts)
-    if args.corpus is not None:
+    if hf_corpus is None:
         path = Path(args.corpus)
         if not path.exists():
             print(f"lens fit: corpus file not found: {path}", file=sys.stderr)
@@ -71,12 +106,11 @@ def _load_lens_corpus(args: argparse.Namespace) -> tuple[list[str], str]:
                     break
         return docs, f"file:{path.name}"
     from drowse.core.jlens import JacobianLensError
-    from drowse.io.lens import DEFAULT_LENS_CORPUS, stream_default_lens_corpus
+    from drowse.io.lens import stream_lens_corpus
 
-    repo, config = DEFAULT_LENS_CORPUS
-    print(f"Streaming {n} documents from {repo} ({config})...")
+    print(f"Streaming {n} documents from {hf_corpus}...")
     try:
-        return stream_default_lens_corpus(n)
+        return stream_lens_corpus(n, hf_corpus)
     except JacobianLensError as e:
         print(f"lens fit: {e}", file=sys.stderr)
         sys.exit(2)
@@ -113,6 +147,7 @@ def _try_lens_fit_noop_preflight(
     requested_layers: "list[int] | str | None",
     *,
     docs: list[str] | None = None,
+    hf_corpus: "HfLensCorpus | None" = None,
 ) -> bool:
     """Serialize the complete model-free proof/reap/report transaction."""
     if args.force:
@@ -121,7 +156,7 @@ def _try_lens_fit_noop_preflight(
 
     with lens_fit_lock(args.model, _lens_fit_name(args)):
         return _try_lens_fit_noop_preflight_locked(
-            args, requested_layers, docs=docs,
+            args, requested_layers, docs=docs, hf_corpus=hf_corpus,
         )
 
 
@@ -134,8 +169,13 @@ def _try_lens_fit_noop_preflight_locked(
     requested_layers: "list[int] | str | None",
     *,
     docs: list[str] | None = None,
+    hf_corpus: "HfLensCorpus | None" = None,
 ) -> bool:
-    """Prove an existing fit is exact without loading model weights."""
+    """Prove an existing fit is exact without loading model weights.
+
+    The corpus identity is ``docs`` for a file corpus, or the pinned
+    ``hf_corpus`` spec and prompt count for a Hub corpus, before streaming.
+    """
     import hashlib
 
     from drowse.core.jlens import DEFAULT_SEQ_LEN
@@ -147,7 +187,6 @@ def _try_lens_fit_noop_preflight_locked(
         lens_payloads_match,
         load_local_lens_sidecar,
         remove_subsumed_lens_checkpoint,
-        resolved_default_lens_corpus_spec,
     )
 
     name = _lens_fit_name(args)
@@ -177,14 +216,10 @@ def _try_lens_fit_noop_preflight_locked(
         ):
             return False
     else:
-        if args.corpus is not None:
-            return False
-        try:
-            _revision, expected_spec = resolved_default_lens_corpus_spec()
-        except Exception:
+        if hf_corpus is None:
             return False
         if (
-            sidecar.get("corpus_spec") != expected_spec
+            sidecar.get("corpus_spec") != hf_corpus.spec
             or sidecar.get("raw_prompt_count") != int(args.prompts)
         ):
             return False
@@ -225,12 +260,13 @@ def _run_lens_fit(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    if args.corpus is None and _try_lens_fit_noop_preflight(
-        args, requested_layers,
+    hf_corpus = _pinned_lens_hf_corpus(args)
+    if hf_corpus is not None and _try_lens_fit_noop_preflight(
+        args, requested_layers, hf_corpus=hf_corpus,
     ):
         return
-    docs, spec = _load_lens_corpus(args)
-    if args.corpus is not None and _try_lens_fit_noop_preflight(
+    docs, spec = _load_lens_corpus(args, hf_corpus)
+    if hf_corpus is None and _try_lens_fit_noop_preflight(
         args, requested_layers, docs=docs,
     ):
         return

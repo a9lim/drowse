@@ -512,7 +512,10 @@ def test_finished_relp_fit_rerun_is_noop(
 def test_cli_preflight_reports_finished_relp_fit(
     monkeypatch: pytest.MonkeyPatch, relabels: list[str],
 ) -> None:
-    spec = "hf:repo/config@dataset-rev"
+    from drowse.io.lens import HfLensCorpus
+
+    corpus = HfLensCorpus("repo", "config", "a" * 40)
+    spec = corpus.spec
     session = _DenseStubSession()
     setattr(session._model, "_drowse_source_fingerprint", "source-a")
     session.fit_jlens(
@@ -523,17 +526,13 @@ def test_cli_preflight_reports_finished_relp_fit(
         "drowse.core.model.model_source_fingerprint",
         lambda *_args, **_kwargs: "source-a",
     )
-    monkeypatch.setattr(
-        "drowse.io.lens.resolved_default_lens_corpus_spec",
-        lambda: ("dataset-rev", spec),
-    )
     args = argparse.Namespace(
         force=False, model=_DENSE_MODEL_ID, quantize=None, device="cpu",
         seq_len=None, corpus=None, prompts=len(_PROMPTS), relp=True,
     )
-    assert _try_lens_fit_noop_preflight(args, None)
+    assert _try_lens_fit_noop_preflight(args, None, hf_corpus=corpus)
     args.relp = False  # the standard fit has its own, absent, artifact
-    assert not _try_lens_fit_noop_preflight(args, None)
+    assert not _try_lens_fit_noop_preflight(args, None, hf_corpus=corpus)
     assert relabels == []
 
 
