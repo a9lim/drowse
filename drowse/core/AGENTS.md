@@ -44,6 +44,12 @@ table — both exist for the Jacobian-lens readout, and nothing else in drowse
 touches the unembedding outside the model's own forward.
 `loaded_model_fingerprint` / `model_source_fingerprint` are the identities every
 cached artifact keys on; `workspace_layer_indices` is the 40–90% band helper.
+`resolve_model_revision` is the one source of a Hub model's immutable commit
+(`HfApi.resolve_revision`, cached ref when offline; `None` for a local
+directory). Transformers 5.18 and later no longer set `config._commit_hash`, so
+the load plan resolves the commit first, pins every read to it, and
+`_finalize_model` stamps it onto the live config's `_commit_hash`, the slot the
+J-lens binding and capture-fingerprint checks read.
 
 ## static_cache.py
 
