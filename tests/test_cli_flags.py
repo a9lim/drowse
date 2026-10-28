@@ -118,23 +118,26 @@ def test_lens_fit_pins_a_hub_corpus_once_for_preflight_and_stream(
 ) -> None:
     import drowse.io.lens as lens_io
     from drowse.cli.runners import lens as lens_runner
-    from drowse.io.lens import HfLensCorpus
+    from drowse.io.lens import HfLensCorpus, LensCorpusMix
 
-    pinned = HfLensCorpus("org/data", "default", "a" * 40, "body")
-    pins: list[HfLensCorpus] = []
+    pinned = LensCorpusMix((
+        HfLensCorpus("org/data", "default", "a" * 40, "body"),
+        HfLensCorpus("org/zh", "cmn", "b" * 40, files=64),
+    ), (3, 1))
+    pins: list[Any] = []
 
-    def pin(corpus: HfLensCorpus) -> HfLensCorpus:
+    def pin(corpus: Any) -> Any:
         pins.append(corpus)
         return pinned
 
     preflights: list[Any] = []
-    streams: list[tuple[int, HfLensCorpus]] = []
+    streams: list[tuple[int, Any]] = []
 
     def preflight(*_args: Any, docs: Any = None, hf_corpus: Any = None) -> bool:
         preflights.append(hf_corpus)
         return False
 
-    def stream(n: int, corpus: HfLensCorpus) -> tuple[list[str], str]:
+    def stream(n: int, corpus: Any) -> tuple[list[str], str]:
         streams.append((n, corpus))
         raise SystemExit(0)  # stop before the model load
 
@@ -142,12 +145,15 @@ def test_lens_fit_pins_a_hub_corpus_once_for_preflight_and_stream(
     monkeypatch.setattr(lens_io, "stream_lens_corpus", stream)
     monkeypatch.setattr(lens_runner, "_try_lens_fit_noop_preflight", preflight)
     args = cli.parse_args([
-        "lens", "fit", "m", "--hf-corpus", "org/data@main",
-        "--text-field", "body", "--prompts", "7",
+        "lens", "fit", "m", "--hf-corpus", "org/data@main,text_field=body,weight=3",
+        "--hf-corpus", "org/zh:cmn,files=64", "--prompts", "7",
     ])
     with pytest.raises(SystemExit):
         lens_runner._run_lens_fit(args)
-    assert pins == [HfLensCorpus("org/data", None, "main", "body")]
+    assert pins == [LensCorpusMix((
+        HfLensCorpus("org/data", None, "main", "body"),
+        HfLensCorpus("org/zh", "cmn", files=64),
+    ), (3, 1))]
     assert preflights == [pinned]
     assert streams == [(7, pinned)]
 
@@ -155,9 +161,10 @@ def test_lens_fit_pins_a_hub_corpus_once_for_preflight_and_stream(
 @pytest.mark.parametrize(
     "argv",
     [
-        ["lens", "fit", "m", "--text-field", "body"],
-        ["lens", "fit", "m", "--corpus", "docs.txt", "--text-field", "body"],
         ["lens", "fit", "m", "--hf-corpus", "org/data:"],
+        ["lens", "fit", "m", "--hf-corpus", "org/data,weight=2"],
+        ["lens", "fit", "m", "--hf-corpus", "org/data,files=0"],
+        ["lens", "fit", "m", "--hf-corpus", "org/data", "--hf-corpus", "org/zh,seed=1"],
     ],
 )
 def test_lens_fit_rejects_bad_hub_corpus_options(

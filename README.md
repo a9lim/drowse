@@ -345,6 +345,11 @@ drowse lens fetch google/gemma-3-4b-it
 drowse lens fit org/model --prompts 100
 # Or on another commit-pinned Hub dataset (a shuffled one grows by nested samples)
 drowse lens fit org/model --hf-corpus HuggingFaceFW/dclm_100BT-shuffled --prompts 1000
+# A bilingual mix: 3 English documents per Chinese one, the Chinese side spread
+# over 64 of its (unshuffled) data files
+drowse lens fit org/model --prompts 1000 \
+  --hf-corpus HuggingFaceFW/dclm_100BT-shuffled,weight=3 \
+  --hf-corpus HuggingFaceFW/fineweb-2:cmn_Hani,files=64
 # Use --standard when you specifically want local:default instead
 
 # Fetch an SAE or train a local source

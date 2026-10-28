@@ -923,19 +923,17 @@ def _build_lens_fit(p: argparse.ArgumentParser) -> None:
              "library (pip install 'drowse.ai[hf]').",
     )
     corpus.add_argument(
-        "--hf-corpus", default=None, metavar="REPO[:CONFIG][@REV]",
+        "--hf-corpus", action="append", default=None,
+        metavar="REPO[:CONFIG][@REV][,KEY=VALUE...]",
         help="Stream the first N non-empty documents of a Hugging Face "
              "dataset's train split instead, pinned to the commit REV "
              "resolves to (default: main) and to CONFIG (default: the "
-             "dataset's default). The pin is recorded in the corpus spec; "
-             "a larger --prompts later resumes by prefix, so on a shuffled "
-             "dataset such as HuggingFaceFW/dclm_100BT-shuffled it adds a "
-             "nested random sample.",
-    )
-    p.add_argument(
-        "--text-field", default=None, metavar="FIELD",
-        help="Column holding each document's text, with --hf-corpus "
-             "(default: text)",
+             "dataset's default). Options: text_field=F (default text); "
+             "files=K reads round-robin from K of its data files, ordered by "
+             "a seed=S hash of their paths, to spread the sample over a "
+             "dataset whose rows are not shuffled. Repeat the flag to mix "
+             "corpora by weight=W (default 1). The pins are recorded in the "
+             "corpus spec, and a larger --prompts later resumes by prefix.",
     )
     p.add_argument(
         "--prompts", type=_positive_int, default=100, metavar="N",

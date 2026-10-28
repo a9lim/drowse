@@ -71,7 +71,7 @@ from drowse.server.response_models import (
 )
 
 if TYPE_CHECKING:
-    from drowse.io.lens import HfLensCorpus
+    from drowse.io.lens import LensCorpus
 
 log = logging.getLogger(__name__)
 
@@ -252,13 +252,12 @@ class LensFetchRequest(NativeRequest):
 
 class LensFitRequest(NativeRequest):
     """Defaults mirror CLI ``lens fit`` (all source layers).  A matching
-    partial fit resumes by default; ``force`` restarts.  ``hf_corpus`` and
-    ``text_field`` mirror ``--hf-corpus REPO[:CONFIG][@REV]`` and
-    ``--text-field``; unset, the fit streams the default web-text sample."""
+    partial fit resumes by default; ``force`` restarts.  ``hf_corpus`` lists
+    ``--hf-corpus REPO[:CONFIG][@REV][,KEY=VALUE…]`` sources, several making
+    a weighted mix; unset, the fit streams the default web-text sample."""
 
     prompts: int = Field(default=100, ge=1, le=5000)
-    hf_corpus: str | None = Field(default=None, min_length=1, max_length=512)
-    text_field: str | None = Field(default=None, min_length=1, max_length=256)
+    hf_corpus: list[str] | None = Field(default=None, min_length=1, max_length=16)
     seq_len: int | None = Field(default=None, ge=32, le=4096)
     prompt_batch: int | None = Field(default=None, ge=1, le=64)
     layers: str = "all"
@@ -704,7 +703,7 @@ def register_instrument_routes(app: FastAPI) -> None:
     async def _lens_fit_body(
         body: LensFitRequest,
         source_layers: "list[int] | str",
-        corpus: "HfLensCorpus",
+        corpus: "LensCorpus",
     ) -> None:
         from drowse.io.lens import stream_lens_corpus
 
@@ -821,11 +820,11 @@ def register_instrument_routes(app: FastAPI) -> None:
 
     def _start_lens_fit(fields: dict[str, Any]) -> PreparationStatusJSON:
         from drowse.core.jlens import JacobianLensCancelled
-        from drowse.io.lens import lens_corpus_from_options
+        from drowse.io.lens import parse_lens_corpus
 
         body = LensFitRequest(**fields)
         try:
-            corpus = lens_corpus_from_options(body.hf_corpus, body.text_field)
+            corpus = parse_lens_corpus(body.hf_corpus)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         source_layers = _parse_layers(body.layers) or "workspace"
