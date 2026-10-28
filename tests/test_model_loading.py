@@ -1,7 +1,8 @@
 """Tests for `drowse.core.model.load_model` attention-implementation selection.
 
 These tests do not load real models — they intercept the AutoConfig and
-AutoModelForCausalLM calls and inspect the load_kwargs `load_model` passes.
+AutoModelForCausalLM calls (and the Hub commit lookup) and inspect the
+load_kwargs `load_model` passes.
 """
 from __future__ import annotations
 
@@ -15,6 +16,77 @@ import pytest
 import torch
 
 from drowse.core import model as model_mod
+
+_resolve_model_revision = model_mod.resolve_model_revision
+_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.fixture(autouse=True)
+def _offline_hub_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The config stack is mocked here; keep the commit lookup offline too."""
+    monkeypatch.setattr(model_mod, "resolve_model_revision", lambda _model_id: None)
+
+
+def test_resolve_model_revision_returns_the_commit_not_the_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import huggingface_hub
+    from huggingface_hub import ResolvedRevision
+
+    calls: list[str] = []
+
+    class _Api:
+        def resolve_revision(self, repo_id: str, **_kwargs: Any) -> ResolvedRevision:
+            calls.append(repo_id)
+            return ResolvedRevision(resolved=_COMMIT, repo_id=repo_id)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    # ``ResolvedRevision`` is a ``str`` equal to the requested ref ("main");
+    # only ``.resolved`` is the immutable commit.
+    assert _resolve_model_revision("org/model") == _COMMIT
+    assert calls == ["org/model"]
+
+
+def test_resolve_model_revision_skips_the_hub_for_local_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import huggingface_hub
+
+    def _no_hub() -> None:
+        raise AssertionError("a local checkpoint must not query the Hub")
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _no_hub)
+    assert _resolve_model_revision(str(tmp_path)) is None
+
+
+def test_hub_source_fingerprint_pins_the_resolved_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preflight (no config) resolves the commit and reproduces the stamp."""
+    cfg = _FakeConfig("qwen3")
+    reads: list[dict[str, Any]] = []
+
+    def _read(_model_id: str, **kwargs: Any) -> _FakeConfig:
+        reads.append(kwargs)
+        return cfg
+
+    monkeypatch.setattr(model_mod, "resolve_model_revision", lambda _m: "commit-a")
+    with patch.object(model_mod, "AutoConfig") as mock_cfg:
+        mock_cfg.from_pretrained.side_effect = _read
+        preflight = model_mod.model_source_fingerprint(
+            "org/model", device="cpu", parameter_dtype=torch.float32,
+        )
+    assert preflight is not None
+    assert reads == [{"trust_remote_code": False, "revision": "commit-a"}]
+    stamp = model_mod.model_source_fingerprint(
+        "org/model", device="cpu", config=cfg, revision="commit-a",
+        parameter_dtype=torch.float32,
+    )
+    assert stamp == preflight
+    assert model_mod.model_source_fingerprint(
+        "org/model", device="cpu", config=cfg, revision="commit-b",
+        parameter_dtype=torch.float32,
+    ) != preflight
 
 
 def test_local_model_file_hash_cache_is_bounded(
@@ -688,14 +760,18 @@ def test_multimodal_routes_to_text_extraction_even_when_outer_accessible():
     )
 
 
-def test_text_extraction_preserves_the_pinned_hub_revision():
+def test_text_extraction_preserves_the_pinned_hub_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Official artifacts bind to the immutable base-model revision.
 
     The text-only multimodal loader constructs a new model config, so Drowse
-    must carry the already-resolved outer revision onto that live config.
+    must carry the already-resolved revision onto that live config.
     """
     cfg = _FakeConfig(model_type="gemma3", text_model_type="gemma3_text")
-    cfg._commit_hash = "immutable-model-commit"
+    monkeypatch.setattr(
+        model_mod, "resolve_model_revision", lambda _m: "immutable-model-commit",
+    )
 
     with (
         patch.object(model_mod, "AutoTokenizer") as mock_tok,
@@ -858,13 +934,55 @@ def test_plan_quantize_skips_text_extraction():
     assert plan.extract_text_model is True
 
 
-def test_plan_pins_the_resolved_revision():
-    cfg = _FakeConfig("qwen3")
-    cfg._commit_hash = "deadbeef"
-    plan = _plan(cfg)
+def test_plan_pins_every_read_to_the_resolved_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Transformers >=5.18 configs carry no ``_commit_hash``: the pin comes
+    # from the Hub lookup alone, and the probe config read is pinned too.
+    monkeypatch.setattr(model_mod, "resolve_model_revision", lambda _m: "deadbeef")
+    with patch.object(model_mod, "AutoConfig") as mock_cfg:
+        mock_cfg.from_pretrained.return_value = _FakeConfig("qwen3")
+        plan = model_mod._resolve_load_plan(
+            "fake/repo", quantize=None, device="cpu", dtype=None,
+        )
     assert plan.revision == "deadbeef"
     assert plan.pin_kwargs == {"revision": "deadbeef"}
     assert plan.load_kwargs["revision"] == "deadbeef"
+    reads = mock_cfg.from_pretrained.call_args_list
+    assert reads and all(read.kwargs.get("revision") == "deadbeef" for read in reads)
+
+
+def test_plan_fails_open_when_the_commit_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unreachable(_model_id: str) -> str:
+        raise RuntimeError("Hub unreachable and nothing cached")
+
+    monkeypatch.setattr(model_mod, "resolve_model_revision", _unreachable)
+    plan = _plan(_FakeConfig("qwen3"))
+    assert plan.revision is None
+    assert plan.pin_kwargs == {}
+    assert "revision" not in plan.load_kwargs
+
+
+def test_standard_load_stamps_the_resolved_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live config's ``_commit_hash`` slot is Drowse's stamp, not HF's."""
+    monkeypatch.setattr(model_mod, "resolve_model_revision", lambda _m: _COMMIT)
+    with (
+        patch.object(model_mod, "AutoTokenizer") as mock_tok,
+        patch.object(model_mod, "AutoConfig") as mock_cfg,
+        patch.object(model_mod, "AutoModelForCausalLM") as mock_model,
+    ):
+        mock_tok.from_pretrained.return_value = SimpleNamespace()
+        mock_cfg.from_pretrained.return_value = _FakeConfig("qwen3")
+        mock_model.from_pretrained.return_value = _FakeModel("sdpa")
+        model, _ = model_mod.load_model("org/model", device="cpu")
+
+    assert model.config._commit_hash == _COMMIT
+    assert mock_model.from_pretrained.call_args.kwargs["revision"] == _COMMIT
+    assert mock_tok.from_pretrained.call_args.kwargs["revision"] == _COMMIT
 
 
 def test_plan_adds_the_mistral_tokenizer_fix_by_model_id():

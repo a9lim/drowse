@@ -142,13 +142,6 @@ def load_active_lens_source(model_id: str) -> dict[str, Any] | None:
     return LENS_SOURCES.read(lens_root(model_id), model_id)
 
 
-def _model_commit(config: Any) -> str | None:
-    commit = getattr(config, "_commit_hash", None) or getattr(
-        getattr(config, "text_config", None), "_commit_hash", None
-    )
-    return str(commit) if isinstance(commit, str) and commit else None
-
-
 def _config_dimensions(config: Any) -> tuple[int | None, int | None]:
     text = getattr(config, "text_config", config)
     hidden = getattr(text, "hidden_size", getattr(text, "n_embd", None))
@@ -634,15 +627,23 @@ def _publish_external_binding(
 
 
 def _resolve_model_for_fetch(model_id: str) -> tuple[str, int, int]:
-    """The immutable model revision and dimensions a fetch validates against."""
+    """The immutable model revision and dimensions a fetch validates against.
+
+    The commit is resolved first and the config read pinned to it, so the
+    dimensions provably belong to the revision the binding records.
+    """
     from transformers import AutoConfig
 
-    config = AutoConfig.from_pretrained(model_id, trust_remote_code=False)
-    model_revision = _model_commit(config)
+    from drowse.core.model import resolve_model_revision
+
+    model_revision = resolve_model_revision(model_id)
     if model_revision is None:
         raise ValueError(
             f"could not resolve immutable Hugging Face model revision for {model_id}"
         )
+    config = AutoConfig.from_pretrained(
+        model_id, trust_remote_code=False, revision=model_revision,
+    )
     d_model, n_layers = _config_dimensions(config)
     if d_model is None or n_layers is None:
         raise ValueError(f"could not resolve model dimensions for {model_id}")

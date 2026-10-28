@@ -143,6 +143,77 @@ def test_lens_registry_requires_an_active_source() -> None:
     assert load_lens("org/model") is None
 
 
+def test_neuronpedia_fetch_pins_the_resolved_model_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transformers >=5.18 configs carry no ``_commit_hash``.
+
+    The binding's model revision comes from the Hub commit lookup, and the
+    dimension check reads the config pinned to that same commit.
+    """
+    import huggingface_hub
+    import transformers
+    from huggingface_hub import ResolvedRevision
+
+    from drowse.io import lens_sources as sources
+
+    commit = "0123456789abcdef0123456789abcdef01234567"
+
+    class _Api:
+        def resolve_revision(self, repo_id: str, **_kwargs: Any) -> ResolvedRevision:
+            assert repo_id == "org/model"
+            return ResolvedRevision(resolved=commit, repo_id=repo_id)
+
+    config_reads: list[dict[str, Any]] = []
+
+    def _read_config(_cls: Any, _model_id: str, **kwargs: Any) -> SimpleNamespace:
+        config_reads.append(kwargs)
+        return SimpleNamespace(hidden_size=4, num_hidden_layers=3)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained", classmethod(_read_config),
+    )
+
+    snapshot = tmp_path / "snapshot"
+    config_dir = snapshot / "model" / "jlens" / "Salesforce-wikitext"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text("hf_model_name: org/model\n")
+    checkpoint = tmp_path / "lens.pt"
+    torch.save(
+        {
+            "J": {0: torch.eye(4)},
+            "n_prompts": 12,
+            "source_layers": [0],
+            "d_model": 4,
+        },
+        checkpoint,
+    )
+    files = [
+        "model/jlens/Salesforce-wikitext/config.yaml",
+        "model/jlens/Salesforce-wikitext/model_jacobian_lens.pt",
+    ]
+    api = SimpleNamespace(
+        model_info=lambda repo, revision: SimpleNamespace(sha="lens-commit"),
+        list_repo_files=lambda repo, revision: files,
+    )
+    monkeypatch.setattr(sources, "_hf_api", lambda: api)
+    monkeypatch.setattr(
+        sources, "_hf_snapshot_download", lambda _repo, **_kwargs: str(snapshot),
+    )
+    monkeypatch.setattr(
+        sources, "_hf_hub_download",
+        lambda _repo, _filename, **_kwargs: str(checkpoint),
+    )
+
+    binding = sources.fetch_neuronpedia_lens("org/model")
+    assert binding.model_revision == commit
+    assert binding.repo_revision == "lens-commit"
+    assert config_reads == [{"trust_remote_code": False, "revision": commit}]
+    assert sources.load_external_lens_binding("org/model", "neuronpedia") == binding
+
+
 def test_external_lens_identity_binds_model_commit_and_shape() -> None:
     from drowse.core.session import _jlens_matches_loaded_model
 

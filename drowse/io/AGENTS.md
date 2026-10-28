@@ -622,7 +622,9 @@ server entry point); the weights-only adapter reads `.pt` payloads offline from
 the Hugging Face cache without copying them into `DROWSE_HOME`
 (`weights_only=True` — the workspace payload's extra `provenance` key is
 schema-checked per provider). `use_lens_source` accepts `local:NAME` or any
-fetched binding name. Its Hub calls go through `io.hf`.
+fetched binding name. Its Hub calls go through `io.hf`; the bound base-model
+commit comes from `core.model.resolve_model_revision`, with the dimension-check
+config read pinned to it.
 
 ## sae.py / sae_artifacts.py
 
