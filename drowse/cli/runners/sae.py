@@ -74,7 +74,7 @@ def _run_sae_train(args: argparse.Namespace) -> None:
             d_sae=args.width, expansion=args.expansion,
             learning_rate=args.learning_rate, l1_coefficient=args.l1,
             dead_feature_threshold=args.dead_threshold, seed=args.seed,
-            force=args.force, on_progress=lambda message: print(f"  {message}"),
+            force=args.force, on_progress=lambda message: print(f"  {message}", flush=True),
         )
     if args.json_output:
         print(json.dumps(result, indent=2))
