@@ -23,8 +23,6 @@
 
   const uid = $props.id();
   const presence = dropdownMotion();
-  const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string"
-    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
   let open = $state(false);
   let trigger: HTMLButtonElement | null = $state(null);
   let panel: HTMLDivElement | null = $state(null);
@@ -126,7 +124,7 @@
     <div class="appearance-row"><span>Appearance</span><ThemeToggle /></div>
     {#if hosted}
       <nav class="menu-links" aria-label="About Drowse">
-        <a href="/credits">Credits</a><a href="/contact">Contact us</a><a href={`mailto:${CONTACT_ADDRESS}`}>{CONTACT_ADDRESS}</a><a href={sourceUrl} rel="noreferrer">Contribute</a>
+        <a href="/credits">Credits</a><a href="/contact">Contact us</a><a href={`mailto:${CONTACT_ADDRESS}`}>{CONTACT_ADDRESS}</a><a href="https://drowse.ai/contribute">Contribute</a>
       </nav>
     {/if}
   </div>

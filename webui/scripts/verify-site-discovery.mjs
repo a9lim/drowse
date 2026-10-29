@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { guidePages } from "./site-content.mjs";
-import { publicPaths, markdownPath } from "./site-publication.mjs";
+import { guidePages, sitePages } from "./site-content.mjs";
+import { publicPaths, sitemapPaths, markdownPath } from "./site-publication.mjs";
 import { siteTitle } from "./site-metadata.mjs";
 import { agentCatalogPaths, agentResources, releaseRobots } from "./agent-discovery.mjs";
 
@@ -13,25 +13,31 @@ const fetchPage = (path, options) => fetch(`${origin}${path}`, { signal: AbortSi
 const sitemap = await fetchPage("/sitemap.xml");
 assert.equal(sitemap.status, 200);
 const locations = [...(await sitemap.text()).matchAll(/<loc>([^<]+)<\/loc>/g)].map(match => new URL(match[1]));
-assert.deepEqual(locations.map(url => url.pathname), publicPaths);
+assert.deepEqual(locations.map(url => url.pathname), sitemapPaths);
 const publicOrigin = locations[0].origin;
 const robots = await (await fetchPage("/robots.txt")).text();
 assert.match(robots, preview ? /Disallow: \// : /Allow: \//);
 if (!preview) assert.equal(robots, releaseRobots(publicOrigin));
 
-for (const path of publicPaths) {
-  const page = guidePages.find(page => page.path === path);
+const escapeHtml = text => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+for (const path of sitemapPaths) {
+  const page = [...guidePages, ...sitePages].find(page => page.path === path);
+  const negotiated = publicPaths.includes(path);
   const response = await fetchPage(path, { headers: { Accept: "text/html" } });
   assert.equal(response.status, 200, path);
   assert.match(response.headers.get("Content-Type"), /text\/html/);
   assert.equal((response.headers.get("X-Robots-Tag") ?? "").includes("noindex"), preview, `${path} indexing policy`);
   const html = await response.text();
-  assert.ok(html.includes(`<title>${page?.title ?? siteTitle}</title>`), `${path} title`);
+  assert.ok(html.includes(`<title>${escapeHtml(page?.title ?? siteTitle)}</title>`), `${path} title`);
   assert.ok(html.includes(`rel="canonical" href="${publicOrigin}${path}"`), `${path} canonical`);
   assert.match(html, /<h1\b/);
   assert.match(html, /application\/ld\+json/);
-  if (!page) assert.match(html, /data-prerendered/);
-  else assert.ok(html.includes(page.heading));
+  assert.match(html, /data-prerendered="[^"]+"/, `${path} must be prerendered`);
+  assert.doesNotMatch(html, /name="robots"/, `${path} must not carry a noindex meta tag`);
+  if (page?.heading) assert.ok(html.includes(escapeHtml(page.heading)), `${path} heading`);
+  const trailing = await fetchPage(`${path}/`, { redirect: "manual" });
+  if (path !== "/") assert.ok([301, 308].includes(trailing.status) && new URL(trailing.headers.get("Location"), origin).pathname === path, `${path}/ must redirect to ${path}`);
+  if (!negotiated) continue;
   assert.ok(response.headers.get("Link")?.includes(`${publicOrigin}/llms.txt`));
   assert.ok(response.headers.get("Link")?.includes(`<${publicOrigin}/.well-known/ai-catalog.json>; rel="ai-catalog"`));
   assert.match(html, /rel="ai-catalog" href="\/\.well-known\/ai-catalog\.json"/);
@@ -46,11 +52,12 @@ for (const path of publicPaths) {
   assert.equal(head.status, 200);
   assert.match(head.headers.get("Content-Type"), /text\/markdown/);
   assert.equal(await head.text(), "");
-  assert.doesNotMatch(html, /<a[^>]*href="\/(?:learn|developers|privacy|about)(?:[\/"?.])/);
 }
 for (const page of guidePages) {
-  assert.equal((await fetchPage(page.path)).status, 404, `${page.path} must not expose a guide page`);
-  assert.equal((await fetchPage(`${page.path}.html`)).status, 404);
+  if (!publicPaths.includes(page.path)) {
+    assert.equal((await fetchPage(page.path)).status, 404, `${page.path} is a Markdown-only resource`);
+    assert.equal((await fetchPage(`${page.path}.html`)).status, 404);
+  }
   const response = await fetchPage(markdownPath(page.path));
   assert.equal(response.status, 200);
   assert.match(response.headers.get("Content-Type"), /text\/markdown/);
@@ -76,7 +83,7 @@ for (const path of agentCatalogPaths) {
     assert.equal(await response.text(), method === "HEAD" ? "" : expectedResources.get(path.slice(1)), `${path} published content`);
   }
 }
-for (const path of ["/missing-discovery-page", "/learn/missing-discovery-page", "/assets/missing-discovery-file.js"]) {
+for (const path of ["/missing-discovery-page", "/learn/missing-discovery-page", "/assets/missing-discovery-file.js", "/app-shell", "/app/missing-discovery-page"]) {
   assert.equal((await fetchPage(path)).status, 404, `${path} must remain a real 404`);
 }
 const app = await fetchPage("/app");
@@ -84,4 +91,4 @@ const appHtml = await app.text();
 assert.equal(app.status, 200);
 assert.match(appHtml, /name="robots" content="noindex, follow"/);
 assert.doesNotMatch(appHtml, /data-prerendered|rel="canonical"/);
-console.log(`Discovery verification passed: original homepage, no guide pages or visible links, ${guidePages.length} unindexed Markdown resources, Markdown GET/HEAD, sitemap, agent digest, ARD catalogs and CORS, content policy, app shell and real 404s (${preview ? "preview" : "release"}).`);
+console.log(`Discovery verification passed: ${sitemapPaths.length} prerendered pages with canonical URLs and sitemap entries, ${guidePages.length} Markdown resources, Markdown GET/HEAD, agent digest, ARD catalogs and CORS, content policy, app shell and real 404s (${preview ? "preview" : "release"}).`);

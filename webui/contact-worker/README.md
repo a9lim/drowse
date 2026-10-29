@@ -22,7 +22,10 @@ dry run, or successful website build does **not** establish live email delivery.
    destination verification required by the account's Email Service setup.
    Check account plan, limits, and potential charges before activating services.
 4. Confirm rate-limit namespace IDs `24001` and `24002` are not already used by
-   another application in the account. Change them here if necessary.
+   another application in the account. Change them here if necessary. Review
+   `DAILY_LIMIT` (global send attempts per UTC day, default `200`) and
+   `ALLOW_LOCAL_ORIGINS` in `wrangler.jsonc`, and decide whether to enable
+   Turnstile (below) and a WAF rate-limiting rule on `/api/contact`.
 5. Run the local checks below, then deploy the Worker with sending still disabled.
    Confirm `/api/contact` returns JSON `503` for an allowed-origin POST rather
    than the Pages HTML fallback. The route affects only `/api/contact*`.
@@ -60,6 +63,31 @@ From `webui`, run `npm run check` and
 `npx playwright test e2e/contact.spec.ts`. Browser tests mock the endpoint and
 exercise offline/error recovery, focus, mobile layouts, and duplicate submits.
 
+## Optional Turnstile verification
+
+Turnstile is off unless the Worker has a `TURNSTILE_SECRET` secret:
+
+```sh
+npx wrangler secret put TURNSTILE_SECRET
+```
+
+When it is set, every POST must include a `turnstileToken` string beside the
+form fields. The Worker verifies it with
+`https://challenges.cloudflare.com/turnstile/v0/siteverify` (secret, token,
+`CF-Connecting-IP`, and the submission reference as the idempotency key) after
+field validation and before the per-location and daily limits, so failed
+challenges cannot consume them. Responses: missing token `400
+verification_required`, rejected token `403 verification_failed`, siteverify
+unreachable `503 verification_unavailable`. Without the secret, the Worker
+behaves as before and ignores `turnstileToken`.
+
+Turn the secret on only after both forms send a token. Tokens are single-use, so
+the client must reset the widget after each attempt. The widget's site key must
+list every hostname that shows the form; the loopback-served `drowse serve`
+dashboard also needs its own CSP to allow `https://challenges.cloudflare.com` in
+`script-src` and `frame-src`. Otherwise local feedback submissions fail
+verification. Use Cloudflare's published test keys for local development.
+
 ## Delivery and privacy contract
 
 - Sender and recipient are fixed in code and restricted in the binding. The
@@ -68,12 +96,25 @@ exercise offline/error recovery, focus, mobile layouts, and duplicate submits.
   optional reply email, title, body, received time, and submission reference.
   No chat text, model data, browser identifiers, or IP address is attached.
 - Input is validated server-side, the streamed request is capped at 40 KB, and
-  a honeypot rejects obvious bots. Only HTTPS public-site and HTTP/HTTPS loopback
-  browser origins are allowed. Other native-server origins can use direct email.
+  a honeypot rejects obvious bots. Titles also reject bidi overrides and other
+  Unicode format characters (`\p{Cf}` except ZWNJ/ZWJ), C1 controls including
+  U+0085, and U+2028/U+2029, so the subject line cannot be visually spoofed.
+- Only the HTTPS `https://drowse.ai` origin is always allowed. HTTP/HTTPS
+  loopback origins (`localhost`, `127.0.0.1`, `[::1]`) are allowed only when
+  `ALLOW_LOCAL_ORIGINS` is `"true"`. The dashboard served by `drowse serve`
+  posts from loopback, so setting it to `"false"` disables that feedback form
+  (it falls back to direct email). Other native-server origins can use direct
+  email. Origin checks are not authentication; non-browser clients can send any
+  `Origin` header.
 - Limits are five attempts per minute per IP and 60 valid attempts per minute
-  per Cloudflare location. These are best-effort abuse controls, not a global
-  billing cap or complete bot protection. Add a verified challenge/WAF policy if
-  real traffic requires it; do not rely on CORS to stop non-browser clients.
+  per Cloudflare location, plus a global cap of `DAILY_LIMIT` send attempts per
+  UTC day (default `200`, `"0"` refuses all sends). The cap is one counter in a
+  single Durable Object instance (`global-daily-cap`) of the receipt class; it
+  counts only attempts that reach Email Service, not retries of a sent or
+  pending reference. Over the cap the endpoint returns `429` with
+  `{"error": "daily_limit_reached", "reference": ...}` and a `Retry-After` until
+  the next UTC midnight; the reference stays retryable. These are best-effort
+  abuse controls; do not rely on CORS to stop non-browser clients.
 - Each random submission reference owns a Durable Object receipt. Retries reuse
   the reference. A claim is written before calling email; concurrent requests
   cannot send twice. Known provider rejections allow a retry. An ambiguous result

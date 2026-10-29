@@ -17,6 +17,8 @@ export function createHeroShaderSource(canvas: HTMLCanvasElement, video: HTMLVid
     for (const b of buffers) gl.deleteFramebuffer(b);
     for (const s of shaders) gl.deleteShader(s);
     gl.deleteVertexArray(vao);
+    // Release the GPU context now instead of waiting for garbage collection.
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
   };
   const compile = (vertex: string, fragment: string): Program => {
     const program = gl.createProgram()!;

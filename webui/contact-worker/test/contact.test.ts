@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import worker, { allowedOrigin, emailContent } from "../src/index";
+import worker, { allowedOrigin, dailyLimit, emailContent, titleError } from "../src/index";
 import { emptyContact, parseContact, validateContact } from "../../src/lib/contact";
 
 const fields = () => ({ ...emptyContact("feedback"), title: "A useful improvement", body: "Please make this easier to find." });
@@ -9,7 +9,18 @@ const request = (body: unknown, overrides: RequestInit = {}) => new Request("htt
   method: "POST", headers: { Origin: "https://drowse.ai", "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.7" },
   body: JSON.stringify(body), ...overrides,
 });
-const enabled = () => ({ ...env, CONTACT_ENABLED: "true" });
+const enabled = (overrides: Record<string, string> = {}) => ({ ...env, CONTACT_ENABLED: "true", ...overrides });
+const allowAll = () => {
+  vi.spyOn(env.ATTEMPTS, "limit").mockResolvedValue({ success: true });
+  vi.spyOn(env.VOLUME, "limit").mockResolvedValue({ success: true });
+};
+const today = () => new Date().toISOString().slice(0, 10);
+const capStub = () => env.SUBMISSIONS.getByName("global-daily-cap");
+const setDailyCount = (count: number | null) => runInDurableObject(capStub(), (_instance, state) => {
+  state.storage.sql.exec("CREATE TABLE IF NOT EXISTS daily_count (day TEXT PRIMARY KEY, count INTEGER NOT NULL)");
+  state.storage.sql.exec("DELETE FROM daily_count");
+  if (count !== null) state.storage.sql.exec("INSERT INTO daily_count (day, count) VALUES (?, ?)", today(), count);
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe("contact validation and email", () => {
@@ -30,7 +41,9 @@ describe("contact validation and email", () => {
     ["feature", "python", "Python library and API"],
     ["media", "interview", "Interview request"],
     ["research", "study", "Using Drowse in a study"],
-    ["research", "funding", "Funding & Sponsorship"],
+    ["research", "funding", "Grants and research funding"],
+    ["funding", "sponsorship", "Sponsoring Drowse"],
+    ["teaching", "course", "Using Drowse in a course"],
     ["other", "none", "Not applicable"],
   ])("accepts %s topics and keeps their labels in the email", (reason, topic, label) => {
     const submission = { ...fields(), source: "contact" as const, reason, topic };
@@ -55,9 +68,31 @@ describe("contact validation and email", () => {
     expect(message.html).toContain("&lt;script&gt;");
     expect(emailContent(fields(), "reference", "now")).not.toHaveProperty("replyTo");
   });
-  it("allows only the public site and loopback origins", () => {
-    for (const origin of ["https://drowse.ai", "http://localhost:3000", "http://127.0.0.1:4176", "http://[::1]:8080"]) expect(allowedOrigin(origin)).toBe(true);
-    for (const origin of [null, "null", "https://evil.test", "https://drowse.ai.evil.test", "https://drowse.ai/path", "http://drowse.ai"]) expect(allowedOrigin(origin)).toBe(false);
+  it("allows only the public site, plus loopback origins when enabled", () => {
+    const loopback = ["http://localhost:3000", "http://127.0.0.1:4176", "http://[::1]:8080"];
+    for (const origin of ["https://drowse.ai", ...loopback]) expect(allowedOrigin(origin, true)).toBe(true);
+    expect(allowedOrigin("https://drowse.ai")).toBe(true);
+    for (const origin of loopback) expect(allowedOrigin(origin)).toBe(false);
+    for (const origin of [null, "null", "https://evil.test", "https://drowse.ai.evil.test", "https://drowse.ai/path", "http://drowse.ai", "https://www.drowse.ai"]) expect(allowedOrigin(origin, true)).toBe(false);
+  });
+  it.each([
+    ["right-to-left override", "Invoice \u202Egnp.exe"], ["isolate", "A \u2066hidden\u2069 title"], ["zero-width space", "a\u200Bb"],
+    ["byte order mark", "\uFEFFtitle"], ["line separator", "one\u2028two"], ["paragraph separator", "one\u2029two"],
+    ["next line", "one\u0085two"], ["C1 control", "one\u009Btwo"],
+  ])("rejects a title containing a %s", (_name, title) => {
+    expect(titleError(title)).toBeDefined();
+  });
+  it("keeps ordinary Unicode titles, including emoji joiner sequences", () => {
+    for (const title of ["A useful improvement", "Café ☕ résumé", "\u05E9\u05DC\u05D5\u05DD", "Family \u{1F468}\u200D\u{1F469}\u200D\u{1F467}"]) expect(titleError(title)).toBeUndefined();
+  });
+  it("parses the daily limit with a safe default", () => {
+    expect(dailyLimit(undefined)).toBe(200);
+    expect(dailyLimit("")).toBe(200);
+    expect(dailyLimit("abc")).toBe(200);
+    expect(dailyLimit("-1")).toBe(200);
+    expect(dailyLimit("1.5")).toBe(200);
+    expect(dailyLimit("0")).toBe(0);
+    expect(dailyLimit("50")).toBe(50);
   });
 });
 
@@ -91,6 +126,23 @@ describe("HTTP boundary", () => {
     expect((await worker.fetch(nonJson, enabled(), createExecutionContext())).status).toBe(415);
     expect(attempts).toHaveBeenCalled();
   });
+  it("accepts loopback origins only when ALLOW_LOCAL_ORIGINS is true", async () => {
+    const local = { headers: { Origin: "http://localhost:8000", "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.7" } };
+    const blocked = await worker.fetch(request(fields(), local), enabled({ ALLOW_LOCAL_ORIGINS: "false" }), createExecutionContext());
+    expect(blocked.status).toBe(403);
+    expect(await blocked.json()).toEqual({ error: "origin_not_allowed" });
+    const preflight = await worker.fetch(request(undefined, { ...local, method: "OPTIONS", body: undefined }), enabled({ ALLOW_LOCAL_ORIGINS: "true" }), createExecutionContext());
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:8000");
+  });
+  it("rejects hidden formatting characters in the title at the HTTP boundary", async () => {
+    allowAll();
+    const send = vi.spyOn(env.EMAIL, "send");
+    const result = await worker.fetch(request({ ...fields(), title: "Invoice \u202Egnp.exe", requestId: crypto.randomUUID() }), enabled(), createExecutionContext());
+    expect(result.status).toBe(400);
+    expect(await result.json()).toMatchObject({ error: "invalid_fields", fields: { title: expect.any(String) } });
+    expect(send).not.toHaveBeenCalled();
+  });
   it("enforces rate limits without invoking email", async () => {
     vi.spyOn(env.ATTEMPTS, "limit").mockResolvedValue({ success: false });
     const result = await worker.fetch(request({ ...fields(), requestId: crypto.randomUUID() }), enabled(), createExecutionContext());
@@ -105,6 +157,89 @@ describe("HTTP boundary", () => {
     const result = await worker.fetch(request({ ...fields(), requestId }), enabled(), createExecutionContext());
     expect(result.status).toBe(200);
     expect(await result.json()).toEqual({ status: "sent", reference: requestId });
+  });
+});
+
+describe("Turnstile verification", () => {
+  const siteverify = (body: unknown, status = 200) => vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(body, { status }));
+  it("is not required when no secret is configured", async () => {
+    allowAll();
+    const verify = vi.spyOn(globalThis, "fetch");
+    vi.spyOn(env.EMAIL, "send").mockResolvedValue({ messageId: "provider-receipt" });
+    const result = await worker.fetch(request({ ...fields(), requestId: crypto.randomUUID() }), enabled({ TURNSTILE_SECRET: "" }), createExecutionContext());
+    expect(result.status).toBe(200);
+    expect(verify).not.toHaveBeenCalled();
+  });
+  it("requires a token when a secret is configured", async () => {
+    allowAll();
+    const verify = siteverify({ success: true });
+    const result = await worker.fetch(request({ ...fields(), requestId: crypto.randomUUID() }), enabled({ TURNSTILE_SECRET: "secret" }), createExecutionContext());
+    expect(result.status).toBe(400);
+    expect(await result.json()).toEqual({ error: "verification_required" });
+    expect(verify).not.toHaveBeenCalled();
+  });
+  it("rejects a failed token before shared limits or email", async () => {
+    vi.spyOn(env.ATTEMPTS, "limit").mockResolvedValue({ success: true });
+    const volume = vi.spyOn(env.VOLUME, "limit").mockResolvedValue({ success: true });
+    const send = vi.spyOn(env.EMAIL, "send");
+    siteverify({ success: false, "error-codes": ["invalid-input-response"] });
+    const result = await worker.fetch(request({ ...fields(), requestId: crypto.randomUUID(), turnstileToken: "bad" }), enabled({ TURNSTILE_SECRET: "secret" }), createExecutionContext());
+    expect(result.status).toBe(403);
+    expect(await result.json()).toEqual({ error: "verification_failed" });
+    expect(volume).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+  it("fails closed when siteverify is unreachable", async () => {
+    allowAll();
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network"));
+    const result = await worker.fetch(request({ ...fields(), requestId: crypto.randomUUID(), turnstileToken: "token" }), enabled({ TURNSTILE_SECRET: "secret" }), createExecutionContext());
+    expect(result.status).toBe(503);
+    expect(await result.json()).toEqual({ error: "verification_unavailable" });
+  });
+  it("sends after a verified token and passes the secret, token, IP, and reference", async () => {
+    allowAll();
+    const verify = siteverify({ success: true });
+    vi.spyOn(env.EMAIL, "send").mockResolvedValue({ messageId: "provider-receipt" });
+    const requestId = crypto.randomUUID();
+    const result = await worker.fetch(request({ ...fields(), requestId, turnstileToken: "token" }), enabled({ TURNSTILE_SECRET: "secret" }), createExecutionContext());
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({ status: "sent", reference: requestId });
+    const [url, init] = verify.mock.calls[0];
+    expect(String(url)).toBe("https://challenges.cloudflare.com/turnstile/v0/siteverify");
+    expect(JSON.parse(String(init?.body))).toEqual({ secret: "secret", response: "token", remoteip: "192.0.2.7", idempotency_key: requestId });
+  });
+});
+
+describe("global daily cap", () => {
+  it("counts per UTC day and resets on the next day", async () => {
+    await setDailyCount(null);
+    const stub = capStub();
+    const now = Date.parse("2026-09-07T23:59:00Z");
+    expect(await stub.consumeDaily(2, now)).toEqual({ allowed: true, retryAfter: 60 });
+    expect((await stub.consumeDaily(2, now)).allowed).toBe(true);
+    expect(await stub.consumeDaily(2, now)).toEqual({ allowed: false, retryAfter: 60 });
+    expect((await stub.consumeDaily(2, now + 120_000)).allowed).toBe(true);
+    expect((await stub.consumeDaily(0, now + 120_000)).allowed).toBe(false);
+    await setDailyCount(null);
+  });
+  it("refuses sends over the cap with a clear code and allows a retry under the same reference", async () => {
+    allowAll();
+    const send = vi.spyOn(env.EMAIL, "send").mockResolvedValue({ messageId: "provider-receipt" });
+    const requestId = crypto.randomUUID();
+    try {
+      await setDailyCount(dailyLimit((env as typeof env & { DAILY_LIMIT?: string }).DAILY_LIMIT));
+      const limited = await worker.fetch(request({ ...fields(), requestId }), enabled(), createExecutionContext());
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toEqual({ error: "daily_limit_reached", reference: requestId });
+      expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
+      expect(send).not.toHaveBeenCalled();
+      await setDailyCount(null);
+      const retried = await worker.fetch(request({ ...fields(), requestId }), enabled(), createExecutionContext());
+      expect(retried.status).toBe(200);
+      expect(send).toHaveBeenCalledTimes(1);
+      const counted = await runInDurableObject(capStub(), (_instance, state) => state.storage.sql.exec("SELECT count FROM daily_count").toArray());
+      expect(counted).toEqual([{ count: 1 }]);
+    } finally { await setDailyCount(null); }
   });
 });
 

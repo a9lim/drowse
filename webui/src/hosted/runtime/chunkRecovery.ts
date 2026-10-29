@@ -90,7 +90,7 @@ async function clearAppShell(): Promise<void> {
   if (typeof caches === "undefined") return;
   for (const name of await caches.keys()) {
     // These are app code caches, never the model, chat, or artifact stores.
-    if (/^(?:drowse|saklas|polythetic)-hosted-(?:precache-v\d+-|on-demand-assets-v\d+$|landing-shader-v\d+$)/.test(name)) {
+    if (/^(?:drowse|saklas|polythetic)-hosted-(?:precache-v\d+-|(?:on-demand-assets|on-demand-wasm|landing-shader|tab-icons|sae-descriptions|fonts|pages)-v\d+$)/.test(name)) {
       await caches.delete(name);
     }
   }

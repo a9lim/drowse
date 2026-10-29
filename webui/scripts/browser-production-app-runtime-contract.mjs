@@ -515,7 +515,7 @@ export async function clickOpen(page) {
   const choice = await waitForVisibleChoice(page, [
     ["ready", page.locator(".shell")],
     ["loading", page.locator(".runtime-gate.loading-pulse")],
-    ["direct", page.getByRole("button", { name: "Open Drowse", exact: true })],
+    ["direct", page.getByRole("button", { name: "Open workbench", exact: true })],
     ["warning", page.getByRole("button", { name: "Review warning", exact: true })],
   ], "model open control");
   if (choice.name === "ready" || choice.name === "loading") return;

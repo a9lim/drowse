@@ -901,7 +901,9 @@ function fullRuntimeReport() {
     schemaVersion: 1,
     evidenceType: "realBrowserEndToEnd",
     toolVersion: "drowse-real-browser-e2e-v4",
-    producedAt,
+    // The observer-report freshness check reads the real clock (the producer
+    // runs as a subprocess), so this report is minted now, not at `producedAt`.
+    producedAt: new Date(Date.now() - 60 * 1000).toISOString(),
     passed: true,
     releaseEvidence: false,
     environment: {

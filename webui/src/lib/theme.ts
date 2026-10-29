@@ -30,10 +30,20 @@ function storedTheme(): Theme | null {
   }
 }
 
+const systemLightQuery = "(prefers-color-scheme: light)";
+
+function systemTheme(): Theme {
+  try {
+    return window.matchMedia?.(systemLightQuery).matches ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
 function preferredTheme(): Theme {
   const fromDocument = document.documentElement.dataset.theme;
   if (isTheme(fromDocument)) return fromDocument;
-  return storedTheme() ?? "dark";
+  return storedTheme() ?? systemTheme();
 }
 
 function applyTheme(theme: Theme): void {
@@ -92,9 +102,18 @@ export function initializeTheme(): Theme {
   applyTheme(preferredTheme());
 
   window.addEventListener("storage", (event) => {
-    if (event.key !== THEME_STORAGE_KEY) return;
-    changeTheme(isTheme(event.newValue) ? event.newValue : "dark");
+    if (event.key !== THEME_STORAGE_KEY && event.key !== null) return;
+    // A cleared choice in another tab returns to the system appearance.
+    changeTheme(event.key !== null && isTheme(event.newValue) ? event.newValue : storedTheme() ?? systemTheme());
   });
+  // Until someone picks a theme with the toggle, follow the system appearance.
+  try {
+    window.matchMedia?.(systemLightQuery).addEventListener?.("change", () => {
+      if (storedTheme() === null) changeTheme(systemTheme());
+    });
+  } catch {
+    // Older browsers without media query listeners keep the initial theme.
+  }
   return activeTheme;
 }
 

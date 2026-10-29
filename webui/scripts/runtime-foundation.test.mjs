@@ -1181,9 +1181,25 @@ try {
     assert.equal(eligible.eligible, true);
     assert.deepEqual(eligible.hardFailures, []);
     assert.deepEqual(eligible.advisories, []);
+    const setupPacks = recommendation.setupPackBytes(model, variant, 2048);
+    assert.ok(setupPacks > 0, "the default J-lens and SAE count toward the first download");
     assert.equal(
       eligible.requiredStorageBytes,
+      Math.ceil(1_200 + 250 + setupPacks + 256 * 1024 * 1024),
+    );
+    assert.equal(
+      recommendation.assessModelVariant(model, variant, {
+        ...base,
+        installedPackIds: variant.packs.map((pack) => pack.id),
+      }).requiredStorageBytes,
       Math.ceil(1_200 + 250 + 256 * 1024 * 1024),
+      "packs already on the device are not counted again",
+    );
+    assert.equal(recommendation.storageShortfallBytes(1_000, null), 0);
+    assert.equal(recommendation.storageShortfallBytes(1_000, 1024 * 1024 * 1024), 0);
+    assert.equal(
+      recommendation.storageShortfallBytes(1_000, 1_000),
+      recommendation.requiredStorageBytes(1_000, 0) - 1_000,
     );
 
     const unknownStorage = recommendation.assessModelVariant(model, variant, {
@@ -1453,9 +1469,9 @@ try {
     assert.equal(stalled.etaSeconds, null);
     assert.throws(() => estimator.observe(9 * mib, 40 * mib, 23_000), /monotonic/);
 
-    assert.equal(eta.formatEtaRange([1_080, 1_620]), "18 - 27 minutes");
-    assert.equal(eta.formatEtaRange([2_700, 5_400]), "45 minutes - 1.5 hours");
-    assert.equal(eta.formatEtaRange([3_600, 7_200]), "1 - 2 hours");
+    assert.equal(eta.formatEtaRange([1_080, 1_620]), "18–27 minutes");
+    assert.equal(eta.formatEtaRange([2_700, 5_400]), "45 minutes – 1.5 hours");
+    assert.equal(eta.formatEtaRange([3_600, 7_200]), "1–2 hours");
   });
 
   test("range validation appends only exact contiguous responses", () => {

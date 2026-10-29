@@ -5,13 +5,20 @@ const server = await createServer({ configFile: false, appType: "custom", logLev
 try {
   const { ConversationLibrary } = await server.ssrLoadModule("/src/lib/conversationLibrary.ts");
   const { CONVERSATION_SAMPLING_KEYS } = await server.ssrLoadModule("/src/lib/conversationSnapshot.ts");
-  const { encodeChatBackup, importChatBackup, chatBackupFilename, MAX_CHAT_BACKUP_BYTES } = await server.ssrLoadModule("/src/lib/chatBackup.ts");
+  const { encodeChatBackup, encodeChatArchive, importChatBackup, readChatBackup, readChatBackupFiles, findImportedChat, saveChatImport, chatBackupFilename, MAX_CHAT_BACKUP_BYTES } = await server.ssrLoadModule("/src/lib/chatBackup.ts");
   assert.equal(chatBackupFilename(" My backup.drowse-chat.json "), "My-backup.drowsechat");
   assert.equal(chatBackupFilename("My backup.drowsechat"), "My-backup.drowsechat");
   assert.equal(chatBackupFilename("chat.json"), "chat.drowsechat");
   assert.equal(chatBackupFilename("../../study / copy"), "..-..-study-copy.drowsechat");
   assert.equal(chatBackupFilename("  "), "chat.drowsechat");
   assert.equal(chatBackupFilename("x".repeat(200)), `${"x".repeat(80)}.drowsechat`);
+  assert.equal(chatBackupFilename("マーモットの研究"), "マーモットの研究.drowsechat", "Japanese names survive");
+  assert.equal(chatBackupFilename("Исследование сурков"), "Исследование-сурков.drowsechat", "Cyrillic names survive");
+  assert.equal(chatBackupFilename("بحث المرموط"), "بحث-المرموط.drowsechat", "Arabic names survive");
+  assert.equal(chatBackupFilename("Cafe\u0301 notes"), "Café-notes.drowsechat", "names are NFC-normalized");
+  assert.equal(chatBackupFilename('a<b>:c"d|e?f*g\\h\u0000i'), "a-b-c-d-e-f-g-h-i.drowsechat", "unsafe and control characters are replaced");
+  assert.equal(chatBackupFilename("trailing dots..."), "trailing-dots.drowsechat");
+  assert.equal(chatBackupFilename("研".repeat(200)), `${"研".repeat(80)}.drowsechat`, "the length cap counts characters");
   const rows = new Map();
   let sequence = 0;
   let failWrites = false;
@@ -40,6 +47,27 @@ try {
     assert.deepEqual({ ...imported, id: original.id }, original, "preserve every field except the new library id");
   }
   assert.equal(rows.size, 3, "duplicate imports never overwrite an existing chat");
+  const candidate = await readChatBackup(file(encoded));
+  assert.equal((await findImportedChat(candidate, library))?.id, original.id, "a backup of an existing chat is detected by id");
+  const elsewhere = { ...candidate, sourceId: "another-browser" };
+  assert.ok(await findImportedChat(elsewhere, library), "an earlier import of the same backup is detected by content");
+  const edited = structuredClone(elsewhere);
+  edited.snapshot.tree.nodes[2].text = "Marmots whistle.";
+  assert.equal(await findImportedChat(edited, library), null, "an edited chat is not reported as already imported");
+  const archive = await encodeChatArchive([original, await library.get(original.id)]);
+  const unpacked = await readChatBackupFiles({
+    name: "drowse-chats.zip", size: archive.byteLength,
+    async text() { throw new Error("archives are read as bytes"); },
+    async arrayBuffer() { return archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength); },
+  });
+  assert.equal(unpacked.failures.length, 0);
+  assert.deepEqual(unpacked.candidates.map(entry => entry.label), ["Marmots-research-2.drowsechat", "Marmots-research.drowsechat"], "archive entries get unique names");
+  assert.deepEqual(unpacked.candidates[0].candidate.snapshot, original.snapshot, "archives round-trip every chat");
+  const single = await readChatBackupFiles({ name: "one.drowsechat", ...file(encoded) });
+  assert.equal(single.candidates.length, 1);
+  const copy = await saveChatImport(single.candidates[0].candidate, library);
+  assert.notEqual(copy.id, original.id);
+  await library.delete(copy.id);
   assert.deepEqual(await library.get(original.id), original);
   const legacy = await importChatBackup(file(JSON.stringify(original.snapshot)), library);
   assert.match(legacy.name, /^New Chat - [A-Z][a-z]{2} \d{1,2} - \d{1,2}:\d{2} \S+$/);
@@ -51,6 +79,7 @@ try {
   const tampered = structuredClone(backup);
   tampered.conversation.snapshot.tree.nodes[2].tokens[0].top_alts[0].logprob = -99;
   await assert.rejects(importChatBackup(file(JSON.stringify(tampered)), library), /integrity check/);
+  await assert.rejects(importChatBackup(file(JSON.stringify(tampered)), library), /damaged or incomplete/, "the checksum message claims only what it detects");
   await assert.rejects(importChatBackup(file("{broken"), library), /not valid/);
   await assert.rejects(importChatBackup(file("null"), library), /Choose a Drowse/);
   await assert.rejects(importChatBackup(file(JSON.stringify({ ...backup, version: 99 })), library), /not supported/);

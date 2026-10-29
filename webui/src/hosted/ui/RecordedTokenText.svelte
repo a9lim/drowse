@@ -22,7 +22,33 @@
   let hoverAfter = 0;
   let hoverTimer: ReturnType<typeof setTimeout> | undefined;
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
+  // Without the Popover API the panel is a fixed element toggled by class (see the @supports rule).
+  let fallbackOpen = $state(false);
+  // Roving tabindex: one Tab stop for the whole text; arrow keys, Home and End move between tokens.
+  let current = $state<number | null>(null);
   const uid = $props.id();
+  const popoverSupported = () => typeof panel?.showPopover === "function";
+  function showPanel() {
+    if (!popoverSupported()) { fallbackOpen = true; return; }
+    try { if (!panel.matches(":popover-open")) panel.showPopover(); } catch { fallbackOpen = true; }
+  }
+  function hidePanel() {
+    fallbackOpen = false;
+    if (!popoverSupported()) return;
+    try { if (panel.matches(":popover-open")) panel.hidePopover(); } catch { /* Already closed. */ }
+  }
+  function panelOpen() {
+    if (!popoverSupported()) return fallbackOpen;
+    try { return panel.matches(":popover-open") || fallbackOpen; } catch { return fallbackOpen; }
+  }
+  function spokenToken(text: string) {
+    const word = text.trim();
+    const space = (part: string) => part.includes("\n") ? "line break" : "space";
+    if (!word) return text.includes("\n") ? "line break" : "space";
+    const lead = text.match(/^\s+/)?.[0], trail = text.match(/\s+$/)?.[0];
+    const notes = [lead && `a leading ${space(lead)}`, trail && `a trailing ${space(trail)}`].filter(Boolean);
+    return `“${word}”${notes.length ? `, with ${notes.join(" and ")}` : ""}`;
+  }
   const token = $derived(displayed === null ? null : tokens[displayed]);
   const rows = $derived(token ? tokenProbabilityRows(token) : []);
   $effect.pre(() => {
@@ -33,22 +59,25 @@
     displayed = null;
     anchor = null;
     pinned = false;
-    panel?.hidePopover();
+    current = null;
+    if (panel) hidePanel();
   });
   const groups = $derived.by(() => {
-    const result: Array<{ space: string; pieces: Array<{ text: string; index: number }> }> = [];
-    let group = { space: "", pieces: [] as Array<{ text: string; index: number }> };
+    const result: Array<{ space: string; pieces: Array<{ text: string; index: number; first: boolean }> }> = [];
+    let group = { space: "", pieces: [] as Array<{ text: string; index: number; first: boolean }> };
     tokens.forEach((token, index) => {
+      let first = true;
       for (const part of token.text.match(/\s+|\S+/g) ?? []) {
         if (/^\s+$/.test(part)) {
           if (group.pieces.length) { result.push(group); group = { space: "", pieces: [] }; }
           group.space += part;
-        } else group.pieces.push({ text: part, index });
+        } else { group.pieces.push({ text: part, index, first }); first = false; }
       }
     });
     if (group.pieces.length) result.push(group);
     return result;
   });
+  const rovingIndex = $derived(current ?? (layout === "inline" ? 0 : groups[0]?.pieces[0]?.index ?? 0));
 
   function place() {
     if (!anchor || active === null) return;
@@ -79,7 +108,7 @@
       easing: "ease-out",
     });
     fade = exit;
-    exit.onfinish = () => { if (fade === exit) { panel.hidePopover(); fade = null; } };
+    exit.onfinish = () => { if (fade === exit) { hidePanel(); fade = null; } };
     if (restoreFocus) trigger?.focus({ preventScroll: true });
   }
   async function open(index: number, element: HTMLElement, pin = false, focus = false) {
@@ -90,9 +119,9 @@
     pinned = pin;
     await tick();
     if (active !== index || anchor !== element) return;
-    const opacity = panel.matches(":popover-open") ? getComputedStyle(panel).opacity : "0";
+    const opacity = panelOpen() ? getComputedStyle(panel).opacity : "0";
     fade?.cancel();
-    panel.showPopover();
+    showPanel();
     place();
     fade = panel.animate([{ opacity }, { opacity: 1 }], {
       duration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 200,
@@ -154,17 +183,18 @@
   });
 </script>
 
-{#snippet tokenButton(text: string, index: number)}<button
-    type="button" class="recorded-token" class:highlighted={highlights} class:selected={active === index} class:whitespace={text.trim().length === 0}
+{#snippet tokenButton(text: string, index: number, first = true)}<button
+    type="button" class="recorded-token" tabindex={index === rovingIndex && first ? 0 : -1} class:highlighted={highlights} class:selected={active === index} class:whitespace={text.trim().length === 0}
     style:--token-tint={highlightColor(coloring === "probability" ? probabilityScore(tokens[index].logprob) : surpriseScore(tokens[index].logprob), undefined, "surprise")}
-    aria-label={`Inspect token ${visibleTokenText(tokens[index].text)}`}
+    aria-label={`Inspect token ${spokenToken(tokens[index].text)}`}
     aria-haspopup="dialog" aria-expanded={active === index} aria-controls={active === index ? `${uid}-panel` : undefined}
     onpointerenter={event => hover(event, index)} onpointerleave={leave}
+    onfocus={() => current = index}
     onclick={event => void open(index, event.currentTarget, true, event.detail === 0)}
     onkeydown={move}
   >{#if layout === "inline"}<MorphText {text} numbers={false} duration={240} />{:else}{text}{/if}</button>{/snippet}
 
-<svelte:element this={layout === "message" ? "h1" : "div"} class="message-title" class:inline={layout === "inline"} aria-label={tokens.map(token => token.text).join("").trim()}><span class="recorded-tokens">{#if layout === "inline"}{#each tokens as piece, index (index)}<span class="inline-piece" animate:flip={{ duration: motionDuration(240) }}>{@render tokenButton(piece.text, index)}</span>{/each}{:else}{#each [groups.slice(0, 2), groups.slice(2)] as section, sectionIndex}{sectionIndex === 0 ? "" : " "}<span class={sectionIndex === 0 ? "message-prefix" : "message-body"}>{#each section as group, groupIndex}{groupIndex === 0 ? "" : group.space}<span class="word">{#each group.pieces as piece}{@render tokenButton(piece.text, piece.index)}{/each}</span>{/each}</span>{/each}{/if}</span></svelte:element>
+<svelte:element this={layout === "message" ? "h1" : "div"} class="message-title" class:inline={layout === "inline"} aria-label={tokens.map(token => token.text).join("").trim()}><span class="recorded-tokens">{#if layout === "inline"}{#each tokens as piece, index (index)}<span class="inline-piece" animate:flip={{ duration: motionDuration(240) }}>{@render tokenButton(piece.text, index)}</span>{/each}{:else}{#each [groups.slice(0, 2), groups.slice(2)] as section, sectionIndex}{sectionIndex === 0 ? "" : " "}<span class={sectionIndex === 0 ? "message-prefix" : "message-body"}>{#each section as group, groupIndex}{groupIndex === 0 ? "" : group.space}<span class="word">{#each group.pieces as piece}{@render tokenButton(piece.text, piece.index, piece.first)}{/each}</span>{/each}</span>{/each}{/if}</span></svelte:element>
 
 <svg class="glass-definitions" width="0" height="0" aria-hidden="true" focusable="false">
   <defs>
@@ -175,7 +205,7 @@
   </defs>
 </svg>
 
-<div bind:this={panel} id={`${uid}-panel`} class="recorded-token-panel" popover="manual" role="dialog" tabindex="-1"
+<div bind:this={panel} id={`${uid}-panel`} class="recorded-token-panel" class:fallback-open={fallbackOpen} popover="manual" role="dialog" tabindex="-1"
   aria-labelledby={`${uid}-title`} aria-hidden={active === null} onpointerenter={cancelTimers} onpointerleave={leave}>
   {#if token}
     <header>
@@ -236,6 +266,10 @@
   }
   @media (prefers-contrast: more), (forced-colors: active), (prefers-reduced-transparency: reduce) {
     .recorded-token-panel { --fg: CanvasText; --fg-dim: CanvasText; background: Canvas; -webkit-backdrop-filter: none; backdrop-filter: none; text-shadow: none; }
+  }
+  .recorded-token-panel.fallback-open { display: block; z-index: 1000; }
+  @supports not selector(:popover-open) {
+    .recorded-token-panel:not(.fallback-open) { display: none; }
   }
   @media (prefers-reduced-motion: reduce) { .recorded-token, .close, .recorded-token-panel { transition: none; } .close:active { scale: 1; } }
 </style>

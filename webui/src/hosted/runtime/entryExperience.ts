@@ -53,6 +53,30 @@ export function rememberCompletedOnboarding(
   } catch {}
 }
 
+/**
+ * Called after a model is removed from this device. Points entry memory at
+ * another installed model, or clears it when none remain, so the chats page
+ * doesn't keep asking for a model that was deleted on purpose.
+ */
+export function forgetEntryModel(
+  removedModelVariantId: string,
+  replacementModelVariantId: string | null,
+  storage: WebStorage | undefined = browserStorage("localStorage"),
+): void {
+  const memory = readEntryMemory(storage);
+  if (!storage || memory?.lastModelVariantId !== removedModelVariantId) return;
+  try {
+    if (replacementModelVariantId?.trim()) {
+      storage.setItem(ENTRY_MEMORY_KEY, JSON.stringify({
+        ...memory,
+        lastModelVariantId: replacementModelVariantId,
+      } satisfies EntryMemory));
+    } else {
+      removeLegacyStorageItem(storage, ENTRY_MEMORY_KEY);
+    }
+  } catch {}
+}
+
 export function queueConversationOpen(
   id: string,
   modelId: string,

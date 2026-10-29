@@ -182,7 +182,7 @@ interface TemplateScoresWasm extends DisposableWasmValue {
 }
 
 interface FittingWasmBindings {
-  default(): Promise<unknown>;
+  default(options?: { module_or_path?: URL | string }): Promise<unknown>;
   MahalanobisWhitener: new (
     columns: number,
     rank: number,
@@ -1005,9 +1005,13 @@ function deserializeRbf(
 
 function loadBindings(): Promise<FittingWasmBindings> {
   bindingsPromise ??= (async () => {
-    const moduleUrl = new URL("/wasm/drowse_fitting_wasm.js", scope.location.origin).href;
+    // Digest-versioned URLs from the hosted build keep the CacheFirst service-worker cache current.
+    const files = typeof __DROWSE_FITTING_WASM__ === "object"
+      ? __DROWSE_FITTING_WASM__
+      : { module: "/wasm/drowse_fitting_wasm.js", wasm: "/wasm/drowse_fitting_wasm_bg.wasm" };
+    const moduleUrl = new URL(files.module, scope.location.origin).href;
     const bindings = await import(/* @vite-ignore */ moduleUrl) as FittingWasmBindings;
-    await bindings.default();
+    await bindings.default({ module_or_path: new URL(files.wasm, scope.location.origin) });
     return bindings;
   })().catch((error) => {
     bindingsPromise = null;

@@ -15,7 +15,16 @@
   const colorOptions = [{ value: "surprisal", label: "Surprisal" }, { value: "probability", label: "Probability" }];
   const run = $derived(recording.runs[setting]);
   const tokens = $derived(run.tokens.filter(token => token.text.length > 0));
-  const alphaLabel = (alpha: number) => alpha === 0 ? "No steering" : alpha < 0 ? "Toward detached" : "Toward welcoming";
+  // At negative strengths the recorded replies stay close to the unsteered one, so the ends
+  // describe the direction of the influence rather than promising a detached reply.
+  const directionLabel = (alpha: number) => alpha === 0 ? "Unsteered" : alpha < 0 ? "Less welcoming" : "More welcoming";
+  const valueText = $derived(`${directionLabel(run.alpha)}, strength ${run.alpha.toFixed(2)}`);
+  const modelNames: Record<string, string> = { "gemma3-4b-instruct": "Gemma 3 4B" };
+  const recordedOn = new Intl.DateTimeFormat("en", { dateStyle: "long", timeZone: "UTC" }).format(new Date(recording.recordedAt));
+  const provenance = `Recorded with ${modelNames[recording.modelId] ?? recording.modelId} in the Drowse browser runtime on ${recordedOn} · seed ${recording.sampling.seed} · temperature ${recording.sampling.temperature}. Real output, not edited.`;
+  let announcement = $state("");
+  // Announce once when a new setting is committed, not on every drag tick.
+  function announce() { announcement = `${valueText}. Reply: ${run.text.trim()}`; }
 
   function fitContent(node: HTMLElement) {
     const panel = node.parentElement!;
@@ -34,10 +43,16 @@
     <SegmentedTabs items={options} bind:value={mode} ariaLabel="Example capability" />
   </header>
   <p class="context">{promptPreview}</p>
-    <div class="alpha"><span>Welcoming influence</span><span><MorphText text={`${alphaLabel(run.alpha)} · α ${run.alpha.toFixed(2)}`} /></span></div>
-    <Slider value={setting} min={0} max={recording.runs.length - 1} step={1} oninput={value => setting = value}
-      ariaLabel="Recorded welcoming setting" title={`${alphaLabel(run.alpha)}, alpha ${run.alpha.toFixed(2)}`} displayValue={`α ${run.alpha.toFixed(2)}`} />
-    <div class="scale-labels" aria-hidden="true"><span>Detached</span><span>Unsteered</span><span>Welcoming</span></div>
+    <div class="alpha">
+      <span>Welcoming influence</span>
+      <span class="strength"><MorphText text={`${directionLabel(run.alpha)} · Strength (α) ${run.alpha.toFixed(2)}`} />{#if run.expression}<code class="expression">{run.expression}</code>{/if}</span>
+    </div>
+    <div class="slider-field" onchange={announce}>
+      <Slider value={setting} min={0} max={recording.runs.length - 1} step={1} oninput={value => setting = value}
+        ariaLabel="Welcoming influence" displayValue={valueText} />
+    </div>
+    <div class="scale-labels" aria-hidden="true"><span>Less welcoming</span><span>Unsteered</span><span>More welcoming</span></div>
+    <p class="sr-only" aria-live="polite">{announcement}</p>
   <div class="mode-stage">
   {#key mode}
   <div class="mode-content" transition:pageTransition={{}}>
@@ -55,6 +70,7 @@
   </div>
   {/key}
   </div>
+  <p class="provenance">{provenance}</p>
   </div>
 </section>
 
@@ -77,6 +93,9 @@
   .capability-demo :global(.sk-tabs .tab) { min-width: 80px; min-height: 48px; padding: 8px 16px; font-family: var(--font-reading) !important; font-size: var(--text-md); font-weight: var(--weight-reading-medium); line-height: 1.5; letter-spacing: normal; }
   .capability-demo :global(.recorded-token-panel) { text-shadow: none; }
   .scale-labels { -webkit-user-select: none; user-select: none; }
+  .strength { display: inline-flex; flex-wrap: wrap; align-items: baseline; justify-content: end; gap: var(--space-xs) var(--space-sm); }
+  .expression { padding: 0 var(--space-xs); border-radius: var(--data-mark-radius); background: var(--bg-hover); color: var(--fg); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
+  .provenance { max-width: 70ch; margin: var(--space-6) 0 0; color: var(--fg-muted); font-size: var(--text-xs); line-height: 1.6; text-wrap: pretty; }
   .result { max-width: 70ch; font: inherit; font-weight: var(--weight-bold); text-wrap: pretty; overflow-wrap: anywhere; margin: 24px 0 0; white-space: pre-wrap; }
   .inspect-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); margin-top: var(--space-6); }
   .inspect-hint { margin: 0; }

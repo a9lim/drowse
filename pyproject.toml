@@ -54,10 +54,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/a9lim/polythetic"
-Repository = "https://github.com/a9lim/polythetic"
-Issues = "https://github.com/a9lim/polythetic/issues"
-Releases = "https://github.com/a9lim/polythetic/releases"
+Homepage = "https://github.com/a9lim/drowse"
+Repository = "https://github.com/a9lim/drowse"
+Issues = "https://github.com/a9lim/drowse/issues"
+Releases = "https://github.com/a9lim/drowse/releases"
 
 [project.optional-dependencies]
 flash = ["flash-attn>=2.5"]

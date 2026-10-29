@@ -1571,7 +1571,7 @@ def get_layers(model: PreTrainedModel) -> nn.ModuleList:
         _warned.add(model_type)
         warnings.warn(
             f"architecture {model_type!r} is wired up but untested — "
-            "report issues at https://github.com/a9lim/polythetic",
+            "report issues at https://github.com/a9lim/drowse",
             UserWarning,
             stacklevel=2,
         )

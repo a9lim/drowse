@@ -53,7 +53,7 @@ const MESSAGES: Array<[RegExp, ErrorMessage]> = [
   [/DOWNLOAD_(?:HTTP_REJECTED|REDIRECT_REJECTED)|ARTIFACT_ROUTE_UNAVAILABLE/u,
     "The model host did not provide an approved download. Refresh the page and try again later."],
   [/ARTIFACT_|VERIFIED_ARTIFACT_|UNVERIFIED_ARTIFACT|CHECKSUM|HASH|INTEGRITY|SIZE_MISMATCH|SAFETENSORS/u,
-    "A downloaded file failed its safety check. Resume the download to replace it. If it fails again, remove the model and download it again."],
+    "A downloaded file failed its safety check. Retry the download to replace it. If it fails again, remove the model and download it again."],
   [/ARCHIVE_|INVALID_TRANSCRIPT|TRANSCRIPT_MODEL_MISMATCH|JSON_(?:INVALID|NOT_UTF8|DUPLICATE_KEY)/u,
     "Drowse could not read that file. Choose an unmodified Drowse file and try again."],
   [/LOCAL_SESSION_(?:INCOMPATIBLE|SCHEMA_UNSUPPORTED)|UNSUPPORTED_SESSION_SCHEMA/u,

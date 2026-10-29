@@ -71,7 +71,9 @@ try {
   const tagSource = await readFile(new URL("../src/lib/ui/BaseModelTag.svelte", import.meta.url), "utf8");
   assert.match(tagSource, /\.base-tag\.plain\s*\{[^}]*padding: 0;[^}]*background: none;/);
   const pickerSource = await readFile(new URL("../src/hosted/ui/HostedApp.svelte", import.meta.url), "utf8");
-  assert.match(pickerSource, /<strong><span>\{model.name\}<\/span>\{#if model.modelType === "base"\}<BaseModelTag plain \/>/);
+  assert.match(pickerSource, /<strong><span id=\{`model-name-\$\{model.id\}`\}>\{model.name\}<\/span>\{#if model.modelType === "base"\}<BaseModelTag plain \/>/);
+  assert.match(pickerSource, /aria-labelledby=\{`model-name-\$\{model.id\}`\}/,
+    "model cards are named by the model name alone; tier, size, and fit are descriptions");
   assert.match(pickerSource, /\.model-name strong\s*\{[^}]*display: flex;[^}]*align-items: baseline;/);
   assert.match(pickerSource, /modelsBySize\(snapshot.models.filter\(\(model\) => model.modelType === "base"\)\)/);
   assert.match(pickerSource, /\.check-mark\s*\{[^}]*margin-top: var\(--space-xs\);/,
@@ -244,17 +246,20 @@ try {
 
   const { default: Landing } = await server.ssrLoadModule("/src/hosted/ui/Landing.svelte");
   const landing = render(Landing).body;
-  for (const name of ["Gemma 3 1B", "Gemma 3 4B", "Qwen3 1.7B", "Qwen3 4B", "Gemma 3 1B PT", "GPT-2 · 124M", "Pythia 70M", "Qwen 3.5 2B Base"]) {
+  for (const name of ["Gemma 3 270M", "Gemma 3 1B", "Gemma 3 4B", "Qwen3 1.7B", "Qwen3 4B", "Gemma 3 1B PT", "GPT-2 Base (124M)", "Pythia 70M Deduped Base", "Qwen 3.5 2B Base"]) {
     assert.ok(landing.includes(name), `${name} remains represented on the landing page`);
   }
   assert.doesNotMatch(landing, /Under evaluation|\bbeta\b|Polythetic|Saklas/);
-  assert.doesNotMatch(landing, /Install in Drowse|Download files|huggingface\.co|[?&]model=/,
-    "the informational model roster never exposes per-model install or file links");
+  assert.doesNotMatch(landing, /Install in Drowse|Download files|huggingface\.co/,
+    "the model roster never exposes install or file links");
+  assert.equal((landing.match(/href="\/app\?choose=1&amp;model=[^"]+"/g) ?? []).length, 9,
+    "each listed model opens the app's model picker with that model selected");
   assert.equal((landing.match(/class="model-group /g) ?? []).length, 2, "both model types share one group layout");
-  assert.equal((landing.match(/class="model-row /g) ?? []).length, 8);
-  assert.equal((landing.match(/data-provider=/g) ?? []).length, 8, "every listed model has a logo");
-  assert.equal((landing.match(/href="\/app"[^>]*>Open Drowse<\/a>/g) ?? []).length, 2,
-    "both primary actions use the same label and app entry");
+  assert.equal((landing.match(/class="model-row /g) ?? []).length, 9);
+  assert.equal((landing.match(/data-provider=/g) ?? []).length, 9, "every listed model has a logo");
+  const landingMain = landing.match(/<main\b[\s\S]*<\/main>/)?.[0] ?? "";
+  assert.equal((landingMain.match(/href="\/app"[^>]*>Open Drowse<\/a>/g) ?? []).length, 2,
+    "both primary actions in the page body use the same label and app entry");
   assert.match(landing, /Run a language model on your device/);
   assert.doesNotMatch(landing, /Readouts are measurements|not a transcript of the model’s thoughts|J-lens and SAE tools require compatible packs/);
   assert.doesNotMatch(landing, /Interpretability, hands-on|section-signal|reading-section|footer-surface/,
@@ -265,8 +270,8 @@ try {
   assert.match(landing, /Continue raw text\.<br\b[^>]*>Study next-token predictions\./);
   assert.match(landingSource, /\.model-group \{[^}]*grid-template-rows: subgrid;[^}]*grid-row: span 3;/,
     "both model columns share heading, description, and model-list tracks");
-  assert.match(landingSource, /\.model-list \{[^}]*grid-auto-rows: 1fr;/,
-    "matching model rows stay aligned across columns");
+  assert.match(landingSource, /\.model-list \{[^}]*grid-auto-rows: auto;[^}]*align-content: start;/,
+    "lists of different lengths keep natural row heights from the top");
   assert.match(landingSource, /\.model-group h3\s*\{[^}]*line-height: 1\.2;[^}]*text-box-edge: cap alphabetic;[^}]*text-box-trim: trim-start;/,
     "the first heading's cap edge respects the card's top inset");
   assert.match(landingSource, /\.model-row:last-child \.model-copy \{ align-self: end; \}/,
@@ -278,7 +283,7 @@ try {
   let lightPanelRules = 0;
   landingStyles.walkRules(rule => {
     if (/\.primary-action|\.skip-link/.test(rule.selector)) return;
-    if (rule.selector.replace(/\s+/g, " ").trim() === ".capabilities li, .model-group, .demo-panel") {
+    if (rule.selector.replace(/\s+/g, " ").trim() === ".capabilities li, .model-group, .demo-panel, .guide-panel") {
       lightPanelRules++;
       const declarations = Object.fromEntries(rule.nodes.filter(node => node.type === "decl").map(node => [node.prop, node.value]));
       if (rule.parent.type === "atrule") {
@@ -299,7 +304,7 @@ try {
     }
     rule.walkDecls(declaration => {
       assert.ok(!/^(background(?:-.+)?|box-shadow|backdrop-filter|border(?:-.+)?)$/.test(declaration.prop),
-        `${rule.selector}: only feature, model, and example cards gain containers`);
+        `${rule.selector}: only feature, model, example, and guide cards gain containers`);
     });
   });
   assert.equal(lightPanelRules, 3, "cards share base glass, progressive refraction, and accessibility fallback");
@@ -330,7 +335,7 @@ try {
     "the white-on-black EleutherAI asset must not become a solid alpha-mask square");
   const setupSource = await readFile(new URL("../src/hosted/ui/HostedApp.svelte", import.meta.url), "utf8");
   assert.doesNotMatch(setupSource, /Each download includes a precomputed J-lens and SAE/);
-  console.log("Unified informational home, shared app entry, all eight logos, qualified model identities, and research copy passed");
+  console.log("Unified informational home, shared app entry, all nine logos, qualified model identities, and research copy passed");
 } finally {
   await server.close();
 }

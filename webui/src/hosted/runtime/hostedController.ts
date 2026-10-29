@@ -144,6 +144,7 @@ export class HostedControllerImpl implements HostedController {
       capabilities: this.capabilities,
       contextTokens,
       loadRecords: this.loadRecords,
+      installedPackIds: [...this.installedPackIds],
       preference,
       language: language ?? this.capabilities.signals.language,
       explicitOomRetry: options.explicitOomRetry,

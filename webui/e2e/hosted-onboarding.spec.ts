@@ -256,25 +256,25 @@ async function expectSafeActionFirst(
   await expect(actions.nth(1)).toBeFocused();
 }
 
-test("setup details wait for an explicit model selection and identify the selected model", async ({ page }, testInfo) => {
+test("first run preselects the recommended model, explains why, and identifies the selected model", async ({ page }, testInfo) => {
   await mountHostedApp(page, [true], {
     ...initialSnapshot,
     download: { ...initialSnapshot.download, phase: "idle", modelVariantId: undefined },
   });
-  await expect(page.locator(".selected-model-details")).toHaveCount(0);
-  await expect(page.locator(".model-grid > button[aria-pressed=true]")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Download and open", exact: true })).toHaveCount(0);
-  await updateSnapshot(page, { headline: "Device check complete" });
-  await expect(page.locator(".selected-model-details")).toHaveCount(0);
   const first = page.locator(".model-grid > button", { hasText: "recommended model" });
   const second = page.locator(".model-grid > button", { hasText: "eligible model" });
-  await first.focus();
-  await first.press("Enter");
-  await expect(page.getByRole("heading", { name: "Choose recommended model", exact: true })).toBeVisible();
   await expect(first).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".model-grid > button[aria-pressed=true]")).toHaveCount(1);
+  await expect(page.getByRole("heading", { name: "Included with recommended model", exact: true })).toBeVisible();
+  await page.locator(".why-this summary").click();
+  await expect(page.locator(".why-this")).toContainText("recommended device fit");
   await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
-  await second.click();
-  await expect(page.getByRole("heading", { name: "Choose eligible model", exact: true })).toBeVisible();
+  await updateSnapshot(page, { headline: "Device check complete" });
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+  await second.focus();
+  await second.press("Enter");
+  await expect(page.getByRole("heading", { name: "Included with eligible model", exact: true })).toBeVisible();
+  await expect(page.locator(".why-this")).toHaveCount(0);
   await expect(first).toHaveAttribute("aria-pressed", "false");
   await expect(second).toHaveAttribute("aria-pressed", "true");
   const shadows = await page.locator(".model-grid > button").evaluateAll(buttons => buttons.map(button => getComputedStyle(button).boxShadow));
@@ -595,7 +595,7 @@ test("model cards show provider logos and catalog-backed SAE availability", asyn
   );
 
   await gemma.click();
-  await expect(page.getByRole("heading", { name: "Choose Gemma 3 1B", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Included with Gemma 3 1B", exact: true })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /Gemma Scope features/ })).toHaveCount(0);
   await expect(page.locator(".required-tool", { hasText: "Feature insights" })).toContainText("Gemma Scope SAE");
   await expect(page.locator(".setup-disclosure")).toHaveCount(0);
@@ -643,7 +643,7 @@ test("hosted onboarding keeps technical file progress hidden and formats ETA onc
     .toHaveAttribute("aria-valuenow", "50");
   await expect(page.locator(".progress-copy .rolling-number .morph-source")).toHaveText("50");
   await expect(page.locator(".progress-copy .rolling-number")).toHaveAttribute("data-value", "50");
-  await expect(page.locator(".progress-copy")).toContainText("% · 18 - 27 minutes remaining");
+  await expect(page.locator(".progress-copy")).toContainText("% · 18–27 minutes remaining");
   await expect(page.getByText(/params_shard/i)).toHaveCount(0);
   await expect(page.getByRole("list", { name: "Local setup files" })).toHaveCount(0);
 });
@@ -697,7 +697,7 @@ test("hosted onboarding explains and retries storage protection without repeatin
   await page.getByRole("button", { name: "Protect storage" }).click();
   await expect(page.getByRole("button", { name: "Protect storage" })).toHaveCount(0);
   await expect(notice).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Open Drowse", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open workbench", exact: true })).toBeVisible();
 });
 
 test("hosted onboarding presents model load failures as retryable failures", async ({ page }) => {

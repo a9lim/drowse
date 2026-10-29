@@ -34,7 +34,7 @@ test("model opening respects automatic loading and uses explicit controls only w
       locator: selector => selector === ".shell" ? locator("ready", state === "ready")
         : selector === ".runtime-gate.loading-pulse" ? locator("loading", state === "loading")
         : { innerText: async () => state },
-      getByRole: (_, { name }) => name === "Open Drowse" ? locator("open", state === "direct")
+      getByRole: (_, { name }) => name === "Open workbench" ? locator("open", state === "direct")
         : name === "Review warning" ? locator("warning", state === "warning")
         : locator("override", state === "warning"),
     };

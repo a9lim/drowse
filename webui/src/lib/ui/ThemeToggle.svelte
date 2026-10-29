@@ -16,9 +16,11 @@
   <button
     type="button"
     aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+    data-theme-label-dark="Switch to light theme"
+    data-theme-label-light="Switch to dark theme"
     onclick={() => setTheme(theme === "dark" ? "light" : "dark")}
   >
-    <ThemeIcon name={theme === "dark" ? "moon" : "sunny"} class="theme-icon" />
+    <ThemeIcon name={theme === "dark" ? "sunny" : "moon"} class="theme-icon" />
   </button>
 </div>
 

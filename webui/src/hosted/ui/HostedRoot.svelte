@@ -37,12 +37,17 @@
   } from "../../lib/motion";
   import {
     clearConversationOpen,
+    forgetEntryModel,
     queueConversationOpen,
     readEntryMemory,
     rememberCompletedOnboarding,
   } from "../runtime/entryExperience";
 
   type EntryView = "resolving" | "home" | "models";
+  type HistoryMode = "push" | "replace";
+  interface EntryHistoryState {
+    drowseConversation?: { id: string; modelId: string };
+  }
 
   let { controller }: { controller?: HostedShellController } = $props();
   const appController = $derived(controller ?? createShellController());
@@ -65,11 +70,19 @@
   let previousFocus: HTMLElement | null = null;
   let restoreFocusOnClose = true;
   let workbenchPromise: Promise<void> | null = null;
+  let viewNonce = $state(0);
+  let installedModelIds: Set<string> | null = null;
   const initialUrl = new URL(window.location.href);
   const requestedModelPicker = initialUrl.searchParams.get("choose") === "1";
   const requestedWorkbenchReopen = initialUrl.searchParams.get("reopen") === "1";
   const takeoverPhase = $derived(shellSnapshot?.takeover?.phase ?? "idle");
   const takeoverReason = $derived(shellSnapshot?.takeover?.reason ?? null);
+  const downloadActive = $derived(
+    ["requesting_persistence", "downloading", "cancelling"].includes(shellSnapshot?.download.phase ?? "idle"),
+  );
+  const takeoverForDownload = $derived(
+    downloadActive || /\bdownloading\b/u.test(takeoverReason ?? ""),
+  );
   const dialogKey = $derived(
     runtimeRecovery !== null
       ? "recovery"
@@ -79,6 +92,7 @@
   );
   const dialogOpen = $derived(dialogKey !== null);
   const route = $derived(Workbench ? "workbench" : shellSnapshot === null ? "resolving" : entryView);
+  const routeKey = $derived(`${route}:${viewNonce}`);
   let routeMounted = $state(false);
 
   const FOCUSABLE = [
@@ -151,9 +165,21 @@
     window.history.replaceState(window.history.state, "", url);
   }
 
+  // User-initiated Chats/Models moves add a history entry so Back returns to
+  // the previous view instead of leaving the app. Reaching the URL already
+  // shown replaces the entry, so repeated clicks never stack duplicates.
+  function commitEntryUrl(url: URL, mode: HistoryMode, state: EntryHistoryState | null): void {
+    if (mode === "push" && url.href !== window.location.href) {
+      window.history.pushState(state, "", url);
+    } else {
+      window.history.replaceState(state ?? window.history.state, "", url);
+    }
+  }
+
   function showModels(
     modelVariantId?: string,
     conversation?: SavedConversationSummary,
+    mode: HistoryMode = "push",
   ): void {
     if (conversation) queueConversationOpen(conversation.id, conversation.modelId);
     else clearConversationOpen();
@@ -163,20 +189,68 @@
     url.searchParams.set("choose", "1");
     if (modelVariantId) url.searchParams.set("model", modelVariantId);
     else url.searchParams.delete("model");
-    window.history.replaceState(window.history.state, "", url);
-    firstRun = false;
+    commitEntryUrl(url, mode, conversation
+      ? { drowseConversation: { id: conversation.id, modelId: conversation.modelId } }
+      : {});
     entryView = "models";
   }
 
-  function showHome(): void {
+  function showHome(mode: HistoryMode = "push"): void {
     clearConversationOpen();
     const url = new URL(window.location.href);
     url.searchParams.delete("choose");
     url.searchParams.delete("model");
     url.searchParams.delete("reopen");
     url.searchParams.delete("reopen-after-unload");
-    window.history.replaceState(window.history.state, "", url);
+    commitEntryUrl(url, mode, {});
     entryView = "home";
+  }
+
+  function focusPageHeading(): void {
+    const heading = document.querySelector<HTMLElement>(".page-route h1");
+    if (!heading) return;
+    heading.tabIndex = -1;
+    heading.focus({ preventScroll: true });
+  }
+
+  function onPopState(event: PopStateEvent): void {
+    if (disposed || reloading || entryView === "resolving") return;
+    const url = new URL(window.location.href);
+    const target: EntryView = url.searchParams.get("choose") === "1" ? "models" : "home";
+    if (Workbench) {
+      if (!returningHome) void returnToChats(target === "models" ? "models" : "chats");
+      return;
+    }
+    const pending = (event.state as EntryHistoryState | null)?.drowseConversation;
+    if (target === "models" && pending) queueConversationOpen(pending.id, pending.modelId);
+    else clearConversationOpen();
+    // The models view reads ?model= when it mounts; remount it when only the
+    // query changed so Back/Forward between two deep links stays accurate.
+    if (target === entryView) {
+      viewNonce += 1;
+      void tick().then(focusPageHeading);
+    }
+    entryView = target;
+  }
+
+  function onBeforeUnload(event: BeforeUnloadEvent): void {
+    if (!downloadActive || reloading || preparingPwaUpdate) return;
+    event.preventDefault();
+    event.returnValue = "";
+  }
+
+  function trackRemovedModels(snapshot: HostedShellSnapshot): void {
+    if (snapshot.phase !== "supported") return;
+    const installed = new Set(snapshot.models.filter(model => model.setupComplete).map(model => model.id));
+    const previous = installedModelIds;
+    installedModelIds = installed;
+    if (!previous) return;
+    const replacement = [...installed][0] ?? null;
+    for (const id of previous) {
+      if (!installed.has(id) && snapshot.models.some(model => model.id === id)) {
+        forgetEntryModel(id, replacement);
+      }
+    }
   }
 
   function enterPage(event: Event): void {
@@ -199,8 +273,8 @@
       await appController.prepareForReload();
       await flushConversationAutosave();
       Workbench = null;
-      if (destination === "models") showModels(modelVariantId ?? undefined);
-      else showHome();
+      if (destination === "models") showModels(modelVariantId ?? undefined, undefined, "replace");
+      else showHome("replace");
       await tick();
       document.querySelector<HTMLElement>(destination === "models" ? ".app-shell h1" : ".home-shell h1")?.focus({ preventScroll: true });
     } finally {
@@ -218,11 +292,22 @@
         hasSavedChats = false;
       }
     }
-    await appController?.check();
     if (disposed || !appController) return;
+    // Returning visitors see their chats right away. The device check keeps
+    // running in the background; the chats page gates every open on it.
+    const knownReturning = memory !== null || hasSavedChats;
+    const checking = appController.check();
+    if (knownReturning && !requestedModelPicker && !requestedWorkbenchReopen) {
+      firstRun = false;
+      entryView = "home";
+      await checking;
+      return;
+    }
+    await checking;
+    if (disposed) return;
     const checked = appController.current();
     const installedModel = checked.models.find((model) => model.setupComplete);
-    const returning = memory !== null || hasSavedChats || installedModel !== undefined;
+    const returning = knownReturning || installedModel !== undefined;
     if (!memory && installedModel) rememberCompletedOnboarding(installedModel.id);
     firstRun = !returning;
     entryView = requestedModelPicker || requestedWorkbenchReopen || !returning
@@ -372,6 +457,7 @@
     });
     const unsubscribe = appController.subscribe((snapshot) => {
       shellSnapshot = snapshot;
+      trackRemovedModels(snapshot);
       if (snapshot.runtime.phase === "ready") {
         const modelVariantId = snapshot.runtime.modelVariantId ?? snapshot.selectedModelVariantId;
         if (modelVariantId) rememberCompletedOnboarding(modelVariantId);
@@ -391,7 +477,13 @@
       }
     });
     void resolveEntryView();
-    return () => { unsubscribe(); disposeTools(); disposeActions(); };
+    window.addEventListener("popstate", onPopState);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      unsubscribe(); disposeTools(); disposeActions();
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
   });
 
   onDestroy(() => {
@@ -404,12 +496,14 @@
 <div class="hosted-background" inert={dialogOpen}>
   <PwaUpdatePrompt
     showOfflineReady={!Workbench}
+    {downloadActive}
+    onPauseDownload={() => appController.cancelDownload()}
     onPrepareReload={prepareForPwaUpdate}
     onApplyingChange={onPwaApplyingChange}
   />
 
   <div class="route-stage">
-  {#key route}
+  {#key routeKey}
   <div class="page-route" data-route={route}
     in:pageTransition={{ animate: routeMounted }}
     out:pageTransition={{ animate: routeMounted }}
@@ -439,6 +533,7 @@
         controller={appController}
         snapshot={shellSnapshot}
         onChooseModels={showModels}
+        onChats={focusPageHeading}
         {workbenchError}
         {workbenchNeedsReload}
         {workbenchReloading}
@@ -449,7 +544,7 @@
     <HostedApp
       controller={appController}
       {firstRun}
-      onBack={firstRun ? undefined : showHome}
+      onBack={() => showHome()}
       {workbenchError}
       {workbenchNeedsReload}
       {workbenchReloading}
@@ -503,10 +598,12 @@
               >Reload Drowse</button>
             </div>
           {:else if takeoverPhase === "requested"}
-            <h1 id="runtime-dialog-title">Another tab wants to use the GPU</h1>
+            <h1 id="runtime-dialog-title">{takeoverForDownload ? "Another tab wants to take over this download" : "Another tab wants to use the GPU"}</h1>
             <div id="runtime-dialog-description">
               <p>{takeoverReason}</p>
-              <p>Stop the current task, unload the model, and move it to the other tab.</p>
+              <p>{takeoverForDownload
+                ? "Pause the download here and let the other tab continue. Files already downloaded are kept."
+                : "Stop the current task, unload the model, and move it to the other tab."}</p>
             </div>
             <div class="runtime-dialog-actions">
               <button
@@ -519,7 +616,7 @@
                 type="button"
                 class="primary"
                 onclick={() => void allowTakeover()}
-              >Release runtime</button>
+              >{takeoverForDownload ? "Pause and release" : "Release runtime"}</button>
             </div>
           {:else}
             <h1 id="runtime-dialog-title">Releasing the local runtime</h1>

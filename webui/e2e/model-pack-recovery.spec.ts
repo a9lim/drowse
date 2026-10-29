@@ -55,7 +55,7 @@ test("stale J-lens is repaired without downloading the model or losing chats", a
   page.on("request", request => requests.push(request.url()));
   await page.reload();
   await expect(page.getByRole("button", { name: "Add tools and open", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open Drowse", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open workbench", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Add tools and open", exact: true }).click();
   await expect(composer).toBeVisible();
   await expect(page.locator(".msg").filter({ hasText: "Keep this chat during pack recovery" })).toBeVisible();

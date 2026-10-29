@@ -18,10 +18,15 @@
   let {
     onPrepareReload,
     onApplyingChange,
+    onPauseDownload,
+    downloadActive = false,
     showOfflineReady = true,
   }: {
     onPrepareReload?: () => Promise<void>;
     onApplyingChange?: (applying: boolean) => void;
+    /** Pauses the active model download so the reload doesn't interrupt it mid-write. */
+    onPauseDownload?: () => Promise<void>;
+    downloadActive?: boolean;
     showOfflineReady?: boolean;
   } = $props();
 
@@ -38,8 +43,10 @@
   let updatePending = false;
   let firstUpdateEntrance = $state(false);
   let confirmation = $state<string | null>(null);
+  let confirmingPause = $state(false);
   let reminderTimer: number | undefined;
   let confirmationTimer: number | undefined;
+  let deferredStartTimer: number | undefined;
 
   onMount(() => {
     void initializeServiceWorker();
@@ -54,7 +61,10 @@
   });
 
   onDestroy(() => {
+    if (typeof window === "undefined") return;
     destroyed = true;
+    window.clearTimeout(deferredStartTimer);
+    window.removeEventListener("load", deferUpdateMonitoring);
     stopWaitingForOnline();
     window.clearTimeout(reminderTimer);
     window.clearTimeout(confirmationTimer);
@@ -96,6 +106,7 @@
 
   function remindLater(): void {
     if (!updateAvailable || applying) return;
+    confirmingPause = false;
     confirmation = `Okay! We'll remind you in ${deferUpdate()}.`;
     offlineReady = false;
     refreshUpdateNotice();
@@ -114,7 +125,18 @@
         return;
       }
     }
-    startUpdateMonitoring();
+    // The app needs the worker for offline models; on the public pages, installing it can wait until
+    // the page has loaded and gone idle so the precache doesn't compete with first paint.
+    if (/^\/app(?:\/|$)/.test(window.location.pathname)) startUpdateMonitoring();
+    else if (document.readyState === "complete") deferUpdateMonitoring();
+    else window.addEventListener("load", deferUpdateMonitoring, { once: true });
+  }
+
+  function deferUpdateMonitoring(): void {
+    if (destroyed) return;
+    // Safari only gained requestIdleCallback recently.
+    if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(startUpdateMonitoring, { timeout: 5_000 });
+    else deferredStartTimer = globalThis.setTimeout(startUpdateMonitoring, 2_000) as unknown as number;
   }
 
   function waitForOnline(): void {
@@ -164,11 +186,17 @@
     });
   }
 
-  async function applyUpdate(): Promise<void> {
+  async function applyUpdate(pauseConfirmed = false): Promise<void> {
     if (!updateServiceWorker || applying) return;
+    if (downloadActive && !pauseConfirmed) {
+      confirmingPause = true;
+      return;
+    }
     applying = true;
     try {
       onApplyingChange?.(true);
+      if (downloadActive) await onPauseDownload?.();
+      confirmingPause = false;
       await onPrepareReload?.();
       const controlling = waitForUpdatedController();
       await updateServiceWorker(false);
@@ -180,6 +208,7 @@
         "Unable to apply the update safely. Reload the page and try again.",
       );
       updateAvailable = false;
+      confirmingPause = false;
       applying = false;
       onApplyingChange?.(false);
     }
@@ -252,7 +281,11 @@
     <div>
       {#if updateAvailable}
         <strong>A Drowse update is ready.</strong>
-        <span>Your installed models and conversations will stay on this device.</span>
+        {#if confirmingPause && downloadActive}
+          <span>Updating will pause your download. Files already downloaded are kept, and you can resume after the update.</span>
+        {:else}
+          <span>Your installed models and conversations will stay on this device.</span>
+        {/if}
       {:else if offlineReady && !registrationError}
         <strong>The interface is ready offline.</strong>
         <span>Once a model is installed, Drowse can reopen and generate offline.</span>
@@ -263,8 +296,8 @@
     </div>
     <div class="pwa-actions">
       {#if updateAvailable}
-        <button type="button" class="primary" disabled={applying} aria-busy={applying} onclick={() => void applyUpdate()}>
-          <MorphText text={applying ? "Saving local work…" : "Update and reload"} numbers={false} />
+        <button type="button" class="primary" disabled={applying} aria-busy={applying} onclick={() => void applyUpdate(confirmingPause)}>
+          <MorphText text={applying ? "Saving local work…" : confirmingPause && downloadActive ? "Pause and update" : "Update and reload"} numbers={false} />
         </button>
         <button type="button" disabled={applying} onclick={remindLater}>
           Update later

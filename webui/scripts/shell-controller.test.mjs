@@ -976,13 +976,14 @@ try {
 
     await shell.download(variant.id);
 
-    assert.deepEqual(fixture.calls.slice(-5), [
+    assert.deepEqual(fixture.calls.slice(-6), [
       "persist",
       "storage",
       `download:${variant.id}`,
       `download-pack:${variant.id}:fixture-jlens`,
       `download-pack:${variant.id}:fixture-sae`,
-    ]);
+      "storage",
+    ], "the storage estimate refreshes after a completed install");
     assert.equal(shell.current().download.phase, "installed");
     assert.equal(shell.current().download.progress.bytesReceived, baseFirstRunBytes + 100);
     assert.equal(shell.current().download.progress.bytesTotal, baseFirstRunBytes + 100);
@@ -1799,6 +1800,87 @@ try {
     assert.match(snapshot.detail, /could not verify the model list/i);
     assert.match(snapshot.download.reason, /could not verify the model list/i);
     assert.doesNotMatch(snapshot.detail, /Ed25519|verification returned false/i);
+    assert.match(snapshot.catalogError, /could not verify the model list/i);
+    assert.equal(snapshot.headline, "The model list could not load");
+    assert.ok(snapshot.models.length > 0);
+    assert.ok(
+      snapshot.models.every((model) => model.fit === "blocked" && model.catalogAvailable === false),
+      "placeholder models never look downloadable after a catalog failure",
+    );
+  });
+
+  test("changing tools for one model keeps another model's paused download", async () => {
+    const document = catalogFixture();
+    const first = document.models[0];
+    const second = structuredClone(first);
+    second.id = `${first.id}-second`;
+    second.displayName = "Second fixture";
+    second.variants[0].id = `${first.variants[0].id}-second`;
+    second.variants[0].packs = second.variants[0].packs.map((pack) => ({ ...pack, id: `${pack.id}-second` }));
+    document.models.push(second);
+    const pending = deferred();
+    const { bundle } = createBundle({
+      recommend() {
+        return [recommendation(document), {
+          ...recommendation({ models: [second] }),
+          recommended: false,
+        }];
+      },
+      download() { return pending.promise; },
+      async cancelDownload() {
+        pending.resolve({ modelVariantId: first.variants[0].id, installed: false, cancelled: true });
+      },
+    }, document);
+    const shell = createShellController(bundle);
+    await shell.check();
+    const downloading = shell.download(first.variants[0].id);
+    await waitFor(() => shell.current().download.phase === "downloading");
+    await shell.cancelDownload();
+    await downloading;
+    assert.equal(shell.current().download.phase, "paused");
+    const other = shell.current().models.find((model) => model.id === second.variants[0].id);
+    const pack = other.firstRunPacks[0];
+    assert.ok(pack, "the second fixture model offers a tool pack");
+    shell.setOptionalPackSelected(other.id, pack.id, true);
+    assert.equal(shell.current().download.phase, "paused");
+    assert.equal(shell.current().download.modelVariantId, first.variants[0].id);
+    shell.dispose();
+  });
+
+  test("a completed install refreshes the storage estimate with quota and usage", async () => {
+    let reads = 0;
+    const fixture = createBundle({
+      async refreshStorage() {
+        reads += 1;
+        return { quotaBytes: 2_000_000_000, usageBytes: 100_000_000 * (reads + 1), availableBytes: 1_900_000_000 - 100_000_000 * reads, persisted: true };
+      },
+    });
+    const shell = createShellController(fixture.bundle);
+    await shell.check();
+    assert.equal(shell.current().storage.quotaBytes, 2_000_000_000);
+    await shell.download("smollm2-360m-q4f16");
+    await waitFor(() => reads >= 2 && shell.current().storage.availableBytes === 1_700_000_000);
+    assert.equal(shell.current().storage.usageBytes, 300_000_000);
+    shell.dispose();
+  });
+
+  test("kept partial downloads are reported and can be discarded when the runtime supports it", async () => {
+    const discarded = [];
+    const fixture = createBundle({
+      async partialDownloadBytes(id) { return id === "smollm2-360m-q4f16" ? 1_000 : 0; },
+      async discardPartialDownload(id) { discarded.push(id); },
+    });
+    const shell = createShellController(fixture.bundle);
+    assert.equal(typeof shell.discardPartialDownload, "function");
+    await shell.check();
+    const model = shell.current().models.find((candidate) => candidate.id === "smollm2-360m-q4f16");
+    assert.equal(model.partialBytes, Math.min(1_000, model.remainingDownloadBytes));
+    await shell.discardPartialDownload(model.id);
+    assert.deepEqual(discarded, [model.id]);
+    assert.equal(shell.current().models.find((candidate) => candidate.id === model.id).partialBytes, undefined);
+    assert.equal(createShellController(createBundle().bundle).discardPartialDownload, undefined,
+      "runtimes without partial-download support do not offer a discard action");
+    shell.dispose();
   });
 
   test("installed models open with their exact measured context", async () => {

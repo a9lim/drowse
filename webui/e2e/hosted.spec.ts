@@ -791,7 +791,7 @@ test("model storage notice retries protection without repeating instructions or 
   await page.screenshot({ path: testInfo.outputPath("storage-protection-notice.png") });
   await notice.getByRole("button", { name: "Protect storage", exact: true }).click();
   await expect(notice).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Open Drowse", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Open workbench", exact: true })).toBeEnabled();
 });
 
 test("chat storage protection stays compact above saved chats on desktop and phones", async ({ page }, testInfo) => {

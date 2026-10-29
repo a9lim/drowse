@@ -2,10 +2,16 @@
   import ThemeToggle from "../../lib/ui/ThemeToggle.svelte";
   import type { Snippet } from "svelte";
 
-  let { current, onChats, onModels, siteNavigation = true, homeHref = "/", compact = false, actions, leading }: {
-    current?: "home" | "chats" | "models" | "credits" | "workbench";
+  type Current = "home" | "chats" | "models" | "credits" | "contact" | "learn" | "privacy" | "about" | "contribute" | "workbench";
+
+  let { current, variant, onChats, onModels, showChats = true, siteNavigation = true, homeHref = "/", compact = false, actions, leading }: {
+    current?: Current;
+    /** "site" for public pages, "app" inside /app. Chats and Models pages default to "app". */
+    variant?: "site" | "app";
     onChats?: () => void;
     onModels?: () => void;
+    /** Hide the Chats link, for example before the first chat exists. */
+    showChats?: boolean;
     siteNavigation?: boolean;
     homeHref?: string;
     compact?: boolean;
@@ -13,35 +19,8 @@
     leading?: Snippet;
   } = $props();
 
-  const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string"
-    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
-  let brandCollapsed = $state(false);
-
-  function fitNavigation(header: HTMLElement) {
-    const nav = header.querySelector("nav");
-    if (!nav || !siteNavigation) return;
-    const leading = header.querySelector<HTMLElement>(".page-leading")!;
-    const appearance = header.querySelector<HTMLElement>(".appearance")!;
-    const links = Array.from(nav.querySelectorAll("a"));
-    let frame = 0;
-    const measure = () => {
-      const style = getComputedStyle(header);
-      const available = header.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-      const navigationWidth = links.reduce((width, link) => width + link.getBoundingClientRect().width, 0)
-        + parseFloat(getComputedStyle(nav).columnGap) * Math.max(0, links.length - 1);
-      const required = leading.getBoundingClientRect().width + navigationWidth
-        + appearance.getBoundingClientRect().width + parseFloat(getComputedStyle(appearance).marginInlineEnd)
-        + 2 * parseFloat(style.columnGap);
-      brandCollapsed = required > available + 1;
-    };
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(measure);
-    });
-    for (const element of [header, leading, appearance, ...links]) observer.observe(element);
-    measure();
-    return { destroy() { observer.disconnect(); cancelAnimationFrame(frame); } };
-  }
+  const resolvedVariant = $derived(variant ?? (current === "chats" || current === "models" ? "app" : "site"));
+  const learnCurrent = $derived(current === "learn" ? "page" : undefined);
 
   function navigate(event: MouseEvent, action?: () => void) {
     if (!action || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -50,23 +29,31 @@
   }
 </script>
 
-<header class="page-header" class:compact class:workbench={current === "workbench"} class:brand-collapsed={brandCollapsed} use:fitNavigation>
-  <div class="page-leading" aria-hidden={brandCollapsed ? "true" : undefined}>
+<header class="page-header" class:compact class:workbench={current === "workbench"} class:site={current !== "workbench" && resolvedVariant === "site" && siteNavigation}>
+  <div class="page-leading">
     {@render leading?.()}
-    <a class="page-brand" href={homeHref} aria-label="Drowse home" aria-current={current === "home" ? "page" : undefined} tabindex={brandCollapsed ? -1 : undefined} translate="no">Drowse</a>
+    <a class="page-brand" href={homeHref} aria-label="Drowse home" aria-current={current === "home" ? "page" : undefined} translate="no">Drowse</a>
   </div>
   {#if current === "workbench"}
     <div class="workbench-actions">{@render actions?.()}</div>
   {:else}
   <nav aria-label="Primary navigation">
     {#if siteNavigation}
-    <a href="/app" aria-current={current === "chats" ? "page" : undefined} onclick={(event) => navigate(event, onChats)}>Chats</a>
-    <a href="/app?choose=1" aria-current={current === "models" ? "page" : undefined} onclick={(event) => navigate(event, onModels)}>Models</a>
-    <a href="/credits" aria-current={current === "credits" ? "page" : undefined}>Credits</a>
-    <a href={sourceUrl} rel="noreferrer">Contribute</a>
+      {#if resolvedVariant === "app"}
+        {#if showChats}<a href="/app" aria-current={current === "chats" ? "page" : undefined} onclick={(event) => navigate(event, onChats)}>Chats</a>{/if}
+        <a href="/app?choose=1" aria-current={current === "models" ? "page" : undefined} onclick={(event) => navigate(event, onModels)}>Models</a>
+      {:else}
+        <a href="/learn" aria-current={learnCurrent}>Learn</a>
+        <a href="/app?choose=1" aria-current={current === "models" ? "page" : undefined} onclick={(event) => navigate(event, onModels)}>Models</a>
+        <a href="/credits" aria-current={current === "credits" ? "page" : undefined}>Credits</a>
+        <a href="/contribute" aria-current={current === "contribute" ? "page" : undefined}>Contribute</a>
+      {/if}
     {/if}
   </nav>
-  <div class="appearance"><ThemeToggle /></div>
+  <div class="header-end">
+    {#if siteNavigation && resolvedVariant === "site"}<a class="open-action" href="/app">Open Drowse</a>{/if}
+    <div class="appearance"><ThemeToggle /></div>
+  </div>
   {/if}
 </header>
 
@@ -74,14 +61,39 @@
   .page-header {
     --header-theme-icon-size: 1.5rem;
     --header-theme-target: max(44px, var(--control-target));
+    --header-scrim: color-mix(in srgb, var(--bg) 92%, transparent);
     position: relative;
     z-index: 1;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "leading nav end";
     column-gap: var(--space-8);
     align-items: center;
   }
-  nav { display: flex; flex-wrap: nowrap; align-items: center; justify-content: safe end; gap: var(--space-5); min-width: 0; overflow-x: auto; }
+  /* Public and app headers stay in reach while the page scrolls. The scrim
+     fades in once content passes underneath, so the hero stays clear at rest. */
+  .page-header:not(.workbench) { position: sticky; top: 0; z-index: 5; }
+  .page-header:not(.workbench)::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    border-image: linear-gradient(to top, var(--grid-line) 1px, var(--header-scrim) 1px) fill 0 / 0 / 0 100vmax;
+    opacity: 0;
+    animation: header-scrim linear both;
+    animation-timeline: scroll(nearest block);
+    animation-range: 0 48px;
+  }
+  @keyframes header-scrim { to { opacity: 1; } }
+  @supports not (animation-timeline: scroll()) {
+    .page-header:not(.workbench)::before { animation: none; opacity: 1; }
+  }
+  @media (prefers-contrast: more), (forced-colors: active) {
+    .page-header:not(.workbench) { --header-scrim: var(--bg); }
+  }
+  .page-leading { grid-area: leading; }
+  nav { grid-area: nav; display: flex; flex-wrap: nowrap; align-items: center; justify-content: safe end; gap: var(--space-5); min-width: 0; overflow-x: auto; }
   nav a {
     display: inline-flex;
     flex: none;
@@ -103,6 +115,28 @@
   nav { scrollbar-width: none; }
   nav::-webkit-scrollbar { display: none; }
   nav a[aria-current="page"] { color: var(--accent); }
+  .header-end { grid-area: end; display: flex; align-items: center; justify-content: end; gap: var(--space-5); }
+  .open-action {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--control-target);
+    padding-inline: var(--space-5);
+    border-radius: var(--radius);
+    background: var(--control-sheen), var(--action-bg);
+    box-shadow: var(--shadow-control);
+    color: var(--action-ink);
+    font-family: var(--font-structure);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-structure-bold);
+    white-space: nowrap;
+    text-decoration: none;
+    transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  }
+  .open-action:hover { background: var(--control-sheen), var(--action-hover); box-shadow: var(--shadow-control-hover); }
+  .open-action:active { transform: scale(var(--press-scale)); box-shadow: var(--shadow-control-pressed); }
+  .page-header a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
   .appearance {
     display: flex;
     align-items: center;
@@ -119,8 +153,9 @@
     }
     nav { gap: 0; }
     nav a { padding-inline: calc(var(--space-xs) / 2); }
+    .header-end { gap: var(--space-2); }
   }
-  @media (prefers-reduced-motion: reduce) { nav a { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { nav a, .open-action { transition: none; } .open-action:active { transform: none; } }
   .page-header.compact {
     width: 100%;
     min-height: var(--workbench-header-height, 56px);
@@ -141,9 +176,19 @@
     .page-header:not(.workbench) nav { justify-content: space-between; gap: 0; overscroll-behavior-inline: contain; }
     nav a { font-size: var(--text-sm); padding-inline: calc(var(--space-xs) / 2); }
   }
-  .page-header.brand-collapsed { grid-template-columns: minmax(0, 1fr) auto; }
-  .brand-collapsed .page-leading { position: absolute; visibility: hidden; pointer-events: none; width: max-content; }
-  .brand-collapsed nav { flex-wrap: wrap; overflow: visible; justify-content: start; }
-  .page-header.workbench { grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-height: var(--workbench-header-height, 56px); }
-  .workbench-actions { display: flex; justify-content: end; align-items: center; }
+  /* Phones: the four public links move under the wordmark and the Open Drowse
+     button, so the home link and every destination stay visible. */
+  @media (max-width: 640px) {
+    .page-header.site {
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas: "leading end" "nav nav";
+      row-gap: 0;
+      min-height: 0;
+      padding-top: max(var(--space-xs), env(safe-area-inset-top));
+      padding-bottom: 0;
+    }
+    .page-header.site nav { justify-content: space-between; margin-inline: calc(var(--space-xs) / -2); }
+  }
+  .page-header.workbench { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "leading end"; align-items: center; min-height: var(--workbench-header-height, 56px); }
+  .workbench-actions { grid-area: end; display: flex; justify-content: end; align-items: center; }
 </style>

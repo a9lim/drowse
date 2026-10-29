@@ -254,7 +254,7 @@ test("appearance defaults to dark and persists across every hosted surface", asy
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(appearance.getByRole("button", { name: "Switch to dark theme", exact: true }))
     .toBeVisible();
-  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#f2f4f8");
+  await expect(page.locator('meta[name="theme-color"]').first()).toHaveAttribute("content", "#f2f4f8");
 
   const lightContrast = await page.evaluate(() => {
     const root = getComputedStyle(document.documentElement);
@@ -284,7 +284,7 @@ test("appearance defaults to dark and persists across every hosted surface", asy
 
   await appearance.getByRole("button", { name: "Switch to dark theme", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#0b0e17");
+  await expect(page.locator('meta[name="theme-color"]').first()).toHaveAttribute("content", "#0b0e17");
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 

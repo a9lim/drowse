@@ -14,7 +14,8 @@ export const homeSummary = {
   ],
 };
 
-export const guidePages = [
+/** Guides published as HTML pages as well as Markdown, in reading order. */
+export const htmlGuides = [
   {
     path: "/learn",
     title: "Learn LLM interpretability and activation steering | Drowse",
@@ -157,40 +158,9 @@ export const guidePages = [
     ],
   },
   {
-    path: "/developers",
-    title: "Drowse for developers: WebMCP, Python and inference APIs",
-    description: "Use Drowse's experimental WebMCP browser tools or the separate Python library and OpenAI-compatible, Ollama-compatible, and native inference APIs.",
-    heading: "Drowse for developers and browser agents",
-    intro: "Drowse exposes typed tools to visiting browser agents through experimental WebMCP. Its separate Python edition provides a library and HTTP server. Select the interface that matches where the model runs: inside the user's browser or on a machine running Drowse's Python runtime.",
-    sections: [
-      {
-        heading: "Discover the current browser workspace",
-        paragraphs: ["Open the app and load a compatible model before using the workspace example below. Start with state and action discovery, inspect a tool's schema and availability, then select its task group and discover the registered tools again. Public-page and model-onboarding tools are available before a workspace opens; steering tools require the loaded workspace. Selecting a group does not navigate or change model settings."],
-        code: "drowse_get_state({})\ndrowse_list_actions({})\ndrowse_list_actions({action: \"drowse_set_steering\"})\ndrowse_select_tool_group({group: \"steering\"})\ndrowse_list_actions({group: \"steering\"})",
-        bullets: ["Use drowse_explain_control to inspect units, applicability, defaults, and interactions before changing a setting.", "Groups cover chat, raw completion, steering, saved chats, appearance, models, artifacts, templates, profiles, conversation trees, analysis, instruments, files, interface controls, and authoring. Read the current group list from drowse_list_actions.", "Use drowse_list_actions with catalogue: true to inspect coverage, unavailable operations, and actions requiring a browser interaction."],
-        links: [{ label: "WebMCP integration guide", href: source("webui/docs/webmcp.md") }, { label: "Tool discovery implementation", href: source("webui/src/lib/webmcp/index.ts") }],
-      },
-      {
-        heading: "Track operations to completion",
-        paragraphs: ["Tools return structured success or error results. Mutation tools accept expected_revision to reject stale edits and request_id to reconcile an uncertain invocation. Reuse a request ID only with identical input. Long operations return a job ID. Read status with drowse_get_job, or request cancellation with drowse_cancel_job.", "Job history may survive a reload in the same tab when browser storage permits. For an interrupted generation, open its original model and call drowse_reconcile_job with the job_id. This checks runtime receipts without repeating generation. It may restore the original system prompt after a comparison, while preserving newer prompt edits. Inspect the returned state and any partial results; reading status alone does not reconcile a job.", "Large-result handles can expire and do not survive reloads. Read their chunks with drowse_read_result before leaving. Preserve existing drafts and act within the user's authorization when sending a contact message or deleting their work."],
-        links: [{ label: "Job and recovery implementation", href: source("webui/src/lib/webmcp/jobs.ts") }, { label: "Revision and result contracts", href: source("webui/docs/webmcp.md#discovery-and-execution") }],
-      },
-      {
-        heading: "Understand WebMCP availability",
-        paragraphs: ["Drowse registers tools through document.modelContext.registerTool when the browser exposes that experimental API. Browser and agent support are separate requirements; unsupported browsers retain the ordinary interface. The hosted website does not expose a public remote MCP inference endpoint.", "Browser tools can generate, inspect, compare, and fit compatible manifolds and templates locally. SAE training and J-lens fitting require Python; the browser consumes compatible precomputed packs. File pickers, credential entry, and some archive operations retain their existing interaction requirements."],
-        links: [{ label: "Browser capability boundaries", href: source("webui/src/hosted/runtime/capabilities.ts") }, { label: "Chrome WebMCP documentation", href: "https://developer.chrome.com/docs/ai/webmcp" }],
-      },
-      {
-        heading: "Use the Python library and local inference APIs",
-        paragraphs: ["The Python import and CLI are drowse; the distribution name is drowse.ai. DrowseSession supports programmatic steering and measurement. Running drowse serve starts the dashboard and OpenAI-compatible /v1/*, Ollama-compatible /api/*, and native /drowse/v1/* routes on the configured server.", "Inspect that server's /openapi.json and /docs for its HTTP schema. These are Python-server routes, not hosted-site inference services. Configure authentication and network access for your own installation, and follow the repository's current installation instructions."],
-        links: [{ label: "Python API", href: source("README.md#python-api") }, { label: "Server implementation and OpenAPI configuration", href: source("drowse/server/app.py") }, { label: "Install from source", href: source("README.md#quick-start") }],
-      },
-    ],
-  },
-  {
     path: "/privacy",
     title: "Drowse privacy: local inference, storage and network requests",
-    description: "Understand Drowse's browser-local prompts and conversations, model downloads, optional feature lookups, agent access, backups, and contact submissions.",
+    description: "What stays in your browser with Drowse, and what reaches Hugging Face, Neuronpedia, Cloudflare hosting, browser agents, and the contact form.",
     heading: "Privacy and your local data",
     intro: "In the hosted browser edition, language-model inference runs on your device. The inference runtime processes prompts, generated text, activation measurements, conversations, and fitted artifacts locally. Browser agents can read workspace data when given access, and their providers handle that information separately. The site also makes network requests to load software, download models, and perform specific online actions.",
     sections: [
@@ -201,12 +171,17 @@ export const guidePages = [
       },
       {
         heading: "Downloads and external services",
-        paragraphs: ["Opening Drowse requests website files from its host. The model catalog, model weights, and compatible instrument packs are downloaded from configured providers, including Hugging Face and its delivery infrastructure. Searching for remote manifold packs sends your search query to Hugging Face.", "SAE feature descriptions use bundled data when available. A missing description may trigger a Neuronpedia lookup containing the model, dictionary, and feature identifier, without your prompt or transcript. Hosting and download providers process ordinary request metadata such as network addresses. External links use the destination site's policies."],
+        paragraphs: ["The model catalog, model weights, and compatible instrument packs are downloaded from Hugging Face and its delivery infrastructure, then checked against the signed catalog and artifact hashes. Hugging Face receives each file request; it does not receive your prompts, chats, or activations. Searching for remote manifold packs sends your search query to Hugging Face.", "SAE feature descriptions use bundled data when available. Opening a feature that has no bundled description can send an optional lookup to Neuronpedia. The request contains only the model name, SAE source, and feature number, without cookies, a referrer, your prompt, or your transcript. External links use the destination site's policies."],
         links: [{ label: "Configured model distribution", href: source("browser-runtime/distribution-lock.json") }, { label: "Remote manifold search", href: source("webui/src/hosted/artifacts/hfManifolds.ts") }, { label: "SAE description lookups", href: source("webui/src/lib/saeDescriptions.ts") }],
       },
       {
+        heading: "Hosting and network error reports",
+        paragraphs: ["Drowse's website is hosted on Cloudflare. Opening a page requests its files from Cloudflare, which processes ordinary request metadata such as your network address, browser user agent, and the requested URL. Drowse does not use analytics, advertising, or tracking cookies.", "Cloudflare's network error logging (NEL) asks your browser to report failed connections to Cloudflare. These reports describe the failure, such as the URL, error type, and timing. Successful requests are not reported."],
+        links: [{ label: "Cloudflare network error logging", href: "https://developers.cloudflare.com/network-error-logging/" }, { label: "Cloudflare privacy policy", href: "https://www.cloudflare.com/privacypolicy/" }],
+      },
+      {
         heading: "Contact messages leave your device",
-        paragraphs: ["Submitting the contact or feedback form sends its fields and a submission reference to Drowse's contact endpoint. This includes your message and optional reply email; chats and model data are not automatically attached. The delivery service processes the request and, when delivery is enabled and accepted, sends it to Drowse's contact inbox.", "The contact implementation uses rate limits and delivery receipts. Receipts store a content hash, status, and provider message identifier; the inbox retains delivered message contents under its own retention policy. Contact drafts remain in page memory. The form reports whether sending was confirmed."],
+        paragraphs: ["Submitting the contact or feedback form sends its fields and a submission reference to Drowse's contact endpoint, a Cloudflare Worker. This includes your message and optional reply email; chats and model data are not automatically attached. The Worker sends the message through Cloudflare Email to Drowse's contact inbox when delivery is enabled and accepted. Your reply email is used only as the reply address.", "The contact implementation uses rate limits and delivery receipts. Receipts store a content hash, status, and provider message identifier, and expire after seven days. Application logs record references and error codes, not your message or email address. The inbox retains delivered message contents under its own retention policy. Contact drafts remain in page memory. The form reports whether sending was confirmed."],
         links: [{ label: "Contact delivery and privacy contract", href: source("webui/contact-worker/README.md#delivery-and-privacy-contract") }, { label: "Contact Drowse", href: "/contact" }],
       },
       {
@@ -246,3 +221,57 @@ export const guidePages = [
     ],
   },
 ];
+
+/** Machine-readable only: published as /developers.md, not as an HTML page. Kept separate so the
+ * browser bundle, which imports htmlGuides, never carries the Python server routes it describes. */
+const developersGuide = {
+  path: "/developers",
+  title: "Drowse for developers: WebMCP, Python and inference APIs",
+  description: "Use Drowse's experimental WebMCP browser tools or the separate Python library and OpenAI-compatible, Ollama-compatible, and native inference APIs.",
+  heading: "Drowse for developers and browser agents",
+  intro: "Drowse exposes typed tools to visiting browser agents through experimental WebMCP. Its separate Python edition provides a library and HTTP server. Select the interface that matches where the model runs: inside the user's browser or on a machine running Drowse's Python runtime.",
+  sections: [
+    {
+      heading: "Discover the current browser workspace",
+      paragraphs: ["Open the app and load a compatible model before using the workspace example below. Start with state and action discovery, inspect a tool's schema and availability, then select its task group and discover the registered tools again. Public-page and model-onboarding tools are available before a workspace opens; steering tools require the loaded workspace. Selecting a group does not navigate or change model settings."],
+      code: "drowse_get_state({})\ndrowse_list_actions({})\ndrowse_list_actions({action: \"drowse_set_steering\"})\ndrowse_select_tool_group({group: \"steering\"})\ndrowse_list_actions({group: \"steering\"})",
+      bullets: ["Use drowse_explain_control to inspect units, applicability, defaults, and interactions before changing a setting.", "Groups cover chat, raw completion, steering, saved chats, appearance, models, artifacts, templates, profiles, conversation trees, analysis, instruments, files, interface controls, and authoring. Read the current group list from drowse_list_actions.", "Use drowse_list_actions with catalogue: true to inspect coverage, unavailable operations, and actions requiring a browser interaction."],
+      links: [{ label: "WebMCP integration guide", href: source("webui/docs/webmcp.md") }, { label: "Tool discovery implementation", href: source("webui/src/lib/webmcp/index.ts") }],
+    },
+    {
+      heading: "Track operations to completion",
+      paragraphs: ["Tools return structured success or error results. Mutation tools accept expected_revision to reject stale edits and request_id to reconcile an uncertain invocation. Reuse a request ID only with identical input. Long operations return a job ID. Read status with drowse_get_job, or request cancellation with drowse_cancel_job.", "Job history may survive a reload in the same tab when browser storage permits. For an interrupted generation, open its original model and call drowse_reconcile_job with the job_id. This checks runtime receipts without repeating generation. It may restore the original system prompt after a comparison, while preserving newer prompt edits. Inspect the returned state and any partial results; reading status alone does not reconcile a job.", "Large-result handles can expire and do not survive reloads. Read their chunks with drowse_read_result before leaving. Preserve existing drafts and act within the user's authorization when sending a contact message or deleting their work."],
+      links: [{ label: "Job and recovery implementation", href: source("webui/src/lib/webmcp/jobs.ts") }, { label: "Revision and result contracts", href: source("webui/docs/webmcp.md#discovery-and-execution") }],
+    },
+    {
+      heading: "Understand WebMCP availability",
+      paragraphs: ["Drowse registers tools through document.modelContext.registerTool when the browser exposes that experimental API. Browser and agent support are separate requirements; unsupported browsers retain the ordinary interface. The hosted website does not expose a public remote MCP inference endpoint.", "Browser tools can generate, inspect, compare, and fit compatible manifolds and templates locally. SAE training and J-lens fitting require Python; the browser consumes compatible precomputed packs. File pickers, credential entry, and some archive operations retain their existing interaction requirements."],
+      links: [{ label: "Browser capability boundaries", href: source("webui/src/hosted/runtime/capabilities.ts") }, { label: "Chrome WebMCP documentation", href: "https://developer.chrome.com/docs/ai/webmcp" }],
+    },
+    {
+      heading: "Use the Python library and local inference APIs",
+      paragraphs: ["The Python import and CLI are drowse; the distribution name is drowse.ai. DrowseSession supports programmatic steering and measurement. Running drowse serve starts the dashboard and OpenAI-compatible /v1/*, Ollama-compatible /api/*, and native /drowse/v1/* routes on the configured server.", "Inspect that server's /openapi.json and /docs for its HTTP schema. These are Python-server routes, not hosted-site inference services. Configure authentication and network access for your own installation, and follow the repository's current installation instructions."],
+      links: [{ label: "Python API", href: source("README.md#python-api") }, { label: "Server implementation and OpenAPI configuration", href: source("drowse/server/app.py") }, { label: "Install from source", href: source("README.md#quick-start") }],
+    },
+  ],
+};
+
+export const guidePages = [...htmlGuides.slice(0, 5), developersGuide, ...htmlGuides.slice(5)];
+export const htmlGuidePaths = htmlGuides.map(page => page.path);
+
+/** Prerendered pages without a Markdown twin. */
+export const sitePages = [
+  { path: "/credits", title: "Credits · Drowse", description: "The people behind Drowse, a local workbench for exploring language models." },
+  { path: "/contact", title: "Contact us · Drowse", description: "Get in touch with the Drowse team. Ask for help, share feedback, or discuss working together." },
+  { path: "/contribute", title: "Contribute to Drowse", description: "Help build Drowse: report a bug, improve the code, add a model or pack, teach with it, or support the project." },
+  { path: "/third-party-licenses", title: "Third-party licenses · Drowse", description: "Licenses and notices for the open-source software, fonts, and icons that ship with the Drowse website." },
+];
+
+export const contributeLinks = {
+  newIssue: `${repository}/issues/new`,
+  contributing: source("CONTRIBUTING.md"),
+  goodFirstIssues: `${repository}/labels/good%20first%20issue`,
+  securityPolicy: `${repository}/security/policy`,
+  hostedModels: source("browser-runtime/README.md"),
+  repository,
+};

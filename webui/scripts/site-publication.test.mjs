@@ -7,30 +7,32 @@ import { basename, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { guidePages, homeSummary } from "./site-content.mjs";
-import { discoveryLinks, discoveryTags, guideMarkdown, markdownPath, publicationAssets, publicPaths, sitePublication } from "./site-publication.mjs";
+import { guidePages, homeSummary, htmlGuidePaths, sitePages } from "./site-content.mjs";
+import { discoveryLinks, discoveryTags, guideMarkdown, hiddenPaths, markdownPath, publicationAssets, publicPaths, sitemapPaths, sitePublication } from "./site-publication.mjs";
 import { prefersMarkdown } from "./discovery-worker.mjs";
 import { agentCatalogPaths, contentSignals } from "./agent-discovery.mjs";
 import { prerenderLanding } from "./prerender-hosted.mjs";
 
 const origin = "https://drowse.example";
-const assets = publicationAssets(origin);
+const lastmod = "2026-10-29";
+const assets = publicationAssets(origin, { lastmod });
 const built = new Map();
-await sitePublication(origin).generateBundle.call({ emitFile({ fileName, source }) { built.set(fileName, source); } });
+await sitePublication(origin, { lastmod }).generateBundle.call({ emitFile({ fileName, source }) { built.set(fileName, source); } });
 const { default: worker } = await import(`data:text/javascript;base64,${Buffer.from(built.get("_worker.js")).toString("base64")}`);
-test("app rewrites use the canonical asset URL without leaking Pages HTML redirects", async () => {
+test("only the app routes rewrite to the shell; pages are real documents with canonical trailing-slash redirects", async () => {
   const redirects = await readFile(new URL("../public-hosted/_redirects", import.meta.url), "utf8");
   const rules = redirects.trim().split("\n").map(line => line.split(/\s+/));
-  assert.deepEqual(rules.map(([path]) => path), ["/app", "/app/", "/credits", "/credits/", "/contact", "/contact/", "/app/*"]);
-  for (const [, target, status] of rules) {
-    assert.equal(status, "200");
-    assert.equal(target, "/app-shell");
-    assert.doesNotMatch(target, /\.html$/);
-  }
+  assert.deepEqual(rules.slice(0, 2), [["/app", "/app-shell", "200"], ["/app/", "/app-shell", "200"]]);
+  for (const [, target] of rules) assert.doesNotMatch(target, /\.html$/);
+  assert.ok(!rules.some(([path]) => path.includes("*")), "unknown /app/* paths must remain real 404s");
+  const slashRedirects = rules.slice(2);
+  assert.deepEqual(slashRedirects, sitemapPaths.filter(path => path !== "/").map(path => [`${path}/`, path, "301"]));
 });
 
-test("machine-readable documentation preserves its source content without creating visible guide pages", () => {
-  assert.deepEqual(publicPaths, ["/"]);
+test("HTML guide pages keep a Markdown twin that preserves their source content", () => {
+  assert.deepEqual(publicPaths, ["/", ...htmlGuidePaths]);
+  assert.ok(!publicPaths.includes("/developers"), "/developers stays a machine-readable resource");
+  assert.deepEqual(sitemapPaths, [...publicPaths, ...sitePages.map(page => page.path)]);
   assert.ok(![...assets.keys()].some(path => path.endsWith(".html")));
   for (const page of guidePages) {
     const markdown = assets.get(markdownPath(page.path).slice(1));
@@ -55,11 +57,15 @@ test("Markdown examples preserve literal code and point internal references to m
   assert.doesNotMatch(markdown, /&lt;|&amp;|&quot;/);
 });
 
-test("only the existing homepage appears in the sitemap and every machine-discovery link resolves", () => {
-  const locations = [...assets.get("sitemap.xml").matchAll(/<loc>([^<]+)<\/loc>/g)].map(match => match[1]);
-  assert.deepEqual(locations, [origin + "/"]);
+test("the sitemap lists every indexable page with lastmod and every machine-discovery link resolves", () => {
+  const sitemap = assets.get("sitemap.xml");
+  const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(match => match[1]);
+  assert.deepEqual(locations, sitemapPaths.map(path => origin + path));
+  assert.ok(!locations.some(location => /\/app(?:[/?]|$)|\.md$/.test(new URL(location).pathname)), "the app and Markdown resources stay out of the sitemap");
+  assert.equal([...sitemap.matchAll(/<lastmod>2026-10-29<\/lastmod>/g)].length, locations.length);
+  assert.doesNotMatch(publicationAssets(origin).get("sitemap.xml"), /<lastmod>/);
   assert.ok(!publicationAssets("").has("sitemap.xml"));
-  const existing = new Set(["/", "/app", "/credits", "/contact", "/LICENSE"]);
+  const existing = new Set(["/", "/app", "/LICENSE", ...sitemapPaths]);
   function resolves(href, from) {
     const url = new URL(href, origin + from);
     if (url.origin !== origin) return;
@@ -182,7 +188,7 @@ test("worker serves HTML when Markdown is excluded and preserves existing Vary t
 });
 
 test("worker does not intercept mutations or unlisted paths", async () => {
-  for (const [path, method] of [["/", "POST"], ["/", "PUT"], ["/", "DELETE"], ["/app", "GET"], ["/learn", "GET"], ["/developers", "GET"], ["/developers.md", "GET"], ["/missing", "GET"]]) {
+  for (const [path, method] of [["/", "POST"], ["/", "PUT"], ["/", "DELETE"], ["/app", "GET"], ["/learn", "POST"], ["/developers", "GET"], ["/developers.md", "GET"], ["/missing", "GET"]]) {
     const { env, requests } = assetEnvironment();
     const request = new Request(origin + path, { method, headers: { Accept: "text/markdown" } });
     const response = await worker.fetch(request, env);
@@ -191,6 +197,22 @@ test("worker does not intercept mutations or unlisted paths", async () => {
     assert.equal(response.headers.get("Link"), null);
     assert.equal(response.headers.get("Content-Type"), "text/html; charset=utf-8");
   }
+});
+
+test("the internal app shell is a real 404 when requested directly", async () => {
+  for (const path of hiddenPaths) {
+    for (const method of ["GET", "HEAD"]) {
+      const { env, requests } = assetEnvironment({ status: 404, contentType: "text/html; charset=utf-8" });
+      const response = await worker.fetch(new Request(origin + path, { method }), env);
+      assert.equal(response.status, 404, `${method} ${path}`);
+      assert.notEqual(new URL(requests[0].url).pathname, path, "the shell itself must not be served");
+      assert.equal(requests[0].method, method);
+      assert.match(response.headers.get("Content-Type"), /text\/html/);
+      assert.equal(await response.text(), method === "HEAD" ? "" : "missing");
+    }
+  }
+  const routes = JSON.parse(built.get("_routes.json"));
+  for (const path of hiddenPaths) assert.ok(routes.include.includes(path));
 });
 
 test("missing negotiated resources remain errors with their original content type", async () => {
@@ -219,7 +241,12 @@ test("publication keeps previews blocked, machine resources unindexed, and worke
     if (path.endsWith(".json")) assert.match(block, /Content-Type: application\/json; charset=utf-8/);
   }
   const routes = JSON.parse(built.get("_routes.json"));
-  assert.deepEqual(routes.include, ["/"]);
+  assert.deepEqual(routes.include, [...publicPaths, ...hiddenPaths]);
+  assert.match(headers, /script-src 'self' 'sha256-[A-Za-z0-9+/]+=*' 'wasm-unsafe-eval'/, "the inlined theme script needs its CSP digest");
+  for (const path of htmlGuidePaths) {
+    const block = headers.split(/\n\s*\n/).find(block => block.trimStart().startsWith(`${markdownPath(path)}\n`));
+    assert.match(block, new RegExp(`Link: <${origin}${path}>; rel="canonical"`), `${path} Markdown points at its HTML page`);
+  }
 });
 
 test("release preparation removes the global preview block while preserving document-specific noindex", async () => {
@@ -331,7 +358,7 @@ test("prerender preserves the actual landing content without visible machine-res
   for (const href of visibleLinks) {
     const path = new URL(href, origin).pathname;
     assert.ok(!assets.has(path.slice(1)), `Landing must not expose machine resource ${href}`);
-    assert.ok(!guidePages.some(page => page.path === path), `Landing must not expose removed guide route ${href}`);
+    if (guidePages.some(page => page.path === path)) assert.ok(publicPaths.includes(path), `Landing links to ${href}, which has no HTML page`);
   }
   assert.ok(images.length > 0);
   assert.match(css, /\.landing-shell\.svelte-/);

@@ -25,7 +25,7 @@ async function setup() {
   const globals = {
     navigator, location, sessionStorage: storage,
     window: { location, history: { state: null, replaceState: (_state, _title, url) => { location.href = String(url); } } },
-    caches: { keys: async () => ["drowse-hosted-precache-v2-https://drowse.test/", "drowse-hosted-on-demand-assets-v1", "saklas-hosted-landing-shader-v1", "drowse-hosted-on-demand-wasm-v1", "webllm/model", "webllm/wasm", "unrelated", "drowse-hosted-models", "drowse-hosted-on-demand-assets-v1-extra"], delete: async name => { deleted.push(name); return true; } },
+    caches: { keys: async () => ["drowse-hosted-precache-v2-https://drowse.test/", "drowse-hosted-on-demand-assets-v1", "saklas-hosted-landing-shader-v1", "drowse-hosted-on-demand-wasm-v1", "drowse-hosted-tab-icons-v1", "drowse-hosted-sae-descriptions-v1", "webllm/model", "webllm/wasm", "unrelated", "drowse-hosted-models", "drowse-hosted-on-demand-assets-v1-extra"], delete: async name => { deleted.push(name); return true; } },
     fetch: async (url, options) => {
       requests.push({ url: new URL(url), options });
       return new Response('<meta name="drowse-source-revision" content="test">', { headers: { "Content-Type": "text/html" } });
@@ -46,7 +46,7 @@ try {
     assert.equal(env.requests[0].options.cache, "no-store");
     assert.equal(env.requests[0].url.pathname, "/index.html");
     assert.ok(env.requests[0].url.searchParams.has("app-recovery"));
-    assert.deepEqual(env.deleted, ["drowse-hosted-precache-v2-https://drowse.test/", "drowse-hosted-on-demand-assets-v1", "saklas-hosted-landing-shader-v1"]);
+    assert.deepEqual(env.deleted, ["drowse-hosted-precache-v2-https://drowse.test/", "drowse-hosted-on-demand-assets-v1", "saklas-hosted-landing-shader-v1", "drowse-hosted-on-demand-wasm-v1", "drowse-hosted-tab-icons-v1", "drowse-hosted-sae-descriptions-v1"]);
     const destination = new URL(env.navigation[0]);
     assert.equal(destination.pathname, "/app");
     assert.equal(destination.searchParams.get("choose"), "1");

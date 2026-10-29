@@ -9,7 +9,10 @@
   "preview_urls": false,
   "routes": [{ "pattern": "drowse.ai/api/contact*", "zone_name": "drowse.ai" }],
   "send_metrics": false,
-  "vars": { "CONTACT_ENABLED": "false" },
+  // ALLOW_LOCAL_ORIGINS admits http(s)://localhost, 127.0.0.1 and [::1] origins. The dashboard served by
+  // `drowse serve` posts from loopback (see drowse/server/app.py connect-src), so "false" disables its form.
+  // DAILY_LIMIT is the global cap on send attempts per UTC day. TURNSTILE_SECRET is an optional Worker secret.
+  "vars": { "CONTACT_ENABLED": "false", "ALLOW_LOCAL_ORIGINS": "true", "DAILY_LIMIT": "200" },
   "send_email": [{
     "name": "EMAIL",
     "destination_address": "contact@drowse.ai",
