@@ -1,10 +1,9 @@
 """SAE backend protocol and adapters.
 
 The protocol is tiny on purpose: contrastive extraction needs only per-layer
-encode/decode and the set of covered layers. The concrete ``SaeLensBackend``
-adapter (added later) lives in the same module but imports ``sae_lens`` lazily,
-inside its factory function, so protocol, mock, and local-artifact paths avoid
-provider initialization.
+encode/decode and the set of covered layers. The ``SaeLensBackend`` adapter
+imports ``sae_lens`` lazily, inside its factory function, so protocol, mock,
+and local-artifact paths avoid provider initialization.
 """
 from __future__ import annotations
 
@@ -289,14 +288,10 @@ def _load_local_sae_backend(
     dtype: torch.dtype | None,
 ) -> LocalSaeBackend:
     from drowse.errors import SaeReleaseNotFoundError
-    from drowse.sae.store import (
-        load_local_sae_manifest,
-        load_local_sae_tensors,
-        local_sae_release,
-        normalize_local_sae_name,
-    )
+    from drowse.sae.sources import parse_sae_release
+    from drowse.sae.store import load_local_sae_manifest, load_local_sae_tensors
 
-    name = normalize_local_sae_name(release)
+    name = parse_sae_release(release).name
     manifest = load_local_sae_manifest(model_id, name)
     if manifest is None:
         raise SaeReleaseNotFoundError(
@@ -325,7 +320,7 @@ def _load_local_sae_backend(
         model_fingerprint=manifest.get("model_fingerprint"),
         _loader=_load,
         sae_ids_by_layer={
-            str(layer): f"{local_sae_release(name)}:layer-{layer}",
+            str(layer): f"{manifest['release']}:layer-{layer}",
         },
     )
 
@@ -384,15 +379,9 @@ def list_sae_releases(model_id: str) -> list[dict[str, Any]]:
         raise SaeBackendImportError(
             "SAE release discovery requires `sae_lens`: pip install 'drowse.ai[sae]'"
         ) from exc
-    loader = getattr(sae_lens, "get_pretrained_saes_directory", None)
-    if loader is None:
-        from sae_lens.loading.pretrained_saes_directory import (  # pyright: ignore[reportMissingImports]
-            get_pretrained_saes_directory,
-        )
-        loader = get_pretrained_saes_directory
-    for release, entry in loader().items():
-        def value(name: str, default: Any = None) -> Any:
-            return entry.get(name, default) if isinstance(entry, Mapping) else getattr(entry, name, default)
+    for release, entry in _registry(sae_lens).items():
+        def value(name: str, default: Any = None, entry: Any = entry) -> Any:
+            return _entry_value(entry, name, default)
 
         release_model = value("model") or value("model_name")
         if release_model and model_id and not _model_names_match(str(release_model), model_id):
@@ -418,6 +407,43 @@ def list_sae_releases(model_id: str) -> list[dict[str, Any]]:
         })
     rows.sort(key=lambda row: row["release"])
     return rows
+
+
+def _registry(sae_lens: Any) -> Mapping[str, Any]:
+    """The SAELens pretrained-SAE registry, wherever this version keeps it."""
+    loader = getattr(sae_lens, "get_pretrained_saes_directory", None)
+    if loader is None:
+        # SAELens 6.x moved the registry helper out of the package root.
+        from sae_lens.loading.pretrained_saes_directory import (  # pyright: ignore[reportMissingImports]
+            get_pretrained_saes_directory,
+        )
+
+        loader = get_pretrained_saes_directory
+    return loader()
+
+
+def _entry_value(entry: Any, name: str, default: Any = None) -> Any:
+    """One registry entry attribute (entries are mappings or objects)."""
+    if isinstance(entry, Mapping):
+        return entry.get(name, default)
+    return getattr(entry, name, default)
+
+
+def sae_binding(backend: Any, layer: int, width: int) -> dict[str, Any]:
+    """The runtime binding of one resident layer of ``backend``.
+
+    The one shape behind a provider binding file, ``session.sae_info``, and
+    the feature-metadata cache key.
+    """
+    return {
+        "layer": int(layer),
+        "width": int(width),
+        "revision": backend.revision,
+        "fingerprint": backend.fingerprint,
+        "sae_id": backend.sae_ids_by_layer.get(str(layer)),
+        "repo_id": backend.repo_id,
+        "neuronpedia_id": backend.neuronpedia_ids_by_layer.get(str(layer)),
+    }
 
 
 def _release_hook_kind(release: str) -> str | None:
@@ -530,9 +556,9 @@ def load_sae_backend(
         SaeReleaseNotFoundError: release not in the SAELens registry.
         SaeModelMismatchError: release's base model != requested ``model_id``.
     """
-    from drowse.sae.store import is_local_sae_release
+    from drowse.sae.sources import parse_sae_release
 
-    if is_local_sae_release(release):
+    if parse_sae_release(release).local:
         return _load_local_sae_backend(
             release, model_id=model_id, device=device, dtype=dtype,
         )
@@ -557,15 +583,7 @@ def load_sae_backend(
             f"installed: pip install 'drowse.ai[sae]'."
         )
 
-    registry_loader = getattr(sae_lens, "get_pretrained_saes_directory", None)
-    if registry_loader is None:
-        # SAELens 6.x moved the registry helper out of the package root.
-        from sae_lens.loading.pretrained_saes_directory import (  # pyright: ignore[reportMissingImports]
-            get_pretrained_saes_directory,
-        )
-
-        registry_loader = get_pretrained_saes_directory
-    registry = registry_loader()
+    registry = _registry(sae_lens)
     if release not in registry:
         import difflib
         all_releases = list(registry.keys())
@@ -580,25 +598,24 @@ def load_sae_backend(
         )
 
     entry = registry[release]
-    def _entry_value(name: str, default: Any = None) -> Any:
-        if isinstance(entry, Mapping):
-            return entry.get(name, default)
-        return getattr(entry, name, default)
 
-    registry_model = _entry_value("model") or _entry_value("model_name")
+    def entry_value(name: str, default: Any = None) -> Any:
+        return _entry_value(entry, name, default)
+
+    registry_model = entry_value("model") or entry_value("model_name")
     if registry_model and model_id and not _model_names_match(registry_model, model_id):
         raise SaeModelMismatchError(
             f"SAE release '{release}' was trained on '{registry_model}' but "
             f"the drowse session is loaded with '{model_id}'"
         )
 
-    saes_map = _entry_value("saes_map", {})
+    saes_map = entry_value("saes_map", {})
     if not saes_map:
         raise SaeReleaseNotFoundError(
             f"SAE release '{release}' has no saes_map in the registry"
         )
 
-    neuronpedia_raw = _entry_value("neuronpedia_id")
+    neuronpedia_raw = entry_value("neuronpedia_id")
     ids_by_layer_int = {
         int(hook_layer): sae_id
         for sae_id, hook_layer in _canonical_layer_map(
@@ -613,7 +630,7 @@ def load_sae_backend(
         str(layer_idx): sae_id
         for layer_idx, sae_id in ids_by_layer_int.items()
     }
-    repo_id = _entry_value("repo_id")
+    repo_id = entry_value("repo_id")
     neuronpedia_by_layer: dict[str, str] = {}
     if isinstance(neuronpedia_raw, Mapping):
         for layer_idx, sae_id in ids_by_layer_int.items():
@@ -652,8 +669,8 @@ def load_sae_backend(
         # fitted-artifact reuse. Without one the backend remains usable and the
         # extraction cache deliberately misses.
         explicit_fingerprint = (
-            _entry_value("content_fingerprint")
-            or _entry_value("fingerprint")
+            entry_value("content_fingerprint")
+            or entry_value("fingerprint")
         )
         if isinstance(explicit_fingerprint, str) and explicit_fingerprint:
             resolved_commit = explicit_fingerprint
@@ -668,8 +685,8 @@ def load_sae_backend(
             "resolved_commit": resolved_commit,
             "sae_ids_by_layer": ids_by_layer,
             "sae_lens_version": getattr(sae_lens, "__version__", None),
-            "conversion_func": _entry_value("conversion_func"),
-            "config_overrides": _entry_value("config_overrides"),
+            "conversion_func": entry_value("conversion_func"),
+            "config_overrides": entry_value("config_overrides"),
             "dtype": str(dtype),
         }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     import inspect

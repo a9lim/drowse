@@ -1,4 +1,4 @@
-"""Source registry + local metadata cache for a session-resident SAE.
+"""Source family + local metadata cache for a session-resident SAE.
 
 Weights remain in the normal Hugging Face cache owned by SAELens. Drowse only
 persists the resolved release/layer binding and optional per-feature metadata
@@ -6,13 +6,11 @@ persists the resolved release/layer binding and optional per-feature metadata
 ``models/<safe>/sae/bindings``. Drowse-trained weights are a separate local
 artifact family under ``sae/local`` (:mod:`drowse.sae.store`).
 
-The active-source half is the J-lens family's twin and shares its
-implementation: :data:`SAE_SOURCES` is a
-:class:`~drowse.base.source_registry.ActiveSourceRegistry`, so both families get
-the same locking, format-version, kind-whitelist, name-grammar, and
-existence-precondition discipline. :func:`load_active_sae` is the counterpart
-of ``lens.store.load_lens`` — the ONE place the ``local:`` / ``saelens:`` source
-grammar is parsed, so callers stop re-deriving the prefix convention.
+:data:`SAE_SOURCES` is the family's :class:`~drowse.base.source_registry.SourceFamily`
+— the same paths, grammar, and locked selection as the lens family — and the
+ONE parser of both SAE grammars: the public *source* (``local:NAME`` /
+``saelens:RELEASE``) and the *release* string the backend loads
+(``local:NAME`` / a bare provider release; :func:`parse_sae_release`).
 """
 from __future__ import annotations
 
@@ -24,119 +22,72 @@ from typing import Any
 
 from drowse.base.atomic import artifact_lock, write_json_atomic
 from drowse.base.integrity import NAME_REGEX
-from drowse.base.paths import decode_release_id, encode_release_id, model_dir
-from drowse.base.source_registry import ActiveSourceRegistry
+from drowse.base.paths import decode_release_id, encode_release_id
+from drowse.base.source_registry import (
+    LOCAL_PREFIX,
+    SourceFamily,
+    SourceRef,
+)
 
 SAE_RUNTIME_FORMAT_VERSION = 3
 SAE_FEATURE_META_FORMAT_VERSION = 4
 SAE_SOURCE_FORMAT_VERSION = 1
+SAELENS = "saelens"
 _RUNTIME_FIELDS = {
     "layer", "width", "revision", "fingerprint", "sae_id", "repo_id",
     "neuronpedia_id",
 }
-# The two source-grammar prefixes, spelled once.
-LOCAL_SOURCE_PREFIX = "local:"
-PROVIDER_SOURCE_PREFIX = "saelens:"
 
-
-def safe_release_id(release: str) -> str:
-    return encode_release_id(release)
-
-
-def sae_runtime_dir(model_id: str) -> Path:
-    return model_dir(model_id) / "sae"
-
-
-def sae_bindings_dir(model_id: str) -> Path:
-    return sae_runtime_dir(model_id) / "bindings"
-
-
-def sae_active_path(model_id: str) -> Path:
-    return sae_runtime_dir(model_id) / "active.json"
-
-
-def sae_metadata_path(model_id: str, release: str) -> Path:
-    return sae_bindings_dir(model_id) / f"{safe_release_id(release)}.json"
-
-
-def sae_features_path(model_id: str, release: str) -> Path:
-    return sae_bindings_dir(model_id) / f"{safe_release_id(release)}-features.json"
-
-
-def _validate_source_name(kind: str, name: str) -> None:
-    """Name grammar per kind.
-
-    A local artifact is Drowse-owned, so it obeys the shared artifact-name
-    grammar.  A provider release id is provider-shaped (slashes, dots, mixed
-    case are all legitimate), so it only has to be a non-blank string.
-    """
-    if kind == "local":
-        if NAME_REGEX.fullmatch(name) is None:
-            raise ValueError(f"local SAE name must match {NAME_REGEX.pattern}")
-    elif not name.strip():
-        raise ValueError("SAE source name must not be empty")
-
-
-def _source_exists(root: Path, kind: str, name: str) -> bool:
-    """Whether the named source is on disk, so a selection can never dangle."""
-    if kind == "local":
-        return (root / "local" / name / "manifest.json").exists()
-    return (
-        root / "bindings" / f"{safe_release_id(name)}.json"
-    ).exists()
-
-
-#: The active-source selection, shared implementation with the J-lens family.
-SAE_SOURCES = ActiveSourceRegistry(
+#: The SAE source family: ``local:NAME`` artifacts and ``saelens:RELEASE``
+#: bindings (filed under the release's reversible encoding), one selection.
+SAE_SOURCES = SourceFamily(
     label="SAE",
+    dirname="sae",
     format_version=SAE_SOURCE_FORMAT_VERSION,
-    kinds=("local", "saelens"),
-    validate_name=_validate_source_name,
-    exists=_source_exists,
+    provider_kind=SAELENS,
+    provider_prefix=f"{SAELENS}:",
+    local_name=NAME_REGEX,
+    provider_name_ok=lambda name: bool(name.strip()),
+    binding_stem=encode_release_id,
 )
 
 
-def set_active_sae_source(model_id: str, kind: str, name: str) -> Path:
-    """Select the session-resident SAE source (locked, validated, existing)."""
-    return SAE_SOURCES.write(sae_runtime_dir(model_id), model_id, kind, name)
+def parse_sae_release(release: str) -> SourceRef:
+    """The release string the backend loads, as a ref.
 
-
-def load_active_sae_source(model_id: str) -> dict[str, Any] | None:
-    """The validated ``{format_version, model_id, kind, name}`` selection."""
-    return SAE_SOURCES.read(sae_runtime_dir(model_id), model_id)
-
-
-def sae_source_release(active: dict[str, Any]) -> str:
-    """Render a selection back into the public ``<kind>:<name>`` grammar.
-
-    ``local:<name>`` for a Drowse-trained artifact; a bare release id for a
-    provider source (what ``load_sae_backend`` and the metadata cache key on).
-    This is the ONE place the prefix convention is applied.
+    ``local:NAME`` is a Drowse-trained artifact; anything else is a bare
+    SAELens release id.
     """
-    if active["kind"] == "local":
-        return f"{LOCAL_SOURCE_PREFIX}{active['name']}"
-    return str(active["name"])
+    text = release.strip()
+    if text.startswith(LOCAL_PREFIX):
+        return SAE_SOURCES.parse(text)
+    return SAE_SOURCES.parse(f"{SAELENS}:{text}")
+
+
+def sae_release(ref: SourceRef) -> str:
+    """Inverse of :func:`parse_sae_release`: ``local:NAME`` or the bare release."""
+    return SAE_SOURCES.format(ref) if ref.local else ref.name
+
+
+def sae_features_path(model_id: str, release: str) -> Path:
+    return SAE_SOURCES.bindings_dir(model_id) / (
+        f"{encode_release_id(release)}-features.json"
+    )
 
 
 def load_active_sae(model_id: str) -> tuple[str, dict[str, Any] | None] | None:
     """Resolve the active SAE selection to ``(release, provider_metadata)``.
 
-    The counterpart of :func:`drowse.lens.store.load_lens`: source dispatch lives
-    in io, so callers do not re-derive the ``local:`` / ``saelens:`` prefix
-    convention or re-decide when to read the provider binding.  Returns
-    ``None`` when nothing is selected; ``metadata`` is the validated runtime
-    binding for a provider source (carrying the explicitly selected hook
-    layer) and ``None`` for a local artifact, whose manifest is the binding.
+    Returns ``None`` when nothing is selected; ``metadata`` is the validated
+    runtime binding for a provider source (carrying the pinned commit and the
+    explicitly selected hook layer) and ``None`` for a local artifact, whose
+    manifest is the binding.
     """
-    active = load_active_sae_source(model_id)
+    active = SAE_SOURCES.active(model_id)
     if active is None:
         return None
-    release = sae_source_release(active)
-    metadata = (
-        load_sae_metadata(model_id, release)
-        if active["kind"] == "saelens" else None
-    )
-    return release, metadata
+    metadata = None if active.local else load_sae_metadata(model_id, active.name)
+    return sae_release(active), metadata
 
 
 def save_sae_metadata(
@@ -146,7 +97,7 @@ def save_sae_metadata(
     """Persist a provider release's runtime binding under the artifact lock.
 
     ``activate=False`` records the binding without selecting it — the same
-    opt-out ``fetch_neuronpedia_lens`` has, for a caller that fetches or
+    opt-out ``fetch_lens_source`` has, for a caller that fetches or
     refreshes one source while another stays resident.
     """
     if set(payload) != _RUNTIME_FIELDS:
@@ -161,11 +112,11 @@ def save_sae_metadata(
     }
     if not _validate_runtime_payload(full, model_id, release):
         raise ValueError("invalid SAE runtime metadata values")
-    path = sae_metadata_path(model_id, release)
+    path = SAE_SOURCES.binding_path(model_id, release)
     with artifact_lock(path):
         write_json_atomic(path, full)
     if activate:
-        set_active_sae_source(model_id, "saelens", release)
+        SAE_SOURCES.select(model_id, SourceRef(SAELENS, release))
     return path
 
 
@@ -200,7 +151,7 @@ def _validate_runtime_payload(
 
 
 def load_sae_metadata(model_id: str, release: str) -> dict[str, Any] | None:
-    path = sae_metadata_path(model_id, release)
+    path = SAE_SOURCES.binding_path(model_id, release)
     if not path.exists():
         return None
     try:
@@ -303,42 +254,43 @@ def save_sae_feature_meta(
     return path
 
 
-def use_sae_source(model_id: str, source: str) -> Path:
+def load_sae_source(model_id: str, ref: SourceRef) -> dict[str, Any] | None:
+    """A source's validated record: a local manifest or a provider binding."""
+    if ref.local:
+        from drowse.sae.store import load_local_sae_manifest
+
+        return load_local_sae_manifest(model_id, ref.name)
+    return load_sae_metadata(model_id, ref.name)
+
+
+def use_sae_source(model_id: str, source: str) -> SourceRef:
     """Select a source from the public ``local:NAME`` / ``saelens:RELEASE`` grammar."""
-    source = source.strip()
-    if source.startswith(LOCAL_SOURCE_PREFIX):
-        from drowse.sae.store import (
-            load_local_sae_manifest,
-            normalize_local_sae_name,
+    ref = SAE_SOURCES.parse(source)
+    if load_sae_source(model_id, ref) is None:
+        raise FileNotFoundError(
+            f"SAE source {SAE_SOURCES.format(ref)} is not prepared for {model_id}"
         )
-
-        name = normalize_local_sae_name(source)
-        if load_local_sae_manifest(model_id, name) is None:
-            raise FileNotFoundError(f"local SAE {name!r} is not trained")
-        return set_active_sae_source(model_id, "local", name)
-    if source.startswith(PROVIDER_SOURCE_PREFIX):
-        release = source[len(PROVIDER_SOURCE_PREFIX):]
-        if load_sae_metadata(model_id, release) is None:
-            raise FileNotFoundError(
-                f"SAELens release {release!r} has not been fetched for {model_id}"
-            )
-        return set_active_sae_source(model_id, "saelens", release)
-    raise ValueError("SAE source must be local:NAME or saelens:RELEASE")
+    SAE_SOURCES.select(model_id, ref)
+    return ref
 
 
-def remove_sae_binding(model_id: str, release: str) -> bool:
-    """Forget an external release without deleting SAELens/HF cache bytes."""
-    metadata = sae_metadata_path(model_id, release)
-    features = sae_features_path(model_id, release)
+def remove_sae_source(model_id: str, ref: SourceRef) -> bool:
+    """Delete a local artifact or forget a provider binding.
+
+    A provider removal never touches SAELens/HF cache bytes; either way the
+    selection is unpublished only when it named exactly this source.
+    """
+    if ref.local:
+        from drowse.sae.store import remove_local_sae
+
+        return remove_local_sae(model_id, ref.name)
+    metadata = SAE_SOURCES.binding_path(model_id, ref.name)
+    features = sae_features_path(model_id, ref.name)
     with artifact_lock(metadata):
         removed = metadata.exists() or features.exists()
         metadata.unlink(missing_ok=True)
         features.unlink(missing_ok=True)
-    # Unpublish after the binding is gone, so the selection can never outlive
-    # what it points at.
-    SAE_SOURCES.clear_if_active(
-        sae_runtime_dir(model_id), model_id, "saelens", release,
-    )
+    SAE_SOURCES.clear_if_active(model_id, ref)
     return removed
 
 
@@ -346,8 +298,8 @@ def list_sae_sources(model_id: str) -> list[dict[str, Any]]:
     from drowse.sae.store import list_local_saes
 
     rows = list_local_saes(model_id)
-    active = load_active_sae_source(model_id)
-    for path in sorted(sae_bindings_dir(model_id).glob("_z*.json")):
+    active = SAE_SOURCES.active(model_id)
+    for path in sorted(SAE_SOURCES.bindings_dir(model_id).glob("_z*.json")):
         if path.name.endswith("-features.json"):
             continue
         try:
@@ -365,15 +317,12 @@ def list_sae_sources(model_id: str) -> list[dict[str, Any]]:
                 "model": model, "source": dictionary,
                 "repository": metadata["repo_id"], "saeId": metadata["sae_id"],
             }
+        ref = SourceRef(SAELENS, release)
         rows.append({
-            "source": f"saelens:{release}",
-            "kind": "saelens",
+            "source": SAE_SOURCES.format(ref),
+            "kind": SAELENS,
             "name": release,
-            "active": bool(
-                active is not None
-                and active["kind"] == "saelens"
-                and active["name"] == release
-            ),
+            "active": active == ref,
             "path": str(path),
             "layer": metadata["layer"],
             "features": metadata["width"],

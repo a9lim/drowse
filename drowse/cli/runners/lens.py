@@ -5,21 +5,14 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import drowse.cli.runners as _pkg
 from drowse.cli.parsers import _LENS_VERBS
 from drowse.cli.runners.shared import _print_verb_menu, _drowse_error_exit
 
 if TYPE_CHECKING:
-    from drowse.lens.store import LensCorpus
-
-
-#: Documents are sliced to this many characters before tokenization — the fit
-#: truncates to --seq-len tokens anyway, so tokenizing a full web page is waste.
-#: (The default-corpus streamer lives in ``lens.store`` — shared with the server's
-#: fit route — and applies the same slice.)
-_LENS_DOC_CHARS = 4000
+    from drowse.lens.corpus import LensCorpus
 
 
 def _parse_layer_list(raw: "str | None") -> "list[int] | str | None":
@@ -50,7 +43,7 @@ def _pinned_lens_hf_corpus(args: argparse.Namespace) -> "LensCorpus | None":
     is the default web-text sample. ``None`` for ``--corpus FILE``.
     """
     from drowse.lens.jlens import JacobianLensError
-    from drowse.lens.store import parse_lens_corpus, pin_lens_corpus
+    from drowse.lens.corpus import parse_lens_corpus, pin_lens_corpus
 
     if args.corpus is not None:
         return None
@@ -76,7 +69,7 @@ def _load_lens_corpus(
     the first documents of ``hf_corpus`` via the optional ``datasets``
     dependency.
     """
-    import json as _json
+    from drowse.lens.corpus import read_corpus_file, stream_lens_corpus
 
     n = int(args.prompts)
     if hf_corpus is None:
@@ -84,24 +77,8 @@ def _load_lens_corpus(
         if not path.exists():
             print(f"lens fit: corpus file not found: {path}", file=sys.stderr)
             sys.exit(2)
-        docs: list[str] = []
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("{"):
-                    try:
-                        obj = _json.loads(line)
-                        line = str(obj.get("text", "")) or line
-                    except _json.JSONDecodeError:
-                        pass
-                docs.append(line[:_LENS_DOC_CHARS])
-                if len(docs) >= n:
-                    break
-        return docs, f"file:{path.name}"
+        return read_corpus_file(path, n), f"file:{path.name}"
     from drowse.lens.jlens import JacobianLensError
-    from drowse.lens.store import stream_lens_corpus
 
     print(f"Streaming {n} documents from {hf_corpus}...")
     try:
@@ -115,10 +92,9 @@ def _lens_fit_source_preflight_matches(
     sidecar: dict[str, object],
     requested_layers: "list[int] | str | None",
 ) -> bool:
-    raw_layers = sidecar.get("source_layers", [])
-    if not isinstance(raw_layers, list):
-        return False
-    source_layers = [int(layer) for layer in raw_layers]
+    from drowse.lens.store import lens_layers
+
+    source_layers = lens_layers(sidecar)
     if not source_layers:
         return False
     if isinstance(requested_layers, list):
@@ -155,8 +131,12 @@ def _try_lens_fit_noop_preflight(
         )
 
 
+def _lens_fit_kind(args: argparse.Namespace) -> str:
+    return "R" if getattr(args, "relp", False) else "J"
+
+
 def _lens_fit_name(args: argparse.Namespace) -> str:
-    return "relp" if getattr(args, "relp", False) else "default"
+    return _lens_fit_kind(args).lower()
 
 
 def _try_lens_fit_noop_preflight_locked(
@@ -178,19 +158,19 @@ def _try_lens_fit_noop_preflight_locked(
     from drowse.lens.store import (
         lens_artifact_size,
         lens_estimator_policy,
-        lens_paths,
+        lens_layers,
+        lens_manifest_path,
         lens_payloads_match,
         load_local_lens_sidecar,
         remove_subsumed_lens_checkpoint,
     )
 
     name = _lens_fit_name(args)
-    backward_rules = "relp" if getattr(args, "relp", False) else "standard"
     sidecar = load_local_lens_sidecar(args.model, name)
     if sidecar is None:
         return False
     if sidecar.get("estimator_policy") != lens_estimator_policy(
-        backward_rules=backward_rules,
+        _lens_fit_kind(args),
     ):
         return False
     source_fp = model_source_fingerprint(
@@ -221,14 +201,14 @@ def _try_lens_fit_noop_preflight_locked(
     usable_count = int(sidecar.get("usable_prompt_count", -1))
     if usable_count < 0 or int(sidecar.get("n_prompts", -1)) < usable_count:
         return False
-    _ts_path, sidecar_path = lens_paths(args.model, name)
+    sidecar_path = lens_manifest_path(args.model, name)
     if not lens_payloads_match(args.model, sidecar, name=name):
         return False
     remove_subsumed_lens_checkpoint(
         args.model, name=name, verified_final_sidecar=sidecar,
     )
-    size_mb = lens_artifact_size(args.model, sidecar, name=name) / 1024**2
-    source_layers = [int(layer) for layer in sidecar["source_layers"]]
+    size_mb = lens_artifact_size(args.model, name=name) / 1024**2
+    source_layers = lens_layers(sidecar)
     print(
         f"Fitted Jacobian lens: {len(source_layers)} layers, "
         f"{sidecar.get('n_prompts', usable_count)} prompts, "
@@ -241,11 +221,7 @@ def _try_lens_fit_noop_preflight_locked(
 
 def _run_lens_fit(args: argparse.Namespace) -> None:
     from drowse.session.session import DrowseSession
-    from drowse.lens.store import (
-        lens_artifact_size,
-        lens_paths,
-        load_local_lens_sidecar,
-    )
+    from drowse.lens.store import lens_artifact_size, lens_manifest_path
 
     requested_layers = _parse_layer_list(getattr(args, "layers", None))
     if requested_layers == "sample":
@@ -289,12 +265,8 @@ def _run_lens_fit(args: argparse.Namespace) -> None:
             on_progress=lambda m: print(f"  {m}", flush=True),
         )
     name = _lens_fit_name(args)
-    _ts_path, sidecar_path = lens_paths(args.model, name)
-    sidecar = load_local_lens_sidecar(args.model, name)
-    size_mb = (
-        lens_artifact_size(args.model, sidecar, name=name) / 1024**2
-        if sidecar is not None else 0.0
-    )
+    sidecar_path = lens_manifest_path(args.model, name)
+    size_mb = lens_artifact_size(args.model, name=name) / 1024**2
     print(
         f"Fitted Jacobian lens: {len(lens.source_layers)} layers, "
         f"{lens.n_prompts} prompts, d_model={lens.d_model}"
@@ -305,13 +277,9 @@ def _run_lens_fit(args: argparse.Namespace) -> None:
 def _run_lens_fetch(args: argparse.Namespace) -> None:
     import json as _json
 
-    from drowse.lens.sources import (
-        NEURONPEDIA_BINDING,
-        WORKSPACE_ARMS,
-        fetch_lens_source,
-    )
+    from drowse.lens.sources import LENS_PROVIDERS, fetch_lens_source
 
-    known = [NEURONPEDIA_BINDING, *sorted(WORKSPACE_ARMS)]
+    known = sorted(LENS_PROVIDERS)
     if args.source not in known:
         print(
             f"lens fetch: source must be one of {', '.join(known)}",
@@ -331,15 +299,13 @@ def _run_lens_fetch(args: argparse.Namespace) -> None:
     if args.json_output:
         print(_json.dumps(payload, indent=2))
         return
+    bound = binding.files[binding.key]
     print(
-        f"Fetched {binding.name} for {args.model}: {len(binding.source_layers)} layers, "
-        f"{binding.n_prompts} prompts"
+        f"Fetched {binding.name} for {args.model}: {binding.key.label} lens, "
+        f"{len(bound.layers)} layers, {binding.n_prompts} prompts"
     )
     print(f"  provider: {binding.repo_id}@{binding.repo_revision}")
-    print(f"  checkpoint: {binding.checkpoint}")
-    estimator = getattr(binding, "estimator", None)
-    if estimator is not None:
-        print(f"  estimator: {estimator}")
+    print(f"  checkpoint: {bound.path}")
     print("Provider payload remains in the Hugging Face cache; binding is active.")
 
 
@@ -367,97 +333,79 @@ def _run_lens_use(args: argparse.Namespace) -> None:
     print(f"Active Jacobian lens for {args.model}: {args.source}")
 
 
+def _resolve_lens_source(model: str, source: str | None) -> "Any":
+    """The named source, or the active output-side one; exits when none."""
+    from drowse.lens.sources import LENS_SOURCES
+
+    if source is None:
+        ref = LENS_SOURCES.active(model, "output")
+        if ref is None:
+            print(f"no lens source for {model}", file=sys.stderr)
+            sys.exit(1)
+        return ref
+    try:
+        return LENS_SOURCES.parse(source)
+    except ValueError as exc:
+        print(f"lens: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
 def _run_lens_show(args: argparse.Namespace) -> None:
     import json as _json
 
-    from drowse.lens.store import (
-        lens_artifact_size,
-        lens_paths,
-        load_lens_sidecar,
-        load_local_lens_sidecar,
-    )
-    from drowse.lens.sources import (
-        load_active_lens_source,
-        load_external_lens_binding,
-        external_lens_sidecar,
-        lens_binding_path,
-    )
+    from drowse.lens.store import lens_artifact_size, lens_layers
+    from drowse.lens.sources import LENS_SOURCES, load_lens_source_sidecar
 
-    source = args.source
-    active = load_active_lens_source(args.model)
-    if source is None:
-        sidecar = load_lens_sidecar(args.model)
-        selected = active
-    elif source.startswith("local:"):
-        from drowse.base.integrity import NAME_REGEX
-
-        local_name = source[len("local:"):]
-        if NAME_REGEX.fullmatch(local_name) is None:
-            print(f"no local lens source {source}", file=sys.stderr)
-            sys.exit(1)
-        sidecar = load_local_lens_sidecar(args.model, local_name)
-        selected = {"kind": "local", "name": local_name}
-    else:
-        from drowse.base.integrity import NAME_REGEX
-
-        if NAME_REGEX.fullmatch(source) is None:
-            print(
-                "lens show: source must be local:default or a fetched "
-                "binding name (neuronpedia, workspace-r, workspace-j)",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        binding = load_external_lens_binding(args.model, source)
-        sidecar = None if binding is None else external_lens_sidecar(binding)
-        selected = {"kind": "huggingface", "name": source}
+    ref = _resolve_lens_source(args.model, args.source)
+    sidecar = load_lens_source_sidecar(args.model, ref)
     if sidecar is None:
-        print(f"no Jacobian lens for {args.model}", file=sys.stderr)
-        sys.exit(1)
-    external = isinstance(sidecar.get("_source"), dict)
-    if external:
-        sidecar_path = lens_binding_path(args.model, sidecar["_source"]["name"])
-        size_mb = None
-    else:
-        shown_name = (
-            str(selected["name"])
-            if selected is not None and selected.get("kind") == "local"
-            else "default"
+        print(
+            f"no lens source {LENS_SOURCES.format(ref)} for {args.model}",
+            file=sys.stderr,
         )
-        _ts_path, sidecar_path = lens_paths(args.model, shown_name)
-        size_mb = lens_artifact_size(
-            args.model, sidecar, name=shown_name,
-        ) / 1024**2
-    source_layers = [int(layer) for layer in sidecar["source_layers"]]
+        sys.exit(1)
+    sidecar_path = LENS_SOURCES.path_of(args.model, ref)
+    size_mb = (
+        lens_artifact_size(args.model, name=ref.name) / 1024**2
+        if ref.local else None
+    )
+    active = ref in {
+        LENS_SOURCES.active(args.model, side) for side in ("output", "input")
+    }
+    source_layers = lens_layers(sidecar)
     if getattr(args, "json_output", False):
         print(_json.dumps({
             "model": args.model,
+            "source": LENS_SOURCES.format(ref),
             "path": str(sidecar_path),
             "size_mb": None if size_mb is None else round(size_mb, 1),
-            "active": bool(
-                active is not None and selected is not None
-                and active["kind"] == selected["kind"]
-                and active["name"] == selected["name"]
-            ),
+            "active": active,
             **sidecar,
         }, indent=2))
         return
-    print(f"Jacobian lens for {args.model}")
+    skip_first = (
+        sidecar["estimator_policy"]["skip_first_positions"] if ref.local
+        else sidecar.get("skip_first_positions", "?")
+    )
+    print(f"{sidecar['kind']}-lens {LENS_SOURCES.format(ref)} for {args.model}"
+          f"{' (active)' if active else ''}")
     print(f"  layers:   {source_layers[0]}..{source_layers[-1]} "
           f"({len(source_layers)})")
     print(f"  d_model:  {sidecar['d_model']}")
     print(f"  prompts:  {sidecar.get('n_prompts', '?')}")
-    print(f"  corpus:   {sidecar.get('corpus_spec', '?')} "
-          f"(sha256 {str(sidecar.get('corpus_sha256', ''))[:12]}…)")
-    print(f"  seq_len:  {sidecar.get('seq_len', '?')}, "
-          f"skip_first: {sidecar.get('skip_first_positions', '?')}")
-    if external:
+    corpus = f"  corpus:   {sidecar.get('corpus_spec', '?')}"
+    if sidecar.get("corpus_sha256"):
+        corpus += f" (sha256 {str(sidecar['corpus_sha256'])[:12]}…)"
+    print(corpus)
+    print(f"  seq_len:  {sidecar.get('seq_len', '?')}, skip_first: {skip_first}")
+    if ref.local:
+        assert size_mb is not None
+        print(f"  artifact: {sidecar_path} ({size_mb:.0f} MB across layer shards)")
+    else:
         source_meta = sidecar["_source"]
         print(f"  source:   {source_meta['provider']} ({source_meta['repo_id']}@{source_meta['repo_revision']})")
         print(f"  binding:  {sidecar_path}")
         print("  payload:  Hugging Face cache (provider-owned)")
-    else:
-        assert size_mb is not None
-        print(f"  artifact: {sidecar_path} ({size_mb:.0f} MB across layer shards)")
 
 
 def _run_lens_top(args: argparse.Namespace) -> None:
@@ -575,67 +523,27 @@ def _run_lens_decompose(args: argparse.Namespace) -> None:
 
 
 def _run_lens_rm(args: argparse.Namespace) -> None:
-    from drowse.lens.store import lens_paths, remove_lens
-    from drowse.lens.sources import (
-        lens_binding_path,
-        load_active_lens_source,
-        remove_external_lens_binding,
-    )
+    from drowse.lens.sources import LENS_SOURCES, remove_lens_source
 
-    source = args.source
-    if source is None:
-        active = load_active_lens_source(args.model)
-        if active is None:
-            print(f"no lens source for {args.model}", file=sys.stderr)
-            sys.exit(1)
-        source = (
-            f"local:{active['name']}"
-            if active["kind"] == "local" else active["name"]
-        )
-    local = source.startswith("local:")
-    local_name = source[len("local:"):] if local else "default"
-    if local:
-        from drowse.base.integrity import NAME_REGEX
-
-        if NAME_REGEX.fullmatch(local_name) is None:
-            print(f"no local lens source {source}", file=sys.stderr)
-            sys.exit(1)
-    if not local:
-        from drowse.base.integrity import NAME_REGEX
-
-        if NAME_REGEX.fullmatch(source) is None:
-            print(
-                "lens rm: source must be local:default or a fetched "
-                "binding name (neuronpedia, workspace-r, workspace-j)",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-    sidecar_path = (
-        lens_paths(args.model, local_name)[1]
-        if local else lens_binding_path(args.model, source)
-    )
+    ref = _resolve_lens_source(args.model, args.source)
+    source = LENS_SOURCES.format(ref)
+    sidecar_path = LENS_SOURCES.path_of(args.model, ref)
     if not sidecar_path.exists():
         print(f"no lens source {source} for {args.model}", file=sys.stderr)
         sys.exit(1)
     if not args.yes:
-        action = "Remove local artifact" if local else "Forget external binding"
+        action = "Remove local artifact" if ref.local else "Forget external binding"
         answer = input(f"{action} {sidecar_path}? [y/N] ").strip().lower()
         if answer not in ("y", "yes"):
             print("Aborted.")
             return
-    removed = (
-        remove_lens(args.model, local_name)
-        if local else remove_external_lens_binding(args.model, source)
-    )
-    if not removed:
+    if not remove_lens_source(args.model, ref):
         print(f"no lens source {source} for {args.model}", file=sys.stderr)
         sys.exit(1)
-    if local:
+    if ref.local:
         print(f"Removed Drowse-owned lens {source} for {args.model}.")
     else:
-        print(
-            f"Forgot {source} binding; Hugging Face cache was not modified."
-        )
+        print(f"Forgot {source} binding; Hugging Face cache was not modified.")
 
 
 _LENS_RUNNERS = {

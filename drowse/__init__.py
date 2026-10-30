@@ -88,7 +88,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "UnsupportedProbeChannelError": ("drowse.errors", "UnsupportedProbeChannelError"),
     # Jacobian lens (the verbalizable-workspace readout)
     "JacobianLens": ("drowse.lens.jlens", "JacobianLens"),
-    "JSpaceDecomposition": ("drowse.lens.jlens", "JSpaceDecomposition"),
+    "SparseDecomposition": ("drowse.lens.decompose", "SparseDecomposition"),
+    "LensKey": ("drowse.lens.key", "LensKey"),
     "JacobianLensError": ("drowse.lens.jlens", "JacobianLensError"),
     "LensNotFittedError": ("drowse.lens.jlens", "LensNotFittedError"),
     "MultiTokenWordError": ("drowse.lens.jlens", "MultiTokenWordError"),
@@ -175,7 +176,8 @@ __all__ = [
     "UnsupportedProbeChannelError",
     # Jacobian lens (the verbalizable-workspace readout)
     "JacobianLens",
-    "JSpaceDecomposition",
+    "SparseDecomposition",
+    "LensKey",
     "JacobianLensError",
     "LensNotFittedError",
     "MultiTokenWordError",
@@ -280,13 +282,16 @@ if TYPE_CHECKING:
         ManifoldNotRegisteredError as ManifoldNotRegisteredError,
         ProfileNotRegisteredError as ProfileNotRegisteredError,
     )
+    from drowse.lens.decompose import (
+        SparseDecomposition as SparseDecomposition,
+    )
     from drowse.lens.jlens import (
         JacobianLens as JacobianLens,
         JacobianLensError as JacobianLensError,
-        JSpaceDecomposition as JSpaceDecomposition,
         LensNotFittedError as LensNotFittedError,
         MultiTokenWordError as MultiTokenWordError,
     )
+    from drowse.lens.key import LensKey as LensKey
     from drowse.errors import (
         UnsupportedProbeChannelError as UnsupportedProbeChannelError,
     )

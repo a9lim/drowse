@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import ExitStack
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -54,6 +55,7 @@ import torch
 from torch import nn
 
 from drowse.errors import is_out_of_memory_error
+from drowse.lens.key import FITTABLE_KINDS, LensKey
 from drowse.lens.jlens import (
     DEFAULT_CHECKPOINT_EVERY,
     DEFAULT_DIM_BATCH,
@@ -277,8 +279,14 @@ def fit_jacobian_lens(
     vjp_mode: str = "auto",
     cancel_event: Any | None = None,
     initial_lens: JacobianLens | None = None,
+    kind: str = "J",
 ) -> JacobianLens:
     """Fit ``J_l`` for every source layer over ``prompts``.
+
+    ``kind`` is the lens to fit (:class:`~drowse.lens.key.LensKey`): ``"J"``
+    the standard Jacobian, ``"R"`` the same estimator run through the RelP
+    backward rules (:func:`~drowse.lens.relp.relp_backward_rules`, applied
+    here for the fit's duration).  The returned lens carries that key.
 
     One graph per prompt microbatch + ``ceil(d_model/dim_batch)`` backwards
     (see the module docstring for the estimator). ``initial_lens`` transfers
@@ -330,7 +338,17 @@ def fit_jacobian_lens(
         )
     initial_n_prompts = 0
     initial_acc: dict[int, torch.Tensor] | None = None
+    key = LensKey(kind)
+    if kind not in FITTABLE_KINDS:
+        raise JacobianLensError(
+            f"no estimator fits {kind}-lenses yet (fittable: "
+            f"{', '.join(FITTABLE_KINDS)})"
+        )
     if initial_lens is not None:
+        if initial_lens.key != key:
+            raise ValueError(
+                f"initial_lens is a {initial_lens.key.label} lens, not {key.label}"
+            )
         if initial_lens.source_layers != sources:
             raise ValueError(
                 "initial_lens source layers must exactly match the fit request"
@@ -428,7 +446,11 @@ def fit_jacobian_lens(
     )
     state["hook_state"] = hook_state
     try:
-        with torch.enable_grad():
+        with ExitStack() as rules, torch.enable_grad():
+            if key.relp:
+                from drowse.lens.relp import relp_backward_rules
+
+                rules.enter_context(relp_backward_rules(layer_modules))
             while cursor < len(prepared_rows):
                 if not pending_tasks:
                     # Cancellation is observed only between complete prompt
@@ -703,7 +725,7 @@ def fit_jacobian_lens(
     for tensor in acc.values():
         tensor.mul_(inv_n)
     return JacobianLens(
-        acc, n_prompts=total_done, d_model=state["d_model"],
+        acc, n_prompts=total_done, d_model=state["d_model"], key=key,
     )
 
 

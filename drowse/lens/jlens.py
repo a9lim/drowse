@@ -11,10 +11,11 @@ d-vector with the same shape contract as any drowse steering direction, which
 is what lets a ``jlens/<word>`` term ride the ordinary profile registry.
 
 This module holds everything on a runtime path: the :class:`JacobianLens`
-artifact (transport, token directions, merge/union), the readout math every
-probe / live-workspace / token-replay surface calls per decode step, and the
-J-space decomposition.  It imports nothing beyond torch and the error
-taxonomy, so a per-step import costs a ``sys.modules`` lookup.
+artifact (transport, token directions, select/union) and the readout math
+every probe / live-workspace / token-replay surface calls per decode step.
+The J-space decomposition lives in :mod:`drowse.lens.decompose`.  It imports
+nothing beyond torch and the error taxonomy, so a per-step import costs a
+``sys.modules`` lookup.
 
 The **estimator** — the only backward pass through the language model — lives
 in :mod:`drowse.lens.fit`; importing this module never drags it in.
@@ -35,6 +36,8 @@ from typing import Any
 import torch
 
 from drowse.errors import DrowseError
+from drowse.lens.decompose import token_atom_norms
+from drowse.lens.key import LensKey
 
 #: Positions before this index are excluded from the Jacobian average — early
 #: positions act as attention sinks with atypical residual statistics.  Part of
@@ -115,10 +118,12 @@ def resolve_word_token(tokenizer: Any, word: str) -> int:
 
 
 class JacobianLens:
-    """Fitted per-layer ``J_l`` matrices plus the readout primitives.
+    """One lens's fitted per-layer matrices plus the readout primitives.
 
-    ``jacobians`` maps source layer index → ``[d_model, d_model]`` fp32
-    matrix transporting that layer's residual into the final-layer basis.
+    ``jacobians`` maps layer index → ``[d_model, d_model]`` fp32 matrix.
+    ``key`` names what they are (:class:`~drowse.lens.key.LensKey`): for an
+    output-side kind (J/R) each matrix transports that layer's residual into
+    the final-layer basis, which every readout surface below assumes.
     """
 
     def __init__(
@@ -127,11 +132,13 @@ class JacobianLens:
         *,
         n_prompts: int,
         d_model: int,
+        key: LensKey = LensKey("J"),
     ) -> None:
         self.jacobians = {int(l): j.to(torch.float32) for l, j in jacobians.items()}
         self.source_layers = sorted(self.jacobians)
         self.n_prompts = int(n_prompts)
         self.d_model = int(d_model)
+        self.key = key
         self._atom_norm_cache: dict[tuple[int, str, str, int, tuple[int, ...]], torch.Tensor] = {}
 
     def __repr__(self) -> str:
@@ -141,7 +148,8 @@ class JacobianLens:
             else "[]"
         )
         return (
-            f"JacobianLens(d_model={self.d_model}, n_prompts={self.n_prompts}, "
+            f"JacobianLens({self.key.label}, d_model={self.d_model}, "
+            f"n_prompts={self.n_prompts}, "
             f"source_layers={span} ({len(self.source_layers)} layers))"
         )
 
@@ -199,6 +207,7 @@ class JacobianLens:
             {layer: self.jacobians[layer] for layer in requested},
             n_prompts=self.n_prompts,
             d_model=self.d_model,
+            key=self.key,
         )
 
     def atom_norms(self, layer: int, unembed: torch.Tensor) -> torch.Tensor:
@@ -218,7 +227,7 @@ class JacobianLens:
         cached = self._atom_norm_cache.get(key)
         if cached is not None:
             return cached
-        norms = _atom_norms(
+        norms = token_atom_norms(
             self.jacobians[layer].to(device=unembed.device, dtype=torch.float32),
             unembed,
         )
@@ -226,47 +235,11 @@ class JacobianLens:
         return norms
 
     @classmethod
-    def merge_into(
-        cls, lenses: Sequence["JacobianLens"], *, target: int = -1,
-    ) -> "JacobianLens":
-        """Prompt-weighted merge using one caller-owned lens as the destination.
-
-        Resume fitting owns the newly fitted tail, so allocating another complete
-        fp32 artifact at final merge only multiplies peak RAM.  This explicit
-        mutating variant preserves :meth:`merge`'s non-mutating public behavior
-        while letting orchestration recycle that tail in place.
-        """
-        if not lenses:
-            raise ValueError("merge_into() needs at least one lens")
-        first = lenses[0]
-        for other in lenses[1:]:
-            if (
-                other.source_layers != first.source_layers
-                or other.d_model != first.d_model
-            ):
-                raise ValueError("lenses disagree on source_layers / d_model")
-        total = sum(lens.n_prompts for lens in lenses)
-        if total <= 0:
-            raise ValueError("merge_into() needs lenses with n_prompts > 0")
-        owner = lenses[target]
-        owner_weight = owner.n_prompts / total
-        for layer in owner.source_layers:
-            dst = owner.jacobians[layer]
-            dst.mul_(owner_weight)
-            for lens in lenses:
-                if lens is owner:
-                    continue
-                dst.add_(lens.jacobians[layer], alpha=lens.n_prompts / total)
-        owner.n_prompts = total
-        owner._atom_norm_cache.clear()
-        return owner
-
-    @classmethod
     def union_layers(cls, lenses: Sequence["JacobianLens"]) -> "JacobianLens":
         """Combine same-corpus lenses that cover different source layers.
 
-        Unlike :meth:`merge`, this is not a prompt-weighted average; every input
-        must describe the same prompt set and ``d_model``.  Later inputs replace
+        This is not a prompt-weighted average; every input must describe the
+        same prompt set, ``d_model``, and key.  Later inputs replace
         duplicate layers, which lets a missing-layer top-up overwrite a stale
         partial layer cleanly.
         """
@@ -274,12 +247,19 @@ class JacobianLens:
             raise ValueError("union_layers() needs at least one lens")
         first = lenses[0]
         for other in lenses[1:]:
-            if other.n_prompts != first.n_prompts or other.d_model != first.d_model:
-                raise ValueError("lenses disagree on n_prompts / d_model")
+            if (
+                other.n_prompts != first.n_prompts
+                or other.d_model != first.d_model
+                or other.key != first.key
+            ):
+                raise ValueError("lenses disagree on n_prompts / d_model / key")
         union: dict[int, torch.Tensor] = {}
         for lens in lenses:
             union.update(lens.jacobians)
-        return cls(union, n_prompts=first.n_prompts, d_model=first.d_model)
+        return cls(
+            union, n_prompts=first.n_prompts, d_model=first.d_model,
+            key=first.key,
+        )
 
 
 @contextmanager
@@ -693,137 +673,3 @@ def token_readout_stats(
         depths,
         depth_tensor=depth_tensor,
     )
-
-
-class JSpaceDecomposition:
-    """One layer's sparse nonnegative split of a direction against the J-lens
-    dictionary: ``share`` = fraction of the direction's variance carried by
-    the selected atoms, ``tokens`` = ``[(vocab_id, coeff), ...]`` sorted by
-    descending coefficient."""
-
-    __slots__ = ("layer", "share", "tokens")
-
-    def __init__(self, layer: int, share: float, tokens: list[tuple[int, float]]) -> None:
-        self.layer = layer
-        self.share = share
-        self.tokens = tokens
-
-    def __repr__(self) -> str:
-        return (
-            f"JSpaceDecomposition(layer={self.layer}, share={self.share:.3f}, "
-            f"k={len(self.tokens)})"
-        )
-
-
-def sparse_nonneg_decompose(
-    target: torch.Tensor,
-    jacobian: torch.Tensor,
-    unembed: torch.Tensor,
-    *,
-    layer: int,
-    k: int = 16,
-    nnls_iters: int = 200,
-    atom_norms: torch.Tensor | None = None,
-) -> JSpaceDecomposition:
-    """Greedy sparse nonnegative pursuit of ``target`` against the J-lens
-    dictionary ``D = W_U @ J_l`` (the paper's gradient-pursuit decomposition).
-
-    The dictionary is never materialized (``[vocab, d]`` would be gigabytes
-    on a real model): atom scores are the composed matvec
-    ``W_U @ (J_l @ residual)``, normalized by chunk-computed atom norms
-    (unnormalized inner products would bias selection toward large-norm
-    atoms), and only the ≤k selected rows are formed. After each selection
-    the coefficients re-solve as a k-dim nonnegative least squares
-    (projected gradient with the exact Lipschitz step — the problem is
-    tiny). Selection stops early when no atom correlates positively with
-    the residual.
-    """
-    device = unembed.device
-    J = jacobian.to(device=device, dtype=torch.float32)
-    t = target.detach().to(device=device, dtype=torch.float32)
-    t_norm_sq = float(t.pow(2).sum())
-    if t_norm_sq == 0.0:
-        return JSpaceDecomposition(layer, 0.0, [])
-    norms = (
-        _atom_norms(J, unembed)
-        if atom_norms is None
-        else atom_norms.to(device=device, dtype=torch.float32)
-    )
-    norms = norms.clamp(min=1e-12)
-
-    selected: list[int] = []
-    rows: list[torch.Tensor] = []
-    coeffs = torch.zeros(0, device=device)
-    residual = t.clone()
-    for _ in range(k):
-        # normalized correlation over the vocabulary, D never materialized
-        scores = (unembed @ (J @ residual).to(unembed.dtype)).float() / norms
-        if selected:
-            scores[torch.tensor(selected, device=device)] = -torch.inf
-        best = int(scores.argmax())
-        if float(scores[best]) <= 0.0:
-            break
-        selected.append(best)
-        rows.append(unembed[best].float() @ J)
-        A = torch.stack(rows)  # [s, d]
-        gram = A @ A.T
-        b = A @ t
-        c = torch.cat([coeffs, coeffs.new_zeros(1)])
-        solved = _try_unconstrained_nonnegative(gram, b, device=device)
-        if solved is None:
-            # CPU hop: eigvalsh is unimplemented on MPS, and the gram is ≤ k×k.
-            lipschitz = float(torch.linalg.eigvalsh(gram.cpu())[-1].clamp(min=1e-12))
-            for _ in range(nnls_iters):
-                c = torch.clamp(c - (gram @ c - b) / lipschitz, min=0.0)
-        else:
-            c = solved
-        coeffs = c
-        residual = t - A.T @ coeffs
-
-    share = max(0.0, 1.0 - float(residual.pow(2).sum()) / t_norm_sq)
-    pairs = sorted(
-        ((tok, float(cf)) for tok, cf in zip(selected, coeffs) if float(cf) > 0.0),
-        key=lambda p: -p[1],
-    )
-    return JSpaceDecomposition(layer, share, pairs)
-
-
-def _try_unconstrained_nonnegative(
-    gram: torch.Tensor,
-    b: torch.Tensor,
-    *,
-    device: torch.device,
-    tol: float = 1e-7,
-) -> torch.Tensor | None:
-    """Exact tiny least-squares solve when its coefficients are already >= 0.
-
-    The greedy J-space step solves ``min ||A^T c - t||²`` over the selected
-    atoms.  If the unconstrained normal-equation solution is nonnegative, it is
-    also the NNLS optimum, so the 200-step projected-gradient loop is pure
-    overhead.  If any coefficient is negative or the tiny system is singular, the
-    caller keeps the existing PGD fallback.
-    """
-    g_cpu = gram.detach().to("cpu", torch.float32)
-    b_cpu = b.detach().to("cpu", torch.float32)
-    eye = torch.eye(g_cpu.shape[0], dtype=torch.float32)
-    try:
-        sol = torch.linalg.solve(g_cpu + 1e-7 * eye, b_cpu)
-    except RuntimeError:
-        return None
-    if not bool(torch.isfinite(sol).all()):
-        return None
-    if bool((sol < -tol).any()):
-        return None
-    return sol.clamp(min=0.0).to(device=device, dtype=torch.float32)
-
-
-def _atom_norms(
-    jacobian: torch.Tensor, unembed: torch.Tensor, *, chunk: int = 8192
-) -> torch.Tensor:
-    """Per-atom norms ``‖W_U[v] @ J‖`` for the whole vocabulary, computed in
-    chunks so the ``[vocab, d]`` dictionary never exists in full."""
-    norms = torch.empty(unembed.shape[0], device=unembed.device)
-    for start in range(0, unembed.shape[0], chunk):
-        block = unembed[start : start + chunk].float() @ jacobian
-        norms[start : start + chunk] = block.norm(dim=-1)
-    return norms

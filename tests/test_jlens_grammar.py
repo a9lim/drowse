@@ -277,7 +277,7 @@ def test_manifold_authoring_rejects_reserved_runtime_namespace(
 
 def test_lens_preflight_rejects_contiguous_prefix_for_all_layers() -> None:
     sidecar: dict[str, object] = {
-        "source_layers": list(range(5)),
+        "sites": {"out": {"layers": list(range(5))}},
         "model_layer_count": 12,
     }
     assert not _lens_fit_source_preflight_matches(sidecar, "all")
@@ -285,34 +285,36 @@ def test_lens_preflight_rejects_contiguous_prefix_for_all_layers() -> None:
 
 def test_lens_preflight_resolves_workspace_from_model_depth() -> None:
     sidecar: dict[str, object] = {
-        "source_layers": [4, 5, 6, 7, 8, 9],
+        "sites": {"out": {"layers": [4, 5, 6, 7, 8, 9]}},
         "model_layer_count": 11,
     }
     assert _lens_fit_source_preflight_matches(sidecar, "workspace")
-    sidecar["source_layers"] = [4, 5, 6]
+    sidecar["sites"] = {"out": {"layers": [4, 5, 6]}}
     assert not _lens_fit_source_preflight_matches(sidecar, "workspace")
 
 
 def test_lens_noop_preflight_requires_exact_model_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.lens.store import lens_paths
-
-    from drowse.lens.store import HfLensCorpus
+    from drowse.lens.corpus import HfLensCorpus
+    from drowse.lens.store import lens_manifest_path
 
     corpus = HfLensCorpus("repo", "config", "a" * 40)
     expected_spec = corpus.spec
-    tensor_path, sidecar_path = lens_paths("toy/model")
-    tensor_path.parent.mkdir(parents=True, exist_ok=True)
-    shard_path = sidecar_path.parent / "jlens.layer-0.gen-test.safetensors"
+    sidecar_path = lens_manifest_path("toy/model", "j")
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    shard_path = sidecar_path.parent / "out.layer-0.gen-test.safetensors"
     shard_path.write_bytes(b"lens")
     sidecar: dict[str, object] = {
-        "format_version": 4,
-        "source_layers": [0],
+        "format_version": 7,
+        "kind": "J",
+        "sites": {"out": {
+            "layers": [0],
+            "tensor_files": {"0": shard_path.name},
+            "tensor_sha256": {"0": hashlib.sha256(b"lens").hexdigest()},
+        }},
         "model_layer_count": 2,
         "model_source_fingerprint": "source-a",
-        "tensor_files": {"0": shard_path.name},
-        "tensor_sha256": {"0": hashlib.sha256(b"lens").hexdigest()},
         "seq_len": 128,
         "corpus_spec": expected_spec,
         "raw_prompt_count": 100,
@@ -322,10 +324,10 @@ def test_lens_noop_preflight_requires_exact_model_source(
     }
     from drowse.lens.store import lens_estimator_policy
 
-    sidecar["estimator_policy"] = lens_estimator_policy()
+    sidecar["estimator_policy"] = lens_estimator_policy("J")
     monkeypatch.setattr(
         "drowse.lens.store.load_local_lens_sidecar",
-        lambda _model, _name="default": sidecar,
+        lambda _model, _name="j": sidecar,
     )
     monkeypatch.setattr(
         "drowse.model.loading.model_source_fingerprint",
@@ -346,31 +348,35 @@ def test_lens_noop_preflight_requires_exact_model_source(
 def test_lens_noop_preflight_rejects_changed_dataset_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.lens.store import HfLensCorpus, lens_paths
+    from drowse.lens.corpus import HfLensCorpus
+    from drowse.lens.store import lens_manifest_path
 
     old = HfLensCorpus("repo", "config", "0" * 40)
     new = HfLensCorpus("repo", "config", "1" * 40)
 
-    tensor_path, sidecar_path = lens_paths("toy/model")
-    tensor_path.parent.mkdir(parents=True, exist_ok=True)
-    shard_path = sidecar_path.parent / "jlens.layer-0.gen-test.safetensors"
+    sidecar_path = lens_manifest_path("toy/model", "j")
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    shard_path = sidecar_path.parent / "out.layer-0.gen-test.safetensors"
     shard_path.write_bytes(b"lens")
     sidecar: dict[str, object] = {
-        "format_version": 4,
-        "source_layers": [0], "model_layer_count": 2,
+        "format_version": 7, "kind": "J",
+        "sites": {"out": {
+            "layers": [0],
+            "tensor_files": {"0": shard_path.name},
+            "tensor_sha256": {"0": hashlib.sha256(b"lens").hexdigest()},
+        }},
+        "model_layer_count": 2,
         "model_source_fingerprint": "source-a",
-        "tensor_files": {"0": shard_path.name},
-        "tensor_sha256": {"0": hashlib.sha256(b"lens").hexdigest()},
         "seq_len": 128, "corpus_spec": old.spec,
         "raw_prompt_count": 100, "usable_prompt_count": 100,
         "n_prompts": 100, "d_model": 6,
     }
     from drowse.lens.store import lens_estimator_policy
 
-    sidecar["estimator_policy"] = lens_estimator_policy()
+    sidecar["estimator_policy"] = lens_estimator_policy("J")
     monkeypatch.setattr(
         "drowse.lens.store.load_local_lens_sidecar",
-        lambda _model, _name="default": sidecar,
+        lambda _model, _name="j": sidecar,
     )
     monkeypatch.setattr(
         "drowse.model.loading.model_source_fingerprint",
@@ -403,7 +409,7 @@ def test_lens_noop_preflight_holds_fit_lock_during_sidecar_read(
     held = False
 
     @contextmanager
-    def fake_lock(_model: str, _name: str = "default"):
+    def fake_lock(_model: str, _name: str = "j"):
         nonlocal held
         held = True
         try:
@@ -411,7 +417,7 @@ def test_lens_noop_preflight_holds_fit_lock_during_sidecar_read(
         finally:
             held = False
 
-    def read_sidecar(_model: str, _name: str = "default") -> None:
+    def read_sidecar(_model: str, _name: str = "j") -> None:
         assert held
         return None
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,8 @@ def _weights() -> dict[str, torch.Tensor]:
 
 def test_local_sae_round_trip_and_backend() -> None:
     from drowse.sae.backend import load_sae_backend
-    from drowse.sae.sources import list_sae_sources, load_active_sae_source
+    from drowse.base.source_registry import SourceRef
+    from drowse.sae.sources import SAE_SOURCES, list_sae_sources
     from drowse.sae.store import load_local_sae_manifest, save_local_sae
 
     manifest_path = save_local_sae(
@@ -45,7 +47,8 @@ def test_local_sae_round_trip_and_backend() -> None:
     assert manifest_path.parts[-4:] == ("sae", "local", "mine", "manifest.json")
     manifest = load_local_sae_manifest("org/model", "mine")
     assert manifest is not None and manifest["release"] == "local:mine"
-    assert load_active_sae_source("org/model") == {
+    assert SAE_SOURCES.active("org/model") == SourceRef("local", "mine")
+    assert json.loads(SAE_SOURCES.active_path("org/model").read_text()) == {
         "format_version": 1,
         "model_id": "org/model",
         "kind": "local",
@@ -71,18 +74,19 @@ def test_local_sae_round_trip_and_backend() -> None:
 
 
 def test_local_release_predicate_routes_padded_selectors() -> None:
-    """``is_local_sae_release`` owns the ``local:`` test, whitespace and all.
+    """``parse_sae_release`` owns the ``local:`` test, whitespace and all.
 
     ``load_sae_backend`` dispatches on it, so a padded selector must not fall
     through to the provider registry (which would report the whole padded
     string as an unknown release).
     """
     from drowse.sae.backend import load_sae_backend
-    from drowse.sae.store import is_local_sae_release, save_local_sae
+    from drowse.sae.sources import parse_sae_release
+    from drowse.sae.store import save_local_sae
 
-    assert is_local_sae_release("local:mine") is True
-    assert is_local_sae_release("  local:mine  ") is True
-    assert is_local_sae_release("gemma-scope-2b-pt-res") is False
+    assert parse_sae_release("local:mine").local
+    assert parse_sae_release("  local:mine  ").local
+    assert not parse_sae_release("gemma-scope-2b-pt-res").local
 
     save_local_sae(
         "org/model", "mine", _weights(),

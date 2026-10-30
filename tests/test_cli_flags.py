@@ -116,9 +116,9 @@ def test_lens_layers_named_modes_parse() -> None:
 def test_lens_fit_pins_a_hub_corpus_once_for_preflight_and_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.store as lens_io
+    import drowse.lens.corpus as lens_io
     from drowse.cli.runners import lens as lens_runner
-    from drowse.lens.store import HfLensCorpus, LensCorpusMix
+    from drowse.lens.corpus import HfLensCorpus, LensCorpusMix
 
     pinned = LensCorpusMix((
         HfLensCorpus("org/data", "default", "a" * 40, "body"),

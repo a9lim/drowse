@@ -970,7 +970,7 @@ class LensInstrument:
 
     @property
     def active_source(self) -> str | None:
-        """The active J-lens source in the public source syntax.
+        """The active output-side lens source in the public source syntax.
 
         THE resolver — one ``active.json`` read, the same label that stamps
         every lens measurement binding.  A listing that answered from the
@@ -978,12 +978,10 @@ class LensInstrument:
         pointer whose artifact is gone while persisted rows still carry its
         label.
         """
-        from drowse.lens.sources import (
-            lens_source_label, load_active_lens_source,
-        )
+        from drowse.lens.sources import LENS_SOURCES
 
-        active = load_active_lens_source(self._session.model_id)
-        return None if active is None else lens_source_label(active)
+        active = LENS_SOURCES.active(self._session.model_id, "output")
+        return None if active is None else LENS_SOURCES.format(active)
 
     @property
     def live_state(self) -> LensLiveState:
