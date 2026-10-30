@@ -1093,7 +1093,7 @@ class TestScoreSingleToken:
     def test_returns_scores_without_accumulation(self):
         import torch
         from drowse.readout.monitor import Monitor
-        from drowse.generation.results import ProbeReading
+        from drowse.readout.types import ProbeReading
         from drowse.geometry.fold import fold_directions_to_subspace
 
         from tests._whitener import isotropic_whitener

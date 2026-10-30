@@ -913,7 +913,7 @@ class TestWebSocketLoom:
         clean break the ``token`` frame already made); it survives only on
         the OpenAI / Ollama ``x-drowse-probe-readings`` vendor extension."""
         from drowse.readout.types import ScalarReading
-        from drowse.generation.results import ProbeReading
+        from drowse.readout.types import ProbeReading
 
         session, client = session_and_client
         reading = ProbeReading(

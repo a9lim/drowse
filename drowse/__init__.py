@@ -31,7 +31,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "TokenEvent": ("drowse.generation.results", "TokenEvent"),
     "ProbeReadings": ("drowse.generation.results", "ProbeReadings"),
     "Manifold": ("drowse.geometry.manifold", "Manifold"),
-    "ProbeReading": ("drowse.generation.results", "ProbeReading"),
+    "ProbeReading": ("drowse.readout.types", "ProbeReading"),
     "ResultCollector": ("drowse.generation.results", "ResultCollector"),
     "LoomTree": ("drowse.loom.tree", "LoomTree"),
     "LoomNode": ("drowse.loom.tree", "LoomNode"),
@@ -244,7 +244,6 @@ if TYPE_CHECKING:
     from drowse.geometry.profile import Profile as Profile, ProfileError as ProfileError
     from drowse.generation.results import (
         GenerationResult as GenerationResult,
-        ProbeReading as ProbeReading,
         ProbeReadings as ProbeReadings,
         ResultCollector as ResultCollector,
         RunSet as RunSet,
@@ -318,6 +317,7 @@ if TYPE_CHECKING:
         GeometryLiveState as GeometryLiveState,
         LensLiveState as LensLiveState,
         LiveState as LiveState,
+        ProbeReading as ProbeReading,
         SaeLiveState as SaeLiveState,
         ScalarReading as ScalarReading,
     )

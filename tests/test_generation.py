@@ -16,7 +16,8 @@ from drowse.generation.decode import (
 )
 from drowse.generation.finalize import MIN_ELAPSED_FOR_RATE
 from drowse.model.chat import chat_eos_ids, logits_keep_kwarg
-from drowse.generation.results import GenerationResult, ProbeReading
+from drowse.generation.results import GenerationResult
+from drowse.readout.types import ProbeReading
 from drowse.generation.types import GenState
 from drowse.session.session import (
     CaptureMode,

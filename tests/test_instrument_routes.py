@@ -738,7 +738,7 @@ class TestTokenReadout:
 
     @staticmethod
     def _geometry_out(steering: "str | None") -> dict[str, Any]:
-        from drowse.generation.results import ProbeReading
+        from drowse.readout.types import ProbeReading
 
         return {
             "node_id": "n1", "raw_index": 3, "token_id": 42,

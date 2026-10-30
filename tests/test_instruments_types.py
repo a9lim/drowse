@@ -18,7 +18,7 @@ from drowse.readout.types import (
     parse_gate_ref,
     validate_gate_channels,
 )
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 
 
 # --------------------------------------------------------------------------

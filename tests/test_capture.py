@@ -12,8 +12,8 @@ from drowse.fit.capture import (
     _capture_all_hidden_states,
     _load_json_with_override,
     _ReusablePooledCapture,
-    last_content_index,
 )
+from drowse.model.tokens import last_content_index
 
 
 class _AddLayer(torch.nn.Module):

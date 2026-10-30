@@ -63,6 +63,7 @@ from drowse.readout.types import (
     AGG_TAIL_DEPTH,
     InstrumentFamily,
     InstrumentPlan,
+    ProbeReading,
     ReadRequest,
 )
 from drowse.readout.monitor import Monitor
@@ -75,7 +76,6 @@ from drowse.store.bundled_probes import bootstrap_probe_roster
 from drowse.geometry.profile import Profile
 from drowse.generation.results import (
     GenerationResult,
-    ProbeReading,
     RunSet,
 )
 from drowse.generation.sampling import SamplingConfig
@@ -1744,7 +1744,7 @@ class DrowseSession:
             return int(idx)
         if state.finish_reason == "stop_sequence" and state.response_text is not None:
             return None
-        from drowse.fit.capture import last_content_index
+        from drowse.model.tokens import last_content_index
         return last_content_index(generated_ids, self._tokenizer)
 
     def _pooled_aggregate_slice(

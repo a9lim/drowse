@@ -15,7 +15,8 @@ from drowse.readout.types import (
     reading_axis0,
 )
 from drowse.readout.measurements import build_measurements
-from drowse.generation.results import GenerationResult, ProbeReading
+from drowse.generation.results import GenerationResult
+from drowse.readout.types import ProbeReading
 
 if TYPE_CHECKING:
     from drowse.generation.decode import GenerationState

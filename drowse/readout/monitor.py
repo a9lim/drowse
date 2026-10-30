@@ -22,7 +22,7 @@ from drowse.readout.monitor_attach import (
     _layer_geometry,
 )
 from drowse.readout.monitor_flat import _FlatEngine, stack_hidden
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 
 if TYPE_CHECKING:
     from drowse.geometry.manifold import Manifold
@@ -1162,7 +1162,7 @@ class Monitor:
         if aggregate_index is not None and int(aggregate_index) < 0:
             return {name: _empty_reading() for name in self._probes}, per_token
         if aggregate_index is None:
-            from drowse.fit.capture import last_content_index
+            from drowse.model.tokens import last_content_index
             agg_idx = last_content_index(generated_ids, tokenizer)
         else:
             agg_idx = max(0, min(int(aggregate_index), n - 1))

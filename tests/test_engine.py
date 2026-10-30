@@ -382,7 +382,7 @@ def test_tap_skips_the_compat_projection_unless_the_consumer_asks() -> None:
 
 
 def test_tap_reuses_the_capture_sinks_row_instead_of_rescoring() -> None:
-    from drowse.generation.results import ProbeReading
+    from drowse.readout.types import ProbeReading
 
     reading = ProbeReading(fraction=0.4, nearest=[("calm", 0.2)], coords=(0.75,))
     session = _tap_session()

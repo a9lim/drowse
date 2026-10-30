@@ -83,7 +83,7 @@ from drowse.loom.recipe import (
 from drowse.steering.terms import Steering
 
 if TYPE_CHECKING:
-    from drowse.generation.results import ProbeReading
+    from drowse.readout.types import ProbeReading
     from drowse.readout.capture_buffer import HiddenCapture
     from drowse.session.authored_capture import AuthoredPromptCapture
     from drowse.session.session import DrowseSession, ReadDemand

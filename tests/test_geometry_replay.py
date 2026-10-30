@@ -17,7 +17,7 @@ import torch
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 from drowse.loom.errors import InvalidNodeOperationError, UnknownNodeError
 from drowse.loom.recipe import Recipe
 from drowse.loom.tree import LoomTree

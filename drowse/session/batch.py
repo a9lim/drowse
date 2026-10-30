@@ -26,7 +26,7 @@ import torch
 from transformers import StoppingCriteria, StoppingCriteriaList
 
 from drowse.events import EventBus, GenerationFinished, GenerationStarted
-from drowse.fit.capture import last_content_index
+from drowse.model.tokens import last_content_index
 from drowse.generation.decode import (
     GenerationState,
     hf_generation_config,
