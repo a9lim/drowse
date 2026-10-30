@@ -1,18 +1,12 @@
 """Attach-time probe algebra for :class:`~drowse.readout.monitor.Monitor`.
 
-This module holds the once-per-``add_probe`` setup work that is entirely off
-the per-token hot path: the :class:`AttachedManifoldProbe` and
-:class:`_LayerWhiten` dataclasses, the Mahalanobis factor builder
-(:func:`_build_whitened_factors`), the node-cache + share-weight builder
-(:func:`_attach_manifold_probe`), the soft-assignment bandwidth computation
-(:func:`_compute_assign_bandwidth`), and the per-layer geometry primitive
-(:func:`_layer_geometry`).
-
-The *only* item here that the hot path calls directly is
-:func:`_layer_geometry` — a module-level function call with no class
-attribute resolution overhead.  :mod:`drowse.readout.monitor` imports it (and the
-supporting constants / dataclasses) back from here; this module must **not**
-import from :mod:`drowse.readout.monitor` (no circular dependency).
+Everything here runs once per ``add_probe`` (or once per roster change), off
+the per-token hot path: the :class:`AttachedManifoldProbe` / :class:`_LayerWhiten`
+caches, the Mahalanobis factor build, the soft-assignment bandwidths, and the
+:class:`_FactorStack` — the Monitor's single device copy of the whitener's
+Woodbury factors.  The one per-token primitive kept here is
+:func:`_layer_geometry` (the curved per-probe read).  This module must not
+import :mod:`drowse.readout.monitor`.
 """
 
 from __future__ import annotations
@@ -20,10 +14,11 @@ from __future__ import annotations
 import math
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import torch
 
+from drowse.geometry.manifold import manifold_is_affine
 from drowse.geometry.whitener import WhitenerError
 
 if TYPE_CHECKING:
@@ -61,8 +56,7 @@ _FRACTION_EPSILON: float = 1e-8
 
 
 # ---------------------------------------------------------------------------
-# Woodbury helper — shared by attach-time factor build and the per-token
-# hot path in monitor.py (imported back there).
+# Woodbury factors — one device copy per Monitor, stacked by layer
 # ---------------------------------------------------------------------------
 
 def _woodbury_apply(
@@ -70,18 +64,116 @@ def _woodbury_apply(
 ) -> torch.Tensor:
     """On-device ``Σ_reg⁻¹ v = (1/λ)(v − Xᵀ K (X v))`` (Woodbury).
 
-    Shared by the per-probe and batched flat scoring paths.  Kept a
-    plain module-level function (not a method) so the per-token hot path is
-    a global lookup with no class attribute resolution — the hot-path
-    companion to :meth:`LayerWhitener.apply_inv` (which force-promotes
-    fp32/CPU and is wrong here).  ``v`` is ``[D]`` or ``[n, D]``; ``X`` is
-    ``[N, D]``, ``K`` is ``[N, N]``, all on the same device/dtype.  Pure
-    matmuls, no host sync.  For a ``[n, D]`` batch this is
-    ``(1/λ)(V − (V Xᵀ) K X)``; for ``[D]`` it broadcasts the same way.
+    The hot-path companion to :meth:`LayerWhitener.apply_inv` (which
+    force-promotes to fp32/CPU).  ``v`` is ``[..., D]``; ``X`` ``[N, D]``,
+    ``K`` ``[N, N]`` (symmetric), all on one device.  Pure matmuls, no sync.
     """
     Xv = v @ X.transpose(0, 1)        # [..., N]
-    KXv = Xv @ K.transpose(0, 1)      # [..., N]  (K symmetric; t() = K)
+    KXv = Xv @ K                      # [..., N]  (K symmetric)
     return (v - KXv @ X) / lam        # [..., D]
+
+
+@dataclass(frozen=True, eq=False)
+class _FactorStack:
+    """The whitener's Woodbury factors for a set of layers, stacked on one device.
+
+    The Monitor's single owner of device-resident ``(X, K, λ)``: every probe,
+    the batched flat engine, and the curved per-probe path read factors from
+    here, so a layer's factors exist once per device no matter how many probes
+    read it (attach and detach never re-upload or duplicate them).  Immutable:
+    :meth:`grown` returns a new stack covering extra layers, and an engine built
+    over a stack keeps reading exactly that stack.
+
+    ``X`` is ``(n, N, D)`` and ``K`` ``(n, N, N)`` with ``N`` zero-padded to the
+    widest layer — exact, since padded rows of ``X`` and padded rows/cols of
+    ``K`` contribute nothing to ``Xᵀ K X v``.
+    """
+
+    layers: tuple[int, ...]
+    index: dict[int, int]
+    X: torch.Tensor          # (n, N, D)
+    K: torch.Tensor          # (n, N, N)
+    lam: torch.Tensor        # (n, 1, 1)
+    lam_list: tuple[float, ...]
+
+    @property
+    def device(self) -> torch.device:
+        return self.X.device
+
+    @staticmethod
+    def build(
+        whitener: Any, layers: "list[int]", device: torch.device,
+    ) -> "_FactorStack":
+        """Upload ``layers``' factors (all must be covered by ``whitener``)."""
+        return _FactorStack._from_parts(
+            [
+                whitener.woodbury_factors(L, device=device, dtype=torch.float32)
+                for L in layers
+            ],
+            layers,
+        )
+
+    @staticmethod
+    def _from_parts(
+        parts: "list[tuple[torch.Tensor, torch.Tensor, float]]",
+        layers: "list[int]",
+    ) -> "_FactorStack":
+        n_max = max(int(X.shape[0]) for X, _K, _lam in parts)
+        dims = {int(X.shape[1]) for X, _K, _lam in parts}
+        if len(dims) != 1:
+            raise WhitenerError(
+                f"whitener layers {sorted(layers)} disagree on hidden dim "
+                f"{sorted(dims)}; one Monitor reads one residual width"
+            )
+        Xs, Ks = [], []
+        for X, K, _lam in parts:
+            pad = n_max - int(X.shape[0])
+            if pad:
+                X = torch.nn.functional.pad(X, (0, 0, 0, pad))
+                K = torch.nn.functional.pad(K, (0, pad, 0, pad))
+            Xs.append(X)
+            Ks.append(K)
+        lam_list = tuple(float(lam) for _X, _K, lam in parts)
+        X0 = Xs[0]
+        return _FactorStack(
+            layers=tuple(layers),
+            index={L: i for i, L in enumerate(layers)},
+            X=torch.stack(Xs).contiguous(),
+            K=torch.stack(Ks).contiguous(),
+            lam=torch.tensor(
+                lam_list, device=X0.device, dtype=torch.float32,
+            ).reshape(-1, 1, 1),
+            lam_list=lam_list,
+        )
+
+    def covers(self, layers: "Any") -> bool:
+        return all(L in self.index for L in layers)
+
+    def grown(self, whitener: Any, layers: "Any") -> "_FactorStack":
+        """This stack extended to cover ``layers`` (``self`` when it already does)."""
+        missing = sorted({int(L) for L in layers} - set(self.index))
+        if not missing:
+            return self
+        parts = [self.factors(L) for L in self.layers] + [
+            whitener.woodbury_factors(L, device=self.device, dtype=torch.float32)
+            for L in missing
+        ]
+        return _FactorStack._from_parts(parts, [*self.layers, *missing])
+
+    def factors(self, layer: int) -> "tuple[torch.Tensor, torch.Tensor, float]":
+        i = self.index[layer]
+        return self.X[i], self.K[i], self.lam_list[i]
+
+    def apply(self, layer: int, v: torch.Tensor) -> torch.Tensor:
+        """``Σ_L⁻¹ v`` for one layer (``v`` ``[..., D]``)."""
+        X, K, lam = self.factors(layer)
+        return _woodbury_apply(v, X, K, lam)
+
+    def apply_stack(self, H: torch.Tensor) -> torch.Tensor:
+        """``Σ_L⁻¹ h`` for every stacked layer at once: ``H`` is ``(n, T, D)``."""
+        Xv = torch.bmm(H, self.X.transpose(1, 2))      # (n, T, N)
+        KXv = torch.bmm(Xv, self.K)                    # (n, T, N)
+        return (H - torch.bmm(KXv, self.X)) / self.lam
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +273,9 @@ class _LayerWhiten:
     ``node_white`` is the ``(K, R)`` node coords transformed into the whitened
     metric (``v_reduced @ chol``) so a plain cdist against the transformed
     query yields the true Mahalanobis distance restricted to the subspace.
-    ``(X, K_inv, lam)`` are the on-device Woodbury factors for the per-token
-    ``Σ⁻¹ x`` apply.  All tensors live on the manifold's fit device.
+    The Woodbury factors themselves live once on the Monitor's
+    :class:`_FactorStack`, not per probe.  All tensors live on the manifold's
+    fit device.
     """
 
     m_r_inv: torch.Tensor      # (R, R) = (B Σ⁻¹ Bᵀ)⁻¹
@@ -205,15 +298,9 @@ class _LayerWhiten:
     node_white_aug: torch.Tensor  # (Kc, R)
     mean: torch.Tensor         # (D,) fit mean on the scoring device
     basis: torch.Tensor        # (R, D) basis on the scoring device
-    X: torch.Tensor            # (N, D) centered neutral observations
-    K_inv: torch.Tensor        # (N, N) Woodbury inverse
-    lam: float                 # ridge λ
-    # Precomputed ``Σ⁻¹ mean`` (D,) — the per-probe-per-layer centering term.
-    # ``_woodbury_apply`` is exactly linear, so the per-token centered apply
-    # ``Σ⁻¹(h − mean)`` is ``Σ⁻¹h − s_mean``: one subtract against a shared
-    # ``Σ⁻¹h`` (the same for every probe at a layer, cached in ``_score_full``)
-    # instead of a full Woodbury apply per probe.  Baked at attach (and rebuilt
-    # on ``set_whitener``), since ``mean`` and the whitener are both constant.
+    # Precomputed ``Σ⁻¹ mean`` (D,): the Woodbury apply is linear, so the
+    # per-token centered apply ``Σ⁻¹(h − mean)`` is the shared ``Σ⁻¹h`` minus
+    # this — one subtract instead of a per-probe apply.
     s_mean: torch.Tensor       # (D,) = Σ⁻¹ mean
     # Affine reduced→domain coordinate map (flat probes only; ``None`` for a
     # curved fit, which recovers coords through ``invert_parameterization``).
@@ -225,31 +312,9 @@ class _LayerWhiten:
     coord_b: torch.Tensor | None = None   # (n_dim,)
 
 
-# ----------------------------------------------------------------------------
-# Shared subspace-read machinery — used by both read paths of the unified
-# Monitor.  Flat (affine) probes get an analytic coordinate readout;
-# curved probes foot-solve against the aggregate.  Both share the
-# whitened-factor build, the per-layer geometry, and the attach-time node
-# cache — the read-side peer of the steering split (one subspace_inject kernel,
-# SteeringManager.{subspaces, manifolds}).
-# ----------------------------------------------------------------------------
-
-
-def _probe_is_affine_for_manifold(manifold: "Manifold") -> bool:
-    """True iff a manifold's fit is flat (affine) — batched coordinate readout.
-
-    A manifold's layers are uniformly affine (``pca`` / 2-node concept) or
-    curved (``spectral`` / ``authored``), so the first fitted layer decides.
-    An empty manifold is treated as affine (it scores to nothing anyway).
-    """
-    from drowse.geometry.manifold import manifold_is_affine
-
-    return manifold_is_affine(manifold)
-
-
 def _affine_coord_map(
     sub: Any, manifold: "Manifold", m_r_inv: torch.Tensor,
-    X: torch.Tensor, K: torch.Tensor, lam: float,
+    stack: _FactorStack, layer_idx: int,
 ) -> "tuple[torch.Tensor, torch.Tensor]":
     """Least-squares affine map: whitened M-proj reduced coords → domain.
 
@@ -261,7 +326,7 @@ def _affine_coord_map(
     solve runs on CPU (MPS has ``linalg.lstsq`` gaps); the per-node
     ``Σ⁻¹`` apply rides the device Woodbury.
     """
-    dev = X.device
+    dev = stack.device
     sub_f = sub.to(device=dev, dtype=torch.float32)
     basis = sub_f.basis                                   # (R, D)
     R = int(basis.shape[0])
@@ -270,7 +335,7 @@ def _affine_coord_map(
     n_dim = int(manifold.domain.intrinsic_dim)
     assert sub_f.node_coords is not None
     v_centered = sub_f.node_coords.to(device=dev, dtype=torch.float32) @ basis
-    si_vc = _woodbury_apply(v_centered, X, K, lam)       # (K, D) = Σ⁻¹ v_centered
+    si_vc = stack.apply(layer_idx, v_centered)          # (K, D) = Σ⁻¹ v_centered
     g_nodes = si_vc @ basis.T                             # (K, R) = B Σ⁻¹ v_centered
     c_nodes = (g_nodes @ m_r_inv.T).cpu()                # (K, R) whitened M-proj coords
     dc = node_coords.reshape(K_nodes, -1)[:, :n_dim].cpu()  # (K, n_dim) domain target
@@ -293,31 +358,36 @@ def _affine_coord_map(
     )
 
 
-def _build_whitened_factors(
-    whitener: Any, probe: "AttachedManifoldProbe",
-    *,
-    factor_cache: dict[
-        tuple[int, str, torch.dtype],
-        tuple[torch.Tensor, torch.Tensor, float],
-    ] | None = None,
-) -> dict[int, "_LayerWhiten"]:
-    """Per-layer :class:`_LayerWhiten` map for a probe (Mahalanobis-only).
-
-    The wired whitener is **required** and must cover **every** fit layer
-    (all-or-nothing per probe).  A missing/non-covering whitener raises
-    :class:`~drowse.geometry.whitener.WhitenerError` — there is no Euclidean
-    readout.  Off the hot path; runs once at attach / on ``set_whitener``.
-    """
-    manifold = probe.manifold
-    if not manifold.layers:
-        return {}
-    layers = list(manifold.layers.keys())
+def _require_covering_whitener(whitener: Any, layers: "list[int]") -> None:
+    """Raise unless ``whitener`` covers every layer (reads are Mahalanobis-only)."""
     if whitener is None or not whitener.covers_all(layers):
         raise WhitenerError(
             "subspace probe reads require a Mahalanobis whitener covering "
             f"every fit layer {sorted(layers)}; regenerate the neutral "
             "activation cache for this model (the Euclidean path is gone)"
         )
+
+
+#: ``stack_for(device, layers)`` — the Monitor's factor stack on ``device``,
+#: grown to cover ``layers``.
+StackFor = Callable[[torch.device, "list[int]"], _FactorStack]
+
+
+def _build_whitened_factors(
+    whitener: Any, probe: "AttachedManifoldProbe", stack_for: StackFor,
+) -> dict[int, "_LayerWhiten"]:
+    """Per-layer :class:`_LayerWhiten` map for a probe (Mahalanobis-only).
+
+    The whitener must cover every fit layer; the Woodbury factors come from
+    the Monitor's shared :class:`_FactorStack`.  Off the hot path.
+    """
+    manifold = probe.manifold
+    if not manifold.layers:
+        return {}
+    layers = list(manifold.layers.keys())
+    _require_covering_whitener(whitener, layers)
+    device = next(iter(probe.node_values_reduced.values())).device
+    stack = stack_for(device, layers)
     out: dict[int, _LayerWhiten] = {}
     for layer_idx, sub in manifold.layers.items():
         v_reduced = probe.node_values_reduced.get(layer_idx)
@@ -339,15 +409,6 @@ def _build_whitened_factors(
             jitter = 1e-8 * float(m_r.diagonal().mean().clamp_min(1e-12))
             chol = torch.linalg.cholesky(m_r + jitter * eye)
         m_r_inv = torch.cholesky_inverse(chol)
-        cache_key = (layer_idx, str(dev), torch.float32)
-        if factor_cache is not None and cache_key in factor_cache:
-            X, K_inv, lam = factor_cache[cache_key]
-        else:
-            X, K_inv, lam = whitener.woodbury_factors(
-                layer_idx, device=dev, dtype=torch.float32,
-            )
-            if factor_cache is not None:
-                factor_cache[cache_key] = (X, K_inv, lam)
         chol_dev = chol.to(device=dev, dtype=torch.float32)
         m_r_inv_dev = m_r_inv.to(device=dev, dtype=torch.float32)
         # Flat probes carry the affine reduced→domain coord map (the rank-R
@@ -356,7 +417,7 @@ def _build_whitened_factors(
         coord_S = coord_b = None
         if sub.is_affine:
             coord_S, coord_b = _affine_coord_map(
-                sub, manifold, m_r_inv_dev, X, K_inv, lam,
+                sub, manifold, m_r_inv_dev, stack, layer_idx,
             )
         # Neutral anchor in the whitened metric.  Affine: the frame is
         # neutral-anchored, so neutral is reduced coord 0.  Curved: map the
@@ -381,7 +442,7 @@ def _build_whitened_factors(
         # Precompute ``Σ⁻¹ mean`` once (constant in mean + whitener), so the
         # per-token ``_layer_geometry`` centers via ``sih − s_mean`` against the
         # shared ``Σ⁻¹h`` rather than a full per-probe Woodbury apply.
-        s_mean = _woodbury_apply(mean_dev, X, K_inv, lam)
+        s_mean = stack.apply(layer_idx, mean_dev)
         node_white = v_reduced.to(torch.float32) @ chol_dev   # (K, R)
         # Append the neutral anchor as the ``K``-th candidate once, here, so the
         # per-token read does one ``vector_norm`` against a standing
@@ -398,7 +459,6 @@ def _build_whitened_factors(
             node_white_aug=node_white_aug,
             mean=mean_dev,
             basis=sub.basis.to(device=dev, dtype=torch.float32),
-            X=X, K_inv=K_inv, lam=lam,
             s_mean=s_mean,
             coord_S=coord_S, coord_b=coord_b,
         )
@@ -410,11 +470,8 @@ def _attach_manifold_probe(
     manifold: "Manifold",
     *,
     top_n: int = DEFAULT_NEAREST_TOP_N,
-    whitener: Any = None,
-    factor_cache: dict[
-        tuple[int, str, torch.dtype],
-        tuple[torch.Tensor, torch.Tensor, float],
-    ] | None = None,
+    whitener: Any,
+    stack_for: StackFor,
 ) -> "AttachedManifoldProbe":
     """Build an :class:`AttachedManifoldProbe`: node values + share weights + whitened.
 
@@ -479,16 +536,14 @@ def _attach_manifold_probe(
         name=name,
         manifold=manifold,
         top_n=int(top_n),
-        is_affine=_probe_is_affine_for_manifold(manifold),
+        is_affine=manifold_is_affine(manifold),
         inject_neutral=inject_neutral,
         candidate_labels=candidate_labels,
         label_to_candidate_idx=label_to_candidate_idx,
         node_values_reduced=node_values_reduced,
         share_weights=share_weights,
     )
-    probe.whitened = _build_whitened_factors(
-        whitener, probe, factor_cache=factor_cache,
-    )
+    probe.whitened = _build_whitened_factors(whitener, probe, stack_for)
     bw, lvb = _compute_assign_bandwidth(probe, embedded)
     # Park the soft-assignment factors on the scoring device once, so
     # the per-token ``probe.assign_bandwidth.to(dist_acc_t.device, fp32)`` in the
@@ -624,29 +679,21 @@ def _layer_geometry(
     probe: "AttachedManifoldProbe",
     layer_idx: int,
     h: torch.Tensor,
-    sih_cache: dict[int, torch.Tensor] | None = None,
-) -> "tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]":
-    """Per-layer readout pieces, shared by the per-token + aggregate paths.
+    sih: torch.Tensor,
+) -> "tuple[torch.Tensor, torch.Tensor, torch.Tensor]":
+    """Per-layer readout pieces for one probe at one state.
 
-    Returns ``(frac, cdist_query, invert_query, cdist_nodes)``:
+    ``sih`` is ``Σ⁻¹h`` for this layer — probe-independent, so the Monitor
+    computes it once per layer per read (:meth:`_FactorStack.apply_stack`) and
+    every probe centers it with one subtract (``Σ⁻¹(h − mean) = sih − s_mean``).
+    Returns ``(frac, cdist_query, invert_query)``:
 
-    * ``frac`` — scalar tensor in ``[0, 1]``, the whitened **M-orthogonal**
-      in-subspace energy share ``sqrt(gᵀ M_R⁻¹ g) / ‖x‖_M`` with
-      ``g = B Σ⁻¹ x``.
-    * ``cdist_query`` — ``(1, R)`` query (``Lᵀc``) so a plain cdist against
-      ``cdist_nodes`` is the Mahalanobis distance.
-    * ``invert_query`` — ``(R,)`` M-orthogonal projection coords
-      ``c = M_R⁻¹ g`` for :func:`~drowse.geometry.manifold.invert_parameterization`.
-    * ``cdist_nodes`` — ``(K, R)`` whitened node coords.
-
-    ``Σ⁻¹h`` depends only on the layer's hidden state + the shared whitener,
-    not on the probe, so within one :meth:`Monitor._score_full` pass (where ``h``
-    is fixed) it is computed once per layer and reused across every curved probe
-    at that layer.  ``sih_cache`` (keyed by ``layer_idx``, valid only for the
-    current ``h``) carries it; on a miss we compute and store it.  The centering
-    is then ``Σ⁻¹(h − mean) = Σ⁻¹h − Σ⁻¹mean = sih − wh.s_mean`` (one subtract,
-    ``_woodbury_apply`` being exactly linear), instead of a full per-probe apply.
-    ``None`` (one-off reads) computes ``Σ⁻¹h`` locally — bit-identical algebra.
+    * ``frac`` — scalar in ``[0, 1]``, the whitened **M-orthogonal**
+      in-subspace energy share ``sqrt(gᵀ M_R⁻¹ g) / ‖x‖_M`` with ``g = B Σ⁻¹ x``;
+    * ``cdist_query`` — ``(1, R)`` whitened query ``Lᵀc``, so a plain distance
+      against ``node_white`` is the Mahalanobis distance;
+    * ``invert_query`` — ``(R,)`` M-orthogonal projection coords ``c = M_R⁻¹ g``
+      for :func:`~drowse.geometry.manifold.invert_parameterization`.
     """
     wh = probe.whitened.get(layer_idx)
     if wh is None:
@@ -655,28 +702,14 @@ def _layer_geometry(
             f"{layer_idx}; rebuild the probe (the Euclidean path is gone)"
         )
     device = h.device
-    mean = wh.mean.to(device)
-    basis = wh.basis.to(device)
-    X = wh.X.to(device)
-    K_inv = wh.K_inv.to(device)
-    s_mean = wh.s_mean.to(device)
-    x = h - mean
-    # Σ⁻¹h is probe-independent — share it across the layer's curved probes via
-    # the per-pass cache, then center by subtracting the precomputed Σ⁻¹mean.
-    if sih_cache is not None:
-        sih = sih_cache.get(layer_idx)
-        if sih is None:
-            sih = _woodbury_apply(h, X, K_inv, wh.lam)  # Σ⁻¹ h  (D,)
-            sih_cache[layer_idx] = sih
-    else:
-        sih = _woodbury_apply(h, X, K_inv, wh.lam)       # Σ⁻¹ h  (D,)
-    sx = sih - s_mean                  # Σ⁻¹ x = Σ⁻¹h − Σ⁻¹mean  (D,)
+    x = h - wh.mean.to(device)
+    sx = sih - wh.s_mean.to(device)      # Σ⁻¹ x  (D,)
     x_mnorm = torch.sqrt(
         (x * sx).sum().clamp(min=0.0)
     ).clamp(min=_FRACTION_EPSILON)
-    g = basis @ sx                       # (R,) = B Σ⁻¹ x
+    g = wh.basis.to(device) @ sx         # (R,) = B Σ⁻¹ x
     c = wh.m_r_inv @ g                   # (R,) = M_R⁻¹ g  (M-proj coords)
     par_mnorm = torch.sqrt((g * c).sum().clamp(min=0.0))  # ‖P_M x‖_M
     frac = (par_mnorm / x_mnorm).clamp(min=0.0, max=1.0)
     cdist_query = (c.reshape(1, -1) @ wh.chol)  # (1, R) — Lᵀc as row
-    return frac, cdist_query, c, wh.node_white
+    return frac, cdist_query, c

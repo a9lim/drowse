@@ -635,9 +635,9 @@ def test_planned_gate_scalars_match_the_full_reading():
     planned = mon.score_planned_gate_scalars(hidden, plan)
     full = mon.flat_scalars(mon.score_single_token(hidden))
 
-    assert len(plan) == 1
-    assert plan[0].dist_index is not None
-    assert plan[0].assign_index is not None
+    assert len(plan.items) == 1
+    assert plan.items[0].dist_index is not None
+    assert plan.items[0].assign_index is not None
     assert "curve@missing" not in planned
     assert "curve~missing" not in planned
     for key in keys - {"curve@missing", "curve~missing"}:
@@ -657,7 +657,7 @@ def test_plan_gate_scalars_keeps_variant_suffixed_probe_names():
     hidden = {L: _node_world(m, L)[2] for L in m.layers}
 
     plan = mon.plan_gate_scalars({"pirate:role-x", "pirate:role-x:fraction"})
-    assert len(plan) == 1
+    assert len(plan.items) == 1
     scalars = mon.score_planned_gate_scalars(hidden, plan)
     full = mon.flat_scalars(mon.score_single_token(hidden))
     assert scalars["pirate:role-x"] == pytest.approx(full["pirate:role-x"])
@@ -1026,7 +1026,7 @@ def test_affine_batched_topk_width_tracks_requested_top_n():
 
     reading = mon.score_single_token(_flat_node_hidden(m, 0))["wide"]
 
-    assert mon._flat_global["topk_width"] == 3
+    assert mon._engine(torch.device("cpu")).topk_width == 3
     assert len(reading.nearest) == 3
     assert len(reading.assignment) == 3
     assert reading.nearest[0][0] == "n0"
@@ -1040,7 +1040,7 @@ def test_affine_batched_top_n_zero_skips_ranked_heads():
 
     reading = mon.score_single_token(_flat_node_hidden(m, 1))["tri"]
 
-    assert mon._flat_global["topk_width"] == 0
+    assert mon._engine(torch.device("cpu")).topk_width == 0
     assert reading.nearest == []
     assert reading.assignment == []
 
@@ -1499,3 +1499,117 @@ def test_depth_stats_serialize_in_to_dict():
     d = mon.score_single_token(_flat_node_hidden(m, 0))["ax"].to_dict()
     assert "depth_com" in d and "depth_spread" in d
     assert isinstance(d["depth_com"], list)
+
+
+# ================================================ factor ownership / whitener ===
+
+
+def test_remove_probe_keeps_the_single_factor_copy(monkeypatch: pytest.MonkeyPatch):
+    """Detaching a probe must not drop the shared Woodbury factors: a later
+    attach on the same layers reuses the one device copy instead of uploading
+    a second set beside the copy the remaining probes still read."""
+    from drowse.geometry.whitener import LayerWhitener
+    from tests._whitener import synthetic_whitener
+
+    rc = torch.tensor([[1.0], [-1.0]])
+    m_a = _flat_manifold(reduced_coords=rc, seed=1, name="a")
+    m_b = _flat_manifold(reduced_coords=rc, seed=2, name="b")
+    m_c = _flat_manifold(reduced_coords=rc, seed=3, name="c")
+    uploads: list[int] = []
+    original = LayerWhitener.woodbury_factors
+
+    def counting(self: Any, layer: int, **kwargs: Any) -> Any:
+        uploads.append(layer)
+        return original(self, layer, **kwargs)
+
+    monkeypatch.setattr(LayerWhitener, "woodbury_factors", counting)
+    mon = Monitor(whitener=synthetic_whitener(m_a.layers, 16))
+    mon.add_probe("a", m_a)
+    mon.add_probe("b", m_b)
+    assert sorted(uploads) == sorted(m_a.layers)
+    hidden = _flat_node_hidden(m_b, 0)
+    before = mon.score_single_token(hidden)["b"]
+
+    mon.remove_probe("a")
+    mon.add_probe("c", m_c)
+
+    assert sorted(uploads) == sorted(m_a.layers)   # nothing re-uploaded
+    after = mon.score_single_token(hidden)["b"]
+    assert after.coords == pytest.approx(before.coords)
+    assert after.nearest == before.nearest
+
+
+def test_set_whitener_rebuilds_every_metric_derived_field():
+    """A whitener change re-derives the soft-assignment bandwidths, their
+    log-volume bias and the label scale — not just the per-layer factors —
+    so a probe reads exactly like one attached fresh under the new metric."""
+    from tests._whitener import synthetic_whitener
+
+    rc = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, -1.0], [2.0, 2.0]])
+    m = _flat_manifold(reduced_coords=rc, labels=["w", "x", "y", "z"])
+    w1 = synthetic_whitener(m.layers, 16, seed=1)
+    w2 = synthetic_whitener(m.layers, 16, seed=2)
+    mon = Monitor(whitener=w1)
+    mon.add_probe("p", m)
+    stale = mon.attached_probes()["p"]
+    mon.set_whitener(w2)
+    fresh_mon = Monitor(whitener=w2)
+    fresh_mon.add_probe("p", m)
+
+    got, want = mon.attached_probes()["p"], fresh_mon.attached_probes()["p"]
+    assert got.label_scale != pytest.approx(stale.label_scale)
+    assert got.label_scale == pytest.approx(want.label_scale)
+    assert torch.allclose(got.assign_bandwidth, want.assign_bandwidth)
+    assert torch.allclose(got.assign_logvol_bias, want.assign_logvol_bias)
+    hidden = _flat_node_hidden(m, 1)
+    r_got = mon.score_single_token(hidden)["p"]
+    r_want = fresh_mon.score_single_token(hidden)["p"]
+    for field_name in ("assignment", "nearest"):
+        got_rows, want_rows = getattr(r_got, field_name), getattr(r_want, field_name)
+        assert [label for label, _v in got_rows] == [label for label, _v in want_rows]
+        assert [v for _l, v in got_rows] == pytest.approx([v for _l, v in want_rows])
+
+
+def test_set_whitener_is_atomic_on_a_non_covering_whitener():
+    from drowse.geometry.whitener import WhitenerError
+    from tests._whitener import synthetic_whitener
+
+    rc = torch.tensor([[1.0], [-1.0]])
+    m = _flat_manifold(reduced_coords=rc, n_layers=2)
+    w = synthetic_whitener(m.layers, 16)
+    mon = Monitor(whitener=w)
+    mon.add_probe("p", m)
+    hidden = _flat_node_hidden(m, 0)
+    before = mon.score_single_token(hidden)["p"]
+
+    with pytest.raises(WhitenerError):
+        mon.set_whitener(synthetic_whitener([0], 16))
+
+    assert mon.whitener is w
+    assert mon.score_single_token(hidden)["p"].coords == pytest.approx(before.coords)
+
+
+def test_stream_is_one_batched_read_matching_per_token_reads():
+    """The FULL-mode coordinate stream (``score_stack``) equals T separate
+    lean reads — flat and curved, including a ragged capture whose short
+    layers drop out of the tokens they don't cover."""
+    from tests._whitener import synthetic_whitener
+
+    rc = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, -1.0]])
+    flat_m = _flat_manifold(reduced_coords=rc, n_layers=2, dim=8, labels=["x", "y", "z"])
+    curved = _curved_toy(dim=8)
+    _attach_const_sigma(curved, 0.3)
+    mon = Monitor(whitener=synthetic_whitener([0, 1], 8))
+    mon.add_probe("flat", flat_m)
+    mon.add_probe("curve", curved)
+    g = torch.Generator().manual_seed(5)
+    T = 6
+    captured = {0: torch.randn(T, 8, generator=g), 1: torch.randn(T - 2, 8, generator=g)}
+
+    stream = mon._per_token_coord_stream(captured, T)
+
+    for t in range(T):
+        tok = {L: h[t] for L, h in captured.items() if h.shape[0] > t}
+        lean = mon.score_single_token(tok, coords_only=True)
+        for name in ("flat", "curve"):
+            assert stream[name][t] == pytest.approx(lean[name].coords[0], abs=1e-5)
