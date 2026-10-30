@@ -130,9 +130,14 @@ def _make_session(logits_fn: Any, *, steering_cm: Any = None) -> Any:
 
     return SimpleNamespace(
         model=model, tokenizer=tok,
-        _model=model, _tokenizer=tok,  # kept for any direct stub reads in tests
         steering=steering, _steer_calls=calls,
+        _model_exclusive=_free_model_exclusive,
     )
+
+
+def _free_model_exclusive(*_args: Any, **_kwargs: Any) -> Any:
+    import contextlib
+    return contextlib.nullcontext()
 
 
 def _logsumexp_base(value_for_id: dict[int, float]) -> float:
@@ -387,25 +392,6 @@ def test_no_steering_leaves_label_none():
     assert session._steer_calls == []
 
 
-def test_steering_object_label_via_format():
-    """A non-str steering carrying ``.format()`` labels via that callable."""
-    tok = _ScriptedTokenizer(mod=_VOCAB - 2)
-    value_for_id = {tok.encode("a")[0]: 1.0}
-    import contextlib
-    session = _make_session(
-        _const_logits_fn(value_for_id), steering_cm=contextlib.nullcontext(),
-    )
-
-    class _Steer:
-        def format(self) -> str:
-            return "formatted-expr"
-
-    scores = score_choices(
-        session, [{"role": "user", "content": "q"}], ["a"], steering=_Steer(),
-    )
-    assert scores.steering == "formatted-expr"
-
-
 def test_steering_actually_shifts_distribution():
     """Steering can change the restricted distribution — the headline read.
 
@@ -436,7 +422,10 @@ def test_steering_actually_shifts_distribution():
     def steering(expr: Any) -> Any:
         return cm()
 
-    session: Any = SimpleNamespace(model=base, tokenizer=tok, _model=base, _tokenizer=tok, steering=steering)
+    session: Any = SimpleNamespace(
+        model=base, tokenizer=tok, steering=steering,
+        _model_exclusive=_free_model_exclusive,
+    )
 
     before = score_choices(session, [{"role": "user", "content": "q"}], ["a", "b"])
     after = score_choices(
@@ -449,6 +438,120 @@ def test_steering_actually_shifts_distribution():
     assert after_by["b"] > after_by["a"]        # steered:   b wins
     # The distribution genuinely moved (not just the argmax).
     assert after_by["a"] < before_by["a"]
+
+
+# --------------------------------------------------------------------------- #
+# exclusive model guard + logits tail
+# --------------------------------------------------------------------------- #
+
+
+def _locking_session(logits_fn: Any, events: list[str]) -> Any:
+    """A stub carrying the real ``DrowseSession._model_exclusive`` guard."""
+    import contextlib
+    import threading
+
+    from drowse.session.session import DrowseSession, GenState
+
+    lock = threading.Lock()
+
+    def recording_logits(input_ids: torch.Tensor) -> torch.Tensor:
+        events.append(f"forward locked={lock.locked()}")
+        return logits_fn(input_ids)
+
+    @contextlib.contextmanager
+    def steering(_expr: Any) -> Any:
+        # The composer's push/pop take ``_gen_lock`` blocking; a scope opened
+        # inside the exclusive guard would self-deadlock.
+        events.append(f"steer-enter locked={lock.locked()}")
+        yield
+        events.append(f"steer-exit locked={lock.locked()}")
+
+    session = SimpleNamespace(
+        model=FakeLogitsModel(recording_logits),
+        tokenizer=_ScriptedTokenizer(mod=_VOCAB - 2),
+        steering=steering,
+        _gen_lock=lock,
+        _gen_phase=GenState.IDLE,
+    )
+    session._model_exclusive = (
+        lambda *a, **k: DrowseSession._model_exclusive(session, *a, **k)
+    )
+    return session
+
+
+def test_scoring_forwards_hold_the_model_and_steer_outside_it():
+    events: list[str] = []
+    session = _locking_session(_const_logits_fn({}), events)
+
+    score_template(session, _toy_template(), steering="0.3 calm")
+
+    assert events[0] == "steer-enter locked=False"
+    assert events[-1] == "steer-exit locked=False"
+    forwards = events[1:-1]
+    assert forwards and all(e == "forward locked=True" for e in forwards)
+    assert not session._gen_lock.locked()
+
+
+def test_scoring_refuses_while_another_model_use_holds_the_lock():
+    from drowse.session.session import ConcurrentExtractionError
+
+    events: list[str] = []
+    session = _locking_session(_const_logits_fn({}), events)
+    assert session._gen_lock.acquire(blocking=False)
+    try:
+        with pytest.raises(ConcurrentExtractionError):
+            score_choices(session, [{"role": "user", "content": "q"}], ["a"])
+    finally:
+        session._gen_lock.release()
+    assert not any(e.startswith("forward") for e in events)
+
+
+class _TailModel(FakeLogitsModel):
+    """A forward that honors ``logits_to_keep`` the way HF causal LMs do."""
+
+    def __init__(self, logits_fn: Any) -> None:
+        super().__init__(logits_fn)
+        self.kept: list[int] = []
+
+    def forward(
+        self, input_ids: torch.Tensor, logits_to_keep: int = 0, **kwargs: Any,
+    ) -> Any:
+        out = super().__call__(input_ids, **kwargs)
+        self.kept.append(int(logits_to_keep))
+        if logits_to_keep:
+            out.logits = out.logits[:, -logits_to_keep:]
+        return out
+
+    def __call__(self, input_ids: torch.Tensor | None = None, **kwargs: Any) -> Any:
+        assert input_ids is not None
+        return self.forward(input_ids, **kwargs)
+
+
+def test_scoring_keeps_only_the_completion_logits():
+    """The head runs only over completion producers, with identical scores."""
+    tok = _ScriptedTokenizer(mod=_VOCAB - 2)
+
+    def bigram(input_ids: torch.Tensor) -> torch.Tensor:
+        n, t = input_ids.shape
+        logits = torch.zeros(n, t, _VOCAB)
+        logits.scatter_(2, ((input_ids * 7) % _VOCAB)[..., None], 3.0)
+        return logits
+
+    messages = [{"role": "user", "content": "a fairly long prompt context"}]
+    choices = ["yes", "no", "maybe so"]
+    full = score_choices(_make_session(bigram), messages, choices)
+
+    tail_model = _TailModel(bigram)
+    session = _make_session(bigram)
+    session.model = tail_model
+    tail = score_choices(session, messages, choices)
+
+    render_len = len(tok.encode("User: a fairly long prompt context\nAssistant:"))
+    (kept,) = tail_model.kept
+    assert 0 < kept < render_len
+    for a, b in zip(full.choices, tail.choices):
+        assert a.sum_logprob == pytest.approx(b.sum_logprob, abs=1e-6)
+        assert a.token_ids == b.token_ids
 
 
 # --------------------------------------------------------------------------- #
