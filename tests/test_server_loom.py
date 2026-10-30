@@ -1498,7 +1498,6 @@ class TestJointLogprobsLock:
         ran the model forwards without the session lock."""
         import asyncio
 
-        import drowse.loom.joint_logprobs as joint_logprobs
         import drowse.server.runtime as runtime
 
         session, client = session_and_client
@@ -1519,7 +1518,7 @@ class TestJointLogprobsLock:
         cast(Any, client.app).state.session_lock = _HeldLock()
         session.joint_logprob_cache = {}
         monkeypatch.setattr(runtime, "SESSION_LOCK_TIMEOUT_SECONDS", 0.01)
-        monkeypatch.setattr(joint_logprobs, "compute_joint_logprobs", _forward)
+        monkeypatch.setattr(session, "joint_logprobs", _forward, raising=False)
         resp = client.post(
             "/drowse/v1/sessions/default/tree/joint-logprobs",
             json={"a_id": a, "b_id": b},

@@ -477,11 +477,7 @@ def register_tree_routes(app: FastAPI) -> None:
         queues FIFO at the lock rather than 409ing, and a lock timeout is
         a 503 — the forwards never run unlocked.
         """
-        from drowse.loom.joint_logprobs import (
-            compute_joint_logprobs,
-            _cache_key,
-            reorient_for_request,
-        )
+        from drowse.loom.joint_logprobs import _cache_key, reorient_for_request
 
         if req.a_id == req.b_id:
             raise HTTPException(400, "a_id and b_id must differ")
@@ -501,7 +497,7 @@ def register_tree_routes(app: FastAPI) -> None:
                 hit = _cached_joint_logprobs(cache, key)
                 if hit is None:
                     hit = await run_in_thread(
-                        compute_joint_logprobs, session, req.a_id, req.b_id,
+                        session.joint_logprobs, req.a_id, req.b_id,
                     )
                     _remember_joint_logprobs(cache, key, hit)
         return cast(

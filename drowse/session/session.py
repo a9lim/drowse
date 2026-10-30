@@ -50,6 +50,7 @@ from drowse.loom.recipe import (
 )
 from drowse.loom.tree import LoomTree
 from drowse.loom.diff import node_diff
+from drowse.loom.joint_logprobs import JointLogprobReplayer, JointLogprobs
 from drowse.loom.ops import (
     append_turn,
     begin_generation_turn,
@@ -475,6 +476,20 @@ class DrowseSession:
             reads=self._read_plane,
             release=self._release_generation,
             default_return_top_k=return_top_k,
+        )
+        # Cross-branch joint logprobs: force-replays two loom siblings.
+        self._joint_logprobs = JointLogprobReplayer(
+            tree=lambda: self.tree,
+            model=self._model,
+            tokenizer=self._tokenizer,
+            traits=self._chat,
+            renderer=self._renderer,
+            profile_names=lambda: self._registry.profiles,
+            gen_config=self._engine.gen_config,
+            open_scope=self._steering_composer.open_scope,
+            steering=self._steering,
+            needs_probe_gating=self._steering_composer.steering_needs_probe_gating,
+            reads=self._read_plane,
         )
         # Fans, batches and sweeps: the multi-row runner over the engine.
         # Built last among the collaborators: the batched ``model.generate``
@@ -1203,6 +1218,13 @@ class DrowseSession:
         return self._roster.probe_hashes()
 
     # -- Conversation (loom) --
+
+    def joint_logprobs(self, a_id: str, b_id: str) -> JointLogprobs:
+        """Cross-evaluate two generated loom siblings (uncached); see
+        :meth:`~drowse.loom.joint_logprobs.JointLogprobReplayer.compute`.
+        The caller serializes it against concurrent generation; the server
+        caches results in :attr:`joint_logprob_cache`."""
+        return self._joint_logprobs.compute(a_id, b_id)
 
     def diff_nodes(self, a_id: str, b_id: str) -> Any:
         """Return a :class:`drowse.loom.diff.NodeDiff` between two nodes."""
