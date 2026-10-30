@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
 import torch
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel

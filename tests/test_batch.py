@@ -177,13 +177,12 @@ def _fast_batch_session():
     from drowse.steering.triggers import TriggerContext
 
     s = DrowseSession.__new__(DrowseSession)
-    attach_stub_instruments(s)
     model = _BatchModel()
     s_any = cast(Any, s)
     s_any._model = model
     s._model_info = {"model_id": "batch/test"}
-    s._jlens = None
     s_any._tokenizer = _BatchTokenizer()
+    attach_stub_instruments(s)
     s._device = torch.device("cpu")
     s_any._gen_lock = threading.Lock()
     s._gen_phase = GenState.IDLE
@@ -219,7 +218,6 @@ def _fast_batch_session():
     s._incremental_gate_scores = []
     s._last_per_token_scores = None
     s._last_result = None
-    s._readout_long_tensor_cache = {}
     wire_stub_steering(s)
 
     def _prepare_input(

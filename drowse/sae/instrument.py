@@ -31,6 +31,7 @@ from typing import Any, Mapping, TYPE_CHECKING
 
 import torch
 
+from drowse.base.lru import BoundedLRU
 from drowse.readout.types import (
     Axis,
     DepthSummary,
@@ -173,6 +174,10 @@ class SaeInstrument:
 
     def __init__(self, session: "DrowseSession") -> None:
         self._session = session
+        # Device feature-id selector tensors, keyed by (device, ids).
+        self._index_tensors: BoundedLRU[
+            tuple[str, tuple[int, ...]], torch.Tensor
+        ] = BoundedLRU(64)
         # Pinned SAE feature probes: name -> {feature_id, layer, label,
         # max_act}.  NOT monitor probes — they read the encoder channel.
         self.probes: dict[str, dict[str, Any]] = {}
@@ -567,7 +572,6 @@ class SaeInstrument:
         registry (between generations a refresh changes the unit
         immediately, as before).
         """
-        session = self._session
         specs = self._measurement_specs()
         live_fallback = not self.current_run.bound
         names = [
@@ -586,8 +590,10 @@ class SaeInstrument:
             if fid not in raw_values_by_fid
         ]
         if missing_fids:
-            fid_tensor = session._readout_long_tensor(
-                missing_fids, activations.device,
+            device = activations.device
+            fid_tensor = self._index_tensors.get_or_build(
+                (str(device), tuple(missing_fids)),
+                lambda: torch.tensor(missing_fids, dtype=torch.long, device=device),
             )
             # One host transfer for every not-already-read pinned SAE probe
             # value.  Live readout top-k rows seed ``raw_by_fid`` first, so

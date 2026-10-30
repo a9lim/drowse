@@ -1,6 +1,8 @@
 """Instrument-protocol vocabulary: GateRef parsing, channel validation,
 and the ScalarReading -> ProbeReading phase-1 wire bridge."""
 
+from typing import Any
+
 import pytest
 
 from drowse.errors import DrowseError, UnsupportedProbeChannelError
@@ -17,7 +19,6 @@ from drowse.readout.types import (
     validate_gate_channels,
 )
 from drowse.generation.results import ProbeReading
-from tests.support.stubs import attach_stub_instruments
 
 
 # --------------------------------------------------------------------------
@@ -194,14 +195,12 @@ def test_bridge_defaults_without_depth():
 # Public facade wiring (P3)
 # --------------------------------------------------------------------------
 
-def test_session_facades_are_the_instruments() -> None:
+def test_session_facades_are_the_instruments(make_tiny_session: Any) -> None:
     """``session.lens`` / ``session.sae`` are the instrument objects
     themselves — the typed public faces of ``session.instruments``."""
     from drowse import GeometryInstrument, LensInstrument, SaeInstrument
-    from drowse.session.session import DrowseSession
 
-    session = DrowseSession.__new__(DrowseSession)
-    attach_stub_instruments(session)
+    session = make_tiny_session(warm=False)
     inst = session.instruments
     assert set(inst) == {"geometry", "lens", "sae"}
     assert isinstance(inst["geometry"], GeometryInstrument)
@@ -221,13 +220,11 @@ _INSTRUMENT_SURFACE = (
 _RUN_SURFACE = ("observe", "observe_aggregate", "close")
 
 
-def test_every_family_carries_the_uniform_instrument_surface() -> None:
+def test_every_family_carries_the_uniform_instrument_surface(make_tiny_session: Any) -> None:
     """Each family exposes the same instrument/run methods and starts on an
     idle passthrough run; ``close_run`` restores one."""
-    from drowse.session.session import DrowseSession
 
-    session = DrowseSession.__new__(DrowseSession)
-    attach_stub_instruments(session)
+    session = make_tiny_session(warm=False)
     for family, instrument in session.instruments.items():
         assert instrument.family == family
         for name in _INSTRUMENT_SURFACE:
@@ -245,16 +242,14 @@ def test_every_family_carries_the_uniform_instrument_surface() -> None:
     assert session.sae.family == "sae"
 
 
-def test_gate_validation_is_only_where_a_channel_can_be_refused() -> None:
+def test_gate_validation_is_only_where_a_channel_can_be_refused(make_tiny_session: Any) -> None:
     """Every family answers ``validate_gate`` — that is what lets the
     composer walk ``session.instruments`` uniformly.  Lens and SAE read one
     strength axis, so a geometry-channel gate is a composition-preflight
     error there; geometry produces every channel, so its implementation
     accepts unconditionally."""
-    from drowse.session.session import DrowseSession
 
-    session = DrowseSession.__new__(DrowseSession)
-    attach_stub_instruments(session)
+    session = make_tiny_session(warm=False)
     ref = parse_gate_ref("probe:membership")
     for family in ("lens", "sae"):
         with pytest.raises(UnsupportedProbeChannelError):

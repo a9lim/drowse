@@ -265,7 +265,7 @@ def test_neuronpedia_fetch_pins_the_resolved_model_commit(
 
 
 def test_external_lens_identity_binds_model_commit_and_shape() -> None:
-    from drowse.session.session import _jlens_matches_loaded_model
+    from drowse.lens.runtime import matches_loaded_model
 
     model = SimpleNamespace(
         config=SimpleNamespace(
@@ -284,9 +284,9 @@ def test_external_lens_identity_binds_model_commit_and_shape() -> None:
             "model_revision": "model-commit",
         },
     }
-    assert _jlens_matches_loaded_model(sidecar, model, "org/model")
+    assert matches_loaded_model(sidecar, model, "org/model")
     sidecar["_source"]["model_revision"] = "changed"
-    assert not _jlens_matches_loaded_model(sidecar, model, "org/model")
+    assert not matches_loaded_model(sidecar, model, "org/model")
 
 
 def _workspace_payload(

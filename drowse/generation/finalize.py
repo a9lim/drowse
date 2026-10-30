@@ -163,7 +163,7 @@ def finalize_generation(
         and generated_ids
         and session.lens.names
     ):
-        lens_aggregates = session._score_lens_probes_aggregate(
+        lens_aggregates = session.lens.score_aggregate(
             generated_ids, pooled=_aggregate_pooled_slice(),
         )
     sae_aggregates: dict[str, ScalarReading] = {}

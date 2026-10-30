@@ -41,6 +41,7 @@ from drowse.session.session import (
     DrowseSession,
 )
 from tests.support.stubs import wire_stub_steering
+from tests.support.lens import stub_lens_instrument
 
 
 def _toy_manifold(*, dim: int = 8, n_layers: int = 2) -> Manifold:
@@ -110,8 +111,7 @@ def _stub_session() -> DrowseSession:
         set_incremental=lambda _sink: None,
     )
     session._capture_state = CaptureState()
-    session._jlens = None
-    session._jlens_identity = None
+    session._lens_instrument = stub_lens_instrument(session)
     # All three families route through real instruments now: geometry for
     # the add_probe flow (exclusive section + whitener touch + resolve +
     # monitor.add_probe), lens/SAE because ``_begin_capture`` consumes
@@ -119,10 +119,8 @@ def _stub_session() -> DrowseSession:
     # layer union.  Lens/SAE state (live config, probe registry) lives ON
     # the instruments; tests set ``session._lens_instrument.live`` etc.
     from drowse.readout.geometry import GeometryInstrument
-    from drowse.lens.instrument import LensInstrument
     from drowse.sae.instrument import SaeInstrument
     session._geometry_instrument = GeometryInstrument(session)
-    session._lens_instrument = LensInstrument(session)
     session._sae_instrument = SaeInstrument(session)
     session._lens_instrument.generation_lens = None
     session._lens_instrument.generation_lens_active = False

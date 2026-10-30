@@ -122,12 +122,12 @@ def _run_jlens(args: argparse.Namespace) -> None:
             }
             _measure(
                 "jlens_force_fit",
-                lambda: session.fit_jlens(prompts, force=True, **fit_kwargs),
+                lambda: session.lens.fit(prompts, force=True, **fit_kwargs),
                 counters, report_process_peak=True,
             )
             _measure(
                 "jlens_exact_cache_repeat",
-                lambda: session.fit_jlens(prompts, force=False, **fit_kwargs),
+                lambda: session.lens.fit(prompts, force=False, **fit_kwargs),
                 counters,
             )
         finally:

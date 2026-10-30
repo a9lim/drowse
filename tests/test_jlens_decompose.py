@@ -8,7 +8,8 @@ import pytest
 import torch
 
 from drowse.lens.decompose import TokensOut, sparse_decompose
-from tests.test_jlens_session import _PROMPTS, _StubSession
+from tests.support.lens import LENS_PROMPTS as _PROMPTS
+from tests.support.lens import LensHarness
 
 _D = 32
 _VOCAB = 60
@@ -87,16 +88,14 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
 
-def test_session_jspace_decompose_on_registered_profile(_isolated_home: None) -> None:
-    session = _StubSession()
-    lens = session.fit_jlens(_PROMPTS)
+def test_lens_decompose_on_registered_profile(_isolated_home: None) -> None:
+    session = LensHarness()
+    lens = session.lens.fit(_PROMPTS)
     # register the direction for toy-vocab token 'g', then decompose it —
     # the decomposition should attribute it (near-)fully to that atom.
-    name = session.register_jlens_direction("g")
-    session.ensure_profile_registered = lambda sel: session._registry.profiles[sel]  # type: ignore[attr-defined]
-    from drowse.session.session import DrowseSession
+    name = session.lens.register_direction("g")
 
-    out = DrowseSession.jspace_decompose(session, name, k=4)  # type: ignore[arg-type]
+    out = session.lens.decompose(name, k=4)
     del lens
     assert set(out) == {0, 1}
     for share, tokens in out.values():

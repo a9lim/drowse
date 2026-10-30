@@ -91,7 +91,7 @@ def enable_live_lens(session: Any) -> bool:
         model_id = session.model_id
         active = LENS_SOURCES.active(model_id, "output")
         if active is not None:
-            if not session.has_compatible_jlens():
+            if not session.lens.has_compatible():
                 note(
                     f"Live J-lens readout: off — the active source "
                     f"{LENS_SOURCES.format(active)} does not match the loaded "
@@ -104,8 +104,8 @@ def enable_live_lens(session: Any) -> bool:
                 if LensKey(str(row["lens"])).side != "output":
                     continue
                 try:
-                    session.select_jlens_source(str(row["source"]))
-                    compatible = session.has_compatible_jlens()
+                    session.lens.select_source(str(row["source"]))
+                    compatible = session.lens.has_compatible()
                 except Exception:  # noqa: BLE001 — try the next prepared source
                     continue
                 if compatible:

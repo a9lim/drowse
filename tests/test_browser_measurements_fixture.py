@@ -143,9 +143,6 @@ def test_browser_measurement_fixture_matches_python_source_of_truth() -> None:
         _layers=[object() for _ in range(model_layer_count)],
         _require_sae=lambda: (None, sae["layer"], sae["featureCount"]),
         _sae_max_act=lambda _feature_id: sae["maxAct"],
-        _readout_long_tensor=lambda ids, device: torch.tensor(
-            ids, dtype=torch.long, device=device,
-        ),
     )
     sae_instrument = SaeInstrument(cast(DrowseSession, sae_session))
     sae_instrument.probes[sae["name"]] = {

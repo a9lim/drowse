@@ -327,18 +327,13 @@ def check_steering(expression: str | None) -> None:
 
 
 def parse_layers(raw: str | None) -> "list[int] | str | None":
-    """A ``--layers`` spec: explicit indices, or ``workspace`` / ``sample`` / ``all``."""
-    if raw is None:
-        return None
-    lowered = raw.strip().lower()
-    if lowered in {"workspace", "sample", "all"}:
-        return lowered
-    try:
-        layers = [int(part) for part in raw.split(",") if part.strip()]
-    except ValueError:
-        raise CliError(
-            f"bad --layers value {raw!r} (want e.g. 12,24,36 or workspace)"
-        ) from None
-    if not layers:
+    """A ``--layers`` spec (:func:`~drowse.lens.layers.parse_layer_selector`):
+    explicit indices, or ``workspace`` / ``sample`` / ``all``."""
+    from drowse.lens.layers import parse_layer_selector
+
+    if raw is not None and not raw.strip():
         raise CliError("--layers must name at least one layer")
-    return layers
+    try:
+        return parse_layer_selector(raw)
+    except ValueError as exc:
+        raise CliError(f"bad --layers value: {exc}") from None

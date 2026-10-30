@@ -27,16 +27,21 @@ __all__ = ["attach_stub_instruments", "wire_stub_steering"]
 
 
 def attach_stub_instruments(stub: Any) -> Any:
-    """Construct the three read instruments on ``stub`` (as ``__init__`` does)."""
-    from drowse.lens.instrument import LensInstrument
+    """Construct the three read instruments on ``stub`` (as ``__init__`` does).
+
+    The lens instrument takes its dependencies from the stub's attributes at
+    construction (see :func:`tests.support.lens.stub_lens_kwargs`), so set
+    ``_model`` / ``_tokenizer`` / ``_layers`` first when a test needs them.
+    """
     from drowse.readout.geometry import GeometryInstrument
     from drowse.sae.instrument import SaeInstrument
+    from tests.support.lens import stub_lens_instrument
 
     d = stub.__dict__
     if "_geometry_instrument" not in d:
         stub._geometry_instrument = GeometryInstrument(stub)
     if "_lens_instrument" not in d:
-        stub._lens_instrument = LensInstrument(stub)
+        stub._lens_instrument = stub_lens_instrument(stub)
     if "_sae_instrument" not in d:
         stub._sae_instrument = SaeInstrument(stub)
     return stub
@@ -88,8 +93,7 @@ def wire_stub_steering(
         model_id=_model_id(stub), device=device, dtype=dtype,
     ))
     registry.on_change(lambda: getattr(stub, "_invalidate_prefix_cache", lambda: None)())
-    if hasattr(stub, "register_jlens_direction"):
-        registry.set_atom_resolver("jlens", lambda atom: stub.register_jlens_direction(atom))
+    registry.set_atom_resolver("jlens", lambda atom: stub.lens.register_direction(atom))
     if hasattr(stub, "register_sae_direction"):
         registry.set_atom_resolver("sae", lambda atom: stub.register_sae_direction(atom))
     if hasattr(stub, "_fold_profile_probe"):
@@ -131,8 +135,8 @@ def wire_stub_steering(
             incremental_readings=lambda: stub._incremental_readings,
             incremental_gate_scores=lambda: stub._incremental_gate_scores,
             instruments=lambda: stub.instruments,
-            lens_gate_scalars=lambda keys, *, step_id: stub._score_lens_gate_scalars(
-                keys, step_id=step_id,
+            lens_gate_scalars=lambda keys, *, step_id: stub.lens.current_run.gate_scalars(
+                step_id, None, keys,
             ),
             sae_gate_scalars=lambda keys, *, step_id: stub._score_sae_gate_scalars(
                 keys, step_id=step_id,

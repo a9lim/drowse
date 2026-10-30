@@ -483,12 +483,12 @@ class LensPrep(InstrumentPrep):
     """The lens family's prep: the refresh/pin decision AND the
     authoritative source/spec snapshot.
 
-    ``prepare`` reads the disk-refreshing ``session.jlens`` getter under
+    ``prepare`` refreshes the resident lens from disk (``lens.resident()``) under
     pin demand — the adoption path rewrites live probe layer lists when
     an external replacement lens landed, which is exactly why the read
     must precede planning and the spec freeze.  Because the pin itself
     only lands at ``bind``, an interleaved **unpinned** getter read (the
-    un-locked ``has_compatible_jlens`` on the session-info route) can
+    un-locked ``lens.has_compatible()`` on the session-info route) can
     adopt a *newer* disk lens inside the prepare→bind window and rewrite
     the live registry again; the prep therefore carries everything
     downstream steps may consume:

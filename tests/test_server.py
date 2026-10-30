@@ -55,7 +55,7 @@ def _mock_session():
     session.tree.get.return_value.mean_logprob = None
     session.tree.get.return_value.mean_surprise = None
     session.is_base_model = False
-    session.has_compatible_jlens.return_value = False
+    session.lens.has_compatible.return_value = False
     session.sae_info = None
     session.scene_grammar = None
     session.joint_logprob_cache = {}
@@ -1222,7 +1222,7 @@ class TestSessionInfoInstrumentFields:
         resp = client.get("/drowse/v1/sessions/default")
         assert resp.status_code == 200
         assert resp.json()["jlens_fitted"] is False
-        session.has_compatible_jlens.return_value = True
+        session.lens.has_compatible.return_value = True
         got = client.get("/drowse/v1/sessions/default").json()
         assert got["jlens_fitted"] is True
 
