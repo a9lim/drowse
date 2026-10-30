@@ -27,7 +27,6 @@ xdist workers (contention makes them meaningless); run them serially with
 
 from __future__ import annotations
 
-import os
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,7 +35,7 @@ from typing import Any, Callable, Iterator
 import pytest
 import torch
 
-from tests.support.sessions import TinyCheckpoint, TinySessionFactory
+from tests.support.sessions import TinyCheckpoint, TinySessionFactory, drowse_home
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -47,13 +46,8 @@ def _isolated_drowse_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[
     ``monkeypatch.setenv("DROWSE_HOME", ...)``); this only guarantees nothing
     ever falls through to the user's real home.
     """
-    previous = os.environ.get("DROWSE_HOME")
-    os.environ["DROWSE_HOME"] = str(tmp_path_factory.mktemp("drowse-home"))
-    yield
-    if previous is None:
-        os.environ.pop("DROWSE_HOME", None)
-    else:
-        os.environ["DROWSE_HOME"] = previous
+    with drowse_home(tmp_path_factory.mktemp("drowse-home")):
+        yield
 
 
 @pytest.fixture
