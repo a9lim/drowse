@@ -39,7 +39,8 @@ from drowse.generation.decode import (
     generate_steered,
     supports_thinking,
 )
-from drowse.steering.hooks import HiddenCapture, SteeringManager
+from drowse.readout.capture_buffer import HiddenCapture
+from drowse.steering.hooks import SteeringManager
 from drowse.naming import BIPOLAR_SEP, _slug, canonical_concept_name
 from drowse.generation.token_callback import (
     StepTokenCallback,
@@ -981,10 +982,10 @@ class DrowseSession:
         capture_buffers: dict[int, Any] = {}
         capture_handles: list[Any] = []
         if compile and device_obj.type in ("cuda", "mps"):
-            from drowse.steering.hooks import (
+            from drowse.readout.capture_buffer import (
                 install_persistent_capture_hooks,
-                install_persistent_offset_hooks,
             )
+            from drowse.steering.hooks import install_persistent_offset_hooks
             from drowse.model.loading import _compile_with_probe, get_layers
             # Attach the persistent branchless steering hooks BEFORE
             # compile so they ride inside the captured graph (post-compile hook

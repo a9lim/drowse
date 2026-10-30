@@ -27,7 +27,7 @@ class CaptureMode(Enum):
     aggregate-only) unrepresentable.  The modes trade only *when/how* scoring
     runs (per token vs once) and what memory the capture keeps (length-1
     buffer vs tail ring vs full stack); every read is a full per-probe
-    ``ProbeReading`` (see ``hooks.py`` ``HiddenCapture``).
+    ``ProbeReading`` (see ``readout/capture_buffer.py`` ``HiddenCapture``).
 
     - ``INCREMENTAL`` — a full-reading live consumer wants per-token readings:
       score each token live (full roster) into ``_incremental_readings``.

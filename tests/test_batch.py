@@ -213,7 +213,7 @@ def _fast_batch_session():
     s._active_gen_reservation = None
     s._last_token_probe_payload = None
     s._capture_state = CaptureState()
-    from drowse.steering.hooks import HiddenCapture
+    from drowse.readout.capture_buffer import HiddenCapture
     s._capture = HiddenCapture()
     s._compiled_clean_eligible = False
     s._incremental_readings = []
@@ -254,7 +254,7 @@ def _fast_batch_session():
 
 def _probe_fast_batch_session():
     import torch
-    from drowse.steering.hooks import HiddenCapture
+    from drowse.readout.capture_buffer import HiddenCapture
 
     s, _model = _fast_batch_session()
     s._layers = torch.nn.ModuleList([torch.nn.Identity()])

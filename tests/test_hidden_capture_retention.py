@@ -16,7 +16,7 @@ from typing import Callable
 
 import torch
 
-from drowse.steering.hooks import HiddenCapture
+from drowse.readout.capture_buffer import HiddenCapture
 
 _D = 4
 _LAYERS = [0, 1, 2]

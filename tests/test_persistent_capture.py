@@ -20,10 +20,12 @@ from typing import Any, Callable, cast
 import torch
 
 from drowse.events import EventBus
-from drowse.steering.hooks import (
+from drowse.readout.capture_buffer import (
     HiddenCapture,
-    SteeringManager,
     install_persistent_capture_hooks,
+)
+from drowse.steering.hooks import (
+    SteeringManager,
     install_persistent_offset_hooks,
 )
 from drowse.session.session import DrowseSession
