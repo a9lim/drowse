@@ -46,7 +46,7 @@ class ExtractionRig:
 
 
 class _Corpus:
-    def __init__(self, rig: ExtractionRig, on_generate: Callable[[], None] | None) -> None:
+    def __init__(self, rig: ExtractionRig, on_generate: Callable[[], object] | None) -> None:
         self._rig = rig
         self._on_generate = on_generate
 
@@ -61,7 +61,7 @@ def make_extraction(
     monkeypatch: pytest.MonkeyPatch,
     *,
     fit: Callable[..., Any] | None = None,
-    on_generate: Callable[[], None] | None = None,
+    on_generate: Callable[[], object] | None = None,
     adopt: Callable[[Any, Any], None] | None = None,
     evict_failed: Callable[..., None] | None = None,
     register_profile: Callable[[str, Any], None] | None = None,
