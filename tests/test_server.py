@@ -334,48 +334,6 @@ class TestCompletions:
 
 
 # ---------------------------------------------------------------------------
-# CLI arg parsing
-# ---------------------------------------------------------------------------
-
-class TestCLIParsing:
-    def test_serve_subcommand(self):
-        from drowse.cli.main import parse_args
-        args = parse_args(["serve", "google/gemma-2-2b-it", "--port", "9000"])
-        assert args.command == "serve"
-        assert args.model == "google/gemma-2-2b-it"
-        assert args.port == 9000
-
-    def test_serve_steer_flag(self):
-        from drowse.cli.main import parse_args
-        args = parse_args([
-            "serve", "m", "--steer", "0.2 cheerful + 0.3 warm",
-        ])
-        assert args.steer == "0.2 cheerful + 0.3 warm"
-
-    def test_serve_cors(self):
-        from drowse.cli.main import parse_args
-        args = parse_args(["serve", "m", "--cors", "http://localhost:3000", "--cors", "*"])
-        assert args.cors == ["http://localhost:3000", "*"]
-
-    def test_serve_no_web_flag_default_off(self):
-        from drowse.cli.main import parse_args
-        # Dashboard is on by default; ``args.no_web`` defaults to False
-        # so create_app will receive ``web=True`` from the runner.
-        args = parse_args(["serve", "m"])
-        assert args.no_web is False
-
-    def test_serve_no_web_flag_opt_out(self):
-        from drowse.cli.main import parse_args
-        args = parse_args(["serve", "m", "--no-web"])
-        assert args.no_web is True
-
-    # Manifold lifecycle coverage (rm / clear / refresh, and the GGUF
-    # export driver) lives in tests/test_manifolds_io.py and
-    # tests/test_cli_manifold_fold.py; the CLI flag grammar around them is
-    # in tests/test_cli_flags.py.
-
-
-# ---------------------------------------------------------------------------
 # Ollama-compatible /api/* routes
 # ---------------------------------------------------------------------------
 
