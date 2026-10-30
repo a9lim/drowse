@@ -4,7 +4,7 @@ and the ScalarReading -> ProbeReading phase-1 wire bridge."""
 import pytest
 
 from drowse.errors import DrowseError, UnsupportedProbeChannelError
-from drowse.readout import (
+from drowse.readout.types import (
     Assignment,
     Axis,
     DepthSummary,
