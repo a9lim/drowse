@@ -58,7 +58,6 @@ def _mock_session():
     session.lens.has_compatible.return_value = False
     session.scene_grammar = None
     session.joint_logprob_cache = {}
-    session.token_probe_payload = {}
     # Read plane: the three instrument faces the routes and session_info read.
     session.geometry.names = []
     session.geometry.specs.return_value = {}
@@ -1279,28 +1278,24 @@ class TestSessionInfoInstrumentFields:
 
 
 class TestWSTokenEventLens:
-    """``build_token_event`` forwards the token tap's 5.x ``measurements``
+    """``build_token_event`` forwards the token event's 5.x ``measurements``
     envelope verbatim onto the frame and carries no legacy per-token aliases."""
 
     @staticmethod
-    def _event(payload: Any) -> dict[str, Any]:
+    def _event(measurements: Any) -> dict[str, Any]:
         from types import SimpleNamespace
 
+        from drowse.generation.results import TokenEvent
         from drowse.server.ws_events import build_token_event
 
-        session = SimpleNamespace(
-            token_probe_payload=payload or {},
-            tree=SimpleNamespace(active_node_id="node-1"),
-            generation_state=SimpleNamespace(emit_map=[]),
-        )
+        session = SimpleNamespace(tree=SimpleNamespace(active_node_id="node-1"))
         return build_token_event(
             cast(Any, session),
             [None],
-            text=" x",
-            is_thinking=False,
-            tid=5,
-            lp=-0.1,
-            top_alts=None,
+            TokenEvent(
+                text=" x", token_id=5, index=0, logprob=-0.1,
+                measurements=measurements,
+            ),
         )
 
     def test_measurements_ride_token_frame_verbatim(self) -> None:
@@ -1342,7 +1337,7 @@ class TestWSTokenEventLens:
                 },
             },
         }
-        event = self._event({"measurements": measurements})
+        event = self._event(measurements)
         assert event["measurements"] is measurements
         # The six legacy per-token aliases are gone from the frame.
         for dead in (
@@ -1351,32 +1346,30 @@ class TestWSTokenEventLens:
         ):
             assert dead not in event
 
-    def test_perplexity_rides_token_frame(self) -> None:
+    def test_perplexity_and_raw_index_ride_token_frame(self) -> None:
         from types import SimpleNamespace
 
+        from drowse.generation.results import TokenEvent
         from drowse.server.ws_events import build_token_event
 
-        session = SimpleNamespace(
-            token_probe_payload={},
-            tree=SimpleNamespace(active_node_id="node-1"),
-            generation_state=SimpleNamespace(emit_map=[]),
-        )
+        session = SimpleNamespace(tree=SimpleNamespace(active_node_id="node-1"))
         event = build_token_event(
             cast(Any, session),
             [None],
-            text=" x",
-            is_thinking=False,
-            tid=5,
-            lp=-0.1,
-            top_alts=None,
-            perplexity=2.75,
+            TokenEvent(
+                text=" x", token_id=5, index=0, logprob=-0.1,
+                perplexity=2.75, raw_index=3,
+            ),
         )
 
         assert event["perplexity"] == 2.75
+        assert event["raw_index"] == 3
+        assert event["node_id"] == "node-1"
 
     def test_measurements_not_reconstructed_from_tree_rows(self) -> None:
         from types import SimpleNamespace
 
+        from drowse.generation.results import TokenEvent
         from drowse.server.ws_events import build_token_event
 
         class ExplodingTree:
@@ -1388,31 +1381,20 @@ class TestWSTokenEventLens:
             def nodes(self) -> Any:
                 raise AssertionError("payload path should not read tree rows")
 
-        session = SimpleNamespace(
-            token_probe_payload={},
-            tree=ExplodingTree(),
-            generation_state=SimpleNamespace(emit_map=[]),
-        )
+        session = SimpleNamespace(tree=ExplodingTree())
 
         event = build_token_event(
             cast(Any, session),
             ["node-1"],
-            text=" x",
-            is_thinking=False,
-            tid=5,
-            lp=None,
-            top_alts=None,
+            TokenEvent(text=" x", token_id=5, index=0),
         )
 
         assert "measurements" not in event
+        assert "raw_index" not in event
 
     def test_absent_when_no_measurements(self) -> None:
-        event = self._event({"measurements": None})
-        assert "measurements" not in event
-
-    def test_absent_when_no_payload(self) -> None:
-        event = self._event(None)
-        assert "measurements" not in event
+        assert "measurements" not in self._event(None)
+        assert "measurements" not in self._event({})
 
 
 class TestLensProbeRoutes:

@@ -117,11 +117,10 @@ def run_rm(args: argparse.Namespace) -> None:
 
 def run_score(args: argparse.Namespace) -> None:
     """The restricted-choice value distribution, per context."""
-    from drowse.generation.scoring import score_template
     tmpl = existing_template(args.name)
     check_steering(args.steer)
     with open_session(args) as session:
-        per_ctx = score_template(session, tmpl, steering=args.steer)
+        per_ctx = session.score_template(tmpl, steering=args.steer)
     if args.json_output:
         emit_json({
             "template": tmpl.name, "model": args.model, "steering": args.steer,

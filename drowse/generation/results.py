@@ -409,6 +409,10 @@ class TokenEvent:
     # families as :class:`ProbeReading` objects rather than the serialized
     # envelope shape.
     measurements: dict[str, Any] | None = None
+    # The ``generated_ids`` index of the token that triggered this emission
+    # (the last buffered id for a multi-byte flush): the join key a logit fork
+    # slices ``raw_token_ids`` with.  ``None`` before any token was decoded.
+    raw_index: int | None = None
 
 class ResultCollector:
     """Accumulates GenerationResults with tags for batch export."""

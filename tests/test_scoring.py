@@ -450,7 +450,7 @@ def _locking_session(logits_fn: Any, events: list[str]) -> Any:
     import contextlib
     import threading
 
-    from drowse.session.session import DrowseSession, GenState
+    from drowse.session.session import DrowseSession
 
     lock = threading.Lock()
 
@@ -471,7 +471,7 @@ def _locking_session(logits_fn: Any, events: list[str]) -> Any:
         tokenizer=_ScriptedTokenizer(mod=_VOCAB - 2),
         steering=steering,
         _gen_lock=lock,
-        _gen_phase=GenState.IDLE,
+        _engine=SimpleNamespace(is_generating=False),
     )
     session._model_exclusive = (
         lambda *a, **k: DrowseSession._model_exclusive(session, *a, **k)

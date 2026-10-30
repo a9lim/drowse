@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol, cast
-
-import torch
+from typing import Any, Mapping, cast
 
 from drowse.readout.types import (
     InstrumentFamily,
@@ -46,6 +44,20 @@ class TokenProbePayload:
     geometry_readings: dict[str, ProbeReading] | None = None
     lens_readings: dict[str, ScalarReading] | None = None
     sae_readings: dict[str, ScalarReading] | None = None
+
+    @classmethod
+    def from_geometry(
+        cls, readings: dict[str, ProbeReading], *, per_layer: bool,
+    ) -> "TokenProbePayload":
+        """One token's monitor readings, shaped into the geometry slot.
+
+        ``per_layer`` adds the per-layer axis-0 rows (the loom heatmap row).
+        """
+        return cls(
+            scores=_axis0_scores(readings),
+            per_layer_scores=_per_layer_axis0(readings) if per_layer else None,
+            geometry_readings=readings,
+        )
 
     @property
     def has_readings(self) -> bool:
@@ -164,66 +176,3 @@ def _per_layer_axis0(
         for layer, value in reading_per_layer_axis0(reading).items():
             by_layer.setdefault(str(layer), {})[probe_name] = round(value, 6)
     return by_layer or None
-
-
-class _GeometryRun(Protocol):
-    def observe(
-        self, step_id: int, hidden: dict[int, torch.Tensor],
-    ) -> dict[str, ProbeReading]: ...
-
-
-def build_token_probe_payload(
-    *,
-    capture: Any,
-    capture_state: Any,
-    incremental_readings: list[dict[str, ProbeReading]],
-    needs_scores: bool,
-    persists_layer_scores: bool,
-    assistant_node_id: str | None,
-    geometry_run: _GeometryRun,
-    step_id: int = -1,
-) -> TokenProbePayload:
-    """Score and shape probe payloads for one generated token.
-
-    This is the token-probe slice of ``DrowseSession._token_tap`` extracted into
-    a typed helper. It performs at most one monitor geometry pass: either reuse
-    the most recent incremental reading, or score the latest captured hidden
-    states through the geometry run's ``observe`` (FULL-retention mode).
-    The monitor readings land in the ``geometry`` family slot.
-    """
-    if not needs_scores:
-        return TokenProbePayload()
-
-    has_incremental_reading = bool(
-        (capture_state.incremental or capture_state.lean)
-        and incremental_readings
-    )
-    latest_hidden_for_token: dict[int, torch.Tensor] | None = None
-    if not has_incremental_reading:
-        latest_hidden_for_token = {
-            layer_idx: bucket[-1]
-            for layer_idx, bucket in capture.per_layer_buckets().items()
-            if bucket
-        }
-
-    readings: dict[str, ProbeReading] | None = None
-    if has_incremental_reading:
-        # The capture sink already scored this forward (rows align 1:1 with
-        # forwards): FULL rows are complete readings, LEAN rows deliberately
-        # ``coords_only``.  Read its row rather than rescoring.
-        readings = incremental_readings[-1] or None
-    elif latest_hidden_for_token:
-        readings = geometry_run.observe(step_id, latest_hidden_for_token) or None
-
-    if not readings:
-        return TokenProbePayload()
-
-    return TokenProbePayload(
-        scores=_axis0_scores(readings),
-        per_layer_scores=(
-            _per_layer_axis0(readings)
-            if assistant_node_id is not None and persists_layer_scores
-            else None
-        ),
-        geometry_readings=readings,
-    )

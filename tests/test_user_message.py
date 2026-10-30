@@ -14,6 +14,8 @@ from drowse.cli.config_file import ConfigFileError
 from drowse.store.selectors import AmbiguousSelectorError, SelectorError
 from drowse.errors import (
     AmbiguousVariantError,
+    ConcurrentGenerationError,
+    GenerationRequestError,
     ManifoldArityError,
     OverlappingManifoldError,
     ProfileError,
@@ -26,7 +28,7 @@ from drowse.errors import (
     UnknownVariantError,
     WhitenerError,
 )
-from drowse.errors import ConcurrentGenerationError, ProfileNotRegisteredError
+from drowse.errors import ProfileNotRegisteredError
 from drowse.steering.grammar import SteeringExprError
 from drowse.store.install import ManifoldInstallConflict
 from drowse.store.gguf import GGUFNotInstalled
@@ -62,8 +64,9 @@ _OVERRIDES: list[tuple[type[DrowseError], int]] = [
     (SteeringCompositionError, 422),
     (ManifoldArityError, 422),
     (OverlappingManifoldError, 422),
-    # session/session.py
     (ConcurrentGenerationError, 409),
+    (GenerationRequestError, 400),
+    # session/session.py
     (ProfileNotRegisteredError, 404),
     # steering/grammar.py
     (SteeringExprError, 400),

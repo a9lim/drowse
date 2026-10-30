@@ -1,15 +1,13 @@
 """DrowseSession — unified backend for drowse's programmatic and server APIs."""
 from __future__ import annotations
 import logging
-import queue
 import threading
 import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
-from enum import IntEnum
 from functools import partial
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal, Protocol, cast, overload
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal, cast, overload
 
 import torch
 from transformers import (
@@ -22,19 +20,21 @@ from transformers import (
 from drowse.fit.capture import CaptureMode, CaptureState, _capture_all_hidden_states
 from drowse.fit.corpus import RESPONSE_MAX_TOKENS, CorpusGenerator
 from drowse.session.extraction import Extraction
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, GenerationRequestError
 from drowse.events import (
     EventBus,
     GenerationFinished,
     GenerationStarted,
     ProbeScored,
 )
-from drowse.generation.prefix_cache import PrefixCacheEntry
+from drowse.generation.compile_runtime import CompiledRuntime
+from drowse.generation.finalize import MIN_ELAPSED_FOR_RATE
+from drowse.generation.prefix_cache import PREFIX_CACHE_MIN_TOKENS
+from drowse.generation.types import CallSpec, GenerationStream, GenState
+from drowse.session.engine import GenerationEngine
 from drowse.generation.decode import (
     GenerationConfig,
     GenerationState,
-    build_chat_input,
-    generate_steered,
     hf_generation_config,
     hf_unneutralizable_processors,
 )
@@ -46,16 +46,9 @@ from drowse.session.registry import ArtifactRegistry, ModelBinding
 from drowse.session.neutral import NeutralBaseline
 from drowse.errors import (
     ConcurrentExtractionError,
-    ConcurrentGenerationError,
     ManifoldNotRegisteredError,
 )
-from drowse.generation.token_callback import (
-    StepTokenCallback,
-    TokenCallback,
-    TokenConsumer,
-    TokenConsumerOptions,
-    consumer_options,
-)
+from drowse.generation.token_callback import TokenSink
 from drowse.model.scene import TurnGrammar
 from drowse.generation.render import PromptRenderer
 from drowse.session.authored_capture import AuthoredPromptCapture, plan_authored_capture
@@ -64,9 +57,7 @@ from drowse.loom.errors import InvalidNodeOperationError
 from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt
 from drowse.loom.recipe import (
     CastMember,
-    ComposedCall,
     Recipe,
-    compose_call,
     derive_seed_schedule,
 )
 from drowse.loom.tree import LoomTree
@@ -101,8 +92,6 @@ from drowse.generation.results import (
     GenerationResult,
     ProbeReading,
     RunSet,
-    TokenAlt,
-    TokenEvent,
 )
 from drowse.generation.sampling import SamplingConfig
 from drowse.steering.terms import Steering
@@ -111,26 +100,12 @@ from drowse.geometry.manifold import Manifold
 if TYPE_CHECKING:
     from drowse.readout.protocol import Instrument
     from drowse.generation.scoring import ChoiceScores
-    from drowse.generation.token_payloads import TokenProbePayload
     from drowse.store.templates import TemplateFolder
 from drowse.steering.triggers import Trigger
 
 _log = logging.getLogger(__name__)
 
-_DEFAULT_READOUT_TOP_K = 8
 
-
-class GenerationStream(Protocol):
-    """Current streaming iterator contract returned by :meth:`generate_stream`."""
-
-    def __iter__(self) -> "GenerationStream": ...
-
-    def __next__(self) -> TokenEvent: ...
-
-    def close(self) -> None: ...
-
-    @property
-    def result(self) -> GenerationResult | None: ...
 
 # Tail-ring depth for aggregate-only capture (probes attached, no per-token
 # consumer): how many trailing hidden slices to retain so finalize can pool the
@@ -140,13 +115,6 @@ class GenerationStream(Protocol):
 # declare the ring depth they demand.
 _AGG_TAIL_DEPTH = AGG_TAIL_DEPTH
 
-# Floor on the shared token prefix ``generate_batch`` will KV-cache.  Below
-# this the saved prefill is in the noise and the double-render + cache-management
-# overhead isn't worth it; the prefix must also leave a non-empty suffix per row
-# (``_try_prefix_cache_hit`` requires it), so the cached length is capped at
-# ``min_row_len - 1``.
-_PREFIX_CACHE_MIN_TOKENS = 16
-
 
 @dataclass(slots=True)
 class _SerialGenerationJob:
@@ -155,7 +123,7 @@ class _SerialGenerationJob:
     sampling: SamplingConfig | None = None
     raw: bool = False
     thinking: bool | None = None
-    on_token: TokenCallback | None = None
+    on_token: TokenSink | None = None
     parent_node_id: str | None = None
     recipe_override: Recipe | str | None = None
     system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT
@@ -199,7 +167,7 @@ def _run_serial_generation_jobs(
     node_ids: list[str | None] = []
     grid_rows: list[dict[str, Any]] = []
     for idx, job in enumerate(jobs):
-        result = session._generate_core(
+        result = session._engine.generate_one(
             job.input,
             steering=job.steering,
             sampling=job.sampling,
@@ -218,7 +186,7 @@ def _run_serial_generation_jobs(
         grid_rows.append(row)
         if on_result is not None:
             on_result(idx, result, row)
-        if stop_between_jobs and session._gen_state.is_stop_requested():
+        if stop_between_jobs and session._engine.state.is_stop_requested():
             break
     return RunSet(results, node_ids=node_ids, grid=grid_rows, kind=kind)
 
@@ -229,57 +197,8 @@ PROBE_CATEGORIES = [
     "register",
     "cultural",
 ]
-MIN_ELAPSED_FOR_RATE = 0.1
 
 
-class GenState(IntEnum):
-    """Lifecycle phases of a single generation call.
-
-    A typed phase rather than a bare in-flight flag, so the five-handle
-    teardown (lock, steering scope CM, capture, monitor live, threading lock)
-    is self-documenting.
-
-    Transitions live in :meth:`DrowseSession._generation_transaction` and
-    :meth:`DrowseSession._generate_core`:
-
-    - ``IDLE`` → ``PREAMBLE``: lock acquired, re-entry guard passed.
-    - ``PREAMBLE`` → ``RUNNING``: capture attached, monitor ``begin_live``,
-      steering :class:`TriggerContext` reset; ``generate_steered`` enters.
-    - ``RUNNING`` → ``FINALIZING``: inner ``finally`` ran — capture detached,
-      steering scope exited; monitor ``end_live`` / lock release pending.
-    - ``FINALIZING`` → ``IDLE``: outer ``finally`` ran.
-
-    The threading ``_gen_lock`` primitive stays alongside this enum — the
-    enum makes the state field typed and self-documenting; the lock still
-    enforces single-flight at the Python level.
-    """
-
-    IDLE = 0
-    PREAMBLE = 1
-    RUNNING = 2
-    FINALIZING = 3
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedCall:
-    """The per-call generation controls, normalized before any model work.
-
-    Produced once by :meth:`DrowseSession._prepare_generation_call` and read by
-    both the ordinary and the batched entry points.  Named fields rather than a
-    positional tuple: several members share a type (two ``int | None``, two
-    ``float``), so a reordering would rebind silently at every unpack site.
-    """
-
-    steering_obj: "Steering | None"
-    use_thinking_req: bool
-    gen_config: GenerationConfig
-    lp_count: int | None
-    seed: int | None
-    stop_list: list[str] | None
-    logit_bias: dict[int, float] | None
-    presence_penalty: float
-    frequency_penalty: float
-    logprobs_list: list[Any] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,21 +244,6 @@ class ReadDemand:
     live_sae_active: bool = True
     capture_prompt: bool = False
 
-
-class _GenerationTransaction:
-    """The mutable state :meth:`DrowseSession._generation_transaction` owns.
-
-    ``steering_cm`` is whatever internal steering scope the body entered and
-    has not popped itself; the transaction pops the remainder on the way out.
-    ``failed`` records that the body is unwinding, which decides whether a
-    teardown ``Exception`` may mask the original failure.
-    """
-
-    __slots__ = ("failed", "steering_cm")
-
-    def __init__(self) -> None:
-        self.steering_cm: Any = None
-        self.failed: bool = False
 
 
 
@@ -399,9 +303,10 @@ class DrowseSession:
         K/V buffers across decode steps mean inductor can capture CUDA
         graphs internally — an additional 1.5–2.5× decode tok/s on top
         of the kernel-fusion win from ``compile=True``.  Off by default
-        for the same reason as ``compile``; setting this without
-        ``compile=True`` has no effect.  Auto-skipped on MPS/CPU and on
-        architectures whose StaticCache construction fails.
+        for the same reason as ``compile``; without ``compile=True`` it only
+        routes eligible generations through an eager StaticCache.
+        Auto-skipped on MPS/CPU and on architectures whose StaticCache
+        construction fails.
 
         ``compile_mode`` (default ``None`` → auto-select) overrides the
         torch.compile mode.  When None, the session picks
@@ -420,16 +325,6 @@ class DrowseSession:
         enabled. Explicit True permits repository Python; explicit False
         overrides the environment. Only opt in for code you trust.
         """
-        # Load WITHOUT compile so the StaticCache probe runs against the
-        # bare nn.Module (probing through the OptimizedModule wrapper
-        # forwards correctly via __getattr__, but avoiding the wrapper
-        # at probe time keeps the failure mode "StaticCache constructor
-        # raised" rather than "compile + probe interaction").  We then
-        # decide ``compile_mode`` based on the probe outcome and apply
-        # ``torch.compile`` manually below.  Ordering matters: committing
-        # to ``"reduce-overhead"`` from the *requested* ``cuda_graphs=True``
-        # before the probe can veto leaves an arch-failed session running
-        # DynamicCache under a graph-capture compile mode.
         model, tokenizer = load_model(
             model_id,
             quantize=quantize,
@@ -438,132 +333,26 @@ class DrowseSession:
             trust_remote_code=trust_remote_code,
             on_progress=on_progress,
         )
-
-        cg_supported = False
-        _cg_reason: str | None = None
-        device_obj = next(model.parameters()).device
-        if cuda_graphs:
-            from drowse.generation.static_cache import is_cuda_graphs_supported
-            cg_supported, _cg_reason = is_cuda_graphs_supported(
-                model, device_obj,
-            )
-
-        # Resolve compile_mode now that the probe outcome is known.
-        # ``"reduce-overhead"`` captures CUDA graphs internally for
-        # fixed-shape inference regions and only pays off paired with
-        # StaticCache; ``"default"`` is the kernel-fusion-only fallback
-        # that composes cleanly with DynamicCache.  An explicit
-        # ``compile_mode`` arg overrides regardless of probe outcome —
-        # power users (benching, debugging) can force a mismatch on
-        # purpose.
-        effective_compile_mode = compile_mode
-        if effective_compile_mode is None:
-            effective_compile_mode = (
-                "reduce-overhead" if cg_supported else "default"
-            )
-
-        # Apply compile manually with the resolved mode.  Routes through
-        # ``compile_with_probe`` so an architecture-specific inductor /
-        # Triton bug surfaces at load time as a caught warning + eager
-        # fallback, rather than as a segfault on the user's first token.
-        #
-        # MPS is now eligible (not just CUDA): inductor's MPS backend fuses the
-        # per-layer kernels and amortizes dispatch, which is the dominant decode
-        # cost on Metal — measured ~1.7x on gemma-3-4b paired with StaticCache.
-        # CUDA-graph capture (``reduce-overhead``) stays CUDA-only, so on MPS
-        # ``effective_compile_mode`` is ``"default"`` (``cg_supported`` is False
-        # there) — fusion without graph capture, which composes with the
-        # transient steering hooks and StaticCache the decode loop installs.
-        offset_buffers: dict[int, Any] = {}
-        offset_handles: list[Any] = []
-        capture_buffers: dict[int, Any] = {}
-        capture_handles: list[Any] = []
-        if compile and device_obj.type in ("cuda", "mps"):
-            from drowse.readout.capture_buffer import (
-                install_persistent_capture_hooks,
-            )
-            from drowse.steering.hooks import install_persistent_offset_hooks
-            from drowse.model.compile import compile_with_probe
-            # Attach the persistent branchless steering hooks BEFORE
-            # compile so they ride inside the captured graph (post-compile hook
-            # changes are not retraced — ``skip_nnmodule_hook_guards``).  The
-            # offset hooks (``add_(offset)``) carry static-affine steering and
-            # update their buffers in place per gen, so the compiled fast path
-            # sees a stable hook topology and never recompiles. Persistent
-            # capture hooks (``copy_`` the last-token slice) are installed only
-            # when the construction-time probe roster is non-empty/default; an
-            # explicit ``probes=[]`` session takes a no-capture compiled mode and
-            # later ad-hoc probes fall back to transient capture. ``hidden_size``
-            # falls back to the text sub-config for multimodal wrappers
-            # (Gemma-3/4).
-            hidden_size = getattr(model.config, "hidden_size", None)
-            if hidden_size is None and hasattr(model.config, "get_text_config"):
-                hidden_size = model.config.get_text_config().hidden_size
-            if hidden_size is not None:
-                model_dtype = next(model.parameters()).dtype
-                layers_ml = get_layers(model)
-                offset_buffers, offset_handles = install_persistent_offset_hooks(
-                    layers_ml, int(hidden_size), device_obj, model_dtype,
-                )
-                if probes is None or bool(probes):
-                    capture_buffers, capture_handles = (
-                        install_persistent_capture_hooks(
-                            layers_ml, int(hidden_size), device_obj, model_dtype,
-                        )
-                    )
-            if on_progress is not None:
-                on_progress(
-                    f"Compiling model with torch.compile"
-                    f"(mode={effective_compile_mode!r})..."
-                )
-            model = compile_with_probe(
-                model, tokenizer, device_obj,
-                mode=effective_compile_mode,
-            )
-        elif compile:
-            _log.info(
-                "compile=True but device=%s — skipping torch.compile "
-                "(supported only on CUDA / MPS)",
-                device_obj.type,
-            )
-            if on_progress is not None:
-                on_progress(
-                    f"compile=True but device={device_obj.type} — skipping "
-                    f"torch.compile (supported only on CUDA / MPS)"
-                )
-
-        # ``__init__`` consults the same probe helper, but the helper now
-        # caches by the underlying module id (survives the torch.compile
-        # wrapper via ``_orig_mod``), so this second call is a dictionary
-        # lookup rather than another StaticCache(max_cache_len=1)
-        # allocation.
-        session = cls(
+        model, runtime = CompiledRuntime.prepare(
+            model,
+            tokenizer,
+            compile=compile,
+            compile_mode=compile_mode,
+            cuda_graphs=cuda_graphs,
+            persistent_capture=probes is None or bool(probes),
+            on_progress=on_progress,
+        )
+        return cls(
             model,  # pyright: ignore[reportArgumentType]  # may be torch.compile OptimizedModule wrapping PreTrainedModel
             tokenizer,
             probes=probes,
             system_prompt=system_prompt,
             max_tokens=max_tokens,
             dls=dls,
-            cuda_graphs=cuda_graphs,
+            runtime=runtime,
             return_top_k=return_top_k,
             on_progress=on_progress,
         )
-        # Adopt the persistent offset + capture hooks iff compile actually stuck;
-        # if it fell back to eager, drop them (their add_(0) / copy_ would be pure
-        # overhead with no compiled graph to ride).
-        if offset_handles or capture_handles:
-            if session._compiled:
-                session._steering.adopt_compiled_offsets(
-                    offset_buffers, offset_handles,
-                )
-                session._capture_buffers = capture_buffers
-                session._capture_handles = capture_handles
-            else:
-                for h in offset_handles:
-                    h.remove()
-                for h in capture_handles:
-                    h.remove()
-        return session
 
     def __init__(
         self,
@@ -574,7 +363,7 @@ class DrowseSession:
         system_prompt: str | None = None,
         max_tokens: int = 1024,
         dls: bool = True,
-        cuda_graphs: bool = False,
+        runtime: CompiledRuntime | None = None,
         return_top_k: int = 0,
         on_progress: Callable[[str], None] | None = None,
     ):
@@ -597,89 +386,18 @@ class DrowseSession:
             system_prompt=system_prompt,
         )
 
-        # Session-level default for SamplingConfig.return_top_k.
-        # Per-call value > 0 wins; per-call K=0 (the
-        # SamplingConfig default) inherits this stored value via the
-        # composition in ``_generate_core``. The sampler bounds this by
-        # the actual candidate pool when capturing alternatives.
-        if return_top_k < 0:
-            return_top_k = 0
-        self._default_return_top_k: int = int(return_top_k)
         self._steering = SteeringManager()
-        # CUDA-graphs / StaticCache routing.  Probe
-        # support once at construction so the per-generation hot path
-        # only consults a boolean.  Off when (a) user opted out, (b)
-        # device != cuda, or (c) the model's StaticCache constructor
-        # raises (architecture-specific quirks).  The fallback reason
-        # is logged once via :func:`drowse.generation.static_cache.warn_once`
-        # which dedupes on ``id(model)``, so when ``from_pretrained``
-        # already probed for its compile_mode decision and we re-probe
-        # here, the user only sees one message.
-        cuda_graphs_requested = bool(cuda_graphs)
-        self._cuda_graphs_active: bool = False
-        if cuda_graphs_requested:
-            from drowse.generation.static_cache import (
-                is_cuda_graphs_supported, warn_once,
-            )
-            supported, reason = is_cuda_graphs_supported(
-                self._model, self._device,
-            )
-            if supported:
-                self._cuda_graphs_active = True
-            elif reason is not None:
-                warn_once(self._model, reason)
-        # ``torch.compile`` left an ``_orig_mod`` wrapper iff it stuck (the
-        # probe in ``from_pretrained`` falls back to the eager model on failure).
-        # The compiled fast path wants StaticCache so inductor traces one fixed
-        # decode shape instead of re-specializing as a DynamicCache grows;
-        # ``_static_cache_active`` gates that, device-agnostically (CUDA *or*
-        # MPS), distinct from the CUDA-only ``_cuda_graphs_active`` graph-capture
-        # signal.  Either one (or a future StaticCache-only opt-in) enables the
-        # preallocated K/V path for fast-path-eligible steering.
-        self._compiled: bool = hasattr(self._model, "_orig_mod")
-        # CUDA graph trees are thread-local in PyTorch. ``from_pretrained``
-        # warms them on this construction thread; synchronous ``generate`` can
-        # replay them here, while ``generate_stream`` must route its worker to
-        # eager execution. Non-graph compiled modes are cross-thread safe.
-        self._compile_owner_thread: int = threading.get_ident()
-        self._static_cache_active: bool = False
-        if self._compiled or self._cuda_graphs_active:
-            from drowse.generation.static_cache import (
-                is_static_cache_supported, warn_once,
-            )
-            sc_supported, sc_reason = is_static_cache_supported(
-                self._model, self._device,
-            )
-            if sc_supported:
-                self._static_cache_active = True
-            elif sc_reason is not None:
-                warn_once(self._model, sc_reason)
-
-        # Persistent compile-clean *capture* buffers + hook handles, adopted from
-        # ``from_pretrained`` when compile stuck.  The always-on hooks
-        # ``copy_`` each layer's last-token slice into ``_capture_buffers[L]``
-        # every forward (fused into the compiled graph); a probed gen on the
-        # compiled path reads them post-forward via ``HiddenCapture.ingest_persistent``
-        # instead of registering transient capture hooks that would graph-break.
-        # Empty unless a compiled CUDA/MPS session adopted them.
-        self._capture_buffers: dict[int, torch.Tensor] = {}
-        self._capture_handles: list[Any] = []
-        # Per-gen flags: ``_compiled_clean_eligible`` (set early in
-        # ``_generate_core``) means this gen *can* take the compiled clean path —
-        # compiled CUDA/MPS, static cache, capture buffers present, not return_hidden —
-        # provided steering also lowers to offsets.  ``_capture_state.persistent``
-        # (set in ``_begin_capture``) means the active capture rides the persistent
-        # buffers, so the decode loop wires ``ingest_persistent`` as its step
-        # callback and the routing keeps the compiled module.
-        self._compiled_clean_eligible: bool = False
-
-        # One session-resident StaticCache for ordinary (non-prefix-cache)
-        # generations.  CUDA graphs guard on the K/V tensors' identities, so a
-        # fresh cache per request forces a full Dynamo recompile even when every
-        # shape is unchanged.  Grow this cache only when needed, then reset and
-        # reuse it in place across serialized session generations.
-        self._generation_static_cache: object | None = None
-        self._generation_static_cache_len: int = 0
+        # Compile / StaticCache / CUDA-graph routing: ``from_pretrained``
+        # decides it; a model handed in directly gets ``for_model``'s routing.
+        # The persistent offset hooks installed before compiling belong to the
+        # steering manager from here on.
+        self._runtime = (
+            runtime if runtime is not None
+            else CompiledRuntime.for_model(model, self._device)
+        )
+        offset_hooks = self._runtime.take_offset_hooks()
+        if offset_hooks is not None:
+            self._steering.adopt_compiled_offsets(*offset_hooks)
 
         # Prompt rendering: model type, the lazily validated scene grammar,
         # system-prompt resolution, the loom-path render, seat stop strings.
@@ -716,16 +434,16 @@ class DrowseSession:
         # from the *config* above).  ``_incremental_readings`` holds the full /
         # lean per-token ``ProbeReading`` rows (INCREMENTAL / LEAN_INCREMENTAL);
         # ``_incremental_gate_scores`` holds the gated-subset scalar dicts
-        # (GATING_SUBSET).  ``_finalize_generation`` builds (aggregate, per_token)
+        # (GATING_SUBSET).  The engine's finalize builds (aggregate, per_token)
         # from these instead of rescoring captured hidden states.  Reset at each
         # ``_begin_capture`` and on teardown.
         self._incremental_readings: list[dict[str, ProbeReading]] = []
         self._incremental_gate_scores: list[dict[str, float]] = []
 
-        # Reentrant — ``_generate_core`` acquires it for the whole gen,
+        # Reentrant — the engine's transaction acquires it for the whole gen,
         # then enters an internal ``self.steering(...)`` scope whose push
-        # re-acquires the lock from the same thread.  The single-in-flight invariant is enforced
-        # by the ``_gen_phase`` state check, not by the lock owner
+        # re-acquires the lock from the same thread.  The single-in-flight
+        # invariant is enforced by the engine's ``phase`` check, not by the lock owner
         # count, so RLock is correct: cross-thread re-entry blocks
         # (which is the property fix #4 wants), same-thread re-entry
         # passes (which keeps the internal steering scope from
@@ -738,16 +456,17 @@ class DrowseSession:
         # Every model op (fit / extract / generate) already holds it for its
         # duration; read-side GPU work (the analytics CPU snapshots,
         # ``add_probe``) acquires it non-blocking and defers rather than race.
-        self._gen_state = GenerationState()
-        # Typed lifecycle phase of the current generation (or ``IDLE`` between
-        # gens).  Re-entry guard between preamble and finalize: prevents a
-        # pending-action dispatch from double-attaching capture/steering
-        # hooks and leaking them.  See :class:`GenState` for transitions.
-        # Distinct from ``_gen_state`` (the per-call ``GenerationState``
-        # holding token queue, finish_reason, etc.) — the names are close
-        # because the enum field is the *session*'s view of state, while
-        # ``_gen_state`` is the *generator's*.
-        self._gen_phase: GenState = GenState.IDLE
+        # The generation engine: phase, decode state, prefix cache, routing,
+        # last result.  It shares the exclusive-GPU lock with every model op.
+        self._engine = GenerationEngine(
+            self,
+            lock=self._gen_lock,
+            runtime=self._runtime,
+            steering=self._steering,
+            capture=self._capture,
+            release=self._release_generation,
+            default_return_top_k=return_top_k,
+        )
 
         # Conversation state lives in a :class:`LoomTree`. The active path
         # through the tree is what the model sees as context. Generation routes
@@ -773,20 +492,6 @@ class DrowseSession:
 
         self.events.subscribe(_invalidate_tree_analysis_caches)
 
-        self._last_result: GenerationResult | None = None
-        self._last_per_token_scores: dict[str, list[float]] | None = None
-        self._last_token_probe_payload: dict[str, Any] | None = None
-        # The merged per-family :class:`ProbeReading` dict for the latest token
-        # (the union of all three families' slots).  The measurement envelope
-        # on ``_last_token_probe_payload`` carries the serialized readings; this
-        # keeps the live objects so ``generate_stream`` can populate
-        # ``TokenEvent.probe_readings`` (the compat vendor-extension / traits
-        # channel) without reconstructing them from the envelope.
-        # The token tap's payload, retained UN-PROJECTED: the cross-family
-        # ``ProbeReading`` dict (``all_readings``) is the compat channel for
-        # ``TokenEvent.probe_readings``, so it is built at the stream
-        # consumer, not per token in the tap.
-        self._last_token_payload: "TokenProbePayload | None" = None
 
         # Probe content-hash cache for transcript export / replay.
         # Keyed by probe name → sha256 hex of the baked tensor
@@ -814,18 +519,6 @@ class DrowseSession:
         # Bootstrap probes
         probe_categories = PROBE_CATEGORIES if probes is None else probes
 
-        # Prefix KV cache (opt-in, off by default).  Populated by
-        # :meth:`cache_prefix`; consumed by :meth:`_generate_core` when the
-        # incoming ``input_ids`` start with the cached prefix.  Shape:
-        # :class:`~drowse.generation.prefix_cache.PrefixCacheEntry`, which owns
-        # the live HF cache the prefix-prefill forward produced and rewinds it
-        # to ``prefix_len`` after each reuse; StaticCache entries additionally
-        # carry capacity so oversized generations miss safely instead of
-        # writing past the preallocated buffers.  Invalidated
-        # on any state change that would alter the cached prefix's hidden-state
-        # semantics: prefill-steering push/pop, probe install/remove,
-        # registry mutation.
-        self._prefix_cache: PrefixCacheEntry | None = None
 
         # -- collaborators --------------------------------------------------
         # Artifact registry: profiles + loaded manifolds; its mutations drop
@@ -834,7 +527,7 @@ class DrowseSession:
             model=self._model, tokenizer=self._tokenizer,
             model_id=self.model_id, device=self._device, dtype=self._dtype,
         ))
-        self._registry.on_change(lambda: self._invalidate_prefix_cache())
+        self._registry.on_change(lambda: self._engine.prefix_cache.clear())
         self._registry.on_swap(self._refresh_swapped_probes)
         self._registry.set_probe_folder(self._fold_profile_probe)
         self._registry.set_atom_resolver("jlens", lambda atom: self._lens_instrument.register_direction(atom))
@@ -870,7 +563,7 @@ class DrowseSession:
             device=self._device, dtype=self._dtype,
             lock=self._gen_lock, events=self.events,
             generation_phase=self._mid_generation_phase,
-            on_prefill_steering_change=lambda: self._invalidate_prefix_cache(),
+            on_prefill_steering_change=lambda: self._engine.prefix_cache.clear(),
             gates=GateSources(
                 monitor=lambda: self._monitor,
                 capture=lambda: self._capture,
@@ -1079,11 +772,11 @@ class DrowseSession:
 
     @property
     def last_result(self) -> GenerationResult | None:
-        return self._last_result
+        return self._engine.last_result
 
     @property
     def last_per_token_scores(self) -> dict[str, list[float]] | None:
-        return self._last_per_token_scores
+        return self._engine.last_per_token_scores
 
     @property
     def monitor(self) -> Monitor:
@@ -1163,16 +856,7 @@ class DrowseSession:
         *phase* (``IDLE``/``RUNNING``/…); this is the live mutable streaming
         state the server reads while a generation is in flight.
         """
-        return self._gen_state
-
-    @property
-    def token_probe_payload(self) -> dict[str, Any]:
-        """Latest token-tap payload for live frontend serialization.
-
-        The token tap is the sole producer. Frontends consume this current
-        step snapshot instead of reconstructing it from persisted loom rows.
-        """
-        return self._last_token_probe_payload or {}
+        return self._engine.state
 
     @property
     def gen_lock(self) -> "threading.RLock":
@@ -1215,12 +899,12 @@ class DrowseSession:
         introspector that wants to ask "is a gen running right
         now?" without reaching past the public API.
         """
-        return self._gen_phase
+        return self._engine.phase
 
     @property
     def is_generating(self) -> bool:
         """``True`` whenever :attr:`gen_state` is not ``GenState.IDLE``."""
-        return self._gen_phase is not GenState.IDLE
+        return self._engine.is_generating
 
     @property
     def is_base_model(self) -> bool:
@@ -1261,7 +945,7 @@ class DrowseSession:
 
     def _mid_generation_phase(self) -> str | None:
         """The phase name while a generation is mid-step, else ``None``."""
-        phase = self._gen_phase
+        phase = self._engine.phase
         if phase in (GenState.RUNNING, GenState.FINALIZING):
             return phase.name
         return None
@@ -1276,7 +960,7 @@ class DrowseSession:
         directions or the resident lens changed, so the prefix cache, the
         analytics cache and the lens probes' hashes are stale."""
         self._forget_probe_hashes(probe_names)
-        self._invalidate_prefix_cache()
+        self._engine.prefix_cache.clear()
         self._registry.invalidate_analytics()
 
     def _forget_probe_hashes(self, names: "Iterable[str]") -> None:
@@ -1528,14 +1212,14 @@ class DrowseSession:
         Acquires non-blocking — a cross-thread model op in flight raises
         ``exc(busy_msg)`` rather than races PyTorch's single global MPS
         command buffer (which would abort the process).  When ``phase_msg``
-        is given, also guards ``_gen_phase is IDLE`` (raises ``exc(phase_msg)``
+        is given, also guards that no generation is in flight (raises ``exc(phase_msg)``
         on a generation in flight); ``add_probe`` passes ``None`` to skip the
         phase guard.  Releases in ``finally``.
         """
         if not self._gen_lock.acquire(blocking=False):
             raise exc(busy_msg)
         try:
-            if phase_msg is not None and self._gen_phase is not GenState.IDLE:
+            if phase_msg is not None and self._engine.is_generating:
                 raise exc(phase_msg)
             yield
         finally:
@@ -1638,85 +1322,6 @@ class DrowseSession:
         :func:`~drowse.steering.composer.resolve_scope_role`).
         """
         return self._steering_composer.open_scope(value, stacklevel=2)
-
-    @contextmanager
-    def _generation_transaction(self) -> "Iterator[_GenerationTransaction]":
-        """The generation boundary: single-flight guard in, hard teardown out.
-
-        Every capture-owning generation path runs inside this — the ordinary
-        decode loop and the batched ``model.generate`` fast path — so the
-        order ARCHITECTURE.md §8.1/§8.3 describes exists once.  On entry: the
-        non-reentrant lock, the ``IDLE`` re-entry guard, and the phase
-        transition to ``PREAMBLE``.  On exit, whatever raised: pop any
-        steering scope the body left open, detach capture, drop the
-        per-generation session slots, close the instrument runs, reset capture
-        state, zero the persistent compile-clean steering offsets, and release
-        the phase and the lock.
-
-        The body owns the steering scope through ``txn.steering_cm``: it
-        assigns the scope when it enters one and clears the slot again if it
-        pops the scope itself (the decode path pops before finalizing, so the
-        finalize reads happen unsteered).  A scope still present here is
-        popped with ``swallow=txn.failed`` — a teardown ``Exception`` must not
-        mask the failure already propagating.
-        """
-        if not self._gen_lock.acquire(blocking=False):
-            raise ConcurrentGenerationError("Generation already in progress")
-        if self._gen_phase is not GenState.IDLE:
-            self._gen_lock.release()
-            raise ConcurrentGenerationError("session generation already in flight")
-        self._gen_phase = GenState.PREAMBLE
-        txn = _GenerationTransaction()
-        try:
-            yield txn
-        except BaseException:
-            txn.failed = True
-            raise
-        finally:
-            try:
-                try:
-                    if txn.steering_cm is not None:
-                        txn.steering_cm.close(internal=True, swallow=txn.failed)
-                finally:
-                    try:
-                        # Defense-in-depth: even if the body's own teardown
-                        # never ran (a BaseException between the transaction
-                        # entry and ``_begin_capture``), any hooks that did
-                        # get attached must come off.  Idempotent.
-                        self._end_capture()
-                        # The probe-inspector subspace-coords post-pass is
-                        # per-generation; clear it so it never leaks into a
-                        # later gen that didn't opt in.
-                        self._monitor.set_subspace_coords(False)
-                        # Release the loom-tree reservation in the same scope
-                        # as the gen-lock release.  Even if finalize raised,
-                        # mutators (edit / delete on this subtree) need to be
-                        # free again now that the streaming target is no
-                        # longer live.
-                        self.tree.reserve(None)
-                        self._last_token_probe_payload = None
-                        self._last_token_payload = None
-                    finally:
-                        # Run closure and capture-state resets must survive a
-                        # teardown failure above (a raising hook detach must
-                        # not leave a bound run pinning a stale lens).
-                        self._close_instrument_runs()
-                        # Reset capture state to the default (FULL,
-                        # non-persistent) so the next gen starts clean —
-                        # finalize has already consumed the rows, and
-                        # ``_begin_capture`` resets it at gen start too.
-                        self._capture_state = CaptureState()
-                        self._compiled_clean_eligible = False
-                        self._incremental_readings = []
-                        self._incremental_gate_scores = []
-                        # Steering state is not touched here: the installed
-                        # plan (offset buffers included) is a function of the
-                        # steering stack, restored by the scope pop above.
-            finally:
-                # Unconditional: an earlier teardown exception must not leave
-                # the session phase-wedged or the gen lock held.
-                self._gen_phase = GenState.IDLE
-                self._gen_lock.release()
 
     def _bind_instrument_runs(
         self,
@@ -1937,8 +1542,8 @@ class DrowseSession:
             # compile; layer_idxs selects the subset this generation consumes.
             # Live lens layers can therefore ride the same compile-clean path
             # instead of forcing transient hooks.
-            and self._compiled_clean_eligible
-            and self._capture_buffers
+            and self._engine.compiled_clean_eligible
+            and self._runtime.capture_buffers
             and (
                 self._steering.uses_compiled_offsets
                 or self._steering.all_fast_path()
@@ -1946,7 +1551,7 @@ class DrowseSession:
         )
         self._capture.clear()
         if use_persistent:
-            self._capture.attach_persistent(layer_idxs, self._capture_buffers)
+            self._capture.attach_persistent(layer_idxs, self._runtime.capture_buffers)
         else:
             self._capture.attach(self._layers, layer_idxs)
         # Default this gen to FULL (append / full-retention); the mode branches
@@ -2181,13 +1786,11 @@ class DrowseSession:
 
     def _aggregate_forward_index(self, generated_ids: list[int]) -> int | None:
         """Forward index to use for the end-of-generation aggregate read."""
-        idx = getattr(self._gen_state, "response_aggregate_index", None)
+        state = self._engine.state
+        idx = state.response_aggregate_index
         if idx is not None and 0 <= int(idx) < len(generated_ids):
             return int(idx)
-        if (
-            self._gen_state.finish_reason == "stop_sequence"
-            and getattr(self._gen_state, "response_text", None) is not None
-        ):
+        if state.finish_reason == "stop_sequence" and state.response_text is not None:
             return None
         from drowse.fit.capture import last_content_index
         return last_content_index(generated_ids, self._tokenizer)
@@ -2474,7 +2077,7 @@ class DrowseSession:
         # New probe → _begin_capture attaches a different layer set than was
         # live when the prefix was prefilled; drop the cache so the next gen
         # re-prefills with the fresh capture-attach layout in place.
-        self._invalidate_prefix_cache()
+        self._engine.prefix_cache.clear()
         # Transcript probe-hash cache is keyed by name; any change to the
         # registered probes invalidates the relevant entry.
         self._probe_hash_cache.pop(name, None)
@@ -2501,7 +2104,7 @@ class DrowseSession:
             pass
         else:
             self._geometry_instrument.detach(name)
-        self._invalidate_prefix_cache()
+        self._engine.prefix_cache.clear()
         self._probe_hash_cache.pop(name, None)
         self._registry.invalidate_analytics()
 
@@ -2613,7 +2216,7 @@ class DrowseSession:
         *,
         replacement_text: str | None = None,
         seed: int | None = None,
-        on_token: TokenCallback | None = None,
+        on_token: TokenSink | None = None,
     ) -> GenerationResult:
         """Regenerate ``node_id`` as a sibling with a replacement at one token.
 
@@ -2626,7 +2229,7 @@ class DrowseSession:
             replacement_text=replacement_text, seed=seed,
             default_max_tokens=self.config.max_new_tokens,
         )
-        return self._generate_core(
+        return self._engine.generate_one(
             turn.input, on_token=on_token, **turn.generate_kwargs(),
         )
 
@@ -2637,7 +2240,7 @@ class DrowseSession:
         *,
         steering: "str | Steering | None" = None,
         sampling: SamplingConfig | None = None,
-        on_token: TokenCallback | None = None,
+        on_token: TokenSink | None = None,
     ) -> GenerationResult:
         """Generate an assistant reply to user node ``node_id`` that opens with ``text``.
 
@@ -2648,7 +2251,7 @@ class DrowseSession:
             steering=steering, sampling=sampling,
             default_max_tokens=self.config.max_new_tokens,
         )
-        return self._generate_core(
+        return self._engine.generate_one(
             turn.input, on_token=on_token, **turn.generate_kwargs(),
         )
 
@@ -2725,229 +2328,40 @@ class DrowseSession:
         max_new_tokens: int | None = None,
         prefer_static: bool = False,
     ) -> int:
-        """Pre-prefill an identical chat prefix so subsequent ``generate()``
-        calls forward only the suffix.
+        """Pre-prefill a shared chat prefix so later ``generate()`` calls
+        forward only their suffix.
 
-        Useful for batch workloads that re-issue the same chat-template
-        head (system + leading user-instruction) hundreds of times — the
-        The motivating workload does 800 stateless
-        generations with the same kaomoji instruction prefix tokens.
-        Per-call savings scale with prefix_len / total_input_len.
+        For workloads that re-issue the same chat-template head (system +
+        leading instruction) many times; per-call savings scale with
+        ``prefix_len / total_input_len``.
 
-        Accepts:
-        - ``list[dict[str, str]]``: encoded via ``build_chat_input`` with
-          ``add_generation_prompt=False`` (the prefix should be the
-          turn(s) that PRECEDE the assistant turn — generation-prompt
-          tokens for the assistant turn are part of the per-call suffix).
-        - ``torch.Tensor`` of shape ``[seq_len]`` or ``[1, seq_len]``:
-          stored verbatim. Use this when the natural common prefix sits
-          mid-content and isn't a clean message-list boundary (e.g. a
-          fixed instruction concatenated into the user message before
-          the variable prompt body).
-        - ``None``: clear the cache. Equivalent to ``cache_prefix()``.
+        ``messages`` is a message list (rendered with
+        ``add_generation_prompt=False``: the prefix is the turns *before* the
+        assistant turn, whose opener belongs to each call's suffix), a
+        ``[seq_len]`` / ``[1, seq_len]`` token tensor stored verbatim (for a
+        common prefix that isn't a message boundary), or ``None`` to clear.
 
-        ``prefer_static=True`` builds a StaticCache-backed prefix entry when the
-        session supports StaticCache. ``max_new_tokens`` sizes the decode
-        headroom; callers that pass a larger generation budget later will miss
-        this static entry and fall back to the regular full-prefill path. When
-        StaticCache construction or prefill fails, the method falls back to the
-        ordinary DynamicCache prefix entry.
+        ``prefer_static=True`` builds a StaticCache-backed entry when the
+        session supports StaticCache, with ``max_new_tokens`` of decode
+        headroom (default: the session's); a later generation needing more
+        misses it and prefills in full.  A failed StaticCache build falls back
+        to an ordinary DynamicCache entry.
 
         Returns the cached prefix length in tokens (0 when clearing).
 
-        Caveats (DOCUMENTED INLINE because they're easy to step on):
-        1. Only safe to call OUTSIDE any active ``session.steering()``
-           scope.  The prefix is prefilled with whatever steering hooks
-           are live at call time — if those differ from the steering
-           regime active at consume time, the cached hidden states are
-           stale.  We invalidate the cache automatically on push/pop,
-           but the call itself errors if a scope is open.
-        2. Hidden-state capture is suspended for the duration of the
-           prefill so the cached prefix doesn't pollute later score
-           buckets.  No guarantees about what the monitor sees mid-call;
-           callers shouldn't rely on probe state during cache_prefix.
-        3. The cached tokens MUST appear as a byte-prefix of every
-           ``generate()`` call's ``input_ids``.  If the caller's
-           messages drift, the cache silently MISSES (cheap — full
-           prefill on miss) but never silently MIS-HITS — the
-           ``input_ids[..., :prefix_len].equal(prefix_tokens)`` check
-           is exact.
+        Caveats:
+
+        1. Refused inside an active ``session.steering()`` scope: the prefix
+           is prefilled with the neutral baseline.  A later generation reuses
+           it only when its steering leaves the prompt prefill untouched.
+        2. Hidden-state capture is suspended for the prefill.
+        3. The cached tokens must be an exact prefix of a generation's
+           rendered ``input_ids`` to hit; a mismatch silently misses (full
+           prefill), never mis-hits.
         """
-        # Clear path.
-        if messages is None:
-            self._invalidate_prefix_cache()
-            return 0
-
-        if self._steering_composer.active:
-            raise DrowseError(
-                "cache_prefix called inside an active session.steering() "
-                "scope; prefill must run with the neutral baseline so the "
-                "cached prefix is consume-regime independent. Cache before "
-                "entering any steering scope."
-            )
-        if self.is_generating:
-            raise ConcurrentGenerationError(
-                "cache_prefix called while a generation is in flight"
-            )
-
-        # Build prefix tokens.
-        if isinstance(messages, torch.Tensor):
-            prefix_ids = cast(torch.Tensor, messages)
-            if prefix_ids.dim() == 1:
-                prefix_ids = prefix_ids.unsqueeze(0)
-            prefix_ids = prefix_ids.to(device=self._device, dtype=torch.long)
-        else:
-            # List of message dicts.  add_generation_prompt=False so we
-            # don't bake the assistant-turn opener into the prefix —
-            # the per-call suffix carries that, ensuring the same
-            # cached prefix can serve multi-turn variants.
-            prefix_ids = build_chat_input(
-                self._tokenizer, list(messages),
-                self.config.system_prompt,
-                thinking=False,
-                add_generation_prompt=False,
-                scene=self.scene_grammar,
-                traits=self.chat_traits,
-            ).to(self._device)
-
-        prefix_len = int(prefix_ids.shape[1])
-        if prefix_len == 0:
-            self._invalidate_prefix_cache()
-            return 0
-
-        # Replace any prior cache entry; old past_key_values goes out of
-        # scope and is GC'd when no longer referenced.
-        self._prefix_cache = None
-
-        # Suspend capture for the prefill so the prefix tokens don't fill
-        # the per-layer buckets the next generation's scoring code reads.
-        # _begin_capture/_end_capture are idempotent re no-op no-probe
-        # configurations, so the bracketing here is always safe.
-        self._end_capture()
-
-        use_static = bool(prefer_static and self._static_cache_active)
-        static_max_cache_len: int | None = None
-        past_key_values: object | None = None
-        cache_position: torch.Tensor | None = None
-        if use_static:
-            try:
-                from drowse.generation.static_cache import make_static_cache
-
-                model_dtype = next(self._model.parameters()).dtype
-                headroom = int(
-                    max_new_tokens
-                    if max_new_tokens is not None
-                    else self.config.max_new_tokens
-                )
-                static_max_cache_len = prefix_len + max(headroom, 1)
-                past_key_values = make_static_cache(
-                    self._model,
-                    max_cache_len=static_max_cache_len,
-                    device=self._device,
-                    dtype=model_dtype,
-                )
-                cache_position = torch.arange(
-                    prefix_len, device=self._device, dtype=torch.long,
-                )
-            except Exception as exc:
-                _log.debug(
-                    "cache_prefix: StaticCache prefix skipped (%s)", exc,
-                )
-                use_static = False
-                past_key_values = None
-                cache_position = None
-                static_max_cache_len = None
-
-        try:
-            with torch.inference_mode():
-                if use_static and past_key_values is not None and cache_position is not None:
-                    outputs = self._model(
-                        input_ids=prefix_ids,
-                        attention_mask=torch.ones_like(prefix_ids),
-                        past_key_values=past_key_values,
-                        use_cache=True,
-                        cache_position=cache_position,
-                    )
-                else:
-                    outputs = self._model(
-                        input_ids=prefix_ids,
-                        attention_mask=torch.ones_like(prefix_ids),
-                        use_cache=True,
-                    )
-        except Exception:
-            if not use_static:
-                raise
-            _log.debug(
-                "cache_prefix: StaticCache prefill failed; retrying DynamicCache",
-                exc_info=True,
-            )
-            use_static = False
-            past_key_values = None
-            cache_position = None
-            static_max_cache_len = None
-            with torch.inference_mode():
-                outputs = self._model(
-                    input_ids=prefix_ids,
-                    attention_mask=torch.ones_like(prefix_ids),
-                    use_cache=True,
-                )
-
-        if use_static and past_key_values is not None:
-            # StaticCache mutates in place. Some modeling files return the same
-            # object, others may return ``None``; keep the preallocated cache in
-            # both cases.
-            returned_pkv = outputs.past_key_values
-            past_key_values = (
-                returned_pkv if returned_pkv is not None else past_key_values
-            )
-        else:
-            past_key_values = outputs.past_key_values
-        if past_key_values is None:
-            # Model doesn't expose KV cache (custom modeling that ignores
-            # use_cache).  Nothing to cache; drop the prefix.
-            return 0
-
-        self._prefix_cache = PrefixCacheEntry.from_prefill(
-            prefix_ids,
-            past_key_values,
-            static=use_static,
-            max_cache_len=static_max_cache_len,
+        return self._engine.cache_prefix(
+            messages, max_new_tokens=max_new_tokens, prefer_static=prefer_static,
         )
-        return prefix_len
-
-    def _invalidate_prefix_cache(self) -> None:
-        """Drop the prefix KV cache.
-
-        Called on every state change that affects what a fresh prefill
-        of the cached prefix would produce: steering push/pop, steer /
-        unsteer, probe install / remove, profile autoload.  Cheap — just
-        a reference drop; HF's cache objects are GC'd when their refcount
-        falls to zero.
-        """
-        self._prefix_cache = None
-
-    def _try_prefix_cache_hit(
-        self,
-        input_ids: torch.Tensor,
-        *,
-        static_eligible: bool = False,
-        required_max_new_tokens: int | None = None,
-    ) -> tuple[torch.Tensor, object, int, bool] | None:
-        """``(suffix_ids, past_key_values, prefix_len, static)`` on a hit.
-
-        The hit rules live in :meth:`PrefixCacheEntry.suffix_for`.
-        """
-        entry = self._prefix_cache
-        if entry is None:
-            return None
-        suffix_ids = entry.suffix_for(
-            input_ids,
-            static_eligible=static_eligible,
-            required_max_new_tokens=required_max_new_tokens,
-        )
-        if suffix_ids is None:
-            return None
-        return suffix_ids, entry.past_key_values, entry.prefix_len, entry.static
 
     # -- Generation helpers --
 
@@ -2961,218 +2375,51 @@ class DrowseSession:
         """The validated turn grammar for the loaded chat template, or None."""
         return self._renderer.scene_grammar
 
-    def _finalize_generation(
-        self, generated_ids: list[int], elapsed: float,
-        vector_snapshot: dict[str, float], prompt_tokens: int = 0,
-        stateless: bool = False,
-        logprobs_list: list[tuple[int, float | None, list[Any]]] | None = None,
-        applied_steering: str | None = None,
+    def _plan_authored_prompt_capture(
+        self,
+        spec: "CallSpec",
         *,
-        return_hidden: bool = False,
-        return_probe_readings: bool = True,
-        assistant_node_id: str | None = None,
-        mean_logprob: float | None = None,
-        mean_surprise: float | None = None,
-    ) -> GenerationResult:
-        """Finalize result state through the generation finalizer collaborator."""
-        from drowse.generation.finalize import finalize_generation
+        assistant_node_id: str | None,
+        use_thinking: bool,
+        monitor_active: bool,
+        lens_active: bool,
+        sae_active: bool,
+        persist_per_layer_scores: bool,
+    ) -> AuthoredPromptCapture | None:
+        """This generation's authored-prefill capture policy, or ``None``.
 
-        return finalize_generation(
-            self, generated_ids, elapsed, vector_snapshot,
-            prompt_tokens=prompt_tokens,
-            stateless=stateless,
-            logprobs_list=logprobs_list,
-            applied_steering=applied_steering,
-            return_hidden=return_hidden,
-            return_probe_readings=return_probe_readings,
-            assistant_node_id=assistant_node_id,
-            mean_logprob=mean_logprob,
-            mean_surprise=mean_surprise,
-            min_elapsed_for_rate=MIN_ELAPSED_FOR_RATE,
-        )
-
-    def _generation_preamble(self, input: Any, raw: bool, thinking: bool, stateless: bool = False,
-                             parent_node_id: str | None = None,
-                             user_role: str | None = None,
-                             assistant_role: str | None = None,
-                             gen_seat: str = "assistant",
-                             system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT):
-        """Shared input prep + gen-state reset.
-
-        Steering is NOT installed here — the caller is expected to hold a
-        ``session.steering()`` scope open across the generation.
-        ``parent_node_id`` selects which loom-tree path the input is
-        anchored against (default: the active path).  ``user_role`` /
-        ``assistant_role`` are this send's per-message role labels (the
-        roleplay scaffold): the new user turn renders under ``user_role``
-        and the generation prompt under ``assistant_role`` (a role-bearing
-        steering scope overrides the latter inside the renderer).
+        Nothing is tokenized unless some channel (monitor, lens, SAE) would
+        record a measurement (F11).  The search bound is one render without
+        the generation prompt, so a target never matches inside the
+        generation header; see
+        :func:`drowse.session.authored_capture.plan_authored_capture`.
         """
-        use_thinking = thinking and self.chat_traits.supports_thinking
-        input_ids = self._renderer.prepare_input(
-            input, raw=raw, thinking=use_thinking, stateless=stateless,
-            parent_node_id=parent_node_id,
-            user_role=user_role, assistant_role=assistant_role,
-            gen_seat=gen_seat,
-            system_prompt=system_prompt,
+        return plan_authored_capture(
+            self.tree, self._tokenizer, assistant_node_id, raw=spec.raw,
+            monitor=self._monitor,
+            lens=self._lens_instrument,
+            sae=self._sae_instrument,
+            monitor_active=monitor_active,
+            lens_active=lens_active,
+            sae_active=sae_active,
+            readout_top_k=spec.readout_top_k,
+            persist_per_layer_scores=persist_per_layer_scores,
+            content_end=lambda: int(self._renderer.prepare_input(
+                spec.input,
+                raw=False,
+                thinking=use_thinking,
+                stateless=spec.stateless,
+                parent_node_id=spec.history_anchor,
+                user_role=spec.user_role,
+                assistant_role=spec.assistant_role,
+                to_device=False,
+                gen_seat=spec.gen_seat,
+                system_prompt=spec.system_prompt,
+                add_generation_prompt=False,
+            ).shape[1]),
         )
-        self._gen_state.reset()
-        return input_ids, use_thinking, int(input_ids.shape[1])
-
-    def _compose_gen_config(
-        self, sampling: SamplingConfig | None,
-    ) -> "GenerationConfig":
-        """Build a per-call GenerationConfig from session defaults + sampling.
-
-        Does NOT mutate ``self.config`` — returns a new frozen instance the
-        generation worker holds for its lifetime.  ``None`` fields in
-        ``sampling`` fall through to the session default.
-        """
-        from dataclasses import replace as _replace
-
-        if sampling is None:
-            return self.config
-        overrides: dict[str, Any] = {}
-        if sampling.temperature is not None:
-            overrides["temperature"] = sampling.temperature
-        if sampling.top_p is not None:
-            overrides["top_p"] = sampling.top_p
-        if sampling.top_k is not None:
-            overrides["top_k"] = sampling.top_k
-        if sampling.max_tokens is not None:
-            overrides["max_new_tokens"] = sampling.max_tokens
-        if not overrides:
-            return self.config
-        return _replace(self.config, **overrides)
 
     # -- Generation: core --
-
-    def _compose_generation_call(
-        self,
-        *,
-        steering: "str | Steering | None",
-        sampling: SamplingConfig | None,
-        thinking: bool | None,
-        system_prompt: str | None | InheritSystemPrompt,
-        raw: bool,
-        gen_seat: str,
-        parent_node_id: str | None,
-        recipe_override: "Recipe | str | None",
-    ) -> ComposedCall:
-        """Compose a generation's effective kwargs in one :func:`compose_call`.
-
-        Tiers, weakest first: the gen label's cast member, the call's own
-        kwargs, and for a regen the recipe of the node it reproduces
-        (:meth:`LoomTree.anchor_recipe`) plus the modifier
-        ``recipe_override`` derives from it — a :class:`Recipe` partial, a
-        built-in mode, or a comma-separated partial-recipe string
-        (:meth:`Recipe.compose_modifier`).  All four go through the one rule
-        together, so the seed order it documents (modifier > call > anchor >
-        cast) holds across them.
-
-        The cast label rides the call's sampling box (``user_role`` for a
-        user-seat gen, ``assistant_role`` otherwise), falling back to the
-        structural seat name, so a bare continuation of a cast turn doesn't
-        re-trigger the recipe.  Raw / flat mode renders no labels, so the
-        roster doesn't apply there.
-        """
-        cast_recipe: Recipe | None = None
-        if not raw:
-            label = None
-            if sampling is not None:
-                label = (
-                    sampling.user_role if gen_seat == "user"
-                    else sampling.assistant_role
-                )
-            member = self.tree.cast.get(label or gen_seat)
-            cast_recipe = member.recipe if member is not None else None
-        anchor: Recipe | None = None
-        modifier: Recipe | None = None
-        if recipe_override is not None:
-            anchor = self.tree.anchor_recipe(parent_node_id)
-            modifier = (anchor or Recipe()).compose_modifier(recipe_override)
-        if cast_recipe is None and modifier is None:
-            return ComposedCall(steering, sampling, thinking, system_prompt)
-        return compose_call(
-            steering=steering, sampling=sampling, thinking=thinking,
-            system_prompt=system_prompt,
-            cast=cast_recipe, anchor=anchor, modifier=modifier,
-        )
-
-    def _effective_return_top_k(self, sampling: SamplingConfig | None) -> int:
-        """Resolve the generation's logit-alternative width.
-
-        Per-call ``return_top_k`` wins when positive; zero inherits the
-        session default.
-        """
-        top_k = sampling.return_top_k if sampling is not None else 0
-        return int(top_k or self._default_return_top_k)
-
-    def _effective_readout_top_k(self, sampling: SamplingConfig | None) -> int:
-        """Resolve the shared logit/J-lens/SAE top-k width.
-
-        Read-side instruments keep the canonical eight-wide view when logit
-        alternatives are disabled; otherwise they use that exact ``alts``
-        width.
-        """
-        return self._effective_return_top_k(sampling) or _DEFAULT_READOUT_TOP_K
-
-    def _prepare_generation_call(
-        self,
-        steering: "str | Steering | None",
-        sampling: SamplingConfig | None,
-        thinking: bool | None,
-    ) -> "PreparedCall":
-        """Normalize per-call generation controls before model work."""
-        steering_obj = Steering.from_value(
-            steering, profile_names=set(self._registry.profiles),
-        )
-        if thinking is None:
-            config_thinking = getattr(self.config, "thinking", None)
-            if steering_obj is not None and steering_obj.thinking is not None:
-                use_thinking_req = bool(steering_obj.thinking)
-            elif config_thinking is not None:
-                use_thinking_req = bool(config_thinking)
-            else:
-                use_thinking_req = self.chat_traits.supports_thinking
-        else:
-            use_thinking_req = bool(thinking)
-
-        gen_config = self._compose_gen_config(sampling)
-        raw_lp = sampling.logprobs if sampling is not None else None
-        raw_top_k = self._effective_return_top_k(sampling)
-        if raw_top_k > 0:
-            lp_count: int | None = (
-                max(raw_top_k, raw_lp) if raw_lp is not None else raw_top_k
-            )
-        else:
-            lp_count = raw_lp
-
-        seed = sampling.seed if sampling is not None else None
-        stop_tuple = sampling.stop if sampling is not None else None
-        stop_list = list(stop_tuple) if stop_tuple else None
-        logit_bias = sampling.logit_bias if sampling is not None else None
-        presence_penalty = sampling.presence_penalty if sampling is not None else 0.0
-        frequency_penalty = (
-            sampling.frequency_penalty if sampling is not None else 0.0
-        )
-        logprobs_list: list[Any] | None = [] if raw_lp is not None else None
-        return PreparedCall(
-            steering_obj=steering_obj,
-            use_thinking_req=use_thinking_req,
-            gen_config=gen_config,
-            lp_count=lp_count,
-            seed=seed,
-            stop_list=stop_list,
-            logit_bias=logit_bias,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            logprobs_list=logprobs_list,
-        )
-
-    def _snapshot_steering_alphas(self) -> dict[str, float]:
-        """Flatten the active steering stack for result receipts."""
-        return self._steering_composer.snapshot_steering_alphas()
 
     def _start_loom_assistant(
         self,
@@ -3211,853 +2458,6 @@ class DrowseSession:
             continuation_node_id=continuation_node_id,
         )
 
-    def _compiled_graph_thread_safe(self) -> bool:
-        """Whether this thread owns PyTorch's warmed CUDA graph tree."""
-        if not getattr(self, "_cuda_graphs_active", False):
-            return True
-        return (
-            threading.get_ident()
-            == getattr(self, "_compile_owner_thread", threading.get_ident())
-        )
-
-    def _acquire_generation_static_cache(
-        self,
-        model: PreTrainedModel,
-        *,
-        max_cache_len: int,
-    ) -> object:
-        """Return a reset, identity-stable StaticCache with enough capacity."""
-        cached = self._generation_static_cache
-        if cached is not None and self._generation_static_cache_len >= max_cache_len:
-            reset = getattr(cached, "reset", None)
-            if callable(reset):
-                reset()
-                return cached
-            self._generation_static_cache = None
-            self._generation_static_cache_len = 0
-
-        from drowse.generation.static_cache import make_static_cache
-
-        model_dtype = next(model.parameters()).dtype
-        cache = make_static_cache(
-            model,
-            max_cache_len=max_cache_len,
-            device=self._device,
-            dtype=model_dtype,
-        )
-        self._generation_static_cache = cache
-        self._generation_static_cache_len = max_cache_len
-        return cache
-
-    def _run_generation_loop(
-        self,
-        input_ids: torch.Tensor,
-        gen_config: GenerationConfig,
-        *,
-        use_thinking: bool,
-        want_hidden: bool,
-        effective_tap: "StepTokenCallback | None",
-        seed: int | None,
-        stop_list: list[str] | None,
-        logit_bias: dict[int, float] | None,
-        presence_penalty: float,
-        frequency_penalty: float,
-        lp_count: int | None,
-        forced_prefix: list[int] | None = None,
-        want_perplexity: bool = True,
-        authored_capture: AuthoredPromptCapture | None = None,
-    ) -> tuple[list[int], float]:
-        """Run the decode loop once capture and steering are installed."""
-        cached_pkv = None
-        cache_position_offset = 0
-        cached_static = False
-        effective_input_ids = input_ids
-        static_cache_eligible = (
-            self._static_cache_active
-            and self._compiled_graph_thread_safe()
-            and (
-                self._steering.all_fast_path()
-                or self._steering.static_steerable()
-            )
-        )
-        # The cached prefix KV is unsteered.  It's safe to reuse whenever the
-        # active steering doesn't touch the prefill region — ``@response`` /
-        # ``@generated`` / probe-gated steering leaves the prompt KV identical
-        # to unsteered, so a steered (response-phase) batch can still share one
-        # prefill.  ``want_hidden`` (needs every prefix hidden state) and
-        # thinking (different decode path) still force a full re-prefill.
-        if (
-            not want_hidden
-            and not use_thinking
-            and not self._steering_composer.steering_active_in_prefill()
-            and self._prefix_cache is not None
-        ):
-            hit = self._try_prefix_cache_hit(
-                input_ids,
-                static_eligible=static_cache_eligible,
-                required_max_new_tokens=gen_config.max_new_tokens,
-            )
-            if hit is not None:
-                suffix_ids, cached_pkv, cache_position_offset, cached_static = hit
-                effective_input_ids = suffix_ids
-
-        prompt_capture_pending = False
-        if authored_capture is not None:
-            self._capture.set_prompt_positions(authored_capture.match(
-                input_ids, cache_position_offset=cache_position_offset,
-            ))
-            prompt_capture_pending = bool(authored_capture.matches)
-
-        base_step_callback = (
-            self._capture.ingest_persistent
-            if self._capture_state.persistent
-            else self._capture.fire_step_sink
-        )
-
-        def _step_callback(step_id: int) -> None:
-            nonlocal prompt_capture_pending
-            # The first callback follows the full/suffix prefill.  Score the
-            # visible authored positions in prompt order before the ordinary
-            # final-prompt sink advances curved monitor feet to the state that
-            # produces generated token 0.
-            if prompt_capture_pending and authored_capture is not None:
-                prompt_capture_pending = False
-                authored_capture.persist(self._capture.prompt_stacked())
-            base_step_callback(step_id)
-
-        start = time.monotonic()
-        composer = self._steering_composer
-        gating_callback = (
-            composer.build_gating_score_callback()
-            if composer.steering_needs_probe_gating()
-            else None
-        )
-        # StaticCache (+ compile fusion on MPS, + CUDA-graph capture on CUDA) is
-        # eligible when generation is unsteered (``all_fast_path``) OR every
-        # steered layer is the static single-affine fast path
-        # (``static_steerable`` — Trigger.BOTH affine slide, no ctx, no foot, no
-        # gate).  StaticCache never bypasses the forward hooks, so the steering
-        # still applies; only the KV buffers are preallocated and the decode
-        # shape stays fixed (what lets the compiled graph stay specialized).
-        # ``_static_cache_active`` is device-agnostic (set when compile stuck or
-        # CUDA graphs are on).  Curved / gated / phased steering keeps the eager
-        # DynamicCache path.
-        use_static_cache = static_cache_eligible and (
-            cached_pkv is None or cached_static
-        )
-        # Compiled-model routing (CUDA/MPS). The graph was traced with ONLY the
-        # persistent branchless offset + capture hooks present (attached
-        # pre-compile), so the compiled module is correct exactly when the live
-        # hook topology matches that: no *transient* per-token capture hooks
-        # (``self._capture.is_transient()`` false — true for the persistent-capture
-        # and no-probe paths) AND either unsteered or a static-affine steering that
-        # lowered to the persistent offset buffers (``SteeringManager.uses_compiled_offsets``
-        # — the push rides the offset, no transient hook).  A probed gen on the
-        # persistent-capture path satisfies both, so it keeps the
-        # compiled graph.  Everything else (transient ctx-consulting steering
-        # hooks, transient capture hooks for curved/gated/return_hidden) graph-breaks
-        # / recompiles, so route it to the eager original (``_orig_mod``) +
-        # DynamicCache — where the same persistent hooks still apply any offsets
-        # and capture, so correctness holds and ``compile=True`` never regresses
-        # the hooked path. On CUDA this boundary also avoids Dynamo retracing on
-        # every per-generation hook topology.
-        gen_model = self._model
-        steering_uses_compiled_offsets = bool(
-            self._steering.uses_compiled_offsets
-        )
-        if self._compiled and self._device.type in {"cuda", "mps"}:
-            compiled_clean = not self._capture.is_transient() and (
-                steering_uses_compiled_offsets
-                or self._steering.all_fast_path()
-            )
-            if compiled_clean and self._compiled_graph_thread_safe():
-                use_static_cache = self._static_cache_active and (
-                    cached_pkv is None or cached_static
-                )
-            else:
-                gen_model = getattr(self._model, "_orig_mod", self._model)
-                use_static_cache = False
-        generation_pkv = cached_pkv
-        if use_static_cache and generation_pkv is None:
-            # Reserve at least the session default decode window and bucket the
-            # total length.  Most interactive requests then keep one cache
-            # allocation and one set of Dynamo guards even when their per-call
-            # max_tokens differ.  The session lock serializes access, so reset +
-            # reuse cannot race another generation.
-            reserve_tokens = max(
-                int(gen_config.max_new_tokens),
-                int(self.config.max_new_tokens),
-                1,
-            )
-            required_len = (
-                cache_position_offset
-                + int(effective_input_ids.shape[1])
-                + reserve_tokens
-            )
-            cache_len = ((required_len + 255) // 256) * 256
-            try:
-                generation_pkv = self._acquire_generation_static_cache(
-                    gen_model,
-                    max_cache_len=cache_len,
-                )
-            except Exception as exc:
-                _log.warning(
-                    "Reusable StaticCache allocation failed (%s: %s); "
-                    "falling back to DynamicCache",
-                    type(exc).__name__,
-                    exc,
-                )
-                use_static_cache = False
-        generated_ids = generate_steered(
-            gen_model, self._tokenizer, effective_input_ids,
-            gen_config, self._gen_state, thinking=use_thinking,
-            on_token=effective_tap,
-            seed=seed, stop=stop_list, logit_bias=logit_bias,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            logprobs=lp_count,
-            trigger_ctx=self._steering.ctx,
-            past_key_values=generation_pkv,
-            cache_position_offset=cache_position_offset,
-            score_callback=gating_callback,
-            # Per-token probe scoring fires post-forward, not inside the
-            # capture hook.  On the persistent-capture path the step callback is
-            # ``ingest_persistent`` (accumulate from the persistent buffers +
-            # fire the step sink); otherwise ``fire_step_sink`` (the transient
-            # hooks already accumulated in-forward).  Both no-op when no per-token
-            # sink is installed (aggregate-only / full-retention / no-probe).
-            step_callback=_step_callback,
-            use_static_cache=use_static_cache,
-            forced_prefix=forced_prefix,
-            steering_active=bool(
-                self._steering.hooks or steering_uses_compiled_offsets
-            ),
-            want_perplexity=want_perplexity,
-            traits=self.chat_traits,
-        )
-        elapsed = time.monotonic() - start
-
-        entry = self._prefix_cache
-        if (
-            cached_pkv is not None
-            and entry is not None
-            and entry.past_key_values is cached_pkv
-            and not entry.rollback()
-        ):
-            self._invalidate_prefix_cache()
-        return generated_ids, elapsed
-
-    def _generate_core(
-        self,
-        input: Any,
-        *,
-        steering: "str | Steering | None" = None,
-        sampling: SamplingConfig | None = None,
-        stateless: bool = False,
-        raw: bool = False,
-        thinking: bool | None = None,
-        on_token: TokenCallback | None = None,
-        parent_node_id: str | None = None,
-        recipe_override: "Recipe | str | None" = None,
-        forced_prefix: list[int] | None = None,
-        gen_seat: str = "assistant",
-        append_same_role: bool = False,
-        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
-    ) -> GenerationResult:
-        """Shared generation implementation.
-
-        Runs inside :meth:`_generation_transaction` (the lock, the re-entry
-        guard, and the exception-hard teardown), composes a per-call
-        GenerationConfig, opens an internal steering scope (if any), runs
-        ``generate_steered`` with capture attached, and finalizes the result.
-        ``generate`` and ``generate_stream`` are thin wrappers around this.
-        """
-        with self._generation_transaction() as txn:
-
-            # Cast roster (weakest), the call's kwargs, and a regen's
-            # anchor + modifier compose in one pass, before the Steering
-            # object is built.
-            steering, sampling, thinking, system_prompt = (
-                self._compose_generation_call(
-                    steering=steering,
-                    sampling=sampling,
-                    thinking=thinking,
-                    system_prompt=system_prompt,
-                    raw=raw,
-                    gen_seat=gen_seat,
-                    parent_node_id=parent_node_id,
-                    recipe_override=recipe_override,
-                )
-            )
-            # ``""`` is the composition tiers' explicit "unsteered" (it stops
-            # a cast default from filling the slot, and is what the
-            # ``unsteered`` / ``inverted`` modifiers produce); once composed
-            # it means no steering, which the grammar spells ``None``.
-            if isinstance(steering, str) and not steering.strip():
-                steering = None
-
-            # Ordinary one-shot continuation is message-oriented: if the
-            # selected leaf already occupies the same structural seat under
-            # the same effective role label, regenerate that node in place
-            # with its current text as the forced prefix.  Specialist fan,
-            # fork, and prefill paths leave this flag off and retain their
-            # explicit sibling semantics.
-            continuation_node_id: str | None = None
-            continuation_prefix: list[int] | None = None
-            continuation_parent_id: str | None = None
-            if (
-                append_same_role
-                and not stateless
-                and forced_prefix is None
-                and (input is None or (raw and input == ""))
-            ):
-                candidate_id = parent_node_id or self.tree.active_node_id
-                candidate = self.tree.get(candidate_id)
-                candidate_seat = (
-                    "user" if gen_seat == "user" else "assistant"
-                )
-                generated_label = None
-                if sampling is not None and not raw:
-                    generated_label = (
-                        sampling.user_role
-                        if gen_seat == "user"
-                        else sampling.assistant_role
-                    )
-                if (
-                    candidate.role == candidate_seat
-                    and candidate.role_label == generated_label
-                ):
-                    continuation_node_id = candidate.id
-                    continuation_parent_id = candidate.parent_id
-                    continuation_prefix = list(
-                        self._tokenizer.encode(
-                            candidate.text, add_special_tokens=False,
-                        )
-                    )
-                    if continuation_prefix:
-                        from dataclasses import replace as _replace
-                        base_sampling = (
-                            sampling if sampling is not None else SamplingConfig()
-                        )
-                        base_max = (
-                            base_sampling.max_tokens
-                            or self.config.max_new_tokens
-                        )
-                        sampling = _replace(
-                            base_sampling,
-                            max_tokens=len(continuation_prefix) + base_max,
-                        )
-                    # Same-message continuation is an answer/body prefill,
-                    # not a request to open a fresh thinking channel.
-                    thinking = False
-
-            # Bound out by name (not unpacked positionally) because the body
-            # below reads all ten deep in the transaction and reassigns
-            # ``stop_list`` after the seat augmentation.
-            prepared = self._prepare_generation_call(steering, sampling, thinking)
-            steering_obj = prepared.steering_obj
-            use_thinking_req = prepared.use_thinking_req
-            gen_config = prepared.gen_config
-            lp_count = prepared.lp_count
-            seed = prepared.seed
-            stop_list = prepared.stop_list
-            logit_bias = prepared.logit_bias
-            presence_penalty = prepared.presence_penalty
-            frequency_penalty = prepared.frequency_penalty
-            logprobs_list = prepared.logprobs_list
-            readout_top_k = self._effective_readout_top_k(sampling)
-            stop_list = self._renderer.seat_stop_strings(
-                stop_list, gen_seat=gen_seat, raw=raw,
-            )
-            return_probe_readings = bool(
-                sampling is None or sampling.return_probe_readings
-            )
-            # ``mean_logprob_accum`` averages chosen-token logprobs over the
-            # non-thinking response span — surfaced on ``LoomNode.mean_logprob``
-            # at finalize-assistant time so the loom sidebar can sort siblings
-            # by surprise.  Populates whenever the engine captures chosen
-            # logprob (any ``on_token`` consumer with ``lp_count is not None``
-            # — i.e. the loom path or an explicit logprobs request).
-            mean_logprob_sum: float = 0.0
-            mean_logprob_count: int = 0
-            mean_logprob_missing = False
-            # CAA live toggle: when off, every per-token monitor consumer is
-            # masked at the source — generations run aggregate-only capture
-            # (probes still report the end-of-gen aggregate) and only probe
-            # gates can force a per-token subset.
-            _live_scores_on = self._geometry_instrument.is_live
-            _callback_options = consumer_options(on_token)
-            _wants_live_token_scores = bool(
-                _live_scores_on
-                and on_token is not None
-                and _callback_options.live_scores
-            )
-            _persists_layer_scores = bool(
-                _live_scores_on
-                and (
-                    (sampling is not None and sampling.persist_per_layer_scores)
-                    or (
-                        on_token is not None and _callback_options.per_layer_scores
-                    )
-                )
-            )
-            # Probe-inspector live point + fading trail: stamp each token's probe
-            # reading with per-layer whitened subspace coords.  Gates the monitor
-            # post-pass (set here, reset in the teardown ``finally``) and forces
-            # per-token scoring so the per-token reading actually exists to carry it.
-            _persists_subspace_coords = bool(
-                _live_scores_on
-                and sampling is not None
-                and sampling.persist_subspace_coords
-            )
-            self._monitor.set_subspace_coords(_persists_subspace_coords)
-            from drowse.generation.token_payloads import (
-                TokenProbePayload,
-                build_token_probe_payload,
-            )
-
-            _has_monitor_probes = bool(self._monitor.probe_names)
-
-            def _token_tap(
-                text: str, is_thinking: bool, tid: int | None, lp: float | None,
-                top_alts: list[TokenAlt] | None, perplexity: float | None = None,
-                step_id: int = -1,
-            ) -> None:
-                # ``step_id`` is the decode loop's forward index (the internal
-                # StepTokenCallback contract) — the SAME value this forward's
-                # gate callback received, so the lens/SAE display steps below
-                # can reuse the gate's step-keyed stash rows.  User callbacks keep
-                # the public six-argument TokenCallback shape (invoked below).
-                nonlocal mean_logprob_sum, mean_logprob_count, mean_logprob_missing
-                self._last_token_probe_payload = None
-                self._last_token_payload = None
-                if logprobs_list is not None and tid is not None and tid >= 0 and not is_thinking:
-                    logprobs_list.append((tid, lp, top_alts or []))
-                if lp is None and tid is not None and tid >= 0 and not is_thinking:
-                    mean_logprob_missing = True
-                if lp is not None and tid is not None and tid >= 0 and not is_thinking:
-                    mean_logprob_sum += lp
-                    mean_logprob_count += 1
-                needs_scores = bool(
-                    _live_scores_on
-                    and _has_monitor_probes
-                    and (
-                        assistant_node_id is not None
-                        or _wants_live_token_scores
-                        or _persists_subspace_coords
-                    )
-                )
-                payload = (
-                    build_token_probe_payload(
-                        capture=self._capture,
-                        capture_state=self._capture_state,
-                        incremental_readings=self._incremental_readings,
-                        geometry_run=self._geometry_instrument.current_run,
-                        step_id=step_id,
-                        needs_scores=needs_scores,
-                        persists_layer_scores=_persists_layer_scores,
-                        assistant_node_id=assistant_node_id,
-                    )
-                    if needs_scores
-                    else None
-                )
-                # Live J-lens readout (None when off): the step's top-k
-                # lens tokens per selected layer + the layer-aggregated
-                # chip list.  ``step_id`` lets the display reuse the gate
-                # callback's stash rows iff they came from THIS forward
-                # (step identity replaced the old freshness handshake).
-                lens_step = (
-                    self._lens_instrument.live_readout_step(
-                        top_k=readout_top_k, step_id=step_id,
-                    )
-                    if _has_lens_consumer
-                    else None
-                )
-                sae_step = (
-                    self._sae_instrument.live_readout_step(
-                        top_k=readout_top_k, step_id=step_id,
-                    )
-                    if _has_sae_consumer
-                    else None
-                )
-                # Pinned lens probes tick on the same step (readings extracted
-                # from the display logits inside the readout step) — merge them
-                # into every populated probe channel so the loom row, trait
-                # stream, and WS frames carry them uniformly.
-                if lens_step is not None and self._lens_instrument.last_step_readings:
-                    if payload is None:
-                        payload = TokenProbePayload()
-                    payload.merge_readings(
-                        self._lens_instrument.last_step_readings,
-                        family="lens",
-                        per_layer=(
-                            assistant_node_id is not None
-                            and _persists_layer_scores
-                        ),
-                    )
-                if sae_step is not None and self._sae_instrument.last_step_readings:
-                    if payload is None:
-                        payload = TokenProbePayload()
-                    payload.merge_readings(
-                        self._sae_instrument.last_step_readings,
-                        family="sae",
-                        per_layer=(
-                            assistant_node_id is not None
-                            and _persists_layer_scores
-                        ),
-                    )
-                scores = payload.scores if payload is not None else None
-                per_layer_payload = (
-                    payload.per_layer_scores if payload is not None else None
-                )
-                lens_payload = lens_step[0] if lens_step is not None else None
-                lens_aggregate_payload = (
-                    lens_step[1] if lens_step is not None else None
-                )
-                lens_token_ids = (
-                    lens_step[2]
-                    if lens_step is not None and len(lens_step) > 2
-                    else None
-                )
-                if (
-                    lens_payload
-                    or lens_aggregate_payload
-                    or sae_step
-                    or (
-                        payload is not None
-                        and (
-                            payload.scores
-                            or payload.per_layer_scores
-                            or payload.has_readings
-                        )
-                    )
-                ):
-                    if payload is None:
-                        payload = TokenProbePayload()
-                    self._last_token_payload = payload
-                    recipe_steering = None
-                    if assistant_node_id is not None:
-                        node = self.tree.nodes.get(assistant_node_id)
-                        if node is not None and node.recipe is not None:
-                            recipe_steering = node.recipe.steering
-                    self._last_token_probe_payload = payload.to_token_payload(
-                        lens=lens_payload,
-                        lens_aggregate=lens_aggregate_payload,
-                        lens_token_ids=lens_token_ids,
-                        lens_source=(
-                            self._lens_instrument.live.get("source")
-                            if self._lens_instrument.live is not None
-                            else None
-                        ),
-                        sae=sae_step,
-                        sae_source=(
-                            self._sae_instrument.live.get("source")
-                            if self._sae_instrument.live is not None
-                            else None
-                        ),
-                        sae_layer=(
-                            int(self._sae_instrument.live["layer"])
-                            if self._sae_instrument.live is not None
-                            else None
-                        ),
-                        steering=recipe_steering,
-                    )
-                if assistant_node_id is not None and tid is not None:
-                    token_row: dict[str, Any] = {
-                        "token_id": int(tid),
-                        "text": text,
-                        "logprob": float(lp) if lp is not None else None,
-                        "perplexity": (
-                            float(perplexity) if perplexity is not None else None
-                        ),
-                    }
-                    # The decode loop records this emission's
-                    # ``generated_ids`` index just before the tap runs: the
-                    # join key a logit fork uses to slice ``raw_token_ids``.
-                    # Stamped here so the row is complete (and never
-                    # mutated again) once it lands in the tree.
-                    emit_map = self._gen_state.emit_map
-                    if emit_map:
-                        token_row["raw_index"] = int(emit_map[-1][0])
-                    if top_alts:
-                        token_row["top_alts"] = [
-                            {
-                                "id": int(a.id),
-                                "text": a.text,
-                                "logprob": float(a.logprob),
-                            }
-                            for a in top_alts
-                        ]
-                    if scores:
-                        token_row["probes"] = {
-                            p: round(float(v), 6) for p, v in scores.items()
-                        }
-                    if per_layer_payload:
-                        token_row["per_layer_scores"] = per_layer_payload
-                    measurements = (
-                        self._last_token_probe_payload.get("measurements")
-                        if self._last_token_probe_payload is not None
-                        else None
-                    )
-                    if measurements:
-                        token_row["measurements"] = measurements
-                    self.tree.append_token(
-                        assistant_node_id,
-                        token_row,
-                        thinking=bool(is_thinking),
-                    )
-                if on_token is not None:
-                    on_token(text, is_thinking, tid, lp, top_alts, perplexity)
-
-            # Pass _token_tap into generate_steered only when at least one of its
-            # branches is live: caller-supplied on_token, logprobs collection, or
-            # the loom probe row.  When all are inactive, _token_tap
-            # would be a no-op called once per generated token, AND its presence
-            # forces generate_steered to compute the unconditional fp32
-            # log_softmax + entropy sync per step (gate at generation.py:571).
-            # Skipping it here trims that cost from the stateless prefill
-            # workload (800 back-to-back gens of ~16 tokens each, no logprobs,
-            # no streaming).  Stop-sequence behavior is preserved by
-            # not wiring _token_tap=None when stop_list is set — the tokenizer-
-            # decode + stop-match in generation.py only runs under on_token.
-            # The tap also writes per-token ``probes`` / ``per_layer_scores``
-            # onto the loom row when probes are loaded and the gen is loom-
-            # attached — required so a webui refresh can rehydrate highlight
-            # tints and the token-drilldown heatmap from the server tree.
-            _persists_probe_row = bool(
-                _live_scores_on
-                and return_probe_readings
-                and not stateless
-                and _has_monitor_probes
-            )
-            _need_tap = (
-                on_token is not None
-                or logprobs_list is not None
-                or _persists_probe_row
-                or stop_list is not None
-            )
-            _has_lens_consumer = bool(
-                self._lens_instrument.live is not None
-                and on_token is not None
-                and _callback_options.lens_readout
-            )
-            _has_sae_consumer = bool(
-                self._sae_instrument.live is not None
-                and on_token is not None
-                and _callback_options.sae_readout
-            )
-            _effective_tap = _token_tap if _need_tap else None
-
-            # Compiled-clean eligibility for this gen: the compiled CUDA/MPS
-            # graph + static cache are live, the persistent capture buffers were
-            # adopted, and the caller didn't ask for the full per-step hidden
-            # stack (``return_hidden`` keeps the transient full-retention
-            # capture).  Capture then rides the persistent buffers; a static
-            # steering plan rides the offsets — both compile-clean.
-            self._compiled_clean_eligible = bool(
-                self._compiled
-                and self._device.type in {"cuda", "mps"}
-                and self._static_cache_active
-                and self._capture_buffers
-                and not (sampling and sampling.return_hidden)
-            )
-
-            if steering_obj is not None and steering_obj.alphas:
-                txn.steering_cm = self.steering(steering_obj)
-
-            # Snapshot the chat-history anchor BEFORE _start_loom_assistant
-            # mutates the tree.  Otherwise the new (empty) assistant node it
-            # creates becomes the active leaf, and ``messages_for(None)`` later
-            # walks INCLUDING that empty assistant — producing a trailing
-            # empty-content assistant message AND a duplicated trailing user
-            # turn after the render re-appends ``input``.  Strict chat
-            # templates (Mistral 3) reject the empty assistant outright with
-            # ``Assistant message must have a string or a list of chunks ...``;
-            # permissive templates render the duplicate user silently and
-            # degrade prompt quality.
-            chat_history_anchor = (
-                continuation_parent_id
-                if continuation_node_id is not None
-                else parent_node_id
-            )
-            if (
-                not stateless
-                and (isinstance(input, str) or input is None)
-                and chat_history_anchor is None
-            ):
-                chat_history_anchor = self.tree.active_node_id
-
-            assistant_node_id = self._start_loom_assistant(
-                input,
-                stateless=stateless,
-                raw=raw,
-                parent_node_id=parent_node_id,
-                sampling=sampling,
-                steering_obj=steering_obj,
-                use_thinking_req=use_thinking_req,
-                gen_seat=gen_seat,
-                system_prompt=system_prompt,
-                continuation_node_id=continuation_node_id,
-            )
-
-            if txn.steering_cm is not None:
-                txn.steering_cm.__enter__()
-            input_ids, use_thinking, prompt_tokens = self._generation_preamble(
-                input, raw, use_thinking_req, stateless=stateless,
-                parent_node_id=chat_history_anchor,
-                user_role=sampling.user_role if sampling is not None else None,
-                assistant_role=(
-                    sampling.assistant_role if sampling is not None else None
-                ),
-                gen_seat=gen_seat,
-                system_prompt=system_prompt,
-            )
-            # Refresh snapshot now that steering is pushed (first-scope case).
-            vector_snapshot: dict[str, float] = self._snapshot_steering_alphas()
-
-            want_hidden = bool(sampling and sampling.return_hidden)
-            self._lens_instrument.active_for_generation = _has_lens_consumer
-            self._sae_instrument.active_for_generation = _has_sae_consumer
-            # F11: nothing is tokenized unless a channel will measure the rows.
-            authored_capture = plan_authored_capture(
-                self.tree, self._tokenizer, assistant_node_id, raw=raw,
-                monitor=self._monitor,
-                lens=self._lens_instrument,
-                sae=self._sae_instrument,
-                monitor_active=bool(_live_scores_on and _has_monitor_probes),
-                lens_active=_has_lens_consumer,
-                sae_active=_has_sae_consumer,
-                readout_top_k=readout_top_k,
-                persist_per_layer_scores=_persists_layer_scores,
-                content_end=lambda: int(self._renderer.prepare_input(
-                    input,
-                    raw=False,
-                    thinking=use_thinking,
-                    stateless=stateless,
-                    parent_node_id=chat_history_anchor,
-                    user_role=(
-                        sampling.user_role if sampling is not None else None
-                    ),
-                    assistant_role=(
-                        sampling.assistant_role if sampling is not None else None
-                    ),
-                    to_device=False,
-                    gen_seat=gen_seat,
-                    system_prompt=system_prompt,
-                    add_generation_prompt=False,
-                ).shape[1]),
-            )
-            # Fold every consumer of this generation into one read demand.
-            # Per-token scoring is only needed when something consumes a
-            # per-token reading: a probe gate, a loom token row,
-            # a live-scores client, or a per-layer-heatmap persist.
-            # Otherwise (probes attached but only the aggregate wanted, e.g. a
-            # stateless server gen) the capture skips per-token scoring
-            # entirely and pools the aggregate once at finalize.
-            read_demand = self._resolve_read_demand(
-                want_hidden=want_hidden,
-                live_scores_on=_live_scores_on,
-                has_monitor_probes=_has_monitor_probes,
-                loom_attached=assistant_node_id is not None,
-                wants_live_token_scores=_wants_live_token_scores,
-                persists_layer_scores=_persists_layer_scores,
-                persists_probe_row=_persists_probe_row,
-                persists_subspace_coords=_persists_subspace_coords,
-                live_lens_active=_has_lens_consumer,
-                live_sae_active=_has_sae_consumer,
-                final_probe_aggregate=return_probe_readings,
-                capture_prompt=authored_capture is not None,
-            )
-            self.events.emit(GenerationStarted(input=input, stateless=stateless))
-            try:
-                # Capture attach + monitor live + ctx.reset live INSIDE the
-                # inner try so a BaseException (KeyboardInterrupt, etc.)
-                # between any pair of these still hits the cleanup finally.
-                # ``_end_capture`` and ``end_live`` are idempotent.
-                self._begin_capture(read_demand, widen=want_hidden)
-                # Reset the steering manager's TriggerContext for this gen;
-                # ``generate_steered`` mutates it at lifecycle boundaries.
-                self._steering.ctx.reset()
-                # Cold-start every manifold foot-follower so this gen re-seeds
-                # at the origin instead of inheriting the prior run's foot.
-                self._steering.reset_manifold_feet()
-                self._gen_phase = GenState.RUNNING
-
-                generated_ids, elapsed = self._run_generation_loop(
-                    input_ids,
-                    gen_config,
-                    use_thinking=use_thinking,
-                    want_hidden=want_hidden,
-                    effective_tap=_effective_tap,
-                    seed=seed,
-                    stop_list=stop_list,
-                    logit_bias=logit_bias,
-                    presence_penalty=presence_penalty,
-                    frequency_penalty=frequency_penalty,
-                    lp_count=lp_count,
-                    forced_prefix=(
-                        continuation_prefix
-                        if continuation_node_id is not None
-                        else forced_prefix
-                    ),
-                    # Per-token perplexity costs one host sync/token.  Compute
-                    # it only when something surfaces it: a loom-attached gen
-                    # persists it on the token row, an interactive (non-
-                    # stateless) gen may show it, or a caller opts its on_token
-                    # in.  Stateless server streaming (OpenAI/Ollama deltas, the
-                    # native WS tap) never reads per-token ppl, so it skips the
-                    # sync.  Callers can force it via ``on_token
-                    # requests perplexity through ``TokenConsumerOptions``.
-                    want_perplexity=(
-                        not stateless
-                        or assistant_node_id is not None
-                        or (
-                            on_token is not None and _callback_options.perplexity
-                        )
-                    ),
-                    authored_capture=authored_capture,
-                )
-            finally:
-                self._gen_state.stop_requested.set()
-                self._end_capture()
-                if txn.steering_cm is not None:
-                    # The generation's own scope teardown passes the
-                    # mid-generation guard; ``swallow=False`` so a teardown
-                    # failure surfaces here.  Clearing the slot hands the
-                    # transaction an already-popped scope, so its own teardown
-                    # has nothing left to do.
-                    txn.steering_cm.close(internal=True)
-                    txn.steering_cm = None
-                self._gen_phase = GenState.FINALIZING
-
-            applied_steering = (
-                str(steering_obj) if steering_obj is not None else None
-            )
-            # Convert the in-loop logprob accumulator
-            # into per-turn rollups before handing finalize the slot.
-            # ``mean_logprob_count == 0`` covers both "no captures because
-            # gen was empty" and "no captures because no on_token consumer
-            # was wired" — both produce ``None`` so the wire/tree carry a
-            # current empty/no-capture shape.
-            _mean_logprob_out: float | None = None
-            _mean_surprise_out: float | None = None
-            if mean_logprob_count > 0 and not mean_logprob_missing:
-                _mean_logprob_out = mean_logprob_sum / mean_logprob_count
-                _mean_surprise_out = -_mean_logprob_out
-            result = self._finalize_generation(
-                generated_ids, elapsed, vector_snapshot,
-                prompt_tokens=prompt_tokens, stateless=stateless,
-                logprobs_list=logprobs_list,
-                applied_steering=applied_steering,
-                return_hidden=want_hidden,
-                return_probe_readings=return_probe_readings,
-                assistant_node_id=assistant_node_id,
-                mean_logprob=_mean_logprob_out,
-                mean_surprise=_mean_surprise_out,
-            )
-            self.events.emit(GenerationFinished(result=result))
-            return result
-
     def _generate_runset(
         self,
         input: Any,
@@ -4067,7 +2467,7 @@ class DrowseSession:
         stateless: bool = False,
         raw: bool = False,
         thinking: bool | None = None,
-        on_token: TokenCallback | None = None,
+        on_token: TokenSink | None = None,
         parent_node_id: str | None = None,
         n: int = 1,
         recipe_override: "Recipe | str | None" = None,
@@ -4079,7 +2479,7 @@ class DrowseSession:
         if n < 1:
             raise ValueError(f"n must be >= 1, got {n}")
         if n == 1:
-            result = self._generate_core(
+            result = self._engine.generate_one(
                 input,
                 steering=steering,
                 sampling=sampling,
@@ -4155,7 +2555,7 @@ class DrowseSession:
         stateless: bool,
         raw: bool,
         thinking: bool | None,
-        on_token: TokenCallback | None,
+        on_token: TokenSink | None,
         parent_node_id: str | None,
         n: int,
         recipe_override: "Recipe | str | None",
@@ -4169,7 +2569,7 @@ class DrowseSession:
             or recipe_override is not None
         ):
             return None
-        if self._compose_gen_config(sampling).temperature > 0:
+        if self._engine.gen_config(sampling).temperature > 0:
             return None
         fast = self._generate_batch_fast(
             [input for _ in range(n)],
@@ -4198,7 +2598,7 @@ class DrowseSession:
         stateless: bool = False,
         raw: bool = False,
         thinking: bool | None = None,
-        on_token: TokenCallback | None = None,
+        on_token: TokenSink | None = None,
         parent_node_id: str | None = None,
         n: int = 1,
         recipe_override: "Recipe | str | None" = None,
@@ -4258,6 +2658,8 @@ class DrowseSession:
             :class:`RunSet` in every case.  It is list-like for fan-out
             and exposes ``.first`` for the common single-result case.
         """
+        if n < 1:
+            raise GenerationRequestError(f"n must be >= 1, got {n}")
         return self._generate_runset(
             input,
             steering=steering,
@@ -4298,8 +2700,8 @@ class DrowseSession:
         Yields ``TokenEvent`` per token.  On iterator close (normal
         exhaustion, ``GeneratorExit``, or an exception raised through
         ``yield``) the worker is signaled to stop and joined, and the
-        underlying ``_generate_core`` cleanup runs — probes detached,
-        steering scope popped, lock released.
+        generation's teardown runs — probes detached, steering scope popped,
+        lock released.
 
         ``sampling=SamplingConfig(return_hidden=True)`` works here too:
         per-token events do not carry hidden states (that would break
@@ -4314,128 +2716,21 @@ class DrowseSession:
         ``live_readouts=False`` skips live J-LENS/SAE token readouts for
         stream formats that never serialize those richer cards.
         """
-        q: queue.SimpleQueue[Any] = queue.SimpleQueue()
-        done = object()
-        result_holder: list[GenerationResult] = []
-        exc_holder: list[BaseException] = []
-        idx_counter = [0]
-        cancelled = threading.Event()
-
-        def _push(
-            text: str, is_thinking: bool, tid: int | None, lp: float | None,
-            top_alts: list[TokenAlt] | None, perplexity: float | None = None,
-        ) -> None:
-            payload = self._last_token_probe_payload or {}
-            probe_readings: dict[str, "ProbeReading"] | None = None
-            # Monitor probes AND pinned lens/SAE probes (readout channels) all
-            # land in the merged per-family readings — a lens-only roster still
-            # carries per-token readings while the live lens is on.  This is
-            # the ``TokenEvent.probe_readings`` compat channel (the
-            # OpenAI/Ollama vendor extension), kept as live
-            # :class:`ProbeReading` objects; the serialized envelope rides
-            # ``measurements`` with each family's NATIVE reading shape.
-            #
-            # The single-axis families' ``ScalarReading -> ProbeReading``
-            # projection happens HERE, per stream consumer — never in the
-            # token tap, so a generation nobody streams pays nothing for a
-            # compatibility shape nobody reads.
-            if live_scores and (
-                self._monitor.probe_names
-                or self._lens_instrument.probes
-                or self._sae_instrument.probes
-            ):
-                last_payload = self._last_token_payload
-                if last_payload is not None and last_payload.has_readings:
-                    probe_readings = last_payload.all_readings
-            event = TokenEvent(
-                text=text, token_id=tid if tid is not None else -1, index=idx_counter[0],
-                thinking=is_thinking, logprob=lp, top_alts=top_alts,
-                probe_readings=probe_readings, perplexity=perplexity,
-                measurements=payload.get("measurements"),
-            )
-            idx_counter[0] += 1
-            q.put(event)
-        consumer = TokenConsumer(
-            _push,
-            TokenConsumerOptions(
-                live_scores=bool(live_scores),
-                lens_readout=bool(live_readouts),
-                sae_readout=bool(live_readouts),
-            ),
+        return self._engine.stream(
+            input,
+            live_scores=live_scores,
+            live_readouts=live_readouts,
+            steering=steering,
+            sampling=sampling,
+            stateless=stateless,
+            raw=raw,
+            thinking=thinking,
+            parent_node_id=parent_node_id,
+            recipe_override=recipe_override,
+            gen_seat=gen_seat,
+            append_same_role=append_same_role,
+            system_prompt=system_prompt,
         )
-
-        def _worker():
-            try:
-                with self._gen_state.cancellation_scope(cancelled):
-                    result = self._generate_core(
-                        input,
-                        steering=steering,
-                        sampling=sampling,
-                        stateless=stateless,
-                        raw=raw,
-                        thinking=thinking,
-                        on_token=consumer,
-                        parent_node_id=parent_node_id,
-                        recipe_override=recipe_override,
-                        gen_seat=gen_seat,
-                        append_same_role=append_same_role,
-                        system_prompt=system_prompt,
-                    )
-                result_holder.append(result)
-            except BaseException as e:
-                exc_holder.append(e)
-            finally:
-                q.put(done)
-
-        worker = threading.Thread(target=_worker, daemon=True)
-        worker.start()
-        finished = False
-
-        def _finish() -> None:
-            nonlocal finished
-            if finished:
-                return
-            cancelled.set()
-            worker.join()
-            while not q.empty():
-                q.get_nowait()
-            finished = True
-            if exc_holder and not result_holder:
-                raise exc_holder[0]
-
-        def _events() -> Iterator[TokenEvent]:
-            try:
-                while True:
-                    item = q.get()
-                    if item is done:
-                        break
-                    yield item
-            finally:
-                _finish()
-
-        class _GenerationStream:
-            def __init__(self, iterator: Iterator[TokenEvent]) -> None:
-                self._iterator = iterator
-
-            def __iter__(self) -> "_GenerationStream":
-                return self
-
-            def __next__(self) -> TokenEvent:
-                return next(self._iterator)
-
-            def close(self) -> None:
-                close = getattr(self._iterator, "close", None)
-                try:
-                    if callable(close):
-                        close()
-                finally:
-                    _finish()
-
-            @property
-            def result(self) -> GenerationResult | None:
-                return result_holder[0] if result_holder else None
-
-        return _GenerationStream(_events())
 
     # -- Generation: batch + sweep --
 
@@ -4470,7 +2765,10 @@ class DrowseSession:
         if has_sae_probes and self._sae_instrument.runtime.layer is None:
             return None
 
-        prepared = self._prepare_generation_call(steering, sampling, thinking)
+        prepared = self._engine.resolve_call(
+            None, steering=steering, sampling=sampling, thinking=thinking,
+            stateless=True, raw=raw,
+        )
         if (
             prepared.use_thinking_req
             or prepared.gen_config.max_new_tokens < 1
@@ -4483,7 +2781,7 @@ class DrowseSession:
             or prepared.logit_bias is not None
             or prepared.presence_penalty != 0.0
             or prepared.frequency_penalty != 0.0
-            or prepared.logprobs_list is not None
+            or prepared.collect_logprobs
             or not self._batch_fast_steering_is_always_on(prepared.steering_obj)
         ):
             return None
@@ -4572,8 +2870,7 @@ class DrowseSession:
                 )) is not None else None
             ),
         )
-        self._last_result = result
-        self._last_per_token_scores = None
+        self._engine.record(result, None)
         if merged:
             self.events.emit(ProbeScored(readings={
                 name: reading_axis0(reading)
@@ -4773,17 +3070,17 @@ class DrowseSession:
     ) -> RunSet:
         """Implementation of the compatible batched ``model.generate`` path.
 
-        Shares :meth:`_generation_transaction` with the ordinary decode path,
+        Shares the engine's transaction with the ordinary decode path,
         so the boundary guard and the teardown are the same code; only the
         body differs (one batched ``model.generate`` instead of the decode
         loop, and no loom attachment).
         """
-        with self._generation_transaction() as txn:
+        with self._engine.transaction() as txn:
             if steering_obj is not None and steering_obj.alphas:
                 txn.steering_cm = self.steering(steering_obj)
                 txn.steering_cm.__enter__()
             vector_snapshot: dict[str, float] = (
-                self._snapshot_steering_alphas()
+                self._steering_composer.snapshot_steering_alphas()
                 if self._steering_composer.active or txn.steering_cm is not None
                 else {}
             )
@@ -4836,10 +3133,10 @@ class DrowseSession:
                 self._capture_state = CaptureState(mode=CaptureMode.AGGREGATE_ONLY)
                 if probe_names:
                     self._monitor.enable_curved_warm(False)
-            self._gen_state.reset()
+            self._engine.state.reset()
             self._steering.ctx.reset()
             self._steering.reset_manifold_feet()
-            self._gen_phase = GenState.RUNNING
+            self._engine.phase = GenState.RUNNING
             for prompt in prompts:
                 self.events.emit(GenerationStarted(input=prompt, stateless=stateless))
 
@@ -4869,7 +3166,7 @@ class DrowseSession:
                     attention_mask=attention_mask,
                     generation_config=hf_config,
                     stopping_criteria=StoppingCriteriaList([
-                        _SessionStopCriteria(self._gen_state),
+                        _SessionStopCriteria(self._engine.state),
                     ]),
                 )
             elapsed = time.monotonic() - start
@@ -4883,7 +3180,7 @@ class DrowseSession:
                 )
 
             max_prompt_len = int(input_ids.shape[1])
-            self._gen_phase = GenState.FINALIZING
+            self._engine.phase = GenState.FINALIZING
             results: list[GenerationResult] = []
             node_ids: list[str | None] = []
             grid_rows: list[dict[str, Any]] = []
@@ -4897,11 +3194,11 @@ class DrowseSession:
                     pad_id=pad_id,
                     max_new_tokens=int(gen_config.max_new_tokens),
                 )
-                self._gen_state.thinking_end_idx = 0
-                self._gen_state.emit_map = []
-                self._gen_state.response_text = None
-                self._gen_state.response_aggregate_index = None
-                self._gen_state.finish_reason = finish_reason
+                self._engine.state.thinking_end_idx = 0
+                self._engine.state.emit_map = []
+                self._engine.state.response_text = None
+                self._engine.state.response_aggregate_index = None
+                self._engine.state.finish_reason = finish_reason
                 if capture_probe_aggregates:
                     pooled = self._batch_pooled_aggregate_for_row(idx, generated_ids)
                     geometry_readings: dict[str, ProbeReading] = (
@@ -4929,7 +3226,7 @@ class DrowseSession:
                         sae_readings=sae_readings,
                     )
                 else:
-                    result = self._finalize_generation(
+                    result = self._engine.finalize(
                         generated_ids,
                         elapsed,
                         vector_snapshot,
@@ -4948,7 +3245,7 @@ class DrowseSession:
                 self.events.emit(GenerationFinished(result=result))
                 if on_result is not None:
                     on_result(idx, result)
-            self._gen_state.stop_requested.set()
+            self._engine.state.stop_requested.set()
             total_tokens = sum(r.token_count for r in results)
             batch_tok_per_sec = (
                 total_tokens / elapsed if elapsed > MIN_ELAPSED_FOR_RATE else 0.0
@@ -5078,7 +3375,7 @@ class DrowseSession:
         row and the consume gate would refuse the hit anyway), no
         ``return_hidden`` and no thinking (both force a full re-prefill), at
         least two rows, and a shared prefix of at least
-        :data:`_PREFIX_CACHE_MIN_TOKENS`. Ordinary ineligibility returns False;
+        :data:`PREFIX_CACHE_MIN_TOKENS`. Ordinary ineligibility returns False;
         lifecycle, rendering, and initialization failures propagate.
         """
         if len(prompts) < 2 or not stateless:
@@ -5102,10 +3399,10 @@ class DrowseSession:
                 common,
                 max_new_tokens=max_new_tokens,
                 prefer_static=bool(
-                    self._static_cache_active and steering is None
+                    self._runtime.static_cache_active and steering is None
                 ),
             )
-            >= _PREFIX_CACHE_MIN_TOKENS
+            >= PREFIX_CACHE_MIN_TOKENS
         )
 
     def _batch_common_prefix_ids(
@@ -5117,7 +3414,7 @@ class DrowseSession:
         ``_generate_core`` will reproduce, so the cached tokens are a true
         byte-prefix of every row) and returns the shared head as a 1-D tensor,
         or ``None`` when the shared run is shorter than
-        :data:`_PREFIX_CACHE_MIN_TOKENS`.  The run is capped at ``min_row_len -
+        :data:`PREFIX_CACHE_MIN_TOKENS`.  The run is capped at ``min_row_len -
         1`` so every row keeps a non-empty suffix to sample from.
         """
         rendered: list[torch.Tensor] = []
@@ -5130,7 +3427,7 @@ class DrowseSession:
             # ``int(t[i])`` while walking the common prefix.
             rendered.append(ids[0].detach().to("cpu"))
         min_len = min(int(t.shape[0]) for t in rendered)
-        if min_len <= _PREFIX_CACHE_MIN_TOKENS:
+        if min_len <= PREFIX_CACHE_MIN_TOKENS:
             return None
         ref = rendered[0]
         common = 0
@@ -5141,7 +3438,7 @@ class DrowseSession:
             else:
                 break
         common = min(common, min_len - 1)  # leave a >=1-token suffix per row
-        if common < _PREFIX_CACHE_MIN_TOKENS:
+        if common < PREFIX_CACHE_MIN_TOKENS:
             return None
         return ref[:common].clone()
 
@@ -5164,7 +3461,7 @@ class DrowseSession:
         if len(jobs) < 2 or not stateless:
             return None
         first = jobs[0]
-        gen_config = self._compose_gen_config(first.sampling)
+        gen_config = self._engine.gen_config(first.sampling)
         if gen_config.temperature > 0:
             return None
         for job in jobs[1:]:
@@ -5174,7 +3471,7 @@ class DrowseSession:
                 or job.raw != first.raw
                 or job.thinking != first.thinking
                 or job.recipe_override is not None
-                or self._compose_gen_config(job.sampling).temperature > 0
+                or self._engine.gen_config(job.sampling).temperature > 0
             ):
                 return None
 
@@ -5354,12 +3651,37 @@ class DrowseSession:
     # -- Generation control --
 
     def stop(self) -> None:
-        self._gen_state.request_stop()
+        """Ask the in-flight generation to stop after its current step."""
+        self._engine.stop()
+
+    def _release_generation(self) -> None:
+        """The session half of a generation's teardown (the engine calls it).
+
+        Detaches capture, clears the per-generation probe-inspector pass and
+        the loom reservation, closes the instrument runs and resets the read
+        plane's per-generation state.  The run closure and the resets survive
+        a raising detach, so a bound run can never pin a stale lens.
+        """
+        try:
+            self._end_capture()
+            self._monitor.set_subspace_coords(False)
+        finally:
+            # Mutators (edit / delete on this subtree) are free again once the
+            # streaming target is no longer live, even if finalize raised.
+            self.tree.reserve(None)
+            try:
+                self._close_instrument_runs()
+            finally:
+                # The next generation starts from the default (FULL,
+                # non-persistent) capture state with empty reading rows.
+                self._capture_state = CaptureState()
+                self._incremental_readings = []
+                self._incremental_gate_scores = []
 
     # -- Lifecycle --
 
     def close(self) -> None:
-        """Detach everything this session attached to the model.
+        """Detach everything this session attached to the model and drop its state.
 
         ``from_pretrained`` installs two families of *permanent* forward hooks
         before ``torch.compile`` — the persistent steering offsets and the
@@ -5369,72 +3691,39 @@ class DrowseSession:
         alongside the transient steering hooks, releasing their
         ``2 x n_layers x hidden_size`` of device buffers with them.
         """
+        # Hooks and device buffers.
         self._steering.clear_all()
         self._steering.detach_compiled_offsets()
-        self.detach_persistent_capture()
-        capture = getattr(self, "_capture", None)
-        if capture is not None:
-            capture.detach()
-            capture.clear()
+        self._runtime.close()
+        self._engine.close()
+        self._capture.detach()
+        self._capture.clear()
+        self._chat.clear_caches()
 
-        for instrument_name in (
-            "_geometry_instrument", "_lens_instrument", "_sae_instrument",
-        ):
-            instrument = self.__dict__.get(instrument_name)
-            if instrument is None:
-                continue
-            instrument.close_run()
-            if hasattr(instrument, "probes"):
-                instrument.probes.clear()
-            if hasattr(instrument, "live"):
-                instrument.live = None
-
-        monitor = getattr(self, "_monitor", None)
-        if monitor is not None:
-            for name in list(monitor.probe_names):
-                monitor.remove_probe(name)
-            monitor.set_whitener(None)
-
-        self._registry.clear()
-        self._neutral.reset()
-        for cache_name in (
-            "_joint_logprob_cache",
-            "_probe_hash_cache",
-            "_incremental_readings",
-            "_incremental_gate_scores",
-        ):
-            cache = getattr(self, cache_name, None)
-            if cache is not None:
-                cache.clear()
-        self._prefix_cache = None
-        self._generation_static_cache = None
-        self._generation_static_cache_len = 0
+        # Read families: runs, attached probes, live readouts, residency.
+        self._geometry_instrument.close_run()
         self._lens_instrument.close()
+        self._sae_instrument.close_run()
+        self._sae_instrument.probes.clear()
+        self._sae_instrument.live = None
         self._sae_instrument.runtime.close()
-        self._last_result = None
-        self._last_per_token_scores = None
-        self._last_token_probe_payload = None
-        self._last_token_payload = None
-        events = getattr(self, "events", None)
-        if events is not None:
-            events.clear()
+        for name in list(self._monitor.probe_names):
+            self._monitor.remove_probe(name)
+        self._monitor.set_whitener(None)
+        self._incremental_readings = []
+        self._incremental_gate_scores = []
 
-    def detach_persistent_capture(self) -> None:
-        """Remove the persistent capture hooks and drop their buffers.
+        # The artifact registry, its derived caches, the neutral baseline.
+        self._registry.clear()
+        self._probe_hash_cache.clear()
+        self._joint_logprob_cache.clear()
+        self._neutral.reset()
 
-        The capture-side sibling of
-        :meth:`SteeringManager.detach_compiled_offsets`.  Idempotent.
-        """
-        for handle in self._capture_handles:
-            handle.remove()
-        self._capture_handles = []
-        self._capture_buffers = {}
+        self.events.clear()
 
     def __enter__(self) -> "DrowseSession":
         return self
 
     def __exit__(self, *args: Any) -> None:
         self.close()
-    def __iter__(self) -> "GenerationStream": ...
 
-    def __next__(self) -> TokenEvent: ...

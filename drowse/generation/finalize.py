@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -17,7 +18,12 @@ from drowse.readout.measurements import build_measurements
 from drowse.generation.results import GenerationResult, ProbeReading
 
 if TYPE_CHECKING:
+    from drowse.generation.decode import GenerationState
     from drowse.session.session import DrowseSession
+
+#: Below this many seconds a generation reports ``tok_per_sec = 0`` rather
+#: than a rate dominated by timer resolution.
+MIN_ELAPSED_FOR_RATE = 0.1
 
 
 def finalize_generation(
@@ -30,22 +36,27 @@ def finalize_generation(
     logprobs_list: list[tuple[int, float | None, list[Any]]] | None = None,
     applied_steering: str | None = None,
     *,
+    state: "GenerationState",
+    record: Callable[[GenerationResult, dict[str, list[float]] | None], None],
     return_hidden: bool = False,
     return_probe_readings: bool = True,
     assistant_node_id: str | None = None,
     mean_logprob: float | None = None,
     mean_surprise: float | None = None,
-    min_elapsed_for_rate: float = 1e-9,
+    min_elapsed_for_rate: float = MIN_ELAPSED_FOR_RATE,
 ) -> GenerationResult:
-    """Decode, score probes, update session side effects, and build a result."""
+    """Decode, score probes, finalize the loom node, and build a result.
+
+    ``state`` is the decode loop's state for this generation.  ``record``
+    publishes the result and its per-token scores (the engine's
+    ``last_result``) once the result exists, before the loom node is
+    finalized.
+    """
     token_count = len(generated_ids)
     tok_per_sec = token_count / elapsed if elapsed > min_elapsed_for_rate else 0.0
-    response_ids = generated_ids[session._gen_state.thinking_end_idx:]
-    if (
-        session._gen_state.finish_reason == "stop_sequence"
-        and session._gen_state.response_text is not None
-    ):
-        text: str = session._gen_state.response_text
+    response_ids = generated_ids[state.thinking_end_idx:]
+    if state.finish_reason == "stop_sequence" and state.response_text is not None:
+        text: str = state.response_text
     else:
         decoded = session._tokenizer.decode(response_ids, skip_special_tokens=True)
         text = decoded if isinstance(decoded, str) else decoded[0]
@@ -110,6 +121,7 @@ def finalize_generation(
         return aggregate_stack
 
     agg_vals: dict[str, ProbeReading] = {}
+    per_token_scores: dict[str, list[float]] | None = None
     if return_probe_readings and session._monitor.probe_names and generated_ids:
         if capture_mode is CaptureMode.INCREMENTAL:
             agg_vals, per_token = session._score_incremental(generated_ids)
@@ -133,9 +145,7 @@ def finalize_generation(
                 )
             else:
                 agg_vals, per_token = {}, {}
-        session._last_per_token_scores = per_token or None
-    else:
-        session._last_per_token_scores = None
+        per_token_scores = per_token or None
 
     hidden_states: dict[int, torch.Tensor] | None = None
     if return_hidden and generated_ids and captured_stack:
@@ -213,7 +223,7 @@ def finalize_generation(
         tok_per_sec=tok_per_sec, elapsed=elapsed,
         steering_alphas=vector_snapshot,
         prompt_tokens=prompt_tokens,
-        finish_reason=session._gen_state.finish_reason,
+        finish_reason=state.finish_reason,
         logprobs=logprobs_list,
         applied_steering=applied_steering,
         hidden_states=hidden_states,
@@ -225,7 +235,7 @@ def finalize_generation(
         },
         measurements=measurements,
     )
-    session._last_result = result
+    record(result, per_token_scores)
 
     if manifold_aggregates:
         session.events.emit(ProbeScored(readings={
@@ -260,7 +270,7 @@ def finalize_generation(
                 for name, reading in manifold_aggregates.items()
             },
             applied_steering=applied_steering,
-            finish_reason=session._gen_state.finish_reason,
+            finish_reason=state.finish_reason,
             mean_logprob=mean_logprob,
             mean_surprise=mean_surprise,
             raw_token_ids=generated_ids,

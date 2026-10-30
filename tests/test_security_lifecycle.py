@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from starlette.types import Message
 
-from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
+from drowse.generation.decode import GenerationConfig, generate_steered
 from drowse.generation.results import GenerationResult
 from drowse.session.session import DrowseSession
 from drowse.server import create_app
@@ -23,6 +23,7 @@ from drowse.server.operations import register_operation_routes, run_operation
 from drowse.server.runtime import finish_worker
 from tests.test_generation import _CurrentSessionStub, _StopTokenizer, _scripted_model
 from tests.test_server_loom import _StubSession
+from tests.support.engine import attach_engine
 
 STREAM_PATH = "/drowse/v1/sessions/default/stream"
 
@@ -104,27 +105,25 @@ def test_stream_close_before_first_read_waits_for_worker_and_survives_reset() ->
     generated: list[int] = []
     errors: list[BaseException] = []
     session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = GenerationState()
-    session._monitor = SimpleNamespace(probe_names=[])
-    session._last_token_probe_payload = {}
+    engine = attach_engine(session)
 
     def worker(*_args: Any, **kwargs: Any) -> GenerationResult:
         import torch
         entered.set()
         assert release.wait(3)
-        session._gen_state.reset()
+        engine.state.reset()
         try:
             generated.extend(generate_steered(
                 _scripted_model([0] * 20), cast(Any, _StopTokenizer()),
                 torch.tensor([[0]]), GenerationConfig(max_new_tokens=20, temperature=0),
-                session._gen_state,
+                engine.state,
             ))
             return GenerationResult(text="", tokens=generated, token_count=len(generated),
                                     tok_per_sec=0, elapsed=0)
         finally:
             finished.set()
 
-    session._generate_core = worker
+    engine.generate_one = worker  # type: ignore[method-assign]
     stream = session.generate_stream("prompt")
     assert entered.wait(2)
 
@@ -418,20 +417,18 @@ def test_repeated_cancellation_keeps_worker_lock() -> None:
 
 def test_closed_stream_does_not_cancel_a_later_generation() -> None:
     session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = GenerationState()
-    session._monitor = SimpleNamespace(probe_names=[])
-    session._last_token_probe_payload = {}
-    session._generate_core = lambda *args, **kwargs: GenerationResult(
+    engine = attach_engine(session)
+    engine.generate_one = lambda *args, **kwargs: GenerationResult(  # type: ignore[method-assign]
         text="", tokens=[], token_count=0, tok_per_sec=0, elapsed=0,
     )
     stream = session.generate_stream("prompt")
     assert list(stream) == []
     later = threading.Event()
-    with session._gen_state.cancellation_scope(later):
-        session._gen_state.reset()
+    with engine.state.cancellation_scope(later):
+        engine.state.reset()
         stream.close()
         stream.close()
-        assert not session._gen_state.is_stop_requested()
+        assert not engine.state.is_stop_requested()
 
 
 def test_serve_default_is_loopback_and_remote_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -586,14 +583,12 @@ def test_socket_lifecycles_release_subscriptions() -> None:
 @pytest.mark.parametrize("read_first", [True, False])
 def test_stream_reports_worker_error_once_and_close_is_idempotent(read_first: bool) -> None:
     session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = GenerationState()
-    session._monitor = SimpleNamespace(probe_names=[])
-    session._last_token_probe_payload = {}
+    engine = attach_engine(session)
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("worker failed")
 
-    session._generate_core = fail
+    engine.generate_one = fail  # type: ignore[method-assign]
     stream = session.generate_stream("prompt")
     with pytest.raises(RuntimeError, match="worker failed"):
         if read_first:

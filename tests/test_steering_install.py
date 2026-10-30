@@ -23,8 +23,10 @@ from torch import nn
 
 from drowse.errors import SteeringCompositionError
 from drowse.events import EventBus
+from drowse.generation.compile_runtime import CompiledRuntime
 from drowse.loom.tree import LoomTree
-from drowse.session.session import DrowseSession, GenState
+from drowse.session.session import DrowseSession
+from tests.support.engine import attach_engine
 from drowse.steering.grammar import ManifoldTerm
 from drowse.steering.hooks import SteeringManager, install_persistent_offset_hooks
 from drowse.steering.terms import Steering
@@ -70,13 +72,10 @@ def _session(*, compiled: bool = True) -> tuple[DrowseSession, dict[int, torch.T
         )
         s._steering.adopt_compiled_offsets(buffers, handles)
     s._gen_lock = threading.RLock()
-    s._gen_phase = GenState.IDLE
-    s._compiled = compiled
-    s._compiled_clean_eligible = False
+    attach_engine(s, runtime=CompiledRuntime(compiled=compiled))
     s._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _on: None)
     s._end_capture = lambda: None
     s._close_instrument_runs = lambda: None
-    s._prefix_cache = None
     s.events = EventBus()
     s.tree = LoomTree()
     wire_stub_steering(
@@ -125,7 +124,7 @@ def test_generation_scope_restores_outer_offsets_through_teardown() -> None:
     manager = session._steering
     with session.steering("0.5 a"):
         outer = _offsets(buffers)
-        with session._generation_transaction() as txn:
+        with session._engine.transaction() as txn:
             txn.steering_cm = session.steering("0.3 b")
             txn.steering_cm.__enter__()
             assert not torch.equal(buffers[1], outer[1])
@@ -133,7 +132,7 @@ def test_generation_scope_restores_outer_offsets_through_teardown() -> None:
         for L, buf in buffers.items():
             assert torch.equal(buf, outer[L])
         # A generation with no inner steering keeps them too.
-        with session._generation_transaction():
+        with session._engine.transaction():
             pass
         for L, buf in buffers.items():
             assert torch.equal(buf, outer[L])

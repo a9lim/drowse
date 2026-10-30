@@ -15,23 +15,14 @@ is exercised without a model download.
 
 from __future__ import annotations
 
-from typing import Any, Callable, cast
+from typing import Callable
 
 import torch
 
-from drowse.events import EventBus
 from drowse.readout.capture_buffer import (
     HiddenCapture,
     install_persistent_capture_hooks,
 )
-from drowse.steering.hooks import (
-    SteeringManager,
-    install_persistent_offset_hooks,
-)
-from drowse.session.session import DrowseSession
-from tests.support.sae import make_resident
-from tests.support.stubs import attach_stub_instruments, wire_stub_steering
-from types import SimpleNamespace
 
 _D = 8
 _LAYERS = [0, 1, 2]
@@ -262,57 +253,3 @@ def test_attach_persistent_registers_no_hooks_and_detach_clears_buffers():
     assert cap._forward_count == 0
 
 
-def test_session_close_removes_both_persistent_hook_families():
-    """``from_pretrained`` installs permanent offset + capture hooks on the
-    caller's model; ``close()`` is the only symmetric teardown, and
-    ``DrowseSession.__init__`` takes a pre-loaded model that outlives the
-    session, so leaving them attached leaks ``2 x n_layers`` forward hooks and
-    their device buffers.
-    """
-    stack, _clock = _toy_stack()
-    device, dtype = torch.device("cpu"), torch.float32
-    offset_buffers, offset_handles = install_persistent_offset_hooks(
-        stack, _D, device, dtype,
-    )
-    capture_buffers, capture_handles = install_persistent_capture_hooks(
-        stack, _D, device, dtype,
-    )
-    assert all(len(layer._forward_hooks) == 2 for layer in stack)
-
-    steering = SteeringManager()
-    steering.adopt_compiled_offsets(offset_buffers, offset_handles)
-    session = DrowseSession.__new__(DrowseSession)
-    attach_stub_instruments(session)
-    session._steering = steering
-    session._capture_buffers = capture_buffers
-    session._capture_handles = capture_handles
-    session._capture = HiddenCapture()
-    session._capture._per_layer = {0: [torch.ones(2)]}
-    session.events = EventBus()
-    wire_stub_steering(session)
-    session.events.subscribe(lambda _event: None)
-    runtime = session._lens_instrument.runtime
-    runtime.transport_stack(
-        SimpleNamespace(jacobians={0: torch.eye(2)}), [0], torch.device("cpu"),
-    )
-    runtime._decoded.put(1, "one")
-    cast(Any, session)._prefix_cache = object()
-    runtime.lens = cast(Any, object())
-    make_resident(session.sae.runtime, layer=0)
-
-    session.close()
-
-    assert all(not layer._forward_hooks for layer in stack)
-    assert steering.has_compiled_offsets() is False
-    assert session._capture_handles == []
-    assert session._capture_buffers == {}
-    assert session._capture._per_layer == {}
-    assert len(runtime._stacks) == 0
-    assert len(runtime._decoded) == 0
-    assert session._prefix_cache is None
-    assert session._lens_instrument.resident_lens is None
-    assert session.sae.runtime.resident is None
-    assert session.events._subs == []
-
-    # Idempotent: a second close (or an explicit re-detach) must not raise.
-    session.close()

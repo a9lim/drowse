@@ -28,6 +28,7 @@ from drowse.base.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
 from tests.support.stubs import wire_stub_steering
 from tests.support.extraction import make_extraction
+from tests.support.engine import attach_engine, seed_prefix_cache
 
 _LABELS = ["calm", "uneasy", "afraid", "frantic", "numb"]
 _DIM = 8
@@ -2091,12 +2092,11 @@ def _registry_stub(
     attach_stub_instruments(session)
     session._monitor = monitor
     session._probe_hash_cache = dict(probe_hashes)
-    session._prefix_cache = object()
     wire_stub_steering(session, profiles=profiles, manifolds=manifolds)
     session._registry.on_swap(
         types.MethodType(DrowseSession._refresh_swapped_probes, session),
     )
-    session._prefix_cache = object()
+    seed_prefix_cache(attach_engine(session))
     return session
 
 
@@ -2170,7 +2170,7 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
     assert torch.allclose(
         session._registry.profiles["local/mood"][0], folded_directions(new)[0],
     )
-    assert session._prefix_cache is None
+    assert not session._engine.prefix_cache
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
     assert "mood-probe" not in session._probe_hash_cache
@@ -2232,7 +2232,7 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
     assert set(session._registry.profiles) == {"other/mood"}
     assert set(session._monitor.probes) == {"other-mood-probe"}
     assert session._probe_hash_cache == {"other-mood-probe": "other"}
-    assert session._prefix_cache is None
+    assert not session._engine.prefix_cache
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
 

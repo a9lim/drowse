@@ -15,6 +15,7 @@ import pytest
 
 from drowse.generation.results import GenerationResult, ProbeReading
 from drowse.loom.tree import LoomTree
+from tests.support.engine import attach_engine
 from tests.support.sae import make_resident
 from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
@@ -42,8 +43,13 @@ def _make_result(text: str, applied: str | None = None) -> GenerationResult:
     )
 
 
+def _engine_of(session: Any) -> Any:
+    """The stub's engine, attaching the real one on first use."""
+    return session.__dict__.get("_engine") or attach_engine(session)
+
+
 def _stub_generate_core(session: DrowseSession, *, capture: list[Any]) -> None:
-    """Replace ``session._generate_core`` with a stub that records calls.
+    """Replace the engine's ``generate_one`` with a stub that records calls.
 
     Returns one ``GenerationResult`` per call carrying the call's index
     so tests can verify ordering.  Each call appends a ``(input,
@@ -53,7 +59,7 @@ def _stub_generate_core(session: DrowseSession, *, capture: list[Any]) -> None:
     counter = {"n": 0}
 
     def _fake(input: Any, *, steering: Any = None, sampling: Any = None, stateless: bool = False, raw: bool = False, thinking: Any = None, on_token: Any = None, **kwargs: Any) -> GenerationResult:
-        # ``kwargs`` swallows additions to ``_generate_core``'s signature
+        # ``kwargs`` swallows additions to ``generate_one``'s signature
         # (``parent_node_id``, ``recipe_override``, ...) so this stub doesn't
         # churn every time the core gains a new optional keyword.
         idx = counter["n"]
@@ -62,7 +68,7 @@ def _stub_generate_core(session: DrowseSession, *, capture: list[Any]) -> None:
         applied = steering if isinstance(steering, str) else None
         return _make_result(f"out_{idx}", applied=applied)
 
-    session._generate_core = _fake
+    _engine_of(session).generate_one = _fake
 
 
 class _NoopSteeringContext:
@@ -80,7 +86,7 @@ def _install_noop_steering(session: DrowseSession) -> None:
     session_any = cast(Any, session)
     wire_stub_steering(session, profiles={"a": {}})
     session_any.steering = lambda value: _NoopSteeringContext()
-    session_any._snapshot_steering_alphas = lambda: {"a": 0.0}
+    session_any._steering_composer.snapshot_steering_alphas = lambda: {"a": 0.0}
 
 
 class _BatchTokenizer:
@@ -174,8 +180,8 @@ class _ProbeBatchModel(_BatchModel):
 
 def _fast_batch_session():
     import torch
-    from drowse.generation.decode import GenerationConfig, GenerationState
-    from drowse.session.session import CaptureState, GenState, DrowseSession
+    from drowse.generation.decode import GenerationConfig
+    from drowse.session.session import CaptureState, DrowseSession
     from drowse.steering.triggers import TriggerContext
 
     s = DrowseSession.__new__(DrowseSession)
@@ -187,10 +193,7 @@ def _fast_batch_session():
     attach_stub_instruments(s)
     s._device = torch.device("cpu")
     s_any._gen_lock = threading.Lock()
-    s._gen_phase = GenState.IDLE
-    s._gen_state = GenerationState()
     s_any._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
-    s._default_return_top_k = 0
     s.config = GenerationConfig(
         max_new_tokens=3,
         temperature=0.0,
@@ -209,16 +212,14 @@ def _fast_batch_session():
     s._lens_instrument.live = None
     s._lens_instrument.probes = {}
     s._sae_instrument.probes = {}
-    s.tree = LoomTree()
-    s._last_token_probe_payload = None
     s._capture_state = CaptureState()
     from drowse.readout.capture_buffer import HiddenCapture
     s._capture = HiddenCapture()
-    s._compiled_clean_eligible = False
+    attach_engine(s)
+    # Call resolution reads the cast roster even on the stateless fast path.
+    s.tree = LoomTree()
     s._incremental_readings = []
     s._incremental_gate_scores = []
-    s._last_per_token_scores = None
-    s._last_result = None
     wire_stub_steering(s)
 
     def _prepare_input(
@@ -328,7 +329,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
         seen: list[tuple[int, str]] = []
 
         runset = s.generate_batch(
@@ -388,7 +389,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate_batch(
             ["alpha", "beta"],
@@ -439,7 +440,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate_batch(["alpha", "beta", "gamma"], thinking=False)
 
@@ -460,7 +461,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate_batch(
             ["alpha", "beta", "gamma"],
@@ -495,7 +496,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate_batch(["alpha", "beta", "gamma"], thinking=False)
 
@@ -524,7 +525,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate_batch(
             ["alpha", "beta", "gamma"],
@@ -558,7 +559,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate_batch(["alpha", "beta", "gamma"], thinking=False)
 
@@ -586,7 +587,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate_batch(
             ["alpha", "beta", "gamma"],
@@ -603,7 +604,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate("alpha", n=3, stateless=True, thinking=False)
 
@@ -622,7 +623,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate(
             "alpha",
@@ -645,7 +646,7 @@ class TestGenerateBatch:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
 
         runset = s.generate(
             "alpha",
@@ -748,191 +749,6 @@ class TestPrefixCacheEligibility:
         assert prefix is not None
         assert prefix.device.type == "cpu"
         assert prefix.tolist() == common
-
-    def test_static_prefix_hit_requires_static_eligibility_and_headroom(self) -> None:
-        import torch
-        from drowse.generation.prefix_cache import PrefixCacheEntry
-
-        s = self._session()
-        cache = object()
-        s._prefix_cache = PrefixCacheEntry(
-            prefix_ids_cpu=torch.tensor([1, 2]),
-            past_key_values=cache,
-            prefix_len=2,
-            static=True,
-            max_cache_len=5,
-        )
-        ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
-
-        assert s._try_prefix_cache_hit(
-            ids, static_eligible=False, required_max_new_tokens=1,
-        ) is None
-        assert s._try_prefix_cache_hit(
-            ids, static_eligible=True, required_max_new_tokens=3,
-        ) is None
-
-        hit = s._try_prefix_cache_hit(
-            ids, static_eligible=True, required_max_new_tokens=2,
-        )
-        assert hit is not None
-        suffix, hit_cache, prefix_len, is_static = hit
-        assert suffix.tolist() == [[3]]
-        assert hit_cache is cache
-        assert prefix_len == 2
-        assert is_static is True
-
-    def test_generation_loop_keeps_static_cache_on_static_prefix_hit(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        import torch
-        from drowse.generation.decode import GenerationConfig
-        from drowse.generation.prefix_cache import PrefixCacheEntry
-        from drowse.session.session import CaptureState
-
-        class _Cache:
-            # One static layer whose write counter the generation advanced
-            # past the 2-token prefix.
-            layers = [SimpleNamespace(cumulative_length=torch.tensor(4))]
-
-        s = self._session()
-        cache = _Cache()
-        s._prefix_cache = PrefixCacheEntry(
-            prefix_ids_cpu=torch.tensor([1, 2]),
-            past_key_values=cache,
-            prefix_len=2,
-            static=True,
-            max_cache_len=8,
-        )
-        s._static_cache_active = True
-        s_any = cast(Any, s)
-        s_any._steering = SimpleNamespace(
-            all_fast_path=lambda: True,
-            static_steerable=lambda: False,
-            uses_compiled_offsets=False,
-            ctx=None,
-            hooks={},
-        )
-        s._compiled = False
-        s._device = torch.device("cpu")
-        s_any._model = object()
-        s_any._tokenizer = object()
-        s_any._gen_state = object()
-        s._capture_state = CaptureState(persistent=False)
-        s_any._capture = SimpleNamespace(
-            ingest_persistent=lambda: None,
-            fire_step_sink=lambda: None,
-        )
-
-        seen: dict[str, Any] = {}
-
-        def _fake_generate(
-            model: Any,
-            tokenizer: Any,
-            input_ids: torch.Tensor,
-            config: GenerationConfig,
-            state: Any,
-            **kwargs: Any,
-        ) -> list[int]:
-            del model, tokenizer, config, state
-            seen["input_ids"] = input_ids.clone()
-            seen.update(kwargs)
-            return [42]
-
-        monkeypatch.setattr("drowse.session.session.generate_steered", _fake_generate)
-
-        out, _elapsed = s._run_generation_loop(
-            torch.tensor([[1, 2, 3]], dtype=torch.long),
-            GenerationConfig(max_new_tokens=2),
-            use_thinking=False,
-            want_hidden=False,
-            effective_tap=None,
-            seed=None,
-            stop_list=None,
-            logit_bias=None,
-            presence_penalty=0.0,
-            frequency_penalty=0.0,
-            lp_count=None,
-        )
-
-        assert out == [42]
-        assert seen["input_ids"].tolist() == [[3]]
-        assert seen["past_key_values"] is cache
-        assert seen["cache_position_offset"] == 2
-        assert seen["use_static_cache"] is True
-        # The static rollback rewinds the write counter to the prefix and the
-        # entry stays installed for the next reuse.
-        assert int(cache.layers[0].cumulative_length) == 2
-        assert s._prefix_cache is not None
-
-    def test_cache_prefix_can_build_static_cache_entry(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        import torch
-        from drowse.generation.decode import GenerationConfig
-
-        s = self._session()
-        s._static_cache_active = True
-        s._device = torch.device("cpu")
-        s.config = GenerationConfig(max_new_tokens=4)
-        s._steering_composer._stack = []
-        s._prefix_cache = None
-        from drowse.session.session import GenState
-        s._gen_phase = GenState.IDLE
-        s._end_capture = lambda: None
-
-        static_cache = object()
-        made: dict[str, Any] = {}
-
-        def _make_static_cache(model: Any, max_cache_len: int, device: Any, dtype: Any) -> object:
-            made.update({
-                "model": model,
-                "max_cache_len": max_cache_len,
-                "device": device,
-                "dtype": dtype,
-            })
-            return static_cache
-
-        monkeypatch.setattr(
-            "drowse.generation.static_cache.make_static_cache", _make_static_cache,
-        )
-
-        class _Model:
-            config = object()
-
-            def __init__(self) -> None:
-                self.calls: list[dict[str, Any]] = []
-                self.param = torch.zeros(1, dtype=torch.float16)
-
-            def parameters(self):
-                return iter([self.param])
-
-            def __call__(self, **kwargs: Any) -> Any:
-                self.calls.append(kwargs)
-                return SimpleNamespace(past_key_values=kwargs.get("past_key_values"))
-
-        model = _Model()
-        cast(Any, s)._model = model
-
-        prefix_len = s.cache_prefix(
-            torch.tensor([[4, 5, 6]], dtype=torch.long),
-            max_new_tokens=7,
-            prefer_static=True,
-        )
-
-        assert prefix_len == 3
-        assert s._prefix_cache is not None
-        assert s._prefix_cache.static is True
-        assert s._prefix_cache.max_cache_len == 10
-        assert s._prefix_cache.past_key_values is static_cache
-        assert made == {
-            "model": model,
-            "max_cache_len": 10,
-            "device": torch.device("cpu"),
-            "dtype": torch.float16,
-        }
-        call = model.calls[0]
-        assert call["past_key_values"] is static_cache
-        assert call["cache_position"].tolist() == [0, 1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -1044,7 +860,7 @@ class TestGenerateSweep:
         def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
             raise AssertionError("serial generation path should not run")
 
-        s._generate_core = _fail_generate_core
+        _engine_of(s).generate_one = _fail_generate_core
         seen: list[tuple[int, str, dict[str, float]]] = []
 
         runset = s.generate_sweep(

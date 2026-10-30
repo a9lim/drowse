@@ -22,6 +22,7 @@ from drowse.steering.terms import Steering
 from drowse.steering.grammar import AblationTerm
 from drowse.steering.triggers import Trigger
 from tests._whitener import isotropic_whitener
+from tests.support.engine import attach_engine
 from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
 
@@ -56,12 +57,9 @@ def _skeleton_session() -> DrowseSession:
     # mode never runs gen so the lock is uncontended, but the ``with
     # self._gen_lock:`` block needs the attribute to exist.
     session._gen_lock = threading.RLock()
-    # Phase guard the push/pop methods read to reject callback
-    # reentry — skeleton sessions are always idle.
-    from drowse.session.session import GenState
-    session._gen_phase = GenState.IDLE
-    session._compiled = False
-    session._compiled_clean_eligible = False
+    # The engine carries the phase guard the push/pop methods read to
+    # reject callback reentry — skeleton sessions are always idle.
+    attach_engine(session)
     cast(Any, session)._monitor = type("_Monitor", (), {"probe_names": []})()
     session.events = EventBus()
     session._history = []  # pyright: ignore[reportAttributeAccessIssue]  # skeleton: _history is dynamically set

@@ -2,7 +2,7 @@
 
 These tests don't load a real model — they verify the deterministic
 sibling layout and seed schedule on the engine side by stubbing out
-``_generate_core``.  Per-row gen invocation is mocked; tree mutation
+the engine's ``generate_one``.  Per-row gen invocation is mocked; tree mutation
 is real (loom + recipe stamping).
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from drowse.generation.results import GenerationResult, RunSet
 
 
 class _SweepStub:
-    """Real LoomTree + stubbed ``_generate_core`` to skip the model load.
+    """Real LoomTree + a stubbed engine ``generate_one`` to skip the model load.
 
     We reuse :meth:`DrowseSession.generate_sweep` directly off the class
     by binding to this stub so the loom + sibling-bookkeeping logic
@@ -30,8 +30,10 @@ class _SweepStub:
     def __init__(self) -> None:
         self.tree = LoomTree()
         self.calls: list[dict[str, Any]] = []
-        self._gen_state = types.SimpleNamespace(
-            stop_requested=types.SimpleNamespace(is_set=lambda: False),
+        # The serial job runner calls the engine's ``generate_one`` per row.
+        self._engine = types.SimpleNamespace(
+            generate_one=self._generate_core,
+            state=types.SimpleNamespace(is_stop_requested=lambda: False),
         )
 
     def _generate_core(

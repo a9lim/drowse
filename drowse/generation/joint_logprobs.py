@@ -576,7 +576,7 @@ def _replay_branch_logprobs(
     full = torch.tensor(
         [branch.prompt_ids + forced], dtype=torch.long, device=device,
     )
-    config = session._compose_gen_config(branch.sampling)
+    config = session._engine.gen_config(branch.sampling)
     adjust = _LogitAdjust(branch.sampling, len(forced), device)
 
     steering_cm: Any = contextlib.nullcontext()

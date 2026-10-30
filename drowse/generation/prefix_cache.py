@@ -1,10 +1,12 @@
 """A reusable prompt-prefix KV cache: prefill once, reuse, roll back.
 
-:meth:`PrefixCacheEntry.from_prefill` wraps the cache a prefix prefill just
-produced, :meth:`PrefixCacheEntry.suffix_for` matches a generation's rendered
-input against it, and :meth:`PrefixCacheEntry.rollback` rewinds the cache to
-the prefix after the generation that reused it.  Rollback is per cache-layer
-kind (transformers 5.x):
+:class:`PrefixCache` is the session's one slot: :meth:`PrefixCache.build`
+prefills a prefix, :meth:`PrefixCache.hit` matches a generation's rendered
+input against it, and :meth:`PrefixCache.release` rewinds it after the
+generation that reused it.  Underneath, :meth:`PrefixCacheEntry.from_prefill`
+wraps the cache a prefix prefill just produced, :meth:`PrefixCacheEntry.suffix_for`
+holds the hit rules, and :meth:`PrefixCacheEntry.rollback` rewinds the cache to
+the prefix.  Rollback is per cache-layer kind (transformers 5.x):
 
 * **Full attention** (``DynamicLayer``): ``crop(-n)`` drops the decode tail.
 * **Sliding window** and **linear-attention conv states** keep only their
@@ -29,10 +31,20 @@ class is patched.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import torch
+
+_log = logging.getLogger(__name__)
+
+#: Floor on the shared token prefix a batch will KV-cache.  Below this the
+#: saved prefill is in the noise and the double-render + cache-management
+#: overhead isn't worth it; the prefix must also leave a non-empty suffix per
+#: row (:meth:`PrefixCacheEntry.suffix_for` requires it), so the cached length
+#: is capped at ``min_row_len - 1``.
+PREFIX_CACHE_MIN_TOKENS = 16
 
 # (layer, "conv_states" | "recurrent_states", state index, saved tensor)
 _StateSnapshot = tuple[Any, str, int, torch.Tensor]
@@ -170,3 +182,153 @@ class PrefixCacheEntry:
         except (AttributeError, TypeError, ValueError, RuntimeError):
             return False
         return True
+
+
+class PrefixHit(NamedTuple):
+    """A generation's view of a prefix-cache hit."""
+
+    suffix_ids: torch.Tensor
+    past_key_values: Any
+    prefix_len: int
+    static: bool
+
+
+class PrefixCache:
+    """The session's one prompt-prefix KV slot: build, hit, release.
+
+    Opt-in and library-only: :meth:`build` prefills a prefix (``[1, T]``
+    token ids) with no hooks of its own, a later generation whose rendered
+    input starts with exactly those tokens decodes only the suffix on top of
+    it, and :meth:`release` rewinds the cache afterwards.  The cached KV is a
+    pure function of the prefix tokens (the builder refuses to run inside a
+    steering scope and with capture attached), so the only invalidation that
+    matters is steering that touches the prefill at consume time, which the
+    caller checks per generation.
+    """
+
+    def __init__(self) -> None:
+        self._entry: PrefixCacheEntry | None = None
+
+    @property
+    def entry(self) -> PrefixCacheEntry | None:
+        return self._entry
+
+    def __bool__(self) -> bool:
+        return self._entry is not None
+
+    def clear(self) -> None:
+        """Drop the cached prefix (its KV is freed with the last reference)."""
+        self._entry = None
+
+    def build(
+        self,
+        model: Any,
+        prefix_ids: torch.Tensor,
+        *,
+        static_max_cache_len: int | None = None,
+        make_static: Any = None,
+    ) -> int:
+        """Prefill ``prefix_ids`` and keep the resulting cache; returns its length.
+
+        ``static_max_cache_len`` asks for a StaticCache-backed entry sized to
+        that many positions, built by ``make_static(max_cache_len)``; when the
+        construction or the static prefill fails the prefix falls back to an
+        ordinary DynamicCache entry.  Returns ``0`` (and keeps nothing) for an
+        empty prefix or a model whose forward returns no cache.
+        """
+        self._entry = None
+        prefix_len = int(prefix_ids.shape[1])
+        if prefix_len == 0:
+            return 0
+        attention_mask = torch.ones_like(prefix_ids)
+        static_cache: Any = None
+        if static_max_cache_len is not None and make_static is not None:
+            try:
+                static_cache = make_static(static_max_cache_len)
+            except Exception as exc:
+                _log.debug("prefix cache: StaticCache skipped (%s)", exc)
+        outputs: Any = None
+        if static_cache is not None:
+            try:
+                with torch.inference_mode():
+                    outputs = model(
+                        input_ids=prefix_ids,
+                        attention_mask=attention_mask,
+                        past_key_values=static_cache,
+                        use_cache=True,
+                        cache_position=torch.arange(
+                            prefix_len, device=prefix_ids.device, dtype=torch.long,
+                        ),
+                    )
+            except Exception:
+                _log.debug(
+                    "prefix cache: StaticCache prefill failed; retrying DynamicCache",
+                    exc_info=True,
+                )
+                static_cache = None
+        if static_cache is not None:
+            # StaticCache mutates in place.  Some modeling files return the
+            # same object, others ``None``; keep the preallocated cache either way.
+            returned = outputs.past_key_values
+            past_key_values = returned if returned is not None else static_cache
+        else:
+            with torch.inference_mode():
+                outputs = model(
+                    input_ids=prefix_ids,
+                    attention_mask=attention_mask,
+                    use_cache=True,
+                )
+            past_key_values = outputs.past_key_values
+        if past_key_values is None:
+            # A modeling file that ignores ``use_cache``: nothing to reuse.
+            return 0
+        self._entry = PrefixCacheEntry.from_prefill(
+            prefix_ids,
+            past_key_values,
+            static=static_cache is not None,
+            max_cache_len=static_max_cache_len if static_cache is not None else None,
+        )
+        return prefix_len
+
+    def hit(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        static_eligible: bool,
+        required_max_new_tokens: int | None,
+    ) -> PrefixHit | None:
+        """The suffix to decode on top of the cached prefix, or ``None``.
+
+        The hit rules live in :meth:`PrefixCacheEntry.suffix_for`.
+        """
+        entry = self._entry
+        if entry is None:
+            return None
+        suffix_ids = entry.suffix_for(
+            input_ids,
+            static_eligible=static_eligible,
+            required_max_new_tokens=required_max_new_tokens,
+        )
+        if suffix_ids is None:
+            return None
+        return PrefixHit(
+            suffix_ids, entry.past_key_values, entry.prefix_len, entry.static,
+        )
+
+    def release(self, hit: PrefixHit) -> None:
+        """Rewind the cache a generation reused; drop the entry if it can't be."""
+        entry = self._entry
+        if (
+            entry is not None
+            and entry.past_key_values is hit.past_key_values
+            and not entry.rollback()
+        ):
+            self._entry = None
+
+
+__all__ = [
+    "PREFIX_CACHE_MIN_TOKENS",
+    "PrefixCache",
+    "PrefixCacheEntry",
+    "PrefixHit",
+]
