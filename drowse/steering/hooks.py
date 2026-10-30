@@ -454,17 +454,20 @@ class SteeringPlan:
 
         ``position`` is an authoring coord tuple or a node label (resolved
         here).  ``along`` slides the foot toward the position as a fraction
-        in ``[0, 1]``; ``onto`` collapses the off-surface residual.  Both are
-        fractions on a curved fit, so a negative value has no meaning and
-        raises rather than silently clamping to a no-op (the same expression
-        on an affine fit would push away — ``fit_mode=auto`` can resolve
-        either way per model).
+        in ``[0, 1]`` (values above 1 cap at 1); ``onto`` collapses the
+        off-surface residual.  Both are fractions on a curved fit, so a
+        negative value has no meaning and raises rather than silently
+        clamping to a no-op (the same expression on an affine fit would push
+        away — ``fit_mode=auto`` can resolve either way per model).  The loom
+        ``inverted`` regen negates ``along``, so inverting a curved term lands
+        here too: a curved position has no opposite.
         """
         if along < 0.0 or onto < 0.0:
             raise SteeringCompositionError(
                 f"manifold {name!r} is curved, so its along/onto coefficients "
                 f"are fractions in [0, 1]; got along={along:g}, onto={onto:g}. "
-                f"Steer toward a different position instead of negating."
+                f"A curved position has no opposite, so the term cannot be "
+                f"negated or inverted; steer toward a different position."
             )
         manifold.validate_runtime_geometry()
         resolved = manifold.resolve_position(position)

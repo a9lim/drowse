@@ -168,6 +168,45 @@ def test_failed_push_keeps_the_outer_scope_installed() -> None:
     assert not manager.hooks
 
 
+def test_inverted_regen_flips_affine_manifold_terms_and_refuses_curved() -> None:
+    """The loom ``inverted`` regen negates every ``%`` term's ``along``.
+
+    On an affine fit that pushes away from the position; a curved position has
+    no opposite, so the inverted curved term refuses at composition (it used
+    to clamp silently to a no-op, so "inverted" regenerated unsteered text).
+    """
+    from drowse import Recipe
+    from drowse.fit.capture import fold_directions_to_subspace
+
+    session, _buffers = _session(compiled=False)
+    ray = fold_directions_to_subspace(
+        "ray", {1: _unit(0)}, session._layer_means,
+        whitener=session._whitener, label="pole",
+    )
+    session._manifolds["ray"] = ray
+    session._manifolds["mood"] = _manifold(layers=(2,))
+    manager = session._steering
+
+    def pushed(expr: str) -> torch.Tensor:
+        with session.steering(expr):
+            hidden = torch.zeros(1, 1, _D)
+            session._layers[1](hidden)
+        return hidden[0, 0]
+
+    inverted = Recipe(steering="0.5 ray%pole").invert_steering().steering
+    assert inverted is not None
+    forward, backward = pushed("0.5 ray%pole"), pushed(inverted)
+    assert forward[0] > 0
+    assert torch.allclose(backward, -forward)
+
+    inverted = Recipe(steering="0.5 mood%n1").invert_steering().steering
+    assert inverted is not None
+    with pytest.raises(SteeringCompositionError, match="no opposite"):
+        session.steering(inverted).__enter__()
+    assert manager.plan is None
+    assert session._steering_composer._stack == []
+
+
 @pytest.mark.parametrize("compiled", [True, False])
 def test_failed_pop_rebuild_uninstalls_the_exited_scope(compiled: bool) -> None:
     """A pop whose outer head no longer composes must not keep the inner plan.
