@@ -141,7 +141,9 @@ class UnknownManifoldLabelError(KeyError, DrowseError):
     """
 
     def user_message(self) -> tuple[int, str]:
-        return (404, str(self))
+        # ``str(KeyError("x"))`` is repr-quoted; ``args[0]`` is the message.
+        msg = self.args[0] if self.args else self.__class__.__name__
+        return (404, str(msg))
 
 
 class SaeBackendImportError(ImportError, DrowseError):
