@@ -315,6 +315,7 @@ def test_pull_manifold_download_failure_wraps_hferror(
     def boom(**kwargs: Any) -> str:
         raise RuntimeError("connection refused")
 
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     monkeypatch.setattr(hfm, "_hf_snapshot_download", boom)
     with pytest.raises(HFError, match="alice/mood@v1: not found"):
         hfm.pull_manifold(
@@ -329,6 +330,7 @@ def test_pull_manifold_no_manifest_no_statements_rejected(
     snap = tmp_path / "snapshot"
     snap.mkdir()
     (snap / "model.safetensors").write_bytes(b"bare tensor")
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     monkeypatch.setattr(hfm, "_hf_snapshot_download", lambda **kw: str(snap))
 
     with pytest.raises(HFError, match="no manifold.json at root"):

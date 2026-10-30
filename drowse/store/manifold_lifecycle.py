@@ -9,7 +9,6 @@ itself, so callers carry no invalidation duty.
 from __future__ import annotations
 
 import json
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -18,6 +17,7 @@ import torch
 
 from drowse.base.atomic import write_json_atomic
 from drowse.base.integrity import is_sha256_digest
+from drowse.base.staging import staging_area
 from drowse.base.paths import (
     manifold_dir,
     manifolds_dir,
@@ -215,9 +215,12 @@ def remove_manifold_folder(namespace: str, name: str) -> dict[str, Any]:
         manifest_files = manifest.get("files", {})
         names = list(manifest_files) if isinstance(manifest_files, dict) else []
         files = fitted_pair_files(folder)
-        with locked_manifold_pairs(files):
+        with locked_manifold_pairs(files), staging_area() as area:
             capture_groups = _delete_fitted_files(files, names)
-            shutil.rmtree(folder)
+            # One rename takes the folder out of every namespace; the scratch
+            # area's cleanup deletes it, so a crash mid-delete never leaves a
+            # half-removed manifold behind.
+            folder.rename(area / folder.name)
     _remove_unreferenced_capture_groups(capture_groups)
     invalidate_selector_index()
     return {

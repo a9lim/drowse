@@ -113,14 +113,6 @@ def destructive_manifold_folder_transaction(folder: Path) -> Iterator[None]:
             yield
 
 
-def reset_manifold_folder(folder: Path) -> None:
-    """Remove ``folder`` only after all extant fitted pairs are quiescent."""
-    folder = Path(folder)
-    with destructive_manifold_folder_transaction(folder):
-        if folder.exists():
-            shutil.rmtree(folder)
-
-
 @contextmanager
 def locked_manifold_folder(folder: Path) -> Iterator[None]:
     """Take ``folder``'s manifest lock and recover a crash-left swap backup.
