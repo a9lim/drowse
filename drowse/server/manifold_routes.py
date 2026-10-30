@@ -13,6 +13,8 @@ artifact lazily on scope entry.
 """
 from __future__ import annotations
 
+import functools
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -20,6 +22,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import ConfigDict, Field
 
 from drowse.geometry.manifold import domain_from_spec
+from drowse.model.loading import loaded_model_fingerprint
 from drowse.session.session import DrowseSession
 from drowse.store.hub import install_manifold, search_manifolds
 from drowse.store.manifolds import (
@@ -290,6 +293,7 @@ def _manifold_json(
     session: DrowseSession,
     *,
     full: bool,
+    fingerprint: Callable[[], str] | None = None,
 ) -> ManifoldInfo:
     """Serialize a :class:`ManifoldFolder` for the wire.
 
@@ -308,7 +312,8 @@ def _manifold_json(
     session).
 
     ``full`` adds per-node statements and per-tensor fit detail — the
-    list route omits both to stay light.
+    list route omits both to stay light.  ``fingerprint`` supplies the
+    loaded-weight fingerprint, so a listing computes it once, not per row.
     """
     out = cast(ManifoldInfo, manifold_summary(mf.folder))
 
@@ -321,14 +326,15 @@ def _manifold_json(
 
     stale = False
     if fitted_for_session:
+        if fingerprint is None:
+            fingerprint = _fingerprint(session)
         try:
-            from drowse.model.loading import loaded_model_fingerprint
-
             sidecar = mf.sidecar(session_stem)
+            # The (memoized) weight fingerprint is far cheaper than hashing
+            # every node corpus, so it short-circuits first.
             stale = (
-                sidecar.nodes_sha256 != mf.nodes_sha256()
-                or sidecar.model_fingerprint
-                != loaded_model_fingerprint(session.model, session.model_id)
+                sidecar.model_fingerprint != fingerprint()
+                or sidecar.nodes_sha256 != mf.nodes_sha256()
             )
         except (KeyError, ManifoldFormatError, OSError):
             stale = True
@@ -447,6 +453,11 @@ def _manifold_json(
     return out
 
 
+def _fingerprint(session: DrowseSession) -> Callable[[], str]:
+    """The loaded-weight fingerprint, computed at most once per caller."""
+    return functools.cache(lambda: loaded_model_fingerprint(session.model, session.model_id))
+
+
 def _find_manifold(namespace: str, name: str) -> ManifoldFolder:
     """Load one manifold folder by namespace + name, or 404."""
     folder = manifold_dir(namespace, name)
@@ -481,8 +492,10 @@ def register_manifold_routes(app: FastAPI) -> None:
     @app.get("/drowse/v1/manifolds")
     def list_manifolds() -> ManifoldListResponse:
         """List every installed manifold with per-session fit status."""
+        fingerprint = _fingerprint(session)
         return {"manifolds": [
-            _manifold_json(mf, session, full=False) for _ns, mf in iter_manifold_folders()
+            _manifold_json(mf, session, full=False, fingerprint=fingerprint)
+            for _ns, mf in iter_manifold_folders()
         ]}
 
     @app.get("/drowse/v1/manifolds/{namespace}/{name}")
