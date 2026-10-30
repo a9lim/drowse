@@ -455,11 +455,11 @@ class _MockSession:
             steering_needs_probe_gating=lambda: False,
         )
         self.renderer = SimpleNamespace(
-            prepare_input=self._prepare_input, model_type=None,
+            prepare_input=self._render, model_type=None,
         )
         self.scene_grammar = None
 
-    def _prepare_input(self, _input: Any, **kwargs: Any) -> torch.Tensor:
+    def _render(self, _input: Any, **kwargs: Any) -> torch.Tensor:
         node_id = kwargs["parent_node_id"]
         return build_chat_input(
             self.tokenizer, self.tree.messages_for(node_id),

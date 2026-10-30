@@ -506,7 +506,7 @@ def test_failed_override_eviction_holds_geometry_state_lock(tiny_session: Any, s
 
 # ================================== per-forward reuse of the sink row ===
 
-def _wire_begin_capture(rig: _ProbeRig) -> dict[str, Any]:
+def _arm_capture(rig: _ProbeRig) -> dict[str, Any]:
     """Minimal capture wiring so the read plane's ``begin`` runs on the
     rig, capturing whichever step sink the plan arms."""
     holder: dict[str, Any] = {}
@@ -526,7 +526,7 @@ def test_gate_callback_reuses_the_full_incremental_sink_row():
     rig = _ProbeRig()
     m = _toy_manifold()
     rig.attach(m)
-    holder = _wire_begin_capture(rig)
+    holder = _arm_capture(rig)
     ok = rig.plane.begin(ReadDemand(need_per_token=True))
     assert ok is True
 
@@ -561,7 +561,7 @@ def test_token_tap_reuses_the_full_incremental_sink_row():
     rig = _ProbeRig()
     m = _toy_manifold()
     rig.attach(m)
-    holder = _wire_begin_capture(rig)
+    holder = _arm_capture(rig)
     ok = rig.plane.begin(ReadDemand(need_per_token=True))
     assert ok is True
 

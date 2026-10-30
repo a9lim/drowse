@@ -67,7 +67,7 @@ def _geometry_block(out: dict[str, Any]) -> dict[str, Any]:
     return measurements["instruments"]["geometry"]
 
 
-def test_geometry_token_readout_reads_the_roster_at_the_producing_position() -> None:
+def test_geometry_replay_reads_the_roster_at_the_producing_position() -> None:
     rig = ReplayRig()
     geometry, session = _geometry(rig)
     node_id = rig.turn(rig.tokenizer.encode("abcdefg"), Recipe(system_prompt=None))
@@ -91,7 +91,7 @@ def test_geometry_token_readout_reads_the_roster_at_the_producing_position() -> 
     )
 
 
-def test_geometry_token_readout_binds_the_recipe_steering() -> None:
+def test_geometry_replay_binds_the_recipe_steering() -> None:
     rig = ReplayRig()
     geometry, _session = _geometry(rig)
     node_id = rig.turn(
@@ -110,7 +110,7 @@ def test_geometry_token_readout_binds_the_recipe_steering() -> None:
     assert rig.steering_scopes == ["0.3 formal.casual"]
 
 
-def test_geometry_token_readout_raw_mode_render() -> None:
+def test_geometry_replay_raw_mode_render() -> None:
     rig = ReplayRig()
     geometry, _session = _geometry(rig)
     node_id = rig.turn(rig.tokenizer.encode("abcd"))
@@ -121,7 +121,7 @@ def test_geometry_token_readout_raw_mode_render() -> None:
     assert call["parent_node_id"] == rig.tree.get(node_id).parent_id
 
 
-def test_geometry_token_readout_errors() -> None:
+def test_geometry_replay_errors() -> None:
     rig = ReplayRig()
     geometry, session = _geometry(rig)
     node_id = rig.turn(rig.tokenizer.encode("abc"))
@@ -136,7 +136,7 @@ def test_geometry_token_readout_errors() -> None:
     assert rig.captures == []
 
 
-def test_geometry_token_readout_detach_race_keeps_caller_error() -> None:
+def test_geometry_replay_detach_race_keeps_caller_error() -> None:
     """sol's round-3 P3: a detach winning the gap between the entry roster
     check and the exclusive section must still surface the caller-facing
     "no geometry probes attached" error — not a capture-layer
