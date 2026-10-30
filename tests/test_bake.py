@@ -398,7 +398,7 @@ def test_merge_into_manifold_explicit_model(monkeypatch: pytest.MonkeyPatch, tmp
     assert not (dst / tensor_filename("qwen")).is_file()
 
 
-def test_legacy_projected_bake_requires_rebake(
+def test_component_provenance_refuses_unknown_fields(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))

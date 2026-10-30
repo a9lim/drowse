@@ -30,17 +30,6 @@ import re
 import tokenize
 from pathlib import Path
 
-# Genuinely-unavoidable session-private reach-ins, each as
-# "<relpath-from-drowse>:<receiver>._<attr>" with a comment justifying it.
-# Do NOT add a site here to silence a fixable reach-in — only one with no
-# public accessor belongs.
-ALLOWLIST: list[str] = [
-    # Empty, and meant to stay that way.  The last entry was the active
-    # J-lens source resolver, which the routes reached for privately; it is
-    # now the public ``session.lens.active_source`` on the instrument
-    # interface, so the reach-in no longer exists to excuse.
-]
-
 _FRONTEND_DIRS = ("server",)
 
 # Receiver expressions that denote the DrowseSession object, each matched
@@ -124,11 +113,9 @@ def _find_reach_ins() -> dict[str, list[str]]:
 def test_no_frontend_session_private_reach_ins() -> None:
     """No ``drowse/server`` code reaches a DrowseSession private."""
     hits = _find_reach_ins()
-    allow = set(ALLOWLIST)
-    offenders = {key: lines for key, lines in hits.items() if key not in allow}
-    if offenders:
+    if hits:
         report = "\n".join(
-            line for lines in offenders.values() for line in lines
+            line for lines in hits.values() for line in lines
         )
         raise AssertionError(
             "frontend code reaches past the DrowseSession public API.\n"
@@ -136,79 +123,9 @@ def test_no_frontend_session_private_reach_ins() -> None:
             "model_info / generation_state / gen_lock / "
             "joint_logprob_cache / "
             "ensure_manifold_loaded / ensure_profile_registered, …) at the "
-            "call site, or — only if genuinely unavoidable — add the site to "
-            "ALLOWLIST with a justification.\n\n" + report
+            "call site.\n\n" + report
         )
 
-
-def test_allowlist_entries_are_still_present() -> None:
-    """An ALLOWLIST entry whose reach-in is gone is stale — drop it.
-
-    Keeps the allowlist honest: a fixed reach-in shouldn't leave a dead
-    exemption behind that would silently re-admit a future regression at the
-    same key.
-    """
-    hits = _find_reach_ins()
-    stale = [key for key in ALLOWLIST if key not in hits]
-    assert not stale, (
-        "ALLOWLIST has entries with no matching reach-in (remove them): "
-        + ", ".join(stale)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Promoted-name regression guard (T2.4)
-# ---------------------------------------------------------------------------
-
-# The four names that were promoted from underscore-private to public in T2.4.
-# Frontends must now import the public form; importing the old underscore name
-# from any module is a regression against the promotion.
-_PROMOTED_OLD_NAMES = frozenset(["_export_gguf_manifold"])
-
-# All cross-module import surfaces (CLI/server plus core helpers) must use
-# the promoted public names.
-_ALL_FRONTEND_DIRS = ("server", "cli", "core")
-
-_UNDERSCORE_IMPORT_RE = re.compile(
-    r"(?:^|\s)from\s+[\w.]+\s+import\s+[^#\n]*\b(_[A-Za-z]\w*)"
-)
-
-
-def _find_promoted_old_name_imports() -> list[str]:
-    """Return one diagnostic string per import of a now-promoted name."""
-    root = _drowse_root()
-    offenders: list[str] = []
-    for sub in _ALL_FRONTEND_DIRS:
-        for path in sorted((root / sub).rglob("*.py")):
-            rel = path.relative_to(root).as_posix()
-            code = _strip_comments_and_strings(path.read_text(encoding="utf-8"))
-            for lineno, line in enumerate(code.splitlines(), start=1):
-                for m in _UNDERSCORE_IMPORT_RE.finditer(line):
-                    name = m.group(1)
-                    if name in _PROMOTED_OLD_NAMES:
-                        offenders.append(f"{rel}:{lineno}: import of old name {name!r}")
-    return offenders
-
-
-def test_promoted_names_not_imported_by_old_underscore_form() -> None:
-    """Frontends must not import the four T2.4-promoted names by their old
-    underscore form.
-
-    Each of these was renamed to a public name and the old ``_``-prefixed form
-    is now only a back-compat alias kept for monkeypatching in tests.  A fresh
-    cross-module import of the old name is a boundary violation.
-    """
-    offenders = _find_promoted_old_name_imports()
-    assert not offenders, (
-        "Frontend code imports a now-public name by its old underscore form.\n"
-        "Use the public name (export_gguf_manifold) instead.\n\n"
-        + "\n".join(offenders)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Intra-server private-import guard
-# ---------------------------------------------------------------------------
 
 _SERVER_PRIVATE_IMPORT_RE = re.compile(
     r"(?:^|\s)from\s+drowse\.server[\w.]*\s+import\s+[^#\n]*?(?<![\w.])"

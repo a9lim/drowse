@@ -6,6 +6,8 @@ exercised.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import torch
 
@@ -15,6 +17,7 @@ from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
 from tests._whitener import isotropic_whitener
 from tests.support.composer import SteeringRig
+from tests.support.sessions import forward_logits, register_vectors
 
 
 class _NoopModule(torch.nn.Module):
@@ -113,3 +116,38 @@ def test_zero_ablation_coefficient_is_a_true_noop() -> None:
     with session.steering(steering):
         assert not session.manager.plan
         assert not session.manager.hooks
+
+
+def test_mean_ablation_pins_the_concept_coordinate_to_neutral(tiny_session: Any) -> None:
+    """``!a`` at alpha 1 replaces every position's component along the
+    concept direction with the neutral mean's: ``h'.d = mu.d`` (the
+    Euclidean operator ``h' = h - (h.d - mu.d) d``), read from the layer
+    outputs of a real forward."""
+    profile = register_vectors(tiny_session, "a")["a"]
+    means = tiny_session.layer_means
+    seen: dict[int, torch.Tensor] = {}
+
+    def _record(layer: int) -> Any:
+        def hook(_module: Any, _inputs: Any, output: Any) -> None:
+            hidden = output[0] if isinstance(output, tuple) else output
+            seen[layer] = hidden[0].detach().float().clone()
+        return hook
+
+    with tiny_session.steering("!a"):
+        handles = [
+            module.register_forward_hook(_record(layer))
+            for layer, module in enumerate(tiny_session.layers)
+        ]
+        try:
+            forward_logits(tiny_session)
+        finally:
+            for handle in handles:
+                handle.remove()
+
+    assert sorted(seen) == list(range(len(tiny_session.layers)))
+    for layer, hidden in seen.items():
+        direction = profile[layer] / profile[layer].norm()
+        neutral = float(means[layer].float() @ direction)
+        assert torch.allclose(
+            hidden @ direction, torch.full((hidden.shape[0],), neutral), atol=1e-5,
+        )
