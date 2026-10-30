@@ -512,6 +512,88 @@ def _effective_topk(config: GenerationConfig, vocab: int) -> int:
     return min(int(user_top_k), int(vocab))
 
 
+# Logits processors HF ``generate`` builds from fields whose neutral value is
+# ``None``.  HF fills a ``None`` field of an explicit config from the
+# checkpoint's ``generation_config``, so these cannot be neutralized by
+# setting them — a checkpoint that sets one makes HF ``generate`` sample
+# from a different distribution than :func:`generate_steered`.
+_HF_UNNEUTRALIZABLE_PROCESSORS = (
+    "bad_words_ids",
+    "begin_suppress_tokens",
+    "exponential_decay_length_penalty",
+    "forced_bos_token_id",
+    "forced_eos_token_id",
+    "guidance_scale",
+    "min_new_tokens",
+    "min_p",
+    "sequence_bias",
+    "suppress_tokens",
+    "top_h",
+    "watermarking_config",
+)
+
+
+def hf_unneutralizable_processors(model: Any) -> list[str]:
+    """The checkpoint ``generation_config`` processors HF ``generate`` would add.
+
+    Non-empty means HF ``generate`` cannot reproduce the decode loop's
+    sampler for this model, so a batched HF path must not serve it.
+    """
+    defaults = getattr(model, "generation_config", None)
+    return [
+        name for name in _HF_UNNEUTRALIZABLE_PROCESSORS
+        if getattr(defaults, name, None) not in (None, [], 0)
+    ]
+
+
+def hf_generation_config(
+    config: GenerationConfig,
+    *,
+    vocab: int,
+    eos_ids: list[int],
+    pad_id: int,
+    steering_active: bool,
+) -> Any:
+    """An explicit ``transformers.GenerationConfig`` with the decode loop's sampler.
+
+    Every processor-bearing field with a non-``None`` neutral value is pinned
+    (repetition penalties off, no n-gram blocking, no typical/eta/epsilon
+    cutoffs), so the checkpoint's ``generation_config`` cannot leak a
+    ``top_k: 20`` or ``repetition_penalty: 1.1`` into the batch.  ``top_k``
+    is the loop's own candidate cap (:func:`_effective_topk`); greedy is
+    ``do_sample=False``.  Invalid logits are cleaned only under steering,
+    matching the loop's ``nan_to_num_`` guard.  The remaining processors
+    (:data:`_HF_UNNEUTRALIZABLE_PROCESSORS`) must be absent from the
+    checkpoint config — see :func:`hf_unneutralizable_processors`.
+    """
+    from transformers import GenerationConfig as HFGenerationConfig
+
+    sample = config.temperature > 0
+    return HFGenerationConfig(
+        max_new_tokens=int(config.max_new_tokens),
+        min_length=0,
+        do_sample=sample,
+        num_beams=1,
+        num_beam_groups=1,
+        temperature=float(config.temperature) if sample else 1.0,
+        top_p=float(config.top_p) if sample else 1.0,
+        top_k=_effective_topk(config, vocab) if sample else None,
+        typical_p=1.0,
+        epsilon_cutoff=0.0,
+        eta_cutoff=0.0,
+        repetition_penalty=1.0,
+        encoder_repetition_penalty=1.0,
+        length_penalty=1.0,
+        no_repeat_ngram_size=0,
+        encoder_no_repeat_ngram_size=0,
+        diversity_penalty=0.0,
+        renormalize_logits=False,
+        remove_invalid_values=bool(steering_active),
+        eos_token_id=sorted(eos_ids),
+        pad_token_id=int(pad_id),
+    )
+
+
 # Modern HF ``CausalLM.forward`` accepts ``logits_to_keep`` (the current
 # name; ``num_logits_to_keep`` is the older one) — an int cap on how many
 # trailing positions get the LM head.  Passing ``1`` at prefill avoids

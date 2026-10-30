@@ -37,6 +37,8 @@ from drowse.generation.decode import (
     build_chat_input,
     detect_base_model,
     generate_steered,
+    hf_generation_config,
+    hf_unneutralizable_processors,
     supports_thinking,
 )
 from drowse.steering.hooks import HiddenCapture, SteeringManager
@@ -10049,7 +10051,7 @@ class DrowseSession:
             return None
 
         model = self._batch_generate_model()
-        if model is None:
+        if model is None or hf_unneutralizable_processors(model):
             return None
 
         return self._run_generate_batch_fast(
@@ -10403,34 +10405,35 @@ class DrowseSession:
             for prompt in prompts:
                 self.events.emit(GenerationStarted(input=prompt, stateless=stateless))
 
-            generate_kwargs: dict[str, Any] = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "max_new_tokens": int(gen_config.max_new_tokens),
-                "pad_token_id": pad_id,
-                "stopping_criteria": StoppingCriteriaList([
-                    _SessionStopCriteria(self._gen_state),
-                ]),
-            }
             # The full EOS set (generation_config + tokenizer + added
             # end-of-turn specials), matching the ordinary decode loop —
             # the tokenizer's single ``eos_token_id`` alone misses e.g.
             # Gemma's ``<end_of_turn>`` and would generate past it to the
-            # token cap.
+            # token cap.  The explicit config pins the decode loop's sampler
+            # so the checkpoint's own ``generation_config`` (Qwen's
+            # ``top_k: 20`` / ``repetition_penalty: 1.1``) cannot leak in.
             eos_ids = _get_eos_ids(model, self._tokenizer)
-            if eos_ids:
-                generate_kwargs["eos_token_id"] = sorted(eos_ids)
-            do_sample = gen_config.temperature > 0
-            generate_kwargs["do_sample"] = do_sample
-            if do_sample:
-                generate_kwargs["temperature"] = float(gen_config.temperature)
-                generate_kwargs["top_p"] = float(gen_config.top_p)
-                if gen_config.top_k is not None:
-                    generate_kwargs["top_k"] = int(gen_config.top_k)
+            text_cfg = getattr(model.config, "text_config", model.config)
+            hf_config = hf_generation_config(
+                gen_config,
+                vocab=int(text_cfg.vocab_size),
+                eos_ids=sorted(eos_ids),
+                pad_id=pad_id,
+                steering_active=bool(
+                    self._steering.hooks or self._steering_uses_compiled_offsets
+                ),
+            )
 
             start = time.monotonic()
             with torch.inference_mode():
-                generated = model.generate(**generate_kwargs)
+                generated = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    generation_config=hf_config,
+                    stopping_criteria=StoppingCriteriaList([
+                        _SessionStopCriteria(self._gen_state),
+                    ]),
+                )
             elapsed = time.monotonic() - start
             if capture_probe_aggregates:
                 self._end_capture()

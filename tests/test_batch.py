@@ -202,6 +202,7 @@ def _fast_batch_session():
     s_any.events = events
     s_any._steering = SimpleNamespace(
         ctx=TriggerContext(),
+        hooks={},
         reset_manifold_feet=lambda: None,
         has_compiled_offsets=lambda: False,
         zero_compiled_offsets=lambda: None,
@@ -382,7 +383,7 @@ class TestGenerateBatch:
         s.generate_batch(["alpha", "beta", "gamma"], thinking=False)
 
         assert len(model.calls) == 1
-        assert model.calls[0]["eos_token_id"] == [42, 98, 99]
+        assert model.calls[0]["generation_config"].eos_token_id == [42, 98, 99]
 
     def test_greedy_batch_allows_seeded_sampling_config(self) -> None:
         from drowse.generation.sampling import SamplingConfig
