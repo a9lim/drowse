@@ -1498,7 +1498,7 @@ class TestJointLogprobsLock:
         ran the model forwards without the session lock."""
         import asyncio
 
-        import drowse.generation.joint_logprobs as joint_logprobs
+        import drowse.loom.joint_logprobs as joint_logprobs
         import drowse.server.runtime as runtime
 
         session, client = session_and_client
