@@ -2120,7 +2120,7 @@ def _analytics_probe(session: Any, name: str) -> Any:
     return _snapshot
 
 
-def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
+def test_adopt_fitted_manifold_rebinds_loaded_probe_and_profile(
     tmp_path: Path,
 ) -> None:
     from types import SimpleNamespace
@@ -2170,7 +2170,9 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
     assert torch.allclose(
         session._registry.profiles["local/mood"][0], folded_directions(new)[0],
     )
-    assert not session._engine.prefix_cache
+    # The cached prefix is unsteered, so a re-fit leaves it valid
+    # (test_engine::test_registry_changes_keep_the_unsteered_prefix).
+    assert session._engine.prefix_cache
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
     assert "mood-probe" not in session._probe_hash_cache
@@ -2232,7 +2234,7 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
     assert set(session._registry.profiles) == {"other/mood"}
     assert set(session._monitor.probes) == {"other-mood-probe"}
     assert session._probe_hash_cache == {"other-mood-probe": "other"}
-    assert not session._engine.prefix_cache
+    assert session._engine.prefix_cache  # unsteered, so still valid
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
 

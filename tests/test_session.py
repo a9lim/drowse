@@ -447,8 +447,8 @@ class TestPrefixCache:
                 "happy", _corpus("I am happy"), _corpus("I am sad"),
             )
             session.registry.put_profile("happy", prof)
-        # Registering a profile itself invalidates; re-warm and verify scope-entry
-        # is what we're really testing.
+        # Re-warm (extraction ran forwards in between) so scope entry is what
+        # this tests; registering a profile leaves the unsteered prefix alone.
         session.cache_prefix(prefix_ids)
         assert session._engine.prefix_cache
 
