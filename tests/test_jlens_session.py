@@ -24,7 +24,7 @@ from drowse.lens.jlens import (
     LensNotFittedError,
     MultiTokenWordError,
 )
-from drowse.model.loading import loaded_model_fingerprint, model_source_fingerprint
+from drowse.model.fingerprint import loaded_model_fingerprint, model_source_fingerprint
 from drowse.loom.tree import (
     InvalidNodeOperationError,
     LoomTree,
@@ -1460,7 +1460,7 @@ def test_loaded_model_fingerprint_memoizes_until_sanctioned_mutation(
 
 
 def test_loaded_model_fingerprint_explicitly_invalidates_data_writes() -> None:
-    from drowse.model.loading import invalidate_loaded_model_fingerprint
+    from drowse.model.fingerprint import invalidate_loaded_model_fingerprint
 
     model = torch.nn.Linear(10, 10, bias=False)
     first = loaded_model_fingerprint(model, "toy")

@@ -343,7 +343,7 @@ def _manifold_json(
     stale = False
     if fitted_for_session:
         try:
-            from drowse.model.loading import loaded_model_fingerprint
+            from drowse.model.fingerprint import loaded_model_fingerprint
 
             sidecar = mf.sidecar(session_stem)
             stale = (

@@ -13,7 +13,7 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from drowse.model.loading import loaded_model_fingerprint
+from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.session.session import DrowseSession
 from tests._fakes import make_mock_session
 

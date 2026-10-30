@@ -1,7 +1,7 @@
 """Per-architecture structural + hot-path coverage.
 
-`drowse.model.loading._LAYER_ACCESSORS` maps each ``model_type`` to the
-attribute path of its transformer-block list.  Those mappings are the
+`drowse.model.arch.get_layers` discovers each architecture's transformer-block
+list from its module tree.  That discovery is the
 load-bearing assumption behind *everything* drowse does — capture,
 steering, monitoring — yet most entries have never been exercised
 against the architecture's *actual* module tree.  When ``transformers``
@@ -40,13 +40,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 import pytest
 
-from drowse.model.loading import (
-    _ARCH_PROFILES,
-    _LAYER_ACCESSORS,
-    _SUPPORTED_TYPES,
-    _TESTED_ARCHS,
-    get_layers,
-)
+from drowse.model.arch import TESTED_ARCHS, get_layers
 from drowse.steering.hooks import HiddenCapture, SteeringManager
 from drowse.geometry.manifold import synthesize_subspace
 from tests._whitener import isotropic_whitener
@@ -111,63 +105,69 @@ def _real_model(model_type: str):
     return _REAL_CACHE[model_type]
 
 
-def test_guaranteed_archs_are_in_accessor_table():
-    """The curated set may not silently drift out of ``_LAYER_ACCESSORS``.
-
-    A model dropped from the table would raise on load with an
-    "unsupported architecture" error; catch that here rather than in a
-    user's session.
-    """
-    missing = [mt for mt in GUARANTEED_ARCHS if mt not in _LAYER_ACCESSORS]
-    assert not missing, f"guaranteed archs missing from _LAYER_ACCESSORS: {missing}"
-
-
-def test_every_tested_arch_has_an_accessor():
-    """A "tested" arch with no accessor is a dead entry.
-
-    ``get_layers`` raises on the missing accessor *before* it reaches the
-    tested check, so such an entry can never suppress a warning — it just
-    reads as coverage that isn't there.  ``mistral3`` was one.
-    """
-    assert _TESTED_ARCHS <= set(_LAYER_ACCESSORS)
-
-
-def test_registry_views_derive_from_one_table():
-    """Accessor / tested / supported are views over ``_ARCH_PROFILES``."""
-    assert set(_LAYER_ACCESSORS) == set(_ARCH_PROFILES)
-    assert _SUPPORTED_TYPES == sorted(_ARCH_PROFILES)
-    for model_type, profile in _ARCH_PROFILES.items():
-        assert _LAYER_ACCESSORS[model_type] is profile.layers
-        assert (model_type in _TESTED_ARCHS) is profile.tested
-
-
 def test_mistral_loads_as_its_text_submodel_and_is_marked_tested():
     """Mistral-3's composite type never reaches ``get_layers``.
 
     ``AutoConfig.for_model("mistral3").text_config.model_type == "mistral"``,
     so ``extract_text_model`` fires and the loaded model reports ``mistral``.
     Marking the composite type tested left the type users actually load
-    warning "wired up but untested" on every session.
+    warning "untested" on every session.
     """
     assert AutoConfig.for_model("mistral3").text_config.model_type == "mistral"
-    assert "mistral" in _TESTED_ARCHS
-    assert "mistral3" not in _ARCH_PROFILES
+    assert "mistral" in TESTED_ARCHS
+    assert "mistral3" not in TESTED_ARCHS
     # Ministral-3 has no text_config, so its composite type is what loads.
     assert getattr(AutoConfig.for_model("ministral3"), "text_config", None) is None
-    assert "ministral3" in _TESTED_ARCHS
+    assert "ministral3" in TESTED_ARCHS
 
 
-def test_layer_accessors_are_named_defs():
-    """Shared and one-off shapes alike are named ``def``s, not lambdas.
+# One architecture per block-list shape the structural discovery walks:
+# ``transformer.h`` (GPT-2), ``gpt_neox.layers`` (Pythia), ``model.decoder.layers``
+# (OPT).  ``model.layers`` and the VLM ``model.language_model.layers`` shape are
+# covered by the guaranteed set and the gemma composite below.
+@pytest.mark.parametrize("model_type", ["gpt2", "gpt_neox", "opt"])
+def test_untested_shapes_are_discovered_structurally(
+    model_type: str, monkeypatch: pytest.MonkeyPatch,
+):
+    import drowse.model.arch as arch
 
-    A traceback out of a wrong accessor should name the block shape it
-    tried, not read ``<lambda>``.
-    """
-    anonymous = sorted(
-        model_type for model_type, accessor in _LAYER_ACCESSORS.items()
-        if getattr(accessor, "__name__", "<lambda>") == "<lambda>"
+    monkeypatch.setattr(arch, "_warned", set())
+    cfg = AutoConfig.for_model(
+        model_type, vocab_size=64, hidden_size=32, num_hidden_layers=3,
+        num_attention_heads=4, n_embd=32, n_layer=3, n_head=4,
+        intermediate_size=64, ffn_dim=64, word_embed_proj_dim=32,
     )
-    assert not anonymous, f"lambda layer accessors: {anonymous}"
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(cfg)
+    with pytest.warns(UserWarning, match="untested"):
+        layers = get_layers(model)
+    assert isinstance(layers, nn.ModuleList) and len(layers) == 3
+
+
+def test_multimodal_composite_resolves_its_language_model_blocks():
+    from transformers import Gemma3Config, Gemma3ForConditionalGeneration
+
+    cfg = Gemma3Config(
+        text_config=dict(_TINY_CONFIG, model_type="gemma3_text"),
+        vision_config=dict(
+            hidden_size=32, intermediate_size=64, num_hidden_layers=1,
+            num_attention_heads=2, image_size=28, patch_size=14,
+        ),
+        mm_tokens_per_image=4,
+    )
+    with torch.device("meta"):
+        model = Gemma3ForConditionalGeneration(cfg)
+    layers = get_layers(model)
+    assert len(layers) == _TINY_CONFIG["num_hidden_layers"]
+    assert layers is model.model.language_model.layers
+
+
+def test_a_model_without_a_block_list_raises():
+    class _Bare(nn.Module):
+        config = type("C", (), {"model_type": "bare"})()
+
+    with pytest.raises(ValueError, match="no transformer block list"):
+        get_layers(_Bare())  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize("model_type", GUARANTEED_ARCHS)

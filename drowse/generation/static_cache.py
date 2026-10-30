@@ -18,7 +18,7 @@ This module owns *detection*, *construction*, and *fallback*:
   decides ``reduce-overhead`` vs the ``default`` (fusion-only) compile mode.
 - :func:`make_static_cache` — the single factory used by
   :mod:`drowse.generation.decode`, :mod:`drowse.session.session`, and
-  :mod:`drowse.model.loading`.  It early-initializes the layer buffers so
+  :mod:`drowse.model.load`.  It early-initializes the layer buffers so
   Transformers can mark stable K/V addresses outside Dynamo, and flags the
   sliding layers that cannot slide for this generation so
   :func:`_patch_static_sliding_mask`'s constant mask keeps them in the compiled

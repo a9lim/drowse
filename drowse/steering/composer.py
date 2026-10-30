@@ -236,7 +236,7 @@ class SteeringComposer:
         tensor_path = matches[0][1]
         manifold = load_manifold(tensor_path)
         metadata = manifold.metadata
-        from drowse.model.loading import loaded_model_fingerprint
+        from drowse.model.fingerprint import loaded_model_fingerprint
         from drowse.base.paths import encode_release_id
 
         live_fingerprint = loaded_model_fingerprint(

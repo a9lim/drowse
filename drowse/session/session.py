@@ -66,13 +66,9 @@ from drowse.loom.tree import (
     Recipe,
     derive_seed_schedule,
 )
-from drowse.model.loading import (
-    get_layers,
-    get_model_info,
-    load_model,
-    loaded_model_fingerprint,
-    workspace_layer_indices,
-)
+from drowse.model.arch import get_layers, get_model_info, workspace_layer_indices
+from drowse.model.fingerprint import loaded_model_fingerprint
+from drowse.model.load import load_model
 from drowse.readout.types import (
     AGG_TAIL_DEPTH,
     InstrumentFamily,
@@ -936,7 +932,6 @@ class DrowseSession:
             quantize=quantize,
             device=device,
             dtype=dtype,
-            compile=False,
             trust_remote_code=trust_remote_code,
             on_progress=on_progress,
         )
@@ -965,7 +960,7 @@ class DrowseSession:
             )
 
         # Apply compile manually with the resolved mode.  Routes through
-        # ``_compile_with_probe`` so an architecture-specific inductor /
+        # ``compile_with_probe`` so an architecture-specific inductor /
         # Triton bug surfaces at load time as a caught warning + eager
         # fallback, rather than as a segfault on the user's first token.
         #
@@ -985,7 +980,7 @@ class DrowseSession:
                 install_persistent_capture_hooks,
                 install_persistent_offset_hooks,
             )
-            from drowse.model.loading import _compile_with_probe, get_layers
+            from drowse.model.compile import compile_with_probe
             # Attach the persistent branchless steering hooks BEFORE
             # compile so they ride inside the captured graph (post-compile hook
             # changes are not retraced — ``skip_nnmodule_hook_guards``).  The
@@ -1018,7 +1013,7 @@ class DrowseSession:
                     f"Compiling model with torch.compile"
                     f"(mode={effective_compile_mode!r})..."
                 )
-            model = _compile_with_probe(
+            model = compile_with_probe(
                 model, tokenizer, device_obj,
                 mode=effective_compile_mode,
             )
@@ -2999,7 +2994,7 @@ class DrowseSession:
         cached = self._jlens_readout_module_cache
         if cached is not None:
             return cached
-        from drowse.model.loading import LogitReadout, get_unembedding
+        from drowse.model.readout import LogitReadout, get_unembedding
 
         modules = (get_unembedding(self._model), LogitReadout(self._model))
         self._jlens_readout_module_cache = modules
@@ -3490,7 +3485,7 @@ class DrowseSession:
         an explicit source-layer subset.
         """
         from drowse.lens.jlens import resolve_word_token
-        from drowse.model.loading import get_output_projection, get_unembedding
+        from drowse.model.readout import get_output_projection, get_unembedding
 
         name = f"jlens/{word}"
         if name in self._profiles:
@@ -4426,7 +4421,7 @@ class DrowseSession:
         the workspace).
         """
         from drowse.lens.jlens import sparse_nonneg_decompose
-        from drowse.model.loading import get_output_projection, get_unembedding
+        from drowse.model.readout import get_output_projection, get_unembedding
 
         lens = self._require_jlens()
         directions = self.ensure_profile_registered(selector)
@@ -5351,7 +5346,7 @@ class DrowseSession:
         from drowse.fit.bake import MergeError, merge_into_manifold
         from drowse.base.paths import tensor_filename
         from drowse.store.manifold_tensors import load_manifold
-        from drowse.model.loading import loaded_model_fingerprint
+        from drowse.model.fingerprint import loaded_model_fingerprint
         from drowse.fit.capture import folded_directions
 
         live_fingerprint = loaded_model_fingerprint(self._model, self.model_id)

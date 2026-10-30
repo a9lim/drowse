@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.model.loading import loaded_model_fingerprint
+from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.steering.composer import SteeringComposer
 from drowse.fit.capture import fold_directions_to_subspace
 from drowse.store.manifold_folder import ManifoldFormatError

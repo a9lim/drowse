@@ -10,7 +10,14 @@ import torch
 from drowse.fit.capture import _capture_all_hidden_states
 from drowse.generation.decode import GenerationConfig, GenerationState, clear_generation_caches, generate_steered
 from drowse.lens.jlens import JacobianLens, lens_logits
-from drowse.model.loading import LogitReadout, get_final_norm, get_layers, get_logit_softcap, get_unembedding, load_model
+from drowse.model.arch import get_layers
+from drowse.model.load import load_model
+from drowse.model.readout import (
+    LogitReadout,
+    get_final_norm,
+    get_logit_softcap,
+    get_unembedding,
+)
 from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(

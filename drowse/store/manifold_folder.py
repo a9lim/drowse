@@ -845,7 +845,7 @@ class ManifoldSidecar:
     sae_full_coverage: bool = False
     model_fingerprint: Optional[str] = None
     # The *pre-load-verifiable* checkpoint identity
-    # (:func:`drowse.model.loading.model_source_fingerprint`): resolved Hub commit
+    # (:func:`drowse.model.fingerprint.model_source_fingerprint`): resolved Hub commit
     # or exact local file hashes, plus the load representation.  Distinct from
     # ``source_model_fingerprint``, which names the *other* model a cross-model
     # Procrustes transfer came from.  This one exists so a fit no-op can be

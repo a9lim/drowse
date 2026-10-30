@@ -9,7 +9,8 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
-from drowse.model import loading as model_mod
+from drowse.model import checkpoint as ckpt_mod
+from drowse.model import load as model_mod
 from tests.test_model_loading import _remap_to_layout, _tiny_text_config
 
 
@@ -27,7 +28,7 @@ def test_index_rejects_unsafe_shard_names_before_resolution(tmp_path: Path, monk
 
     monkeypatch.setattr("transformers.utils.hub.cached_file", cached_file)
     with pytest.raises(ValueError, match="shard"):
-        model_mod._load_text_from_multimodal("fixture/model", _tiny_text_config(False), torch.float32, "cpu")
+        ckpt_mod.load_text_from_multimodal("fixture/model", _tiny_text_config(False), torch.float32, "cpu")
     assert calls == [SAFE_WEIGHTS_INDEX_NAME]
 
 
@@ -41,7 +42,7 @@ def test_local_index_traversal_cannot_read_an_external_checkpoint(tmp_path: Path
         "weight_map": {name: "../outside.safetensors" for name in reference.state_dict()},
     }))
     with pytest.raises(ValueError, match="shard"):
-        model_mod._load_text_from_multimodal(str(model_root), config, torch.float32, "cpu")
+        ckpt_mod.load_text_from_multimodal(str(model_root), config, torch.float32, "cpu")
 
 
 @pytest.mark.parametrize("kind", ["index", "shard"])
@@ -54,7 +55,7 @@ def test_checkpoint_rejects_fifo_without_blocking(tmp_path: Path, monkeypatch: p
         return str(path) if name == path.name else None
     monkeypatch.setattr("transformers.utils.hub.cached_file", cached_file)
     with pytest.raises(ValueError, match="regular file"):
-        model_mod._load_text_from_multimodal("fixture/model", _tiny_text_config(False), torch.float32, "cpu")
+        ckpt_mod.load_text_from_multimodal("fixture/model", _tiny_text_config(False), torch.float32, "cpu")
 
 
 @pytest.mark.parametrize("damage", ["missing", "broadcast"])
@@ -71,7 +72,7 @@ def test_partial_or_broadcast_checkpoint_is_not_a_loaded_model(tmp_path: Path, m
     save_file(state, str(path))
     monkeypatch.setattr("transformers.utils.hub.cached_file", lambda model, name, **kwargs: str(path) if name == SAFE_WEIGHTS_NAME else None)
     with pytest.raises(ValueError, match="missing|shape"):
-        model_mod._load_text_from_multimodal("fixture/model", config, torch.float32, "cpu")
+        ckpt_mod.load_text_from_multimodal("fixture/model", config, torch.float32, "cpu")
 
 
 @pytest.mark.parametrize("header", [
@@ -87,14 +88,14 @@ def test_manual_header_reader_rejects_malformed_layout(tmp_path: Path, header: d
     path = tmp_path / "bad.safetensors"
     path.write_bytes(len(raw).to_bytes(8, "little") + raw + b"\0" * 8)
     with pytest.raises(ValueError, match="safetensors"):
-        model_mod._read_safetensors_header(str(path))
+        ckpt_mod.read_safetensors_header(str(path))
 
 
 def test_manual_header_reader_bounds_length_before_reading(tmp_path: Path):
     path = tmp_path / "bad.safetensors"
     path.write_bytes((2**40).to_bytes(8, "little"))
     with pytest.raises(ValueError, match="header"):
-        model_mod._read_safetensors_header(str(path))
+        ckpt_mod.read_safetensors_header(str(path))
 
 
 def test_tied_checkpoint_alias_and_nonpersistent_buffers_are_optional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -113,7 +114,7 @@ def test_tied_checkpoint_alias_and_nonpersistent_buffers_are_optional(tmp_path: 
 
     monkeypatch.setattr(model_mod.AutoModelForCausalLM, "from_config", with_runtime_buffer)
     monkeypatch.setattr("transformers.utils.hub.cached_file", lambda model, name, **kwargs: str(weights) if name == SAFE_WEIGHTS_NAME else None)
-    loaded = model_mod._load_text_from_multimodal("fixture/model", config, torch.float32, "cpu")
+    loaded = ckpt_mod.load_text_from_multimodal("fixture/model", config, torch.float32, "cpu")
     assert torch.equal(loaded.runtime_cache, torch.ones(3))
     for name, tensor in reference.state_dict().items():
         assert torch.equal(loaded.state_dict()[name], tensor), name
@@ -123,13 +124,13 @@ def test_tied_checkpoint_alias_and_nonpersistent_buffers_are_optional(tmp_path: 
 def test_tensor_reader_rejects_post_header_truncation(tmp_path: Path):
     path = tmp_path / SAFE_WEIGHTS_NAME
     save_file({"weight": torch.arange(4)}, str(path))
-    header, offset = model_mod._read_safetensors_header(str(path))
+    header, offset = ckpt_mod.read_safetensors_header(str(path))
     with path.open("r+b") as handle:
         handle.truncate(offset + 8)
-    fd = model_mod._open_uncached(str(path))
+    fd = ckpt_mod.open_uncached(str(path))
     try:
         with pytest.raises(ValueError, match="truncated"):
-            model_mod._read_st_tensor(fd, header, offset, "weight")
+            ckpt_mod.read_st_tensor(fd, header, offset, "weight")
     finally:
         os.close(fd)
 
@@ -138,11 +139,11 @@ def test_scalar_and_empty_tensor_headers_remain_valid(tmp_path: Path):
     path = tmp_path / SAFE_WEIGHTS_NAME
     values = {"empty": torch.empty(0, 3), "scalar": torch.tensor(2.0)}
     save_file(values, str(path))
-    header, offset = model_mod._read_safetensors_header(str(path))
-    fd = model_mod._open_uncached(str(path))
+    header, offset = ckpt_mod.read_safetensors_header(str(path))
+    fd = ckpt_mod.open_uncached(str(path))
     try:
         for name, expected in values.items():
-            assert torch.equal(model_mod._read_st_tensor(fd, header, offset, name), expected)
+            assert torch.equal(ckpt_mod.read_st_tensor(fd, header, offset, name), expected)
     finally:
         os.close(fd)
 
@@ -160,7 +161,7 @@ def test_valid_nested_shards_and_hf_blob_symlinks_preserve_exact_weights(tmp_pat
     (model_root / SAFE_WEIGHTS_INDEX_NAME).write_text(json.dumps({
         "weight_map": {name: "shards/weights.safetensors" for name in state},
     }))
-    loaded = model_mod._load_text_from_multimodal(str(model_root), config, torch.float32, "cpu")
+    loaded = ckpt_mod.load_text_from_multimodal(str(model_root), config, torch.float32, "cpu")
     for name, tensor in reference.state_dict().items():
         assert torch.equal(loaded.state_dict()[name], tensor), name
 
@@ -173,7 +174,7 @@ def test_ignored_vision_dtype_does_not_restrict_text_loading(tmp_path: Path, dty
     state["model.vision_tower.buffer"] = torch.zeros(2, dtype=dtype)
     save_file(state, str(tmp_path / SAFE_WEIGHTS_NAME))
 
-    loaded = model_mod._load_text_from_multimodal(str(tmp_path), config, torch.float32, "cpu")
+    loaded = ckpt_mod.load_text_from_multimodal(str(tmp_path), config, torch.float32, "cpu")
 
     for name, tensor in reference.state_dict().items():
         assert torch.equal(loaded.state_dict()[name], tensor), name
@@ -190,16 +191,16 @@ def test_valid_unselected_dtypes_validate_but_do_not_silently_decode(tmp_path: P
     path.write_bytes(len(raw).to_bytes(8, "little") + raw + bytes(bits))
     with safe_open(str(path), framework="pt") as archive:
         assert archive.keys() == ["vision"]
-    header, offset = model_mod._read_safetensors_header(str(path))
+    header, offset = ckpt_mod.read_safetensors_header(str(path))
 
     def no_read(*args: Any):
         pytest.fail("unsupported selected dtype was read before rejection")
 
     monkeypatch.setattr(os, "pread", no_read)
-    fd = model_mod._open_uncached(str(path))
+    fd = ckpt_mod.open_uncached(str(path))
     try:
         with pytest.raises(ValueError, match="unsupported.*selected tensor"):
-            model_mod._read_st_tensor(fd, header, offset, "vision")
+            ckpt_mod.read_st_tensor(fd, header, offset, "vision")
     finally:
         os.close(fd)
 
@@ -211,15 +212,15 @@ def test_shape_validation_rejects_unbounded_or_misaligned_dimensions(tmp_path: P
     path = tmp_path / SAFE_WEIGHTS_NAME
     path.write_bytes(len(raw).to_bytes(8, "little") + raw + b"\0")
     with pytest.raises(ValueError, match="safetensors"):
-        model_mod._read_safetensors_header(str(path))
+        ckpt_mod.read_safetensors_header(str(path))
 
 
 def test_outer_head_alone_does_not_identify_a_supported_text_layout(tmp_path: Path):
     config = _tiny_text_config(False)
     reference = model_mod.AutoModelForCausalLM.from_config(config)
     save_file(reference.state_dict(), str(tmp_path / SAFE_WEIGHTS_NAME))
-    with pytest.raises(model_mod._NoTextWeightsExtracted):
-        model_mod._load_text_from_multimodal(str(tmp_path), config, torch.float32, "cpu")
+    with pytest.raises(ckpt_mod.NoTextWeightsExtracted):
+        ckpt_mod.load_text_from_multimodal(str(tmp_path), config, torch.float32, "cpu")
 
 
 @pytest.mark.parametrize("architecture", ["mistral3", "gemma3"])
@@ -258,7 +259,7 @@ def test_actual_multimodal_wrapper_preserves_head_weights_and_logits(tmp_path: P
     else:
         save_file(state, str(tmp_path / SAFE_WEIGHTS_NAME))
 
-    loaded = model_mod._load_text_from_multimodal(str(tmp_path), config.text_config, torch.float32, "cpu").eval()
+    loaded = ckpt_mod.load_text_from_multimodal(str(tmp_path), config.text_config, torch.float32, "cpu").eval()
 
     reference_state = reference.state_dict()
     for name, value in loaded.state_dict().items():

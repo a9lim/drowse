@@ -39,7 +39,8 @@ from drowse.errors import DrowseError
 from drowse.events import EventBus, ManifoldExtracted
 from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION
 from drowse.geometry.topology import PcaDiagnostics, SpectralDiagnostics
-from drowse.model.loading import loaded_model_fingerprint, workspace_layer_indices
+from drowse.model.arch import workspace_layer_indices
+from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.sae.backend import SaeBackend
 from drowse.base.paths import model_dir, tensor_filename
 

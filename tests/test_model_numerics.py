@@ -11,7 +11,14 @@ import transformers
 
 from drowse.fit.capture import _capture_all_hidden_states
 from drowse.lens.jlens import JacobianLens, lens_logits
-from drowse.model.loading import LogitReadout, get_final_norm, get_layers, get_logit_softcap, get_output_projection, get_unembedding
+from drowse.model.arch import get_layers
+from drowse.model.readout import (
+    LogitReadout,
+    get_final_norm,
+    get_logit_softcap,
+    get_output_projection,
+    get_unembedding,
+)
 
 
 @pytest.fixture(params=["llama", "qwen2", "qwen3", "qwen3_5_text", "gemma2", "gemma3_text", "gpt2", "gpt_neox", "opt",

@@ -39,7 +39,8 @@ def test_compiled_explicit_no_probes_skips_persistent_capture_hooks(
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
     from drowse.generation import static_cache
-    from drowse.model import loading as model_mod
+    from drowse.model import arch as arch_mod
+    from drowse.model import compile as compile_mod
     from drowse.session import session as session_mod
     from drowse.session.session import DrowseSession
     from drowse.steering.composer import SteeringComposer
@@ -72,10 +73,9 @@ def test_compiled_explicit_no_probes_skips_persistent_capture_hooks(
             "dtype": "float32",
         },
     )
-    monkeypatch.setattr(model_mod, "get_layers", lambda _model: fake_layers)
+    monkeypatch.setattr(arch_mod, "get_layers", lambda _model: fake_layers)
     monkeypatch.setattr(
-        model_mod,
-        "_compile_with_probe",
+        compile_mod, "compile_with_probe",
         lambda model, tokenizer, device, mode=None: _FakeCompiled(model),
     )
     monkeypatch.setattr(

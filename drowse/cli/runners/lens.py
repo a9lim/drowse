@@ -130,7 +130,7 @@ def _lens_fit_source_preflight_matches(
     if requested_layers is None or requested_layers == "all":
         return set(source_layers) >= set(range(final_idx))
     if requested_layers in {"workspace", "band"}:
-        from drowse.model.loading import workspace_layer_indices
+        from drowse.model.arch import workspace_layer_indices
 
         expected = set(workspace_layer_indices(range(final_idx), raw_count))
         return set(source_layers) >= expected
@@ -174,7 +174,7 @@ def _try_lens_fit_noop_preflight_locked(
     import hashlib
 
     from drowse.lens.jlens import DEFAULT_SEQ_LEN
-    from drowse.model.loading import model_source_fingerprint
+    from drowse.model.fingerprint import model_source_fingerprint
     from drowse.lens.store import (
         lens_artifact_size,
         lens_estimator_policy,

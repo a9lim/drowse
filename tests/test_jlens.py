@@ -29,7 +29,7 @@ from drowse.lens.jlens import (
     token_readout_stats,
     token_readout_stats_from_probabilities,
 )
-from drowse.model.loading import get_final_norm, get_unembedding
+from drowse.model.readout import get_final_norm, get_unembedding
 from tests._jlens_toys import TOY_D as _D
 from tests._jlens_toys import TOY_VOCAB as _VOCAB
 from tests._jlens_toys import CharTokenizer as _CharTokenizer

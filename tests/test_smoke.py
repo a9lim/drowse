@@ -36,7 +36,7 @@ _EXTRACTION_BUDGET_S = 60.0 if _IS_MPS else 10.0
 
 @pytest.fixture(scope="module")
 def model_and_tokenizer():
-    from drowse.model.loading import load_model
+    from drowse.model.load import load_model
     # device="auto" picks cuda > mps > cpu; the skipif above guarantees a GPU.
     return load_or_skip_inaccessible(
         lambda: load_model(MODEL_ID, quantize=None, device="auto"), MODEL_ID,
@@ -45,7 +45,7 @@ def model_and_tokenizer():
 
 @pytest.fixture(scope="module")
 def layers(model_and_tokenizer: Any) -> Any:
-    from drowse.model.loading import get_layers
+    from drowse.model.arch import get_layers
     model, _ = model_and_tokenizer
     return get_layers(model)
 
