@@ -15,7 +15,6 @@ tree wiring and protocol shapes phase 2 introduced.
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from types import SimpleNamespace
 from typing import Any, cast
@@ -107,8 +106,6 @@ class _StubSession:
 
         from drowse.generation.decode import GenerationState
         self.generation_state = GenerationState()
-
-        self.lock = asyncio.Lock()
 
         self._next_token_stream: list[str] = ["hi"]
         self._fail_next: bool = False

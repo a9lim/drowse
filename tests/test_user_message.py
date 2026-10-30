@@ -148,8 +148,7 @@ def test_steering_expr_error_carries_col_in_message():
 
 
 def test_server_routes_user_message_status_codes():
-    """``server/app.py:_on_drowse_error`` honors ``user_message()`` status."""
-    import asyncio
+    """The server's exception handlers honor ``user_message()`` status."""
     from unittest.mock import MagicMock
 
     from fastapi.testclient import TestClient
@@ -181,7 +180,6 @@ def test_server_routes_user_message_status_codes():
         s._last_result = None
         s._tokenizer = MagicMock()
         s._tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
-        s.lock = asyncio.Lock()
         return s
 
     # 409: ConcurrentGenerationError already pinned by test_server.py;

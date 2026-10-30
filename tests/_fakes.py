@@ -32,7 +32,6 @@ Usage::
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -47,8 +46,6 @@ def make_mock_session(**overrides: Any) -> Any:
     - the ``_device`` / ``_dtype`` / ``_created_ts`` scalars
     - the default sampling config
     - empty ``profiles`` / ``probes``
-    - a real ``asyncio.Lock`` so ``async with session.lock`` works under
-      ``TestClient``'s event loop
 
     Keyword overrides are applied last as ``setattr(session, k, v)``, so a
     caller wanting a real ``GenerationConfig`` passes ``config=...`` rather
@@ -76,8 +73,6 @@ def make_mock_session(**overrides: Any) -> Any:
 
     session.profiles = {}
     session.probes = {}
-
-    session.lock = asyncio.Lock()
 
     for k, v in overrides.items():
         setattr(session, k, v)

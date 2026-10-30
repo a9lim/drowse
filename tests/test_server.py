@@ -1,6 +1,5 @@
 """Tests for the OpenAI-compatible API server (no GPU required)."""
 
-import asyncio
 import json
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -88,10 +87,6 @@ def _mock_session():
     session.last_result = None
     session.tokenizer = MagicMock()
     session.tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
-
-    # Real asyncio.Lock so `async with session.lock:` works under the
-    # FastAPI test client's event loop.
-    session.lock = asyncio.Lock()
     return session
 
 
@@ -893,7 +888,7 @@ class TestOllamaApi:
 
 
 # ---------------------------------------------------------------------------
-# Cluster 4: LangChain compat, native steering field, session.lock back-pressure
+# Cluster 4: LangChain compat, native steering field, session-lock back-pressure
 # ---------------------------------------------------------------------------
 
 class TestLangChainCompat:
