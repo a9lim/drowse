@@ -224,7 +224,7 @@ def test_templated_fit_rematerializes_value_and_assistant_edits() -> None:
 def test_template_mutation_between_resolve_and_hash_cannot_publish_stale_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.store.fit_publish import ManifoldAuthoringChangedError
+    from drowse.fit.publish import ManifoldAuthoringChangedError
     from drowse.store.manifold_authoring import create_manifold_from_template
     from drowse.store.templates import TemplateFolder, create_template_folder
 
@@ -562,7 +562,7 @@ def test_reader_stays_available_and_authoring_cas_rejects_stale_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import drowse.geometry.subspace as subspace_module
-    from drowse.store.fit_publish import ManifoldAuthoringChangedError
+    from drowse.fit.publish import ManifoldAuthoringChangedError
     from drowse.store.manifold_tensors import load_manifold
     from drowse.base.paths import tensor_filename
 
@@ -704,7 +704,7 @@ def test_clear_invalidates_only_selected_inflight_target(
 ) -> None:
     from drowse.fit.pipeline import _default_prompts
     from drowse.store import manifold_lifecycle
-    from drowse.store.fit_publish import (
+    from drowse.fit.publish import (
         ManifoldAuthoringChangedError,
         _authoring_snapshot_locked,
         publish_fit_if_current,
@@ -751,7 +751,7 @@ def test_removed_and_recreated_folder_rejects_stale_publication(
     tmp_path: Path,
 ) -> None:
     from drowse.fit.pipeline import _default_prompts
-    from drowse.store.fit_publish import (
+    from drowse.fit.publish import (
         ManifoldAuthoringChangedError,
         _authoring_snapshot_locked,
         publish_fit_if_current,

@@ -32,7 +32,7 @@ from drowse.store import neutral as alignment_mod
 from drowse.store.manifold_authoring import create_discover_manifold_folder
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_schema import ManifoldSidecar
-from drowse.store.manifold_preflight import preflight_manifold_fit_noop
+from drowse.fit.preflight import preflight_manifold_fit_noop
 from drowse.base.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
 from tests.test_manifold_extraction import (

@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from drowse.base.paths import tensor_filename
+from drowse.fit.pipeline import (
+    MANIFOLD_CAPTURE_VERSION,
+    offline_fit_identity,
+    resolve_fit_layer_indices,
+)
 from drowse.store.manifold_folder import ManifoldFolder, read_proven_sidecar
 from drowse.store.manifold_schema import ManifoldFormatError
 from drowse.store.manifold_tensors import fitted_tensor_layers
@@ -85,11 +90,6 @@ def preflight_manifold_fit_noop(
     ``baseline_prompts_sha256``), ``fit_policy_version``, and the requested
     layer set against the config's layer count.  Nothing here mutates.
     """
-    from drowse.fit.pipeline import (
-        MANIFOLD_CAPTURE_VERSION,
-        offline_fit_identity,
-        resolve_fit_layer_indices,
-    )
     from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION
     from drowse.model.arch import config_model_shape
     from drowse.model.fingerprint import model_source_fingerprint
