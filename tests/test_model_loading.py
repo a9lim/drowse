@@ -1016,7 +1016,7 @@ def test_standard_load_stamps_the_resolved_revision(
     ):
         mock_tok.from_pretrained.return_value = SimpleNamespace()
         mock_cfg.from_pretrained.return_value = _FakeConfig("qwen3")
-        mock_model.from_pretrained.return_value = _FakeModel("sdpa")
+        mock_model.from_pretrained.return_value = _FakeModel("sdpa"), {"missing_keys": []}
         model, _ = model_mod.load_model("org/model", device="cpu")
 
     assert model.config._commit_hash == _COMMIT

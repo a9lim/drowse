@@ -1,0 +1,1 @@
+export{r as getRuntimeClient}from"./registry-CQv71XNh.js";

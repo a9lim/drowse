@@ -1,1 +1,0 @@
-import{t as e}from"./errors-B4VHh4kN.js";function t(t){return t instanceof e?n(n(t.body)?.error)?.code===`FITTING_CANCELLED`:n(t)?.code===`FITTING_CANCELLED`}function n(e){return typeof e==`object`&&e&&!Array.isArray(e)?e:null}export{t};

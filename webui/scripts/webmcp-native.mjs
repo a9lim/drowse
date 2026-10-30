@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import puppeteer, { PUPPETEER_REVISIONS } from "puppeteer";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const server = await createServer({ configFile: `${root}/vite.hosted.config.ts`, logLevel: "error", server: { watch: null, host: "127.0.0.1", port: 0 } });
@@ -47,7 +47,7 @@ async function finished(page, id) {
 }
 try {
   const version = await browser.version();
-  assert.equal(version, "Chrome/152.0.7977.75", "Use the browser bundled with pinned Puppeteer 25.10.0 for the native lane");
+  assert.equal(version, `Chrome/${PUPPETEER_REVISIONS.chrome}`, "Use the browser bundled with the pinned Puppeteer dependency for the native lane");
   const page = await browser.newPage();
   const pageErrors = [];
   page.on("pageerror", error => pageErrors.push(error.message));

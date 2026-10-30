@@ -104,27 +104,43 @@ FAMILY = {c: c.removesuffix("_z") for c in READ_COLS + COMPARE_COLS}
 
 
 def band(L):
-    if L == 0: return "embed"
-    if L <= 7: return "early"
-    if L == 8: return "crossover"
-    if L <= 12: return "concept"
-    if L <= 20: return "dark"
-    if L <= 31: return "predict"
+    if L == 0:
+        return "embed"
+    if L <= 7:
+        return "early"
+    if L == 8:
+        return "crossover"
+    if L <= 12:
+        return "concept"
+    if L <= 20:
+        return "dark"
+    if L <= 31:
+        return "predict"
     return "suppress"
 
 
 def plan(L):
     """(input reads, output reads) to trust at this depth, primary first (the brief's §4 tables)."""
-    if L <= 4: ins = ["read_S", "read_S_z"]
-    elif L <= 7: ins = ["read_S_z", "read_S"]
-    elif L == 8: ins = ["read_S", "read_S_z", "read_R_dclm", "read_R_dclm_z"]
-    elif L <= 12: ins = ["read_R_dclm", "read_R_dclm_z"]
-    elif L <= 20: ins = ["read_R_dclm_z", "read_R_dclm"]
-    else: ins = ["read_R_dclm", "read_R_dclm_z", "read_S_z"]
-    if L <= 4: outs = ["write_S_z", "write_R_dclm_z"]
-    elif L <= 8: outs = ["write_R_dclm", "write_R_dclm_z", "write_S_z"]
-    elif L <= 20: outs = ["write_R_dclm", "write_R_dclm_z"]
-    else: outs = ["write_R_dclm", "write_R_dclm_z"]
+    if L <= 4:
+        ins = ["read_S", "read_S_z"]
+    elif L <= 7:
+        ins = ["read_S_z", "read_S"]
+    elif L == 8:
+        ins = ["read_S", "read_S_z", "read_R_dclm", "read_R_dclm_z"]
+    elif L <= 12:
+        ins = ["read_R_dclm", "read_R_dclm_z"]
+    elif L <= 20:
+        ins = ["read_R_dclm_z", "read_R_dclm"]
+    else:
+        ins = ["read_R_dclm", "read_R_dclm_z", "read_S_z"]
+    if L <= 4:
+        outs = ["write_S_z", "write_R_dclm_z"]
+    elif L <= 8:
+        outs = ["write_R_dclm", "write_R_dclm_z", "write_S_z"]
+    elif L <= 20:
+        outs = ["write_R_dclm", "write_R_dclm_z"]
+    else:
+        outs = ["write_R_dclm", "write_R_dclm_z"]
     return ins, outs
 
 
@@ -220,7 +236,8 @@ for L in range(LAYERS):
         layers_meta.append({"layer": L, "band": band(L), "missing": True})
         continue
     n = reads.num_rows
-    neuron = arr(reads, "neuron"); pole = arr(reads, "pole")
+    neuron = arr(reads, "neuron")
+    pole = arr(reads, "pole")
     row_of = {(int(a), int(b)): i for i, (a, b) in enumerate(zip(neuron, pole))}
 
     def align(t):
@@ -314,8 +331,10 @@ for L in range(LAYERS):
     # Row lookups through pyarrow are slow one at a time; materialize the few columns used per pole.
     acts_rows = acts.to_pylist() if acts is not None else None
     drivers_rows = drivers.select(["drivers_ids", "drivers_val", "drivers_sum_ids", "drivers_sum_val", "s_hits"]).to_pylist() if drivers is not None else None
-    w_norm_col = arr(reads, "w_norm"); null_col = arr(reads, "null_share")
-    kurt_col = arr(reads, "vocab_kurt"); skew_col = arr(reads, "vocab_skew")
+    w_norm_col = arr(reads, "w_norm")
+    null_col = arr(reads, "null_share")
+    kurt_col = arr(reads, "vocab_kurt")
+    skew_col = arr(reads, "vocab_skew")
 
     # ---------- layer statistics over all 24,576 poles
     stats = {"silent": float(silent.mean()), "detector": float((detector & ~silent).mean()),
@@ -421,9 +440,11 @@ for L in range(LAYERS):
                 for t, _ in p["peaks"]:
                     if t.strip() and t.strip() not in words and not is_junk(tok.token_to_id(t) or 0):
                         words.append(t.strip())
-                    if len(words) >= 3: break
+                    if len(words) >= 3:
+                        break
             for t in prim["tokens"]:
-                if len(words) >= 3: break
+                if len(words) >= 3:
+                    break
                 s = t[0].strip()
                 if s and not t[0].startswith("\u0001") and s not in words and not all(unicodedata.category(ch)[0] in "PSZC" for ch in s):
                     words.append(s)
@@ -467,12 +488,14 @@ for L in range(LAYERS):
             for t, c in p.get("peaks", []):
                 k = stem(t)
                 if k and k.strip():
-                    weights[k] = max(weights[k], 4); search_display.setdefault(k, t.strip())
+                    weights[k] = max(weights[k], 4)
+                    search_display.setdefault(k, t.strip())
             lab = p.get("label")
             if lab:
                 for word in re.findall(r"[\w']+", lab["text"].lower()):
                     if len(word) > 2:
-                        weights[stem(word)] = max(weights[stem(word)], 5); search_display.setdefault(stem(word), word)
+                        weights[stem(word)] = max(weights[stem(word)], 5)
+                        search_display.setdefault(stem(word), word)
             for k, w in weights.most_common(40):
                 search[k].append([ref, side, w])
 
