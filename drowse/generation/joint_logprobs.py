@@ -1,8 +1,8 @@
 """Cross-branch joint logprobs for generated loom siblings.
 
 Given two assistant LoomNodes A and B that share a parent, replay each
-branch token-by-token under the recipe stamped on that node and report,
-for each aligned assistant-token position pair:
+branch under the recipe stamped on that node and report, for each aligned
+assistant-token position pair:
 
 * ``lp_a_in_a`` / ``lp_b_in_b`` — chosen-token logprob under each
   branch's own distribution.  Mirrors what the engine already captures
@@ -19,6 +19,19 @@ for each aligned assistant-token position pair:
   of each side's top-K tokens.  The tail is unobserved, so this is
   documented as an approximate signal, not a full-distribution measurement.
 
+Every replayed row is kept as the sampler's **support pool** — the
+fixed-width top-k candidate set with its renormalized logprobs
+(:class:`SamplerRows`).  Every token outside the pool has logprob ``-inf``
+under the sampler, so the pool is the exact distribution at a fraction of a
+dense ``[rows, vocab]`` table, and it crosses to the host once per branch.
+
+A branch whose steering is position-independent (unsteered, compiled
+offsets, or the static single-affine fast path) and carries no repetition
+penalty replays teacher-forced: the forced stream runs in KV-cached chunks
+that keep only the predictor logits.  Gated, phased, or curved steering and
+penalties depend on the decode step, so those branches replay one forced
+token per forward, with capture bound only when a probe gate reads it.
+
 The route is called lazily when the comparison UI opens; results cache on the
 session keyed by sorted ``(a_id, b_id)`` for the session lifetime. Tree
 mutations that rename or delete the involved
@@ -30,20 +43,21 @@ from __future__ import annotations
 import contextlib
 import math
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from drowse.generation.decode import (
     GenerationConfig,
     _PenaltyState,
-    _advance_no_cache_input,
     _effective_topk,
-    _sampler_logprob_vector,
+    _sampler_candidates,
     build_chat_input,
 )
-from drowse.loom.diff import per_token_diff
 from drowse.generation.sampling import SamplingConfig
+from drowse.generation.scoring import shared_prefix_len
+from drowse.loom.diff import per_token_diff
+from drowse.model.chat import logits_keep_kwarg
 from drowse.steering.terms import Steering
 
 if TYPE_CHECKING:  # avoid a hard import cycle at module load
@@ -55,6 +69,10 @@ if TYPE_CHECKING:  # avoid a hard import cycle at module load
 # mass at typical sampler temperatures; we don't try to estimate the
 # tail because the engine isn't shipping it.
 _KL_TOP_K = 32
+
+# Predictor rows per teacher-forced forward.  Bounds the kept
+# ``[chunk, vocab]`` head output (~67 MB in bf16 at a 262k vocab).
+_REPLAY_CHUNK = 128
 
 
 @dataclass(frozen=True)
@@ -114,13 +132,66 @@ class JointLogprobs:
 
 
 # ---------------------------------------------------------------------------
-# Pure-math core (tested in isolation; see tests/test_joint_logprobs.py)
+# Sampler-distribution rows (pure tensor, host side)
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class SamplerRows:
+    """Sampler support pools keyed by predictor row of the visible sequence.
+
+    ``ids[i]`` / ``logps[i]`` are pool ``i``: candidate token ids sorted by
+    descending logit and their sampler logprobs (``-inf`` where top-p cut an
+    entry).  ``index`` maps a predictor row (position ``k`` predicts the token
+    at ``k + 1``) to its pool.  Tokens absent from a pool have logprob
+    ``-inf``.
+    """
+
+    index: dict[int, int]
+    ids: torch.Tensor     # [M, W] long
+    logps: torch.Tensor   # [M, W] fp32
+
+    @classmethod
+    def empty(cls) -> "SamplerRows":
+        return cls(
+            {}, torch.empty((0, 0), dtype=torch.long),
+            torch.empty((0, 0), dtype=torch.float32),
+        )
+
+    def pool(self, row: int) -> tuple[torch.Tensor, torch.Tensor] | None:
+        pool_idx = self.index.get(row)
+        if pool_idx is None:
+            return None
+        return self.ids[pool_idx], self.logps[pool_idx]
+
+
+def _lookup(pool: tuple[torch.Tensor, torch.Tensor], tokens: torch.Tensor) -> torch.Tensor:
+    """Sampler logprobs of ``tokens`` under one pool (``-inf`` off-pool)."""
+    ids, logps = pool
+    match = ids.unsqueeze(0) == tokens.unsqueeze(1)          # [U, W]
+    found = match.any(dim=1)
+    picked = logps[match.to(torch.int8).argmax(dim=1)]
+    return torch.where(found, picked, torch.full_like(picked, float("-inf")))
+
+
+def _pool_logprob(
+    pool: tuple[torch.Tensor, torch.Tensor] | None, token_id: int,
+) -> float | None:
+    if pool is None or token_id < 0:
+        return None
+    value = float(_lookup(pool, torch.tensor([token_id]))[0])
+    return value if math.isfinite(value) else None
+
+
+def _pool_argmax(pool: tuple[torch.Tensor, torch.Tensor]) -> int:
+    """Lowest token id among the pool's maximal entries (dense ``argmax``)."""
+    ids, logps = pool
+    return int(ids[logps == logps.max()].min())
+
+
 def _approx_kl_topk(
-    logp_a: torch.Tensor,  # [V] fp32 sampler logprobs
-    logp_b: torch.Tensor,  # [V] fp32 sampler logprobs
+    pool_a: tuple[torch.Tensor, torch.Tensor],
+    pool_b: tuple[torch.Tensor, torch.Tensor],
     top_k: int,
 ) -> float:
     """Truncated KL(P_A || P_B) over the union of each side's top-K.
@@ -129,56 +200,23 @@ def _approx_kl_topk(
     are summed exactly; the tail (tokens neither side ranked in its top-K)
     is dropped — that's the "approx" in ``approx_kl``.  For typical
     post-sampler distributions K=32 captures the bulk; the residual is
-    well under 0.1 nats in practice.
+    well under 0.1 nats in practice.  A pool is sorted by descending logit,
+    so its first K entries are its top-K.
     """
-    vocab = logp_a.shape[-1]
-    k = min(top_k, vocab)
-    top_a = torch.topk(logp_a, k).indices
-    top_b = torch.topk(logp_b, k).indices
-    union = torch.unique(torch.cat([top_a, top_b]))
-    la = logp_a.index_select(0, union)
-    lb = logp_b.index_select(0, union)
+    union = torch.unique(torch.cat([pool_a[0][:top_k], pool_b[0][:top_k]]))
+    la = _lookup(pool_a, union)
+    lb = _lookup(pool_b, union)
     support = torch.isfinite(la)
-    if not bool(support.any().item()):
+    if not bool(support.any()):
         return 0.0
-    if bool((~torch.isfinite(lb[support])).any().item()):
+    if bool((~torch.isfinite(lb[support])).any()):
         return float("inf")
-    pa = la[support].exp()
-    diff = la[support] - lb[support]
-    return float((pa * diff).sum().item())
-
-
-def _finite_float(value: torch.Tensor | float) -> float | None:
-    """Convert finite tensor/float values to JSON-safe floats."""
-    out = (
-        float(cast(torch.Tensor, value).item())
-        if isinstance(value, torch.Tensor)
-        else float(value)
-    )
-    return out if math.isfinite(out) else None
-
-
-_LogprobRows = torch.Tensor | dict[int, torch.Tensor]
-
-
-def _logprob_row(rows: _LogprobRows, row_idx: int) -> torch.Tensor | None:
-    if isinstance(rows, dict):
-        return rows.get(row_idx)
-    if 0 <= row_idx < rows.shape[0]:
-        return rows[row_idx]
-    return None
-
-
-def _logprob_value(rows: _LogprobRows, row_idx: int, token_id: int) -> float | None:
-    row = _logprob_row(rows, row_idx)
-    if row is None or token_id < 0 or token_id >= row.shape[-1]:
-        return None
-    return _finite_float(row[token_id])
+    return float((la[support].exp() * (la[support] - lb[support])).sum())
 
 
 def _compute_rows(
-    logp_a: _LogprobRows,        # sampler-renormalized logprobs by predictor row
-    logp_b: _LogprobRows,
+    rows_a: SamplerRows,
+    rows_b: SamplerRows,
     token_ids_a: list[int],      # full sequence (prefix + assistant) for A
     token_ids_b: list[int],
     token_strs_a: list[str],     # decoded text per id (display) for A's full seq
@@ -190,41 +228,27 @@ def _compute_rows(
     """Pure-tensor inner loop — no session / tokenizer / IO.
 
     Aligns A's assistant tail and B's assistant tail via the shared
-    :func:`per_token_diff` byte-offset walker, then looks up logprobs
-    from the precomputed sampler-logprob tables.  Position ``prefix_len + i``
-    in the full sequence is *predicted* by the logits at position
-    ``prefix_len + i - 1`` — that's the index we read from on each row.
+    :func:`per_token_diff` byte-offset walker, then looks up logprobs in the
+    replayed sampler pools.  Position ``prefix_len + i`` in the full sequence
+    is *predicted* by the row at position ``prefix_len + i - 1`` — that's the
+    row we read on each record.
     """
     assistant_ids_a = token_ids_a[prefix_len:]
     assistant_ids_b = token_ids_b[prefix_len:]
-    assistant_strs_a = token_strs_a[prefix_len:]
-    assistant_strs_b = token_strs_b[prefix_len:]
-
-    # ``per_token_diff`` walks byte-offset alignment over the per-token
-    # display strings; we feed it the assistant tail so ``a_index`` /
-    # ``b_index`` come back in the same space we'll surface to the UI.
-    spans = per_token_diff(assistant_strs_a, assistant_strs_b)
+    spans = per_token_diff(token_strs_a[prefix_len:], token_strs_b[prefix_len:])
 
     rows: list[JointLogprobRow] = []
     for sp in spans:
         a_idx = sp.a_index
         b_idx = sp.b_index
-        # Logits *at* full-sequence position k predict the token at k+1,
-        # so to score the token at full-position prefix_len+i we read
-        # logp[prefix_len + i - 1].  ``max(0, …)`` guards the (degenerate)
-        # case where prefix_len is 0 and i is 0 — fall back to position
-        # 0's logits, which are conditioned on nothing and will produce
-        # the unigram-like prior.
-        pa_pos = max(0, prefix_len + a_idx - 1)
-        pb_pos = max(0, prefix_len + b_idx - 1)
+        # ``max(0, …)`` guards the degenerate ``prefix_len == 0`` first row.
+        pool_a = rows_a.pool(max(0, prefix_len + a_idx - 1))
+        pool_b = rows_b.pool(max(0, prefix_len + b_idx - 1))
+        has_a = 0 <= a_idx < len(assistant_ids_a)
+        has_b = 0 <= b_idx < len(assistant_ids_b)
 
-        # Self-evaluation: chosen logprob under own distribution.
-        lp_a_in_a: float | None = None
-        lp_b_in_b: float | None = None
-        if 0 <= a_idx < len(assistant_ids_a):
-            lp_a_in_a = _logprob_value(logp_a, pa_pos, assistant_ids_a[a_idx])
-        if 0 <= b_idx < len(assistant_ids_b):
-            lp_b_in_b = _logprob_value(logp_b, pb_pos, assistant_ids_b[b_idx])
+        lp_a_in_a = _pool_logprob(pool_a, assistant_ids_a[a_idx]) if has_a else None
+        lp_b_in_b = _pool_logprob(pool_b, assistant_ids_b[b_idx]) if has_b else None
 
         # Cross-evaluation: only meaningful when the positions actually
         # align (byte-equal context up to here).  On divergent rows the
@@ -234,24 +258,12 @@ def _compute_rows(
         lp_b_in_a: float | None = None
         rank_changed = False
         approx_kl: float | None = None
-        if sp.aligned and 0 <= a_idx < len(assistant_ids_a) and 0 <= b_idx < len(assistant_ids_b):
-            row_a = _logprob_row(logp_a, pa_pos)
-            row_b = _logprob_row(logp_b, pb_pos)
-            if row_a is not None and row_b is not None:
-                lp_a_in_b = _logprob_value(
-                    logp_b, pb_pos, assistant_ids_a[a_idx],
-                )
-                lp_b_in_a = _logprob_value(
-                    logp_a, pa_pos, assistant_ids_b[b_idx],
-                )
-                # Rank-1 change: does the argmax differ at this aligned
-                # position?  Cheap signal — one ``argmax`` per side.
-                argmax_a = int(row_a.argmax().item())
-                argmax_b = int(row_b.argmax().item())
-                rank_changed = argmax_a != argmax_b
-                approx_kl = _finite_float(_approx_kl_topk(
-                    row_a, row_b, kl_top_k,
-                ))
+        if sp.aligned and has_a and has_b and pool_a is not None and pool_b is not None:
+            lp_a_in_b = _pool_logprob(pool_b, assistant_ids_a[a_idx])
+            lp_b_in_a = _pool_logprob(pool_a, assistant_ids_b[b_idx])
+            rank_changed = _pool_argmax(pool_a) != _pool_argmax(pool_b)
+            kl = _approx_kl_topk(pool_a, pool_b, kl_top_k)
+            approx_kl = kl if math.isfinite(kl) else None
 
         rows.append(JointLogprobRow(
             a_index=a_idx,
@@ -274,21 +286,6 @@ def _compute_rows(
 # ---------------------------------------------------------------------------
 
 
-def _shared_prefix_len(ids_a: list[int], ids_b: list[int]) -> int:
-    """Longest common prefix length between two token-id lists.
-
-    Both branches share their parent's chat-template prefix verbatim,
-    so this lands at the divergence point — exactly where the assistant
-    content starts to differ.  Used instead of re-tokenizing the parent
-    prefix separately to dodge template-boundary surprises.
-    """
-    n = min(len(ids_a), len(ids_b))
-    i = 0
-    while i < n and ids_a[i] == ids_b[i]:
-        i += 1
-    return i
-
-
 @dataclass(frozen=True)
 class _ReplayBranch:
     prompt_ids: list[int]
@@ -301,9 +298,8 @@ class _ReplayBranch:
 
 
 def _decode_each(tokenizer: Any, ids: list[int]) -> list[str]:
-    # Batch-decode-per-id rather than ``decode(ids)`` to keep the
-    # per-position list aligned 1:1 with the id list.  Coerce to ``str``
-    # because some tokenizer signatures are typed loosely.
+    # Decode per id rather than ``decode(ids)`` to keep the per-position
+    # list aligned 1:1 with the id list.
     return [str(tokenizer.decode([tid])) for tid in ids]
 
 
@@ -335,13 +331,6 @@ def _sampling_from_recipe(recipe: "Recipe | None") -> SamplingConfig:
     return sampling
 
 
-def _compose_replay_config(
-    session: "DrowseSession",
-    sampling: SamplingConfig,
-) -> GenerationConfig:
-    return session._compose_gen_config(sampling)
-
-
 def _branch_inputs(session: "DrowseSession", node_id: str) -> _ReplayBranch:
     tree = session.tree
     tokenizer = session.tokenizer
@@ -354,276 +343,301 @@ def _branch_inputs(session: "DrowseSession", node_id: str) -> _ReplayBranch:
     )
 
     stamped_thinking = recipe.thinking if recipe is not None else None
-    if stamped_thinking is None:
-        if steering is not None and steering.thinking is not None:
-            thinking = bool(steering.thinking)
-        else:
-            thinking = session.chat_traits.supports_thinking
-    else:
+    if stamped_thinking is not None:
         thinking = bool(stamped_thinking)
-
-    system_prompt = recipe.resolved_system_prompt(session.config.system_prompt) if recipe is not None else session.config.system_prompt
-    prepare_input = getattr(session, "_prepare_input", None)
-    if callable(prepare_input):
-        # Rebuild the exact prompt that opened this generated node.  Recipe
-        # presence is the capability boundary; the structural seat may be
-        # either human or model, and scene histories need not alternate.
-        prompt_input = prepare_input(
-            None,
-            thinking=thinking,
-            parent_node_id=node.parent_id,
-            user_role=node.role_label if node.role == "user" else None,
-            assistant_role=(
-                node.role_label if node.role == "assistant" else None
-            ),
-            gen_seat=node.role,
-            to_device=False,
-            system_prompt=system_prompt,
-        )
+    elif steering is not None and steering.thinking is not None:
+        thinking = bool(steering.thinking)
     else:
-        # Lightweight test/third-party sessions predating the native prompt
-        # builder retain the legacy alternating-chat reconstruction.
-        parent_id = node.parent_id
-        parent = tree.nodes.get(parent_id) if parent_id is not None else None
-        prompt_messages = (
-            tree.messages_for(parent.id)
-            if parent is not None and parent.role == "user"
-            else tree.messages_for(node_id)
-        )
-        prompt_input = build_chat_input(
-            tokenizer,
-            prompt_messages,
-            system_prompt=system_prompt,
-            thinking=thinking,
-            add_generation_prompt=True,
-        )
-    prompt_tensor = cast(torch.Tensor, prompt_input)
+        thinking = session.chat_traits.supports_thinking
+
+    system_prompt = (
+        recipe.resolved_system_prompt(session.config.system_prompt)
+        if recipe is not None else session.config.system_prompt
+    )
+    # Rebuild the exact prompt that opened this generated node.  Recipe
+    # presence is the capability boundary; the structural seat may be
+    # either human or model, and scene histories need not alternate.
+    prompt_tensor = session._prepare_input(
+        None,
+        thinking=thinking,
+        parent_node_id=node.parent_id,
+        user_role=node.role_label if node.role == "user" else None,
+        assistant_role=(
+            node.role_label if node.role == "assistant" else None
+        ),
+        gen_seat=node.role,
+        to_device=False,
+        system_prompt=system_prompt,
+    )
     prompt_ids = [int(t) for t in prompt_tensor[0].tolist()]
 
     response_ids, response_texts = _row_token_ids(node.tokens)
-    thinking_ids, _thinking_texts = _row_token_ids(
-        node.thinking_tokens
-    )
+    thinking_ids, _thinking_texts = _row_token_ids(node.thinking_tokens)
 
     if not response_ids:
-        if callable(prepare_input):
-            messages = tree.messages_for(node_id, with_labels=True)
-            has_labels = any(m.get("label") for m in messages)
-            model_type = (
-                session._resolved_model_type() if has_labels else None
-            )
-            full_input = build_chat_input(
-                tokenizer,
-                messages,
-                system_prompt=system_prompt,
-                thinking=thinking,
-                add_generation_prompt=False,
-                model_type=model_type,
-                scene=session.scene_grammar,
-                gen_seat=node.role,
-            )
-        else:
-            full_input = build_chat_input(
-                tokenizer,
-                tree.messages_for(node_id),
-                system_prompt=system_prompt,
-                thinking=thinking,
-                add_generation_prompt=False,
-            )
+        # A committed (non-streamed) node: recover its tokens from the closed
+        # render of the path through it.
+        messages = tree.messages_for(node_id, with_labels=True)
+        has_labels = any(m.get("label") for m in messages)
+        full_input = build_chat_input(
+            tokenizer,
+            messages,
+            system_prompt=system_prompt,
+            thinking=thinking,
+            add_generation_prompt=False,
+            model_type=session._resolved_model_type() if has_labels else None,
+            scene=session.scene_grammar,
+            gen_seat=node.role,
+        )
         full_ids = [int(t) for t in full_input[0].tolist()]
-        cut = _shared_prefix_len(prompt_ids, full_ids)
+        cut = shared_prefix_len(prompt_ids, full_ids)
         prompt_ids = full_ids[:cut]
         response_ids = full_ids[cut:]
         response_texts = _decode_each(tokenizer, response_ids)
     elif len(response_texts) != len(response_ids) or any(t == "" for t in response_texts):
         response_texts = _decode_each(tokenizer, response_ids)
 
-    prompt_strs = _decode_each(tokenizer, prompt_ids)
     return _ReplayBranch(
         prompt_ids=prompt_ids,
         response_ids=response_ids,
         token_ids=prompt_ids + response_ids,
-        token_strs=prompt_strs + response_texts,
+        token_strs=_decode_each(tokenizer, prompt_ids) + response_texts,
         thinking_ids=thinking_ids,
         sampling=sampling,
         steering=steering,
     )
 
 
-def _call_model(model: Any, **kwargs: Any) -> Any:
-    try:
-        return model(**kwargs)
-    except TypeError as e:
-        msg = str(e)
-        if (
-            "attention_mask" not in msg
-            and "past_key_values" not in msg
-            and "cache_position" not in msg
-        ):
-            raise
-        return model(input_ids=kwargs["input_ids"], use_cache=kwargs.get("use_cache", False))
+def _sampler_pool(
+    logits: torch.Tensor, config: GenerationConfig,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """One ``[1, V]`` row's sampler support pool on device: ``(ids, logps)``."""
+    ids, probs = _sampler_candidates(
+        logits, config, _effective_topk(config, int(logits.shape[-1])),
+    )
+    logps = torch.where(
+        probs > 0,
+        probs.clamp_min(torch.finfo(torch.float32).tiny).log(),
+        torch.full_like(probs, float("-inf")),
+    )
+    return ids, logps
+
+
+class _LogitAdjust:
+    """The recipe's logit-space edits before the sampler transform."""
+
+    def __init__(
+        self, sampling: SamplingConfig, n_forced: int, device: torch.device,
+    ) -> None:
+        self.presence = sampling.presence_penalty
+        self.frequency = sampling.frequency_penalty
+        self.penalties = (
+            _PenaltyState(max(n_forced, 1), device, torch.float32)
+            if self.presence != 0.0 or self.frequency != 0.0 else None
+        )
+        bias = sampling.logit_bias or {}
+        self.bias_idx = (
+            torch.tensor(list(bias), dtype=torch.long, device=device)
+            if bias else None
+        )
+        self.bias_val = (
+            torch.tensor(list(bias.values()), dtype=torch.float32, device=device)
+            if bias else None
+        )
+
+    def __call__(self, logits: torch.Tensor) -> torch.Tensor:
+        """Adjust ``[rows, V]`` logits in place and return them."""
+        logits.nan_to_num_(nan=0.0, posinf=100.0, neginf=-100.0)
+        if self.penalties is not None:
+            self.penalties.apply(
+                logits,
+                presence_penalty=self.presence,
+                frequency_penalty=self.frequency,
+            )
+        if self.bias_idx is not None:
+            assert self.bias_val is not None
+            logits[:, self.bias_idx] += self.bias_val.to(logits.dtype)
+        return logits
+
+
+def _prefill_kwargs(input_ids: torch.Tensor) -> dict[str, Any]:
+    return {
+        "input_ids": input_ids,
+        "attention_mask": torch.ones_like(input_ids),
+        "use_cache": True,
+    }
+
+
+def _teacher_forced_pools(
+    model: Any,
+    full: torch.Tensor,
+    first_row: int,
+    *,
+    adjust: _LogitAdjust,
+    config: GenerationConfig,
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """Predictor rows ``[first_row, len(full) - 1)`` in KV-cached chunks.
+
+    Valid only for position-independent steering: every forced token runs
+    through the same hooks whether it is prefill or decode.  A model that
+    returns no cache re-feeds the prefix per chunk.
+    """
+    end = int(full.shape[1]) - 1
+    keep_kwarg = logits_keep_kwarg(model)
+    pools: list[tuple[torch.Tensor, torch.Tensor]] = []
+    past: Any = None
+    for start in range(first_row, end, _REPLAY_CHUNK):
+        stop = min(start + _REPLAY_CHUNK, end)
+        if past is None:
+            kwargs = _prefill_kwargs(full[:, :stop])
+        else:
+            kwargs = {
+                "input_ids": full[:, start:stop],
+                "past_key_values": past,
+                "use_cache": True,
+            }
+        if keep_kwarg is not None:
+            kwargs[keep_kwarg] = stop - start
+        out = model(**kwargs)
+        past = getattr(out, "past_key_values", None)
+        logits = adjust(out.logits[0, -(stop - start):, :])
+        pools.extend(
+            _sampler_pool(logits[r:r + 1], config)
+            for r in range(stop - start)
+        )
+        del out, logits
+    return pools
+
+
+def _stepwise_pools(
+    session: "DrowseSession",
+    model: Any,
+    full: torch.Tensor,
+    branch: _ReplayBranch,
+    *,
+    adjust: _LogitAdjust,
+    config: GenerationConfig,
+    gating_callback: Any,
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """One forced token per forward, driving the per-step trigger context."""
+    ctx = session._steering.ctx
+    ctx.reset()
+    prompt_len = len(branch.prompt_ids)
+    n_thinking = len(branch.thinking_ids)
+    forced = branch.thinking_ids + branch.response_ids
+    keep_kwarg = logits_keep_kwarg(model)
+    pools: list[tuple[torch.Tensor, torch.Tensor]] = []
+    past: Any = None
+    cached = True
+    for step, token_id in enumerate(forced):
+        ctx.is_prefill = step == 0
+        ctx.thinking = step < n_thinking
+        ctx.gen_step = step
+        stop = prompt_len + step
+        if past is None:
+            kwargs = _prefill_kwargs(full[:, :stop])
+        else:
+            kwargs = {
+                "input_ids": full[:, stop - 1:stop],
+                "past_key_values": past,
+                "use_cache": True,
+            }
+        if keep_kwarg is not None:
+            kwargs[keep_kwarg] = 1
+        out = model(**kwargs)
+        if gating_callback is not None:
+            # The replay's forward index IS the step identity the live
+            # decode loop threads to the gate sink.
+            ctx.probe_scores = gating_callback(step)
+        if cached:
+            past = getattr(out, "past_key_values", None)
+            cached = past is not None
+        logits = adjust(out.logits[:, -1, :])
+        if step >= n_thinking:
+            pools.append(_sampler_pool(logits, config))
+        if adjust.penalties is not None:
+            adjust.penalties.add(token_id)
+        del out, logits
+    return pools
 
 
 def _replay_branch_logprobs(
     session: "DrowseSession",
     branch: _ReplayBranch,
-) -> dict[int, torch.Tensor]:
-    """Force-replay one branch and return visible response-row logprobs.
+) -> SamplerRows:
+    """Force-replay one branch and return its visible response-row pools.
 
-    The result is keyed by predictor row in the full branch sequence.  Only
-    response-token rows are retained; prompt rows and thinking-only rows are
-    intentionally absent so long branches do not allocate dense
-    ``[n_rows, vocab]`` tensors filled mostly with ``-inf``.
+    Rows are keyed by predictor position in the visible (prompt + response)
+    sequence; prompt and thinking-only rows are never kept.
     """
-    model = session.model
-    device = next(model.parameters()).device
-
-    forced_ids = branch.thinking_ids + branch.response_ids
-    if not forced_ids:
-        return {}
+    if not branch.response_ids:
+        return SamplerRows.empty()
     if not branch.prompt_ids:
         raise ValueError("joint-logprob replay requires a non-empty prompt")
 
-    config = _compose_replay_config(session, branch.sampling)
-    logit_bias = branch.sampling.logit_bias
-    presence_penalty = branch.sampling.presence_penalty
-    frequency_penalty = branch.sampling.frequency_penalty
-    use_penalties = presence_penalty != 0.0 or frequency_penalty != 0.0
-    penalty_state = _PenaltyState(
-        max(len(forced_ids), 1), device, torch.float32,
-    ) if use_penalties else None
+    model = session.model
+    device = next(model.parameters()).device
+    forced = branch.thinking_ids + branch.response_ids
+    full = torch.tensor(
+        [branch.prompt_ids + forced], dtype=torch.long, device=device,
+    )
+    config = session._compose_gen_config(branch.sampling)
+    adjust = _LogitAdjust(branch.sampling, len(forced), device)
 
-    bias_idx: torch.Tensor | None = None
-    bias_val: torch.Tensor | None = None
-    if logit_bias:
-        bias_idx = torch.tensor(list(logit_bias.keys()), dtype=torch.long, device=device)
-        bias_val = torch.tensor(list(logit_bias.values()), dtype=torch.float32, device=device)
-
-    ctx = session._steering.ctx
-    steering_cm = contextlib.nullcontext()
+    steering_cm: Any = contextlib.nullcontext()
     if branch.steering is not None and branch.steering.alphas:
         steering_cm = session.steering(branch.steering)
 
-    row_logps: dict[int, torch.Tensor] = {}
-    vocab_size: int | None = None
-
-    with steering_cm:
-        ctx.reset()
-        try:
-            # Inside the try: ``_begin_capture`` binds every family's
-            # per-generation run, so a partial-bind failure must still
-            # reach the teardown below.
-            session._begin_capture(widen=False)
-            needs_gating = session._steering_needs_probe_gating()
-            gating_callback = (
-                session._build_gating_score_callback() if needs_gating else None
+    with steering_cm, torch.inference_mode():
+        manager = session._steering
+        if adjust.penalties is None and (
+            manager.all_fast_path() or manager.static_steerable()
+        ):
+            pools = _teacher_forced_pools(
+                model, full, len(branch.prompt_ids) + len(branch.thinking_ids) - 1,
+                adjust=adjust, config=config,
             )
-
-            current_input = torch.tensor(
-                [branch.prompt_ids],
-                dtype=torch.long,
-                device=device,
+        elif session._steering_needs_probe_gating():
+            gate_only = session._resolve_read_demand(
+                want_hidden=False, live_scores_on=False,
+                has_monitor_probes=False, loom_attached=False,
+                wants_live_token_scores=False, persists_layer_scores=False,
+                persists_probe_row=False, persists_subspace_coords=False,
+                live_lens_active=False, live_sae_active=False,
+                final_probe_aggregate=False, capture_prompt=False,
             )
-            forced_tensor = torch.tensor(
-                [forced_ids],
-                dtype=torch.long,
-                device=device,
-            )
-            attn_mask_buf = torch.ones(
-                (1, current_input.shape[1] + max(len(forced_ids), 1)),
-                dtype=torch.long,
-                device=device,
-            )
-            past_key_values = None
-            no_cache_mode = False
-            no_cache_buf: torch.Tensor | None = None
-            no_cache_len = int(current_input.shape[1])
-            prefill = True
-
-            def _advance_current_input(next_token: torch.Tensor) -> None:
-                nonlocal current_input, no_cache_buf, no_cache_len
-                current_input, no_cache_buf, no_cache_len = _advance_no_cache_input(
-                    next_token,
-                    current_input=current_input,
-                    no_cache_buf=no_cache_buf,
-                    no_cache_len=no_cache_len,
-                    no_cache_mode=no_cache_mode,
-                    max_extra=len(forced_ids),
-                )
-
-            with torch.inference_mode():
-                for forced_idx, token_id in enumerate(forced_ids):
-                    ctx.is_prefill = prefill
-                    ctx.thinking = forced_idx < len(branch.thinking_ids)
-                    ctx.gen_step = forced_idx
-
-                    kwargs: dict[str, Any] = {
-                        "input_ids": current_input,
-                        "use_cache": True,
-                    }
-                    if past_key_values is not None and not no_cache_mode:
-                        kwargs["past_key_values"] = past_key_values
-                    if prefill or no_cache_mode:
-                        kwargs["attention_mask"] = attn_mask_buf[
-                            :, :current_input.shape[1]
-                        ]
-
-                    outputs = _call_model(model, **kwargs)
-                    prefill = False
-
-                    if gating_callback is not None:
-                        # The replay's forward index IS the step identity the
-                        # loop already stamps on ``ctx.gen_step`` — the same
-                        # per-forward value the live decode loop threads
-                        # (the sink takes the step id; a zero-arg call
-                        # TypeErrors).
-                        ctx.probe_scores = gating_callback(forced_idx)
-
-                    if not no_cache_mode:
-                        past_key_values = getattr(outputs, "past_key_values", None)
-                        if past_key_values is None and current_input.shape[1] > 1:
-                            no_cache_mode = True
-
-                    logits = outputs.logits[:, -1, :]
-                    logits.nan_to_num_(nan=0.0, posinf=100.0, neginf=-100.0)
-
-                    if penalty_state is not None:
-                        penalty_state.apply(
-                            logits,
-                            presence_penalty=presence_penalty,
-                            frequency_penalty=frequency_penalty,
-                        )
-                    if bias_idx is not None:
-                        # bias_val is always set when bias_idx is set (both come from logit_bias)
-                        assert bias_val is not None
-                        logits[0, bias_idx] += bias_val.to(logits.dtype)
-
-                    vocab_size = int(logits.shape[-1])
-                    topk_k = _effective_topk(config, vocab_size)
-                    logp = _sampler_logprob_vector(logits, config, topk_k)
-
-                    if forced_idx >= len(branch.thinking_ids):
-                        response_idx = forced_idx - len(branch.thinking_ids)
-                        visible_pos = len(branch.prompt_ids) + response_idx - 1
-                        row_logps[visible_pos] = logp.detach().to("cpu")
-
-                    if penalty_state is not None:
-                        penalty_state.add(token_id)
-
-                    next_token = forced_tensor[:, forced_idx:forced_idx + 1]
-                    _advance_current_input(next_token)
-        finally:
-            # The replay is a full capture transaction: bound runs must not
-            # leak past the request (a stale lens pin suppresses disk
-            # refresh between generations; a stale SAE binding keeps
-            # serving frozen units to idle reads) — even when the hook
-            # detach itself raises, hence the nested finally.
             try:
-                session._end_capture()
+                # Inside the try: ``_begin_capture`` binds every family's
+                # per-generation run, so a partial-bind failure must still
+                # reach the teardown below.
+                session._begin_capture(gate_only)
+                pools = _stepwise_pools(
+                    session, model, full, branch,
+                    adjust=adjust, config=config,
+                    gating_callback=session._build_gating_score_callback(),
+                )
             finally:
-                session._close_instrument_runs()
+                # A bound run must not leak past the request (a stale lens
+                # pin suppresses disk refresh between generations; a stale
+                # SAE binding keeps serving frozen units to idle reads) —
+                # even when the hook detach itself raises.
+                try:
+                    session._end_capture()
+                finally:
+                    session._close_instrument_runs()
+        else:
+            pools = _stepwise_pools(
+                session, model, full, branch,
+                adjust=adjust, config=config,
+                gating_callback=None,
+            )
 
-    return row_logps if vocab_size is not None else {}
+    ids = torch.stack([pool_ids for pool_ids, _ in pools]).cpu()
+    logps = torch.stack([pool_logps for _, pool_logps in pools]).cpu()
+    first_visible = len(branch.prompt_ids) - 1
+    return SamplerRows(
+        {first_visible + j: j for j in range(len(pools))}, ids, logps,
+    )
 
 
 def compute_joint_logprobs(
@@ -652,7 +666,7 @@ def compute_joint_logprobs(
     branch_b = _branch_inputs(session, b_id)
     ids_a = branch_a.token_ids
     ids_b = branch_b.token_ids
-    prefix_len = _shared_prefix_len(ids_a, ids_b)
+    prefix_len = shared_prefix_len(ids_a, ids_b)
 
     # If neither side has any assistant tokens past the prefix, return
     # an empty result — nothing to align.
@@ -662,12 +676,10 @@ def compute_joint_logprobs(
             rows=(), n_rank1_changed=0,
         )
 
-    logp_a = _replay_branch_logprobs(session, branch_a)
-    logp_b = _replay_branch_logprobs(session, branch_b)
-
     rows = _compute_rows(
-        logp_a, logp_b, ids_a, ids_b,
-        branch_a.token_strs, branch_b.token_strs, prefix_len,
+        _replay_branch_logprobs(session, branch_a),
+        _replay_branch_logprobs(session, branch_b),
+        ids_a, ids_b, branch_a.token_strs, branch_b.token_strs, prefix_len,
     )
     n_changed = sum(1 for r in rows if r.aligned and r.rank_changed)
     return JointLogprobs(
@@ -730,11 +742,7 @@ def reorient_for_request(
 __all__ = [
     "JointLogprobRow",
     "JointLogprobs",
+    "SamplerRows",
     "compute_joint_logprobs",
-    "_compute_rows",
-    "_approx_kl_topk",
-    "_shared_prefix_len",
-    "_cache_key",
     "reorient_for_request",
-    "_KL_TOP_K",
 ]

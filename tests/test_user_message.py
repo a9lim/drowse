@@ -291,7 +291,7 @@ def test_cancellation_errors_agree_across_preparation_families() -> None:
 
 def test_manifold_authoring_conflict_is_a_retryable_409() -> None:
     """Re-authoring under an in-flight fit is a conflict, not a server fault."""
-    from drowse.fit.pipeline import ManifoldAuthoringChangedError
+    from drowse.store.fit_publish import ManifoldAuthoringChangedError
 
     exc = ManifoldAuthoringChangedError("authoring changed during fit")
     assert isinstance(exc, DrowseError)

@@ -350,6 +350,31 @@ def _split_composite_source(
     return concept, baseline
 
 
+def _installed_concept_namespace(name: str, *, force: bool) -> str:
+    """Namespace ``extract`` targets when the caller names none.
+
+    An installed manifold with this canonical name is fitted where it lives,
+    never shadowed by a second ``local/`` copy (that copy would make the bare
+    name ambiguous for every later steering expression).  Two installed copies
+    are already ambiguous and raise.  A bundled ``default/`` folder is
+    refreshed from the package, so regenerating its corpus in place would be
+    silently undone: ``force`` there requires an explicit namespace.
+    """
+    from drowse.store.selectors import Selector, resolve
+
+    matches = resolve(Selector(kind="name", value=name))
+    if not matches:
+        return "local"
+    (match,) = matches
+    if force and match.namespace == "default":
+        raise ValueError(
+            f"{name!r} is the bundled default/{name}; its corpus is refreshed "
+            "from the package. Pass namespace='local' to regenerate a forked "
+            "copy (bare references then need a namespace)."
+        )
+    return match.namespace
+
+
 class GenState(IntEnum):
     """Lifecycle phases of a single generation call.
 
@@ -4684,6 +4709,11 @@ class DrowseSession:
         - ``force=True``: regenerate the corpora + re-author the folder
           (otherwise an existing manifold's corpus is reused and the fit
           cache-hits when a tensor for this model is already present).
+        - ``namespace=``: where a new folder is authored (``local`` by
+          default).  Omitted, an installed manifold with this canonical name
+          in any namespace (e.g. the bundled ``default/formal.casual``) is
+          fitted in place rather than shadowed by a second copy, which would
+          make the bare name ambiguous.
         - ``role=<slug>``: persona-baselined extraction — the explicit role
           overrides the kind-derived label at *both* generation and capture
           (the centroid lives in role-baselined space; stored as the node
@@ -4701,9 +4731,9 @@ class DrowseSession:
             DrowseSession._assert_unsteered_artifact_operation(self)
             from drowse.base.paths import manifold_dir
 
-            ns = namespace or "local"
             pos_raw, neg_raw = _split_composite_source(concept, baseline)
             name = canonical_concept_name(concept, baseline)
+            ns = namespace or _installed_concept_namespace(name, force=force)
             pos_label = _slug(pos_raw)
             if neg_raw is None:
                 # Monopolar = a single concept node.  The folder is genuinely
@@ -4721,20 +4751,10 @@ class DrowseSession:
                 labels = [pos_label, _slug(neg_raw)]
                 desc = f"Bipolar axis: {pos_raw} (+) vs {neg_raw} (-)."
 
-            folder = manifold_dir(ns, name)
-            manifest = folder / "manifold.json"
-            if manifest.exists() and not force:
-                from drowse.store.manifold_folder import ManifoldFolder
-
-                existing = ManifoldFolder.load(
-                    folder, verify_manifest=False,
-                ).roles
-                if not existing or not all(value == role for value in existing):
-                    raise ValueError(
-                        f"manifold {ns}/{name} already carries role baseline "
-                        f"{existing!r}, not uniformly {role!r}; pass force=True "
-                        "to regenerate its corpus for the requested baseline"
-                    )
+            manifest = manifold_dir(ns, name) / "manifold.json"
+            # An existing folder's role baseline is checked under the manifest
+            # lock by ``_author_and_fit_2node``; generation only runs when the
+            # folder is (re-)authored, so nothing expensive precedes that check.
             node_corpora: dict[str, list[str]] | None = None
             if force or not manifest.exists():
                 gen_roles: dict[str, str | None] | None = (

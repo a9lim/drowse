@@ -59,7 +59,7 @@ def extraction_error_frame(exc: Exception) -> dict[str, Any] | None:
     hint.  ``None`` for anything else, which routes the exception to the
     shared catch-all scrubber.
     """
-    from drowse.fit.pipeline import ManifoldAuthoringChangedError
+    from drowse.store.fit_publish import ManifoldAuthoringChangedError
     from drowse.session.session import ConcurrentExtractionError
 
     if isinstance(exc, (ConcurrentExtractionError, ManifoldAuthoringChangedError)):
@@ -83,7 +83,7 @@ def extraction_json_errors() -> tuple[tuple[Any, int], ...]:
     is a ``ValueError``, so the ordered table lands each on the status its SSE
     counterpart reports.
     """
-    from drowse.fit.pipeline import ManifoldAuthoringChangedError
+    from drowse.store.fit_publish import ManifoldAuthoringChangedError
     from drowse.session.session import ConcurrentExtractionError
 
     return (

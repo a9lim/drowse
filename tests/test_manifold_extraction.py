@@ -1,8 +1,8 @@
 """ManifoldExtractionPipeline tests — CPU only, synthetic encoder.
 
-Mirrors the stub-encoder pattern in :mod:`tests.test_dim_extraction`:
-monkeypatch :func:`drowse.fit.capture._encode_and_capture_all` so no
-real model is needed.
+The batched capture seam :func:`drowse.fit.capture._encode_and_capture_all_batch`
+is monkeypatched with a deterministic per-label encoder, so no real model is
+needed.
 """
 from __future__ import annotations
 
@@ -41,12 +41,14 @@ class _CaptureTokenizer:
     added_tokens_encoder: dict[str, int] = {}
 
     def __call__(
-        self, text: str, *, return_tensors: str = "pt",
-        add_special_tokens: bool = False,
-    ) -> dict[str, torch.Tensor]:
-        del return_tensors, add_special_tokens
-        ids = [1 + (ord(char) % 97) for char in text] or [1]
-        return {"input_ids": torch.tensor([ids], dtype=torch.long)}
+        self, texts: list[str], *, add_special_tokens: bool = False,
+    ) -> dict[str, list[list[int]]]:
+        del add_special_tokens
+        return {
+            "input_ids": [
+                [1 + (ord(char) % 97) for char in text] or [1] for text in texts
+            ],
+        }
 
 
 def _stub_encoder(
@@ -73,7 +75,7 @@ def _stub_encoder_batch(
     model: Any, tokenizer: Any, prompts: Any, responses: Any, layers: Any,
     device: Any, **kwargs: Any,
 ) -> dict[int, torch.Tensor]:
-    """Batched seam matching ``vectors._encode_and_capture_all_batch``.
+    """Batched seam matching ``capture._encode_and_capture_all_batch``.
 
     Stacks the per-row :func:`_stub_encoder` over the chunk (same call order, so
     the deterministic-per-label activations and RNG consumption are identical to
@@ -89,12 +91,10 @@ def _stub_encoder_batch(
 
 
 class _Handle:
-    """Minimal ModelHandle stub.
+    """Minimal ModelHandle stub for ``ManifoldExtractionPipeline``.
 
-    Satisfies the ``ModelHandle`` protocol used by
-    ``ManifoldExtractionPipeline``.  The generator methods are never
-    called in CPU-only manifold-extraction tests; they exist only to
-    complete the structural protocol.
+    Real (identity) layer modules host the fit-scoped capture hooks; the
+    batched capture seam is monkeypatched, so they never fire.
     """
 
     def __init__(self) -> None:
@@ -104,31 +104,15 @@ class _Handle:
         self.tokenizer: Any = _CaptureTokenizer()
         self.device = torch.device("cpu")
         self.dtype = torch.float32
-        self.layers: Any = [object()] * _N_LAYERS
+        self.layers: Any = torch.nn.ModuleList(
+            torch.nn.Identity() for _ in range(_N_LAYERS)
+        )
         # Activation-space fits require a covering whitener (no Euclidean
         # fallback post-4.0); synthesize one + matching neutral means on CPU.
         self.layer_means = synthetic_means(range(_N_LAYERS), _DIM)
         self.whitener = synthetic_whitener(
             range(_N_LAYERS), _DIM, means=self.layer_means,
         )
-
-    def _run_generator(
-        self, system_msg: str, prompt: str, max_new_tokens: int,
-    ) -> str:
-        raise NotImplementedError("stub: not called in CPU manifold tests")
-
-    def generate_responses(
-        self,
-        concepts: list[str],
-        kinds: list[str | None],
-        *,
-        roles: dict[str, str | None] | None = None,
-        custom_system: str | None = None,
-        samples_per_prompt: int = 1,
-        max_new_tokens: int = 256,
-        on_progress: Any = None,
-    ) -> dict[str, list[str]]:
-        raise NotImplementedError("stub: not called in CPU manifold tests")
 
 
 def _box1d_domain(periodic: bool, k: int) -> dict[str, Any]:
@@ -240,7 +224,7 @@ def test_templated_fit_rematerializes_value_and_assistant_edits() -> None:
 def test_template_mutation_between_resolve_and_hash_cannot_publish_stale_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.fit.pipeline import ManifoldAuthoringChangedError
+    from drowse.store.fit_publish import ManifoldAuthoringChangedError
     from drowse.store.manifold_authoring import create_manifold_from_template
     from drowse.store.templates import TemplateFolder, create_template_folder
 
@@ -328,13 +312,10 @@ def test_full_capture_cache_serves_subset_without_forward(
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
     pipe.fit(folder)
 
-    import drowse.fit.pipeline as extraction_module
     from drowse.store.manifold_tensors import ActivationRowStore
 
-    loaded_scopes: list[list[int] | None] = []
-    loaded_centroid_shards: list[str] = []
+    loaded_scopes: list[list[int]] = []
     real_load = ActivationRowStore.load_shards.__func__
-    real_load_file = extraction_module.load_file
 
     def _tracked_load(
         cls: type[ActivationRowStore], paths: dict[int, Path], node_sizes: Any,
@@ -342,14 +323,9 @@ def test_full_capture_cache_serves_subset_without_forward(
         loaded_scopes.append(sorted(paths))
         return real_load(cls, paths, node_sizes)
 
-    def _tracked_load_file(path: str, *args: Any, **kwargs: Any) -> Any:
-        loaded_centroid_shards.append(Path(path).name)
-        return real_load_file(path, *args, **kwargs)
-
     monkeypatch.setattr(
         ActivationRowStore, "load_shards", classmethod(_tracked_load),
     )
-    monkeypatch.setattr(extraction_module, "load_file", _tracked_load_file)
 
     def _must_not_capture(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("full capture cache did not serve a layer subset")
@@ -357,11 +333,8 @@ def test_full_capture_cache_serves_subset_without_forward(
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _must_not_capture)
     subset = pipe.fit(folder, layer_indices=[1, 3])
     assert sorted(subset.layers) == [1, 3]
+    # Only the selected layers' row shards are mapped.
     assert loaded_scopes == [[1], [3]]
-    assert sorted(
-        int(name.split("layer_", 1)[1].split(".", 1)[0])
-        for name in loaded_centroid_shards
-    ) == [1, 3]
 
 
 def test_shared_capture_stem_lock_serializes_independent_folders(
@@ -483,9 +456,10 @@ def test_fit_overrides_share_manifest_transaction_without_lost_update(
     errors: list[BaseException] = []
 
     def _observe_locked(
-        _self: ManifoldExtractionPipeline, target: Path, **_kwargs: Any,
+        _self: ManifoldExtractionPipeline, snapshot: Any, _target: Path,
+        **_kwargs: Any,
     ) -> object:
-        mf = ManifoldFolder.load(target, verify_manifest=False)
+        mf = snapshot.manifold
         observations.append((mf.fit_mode, dict(mf.hyperparams)))
         if len(observations) == 1:
             first_entered.set()
@@ -495,7 +469,7 @@ def test_fit_overrides_share_manifest_transaction_without_lost_update(
         return object()
 
     monkeypatch.setattr(
-        ManifoldExtractionPipeline, "_fit_locked", _observe_locked,
+        ManifoldExtractionPipeline, "_fit_snapshot", _observe_locked,
     )
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
 
@@ -545,13 +519,14 @@ def test_distinct_model_targets_compute_concurrently(
     errors: list[BaseException] = []
 
     def _overlap(
-        self: ManifoldExtractionPipeline, _folder: Path, **_kwargs: Any,
+        self: ManifoldExtractionPipeline, _snapshot: Any, _target: Path,
+        **_kwargs: Any,
     ) -> object:
         entered.append(self._handle.model_id)  # pyright: ignore[reportPrivateUsage]
         barrier.wait(timeout=5)
         return object()
 
-    monkeypatch.setattr(ManifoldExtractionPipeline, "_fit_locked", _overlap)
+    monkeypatch.setattr(ManifoldExtractionPipeline, "_fit_snapshot", _overlap)
     handles = [_Handle(), _Handle()]
     handles[1].model_id = "other-model"
 
@@ -577,7 +552,7 @@ def test_target_fit_lock_name_is_bounded_for_long_valid_inputs(
     handle = _Handle()
     handle.model_id = "org/" + ("model" * 30)
     monkeypatch.setattr(
-        ManifoldExtractionPipeline, "_fit_locked",
+        ManifoldExtractionPipeline, "_fit_snapshot",
         lambda *_args, **_kwargs: object(),
     )
     ManifoldExtractionPipeline(handle, EventBus()).fit(folder)
@@ -587,7 +562,7 @@ def test_reader_stays_available_and_authoring_cas_rejects_stale_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import drowse.geometry.subspace as subspace_module
-    from drowse.fit.pipeline import ManifoldAuthoringChangedError
+    from drowse.store.fit_publish import ManifoldAuthoringChangedError
     from drowse.store.manifold_tensors import load_manifold
     from drowse.base.paths import tensor_filename
 
@@ -727,12 +702,13 @@ def test_pair_committed_before_manifest_failure_self_repairs(
 def test_clear_invalidates_only_selected_inflight_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.fit.pipeline import (
+    from drowse.fit.pipeline import _default_prompts
+    from drowse.store import manifold_lifecycle
+    from drowse.store.fit_publish import (
         ManifoldAuthoringChangedError,
         _authoring_snapshot_locked,
-        _publish_fit_if_current,
+        publish_fit_if_current,
     )
-    from drowse.store import manifold_lifecycle
     from drowse.store.manifold_folder import _locked_manifest
     from drowse.base.paths import tensor_filename
 
@@ -745,25 +721,27 @@ def test_clear_invalidates_only_selected_inflight_target(
     target_a = folder / tensor_filename(handle_a.model_id)
     target_b = folder / tensor_filename(handle_b.model_id)
     with _locked_manifest(folder):
-        _m, _n, revision_a, _g, _b = _authoring_snapshot_locked(
-            folder, target_a,
-        )
-        _m, _n, revision_b, _g, _b = _authoring_snapshot_locked(
-            folder, target_b,
-        )
+        revision_a = _authoring_snapshot_locked(
+            folder, target_a, _default_prompts,
+        ).revision
+        revision_b = _authoring_snapshot_locked(
+            folder, target_b, _default_prompts,
+        ).revision
 
     monkeypatch.setattr(manifold_lifecycle, "manifold_dir", lambda *_: folder)
     manifold_lifecycle.clear_manifold_tensors(
         "local", "mood", handle_a.model_id, variant="raw",
     )
     with pytest.raises(ManifoldAuthoringChangedError):
-        _publish_fit_if_current(
+        publish_fit_if_current(
             folder, expected_revision=revision_a, manifold=fit_a,
             tensor_path=target_a, metadata=dict(fit_a.metadata),
+            default_prompts=_default_prompts,
         )
-    _publish_fit_if_current(
+    publish_fit_if_current(
         folder, expected_revision=revision_b, manifold=fit_b,
         tensor_path=target_b, metadata=dict(fit_b.metadata),
+        default_prompts=_default_prompts,
     )
     assert not target_a.exists()
     assert target_b.exists()
@@ -772,10 +750,11 @@ def test_clear_invalidates_only_selected_inflight_target(
 def test_removed_and_recreated_folder_rejects_stale_publication(
     tmp_path: Path,
 ) -> None:
-    from drowse.fit.pipeline import (
+    from drowse.fit.pipeline import _default_prompts
+    from drowse.store.fit_publish import (
         ManifoldAuthoringChangedError,
         _authoring_snapshot_locked,
-        _publish_fit_if_current,
+        publish_fit_if_current,
     )
     from drowse.store.manifold_folder import _locked_manifest
     from drowse.base.paths import tensor_filename
@@ -784,16 +763,19 @@ def test_removed_and_recreated_folder_rejects_stale_publication(
     fitted = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
     target = folder / tensor_filename("stub-model")
     with _locked_manifest(folder):
-        _m, _n, revision, _g, _b = _authoring_snapshot_locked(folder, target)
+        revision = _authoring_snapshot_locked(
+            folder, target, _default_prompts,
+        ).revision
     import shutil
 
     shutil.rmtree(folder)
     replacement = _author_manifold(tmp_path)
     assert replacement == folder
     with pytest.raises(ManifoldAuthoringChangedError):
-        _publish_fit_if_current(
+        publish_fit_if_current(
             folder, expected_revision=revision, manifold=fitted,
             tensor_path=target, metadata=dict(fitted.metadata),
+            default_prompts=_default_prompts,
         )
     assert not target.exists()
 
@@ -801,7 +783,7 @@ def test_removed_and_recreated_folder_rejects_stale_publication(
 def test_disjoint_layer_top_up_preserves_existing_row_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Replacing the row safetensors carries forward unselected layers."""
+    """A second folder with the same rows tops up only its missing layer."""
     from safetensors import safe_open
     from drowse.base.paths import model_dir
 
@@ -811,453 +793,39 @@ def test_disjoint_layer_top_up_preserves_existing_row_cache(
     ManifoldExtractionPipeline(handle, EventBus()).fit(
         folder_a, layer_indices=[0],
     )
-    from drowse.fit import pipeline as extraction_module
     capture_dir = model_dir("stub-model") / "manifold_capture"
     layer_zero_row, = capture_dir.glob("*.rows.layer_0.safetensors")
     layer_zero_before = layer_zero_row.stat()
     scopes: list[list[int]] = []
-    persisted: list[str] = []
-    real_save = extraction_module._save_safetensors_atomic
-    real_row_save = extraction_module._save_row_safetensors_atomic
 
     def _counting(*args: Any, **kwargs: Any) -> Any:
         scopes.append(list(kwargs["layer_indices"]))
         return _stub_encoder_batch(*args, **kwargs)
 
-    def _tracked_save(tensors: Any, path: Path, **kwargs: Any) -> Any:
-        persisted.append(Path(path).name)
-        return real_save(tensors, path, **kwargs)
-
-    def _tracked_row_save(key: str, tensor: torch.Tensor, path: Path) -> str:
-        persisted.append(Path(path).name)
-        return real_row_save(key, tensor, path)
-
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
-    monkeypatch.setattr(extraction_module, "_save_safetensors_atomic", _tracked_save)
-    monkeypatch.setattr(
-        extraction_module, "_save_row_safetensors_atomic", _tracked_row_save,
-    )
     ManifoldExtractionPipeline(handle, EventBus()).fit(
         folder_b, layer_indices=[1],
     )
 
-    meta_path, = capture_dir.glob("*.json")
-    meta = json.loads(meta_path.read_text())
     assert scopes == [[1]]
-    assert meta["centroid_layers"] == [0, 1]
-    assert meta["row_layers"] == [0, 1]
-    assert sorted(persisted) == sorted([
-        next(capture_dir.glob("*.centroids.layer_1.safetensors")).name,
-        next(capture_dir.glob("*.rows.layer_1.safetensors")).name,
-    ])
     layer_zero_after = layer_zero_row.stat()
     assert (layer_zero_after.st_ino, layer_zero_after.st_mtime_ns) == (
         layer_zero_before.st_ino, layer_zero_before.st_mtime_ns,
     )
-    row_paths = sorted(capture_dir.glob("*.rows.layer_*.safetensors"))
-    assert len(row_paths) == 2
-    seen_keys: set[str] = set()
-    for row_path in row_paths:
+    shards = sorted(p.name.split(".", 1)[1] for p in capture_dir.glob("*.safetensors"))
+    assert shards == [
+        "centroids.layer_0.safetensors", "centroids.layer_1.safetensors",
+        "rows.layer_0.safetensors", "rows.layer_1.safetensors",
+    ]
+    for row_path in capture_dir.glob("*.rows.layer_*.safetensors"):
+        layer = row_path.name.rsplit("layer_", 1)[1].split(".", 1)[0]
         with safe_open(str(row_path), framework="pt", device="cpu") as tensors:
-            keys = set(tensors.keys())
-            assert len(keys) == 1
-            seen_keys.update(keys)
-    assert seen_keys == {"layer_0", "layer_1"}
+            assert list(tensors.keys()) == [f"layer_{layer}"]
 
 
-def test_capture_generation_pointer_failure_recovers_without_recapture(
+def test_truncated_row_shard_recaptures_that_layer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A complete crash-left top-up is adopted over the prior good pointer."""
-    from drowse.fit import pipeline as extraction_module
-    from drowse.base import atomic
-    from drowse.base.paths import model_dir
-
-    folder_a = _author_manifold(tmp_path / "a")
-    folder_b = _author_manifold(tmp_path / "b")
-    handle = _Handle()
-    ManifoldExtractionPipeline(handle, EventBus()).fit(
-        folder_a, layer_indices=[0],
-    )
-    capture_dir = model_dir("stub-model") / "manifold_capture"
-    pointer, = [
-        path for path in capture_dir.glob("*.json")
-        if ".pending-" not in path.name
-    ]
-    prior_pointer = pointer.read_bytes()
-    prior_payload = json.loads(prior_pointer)
-    prior_layer_zero = prior_payload["centroid_files"]["0"]
-
-    real_write_json = atomic.write_json_atomic
-    real_publish = extraction_module._publish_fit_if_current
-    pointer_failed = False
-
-    def fail_pointer(path: Path, payload: Any, **kwargs: Any) -> None:
-        nonlocal pointer_failed
-        if Path(path) == pointer and not pointer_failed:
-            pointer_failed = True
-            raise OSError("injected capture pointer failure")
-        real_write_json(path, payload, **kwargs)
-
-    def simulate_crash(*_args: Any, **_kwargs: Any) -> None:
-        raise RuntimeError("simulated crash before fitted publication")
-
-    scopes: list[list[int]] = []
-
-    def count_capture(*args: Any, **kwargs: Any) -> Any:
-        scopes.append(list(kwargs["layer_indices"]))
-        return _stub_encoder_batch(*args, **kwargs)
-
-    monkeypatch.setattr(atomic, "write_json_atomic", fail_pointer)
-    monkeypatch.setattr(extraction_module, "_publish_fit_if_current", simulate_crash)
-    monkeypatch.setattr(V, "_encode_and_capture_all_batch", count_capture)
-    with pytest.raises(RuntimeError, match="simulated crash"):
-        ManifoldExtractionPipeline(handle, EventBus()).fit(
-            folder_b, layer_indices=[1],
-        )
-
-    assert scopes == [[1]]
-    assert pointer.read_bytes() == prior_pointer
-    assert (capture_dir / prior_layer_zero).is_file()
-    pending = list(capture_dir.glob("*.pending-*.json"))
-    assert len(pending) == 1
-    assert list(capture_dir.glob("*.gen-*.centroids.layer_1.safetensors"))
-
-    monkeypatch.setattr(atomic, "write_json_atomic", real_write_json)
-    monkeypatch.setattr(extraction_module, "_publish_fit_if_current", real_publish)
-    monkeypatch.setattr(
-        V, "_encode_and_capture_all_batch",
-        lambda *_args, **_kwargs: pytest.fail(
-            "complete orphan generation was not adopted"
-        ),
-    )
-    fitted = ManifoldExtractionPipeline(handle, EventBus()).fit(
-        folder_b, layer_indices=[1],
-    )
-
-    assert sorted(fitted.layers) == [1]
-    recovered = json.loads(pointer.read_text())
-    assert recovered["centroid_layers"] == [0, 1]
-    assert recovered["row_layers"] == [0, 1]
-    assert recovered["centroid_files"]["0"] == prior_layer_zero
-    assert not list(capture_dir.glob("*.pending-*.json"))
-
-
-def test_capture_post_pointer_exception_is_cleaned_on_fitted_cache_hit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A live pointer plus old-parent journal is recognized as committed."""
-    from drowse.base import atomic
-    from drowse.base.paths import model_dir
-
-    folder = _author_manifold(tmp_path)
-    handle = _Handle()
-    ManifoldExtractionPipeline(handle, EventBus()).fit(
-        folder, layer_indices=[0],
-    )
-    capture_dir = model_dir("stub-model") / "manifold_capture"
-    pointer, = [
-        path for path in capture_dir.glob("*.json")
-        if ".pending-" not in path.name
-    ]
-    prior = json.loads(pointer.read_text())
-    prior_files = {
-        *prior["centroid_files"].values(), *prior["row_files"].values(),
-    }
-    real_write = atomic.write_json_atomic
-    failed = False
-
-    def write_then_fail(path: Path, payload: Any, **kwargs: Any) -> None:
-        nonlocal failed
-        real_write(path, payload, **kwargs)
-        if Path(path) == pointer and not failed:
-            failed = True
-            raise OSError("after capture pointer replace")
-
-    monkeypatch.setattr(atomic, "write_json_atomic", write_then_fail)
-    fitted = ManifoldExtractionPipeline(handle, EventBus()).fit(
-        folder, layer_indices=[0], force=True,
-    )
-    assert sorted(fitted.layers) == [0]
-    assert list(capture_dir.glob("*.pending-*.json"))
-    assert any((capture_dir / name).exists() for name in prior_files)
-
-    monkeypatch.setattr(atomic, "write_json_atomic", real_write)
-    monkeypatch.setattr(
-        V, "_encode_and_capture_all_batch",
-        lambda *_args, **_kwargs: pytest.fail("fitted cache hit recaptured"),
-    )
-    cached = ManifoldExtractionPipeline(handle, EventBus()).fit(
-        folder, layer_indices=[0],
-    )
-
-    assert sorted(cached.layers) == [0]
-    assert not list(capture_dir.glob("*.pending-*.json"))
-    assert not any((capture_dir / name).exists() for name in prior_files)
-
-
-def test_capture_generation_fsyncs_before_pointer_and_gc(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Payload entries and recovery journal are durable before pointer GC."""
-    from drowse.fit import pipeline as extraction
-    from drowse.base import atomic
-    from drowse.base.paths import model_dir
-
-    folder = _author_manifold(tmp_path)
-    capture_dir = model_dir("stub-model") / "manifold_capture"
-    events: list[str] = []
-    real_write_json = atomic.write_json_atomic
-    real_fsync_directory = atomic.fsync_directory
-    real_gc = extraction._gc_capture_generations
-
-    def track_write(path: Path, payload: Any, **kwargs: Any) -> None:
-        resolved = Path(path)
-        if resolved.parent == capture_dir:
-            events.append(
-                "write-pending" if ".pending-" in resolved.name else "write-pointer"
-            )
-        real_write_json(resolved, payload, **kwargs)
-
-    def track_fsync(path: Path) -> None:
-        if Path(path) == capture_dir:
-            events.append("fsync-dir")
-        real_fsync_directory(path)
-
-    def track_gc(*args: Any, **kwargs: Any) -> None:
-        events.append("gc")
-        real_gc(*args, **kwargs)
-
-    monkeypatch.setattr(atomic, "write_json_atomic", track_write)
-    monkeypatch.setattr(atomic, "fsync_directory", track_fsync)
-    monkeypatch.setattr(extraction, "_gc_capture_generations", track_gc)
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
-
-    pending = events.index("write-pending")
-    pointer = events.index("write-pointer")
-    gc = events.index("gc")
-    assert 0 < pending < pointer < gc
-    assert "fsync-dir" in events[:pending]
-    assert "fsync-dir" in events[pending + 1:pointer]
-    assert "fsync-dir" in events[pointer + 1:gc]
-    assert events[-1] == "fsync-dir"  # generation GC durability barrier
-
-
-def test_capture_shard_fsync_precedes_atomic_replace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from drowse.fit import pipeline as extraction_module
-    events: list[str] = []
-    real_fsync = extraction_module.os.fsync
-    real_replace = extraction_module.os.replace
-
-    def track_fsync(fd: int) -> None:
-        events.append("fsync-file")
-        real_fsync(fd)
-
-    def track_replace(src: Any, dst: Any) -> None:
-        events.append("replace")
-        real_replace(src, dst)
-
-    monkeypatch.setattr(extraction_module.os, "fsync", track_fsync)
-    monkeypatch.setattr(extraction_module.os, "replace", track_replace)
-    extraction_module._save_safetensors_atomic(
-        {"layer_0": torch.ones(2, 3)}, tmp_path / "shard.safetensors",
-    )
-
-    assert events == ["fsync-file", "replace"]
-
-
-def test_concurrent_deferred_row_topups_merge_latest_pointer(
-    tmp_path: Path,
-) -> None:
-    from drowse.fit.pipeline import _publish_deferred_row_shards
-    from drowse.store.manifold_tensors import ActivationRowStore
-
-    stem = "c" * 64
-    meta_path = tmp_path / f"{stem}.json"
-    meta_path.write_text(json.dumps({
-        "format_version": 4,
-        "capture_sha256": stem,
-        "node_sizes": [2],
-        "centroid_layers": [0, 1],
-        "row_layers": [],
-        "centroid_files": {},
-        "row_files": {},
-        "centroid_shapes": {},
-        "row_shapes": {},
-        "row_dtypes": {},
-        "row_tensor_sha256": {},
-        "files": {},
-    }))
-    stores: list[ActivationRowStore] = []
-    for layer in (0, 1):
-        store = ActivationRowStore([2])
-        store.write(
-            layer, torch.arange(2),
-            torch.full((2, 3), float(layer + 1)),
-        )
-        stores.append(store)
-    barrier = threading.Barrier(2)
-    errors: list[BaseException] = []
-
-    def _topup(store: ActivationRowStore) -> None:
-        try:
-            barrier.wait(timeout=5)
-            _publish_deferred_row_shards(
-                tmp_path, stem, meta_path, store, [2],
-                set(), {}, {}, {}, {},
-            )
-        except BaseException as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
-
-    threads = [threading.Thread(target=_topup, args=(store,)) for store in stores]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5)
-    for store in stores:
-        store.close()
-
-    assert errors == []
-    payload = json.loads(meta_path.read_text())
-    assert payload["row_layers"] == [0, 1]
-    assert set(payload["row_files"]) == {"0", "1"}
-    assert all((tmp_path / name).exists() for name in payload["row_files"].values())
-
-
-def test_row_cache_uses_layer_digests_without_container_rehash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from drowse.base import integrity
-    from drowse.base.paths import model_dir
-
-    real_hash_file = integrity.hash_file
-    hashed: list[Path] = []
-
-    def _tracked_hash(path: Path) -> str:
-        resolved = Path(path)
-        hashed.append(resolved)
-        if ".rows.layer_" in resolved.name:
-            raise AssertionError("row shard was redundantly whole-file hashed")
-        return real_hash_file(resolved)
-
-    monkeypatch.setattr(integrity, "hash_file", _tracked_hash)
-    folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
-    pipe.fit(folder)
-
-    # Force a geometry refit with identical token rows, exercising the cache
-    # read path as well as publication.
-    manifest = json.loads((folder / "manifold.json").read_text())
-    manifest["nodes"][0]["coords"] = [0.125]
-    (folder / "manifold.json").write_text(json.dumps(manifest))
-    pipe.fit(folder)
-
-    capture_dir = model_dir("stub-model") / "manifold_capture"
-    meta_path, = capture_dir.glob("*.json")
-    meta = json.loads(meta_path.read_text())
-    assert meta["format_version"] == 4
-    assert set(meta["row_tensor_sha256"]) == {"0", "1", "2", "3"}
-    assert set(meta["files"]) == {
-        path.name for path in capture_dir.glob("*.centroids.layer_*.safetensors")
-    }
-    assert any(".centroids.layer_" in path.name for path in hashed)
-    assert not any(".rows.layer_" in path.name for path in hashed)
-
-
-def test_cold_row_publication_traverses_each_payload_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from drowse.fit import pipeline as extraction_module
-    from drowse.base.paths import model_dir
-
-    real_chunks = extraction_module._iter_tensor_byte_chunks
-    traversals: list[int] = []
-
-    def _tracked(tensor: torch.Tensor, **kwargs: Any) -> Any:
-        traversals.append(id(tensor))
-        yield from real_chunks(tensor, **kwargs)
-
-    monkeypatch.setattr(extraction_module, "_iter_tensor_byte_chunks", _tracked)
-    monkeypatch.setattr(
-        extraction_module, "_tensor_sha256",
-        lambda _tensor: pytest.fail(
-            "row publication must not start a second tensor traversal"
-        ),
-    )
-    folder = _author_manifold(tmp_path)
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
-
-    capture_dir = model_dir("stub-model") / "manifold_capture"
-    row_shards = list(capture_dir.glob("*.rows.layer_*.safetensors"))
-    assert len(row_shards) == _N_LAYERS
-    assert len(traversals) == len(row_shards)
-
-
-def test_deferred_row_publication_traverses_each_payload_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from safetensors.torch import load_file
-    from drowse.fit import pipeline as extraction_module
-    from drowse.store.manifold_tensors import ActivationRowStore
-
-    stem = "d" * 64
-    meta_path = tmp_path / f"{stem}.json"
-    meta_path.write_text(json.dumps({
-        "format_version": 4,
-        "capture_sha256": stem,
-        "node_sizes": [2],
-        "centroid_layers": [0],
-        "row_layers": [],
-        "centroid_files": {},
-        "row_files": {},
-        "centroid_shapes": {},
-        "row_shapes": {},
-        "row_dtypes": {},
-        "row_tensor_sha256": {},
-        "files": {},
-    }))
-    expected = torch.arange(6, dtype=torch.float32).reshape(2, 3)
-    store = ActivationRowStore([2])
-    store.write(0, torch.arange(2), expected)
-    real_chunks = extraction_module._iter_tensor_byte_chunks
-    traversals = 0
-
-    def _tracked(tensor: torch.Tensor, **kwargs: Any) -> Any:
-        nonlocal traversals
-        traversals += 1
-        yield from real_chunks(tensor, **kwargs)
-
-    monkeypatch.setattr(extraction_module, "_iter_tensor_byte_chunks", _tracked)
-    real_tensor_sha = extraction_module._tensor_sha256
-    monkeypatch.setattr(
-        extraction_module, "_tensor_sha256",
-        lambda _tensor: pytest.fail(
-            "row publication must not start a second tensor traversal"
-        ),
-    )
-    try:
-        extraction_module._publish_deferred_row_shards(
-            tmp_path, stem, meta_path, store, [2], set(), {}, {}, {}, {},
-        )
-    finally:
-        store.close()
-    monkeypatch.setattr(extraction_module, "_tensor_sha256", real_tensor_sha)
-
-    payload = json.loads(meta_path.read_text())
-    row_path = tmp_path / payload["row_files"]["0"]
-    assert traversals == 1
-    assert real_tensor_sha(expected) == (
-        payload["row_tensor_sha256"]["0"]
-    )
-    assert torch.equal(load_file(str(row_path))["layer_0"], expected)
-
-
-def test_selected_row_digest_tamper_recaptures_that_layer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from safetensors.torch import load_file, save_file
     from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
@@ -1265,10 +833,7 @@ def test_selected_row_digest_tamper_recaptures_that_layer(
     pipe.fit(folder)
     capture_dir = model_dir("stub-model") / "manifold_capture"
     row_path, = capture_dir.glob("*.rows.layer_1.safetensors")
-    tensors = load_file(str(row_path), device="cpu")
-    tensors["layer_1"] = tensors["layer_1"].clone()
-    tensors["layer_1"][0, 0] += 1.0
-    save_file(tensors, str(row_path))
+    row_path.write_bytes(row_path.read_bytes()[:-8])
     manifest = json.loads((folder / "manifold.json").read_text())
     manifest["nodes"][0]["coords"] = [0.125]
     (folder / "manifold.json").write_text(json.dumps(manifest))
@@ -1399,30 +964,6 @@ def test_fit_cache_hit_skips_forward_passes(tmp_path: Path, monkeypatch: pytest.
     assert manifold.name == "mood"
 
 
-def test_fitted_cache_hit_ignores_capture_journal_scan_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
-    first = pipe.fit(folder)
-    real_glob = Path.glob
-
-    def fail_pending_scan(path: Path, pattern: str):
-        if path.name == "manifold_capture" and ".pending-" in pattern:
-            raise OSError("transient capture directory read")
-        return real_glob(path, pattern)
-
-    monkeypatch.setattr(Path, "glob", fail_pending_scan)
-    monkeypatch.setattr(
-        V, "_encode_and_capture_all_batch",
-        lambda *_args, **_kwargs: pytest.fail("fitted cache hit captured"),
-    )
-
-    second = pipe.fit(folder)
-
-    assert torch.allclose(first.node_coords, second.node_coords)
-
-
 def test_missing_whitener_fails_before_manifold_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1515,203 +1056,56 @@ def test_capture_cache_identity_includes_node_partition(
 
 
 def test_capture_cache_prunes_old_groups_but_keeps_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    from drowse.fit.capture_cache import CaptureCache, capture_cache_dir
+
+    root = capture_cache_dir("stub-model")
+    root.mkdir(parents=True)
+    old_stem, recent_stem, keep_stem = "a" * 64, "c" * 64, "b" * 64
+    paths = {
+        stem: root / f"{stem}.centroids.layer_0.safetensors"
+        for stem in (old_stem, recent_stem, keep_stem)
+    }
+    for age, stem in enumerate((old_stem, keep_stem, recent_stem)):
+        paths[stem].write_bytes(b"x" * 100)
+        os.utime(paths[stem], ns=(age * 10**9, age * 10**9))
+    # Room for two groups: the least recently written other group goes.
+    monkeypatch.setenv("DROWSE_MANIFOLD_CAPTURE_CACHE_GB", str(250 / 1024**3))
+    CaptureCache("stub-model", keep_stem, [1]).prune()
+    assert not paths[old_stem].exists()
+    assert paths[keep_stem].exists()
+    assert paths[recent_stem].exists()
+
+
+def test_foreign_centroid_shard_is_a_miss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.fit.pipeline import _prune_manifold_capture_cache
-
-    old_stem = "a" * 64
-    keep_stem = "b" * 64
-    old = tmp_path / f"{old_stem}.centroids.safetensors"
-    keep = tmp_path / f"{keep_stem}.centroids.safetensors"
-    old.write_bytes(b"old-cache")
-    keep.write_bytes(b"current-cache")
-    monkeypatch.setenv("DROWSE_MANIFOLD_CAPTURE_CACHE_GB", "0.000000001")
-    _prune_manifold_capture_cache(tmp_path, keep_stem=keep_stem)
-    assert not old.exists()
-    assert keep.exists()
-
-
-def test_capture_cache_prune_waits_for_active_victim_transaction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Eviction never deletes a foreign stem while its fit lock is held."""
-    from drowse.fit.pipeline import _prune_manifold_capture_cache
-    from drowse.base import atomic
-    victim_stem = "a" * 64
-    keep_stem = "b" * 64
-    victim = tmp_path / f"{victim_stem}.rows.layer_0.safetensors"
-    keep = tmp_path / f"{keep_stem}.centroids.layer_0.safetensors"
-    victim.write_bytes(b"old-cache")
-    keep.write_bytes(b"current-cache")
-    monkeypatch.setenv("DROWSE_MANIFOLD_CAPTURE_CACHE_GB", "0.000000001")
-
-    real_lock = atomic.artifact_lock
-    victim_waiting = threading.Event()
-
-    @contextmanager
-    def _tracked_lock(path: Path):
-        if Path(path).name == victim_stem:
-            victim_waiting.set()
-        with real_lock(path):
-            yield
-
-    monkeypatch.setattr(atomic, "artifact_lock", _tracked_lock)
-    errors: list[BaseException] = []
-
-    def _run_prune() -> None:
-        try:
-            _prune_manifold_capture_cache(tmp_path, keep_stem=keep_stem)
-        except BaseException as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
-
-    with real_lock(tmp_path / victim_stem):
-        thread = threading.Thread(target=_run_prune)
-        thread.start()
-        assert victim_waiting.wait(timeout=5)
-        assert victim.exists()
-        assert thread.is_alive()
-    thread.join(timeout=5)
-
-    assert not thread.is_alive()
-    assert errors == []
-    assert not victim.exists()
-    assert keep.exists()
-
-
-def test_capture_process_lease_survives_payload_publish_and_blocks_prune(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from drowse.fit.pipeline import (
-        _capture_group_paths,
-        _prune_manifold_capture_cache,
-    )
-    from drowse.base.atomic import (
-        artifact_has_live_lease,
-        artifact_process_lease,
-    )
-
-    victim_stem = "a" * 64
-    keep_stem = "b" * 64
-    victim = tmp_path / f"{victim_stem}.rows.layer_0.safetensors"
-    keep = tmp_path / f"{keep_stem}.centroids.layer_0.safetensors"
-    victim.write_bytes(b"leased")
-    keep.write_bytes(b"current")
-    monkeypatch.setenv("DROWSE_MANIFOLD_CAPTURE_CACHE_GB", "0.000000001")
-
-    with artifact_process_lease(tmp_path / victim_stem):
-        assert artifact_has_live_lease(tmp_path / victim_stem)
-        assert all(".lease." not in path.name for path in _capture_group_paths(
-            tmp_path, victim_stem,
-        ))
-        _prune_manifold_capture_cache(tmp_path, keep_stem=keep_stem)
-        assert victim.exists()
-    assert not artifact_has_live_lease(tmp_path / victim_stem)
-    _prune_manifold_capture_cache(tmp_path, keep_stem=keep_stem)
-    assert not victim.exists()
-
-
-def test_capture_lease_enter_failure_releases_transaction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from drowse.base import atomic
-    folder = _author_manifold(tmp_path)
-    real_lock_class = atomic.ReleasableArtifactLock
-    paths: list[Path] = []
-
-    def _track(path: Path) -> atomic.ReleasableArtifactLock:
-        paths.append(Path(path))
-        return real_lock_class(path)
-
-    class _BrokenLease:
-        def __enter__(self) -> None:
-            raise OSError("injected lease marker failure")
-
-        def __exit__(self, *_args: object) -> None:
-            raise AssertionError("unentered lease must not exit")
-
-    monkeypatch.setattr(atomic, "ReleasableArtifactLock", _track)
-    monkeypatch.setattr(atomic, "artifact_process_lease", lambda _path: _BrokenLease())
-    with pytest.raises(OSError, match="lease marker"):
-        ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
-    acquired = threading.Event()
-
-    def _acquire() -> None:
-        with atomic.artifact_lock(paths[0]):
-            acquired.set()
-
-    thread = threading.Thread(target=_acquire)
-    thread.start()
-    assert acquired.wait(timeout=5)
-    thread.join(timeout=5)
-
-
-def test_capture_lease_marker_removed_while_transaction_held(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from drowse.base import atomic
-    folder = _author_manifold(tmp_path)
-    real_lock_class = atomic.ReleasableArtifactLock
-    active: list[Any] = []
-    exit_states: list[bool] = []
-
-    class _TrackedLock:
-        def __init__(self, path: Path) -> None:
-            self.inner = real_lock_class(path)
-            self.held = False
-            active.append(self)
-
-        def acquire(self) -> Any:
-            self.inner.acquire()
-            self.held = True
-            return self
-
-        def release(self) -> None:
-            self.inner.release()
-            self.held = False
-
-    class _Lease:
-        def __enter__(self) -> None:
-            return None
-
-        def __exit__(self, *_args: object) -> None:
-            exit_states.append(bool(active[-1].held))
-
-    monkeypatch.setattr(atomic, "ReleasableArtifactLock", _TrackedLock)
-    monkeypatch.setattr(atomic, "artifact_process_lease", lambda _path: _Lease())
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
-    assert exit_states == [True]
-    assert active[-1].held is False
-
-
-def test_tampered_activation_cache_recaptures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    """A shard whose header names another identity is recaptured, not trusted."""
+    from safetensors.torch import load_file, save_file
     from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
     pipe.fit(folder)
-    cache_files = list(
-        (model_dir("stub-model") / "manifold_capture").glob(
-            "*.centroids.layer_*.safetensors"
-        )
+    shard, = (model_dir("stub-model") / "manifold_capture").glob(
+        "*.centroids.layer_2.safetensors"
     )
-    assert len(cache_files) == _N_LAYERS
-    payload = bytearray(cache_files[0].read_bytes())
-    payload[-1] ^= 1
-    cache_files[0].write_bytes(payload)
+    save_file(load_file(str(shard)), str(shard), metadata={"format": "4"})
     manifest = json.loads((folder / "manifold.json").read_text())
     manifest["nodes"][0]["coords"] = [0.125]
     (folder / "manifold.json").write_text(json.dumps(manifest))
-    calls = {"n": 0}
+    scopes: list[list[int]] = []
 
     def _counting(*args: Any, **kwargs: Any) -> Any:
-        calls["n"] += 1
+        scopes.append(list(kwargs["layer_indices"]))
         return _stub_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
     pipe.fit(folder)
-    assert calls["n"] > 0
+    assert scopes == [[2]]
 
 
 def test_fit_force_bypasses_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

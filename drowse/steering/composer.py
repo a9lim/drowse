@@ -364,7 +364,7 @@ class SteeringComposer:
             )
             expected_capture = prepare_manifold_capture_identity(
                 self._session, folder_mf, live_fingerprint,
-            )[3]
+            ).capture_sha256
             if metadata.get("capture_sha256") != expected_capture:
                 raise ManifoldNotRegisteredError(
                     f"manifold '{key}' capture inputs changed (tokenizer, chat "

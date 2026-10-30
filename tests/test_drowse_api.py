@@ -1424,7 +1424,7 @@ class TestManifoldRoutes:
         ``ManifoldAuthoringChangedError`` is the same conflict
         ``ConcurrentExtractionError`` models, reached from the other side.
         """
-        from drowse.fit.pipeline import ManifoldAuthoringChangedError
+        from drowse.store.fit_publish import ManifoldAuthoringChangedError
 
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         session, client = session_and_client
@@ -1438,7 +1438,7 @@ class TestManifoldRoutes:
     def test_fit_sse_authoring_conflict_is_a_typed_frame(
         self, session_and_client: Any, tmp_path: Any, monkeypatch: Any,
     ) -> None:
-        from drowse.fit.pipeline import ManifoldAuthoringChangedError
+        from drowse.store.fit_publish import ManifoldAuthoringChangedError
 
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         session, client = session_and_client

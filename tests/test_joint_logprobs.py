@@ -18,17 +18,18 @@ import torch
 
 from drowse.model.chat import ChatTraits
 
-from drowse.generation.decode import GenerationConfig
+from drowse.generation.decode import GenerationConfig, build_chat_input
 from drowse.generation.joint_logprobs import (
     JointLogprobRow,
     JointLogprobs,
+    SamplerRows,
     _approx_kl_topk,
     _branch_inputs,
     _cache_key,
     _compute_rows,
-    _shared_prefix_len,
     reorient_for_request,
 )
+from drowse.generation.scoring import shared_prefix_len as _shared_prefix_len
 from drowse.server.tree_routes import (
     _JOINT_LOGPROB_CACHE_MAX,
     _cached_joint_logprobs,
@@ -133,9 +134,20 @@ def _logits_to_logsoftmax(rows: list[list[float]]) -> torch.Tensor:
     return torch.log_softmax(torch.tensor(rows, dtype=torch.float32), dim=-1)
 
 
+def _pool(dense_row: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """A full-vocab logprob row as an (exact) sorted sampler pool."""
+    logps, ids = dense_row.sort(descending=True, stable=True)
+    return ids, logps
+
+
+def _rows(dense: torch.Tensor) -> SamplerRows:
+    logps, ids = dense.sort(dim=-1, descending=True, stable=True)
+    return SamplerRows({r: r for r in range(dense.shape[0])}, ids, logps)
+
+
 def test_approx_kl_identical_distributions_is_zero():
     lp = _logits_to_logsoftmax([[0.0, 1.0, 2.0, 0.5]])[0]
-    assert abs(_approx_kl_topk(lp, lp, top_k=4)) < 1e-6
+    assert abs(_approx_kl_topk(_pool(lp), _pool(lp), top_k=4)) < 1e-6
 
 
 def test_approx_kl_topk_grows_with_divergence():
@@ -144,11 +156,11 @@ def test_approx_kl_topk_grows_with_divergence():
     # widen the cross-entropy.
     lp_a = _logits_to_logsoftmax([[0.0, 1.0, 0.5, -0.5]])[0]
     lp_b = _logits_to_logsoftmax([[-3.0, 5.0, -1.0, -3.0]])[0]
-    kl = _approx_kl_topk(lp_a, lp_b, top_k=4)
+    kl = _approx_kl_topk(_pool(lp_a), _pool(lp_b), top_k=4)
     assert kl > 0
     # KL should be larger when B is even sharper.
     lp_b2 = _logits_to_logsoftmax([[-9.0, 9.0, -3.0, -9.0]])[0]
-    kl2 = _approx_kl_topk(lp_a, lp_b2, top_k=4)
+    kl2 = _approx_kl_topk(_pool(lp_a), _pool(lp_b2), top_k=4)
     assert kl2 > kl
 
 
@@ -156,8 +168,8 @@ def test_approx_kl_topk_respects_truncation():
     # With top_k=1 we only see the argmax token; coarser estimate.
     lp_a = _logits_to_logsoftmax([[0.0, 1.0, 0.5, -0.5]])[0]
     lp_b = _logits_to_logsoftmax([[-3.0, 5.0, -1.0, -3.0]])[0]
-    kl_full = _approx_kl_topk(lp_a, lp_b, top_k=4)
-    kl_top1 = _approx_kl_topk(lp_a, lp_b, top_k=1)
+    kl_full = _approx_kl_topk(_pool(lp_a), _pool(lp_b), top_k=4)
+    kl_top1 = _approx_kl_topk(_pool(lp_a), _pool(lp_b), top_k=1)
     # Full top-K should be >= top-1 (more mass observed).  Equality
     # is allowed (both argmax-dominated distributions) but inequality
     # is the typical shape.
@@ -204,7 +216,7 @@ def test_compute_rows_self_evaluation_only_on_divergent_tail():
     strs_b = ["P0", "P1", "tok_one", "tok_three"]
 
     rows = _compute_rows(
-        logp_a, logp_b, ids_a, ids_b, strs_a, strs_b, prefix_len,
+        _rows(logp_a), _rows(logp_b), ids_a, ids_b, strs_a, strs_b, prefix_len,
     )
     # Two assistant positions on each side → two rows for the common
     # prefix.  Position 0 is byte-aligned ("tok_one" matches), position
@@ -255,7 +267,9 @@ def test_compute_rows_rank_changed_flag():
     ids_b = [99, 100, 0]
     strs_a = ["P0", "P1", "same"]
     strs_b = ["P0", "P1", "same"]
-    rows = _compute_rows(logp_a, logp_b, ids_a, ids_b, strs_a, strs_b, prefix_len)
+    rows = _compute_rows(
+        _rows(logp_a), _rows(logp_b), ids_a, ids_b, strs_a, strs_b, prefix_len,
+    )
     assert len(rows) == 1
     r = rows[0]
     assert r.aligned is True
@@ -267,7 +281,7 @@ def test_compute_rows_rank_changed_flag():
 def test_compute_rows_empty_when_no_assistant_tokens():
     logp = _build_logp([[0.0, 0.0]])
     rows = _compute_rows(
-        logp, logp, [0], [0], ["P"], ["P"], prefix_len=1,
+        _rows(logp), _rows(logp), [0], [0], ["P"], ["P"], prefix_len=1,
     )
     assert rows == []
 
@@ -348,7 +362,10 @@ class _MockTree:
         a2 = LoomNode(id="a2", parent_id="u1", role="assistant", text="hello b end")
         self.nodes = {"root": root, "u1": user, "a1": a1, "a2": a2}
 
-    def messages_for(self, leaf_id: str, *, include_system: bool = False):
+    def messages_for(
+        self, leaf_id: str, *, include_system: bool = False,
+        with_labels: bool = False,
+    ):
         from drowse.loom.tree import LoomNode
 
         # Walk parent chain; return [{role, content}], skip synthetic
@@ -366,6 +383,20 @@ class _MockTree:
                 continue
             out.append({"role": n.role, "content": n.text})
         return out
+
+
+class _MockSteering:
+    """Steering manager surface: trigger ctx + the static-path predicates."""
+
+    def __init__(self) -> None:
+        self.ctx = TriggerContext()
+        self.static = True
+
+    def all_fast_path(self) -> bool:
+        return self.static
+
+    def static_steerable(self) -> bool:
+        return False
 
 
 class _MockSession:
@@ -397,7 +428,7 @@ class _MockSession:
         self.tree = _MockTree()
         self.config = GenerationConfig()
         self.profiles: dict[str, Any] = {}
-        self._steering = type("SteeringState", (), {"ctx": TriggerContext()})()
+        self._steering = _MockSteering()
         self._monitor = type(
             "MonitorState", (),
             {
@@ -411,7 +442,7 @@ class _MockSession:
         self._lens_instrument = LensInstrument(self)  # type: ignore[arg-type]
         self._sae_instrument = SaeInstrument(self)  # type: ignore[arg-type]
 
-        def _bind_all(**_kwargs: Any) -> bool:
+        def _bind_all(*_args: Any, **_kwargs: Any) -> bool:
             request = ReadRequest(final_aggregate=False)
             for inst in (
                 self._geometry_instrument,
@@ -429,6 +460,23 @@ class _MockSession:
         )
         self._steering_needs_probe_gating = lambda: False
         self._build_gating_score_callback = lambda: None
+        self._resolve_read_demand = lambda **_kwargs: None
+        self._resolved_model_type = lambda: None
+        self.scene_grammar = None
+
+    def _prepare_input(self, _input: Any, **kwargs: Any) -> torch.Tensor:
+        node_id = kwargs["parent_node_id"]
+        return build_chat_input(
+            self.tokenizer, self.tree.messages_for(node_id),
+            system_prompt=kwargs.get("system_prompt"),
+            add_generation_prompt=True,
+        )
+
+    def force_stepwise_gated(self, gate: Any = None) -> None:
+        """Route replay through the per-step gated path."""
+        self._steering.static = False
+        self._steering_needs_probe_gating = lambda: True
+        self._build_gating_score_callback = lambda: gate or (lambda _step: {})
 
     def assert_runs_closed(self) -> None:
         for instrument in (
@@ -454,8 +502,7 @@ def test_gated_replay_passes_the_forward_step_to_the_gate_callback():
         steps.append(step_id)
         return {}
 
-    session._steering_needs_probe_gating = lambda: True
-    session._build_gating_score_callback = lambda: _gate
+    session.force_stepwise_gated(_gate)
 
     result = compute_joint_logprobs(session, "a1", "a2")
 
@@ -534,6 +581,7 @@ def test_joint_logprobs_closes_runs_on_replay_failure():
     from drowse.generation.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
+    session.force_stepwise_gated()
 
     def _boom(_input_ids: torch.Tensor) -> torch.Tensor:
         raise RuntimeError("mid-replay model failure")
@@ -551,6 +599,7 @@ def test_joint_logprobs_closes_runs_when_detach_raises():
     from drowse.generation.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
+    session.force_stepwise_gated()
 
     def _detach_boom() -> None:
         raise RuntimeError("detach failed")
@@ -605,3 +654,67 @@ def test_branch_inputs_rebuilds_generated_human_seat_prompt():
     assert seen["user_role"] == "narrator"
     assert seen["assistant_role"] is None
     assert seen["to_device"] is False
+
+
+def _causal_model(vocab: int, calls: list[int]) -> FakeLogitsModel:
+    """Each position's logits depend on the whole causal prefix."""
+
+    def _logits(input_ids: torch.Tensor) -> torch.Tensor:
+        calls.append(int(input_ids.shape[1]))
+        prefix = torch.cumsum(input_ids[0].to(torch.float32) * 1.7, dim=0)
+        grid = torch.arange(vocab, dtype=torch.float32)
+        return torch.sin(prefix[:, None] * 0.3 + grid[None, :]).unsqueeze(0) * 3
+
+    return FakeLogitsModel(_logits)
+
+
+def _long_branch_session(calls: list[int]) -> Any:
+    session: Any = _MockSession()
+    words = [f"w{i}" for i in range(40)]
+    for word in words:
+        session.tokenizer._intern(word)
+    session.tree.nodes["a1"].text = "hello " + " ".join(words[:20]) + " end"
+    session.tree.nodes["a2"].text = "hello " + " ".join(words[20:]) + " end"
+    session.model = session._model = _causal_model(
+        len(session.tokenizer._vocab) + 4, calls,
+    )
+    session.config = GenerationConfig(temperature=0.8, top_k=6, top_p=0.9)
+    return session
+
+
+def test_teacher_forced_replay_matches_stepwise_replay():
+    """The chunked teacher-forced path reproduces the per-step replay."""
+    from drowse.generation.joint_logprobs import compute_joint_logprobs
+
+    forced_calls: list[int] = []
+    forced = compute_joint_logprobs(
+        _long_branch_session(forced_calls), "a1", "a2",
+    )
+    step_calls: list[int] = []
+    stepwise_session = _long_branch_session(step_calls)
+    stepwise_session._steering.static = False
+    stepwise = compute_joint_logprobs(stepwise_session, "a1", "a2")
+
+    assert forced.rows == stepwise.rows
+    assert any(r.lp_a_in_a is not None for r in forced.rows)
+    # One forward per branch versus one per forced token.
+    assert len(forced_calls) == 2
+    assert len(step_calls) > 40
+
+
+def test_replay_keeps_only_the_sampler_pool_per_row():
+    from drowse.generation.joint_logprobs import (
+        _branch_inputs as branch_inputs,
+        _replay_branch_logprobs,
+    )
+
+    session = _long_branch_session([])
+    branch = branch_inputs(session, "a1")
+    rows = _replay_branch_logprobs(session, branch)
+
+    assert rows.ids.shape == (len(branch.response_ids), 6)   # top_k pool, not vocab
+    assert rows.ids.device.type == "cpu"
+    first = len(branch.prompt_ids) - 1
+    assert sorted(rows.index) == list(
+        range(first, first + len(branch.response_ids)),
+    )

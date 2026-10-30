@@ -27,6 +27,7 @@ from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_authoring import create_discover_manifold_folder
 from drowse.base.paths import manifold_dir
 from tests._whitener import synthetic_whitener
+from tests.test_manifold_extraction import _CaptureTokenizer
 
 _DIM = 8
 _N_LAYERS = 4
@@ -69,10 +70,12 @@ class _Handle:
     def __init__(self) -> None:
         self.model_id = "stub-model"
         self.model: torch.nn.Module = torch.nn.Linear(1, 1)
-        self.tokenizer: Any = object()
+        self.tokenizer: Any = _CaptureTokenizer()
         self.device = torch.device("cpu")
         self.dtype = torch.float32
-        self.layers: Any = [object()] * _N_LAYERS
+        self.layers: Any = torch.nn.ModuleList(
+            torch.nn.Identity() for _ in range(_N_LAYERS)
+        )
         self.layer_means: dict[int, torch.Tensor] = {
             L: _NU[L].clone() for L in range(_N_LAYERS)
         }
@@ -81,14 +84,6 @@ class _Handle:
         self.whitener = synthetic_whitener(
             range(_N_LAYERS), _DIM, means=self.layer_means,
         )
-
-    def _run_generator(
-        self, system_msg: str, prompt: str, max_new_tokens: int,
-    ) -> str:
-        raise NotImplementedError("stub: not called")
-
-    def generate_responses(self, *a: Any, **k: Any) -> dict[str, list[str]]:
-        raise NotImplementedError("stub: not called")
 
 
 @pytest.fixture(autouse=True)

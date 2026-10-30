@@ -44,10 +44,12 @@ class _Tokenizer:
     eos_token_id = 2
 
     def __call__(
-        self, text: str, *, return_tensors: str, add_special_tokens: bool = False,
-    ) -> dict[str, torch.Tensor]:
-        del return_tensors, add_special_tokens
-        return {"input_ids": torch.tensor([[3 + ord(char) % 31 for char in text]])}
+        self, texts: list[str], *, add_special_tokens: bool = False,
+    ) -> dict[str, list[list[int]]]:
+        del add_special_tokens
+        return {
+            "input_ids": [[3 + ord(char) % 31 for char in text] for text in texts],
+        }
 
 
 TOKENIZER = _Tokenizer()
