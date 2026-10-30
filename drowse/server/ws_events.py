@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from drowse.core.results import TokenAlt
-from drowse.core.session import DrowseSession
+from drowse.generation.results import TokenAlt
+from drowse.session.session import DrowseSession
 
 
 def build_token_event(
@@ -52,7 +52,7 @@ def build_token_event(
 
     # The 5.x measurement envelope is the single read-side wire record: geometry
     # / lens / SAE ``instruments`` plus the flat ``scores`` / ``per_layer_scores``
-    # views (:func:`drowse.core.measurements.build_measurements`).  The token tap
+    # views (:func:`drowse.readout.measurements.build_measurements`).  The token tap
     # builds it once and stores it on the loom row; the WebSocket forwards it
     # verbatim so live and rehydrated tokens share one rich-channel authority.
     # It replaces the former top-level ``scores`` / ``per_layer_scores`` /

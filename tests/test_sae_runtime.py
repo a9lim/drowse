@@ -9,11 +9,11 @@ from typing import Any, cast
 import pytest
 import torch
 
-from drowse.core.sae import MockSaeBackend, sae_device_str, select_runtime_layer
-from drowse.core.session import DrowseSession
-from drowse.core.steering_composer import SteeringComposer
-from drowse.core.steering_expr import parse_expr
-from drowse.core.steering_expr import format_expr
+from drowse.sae.backend import MockSaeBackend, sae_device_str, select_runtime_layer
+from drowse.session.session import DrowseSession
+from drowse.steering.composer import SteeringComposer
+from drowse.steering.grammar import parse_expr
+from drowse.steering.grammar import format_expr
 
 
 class _Capture:
@@ -82,9 +82,8 @@ def test_select_runtime_layer_prefers_workspace_near_65_percent() -> None:
 def test_failed_provider_binding_does_not_half_adopt_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core import sae as sae_module
-    from drowse.io import sae as sae_io
-
+    from drowse.sae import backend as sae_module
+    from drowse.sae import sources as sae_io
     session: Any = DrowseSession.__new__(DrowseSession)
     previous = MockSaeBackend(
         layers=frozenset({0}), d_model=4, release="previous",
@@ -348,8 +347,8 @@ def test_composer_detects_attached_sae_gate() -> None:
 def test_unsupported_sae_gate_channel_raises_at_preflight() -> None:
     """A gate on a channel the SAE family can never produce is a preflight
     error (the 5.x replacement for the silently-constant fake channels)."""
-    from drowse.core.errors import UnsupportedProbeChannelError
-    from drowse.core.instruments.sae import SaeInstrument
+    from drowse.errors import UnsupportedProbeChannelError
+    from drowse.sae.instrument import SaeInstrument
 
     stub = SimpleNamespace(_monitor=SimpleNamespace(probe_names=()))
     instrument = SaeInstrument(stub)  # type: ignore[arg-type]
@@ -393,7 +392,7 @@ def test_sae_runtime_metadata_roundtrip(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.sae import load_sae_metadata, save_sae_metadata
+    from drowse.sae.sources import load_sae_metadata, save_sae_metadata
 
     path = save_sae_metadata("org/model", "release/name", {
         "layer": 14, "width": 16_384, "revision": "main",
@@ -419,7 +418,7 @@ def test_sae_feature_meta_roundtrip(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.sae import (
+    from drowse.sae.sources import (
         load_sae_feature_meta,
         save_sae_feature_meta,
     )
@@ -453,7 +452,7 @@ def test_sae_feature_meta_rejects_non_current_shapes(
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     import json
 
-    from drowse.io.sae import (
+    from drowse.sae.sources import (
         SAE_FEATURE_META_FORMAT_VERSION,
         load_sae_feature_meta,
         sae_features_path,
@@ -478,7 +477,7 @@ def test_stream_aggregate_keeps_lens_and_sae_probe_readings() -> None:
     # lens/SAE probes live on their own session registries (readout channels,
     # not the Monitor), so the filter must union all three rosters — it used
     # to drop their end-of-gen aggregates from every streaming done frame.
-    from drowse.core.results import ProbeReading
+    from drowse.generation.results import ProbeReading
     from drowse.server.streaming import probe_reading_aggregate
 
     readings = {
@@ -528,7 +527,7 @@ def test_fetch_sae_feature_meta_batch_caches_and_updates_probes(
     assert session._sae_instrument.probes["sae/1"]["max_act"] == 4.0
     assert "sae/1" not in session._probe_hash_cache
     # Persisted — a fresh load sees the merged cache.
-    from drowse.io.sae import load_sae_feature_meta
+    from drowse.sae.sources import load_sae_feature_meta
 
     on_disk = load_sae_feature_meta("org/model", "mock-release", source=session.sae_info)
     assert on_disk["1"]["max_act"] == 4.0
@@ -585,7 +584,7 @@ def test_bound_run_freezes_sae_unit_against_metadata_backfill() -> None:
     generation lock) must not change a running generation's strength unit.
     Between generations (idle run) the refresh applies immediately, as
     before."""
-    from drowse.core.instruments.types import ReadRequest
+    from drowse.readout.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -619,7 +618,7 @@ def test_sae_bind_resolves_unit_from_meta_cache() -> None:
     unit exists in the metadata cache freezes the RESOLVED unit — the
     live-cache fallback never runs under a bound run, so a mid-generation
     cache mutation cannot flip the unit either."""
-    from drowse.core.instruments.types import ReadRequest
+    from drowse.readout.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -660,7 +659,7 @@ def test_sae_negative_step_observe_never_caches() -> None:
     """``step_id < 0`` never populates the SAE run's observe memo —
     repeated negative observations rescore (the family-parameterized pin
     of the shared negative-step fix)."""
-    from drowse.core.instruments.types import ReadRequest
+    from drowse.readout.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -689,7 +688,7 @@ def test_detach_during_bound_generation_keeps_aggregate_roster() -> None:
     (e.g. the synchronous DELETE route, which takes no generation lock)
     stays in the bound generation's aggregate roster; the next bind sees
     the removal."""
-    from drowse.core.instruments.types import ReadRequest
+    from drowse.readout.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -736,7 +735,7 @@ def test_bound_run_reads_its_bind_time_live_snapshot() -> None:
     live-discovery config its generation started with, so a toggle from
     another thread cannot flip a running generation mid-stream.  Idle runs
     pass the current config through."""
-    from drowse.core.instruments.types import ReadRequest
+    from drowse.readout.types import ReadRequest
 
     session = _session()
     inst = session._sae_instrument
@@ -781,7 +780,7 @@ def test_sae_feature_meta_rejects_nonfinite_scale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_act: float,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.sae import save_sae_feature_meta
+    from drowse.sae.sources import save_sae_feature_meta
 
     with pytest.raises(ValueError, match="invalid SAE feature metadata"):
         save_sae_feature_meta("org/model", "release", {
@@ -794,7 +793,7 @@ def test_sae_feature_meta_rejects_noncanonical_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feature_id: str,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.sae import save_sae_feature_meta
+    from drowse.sae.sources import save_sae_feature_meta
 
     with pytest.raises(ValueError, match="feature id"):
         save_sae_feature_meta("org/model", "release", {

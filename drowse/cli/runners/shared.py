@@ -12,11 +12,11 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, TypeVar
 
-from drowse.core.errors import DrowseError
+from drowse.errors import DrowseError
 
 if TYPE_CHECKING:
-    from drowse.core.session import DrowseSession
-    from drowse.core.steering import Steering
+    from drowse.session.session import DrowseSession
+    from drowse.steering.terms import Steering
 
 
 _R = TypeVar("_R")
@@ -97,7 +97,7 @@ def _make_session(args: argparse.Namespace, *, load_probes: bool = True):
     concept not yet fitted for this model.  The printing ``on_progress``
     callback is what keeps that from looking like a hang.
     """
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     probe_categories = _resolve_probes(args.probes) if load_probes else []
     # ``~`` / ``|`` projection is Mahalanobis-only (closed-form LEACE);
     # ``--no-dls`` opts out of the discriminative-layer mask.  The flag and
@@ -217,8 +217,8 @@ def _setup_steering_vectors(
     :class:`Steering` with every atom pre-warmed in ``session.profiles``.
     Returns ``None`` when ``expression`` is empty / falsy.
     """
-    from drowse.io.selectors import canonicalize_atom, AmbiguousSelectorError
-    from drowse.core.steering_expr import (
+    from drowse.store.selectors import canonicalize_atom, AmbiguousSelectorError
+    from drowse.steering.grammar import (
         parse_expr, referenced_selectors,
     )
 
@@ -269,7 +269,7 @@ def _warmup_session(session: DrowseSession) -> None:
     trigger a 0.2–0.5s recompile on each new prefill length.
     """
     import time as _time
-    from drowse.core.sampling import SamplingConfig
+    from drowse.generation.sampling import SamplingConfig
     print("Warming up generation kernels...", flush=True)
     try:
         start = _time.monotonic()
@@ -286,7 +286,7 @@ def _warmup_session(session: DrowseSession) -> None:
 def _iter_manifold_folders(namespace: str | None):
     """Yield ``(namespace, ManifoldFolder)`` for every installed manifold.
 
-    Thin wrapper over :func:`drowse.io.manifolds.iter_manifold_folders` —
+    Thin wrapper over :func:`drowse.store.manifolds.iter_manifold_folders` —
     the discovery walk lives in ``io`` so the server shares it without
     importing ``cli``.
 
@@ -301,8 +301,8 @@ def _iter_manifold_folders(namespace: str | None):
     server has its own session-driven materialization at startup, so
     going through ``iter_manifold_folders`` directly stays correct.
     """
-    from drowse.io.bootstrap import materialize_bundled_artifacts
-    from drowse.io.manifolds import iter_manifold_folders
+    from drowse.store.bundled import materialize_bundled_artifacts
+    from drowse.store.manifolds import iter_manifold_folders
 
     materialize_bundled_artifacts()
     yield from iter_manifold_folders(namespace)
@@ -335,7 +335,7 @@ def _resolve_manifold_ns_name(name: str) -> tuple[str, str]:
     # returns verbatim and never walks the installed folders, so it would
     # otherwise miss the materialize that the bare-name walk triggers.  Process-
     # scoped no-op, so this is free when already done.
-    from drowse.io.bootstrap import materialize_bundled_artifacts
+    from drowse.store.bundled import materialize_bundled_artifacts
     materialize_bundled_artifacts()
 
     if "/" in name:
@@ -368,7 +368,7 @@ def _resolve_manifold_folder(name: str) -> Path:
     that hand a ``(namespace, name)`` pair to their io backend call the
     pair-returning form instead.
     """
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
 
     ns, resolved = _resolve_manifold_ns_name(name)
     return manifold_dir(ns, resolved)

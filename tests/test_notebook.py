@@ -24,8 +24,8 @@ from drowse.notebook import (  # noqa: E402
     plot_trait_history,
     to_dataframe,
 )
-from drowse.core.profile import Profile  # noqa: E402
-from drowse.core.results import (  # noqa: E402
+from drowse.geometry.profile import Profile  # noqa: E402
+from drowse.generation.results import (  # noqa: E402
     GenerationResult,
     ProbeReading,
     ProbeReadings,
@@ -259,7 +259,7 @@ class TestPlotLayerNorms:
     def test_empty_profile_constructor_rejects(self) -> None:
         # Profile itself rejects empty dicts; this confirms our plot
         # function never receives one in practice.
-        from drowse.core.profile import ProfileError
+        from drowse.geometry.profile import ProfileError
 
         with pytest.raises(ProfileError):
             Profile({}, metadata={})

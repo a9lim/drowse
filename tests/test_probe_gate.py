@@ -19,14 +19,14 @@ from typing import cast
 
 import pytest
 
-from drowse.core.events import EventBus
-from drowse.core.session import DrowseSession
-from drowse.core.steering import Steering
-from drowse.core.steering_composer import SteeringComposer
-from drowse.core.steering_expr import (
+from drowse.events import EventBus
+from drowse.session.session import DrowseSession
+from drowse.steering.terms import Steering
+from drowse.steering.composer import SteeringComposer
+from drowse.steering.grammar import (
     SteeringExprError, format_expr, parse_expr,
 )
-from drowse.core.triggers import (
+from drowse.steering.triggers import (
     ProbeGate, Trigger, TriggerContext,
 )
 
@@ -165,7 +165,7 @@ class TestTriggerContextProbeScores:
 class TestGrammar:
     @pytest.fixture(autouse=True)
     def _isolated_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path):
-        from drowse.io import selectors as _sel
+        from drowse.store import selectors as _sel
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         _sel.invalidate()
         yield

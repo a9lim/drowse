@@ -27,7 +27,7 @@ from drowse.cli.runners import _COMMAND_RUNNERS
 def _isolated_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> Generator[None, None, None]:
-    from drowse.io import selectors as _sel
+    from drowse.store import selectors as _sel
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _sel.invalidate()
     yield
@@ -415,7 +415,7 @@ def _patch_sae_fetch_backend(
     monkeypatch.setattr(
         sae_runner, "_model_shape_from_config", lambda _m: (26, 2304),
     )
-    monkeypatch.setattr("drowse.core.sae.load_sae_backend", _load)
+    monkeypatch.setattr("drowse.sae.backend.load_sae_backend", _load)
 
 
 def test_sae_fetch_announces_before_the_provider_download(
@@ -448,8 +448,8 @@ def test_sae_fetch_writes_the_binding_without_loading_the_model(
     of GB of weights — to write a few hundred bytes.  ``from_pretrained`` is
     stubbed to fail here, so reaching it is the test failure.
     """
-    import drowse.core.session as session_mod
-    from drowse.io.sae import load_active_sae, load_sae_metadata
+    import drowse.session.session as session_mod
+    from drowse.sae.sources import load_active_sae, load_sae_metadata
 
     seen: dict[str, Any] = {}
     _patch_sae_fetch_backend(monkeypatch, tmp_path, seen=seen)

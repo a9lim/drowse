@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from drowse.core.errors import DrowseError
+from drowse.errors import DrowseError
 
 
 class WebUINotBuilt(RuntimeError, DrowseError):

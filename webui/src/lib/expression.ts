@@ -1,6 +1,6 @@
 // Serialization of the unified steering-expression rack.
 //
-// Mirrors drowse/core/steering_expr.py (serialize direction only):
+// Mirrors drowse/steering/grammar.py (serialize direction only):
 //
 //   expr     := term (("+" | "-") term)*
 //   term     := [coeff "*"?] ["!"] selector ["@" trigger]

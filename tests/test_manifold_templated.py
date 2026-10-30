@@ -1,7 +1,7 @@
 """Templated discover-manifold authoring (template_ref flow) — CPU-only, no model.
 
 A *templated* manifold is a discover manifold whose node corpora derive from a
-standalone template artifact (:mod:`drowse.io.templates`). The manifold stores the
+standalone template artifact (:mod:`drowse.store.templates`). The manifold stores the
 derived corpus in ``nodes/`` like any discover folder and carries a
 ``template_ref`` so the fit can resolve the template's multi-turn contexts as the
 per-node elicitation prefixes. These tests cover the authoring round-trip, the
@@ -16,14 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from drowse.io.manifolds import (
+from drowse.store.manifolds import (
     MANIFOLD_FORMAT_VERSION,
     ManifoldFolder,
     ManifoldFormatError,
     create_discover_manifold_folder,
     create_manifold_from_template,
 )
-from drowse.io.templates import create_template_folder
+from drowse.store.templates import create_template_folder
 
 SLOT = "[DAY]"
 VALUES = ["Monday", "Tuesday", "Sunday"]

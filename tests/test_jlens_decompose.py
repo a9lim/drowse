@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.core.jlens import sparse_nonneg_decompose
+from drowse.lens.jlens import sparse_nonneg_decompose
 from tests.test_jlens_session import _PROMPTS, _StubSession
 
 _D = 32
@@ -94,7 +94,7 @@ def test_session_jspace_decompose_on_registered_profile(_isolated_home: None) ->
     # the decomposition should attribute it (near-)fully to that atom.
     name = session.register_jlens_direction("g")
     session.ensure_profile_registered = lambda sel: session._profiles[sel]  # type: ignore[attr-defined]
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     out = DrowseSession.jspace_decompose(session, name, k=4)  # type: ignore[arg-type]
     del lens

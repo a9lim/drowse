@@ -19,14 +19,14 @@ from typing import Any, Callable, cast
 
 import torch
 
-from drowse.core.events import EventBus
-from drowse.core.hooks import (
+from drowse.events import EventBus
+from drowse.steering.hooks import (
     HiddenCapture,
     SteeringManager,
     install_persistent_capture_hooks,
     install_persistent_offset_hooks,
 )
-from drowse.core.session import DrowseSession
+from drowse.session.session import DrowseSession
 
 _D = 8
 _LAYERS = [0, 1, 2]

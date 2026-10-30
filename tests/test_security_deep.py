@@ -14,7 +14,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
-from drowse.core import model as model_module
+from drowse.model import loading as model_module
 from drowse.server.background_job import BackgroundJob
 from drowse.server.sse import sse_or_json
 
@@ -132,7 +132,7 @@ def test_background_shutdown_does_not_mark_a_running_writer_idle() -> None:
 @pytest.mark.parametrize("stream", [False, True])
 def test_http_inference_leaves_event_loop_responsive(path: str, stream: bool) -> None:
     import httpx
-    from drowse.core.results import GenerationResult
+    from drowse.generation.results import GenerationResult
     from drowse.server import create_app
     from tests.test_server_loom import _StubSession
 

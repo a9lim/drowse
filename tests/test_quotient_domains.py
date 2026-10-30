@@ -1,17 +1,17 @@
 from pathlib import Path
-from drowse.core.manifold import ManifoldDomain
+from drowse.geometry.manifold import ManifoldDomain
 import math
 
 import pytest
 import torch
 
-from drowse.core.manifold import (
+from drowse.geometry.manifold import (
     KleinBottleDomain, ProjectivePlaneDomain, SphereDomain, Manifold,
     domain_from_spec, fit_layer_subspace, fit_sigma_field, subspace_inject,
     invert_parameterization,
 )
-from drowse.io.manifold_tensors import save_manifold, load_manifold
-from drowse.core.monitor import _mean_coordinate_space, _mean_domain_coordinates
+from drowse.store.manifold_tensors import save_manifold, load_manifold
+from drowse.readout.monitor import _mean_coordinate_space, _mean_domain_coordinates
 
 
 @pytest.fixture(params=[KleinBottleDomain, ProjectivePlaneDomain])

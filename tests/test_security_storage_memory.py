@@ -16,10 +16,10 @@ from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
 from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
 
-from drowse.core import generation
-from drowse.core.hooks import HiddenCapture, SteeringManager
-from drowse.core.session import DrowseSession
-from drowse.core.scene import SeatWrapper, TurnGrammar
+from drowse.generation import decode as generation
+from drowse.steering.hooks import HiddenCapture, SteeringManager
+from drowse.session.session import DrowseSession
+from drowse.model.scene import SeatWrapper, TurnGrammar
 
 
 def tokenizer(swapped: bool = False) -> PreTrainedTokenizerFast:

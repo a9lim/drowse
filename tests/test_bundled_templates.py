@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-import drowse.io.templates as templates_mod
-from drowse.io.paths import templates_dir
-from drowse.io.templates import (
+import drowse.store.templates as templates_mod
+from drowse.base.paths import templates_dir
+from drowse.store.templates import (
     TemplateFolder,
     bundled_template_names,
     materialize_bundled_templates,
@@ -170,9 +170,9 @@ def test_bootstrap_entry_point_runs_templates_before_manifolds(
     each re-derive this from a copied comment, so a sixth would silently
     violate it.
     """
-    from drowse.io import bootstrap, manifolds as manifolds_mod
-    from drowse.io import templates as templates_mod
-
+    from drowse.store import bundled as bootstrap
+    from drowse.store import manifolds as manifolds_mod
+    from drowse.store import templates as templates_mod
     order: list[str] = []
     monkeypatch.setattr(
         templates_mod, "materialize_bundled_templates",
@@ -192,12 +192,12 @@ def test_every_bootstrap_site_uses_the_entry_point() -> None:
 
     root = pathlib.Path(__file__).resolve().parent.parent / "drowse"
     owners = {
-        root / "io" / "bootstrap.py",
-        root / "io" / "manifolds.py",
-        root / "io" / "templates.py",
+        root / "store" / "bundled.py",
+        root / "store" / "manifolds.py",
+        root / "store" / "templates.py",
         # ``refresh_manifold``'s bundled tier re-materializes one artifact
         # kind on purpose; it is not a bootstrap.
-        root / "io" / "manifold_lifecycle.py",
+        root / "store" / "manifold_lifecycle.py",
     }
     offenders = [
         str(path.relative_to(root.parent))

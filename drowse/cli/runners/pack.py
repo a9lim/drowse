@@ -14,7 +14,7 @@ from drowse.cli.runners.shared import (
 
 def _run_pack_ls(args: argparse.Namespace) -> None:
     import json as _json
-    from drowse.io.manifolds import domain_label
+    from drowse.store.manifolds import domain_label
 
     rows = list(_iter_manifold_folders(getattr(args, "namespace", None)))
     if getattr(args, "json_output", False):
@@ -45,7 +45,7 @@ def _run_pack_ls(args: argparse.Namespace) -> None:
 
 def _run_pack_show(args: argparse.Namespace) -> None:
     import json as _json
-    from drowse.io.manifolds import domain_label
+    from drowse.store.manifolds import domain_label
 
     name = args.name
     target_ns = None
@@ -68,7 +68,7 @@ def _run_pack_show(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
     ns, mf = matches[0]
-    from drowse.io.manifolds import manifold_fit_summary
+    from drowse.store.manifolds import manifold_fit_summary
 
     fitted = [
         manifold_fit_summary(mf.sidecar(stem), stem)
@@ -81,7 +81,7 @@ def _run_pack_show(args: argparse.Namespace) -> None:
     # header read.  Soft-fails to an empty list if the tensor isn't there.
     derived_node_coords: list[list[float]] = []
     if mf.is_discover and fitted:
-        from drowse.io.manifold_tensors import load_manifold
+        from drowse.store.manifold_tensors import load_manifold
         stem_for_session = fitted[0]["stem"]
         try:
             m = load_manifold(mf.tensor_path(stem_for_session))
@@ -107,7 +107,7 @@ def _run_pack_show(args: argparse.Namespace) -> None:
         # ``node_coords == []`` — since the derived per-model layout lives
         # in the fitted safetensors; the text path below still surfaces
         # the derived coords for interactive use.
-        from drowse.io.manifolds import manifold_summary
+        from drowse.store.manifolds import manifold_summary
         print(_json.dumps(
             manifold_summary(mf.folder, include_fits=True), indent=2,
         ))
@@ -195,7 +195,7 @@ def _run_pack_show(args: argparse.Namespace) -> None:
 
 
 def _run_pack_install(args: argparse.Namespace) -> None:
-    from drowse.io.hf_manifolds import install_manifold
+    from drowse.store.hub import install_manifold
 
     # Announce before the network call — hub progress bars are suppressed
     # off-TTY, so without the preamble plus the per-stage callback the verb is
@@ -210,7 +210,7 @@ def _run_pack_install(args: argparse.Namespace) -> None:
 
 def _run_pack_search(args: argparse.Namespace) -> None:
     import json as _json
-    from drowse.io.hf_manifolds import search_manifolds
+    from drowse.store.hub import search_manifolds
 
     if not getattr(args, "json_output", False):
         target = f" matching {args.query!r}" if args.query else ""
@@ -245,9 +245,9 @@ def _run_pack_search(args: argparse.Namespace) -> None:
 
 
 def _run_pack_push(args: argparse.Namespace) -> None:
-    from drowse.io.hf import resolve_target_coord
-    from drowse.io.hf_manifolds import push_manifold
-    from drowse.io.paths import manifold_dir
+    from drowse.base.hf import resolve_target_coord
+    from drowse.store.hub import push_manifold
+    from drowse.base.paths import manifold_dir
 
     ns, name = _split_manifold_ns_name(args.selector)
     folder = manifold_dir(ns, name)
@@ -289,7 +289,7 @@ def _run_pack_push(args: argparse.Namespace) -> None:
 
 
 def _run_pack_rm(args: argparse.Namespace) -> None:
-    from drowse.io.manifolds import remove_manifold_folder
+    from drowse.store.manifolds import remove_manifold_folder
 
     ns, name = _resolve_manifold_ns_name(args.selector)
     # Removal is irrecoverable for every namespace *except* bundled
@@ -320,7 +320,7 @@ def _run_pack_rm(args: argparse.Namespace) -> None:
 
 
 def _run_pack_clear(args: argparse.Namespace) -> None:
-    from drowse.io.manifolds import clear_manifold_tensors
+    from drowse.store.manifolds import clear_manifold_tensors
 
     ns, name = _resolve_manifold_ns_name(args.selector)
     # ``args.model`` is the raw model id; ``clear_manifold_tensors`` owns the
@@ -334,7 +334,7 @@ def _run_pack_clear(args: argparse.Namespace) -> None:
 
 
 def _run_pack_refresh(args: argparse.Namespace) -> None:
-    from drowse.io.manifolds import refresh_manifold
+    from drowse.store.manifolds import refresh_manifold
 
     ns, name = _resolve_manifold_ns_name(args.selector)
     # ``args.model`` is the raw model id; ``refresh_manifold`` converts to
@@ -359,7 +359,7 @@ def _run_pack_export(args: argparse.Namespace) -> None:
     fmt = getattr(args, "format", None)
     ns, name = _resolve_manifold_ns_name(args.name)
     if fmt == "archive":
-        from drowse.io.drowse_archive import export_drowse_archive
+        from drowse.store.archive import export_drowse_archive
 
         try:
             written = export_drowse_archive(ns, name, output=args.output)
@@ -371,7 +371,7 @@ def _run_pack_export(args: argparse.Namespace) -> None:
     if fmt != "gguf":
         print(f"Unknown export format: {fmt}", file=sys.stderr)
         sys.exit(2)
-    from drowse.io.gguf_io import export_gguf_manifold
+    from drowse.store.gguf import export_gguf_manifold
 
     try:
         written = export_gguf_manifold(

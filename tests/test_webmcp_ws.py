@@ -4,7 +4,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from drowse.core.session import DrowseSession
+from drowse.session.session import DrowseSession
 from drowse.server import create_app
 from tests.test_drowse_api import _mock_session, TestWebSocket as _WebSocketFixture
 from tests.test_server_loom import _StubSession

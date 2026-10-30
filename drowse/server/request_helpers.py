@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
-from drowse.core.errors import DrowseError
-from drowse.core.model import get_unembedding
-from drowse.core.results import TokenEvent
-from drowse.core.sampling import SamplingConfig
-from drowse.core.steering import Steering
+from drowse.errors import DrowseError
+from drowse.model.loading import get_unembedding
+from drowse.generation.results import TokenEvent
+from drowse.generation.sampling import SamplingConfig
+from drowse.steering.terms import Steering
 
 
 class UnsupportedContentError(ValueError, DrowseError):
@@ -81,7 +81,7 @@ def parse_request_steering(
     the server default; an explicit empty / whitespace string clears it; a
     non-empty string parses through the shared grammar.
     """
-    from drowse.core.steering_expr import parse_expr
+    from drowse.steering.grammar import parse_expr
 
     if expr is None:
         return None, False

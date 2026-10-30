@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from drowse.io import sae as sae_io
+from drowse.sae import sources as sae_io
 from tests.test_sae_runtime import _session
 
 

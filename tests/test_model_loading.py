@@ -1,4 +1,4 @@
-"""Tests for `drowse.core.model.load_model` attention-implementation selection.
+"""Tests for `drowse.model.loading.load_model` attention-implementation selection.
 
 These tests do not load real models — they intercept the AutoConfig and
 AutoModelForCausalLM calls (and the Hub commit lookup) and inspect the
@@ -17,8 +17,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from drowse.core import model as model_mod
-
+from drowse.model import loading as model_mod
 _resolve_model_revision = model_mod.resolve_model_revision
 _COMMIT = "0123456789abcdef0123456789abcdef01234567"
 

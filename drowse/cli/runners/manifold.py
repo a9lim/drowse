@@ -16,14 +16,14 @@ from drowse.cli.runners.shared import (
     _print_verb_menu, _resolve_manifold_folder, _resolve_manifold_ns_name,
     _drowse_error_exit, _split_manifold_ns_name,
 )
-from drowse.io.paths import VARIANT_SUFFIX_RE
+from drowse.base.paths import VARIANT_SUFFIX_RE
 
 if TYPE_CHECKING:
-    from drowse.core.profile import Profile
+    from drowse.geometry.profile import Profile
 
 
 def _run_manifold_bake(args: argparse.Namespace) -> None:
-    from drowse.io import bake as bake_mod
+    from drowse.fit import bake as bake_mod
     dst = bake_mod.merge_into_manifold(
         args.name, args.expression, model=args.model,
         force=args.force, strict=args.strict,
@@ -52,8 +52,8 @@ def _try_manifold_fit_noop_preflight(
     the folder's roles as given (a persona manifold is authored with them), so
     it leaves ``enforce_role`` off.
     """
-    from drowse.io.manifold_folder import ManifoldFolder, ManifoldFormatError
-    from drowse.io.manifolds import preflight_manifold_fit_noop
+    from drowse.store.manifold_folder import ManifoldFolder, ManifoldFormatError
+    from drowse.store.manifolds import preflight_manifold_fit_noop
 
     if not (folder / "manifold.json").exists():
         return None
@@ -92,7 +92,7 @@ def _require_model(args: argparse.Namespace) -> None:
 def _run_manifold_extract(args: argparse.Namespace) -> None:
     _require_model(args)
     import pathlib
-    from drowse.io.paths import manifold_dir, tensor_filename
+    from drowse.base.paths import manifold_dir, tensor_filename
 
     if len(args.concept) == 1:
         raw = args.concept[0]
@@ -139,7 +139,7 @@ def _run_manifold_extract(args: argparse.Namespace) -> None:
     # role / template identity, the token-exact render, and the checkpoint→
     # loaded fingerprint bridge) and falls through to the loaded session
     # whenever any component is unproven.
-    from drowse.core.naming import canonical_concept_name
+    from drowse.naming import canonical_concept_name
 
     ns = getattr(args, "namespace", None) or "local"
     tensor_name = tensor_filename(args.model, release=requested_release)
@@ -197,7 +197,7 @@ def _run_manifold_extract(args: argparse.Namespace) -> None:
     print(f"extracted {name} -> {final_path}")
 
 
-# Single source of truth lives in ``io.paths`` (owns the variant scheme).
+# Single source of truth lives in ``base.paths`` (owns the variant scheme).
 _VARIANT_SUFFIX_RE = VARIANT_SUFFIX_RE
 
 
@@ -205,7 +205,7 @@ def _split_variant_suffix(raw: str) -> tuple[str, str | None]:
     """Peel a trailing ``:<variant>`` off a selector string.
 
     Returns ``(name_part, variant_or_None)``. ``variant`` follows the suffix
-    grammar owned by :data:`drowse.io.paths.VARIANT_SUFFIX_RE`.
+    grammar owned by :data:`drowse.base.paths.VARIANT_SUFFIX_RE`.
     Non-variant colon usage (``tag:``, ``namespace:``, ``model:``) passes
     through unchanged with ``variant=None`` — those prefixes are caught by
     ``sel.parse`` later.
@@ -231,11 +231,11 @@ def _fold_manifold_to_profile_with_identity(
     scanned profiles by ``namespace/name`` rather than letting later matches
     overwrite earlier ones.
     """
-    from drowse.core.profile import Profile
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.core.capture import folded_directions
-    from drowse.io.paths import manifold_dir, manifolds_dir, tensor_filename
-    from drowse.io.selectors import AmbiguousSelectorError
+    from drowse.geometry.profile import Profile
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.fit.capture import folded_directions
+    from drowse.base.paths import manifold_dir, manifolds_dir, tensor_filename
+    from drowse.store.selectors import AmbiguousSelectorError
 
     if variant in (None, "raw"):
         release: str | None = None
@@ -287,10 +287,10 @@ def _fold_all_fitted_manifolds(
     for ``model_id`` that fold to a 2-node affine are included;
     ``exclude_identity`` drops the target by exact ``(namespace, name)``.
     """
-    from drowse.core.profile import Profile
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.core.capture import folded_directions
-    from drowse.io.paths import manifolds_dir, tensor_filename
+    from drowse.geometry.profile import Profile
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.fit.capture import folded_directions
+    from drowse.base.paths import manifolds_dir, tensor_filename
 
     out: dict[str, Profile] = {}
     root = manifolds_dir()
@@ -319,13 +319,13 @@ def _fold_all_fitted_manifolds(
 
 def _run_manifold_compare(args: argparse.Namespace) -> None:
     import json as _json
-    from drowse.io.selectors import parse as sel_parse, resolve
+    from drowse.store.selectors import parse as sel_parse, resolve
 
     # Compare is Mahalanobis-only: load the per-model whitener once up
     # front and share it across every ``cosine_similarity`` call below.
     # Failure is fatal — there is no Euclidean path, so a missing neutral
     # cache surfaces directly instead of degrading silently.
-    from drowse.core.mahalanobis import LayerWhitener, WhitenerError
+    from drowse.geometry.whitener import LayerWhitener, WhitenerError
 
     whitener: "Any | None"
     try:
@@ -520,7 +520,7 @@ def _run_manifold_compare(args: argparse.Namespace) -> None:
 
 def _run_manifold_why(args: argparse.Namespace) -> None:
     import json as _json
-    from drowse.io.selectors import AmbiguousSelectorError
+    from drowse.store.selectors import AmbiguousSelectorError
 
     # Peel off a ``:<variant>`` suffix before resolving the manifold.
     name_part, variant = _split_variant_suffix(args.concept)
@@ -573,7 +573,7 @@ def _print_why_histogram(
     layer_mags: list[tuple[int, float]],
 ) -> None:
     import shutil
-    from drowse.core.histogram import HIST_BUCKETS, bucketize
+    from drowse.cli.histogram import HIST_BUCKETS, bucketize
 
     print(f"{concept_name} ({total_layers} layers, {model_id}):")
     print("  LAYERS (mean ||baked|| per bucket):")
@@ -610,7 +610,7 @@ def _run_manifold_fit(args: argparse.Namespace) -> None:
     the same lock used to derive the cache key. Supplying overrides against an
     authored folder is an error (mirrors the server's 400).
     """
-    from drowse.io.manifolds import (
+    from drowse.store.manifolds import (
         ManifoldFolder, ManifoldFormatError, domain_label,
     )
 
@@ -766,12 +766,12 @@ def _run_manifold_generate(args: argparse.Namespace) -> None:
     generation leaves inspectable corpora) and lets the user review before
     paying for the fit.
     """
-    from drowse.io.manifolds import (
+    from drowse.store.manifolds import (
         ManifoldFormatError,
         append_discover_manifold_node,
         plan_discover_generation,
     )
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
 
     _require_model(args)
     if args.kind == "custom" and not getattr(args, "custom_system", None):
@@ -873,8 +873,8 @@ def _run_manifold_from_template(args: argparse.Namespace) -> None:
     stores the corpus + ``template_ref``. Fit it next with
     ``drowse manifold fit <name> -m MODEL``.
     """
-    from drowse.io.manifolds import ManifoldFormatError, create_manifold_from_template
-    from drowse.io.templates import (
+    from drowse.store.manifolds import ManifoldFormatError, create_manifold_from_template
+    from drowse.store.templates import (
         AmbiguousTemplateError, TemplateNotFoundError, resolve_template,
     )
 
@@ -920,7 +920,7 @@ def _run_manifold_from_template(args: argparse.Namespace) -> None:
 
 
 def _run_manifold_merge(args: argparse.Namespace) -> None:
-    from drowse.io.manifolds import (
+    from drowse.store.manifolds import (
         ManifoldFormatError, merge_discover_manifolds,
     )
 
@@ -970,16 +970,16 @@ def _run_manifold_transfer(args: argparse.Namespace) -> None:
     Resolve the manifold folder, fit (or load) the per-layer Procrustes
     alignment between the source and target models' cached neutral activations
     — the part that needs both models loaded — then hand the prebuilt alignment
-    dict to :func:`drowse.io.manifolds.transfer_manifold`, which is pure-io and
+    dict to :func:`drowse.store.manifolds.transfer_manifold`, which is pure-io and
     only *applies* the map.  Steering vectors transfer the same way (a vector is
     the K=2 case of a flat ``pca`` manifold).
     """
     import json as _json
 
-    from drowse.io.manifolds import (
+    from drowse.store.manifolds import (
         ManifoldFormatError, preflight_transfer_manifold, transfer_manifold,
     )
-    from drowse.io.paths import encode_release_id, manifold_dir
+    from drowse.base.paths import encode_release_id, manifold_dir
 
     ns, name = _resolve_manifold_ns_name(args.name)
     folder = manifold_dir(ns, name)
@@ -1007,7 +1007,7 @@ def _run_manifold_transfer(args: argparse.Namespace) -> None:
     # activations already resident for Procrustes; an exact model-free repeat
     # uses the offline cache loader. Either path reads the target neutral
     # artifact once for this operation.
-    from drowse.core.mahalanobis import WhitenerError
+    from drowse.geometry.whitener import WhitenerError
 
     try:
         (

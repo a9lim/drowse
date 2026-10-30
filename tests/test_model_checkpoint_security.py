@@ -9,7 +9,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
-from drowse.core import model as model_mod
+from drowse.model import loading as model_mod
 from tests.test_model_loading import _remap_to_layout, _tiny_text_config
 
 

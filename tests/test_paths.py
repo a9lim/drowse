@@ -2,8 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from drowse.io import paths
-
+from drowse.base import paths
 GOOGLE_2B = "_zZ29vZ2xlL2dlbW1hLTItMmItaXQ"
 GOOGLE_3_4B = "_zZ29vZ2xlL2dlbW1hLTMtNGItaXQ"
 QWEN_2_5 = "_zUXdlbi9Rd2VuMi41LTdCLUluc3RydWN0"

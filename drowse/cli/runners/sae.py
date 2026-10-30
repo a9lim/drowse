@@ -40,8 +40,8 @@ def _load_sae_training_corpus(args: argparse.Namespace) -> tuple[list[str], str]
             print("sae train: corpus has no non-empty documents", file=sys.stderr)
             sys.exit(2)
         return docs, f"file:{path.name}"
-    from drowse.core.jlens import JacobianLensError
-    from drowse.io.lens import DEFAULT_LENS_CORPUS, stream_lens_corpus
+    from drowse.lens.jlens import JacobianLensError
+    from drowse.lens.store import DEFAULT_LENS_CORPUS, stream_lens_corpus
 
     print(f"Streaming {target_docs} documents from {DEFAULT_LENS_CORPUS}...")
     try:
@@ -53,7 +53,7 @@ def _load_sae_training_corpus(args: argparse.Namespace) -> tuple[list[str], str]
 
 def _run_sae_train(args: argparse.Namespace) -> None:
     import json
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     if args.learning_rate <= 0 or args.l1 < 0 or args.dead_threshold < 0:
         print("sae train: learning-rate must be > 0 and sparsity values >= 0", file=sys.stderr)
@@ -90,10 +90,10 @@ def _model_shape_from_config(model_id: str) -> tuple[int, int]:
     """``(n_layers, hidden_dim)`` for ``model_id`` without loading weights.
 
     The CLI-local name kept as this module's monkeypatch seam; the shape rule
-    itself lives once in :func:`drowse.core.model.config_model_shape`, shared
+    itself lives once in :func:`drowse.model.loading.config_model_shape`, shared
     with the manifold fit's weight-free no-op preflight.
     """
-    from drowse.core.model import config_model_shape
+    from drowse.model.loading import config_model_shape
 
     return config_model_shape(model_id)
 
@@ -109,10 +109,10 @@ def _run_sae_fetch(args: argparse.Namespace) -> None:
     hidden size — so the transformer is never instantiated.
     """
     import json
-    from drowse.core.sae import (
+    from drowse.sae.backend import (
         load_sae_backend, select_runtime_layer, validate_residual_width,
     )
-    from drowse.io.sae import save_sae_metadata
+    from drowse.sae.sources import save_sae_metadata
 
     if not args.source.startswith("saelens:"):
         print("sae fetch: source must be saelens:RELEASE", file=sys.stderr)
@@ -172,7 +172,7 @@ def _run_sae_fetch(args: argparse.Namespace) -> None:
 
 def _run_sae_ls(args: argparse.Namespace) -> None:
     import json
-    from drowse.io.sae import list_sae_sources
+    from drowse.sae.sources import list_sae_sources
 
     rows = list_sae_sources(args.model)
     if args.json_output:
@@ -189,7 +189,7 @@ def _run_sae_ls(args: argparse.Namespace) -> None:
 def _resolve_active_sae_source(model: str, source: str | None) -> str | None:
     if source is not None:
         return source
-    from drowse.io.sae import load_active_sae_source
+    from drowse.sae.sources import load_active_sae_source
 
     active = load_active_sae_source(model)
     if active is None:
@@ -203,8 +203,8 @@ def _resolve_active_sae_source(model: str, source: str | None) -> str | None:
 
 def _run_sae_show(args: argparse.Namespace) -> None:
     import json
-    from drowse.io.sae import load_active_sae_source, load_sae_metadata
-    from drowse.io.sae_artifacts import load_local_sae_manifest
+    from drowse.sae.sources import load_active_sae_source, load_sae_metadata
+    from drowse.sae.store import load_local_sae_manifest
 
     source = _resolve_active_sae_source(args.model, args.source)
     if source is None:
@@ -248,15 +248,15 @@ def _run_sae_show(args: argparse.Namespace) -> None:
 
 
 def _run_sae_use(args: argparse.Namespace) -> None:
-    from drowse.io.sae import use_sae_source
+    from drowse.sae.sources import use_sae_source
 
     use_sae_source(args.model, args.source)
     print(f"Active SAE for {args.model}: {args.source}")
 
 
 def _run_sae_rm(args: argparse.Namespace) -> None:
-    from drowse.io.sae import remove_sae_binding
-    from drowse.io.sae_artifacts import remove_local_sae
+    from drowse.sae.sources import remove_sae_binding
+    from drowse.sae.store import remove_local_sae
 
     source = _resolve_active_sae_source(args.model, args.source)
     if source is None:

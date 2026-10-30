@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
 SINGLE_SESSION_ID = "default"
 
@@ -51,7 +51,7 @@ def extraction_error_frame(exc: Exception) -> dict[str, Any] | None:
     """SSE ``error``-frame body for a typed extraction-pipeline failure.
 
     ``POST /extract`` and ``POST /manifolds/{ns}/{name}/fit`` drive the one
-    :class:`~drowse.core.extraction.ManifoldExtractionPipeline`, so they share
+    :class:`~drowse.fit.pipeline.ManifoldExtractionPipeline`, so they share
     its safe-to-surface failures: the two retryable conflicts (another run
     holding the engine; the folder re-authored under an in-flight fit) and an
     authoring-grade ``ValueError`` — the RBF poisedness failure among them,
@@ -59,8 +59,8 @@ def extraction_error_frame(exc: Exception) -> dict[str, Any] | None:
     hint.  ``None`` for anything else, which routes the exception to the
     shared catch-all scrubber.
     """
-    from drowse.core.extraction import ManifoldAuthoringChangedError
-    from drowse.core.session import ConcurrentExtractionError
+    from drowse.fit.pipeline import ManifoldAuthoringChangedError
+    from drowse.session.session import ConcurrentExtractionError
 
     if isinstance(exc, (ConcurrentExtractionError, ManifoldAuthoringChangedError)):
         return {"message": str(exc), "code": "Conflict"}
@@ -83,8 +83,8 @@ def extraction_json_errors() -> tuple[tuple[Any, int], ...]:
     is a ``ValueError``, so the ordered table lands each on the status its SSE
     counterpart reports.
     """
-    from drowse.core.extraction import ManifoldAuthoringChangedError
-    from drowse.core.session import ConcurrentExtractionError
+    from drowse.fit.pipeline import ManifoldAuthoringChangedError
+    from drowse.session.session import ConcurrentExtractionError
 
     return (
         ((ConcurrentExtractionError, ManifoldAuthoringChangedError), 409),

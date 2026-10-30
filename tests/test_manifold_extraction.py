@@ -1,7 +1,7 @@
 """ManifoldExtractionPipeline tests — CPU only, synthetic encoder.
 
 Mirrors the stub-encoder pattern in :mod:`tests.test_dim_extraction`:
-monkeypatch :func:`drowse.core.capture._encode_and_capture_all` so no
+monkeypatch :func:`drowse.fit.capture._encode_and_capture_all` so no
 real model is needed.
 """
 from __future__ import annotations
@@ -18,12 +18,12 @@ from typing import Any, cast
 import pytest
 import torch
 
-from drowse.core import capture as V
-from drowse.core.events import EventBus, ManifoldExtracted
-from drowse.core.extraction import ManifoldExtractionPipeline
-from drowse.core.sae import MockSaeBackend
-from drowse.io.manifolds import MANIFOLD_FORMAT_VERSION, ManifoldFolder
-from drowse.io.paths import sidecar_filename, tensor_filename
+from drowse.fit import capture as V
+from drowse.events import EventBus, ManifoldExtracted
+from drowse.fit.pipeline import ManifoldExtractionPipeline
+from drowse.sae.backend import MockSaeBackend
+from drowse.store.manifolds import MANIFOLD_FORMAT_VERSION, ManifoldFolder
+from drowse.base.paths import sidecar_filename, tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
 
 _LABELS = ["calm", "uneasy", "afraid", "frantic", "numb"]
@@ -202,8 +202,8 @@ def test_fit_produces_manifold(tmp_path: Path) -> None:
 
 
 def test_templated_fit_rematerializes_value_and_assistant_edits() -> None:
-    from drowse.io.manifolds import create_manifold_from_template
-    from drowse.io.templates import create_template_folder
+    from drowse.store.manifolds import create_manifold_from_template
+    from drowse.store.templates import create_template_folder
 
     create_template_folder(
         "local", "weekday", slot="[DAY]",
@@ -239,9 +239,9 @@ def test_templated_fit_rematerializes_value_and_assistant_edits() -> None:
 def test_template_mutation_between_resolve_and_hash_cannot_publish_stale_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core.extraction import ManifoldAuthoringChangedError
-    from drowse.io.manifolds import create_manifold_from_template
-    from drowse.io.templates import TemplateFolder, create_template_folder
+    from drowse.fit.pipeline import ManifoldAuthoringChangedError
+    from drowse.store.manifolds import create_manifold_from_template
+    from drowse.store.templates import TemplateFolder, create_template_folder
 
     create_template_folder(
         "local", "racy-template", slot="[X]", values=["A", "B", "C"],
@@ -284,8 +284,8 @@ def test_fit_can_restrict_transformer_layers(tmp_path: Path) -> None:
     manifold = pipe.fit(folder, layer_indices=[1, 3])
     assert sorted(manifold.layers) == [1, 3]
 
-    from drowse.io.manifolds import ManifoldSidecar
-    from drowse.io.paths import tensor_filename
+    from drowse.store.manifolds import ManifoldSidecar
+    from drowse.base.paths import tensor_filename
 
     sidecar = ManifoldSidecar.load(
         (folder / tensor_filename("stub-model")).with_suffix(".json")
@@ -327,8 +327,8 @@ def test_full_capture_cache_serves_subset_without_forward(
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
     pipe.fit(folder)
 
-    import drowse.core.extraction as extraction_module
-    from drowse.io.manifold_tensors import ActivationRowStore
+    import drowse.fit.pipeline as extraction_module
+    from drowse.store.manifold_tensors import ActivationRowStore
 
     loaded_scopes: list[list[int] | None] = []
     loaded_centroid_shards: list[str] = []
@@ -367,8 +367,7 @@ def test_shared_capture_stem_lock_serializes_independent_folders(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The per-model capture is one transaction across manifold folders."""
-    from drowse.io import atomic
-
+    from drowse.base import atomic
     folder_a = _author_manifold(tmp_path / "a")
     folder_b = _author_manifold(tmp_path / "b")
     handle = _Handle()
@@ -437,7 +436,7 @@ def test_shared_capture_stem_lock_serializes_independent_folders(
 def test_cold_fit_prepares_token_identity_once_across_capture_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.core.extraction as extraction_module
+    import drowse.fit.pipeline as extraction_module
 
     folder = _author_manifold(tmp_path)
     real_prepare = extraction_module.prepare_manifold_capture_identity
@@ -463,7 +462,7 @@ def test_fit_overrides_share_manifest_transaction_without_lost_update(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Conflicting override requests serialize through cache-key derivation."""
-    from drowse.io.manifold_authoring import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     folder = create_discover_manifold_folder(
@@ -586,10 +585,10 @@ def test_target_fit_lock_name_is_bounded_for_long_valid_inputs(
 def test_reader_stays_available_and_authoring_cas_rejects_stale_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.core.manifold as manifold_module
-    from drowse.core.extraction import ManifoldAuthoringChangedError
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.io.paths import tensor_filename
+    import drowse.geometry.manifold as manifold_module
+    from drowse.fit.pipeline import ManifoldAuthoringChangedError
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
@@ -633,7 +632,7 @@ def test_reader_stays_available_and_authoring_cas_rejects_stale_fit(
 def test_interrupted_pair_publish_is_retryable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.io.manifold_tensors as manifold_module
+    import drowse.store.manifold_tensors as manifold_module
 
     folder = _author_manifold(tmp_path)
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
@@ -666,9 +665,9 @@ def test_interrupted_pair_publish_is_retryable(
 def test_interrupted_existing_pair_replacement_self_repairs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.io.manifold_tensors as manifold_module
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.io.paths import tensor_filename
+    import drowse.store.manifold_tensors as manifold_module
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
@@ -698,8 +697,8 @@ def test_interrupted_existing_pair_replacement_self_repairs(
 def test_pair_committed_before_manifest_failure_self_repairs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.io.paths import tensor_filename
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
@@ -727,14 +726,14 @@ def test_pair_committed_before_manifest_failure_self_repairs(
 def test_clear_invalidates_only_selected_inflight_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core.extraction import (
+    from drowse.fit.pipeline import (
         ManifoldAuthoringChangedError,
         _authoring_snapshot_locked,
         _publish_fit_if_current,
     )
-    from drowse.io import manifold_lifecycle
-    from drowse.io.manifold_folder import _locked_manifest
-    from drowse.io.paths import tensor_filename
+    from drowse.store import manifold_lifecycle
+    from drowse.store.manifold_folder import _locked_manifest
+    from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
     handle_a = _Handle()
@@ -772,13 +771,13 @@ def test_clear_invalidates_only_selected_inflight_target(
 def test_removed_and_recreated_folder_rejects_stale_publication(
     tmp_path: Path,
 ) -> None:
-    from drowse.core.extraction import (
+    from drowse.fit.pipeline import (
         ManifoldAuthoringChangedError,
         _authoring_snapshot_locked,
         _publish_fit_if_current,
     )
-    from drowse.io.manifold_folder import _locked_manifest
-    from drowse.io.paths import tensor_filename
+    from drowse.store.manifold_folder import _locked_manifest
+    from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
     fitted = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
@@ -803,7 +802,7 @@ def test_disjoint_layer_top_up_preserves_existing_row_cache(
 ) -> None:
     """Replacing the row safetensors carries forward unselected layers."""
     from safetensors import safe_open
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     folder_a = _author_manifold(tmp_path / "a")
     folder_b = _author_manifold(tmp_path / "b")
@@ -811,8 +810,7 @@ def test_disjoint_layer_top_up_preserves_existing_row_cache(
     ManifoldExtractionPipeline(handle, EventBus()).fit(
         folder_a, layer_indices=[0],
     )
-    from drowse.core import extraction as extraction_module
-
+    from drowse.fit import pipeline as extraction_module
     capture_dir = model_dir("stub-model") / "manifold_capture"
     layer_zero_row, = capture_dir.glob("*.rows.layer_0.safetensors")
     layer_zero_before = layer_zero_row.stat()
@@ -870,9 +868,9 @@ def test_capture_generation_pointer_failure_recovers_without_recapture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A complete crash-left top-up is adopted over the prior good pointer."""
-    from drowse.core import extraction as extraction_module
-    from drowse.io import atomic
-    from drowse.io.paths import model_dir
+    from drowse.fit import pipeline as extraction_module
+    from drowse.base import atomic
+    from drowse.base.paths import model_dir
 
     folder_a = _author_manifold(tmp_path / "a")
     folder_b = _author_manifold(tmp_path / "b")
@@ -948,8 +946,8 @@ def test_capture_post_pointer_exception_is_cleaned_on_fitted_cache_hit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A live pointer plus old-parent journal is recognized as committed."""
-    from drowse.io import atomic
-    from drowse.io.paths import model_dir
+    from drowse.base import atomic
+    from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
     handle = _Handle()
@@ -1001,9 +999,9 @@ def test_capture_generation_fsyncs_before_pointer_and_gc(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Payload entries and recovery journal are durable before pointer GC."""
-    from drowse.core import extraction
-    from drowse.io import atomic
-    from drowse.io.paths import model_dir
+    from drowse.fit import pipeline as extraction
+    from drowse.base import atomic
+    from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
     capture_dir = model_dir("stub-model") / "manifold_capture"
@@ -1047,8 +1045,7 @@ def test_capture_generation_fsyncs_before_pointer_and_gc(
 def test_capture_shard_fsync_precedes_atomic_replace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core import extraction as extraction_module
-
+    from drowse.fit import pipeline as extraction_module
     events: list[str] = []
     real_fsync = extraction_module.os.fsync
     real_replace = extraction_module.os.replace
@@ -1073,8 +1070,8 @@ def test_capture_shard_fsync_precedes_atomic_replace(
 def test_concurrent_deferred_row_topups_merge_latest_pointer(
     tmp_path: Path,
 ) -> None:
-    from drowse.core.extraction import _publish_deferred_row_shards
-    from drowse.io.manifold_tensors import ActivationRowStore
+    from drowse.fit.pipeline import _publish_deferred_row_shards
+    from drowse.store.manifold_tensors import ActivationRowStore
 
     stem = "c" * 64
     meta_path = tmp_path / f"{stem}.json"
@@ -1131,8 +1128,8 @@ def test_concurrent_deferred_row_topups_merge_latest_pointer(
 def test_row_cache_uses_layer_digests_without_container_rehash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import integrity
-    from drowse.io.paths import model_dir
+    from drowse.base import integrity
+    from drowse.base.paths import model_dir
 
     real_hash_file = integrity.hash_file
     hashed: list[Path] = []
@@ -1171,8 +1168,8 @@ def test_row_cache_uses_layer_digests_without_container_rehash(
 def test_cold_row_publication_traverses_each_payload_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core import extraction as extraction_module
-    from drowse.io.paths import model_dir
+    from drowse.fit import pipeline as extraction_module
+    from drowse.base.paths import model_dir
 
     real_chunks = extraction_module._iter_tensor_byte_chunks
     traversals: list[int] = []
@@ -1201,8 +1198,8 @@ def test_deferred_row_publication_traverses_each_payload_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from safetensors.torch import load_file
-    from drowse.core import extraction as extraction_module
-    from drowse.io.manifold_tensors import ActivationRowStore
+    from drowse.fit import pipeline as extraction_module
+    from drowse.store.manifold_tensors import ActivationRowStore
 
     stem = "d" * 64
     meta_path = tmp_path / f"{stem}.json"
@@ -1260,7 +1257,7 @@ def test_selected_row_digest_tamper_recaptures_that_layer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from safetensors.torch import load_file, save_file
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
@@ -1340,8 +1337,8 @@ def test_capture_does_not_retry_a_known_bad_batch_width(
 
 def test_fit_returns_node_roles_without_reload(tmp_path: Path) -> None:
     from types import SimpleNamespace
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.io.paths import tensor_filename
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
     meta = json.loads((folder / "manifold.json").read_text())
@@ -1428,7 +1425,7 @@ def test_fitted_cache_hit_ignores_capture_journal_scan_error(
 def test_missing_whitener_fails_before_manifold_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core.mahalanobis import WhitenerError
+    from drowse.geometry.whitener import WhitenerError
 
     folder = _author_manifold(tmp_path)
     handle = _Handle()
@@ -1465,7 +1462,7 @@ def test_fitted_tensor_hit_does_not_resolve_whitener(
 def test_fit_rebuilds_tampered_requested_tensor_from_capture_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.paths import tensor_filename
+    from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
@@ -1519,7 +1516,7 @@ def test_capture_cache_identity_includes_node_partition(
 def test_capture_cache_prunes_old_groups_but_keeps_current(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core.extraction import _prune_manifold_capture_cache
+    from drowse.fit.pipeline import _prune_manifold_capture_cache
 
     old_stem = "a" * 64
     keep_stem = "b" * 64
@@ -1537,9 +1534,8 @@ def test_capture_cache_prune_waits_for_active_victim_transaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Eviction never deletes a foreign stem while its fit lock is held."""
-    from drowse.core.extraction import _prune_manifold_capture_cache
-    from drowse.io import atomic
-
+    from drowse.fit.pipeline import _prune_manifold_capture_cache
+    from drowse.base import atomic
     victim_stem = "a" * 64
     keep_stem = "b" * 64
     victim = tmp_path / f"{victim_stem}.rows.layer_0.safetensors"
@@ -1584,11 +1580,11 @@ def test_capture_cache_prune_waits_for_active_victim_transaction(
 def test_capture_process_lease_survives_payload_publish_and_blocks_prune(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core.extraction import (
+    from drowse.fit.pipeline import (
         _capture_group_paths,
         _prune_manifold_capture_cache,
     )
-    from drowse.io.atomic import (
+    from drowse.base.atomic import (
         artifact_has_live_lease,
         artifact_process_lease,
     )
@@ -1616,8 +1612,7 @@ def test_capture_process_lease_survives_payload_publish_and_blocks_prune(
 def test_capture_lease_enter_failure_releases_transaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import atomic
-
+    from drowse.base import atomic
     folder = _author_manifold(tmp_path)
     real_lock_class = atomic.ReleasableArtifactLock
     paths: list[Path] = []
@@ -1652,8 +1647,7 @@ def test_capture_lease_enter_failure_releases_transaction(
 def test_capture_lease_marker_removed_while_transaction_held(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import atomic
-
+    from drowse.base import atomic
     folder = _author_manifold(tmp_path)
     real_lock_class = atomic.ReleasableArtifactLock
     active: list[Any] = []
@@ -1691,7 +1685,7 @@ def test_capture_lease_marker_removed_while_transaction_held(
 def test_tampered_activation_cache_recaptures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
@@ -1747,7 +1741,7 @@ def test_fit_force_bypasses_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_forced_subset_preserves_unselected_capture_shards(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
     pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
@@ -1896,7 +1890,7 @@ def test_curved_fit_releases_centroid_rosters_before_covariance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The retained-row pass must not overlap the K x D centroid rosters."""
-    import drowse.core.manifold as manifold_module
+    import drowse.geometry.manifold as manifold_module
 
     folder = _author_manifold(tmp_path)
     real_fit = manifold_module.fit_layer_subspace
@@ -1945,7 +1939,7 @@ def test_fit_sae_cache_hit_resolves_identity_without_loading_weights(
     )
     pipe.fit(folder, sae=sae)
 
-    import drowse.core.sae as sae_module
+    import drowse.sae.backend as sae_module
 
     resolved = 0
 
@@ -1981,7 +1975,7 @@ def test_default_sae_fit_does_not_accept_partial_layer_artifact(
     )
     pipe.fit(folder, sae=partial_backend, layer_indices=[1, 3])
 
-    import drowse.core.sae as sae_module
+    import drowse.sae.backend as sae_module
 
     monkeypatch.setattr(
         sae_module, "load_sae_backend",
@@ -2037,7 +2031,7 @@ def test_fit_sae_no_coverage_raises_before_pooling(
     """An SAE covering none of the model's layers raises ``SaeCoverageError``
     *before* the per-node centroid pooling loop — fail-fast on the
     ``ManifoldExtractionPipeline`` ordering contract."""
-    from drowse.core.errors import SaeCoverageError
+    from drowse.errors import SaeCoverageError
 
     folder = _author_manifold(tmp_path)
     # SAE layers disjoint from [0, _N_LAYERS) — zero coverage.
@@ -2047,8 +2041,7 @@ def test_fit_sae_no_coverage_raises_before_pooling(
     )
 
     # Pooling must never run on the no-coverage path.
-    from drowse.core import manifold as M
-
+    from drowse.geometry import manifold as M
     def _explode(*_a: Any, **_k: Any) -> None:
         raise AssertionError(
             "compute_manifold_node_stats called before SAE-coverage check"
@@ -2061,7 +2054,7 @@ def test_fit_sae_no_coverage_raises_before_pooling(
 
 
 def test_fit_natural_manifold(tmp_path: Path) -> None:
-    from drowse.core.manifold import BoxDomain
+    from drowse.geometry.manifold import BoxDomain
     folder = _author_manifold(tmp_path, periodic=False)
     manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
     assert manifold.domain.intrinsic_dim == 1
@@ -2173,7 +2166,7 @@ def test_discover_pca_produces_custom_domain(tmp_path: Path) -> None:
     manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
 
     # CustomDomain with identity embedding — intrinsic_dim == embed_dim.
-    from drowse.core.manifold import CustomDomain
+    from drowse.geometry.manifold import CustomDomain
     assert isinstance(manifold.domain, CustomDomain)
     assert manifold.domain.intrinsic_dim == manifold.domain.embed_dim
     assert 1 <= manifold.domain.intrinsic_dim <= 4
@@ -2222,7 +2215,7 @@ def test_discover_pca_layout_is_neutral_centered(tmp_path: Path) -> None:
     than one toward the centroid.  Re-anchoring is a pure translation, so node-
     exact steering is unchanged: a coord-form push at a node's layout coords
     still reproduces that node's label-form push, layer for layer."""
-    from drowse.core.session import _affine_manifold_push
+    from drowse.session.session import _affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, fit_mode="pca",
@@ -2290,7 +2283,7 @@ def test_discover_cache_hit_skips_forward_passes(
     # never reach a model forward.
     def _explode(*_a: Any, **_k: Any) -> None:
         raise AssertionError("compute_manifold_node_stats called on cache hit")
-    from drowse.core import manifold as M
+    from drowse.geometry import manifold as M
     monkeypatch.setattr(M, "compute_manifold_node_stats", _explode)
 
     manifold = ManifoldExtractionPipeline(handle, EventBus()).fit(folder)
@@ -2344,8 +2337,8 @@ def test_discover_cache_invalidates_on_fit_mode_change(tmp_path: Path) -> None:
 
 def test_discover_round_trip_through_load_manifold(tmp_path: Path) -> None:
     """A fitted discover manifold loads back with the same domain + coords."""
-    from drowse.core.manifold import CustomDomain
-    from drowse.io.manifold_tensors import load_manifold
+    from drowse.geometry.manifold import CustomDomain
+    from drowse.store.manifold_tensors import load_manifold
     folder = _discover_folder(
         tmp_path, fit_mode="pca", hyperparams={"max_dim": 4},
     )
@@ -2374,7 +2367,7 @@ def test_discover_subspace_inject_translates_by_target(tmp_path: Path) -> None:
     reduced coords land at exactly ``h_in + target``; the affine path is
     intentionally uncapped.
     """
-    from drowse.core.manifold import subspace_inject
+    from drowse.geometry.manifold import subspace_inject
     # Seed the global RNG before the fit: the stub encoder perturbs each
     # layer's centroid with a generator-less ``torch.randn``, so without
     # this the fitted subspace jitters with test order.
@@ -2449,7 +2442,7 @@ def test_two_node_pca_reads_as_affine_pole_push(tmp_path: Path) -> None:
     toward the ``angry`` pole and toward the ``calm`` pole read
     opposite-signed coords (the difference-of-means contrast).
     """
-    from drowse.core.session import _affine_manifold_push
+    from drowse.session.session import _affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, name="anger", fit_mode="pca",
@@ -2477,7 +2470,7 @@ def test_affine_push_coord_form_equals_label_at_node(tmp_path: Path) -> None:
     (the cardinal RBF weights are ``e_idx`` at node ``idx``).  This is the
     equivalence that makes ``personas%<pirate's coords>`` ≡ ``personas%pirate``.
     """
-    from drowse.core.session import _affine_manifold_push
+    from drowse.session.session import _affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, name="trio", fit_mode="pca", labels=["a", "b", "c"],
@@ -2501,8 +2494,8 @@ def test_affine_push_coord_form_interpolates_between_nodes(tmp_path: Path) -> No
     targets — distinct from either endpoint, and the layout's two nearest nodes
     carry the dominant cardinal weight.
     """
-    from drowse.core.manifold import rbf_cardinal_weights
-    from drowse.core.session import _affine_manifold_push
+    from drowse.geometry.manifold import rbf_cardinal_weights
+    from drowse.session.session import _affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, name="trio2", fit_mode="pca", labels=["a", "b", "c"],
@@ -2529,8 +2522,8 @@ def test_affine_push_coord_form_arity_mismatch_raises(tmp_path: Path) -> None:
     ``ManifoldArityError`` (a ``SteeringCompositionError``), matching the
     curved path.
     """
-    from drowse.core.errors import ManifoldArityError, SteeringCompositionError
-    from drowse.core.session import _affine_manifold_push
+    from drowse.errors import ManifoldArityError, SteeringCompositionError
+    from drowse.session.session import _affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, name="trio3", fit_mode="pca", labels=["a", "b", "c"],
@@ -2616,7 +2609,7 @@ def test_auto_detects_circle_as_periodic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``auto`` on loop-structured centroids resolves a periodic BoxDomain."""
-    from drowse.core.manifold import BoxDomain
+    from drowse.geometry.manifold import BoxDomain
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _circle_encoder_batch)
     folder = _discover_folder(
         tmp_path, name="autocircle", fit_mode="auto",
@@ -2645,7 +2638,7 @@ def test_auto_detects_circle_as_periodic(
 def test_auto_curved_partial_topup_reuses_durable_rows_without_recapture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     folder = _discover_folder(
         tmp_path, name="auto-topup", fit_mode="auto",
@@ -2677,7 +2670,7 @@ def test_auto_curved_partial_topup_reuses_durable_rows_without_recapture(
 
 
 def _fold_test_direction(name: str, direction: torch.Tensor):
-    from drowse.core.capture import fold_directions_to_subspace
+    from drowse.fit.capture import fold_directions_to_subspace
 
     whitener = synthetic_whitener([0], int(direction.numel()))
     return fold_directions_to_subspace(
@@ -2691,7 +2684,7 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
 ) -> None:
     from types import SimpleNamespace
 
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     old = _fold_test_direction("mood", torch.tensor([1.0, 0.0]))
     other = _fold_test_direction("mood", torch.tensor([0.0, 1.0]))
     new = _fold_test_direction("mood", torch.tensor([0.0, 2.0]))
@@ -2738,7 +2731,7 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
     attached = session._monitor.probes["mood-probe"]
     assert attached.manifold is live
     assert attached.top_n == 4
-    from drowse.core.capture import folded_directions
+    from drowse.fit.capture import folded_directions
 
     assert torch.allclose(
         session._profiles["local/mood"][0], folded_directions(new)[0],
@@ -2753,7 +2746,7 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
 ) -> None:
     from types import SimpleNamespace
 
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     old = _fold_test_direction("mood", torch.tensor([1.0, 0.0]))
     other = _fold_test_direction("mood", torch.tensor([0.0, 1.0]))
 
@@ -2823,7 +2816,7 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
 def test_override_validation_failure_preserves_unchanged_consumers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     old = _fold_test_direction("mood", torch.tensor([1.0, 0.0]))
 
     class _Monitor:
@@ -2877,8 +2870,7 @@ def test_dls_false_keeps_every_axis(
     gates it by passing ``None`` for the baseline — ``compute_dls_axes``'s own
     documented "disabled" contract.
     """
-    from drowse.core import capture as C
-
+    from drowse.fit import capture as C
     seen: list[object] = []
     real = C.compute_dls_axes
 
@@ -2913,8 +2905,7 @@ def test_dls_true_passes_the_real_baseline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The default still runs straddle-pruning against the per-model means."""
-    from drowse.core import capture as C
-
+    from drowse.fit import capture as C
     seen: list[object] = []
     real = C.compute_dls_axes
 
@@ -2946,8 +2937,8 @@ def test_session_fit_forwards_its_dls_setting(
     construction, and this is the hop that has to carry it into the fit that
     consumes it.
     """
-    import drowse.core.extraction as extraction_mod
-    from drowse.core.session import DrowseSession
+    import drowse.fit.pipeline as extraction_mod
+    from drowse.session.session import DrowseSession
 
     fit_kwargs: dict[str, Any] = {}
     fitted = object()

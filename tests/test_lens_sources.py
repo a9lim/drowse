@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.io.atomic import write_json_atomic
+from drowse.base.atomic import write_json_atomic
 
 
 @pytest.fixture(autouse=True)
@@ -19,8 +19,8 @@ def test_external_lens_stays_in_provider_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import lens_sources as sources
-    from drowse.io.lens import load_lens, load_lens_sidecar
+    from drowse.lens import sources
+    from drowse.lens.store import load_lens, load_lens_sidecar
 
     provider = tmp_path / "hf-cache"
     provider.mkdir()
@@ -81,9 +81,9 @@ def test_external_lens_stays_in_provider_cache(
 
 
 def test_local_lens_layout_and_source_selection() -> None:
-    from drowse.core.jlens import JacobianLens
-    from drowse.io.lens import lens_paths, save_lens
-    from drowse.io.lens_sources import list_lens_sources, load_active_lens_source
+    from drowse.lens.jlens import JacobianLens
+    from drowse.lens.store import lens_paths, save_lens
+    from drowse.lens.sources import list_lens_sources, load_active_lens_source
 
     save_lens(
         JacobianLens({0: torch.eye(3)}, n_prompts=2, d_model=3),
@@ -107,7 +107,7 @@ def test_local_lens_layout_and_source_selection() -> None:
 
 
 def test_lens_source_default_preference_order() -> None:
-    from drowse.io.lens_sources import lens_source_preference_key
+    from drowse.lens.sources import lens_source_preference_key
 
     shuffled = [
         "local:default",
@@ -126,9 +126,9 @@ def test_lens_source_default_preference_order() -> None:
 
 
 def test_lens_registry_requires_an_active_source() -> None:
-    from drowse.core.jlens import JacobianLens
-    from drowse.io.lens import load_lens, save_lens
-    from drowse.io.lens_sources import lens_active_path
+    from drowse.lens.jlens import JacobianLens
+    from drowse.lens.store import load_lens, save_lens
+    from drowse.lens.sources import lens_active_path
 
     save_lens(
         JacobianLens({0: torch.eye(3)}, n_prompts=2, d_model=3),
@@ -156,8 +156,7 @@ def test_neuronpedia_fetch_pins_the_resolved_model_commit(
     import transformers
     from huggingface_hub import ResolvedRevision
 
-    from drowse.io import lens_sources as sources
-
+    from drowse.lens import sources
     commit = "0123456789abcdef0123456789abcdef01234567"
 
     class _Api:
@@ -215,7 +214,7 @@ def test_neuronpedia_fetch_pins_the_resolved_model_commit(
 
 
 def test_external_lens_identity_binds_model_commit_and_shape() -> None:
-    from drowse.core.session import _jlens_matches_loaded_model
+    from drowse.session.session import _jlens_matches_loaded_model
 
     model = SimpleNamespace(
         config=SimpleNamespace(
@@ -276,8 +275,7 @@ def _mock_workspace_hub(
     *,
     files: list[str] | None = None,
 ) -> Path:
-    from drowse.io import lens_sources as sources
-
+    from drowse.lens import sources
     checkpoint = tmp_path / "workspace-lens.pt"
     torch.save(payload, checkpoint)
     api = SimpleNamespace(
@@ -302,8 +300,8 @@ def test_workspace_lens_fetch_binds_loads_and_switches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import lens_sources as sources
-    from drowse.io.lens import load_lens, load_lens_sidecar
+    from drowse.lens import sources
+    from drowse.lens.store import load_lens, load_lens_sidecar
 
     checkpoint = _mock_workspace_hub(
         monkeypatch, tmp_path, _workspace_payload("relp"),
@@ -351,8 +349,7 @@ def test_workspace_fetch_rejects_arm_estimator_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import lens_sources as sources
-
+    from drowse.lens import sources
     _mock_workspace_hub(monkeypatch, tmp_path, _workspace_payload("standard"))
     with pytest.raises(ValueError, match="estimator"):
         sources.fetch_workspace_lens("org/model", "workspace-r")
@@ -362,8 +359,7 @@ def test_workspace_fetch_rejects_model_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import lens_sources as sources
-
+    from drowse.lens import sources
     _mock_workspace_hub(
         monkeypatch, tmp_path,
         _workspace_payload("relp", model_id="org/other-model"),
@@ -376,8 +372,7 @@ def test_workspace_fetch_reports_published_models_on_miss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import lens_sources as sources
-
+    from drowse.lens import sources
     _mock_workspace_hub(
         monkeypatch, tmp_path, _workspace_payload("relp"),
         files=["gemma-3-27b-it/r-lens/lens.pt"],
@@ -387,8 +382,7 @@ def test_workspace_fetch_reports_published_models_on_miss(
 
 
 def test_fetch_lens_source_dispatch_and_use_rejection() -> None:
-    from drowse.io import lens_sources as sources
-
+    from drowse.lens import sources
     with pytest.raises(ValueError, match="unknown J-lens fetch source"):
         sources.fetch_lens_source("org/model", "nonsense")
     with pytest.raises(ValueError, match="local:NAME"):

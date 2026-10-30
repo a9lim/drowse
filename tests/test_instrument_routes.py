@@ -12,9 +12,9 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from drowse.core.instruments.geometry import GeometryInstrument
-from drowse.core.instruments.lens import LensInstrument
-from drowse.core.instruments.sae import SaeInstrument
+from drowse.readout.geometry import GeometryInstrument
+from drowse.lens.instrument import LensInstrument
+from drowse.sae.instrument import SaeInstrument
 
 _SID = "default"
 _BASE = f"/drowse/v1/sessions/{_SID}/instruments"
@@ -175,7 +175,7 @@ class TestListing:
         """
         session, client = session_and_client
         monkeypatch.setattr(
-            "drowse.io.lens_sources.list_lens_sources", lambda _m: [],
+            "drowse.lens.sources.list_lens_sources", lambda _m: [],
         )
         session.lens.source = "local:default"
         fams = {f["family"]: f for f in client.get(_BASE).json()["instruments"]}
@@ -237,7 +237,7 @@ class TestLiveToggle:
         assert session.lens.disable_calls == 1
 
     def test_lens_not_fitted_404(self, session_and_client: Any) -> None:
-        from drowse.core.jlens import LensNotFittedError
+        from drowse.lens.jlens import LensNotFittedError
         session, client = session_and_client
         session.lens.enable_error = LensNotFittedError("no lens")
         resp = client.post(f"{_BASE}/lens/live", json={"enabled": True})
@@ -305,7 +305,7 @@ class TestSources:
     ) -> None:
         _session, client = session_and_client
         monkeypatch.setattr(
-            "drowse.io.lens_sources.list_lens_sources",
+            "drowse.lens.sources.list_lens_sources",
             lambda _m: [{
                 "source": "local:default", "kind": "local", "name": "default",
                 "active": True, "path": "/tmp/x.json",
@@ -322,7 +322,7 @@ class TestSources:
     ) -> None:
         _session, client = session_and_client
         monkeypatch.setattr(
-            "drowse.io.sae.list_sae_sources",
+            "drowse.sae.sources.list_sae_sources",
             lambda _m: [{
                 "source": "local:mine", "kind": "local", "name": "mine",
                 "active": True, "path": "/tmp/m.json", "layer": 14,
@@ -330,7 +330,7 @@ class TestSources:
             }],
         )
         monkeypatch.setattr(
-            "drowse.core.sae.list_sae_releases",
+            "drowse.sae.backend.list_sae_releases",
             # A release row is keyed by ``release`` and carries ``layers``
             # (plural) — the registry's own shape, not the prepared-source
             # shape above.
@@ -440,7 +440,7 @@ class TestPreparations:
 
         session.fit_jlens.side_effect = _blocking_fit
         monkeypatch.setattr(
-            "drowse.io.lens.stream_lens_corpus",
+            "drowse.lens.store.stream_lens_corpus",
             lambda _n, _corpus, *, cancel_event=None: (
                 ["a long enough prompt."], "spec",
             ),
@@ -475,7 +475,7 @@ class TestPreparations:
     def test_lens_fit_streams_the_requested_hub_corpus(
         self, session_and_client: Any, monkeypatch: Any,
     ) -> None:
-        from drowse.io.lens import HfLensCorpus, LensCorpusMix
+        from drowse.lens.store import HfLensCorpus, LensCorpusMix
 
         session, client = session_and_client
         streamed: list[tuple[int, Any]] = []
@@ -486,7 +486,7 @@ class TestPreparations:
             streamed.append((n, corpus))
             return ["a long enough prompt."], "hf:org/data/cfg@sha"
 
-        monkeypatch.setattr("drowse.io.lens.stream_lens_corpus", _stream)
+        monkeypatch.setattr("drowse.lens.store.stream_lens_corpus", _stream)
         resp = client.post(
             f"{_BASE}/lens/preparations",
             json={
@@ -544,7 +544,7 @@ class TestPreparations:
             "runtime": {}, "metrics": {"tokens_trained": 100}, "source": "local:s",
         }
         monkeypatch.setattr(
-            "drowse.io.lens.stream_lens_corpus",
+            "drowse.lens.store.stream_lens_corpus",
             lambda _n, **_k: (["p"], "spec"),
         )
         resp = client.post(
@@ -612,7 +612,7 @@ class TestTokenReadout:
 
     @staticmethod
     def _geometry_out(steering: "str | None") -> dict[str, Any]:
-        from drowse.core.results import ProbeReading
+        from drowse.generation.results import ProbeReading
 
         return {
             "node_id": "n1", "raw_index": 3, "token_id": 42,
@@ -678,7 +678,7 @@ class TestTokenReadout:
         assert resp.status_code == 400
 
     def test_geometry_unknown_node_404(self, session_and_client: Any) -> None:
-        from drowse.core.loom import UnknownNodeError
+        from drowse.loom.tree import UnknownNodeError
 
         session, client = session_and_client
         session.geometry_token_readout.side_effect = UnknownNodeError("gone")
@@ -733,7 +733,7 @@ class TestTokenReadout:
         assert session.jlens_token_readout.call_args.kwargs["apply_steering"] is False
 
     def test_lens_not_fitted_404(self, session_and_client: Any) -> None:
-        from drowse.core.jlens import LensNotFittedError
+        from drowse.lens.jlens import LensNotFittedError
         session, client = session_and_client
         session.jlens_token_readout.side_effect = LensNotFittedError("nope")
         resp = client.get(

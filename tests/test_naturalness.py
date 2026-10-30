@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from tests.conftest import CharTokenizer, FakeLogitsModel
-from drowse.core.manifold import BoxAxis, BoxDomain
-from drowse.core.naturalness import (
+from drowse.geometry.manifold import BoxAxis, BoxDomain
+from drowse.fit.naturalness import (
     bhattacharyya_distance,
     compute_node_behavior_centroid,
     compute_trajectory_distributions,
@@ -183,12 +183,12 @@ def test_naturalness_preflight_does_not_hash_fitted_payloads(
     from argparse import Namespace
 
     import drowse.cli.runners as runners
-    from drowse.io import integrity
-    from drowse.io.manifolds import (
+    from drowse.base import integrity
+    from drowse.store.manifolds import (
         ManifoldFolder,
         create_manifold_folder,
     )
-    from drowse.io.manifold_folder import canonical_manifold_sidecar_payload
+    from drowse.store.manifold_folder import canonical_manifold_sidecar_payload
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [

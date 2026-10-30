@@ -123,7 +123,7 @@ def test_ensure_vectors_installed_all_present(monkeypatch: pytest.MonkeyPatch, t
     # against the just-dropped folder with nothing to install.  Reset the
     # process-scope materialize guard so it actually fires under this test's
     # DROWSE_HOME (in a real CLI run, config load is the first materialize).
-    monkeypatch.setattr("drowse.io.manifolds._materialized_home", None)
+    monkeypatch.setattr("drowse.store.manifolds._materialized_home", None)
     c = cfg.ConfigFile(vectors="0.5 default/confident.uncertain")
     missing = cfg.ensure_vectors_installed(c, strict=False)
     assert missing == []
@@ -133,8 +133,8 @@ def test_bundled_manifolds_materialize_after_in_process_home_switch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """The process guard must not strand a newly selected artifact root."""
-    from drowse.io import manifolds as manifolds_mod
-    from drowse.io.paths import manifolds_dir
+    from drowse.store import manifolds as manifolds_mod
+    from drowse.base.paths import manifolds_dir
 
     monkeypatch.setattr(manifolds_mod, "_materialized_home", None)
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "first"))
@@ -148,7 +148,7 @@ def test_bundled_manifolds_materialize_after_in_process_home_switch(
 
 def test_ensure_vectors_installed_missing_hf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.selectors import invalidate
+    from drowse.store.selectors import invalidate
     invalidate()
     installed: dict[str, Any] = {}
 
@@ -158,7 +158,7 @@ def test_ensure_vectors_installed_missing_hf(monkeypatch: pytest.MonkeyPatch, tm
 
     # 4.0: HF auto-install of a referenced concept routes through the manifold
     # install path, not the retired pack one.
-    monkeypatch.setattr("drowse.io.hf_manifolds.install_manifold", fake_install)
+    monkeypatch.setattr("drowse.store.hub.install_manifold", fake_install)
     c = cfg.ConfigFile(vectors="0.5 user/happy")
     missing = cfg.ensure_vectors_installed(c, strict=False)
     assert installed["target"] == "user/happy"
@@ -167,7 +167,7 @@ def test_ensure_vectors_installed_missing_hf(monkeypatch: pytest.MonkeyPatch, tm
 
 def test_ensure_vectors_installed_strict_raises_on_local_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.selectors import invalidate
+    from drowse.store.selectors import invalidate
     invalidate()
     c = cfg.ConfigFile(vectors="0.5 local/bard")
     with pytest.raises(cfg.ConfigFileError, match="local/bard"):
@@ -224,8 +224,8 @@ def test_bare_pole_validates_against_installed_packs(monkeypatch: pytest.MonkeyP
     ``_bare_concept_resolves`` rather than the old ``vectors/`` pole alias.
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.manifolds import create_discover_manifold_folder
-    from drowse.io.selectors import invalidate
+    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.selectors import invalidate
     create_discover_manifold_folder(
         "local", "deer.wolf", "x", fit_mode="pca",
         node_corpora={"deer": ["a statement."], "wolf": ["b statement."]},

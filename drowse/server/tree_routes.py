@@ -270,7 +270,7 @@ def register_tree_routes(app: FastAPI) -> None:
         :meth:`Transcript.from_yaml` cleanly.  Returns
         ``{"yaml": "<text>", "node_id": "<leaf-of-rendered-path>"}``.
         """
-        from drowse.core.transcript import Transcript
+        from drowse.loom.transcript import Transcript
 
         resolve_session_id(session_id)
         leaf = req.node_id if req.node_id is not None else session.tree.active_node_id
@@ -296,7 +296,7 @@ def register_tree_routes(app: FastAPI) -> None:
         the surfaces can show a banner there.  Returning them in the body
         too saves the client one fetch.
         """
-        from drowse.core.transcript import (
+        from drowse.loom.transcript import (
             Transcript,
             TranscriptError,
             TranscriptFormatError,
@@ -354,7 +354,7 @@ def register_tree_routes(app: FastAPI) -> None:
         parent's and child's recipes (parent's may be ``None`` when it's
         a user turn, in which case the delta is "from-nothing").
         """
-        from drowse.core.loom_diff import steering_delta
+        from drowse.loom.diff import steering_delta
 
         resolve_session_id(session_id)
         parent = session.tree.get(parent_id)
@@ -371,14 +371,14 @@ def register_tree_routes(app: FastAPI) -> None:
     def tree_filter(session_id: str, expr: str = "") -> FilterMatchesJSON:
         """Apply a filter-grammar expression and return matching node ids.
 
-        Grammar in :mod:`drowse.core.tree_filter` — comma-AND'd
+        Grammar in :mod:`drowse.loom.filter` — comma-AND'd
         ``agg:|any:|last:<probe> <op> <threshold>`` clauses.  ``agg:``
         reads a node's aggregate readings; ``any:`` / ``last:`` read its
         persisted per-token measurement rows.  Empty ``expr`` returns
         every node id (clears the filter).  Bad expressions land as 400
         via :class:`FilterParseError`.
         """
-        from drowse.core.tree_filter import FilterParseError
+        from drowse.loom.filter import FilterParseError
 
         resolve_session_id(session_id)
         text = (expr or "").strip()
@@ -401,7 +401,7 @@ def register_tree_routes(app: FastAPI) -> None:
         for the most-recently-generated turn so callers shouldn't
         rely on it.
         """
-        from drowse.core.loom_diff import per_token_diff, steering_delta
+        from drowse.loom.diff import per_token_diff, steering_delta
 
         resolve_session_id(session_id)
         diff = session.diff_nodes(req.a_id, req.b_id)
@@ -516,7 +516,7 @@ def register_tree_routes(app: FastAPI) -> None:
         compete for the same model with any concurrent generation;
         request queues FIFO at the lock rather than 409ing.
         """
-        from drowse.core.joint_logprobs import (
+        from drowse.generation.joint_logprobs import (
             compute_joint_logprobs,
             _cache_key,
             reorient_for_request,

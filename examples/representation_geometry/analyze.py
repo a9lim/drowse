@@ -25,9 +25,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from data import PROBES  # noqa: E402  # pyright: ignore[reportAttributeAccessIssue]  # sibling script module inserted above
 
-from drowse.io.manifold_folder import load_manifold_sidecar_data  # noqa: E402
-from drowse.io.manifold_tensors import load_manifold  # noqa: E402
-from drowse.io.paths import manifold_dir, tensor_filename  # noqa: E402
+from drowse.store.manifold_folder import load_manifold_sidecar_data  # noqa: E402
+from drowse.store.manifold_tensors import load_manifold  # noqa: E402
+from drowse.base.paths import manifold_dir, tensor_filename  # noqa: E402
 
 FIGROOT = Path(__file__).parent / "figures"
 

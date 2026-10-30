@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.core.capture import compute_dls_axes
+from drowse.fit.capture import compute_dls_axes
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "browser" / "dls-axes-v1.json"

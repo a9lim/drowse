@@ -43,7 +43,7 @@ from drowse.cli.runners.shared import (
 # alignment primitives it wraps; re-exported under its historical private name
 # so ``drowse.cli.runners._load_or_fit_transfer_alignment`` still resolves and
 # stays monkeypatchable at the package level.
-from drowse.io.alignment import (
+from drowse.store.alignment import (
     load_or_fit_transfer_alignment as _load_or_fit_transfer_alignment,
 )
 

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.io.alignment import (
+from drowse.store.alignment import (
     AlignmentError,
     LayerAlignment,
     alignment_cache_path,
@@ -192,7 +192,7 @@ class TestAlignmentCache:
     _TGT_ID = {"model_fingerprint": "tgt", "capture_sha256": "b" * 64}
 
     def test_cache_path_layout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from drowse.io.paths import safe_model_id
+        from drowse.base.paths import safe_model_id
 
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         ts, sc = alignment_cache_path("google/gemma-3-4b-it", "Qwen/Qwen2.5-7B-Instruct")
@@ -260,7 +260,7 @@ class TestAlignmentCache:
             _alignments({0: torch.eye(3)}), "a/b", "c/d",
             source_identity=self._SRC_ID, target_identity=self._TGT_ID,
         )
-        import drowse.io.alignment as alignment_mod
+        import drowse.store.alignment as alignment_mod
 
         monkeypatch.setattr(
             alignment_mod, "load_safetensors",
@@ -299,7 +299,7 @@ class TestAlignmentCache:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        import drowse.io.alignment as alignment_mod
+        import drowse.store.alignment as alignment_mod
 
         anchor, _ = alignment_mod._alignment_anchor_paths("a/b", "c/d")
         anchor.parent.mkdir(parents=True, exist_ok=True)
@@ -351,7 +351,7 @@ class TestAlignmentCache:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        import drowse.io.alignment as alignment_mod
+        import drowse.store.alignment as alignment_mod
 
         save_alignment_map(
             _alignments({0: torch.eye(4)}), "a/b", "c/d",
@@ -389,7 +389,7 @@ class TestAlignmentCache:
     ) -> None:
         """After pointer replace, a durability error must not delete its shards."""
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        import drowse.io.alignment as alignment_mod
+        import drowse.store.alignment as alignment_mod
 
         calls = 0
 
@@ -421,7 +421,7 @@ class TestAlignmentCache:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        import drowse.io.alignment as alignment_mod
+        import drowse.store.alignment as alignment_mod
 
         events: list[str] = []
         real_write = alignment_mod.write_json_atomic
@@ -445,7 +445,7 @@ class TestAlignmentCache:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        import drowse.io.alignment as alignment_mod
+        import drowse.store.alignment as alignment_mod
 
         real_write = alignment_mod.write_json_atomic
 
@@ -476,7 +476,7 @@ class TestAlignmentCache:
             source_identity=self._SRC_ID, target_identity=self._TGT_ID,
             quality_per_layer={0: 0.8},
         )
-        import drowse.io.alignment as alignment_mod
+        import drowse.store.alignment as alignment_mod
 
         anchor, pointer = alignment_mod._alignment_anchor_paths("a/b", "c/d")
         prior = json.loads(pointer.read_text())
@@ -503,7 +503,7 @@ class TestAlignmentCache:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        import drowse.io.alignment as alignment_mod
+        import drowse.store.alignment as alignment_mod
 
         save_alignment_map(
             _alignments({0: torch.eye(4), 5: torch.eye(4)}), "a/b", "c/d",

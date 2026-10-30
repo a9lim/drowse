@@ -20,14 +20,14 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.manifold import BoxDomain, CustomDomain
-from drowse.core.topology import (
+from drowse.geometry.manifold import BoxDomain, CustomDomain
+from drowse.geometry.topology import (
     _count_persistent_loops,
     _faint_cycle_coords,
     _is_angular_harmonic,
     select_topology,
 )
-from drowse.core.mahalanobis import LayerWhitener
+from drowse.geometry.whitener import LayerWhitener
 from tests._whitener import isotropic_whitener, rogue_whitener
 
 _LAYERS = list(range(6))
@@ -91,7 +91,7 @@ def test_ph_dense_complete_complex_no_spurious_loops() -> None:
     essential (which routed the 107-node ``personas`` heap to a spurious
     8-torus).  The raised cap keeps every triangle across the supported regime.
     """
-    from drowse.core.topology import _rips_h1_persistence
+    from drowse.geometry.topology import _rips_h1_persistence
 
     g = torch.Generator().manual_seed(7)
     cluster = torch.randn(109, 6, generator=g) * 0.1
@@ -571,7 +571,7 @@ def test_select_topology_deterministic() -> None:
 def test_select_topology_reuses_laplacian_eigensystem(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.core.topology as topology_mod
+    import drowse.geometry.topology as topology_mod
 
     calls = 0
     real = topology_mod._laplacian_eigen

@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 import pytest
 import torch
-from drowse.core.profile import Profile
-from drowse.core.results import GenerationResult, RunSet, TokenEvent
+from drowse.geometry.profile import Profile
+from drowse.generation.results import GenerationResult, RunSet, TokenEvent
 from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
 
 if TYPE_CHECKING:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
 _HAS_GPU = torch.cuda.is_available() or torch.backends.mps.is_available()
 pytestmark = [
@@ -28,7 +28,7 @@ MODEL_ID = gpu_model_id()
 
 
 def _corpus(response: str) -> list[str]:
-    from drowse.core.capture import _load_baseline_prompts
+    from drowse.fit.capture import _load_baseline_prompts
 
     return [response] * len(_load_baseline_prompts())
 
@@ -36,7 +36,7 @@ def _corpus(response: str) -> list[str]:
 @pytest.fixture(scope="module")
 def session(tmp_path_factory: pytest.TempPathFactory):
     import os
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     # Isolate $DROWSE_HOME so this module's extract/merge writes (e.g.
     # local/formal.casual, happy.sad, honest) land in a throwaway cache instead
     # of the user's real ~/.drowse — where they would shadow bundled manifolds of
@@ -126,7 +126,7 @@ class TestMonitoring:
 
 class TestLifecycle:
     def test_context_manager(self):
-        from drowse.core.session import DrowseSession
+        from drowse.session.session import DrowseSession
         created = load_or_skip_inaccessible(
             lambda: DrowseSession.from_pretrained(MODEL_ID, device="auto", probes=[]),
             MODEL_ID,
@@ -207,7 +207,7 @@ class TestCliRoundTrip:
     def test_extract_cli_roundtrip(self, tmp_path: Path) -> None:
         import subprocess
         import sys
-        from drowse.io.paths import manifold_dir, safe_model_id
+        from drowse.base.paths import manifold_dir, safe_model_id
 
         folder = manifold_dir("local", "happy.sad")
         sid = safe_model_id(MODEL_ID)
@@ -366,7 +366,7 @@ class TestPrefixCache:
         # ISN'T sufficient — the False-encoded prefix may differ
         # by trailing tokens.  Instead, encode the prefix as a token
         # tensor to bypass the issue.
-        from drowse.core.generation import build_chat_input
+        from drowse.generation.decode import build_chat_input
 
         prefix_msg = [
             {"role": "user", "content": "Be concise. Always end with a period."},

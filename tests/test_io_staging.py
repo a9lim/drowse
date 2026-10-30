@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from drowse.io.staging import stage_verify_swap
+from drowse.base.staging import stage_verify_swap
 
 
 class _InstallError(RuntimeError):

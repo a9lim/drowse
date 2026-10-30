@@ -7,16 +7,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from drowse.core.instruments.types import (
+from drowse.readout.types import (
     GeometryLiveState,
     LensLiveState,
     SaeLiveState,
 )
 from fastapi.testclient import TestClient
 
-from drowse.core.results import GenerationResult, RunSet, TokenEvent
+from drowse.generation.results import GenerationResult, RunSet, TokenEvent
 from tests._generation_stream import TestGenerationStream
-from drowse.core.session import ConcurrentGenerationError, ProfileNotRegisteredError
+from drowse.session.session import ConcurrentGenerationError, ProfileNotRegisteredError
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ def _single_run(**kwargs: Any) -> RunSet:
 @pytest.fixture
 def client():
     from drowse.server import create_app
-    from drowse.core.steering import Steering
+    from drowse.steering.terms import Steering
     session = _mock_session()
     app = create_app(session, default_steering=Steering(alphas={"test_vec": 0.1}))
     # Keep one portal/event loop alive for the whole test.  Routes intentionally
@@ -791,8 +791,8 @@ class TestOllamaApi:
         steering expression now surfaces as the canonical Ollama-shape
         ``{"error": "..."}`` 400.
         """
-        from drowse.io.selectors import AmbiguousSelectorError
-        import drowse.core.steering_expr as _sx
+        from drowse.store.selectors import AmbiguousSelectorError
+        import drowse.steering.grammar as _sx
 
         session, client = session_and_client
 
@@ -827,8 +827,8 @@ class TestOllamaApi:
     ) -> None:
         """Belt-and-suspenders: non-streaming Ollama already routed
         ``DrowseError`` through the FastAPI handler. Pin the contract."""
-        from drowse.io.selectors import AmbiguousSelectorError
-        import drowse.core.steering_expr as _sx
+        from drowse.store.selectors import AmbiguousSelectorError
+        import drowse.steering.grammar as _sx
 
         session, client = session_and_client
 
@@ -947,7 +947,7 @@ class TestNativeSteeringField:
 
     def test_steering_merges_with_server_defaults(self):
         from drowse.server import create_app
-        from drowse.core.steering import Steering
+        from drowse.steering.terms import Steering
         session = _mock_session()
         session.generate.return_value = _single_run(
             text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
@@ -964,7 +964,7 @@ class TestNativeSteeringField:
 
     def test_steering_request_overrides_default(self):
         from drowse.server import create_app
-        from drowse.core.steering import Steering
+        from drowse.steering.terms import Steering
         session = _mock_session()
         session.generate.return_value = _single_run(
             text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
@@ -983,7 +983,7 @@ class TestNativeSteeringField:
 
     def test_empty_steering_clears_server_default(self):
         from drowse.server import create_app
-        from drowse.core.steering import Steering
+        from drowse.steering.terms import Steering
         session = _mock_session()
         session.generate.return_value = _single_run(
             text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
@@ -1320,7 +1320,7 @@ class TestLensProbeRoutes:
         assert resp.json()["name"] == "jlens/fake"
 
     def test_attach_lens_not_fitted_404(self, session_and_client: Any) -> None:
-        from drowse.core.jlens import LensNotFittedError
+        from drowse.lens.jlens import LensNotFittedError
 
         session, client = session_and_client
         session.add_probe.side_effect = LensNotFittedError(
@@ -1334,7 +1334,7 @@ class TestLensProbeRoutes:
         assert "lens fit" in resp.json()["detail"]
 
     def test_attach_multi_token_word_400(self, session_and_client: Any) -> None:
-        from drowse.core.jlens import MultiTokenWordError
+        from drowse.lens.jlens import MultiTokenWordError
 
         session, client = session_and_client
         session.add_probe.side_effect = MultiTokenWordError(

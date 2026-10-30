@@ -24,13 +24,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from anyio import CancelScope
 
-from drowse.core.errors import DrowseError
-from drowse.core.loom import LoomMutated
-from drowse.core.results import GenerationResult, TokenAlt
-from drowse.core.sampling import SamplingConfig
-from drowse.core.session import DrowseSession
-from drowse.core.token_callback import TokenConsumer, TokenConsumerOptions
-from drowse.core.steering import Steering
+from drowse.errors import DrowseError
+from drowse.loom.tree import LoomMutated
+from drowse.generation.results import GenerationResult, TokenAlt
+from drowse.generation.sampling import SamplingConfig
+from drowse.session.session import DrowseSession
+from drowse.generation.token_callback import TokenConsumer, TokenConsumerOptions
+from drowse.steering.terms import Steering
 from drowse.server.app import acquire_session_lock, ws_auth_ok
 from drowse.server.native_common import SINGLE_SESSION_ID
 from drowse.server.native_common import resolve_session_id
@@ -864,7 +864,7 @@ async def _ws_stream_generation(
     # Per-sibling seed schedule: when n>1, derive deterministic per-
     # sibling seeds from the request seed (or fresh entropy).  Single
     # streams (n=1) use the user's seed verbatim.
-    from drowse.core.loom import derive_seed_schedule
+    from drowse.loom.tree import derive_seed_schedule
     base_seed = sampling.seed if sampling is not None else None
     seeds: list[int | None]
     seeds = [base_seed] if n == 1 else list(derive_seed_schedule(base_seed, n))

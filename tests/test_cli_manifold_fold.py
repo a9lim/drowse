@@ -17,12 +17,12 @@ import torch
 
 from drowse import cli
 from drowse.cli.runners import _run_manifold_compare, _run_manifold_why
-from drowse.core.manifold import (
+from drowse.geometry.manifold import (
     MANIFOLD_FIT_POLICY_VERSION, CustomDomain, Manifold,
     fit_affine_subspace, subspace_share,
 )
-from drowse.io.manifold_tensors import save_manifold
-from drowse.io.paths import manifold_dir, model_dir, tensor_filename
+from drowse.store.manifold_tensors import save_manifold
+from drowse.base.paths import manifold_dir, model_dir, tensor_filename
 
 _MODEL = "test/model"
 _LAYERS = (2, 5)
@@ -33,7 +33,7 @@ _DIM = 8
 def _isolated_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> Generator[None, None, None]:
-    from drowse.io import selectors as _sel
+    from drowse.store import selectors as _sel
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _sel.invalidate()
     _seed_neutral_cache(_MODEL)
@@ -57,7 +57,7 @@ def _seed_neutral_cache(model_id: str, *, n: int = 64, seed: int = 5) -> None:
     import json
 
     from safetensors.torch import save_file
-    from drowse.io.integrity import hash_file
+    from drowse.base.integrity import hash_file
 
     md = model_dir(model_id)
     md.mkdir(parents=True, exist_ok=True)
@@ -131,7 +131,7 @@ def _write_fitted_manifold(
         layers=layers,
         mahalanobis_share=share,
     )
-    from drowse.io.manifolds import create_discover_manifold_folder
+    from drowse.store.manifolds import create_discover_manifold_folder
 
     folder = manifold_dir(ns, name)
     if not (folder / "manifold.json").exists():
@@ -147,7 +147,7 @@ def _write_fitted_manifold(
     }
     manifest = folder / "manifold.json"
     if manifest.exists():
-        from drowse.io.manifolds import ManifoldFolder
+        from drowse.store.manifolds import ManifoldFolder
 
         metadata["nodes_sha256"] = ManifoldFolder.load(
             folder, verify_manifest=False,
@@ -155,7 +155,7 @@ def _write_fitted_manifold(
         metadata["fit_policy_version"] = MANIFOLD_FIT_POLICY_VERSION
     save_manifold(mfld, path, metadata)
     if manifest.exists():
-        from drowse.io.manifolds import ManifoldFolder
+        from drowse.store.manifolds import ManifoldFolder
 
         ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
             path, path.with_suffix(".json"),
@@ -188,7 +188,7 @@ class TestFoldHelper:
 
     def test_fold_bare_name_collision_raises(self) -> None:
         from drowse.cli.runners import _fold_manifold_to_profile_with_identity
-        from drowse.io.selectors import AmbiguousSelectorError
+        from drowse.store.selectors import AmbiguousSelectorError
 
         _write_fitted_manifold("default", "happy.sad")
         _write_fitted_manifold("alice", "happy.sad")
@@ -335,7 +335,7 @@ class TestCompareFold:
 
 def _make_full_manifold(ns: str, name: str, *, seed: int = 0) -> Path:
     """A complete manifold folder (manifold.json + nodes) plus a fitted tensor."""
-    from drowse.io.manifolds import (
+    from drowse.store.manifolds import (
         create_discover_manifold_folder, ManifoldFolder, hash_manifold_files,
     )
     pos_label, neg_label = (
@@ -358,8 +358,8 @@ def _make_full_manifold(ns: str, name: str, *, seed: int = 0) -> Path:
 
 class TestMergeFold:
     def test_merge_folds_manifold_components(self) -> None:
-        from drowse.io.bake import merge_into_manifold
-        from drowse.io.paths import safe_model_id
+        from drowse.fit.bake import merge_into_manifold
+        from drowse.base.paths import safe_model_id
 
         _write_fitted_manifold("default", "happy.sad", seed=1)
         _write_fitted_manifold("default", "warm.clinical", seed=2)
@@ -371,7 +371,7 @@ class TestMergeFold:
         assert (dst / f"{safe_model_id(_MODEL)}.safetensors").exists()
 
     def test_merge_missing_component_errors(self) -> None:
-        from drowse.io.bake import merge_into_manifold, MergeError
+        from drowse.fit.bake import merge_into_manifold, MergeError
 
         _write_fitted_manifold("default", "happy.sad", seed=1)
         with pytest.raises(MergeError):
@@ -389,7 +389,7 @@ class TestMergeFold:
 class TestGgufFold:
     def test_export_gguf_folds_manifold(self, tmp_path: Path) -> None:
         pytest.importorskip("gguf")  # writing the GGUF needs the optional extra
-        from drowse.io.gguf_io import export_gguf_manifold
+        from drowse.store.gguf import export_gguf_manifold
 
         _make_full_manifold("default", "happy.sad")
         out = tmp_path / "happy.gguf"
@@ -401,10 +401,10 @@ class TestGgufFold:
         assert out.is_file()
 
     def test_export_gguf_unfitted_errors(self, tmp_path: Path) -> None:
-        from drowse.io.gguf_io import export_gguf_manifold
+        from drowse.store.gguf import export_gguf_manifold
 
         # manifold.json but no fitted tensor for the model.
-        from drowse.io.manifolds import create_discover_manifold_folder
+        from drowse.store.manifolds import create_discover_manifold_folder
         create_discover_manifold_folder(
             "default", "happy.sad", "x", fit_mode="pca",
             node_corpora={"happy": ["a"], "sad": ["b"]},
@@ -420,9 +420,10 @@ class TestGgufFold:
     def test_export_preflight_skips_unrelated_variant_hashes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from drowse.io import gguf_io, integrity
-        from drowse.io.gguf_io import export_gguf_manifold
-        from drowse.io.manifolds import ManifoldFolder
+        from drowse.store import gguf as gguf_io
+        from drowse.base import integrity
+        from drowse.store.gguf import export_gguf_manifold
+        from drowse.store.manifolds import ManifoldFolder
 
         folder = _make_full_manifold("default", "happy.sad")
         raw = folder / tensor_filename(_MODEL)
@@ -460,12 +461,12 @@ class TestGgufFold:
 def test_default_probe_preflight_skips_unrelated_variant_hashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.core.session import DrowseSession
-    from drowse.io import integrity
-    from drowse.io.manifolds import ManifoldFolder
-    import drowse.io.manifolds as manifolds_module
-    import drowse.io.probes_bootstrap as probes_module
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.session.session import DrowseSession
+    from drowse.base import integrity
+    from drowse.store.manifolds import ManifoldFolder
+    import drowse.store.manifolds as manifolds_module
+    import drowse.store.bundled_probes as probes_module
 
     folder = _make_full_manifold("default", "probe")
     raw = folder / tensor_filename(_MODEL)

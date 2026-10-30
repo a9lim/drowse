@@ -24,7 +24,7 @@ import math
 import pytest
 import torch
 
-from drowse.core.topology import (
+from drowse.geometry.topology import (
     PcaDiagnostics,
     SpectralDiagnostics,
     derive_pca_coords,

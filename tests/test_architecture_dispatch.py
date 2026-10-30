@@ -1,6 +1,6 @@
 """Per-architecture structural + hot-path coverage.
 
-`drowse.core.model._LAYER_ACCESSORS` maps each ``model_type`` to the
+`drowse.model.loading._LAYER_ACCESSORS` maps each ``model_type`` to the
 attribute path of its transformer-block list.  Those mappings are the
 load-bearing assumption behind *everything* drowse does — capture,
 steering, monitoring — yet most entries have never been exercised
@@ -40,17 +40,17 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 import pytest
 
-from drowse.core.model import (
+from drowse.model.loading import (
     _ARCH_PROFILES,
     _LAYER_ACCESSORS,
     _SUPPORTED_TYPES,
     _TESTED_ARCHS,
     get_layers,
 )
-from drowse.core.hooks import HiddenCapture, SteeringManager
-from drowse.core.manifold import synthesize_subspace
+from drowse.steering.hooks import HiddenCapture, SteeringManager
+from drowse.geometry.manifold import synthesize_subspace
 from tests._whitener import isotropic_whitener
-from drowse.core.triggers import Trigger
+from drowse.steering.triggers import Trigger
 
 
 # Families drowse guarantees end-to-end on CPU.  Covers every architecture

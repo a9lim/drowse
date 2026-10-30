@@ -7,10 +7,10 @@ from typing import Any, cast
 import pytest
 import torch
 
-from drowse.core.capture import project_profile
-from drowse.core.hooks import _lower_affine_subspaces
-from drowse.core.mahalanobis import LayerWhitener
-from drowse.core.manifold import synthesize_subspace
+from drowse.fit.capture import project_profile
+from drowse.steering.hooks import _lower_affine_subspaces
+from drowse.geometry.whitener import LayerWhitener
+from drowse.geometry.manifold import synthesize_subspace
 
 
 FIXTURE = json.loads(

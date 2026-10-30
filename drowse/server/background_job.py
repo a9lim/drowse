@@ -34,7 +34,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
-from drowse.core.errors import DrowseError
+from drowse.errors import DrowseError
 from drowse.server.streaming import finish_worker
 
 JobBody = Callable[[], Awaitable[None]]

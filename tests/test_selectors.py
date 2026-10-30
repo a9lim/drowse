@@ -7,11 +7,11 @@ from pathlib import Path
 import json
 from typing import Any
 
-from drowse.io import selectors as sel
-from drowse.io.manifolds import (
+from drowse.store import selectors as sel
+from drowse.store.manifolds import (
     create_discover_manifold_folder,
 )
-from drowse.io.manifold_folder import canonical_manifold_sidecar_payload
+from drowse.store.manifold_folder import canonical_manifold_sidecar_payload
 
 
 def test_parse_bare_name():
@@ -166,7 +166,7 @@ def test_resolve_model_matches_raw_and_sae_tensors(monkeypatch: pytest.MonkeyPat
     ``_sae-<release>`` tensor for that model.
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.paths import safe_model_id, tensor_filename
+    from drowse.base.paths import safe_model_id, tensor_filename
 
     model_id = "google/gemma-3-4b-it"
     sid = safe_model_id(model_id)
@@ -241,7 +241,7 @@ class TestCanonicalizeAtom:
 
 
 def test_canonicalize_atom_strips_raw_variant() -> None:
-    from drowse.io.selectors import canonicalize_atom
+    from drowse.store.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("honest:raw")
     assert canonical == "honest"
@@ -249,7 +249,7 @@ def test_canonicalize_atom_strips_raw_variant() -> None:
 
 
 def test_canonicalize_atom_sae_variant() -> None:
-    from drowse.io.selectors import canonicalize_atom
+    from drowse.store.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("honest:sae")
     assert canonical == "honest"
@@ -257,14 +257,14 @@ def test_canonicalize_atom_sae_variant() -> None:
 
 
 def test_canonicalize_atom_sae_with_release() -> None:
-    from drowse.io.selectors import canonicalize_atom
+    from drowse.store.selectors import canonicalize_atom
 
     _canonical, variant = canonicalize_atom("honest:sae-gemma-scope-2b-pt-res-canonical")
     assert variant == "sae-gemma-scope-2b-pt-res-canonical"
 
 
 def test_canonicalize_atom_no_variant_defaults_to_raw() -> None:
-    from drowse.io.selectors import canonicalize_atom
+    from drowse.store.selectors import canonicalize_atom
 
     _canonical, variant = canonicalize_atom("honest")
     assert variant == "raw"
@@ -276,7 +276,7 @@ def test_canonicalize_atom_variant_strips_suffix() -> None:
     (Pre-4.0 this asserted a bipolar sign flip for ``wolf:sae`` →
     ``deer.wolf @ -1``; that resolution moved to the manifold tier.)
     """
-    from drowse.io.selectors import canonicalize_atom
+    from drowse.store.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("wolf:sae")
     assert canonical == "wolf"
@@ -284,7 +284,7 @@ def test_canonicalize_atom_variant_strips_suffix() -> None:
 
 
 def test_canonicalize_atom_rejects_invalid_variant() -> None:
-    from drowse.io.selectors import canonicalize_atom, SelectorError
+    from drowse.store.selectors import canonicalize_atom, SelectorError
 
     with pytest.raises(SelectorError):
         canonicalize_atom("honest:weird-variant")
@@ -292,7 +292,7 @@ def test_canonicalize_atom_rejects_invalid_variant() -> None:
 
 def test_parse_accepts_variant_suffix():
     """parse() with a :variant suffix strips the variant, keeps Selector.value as the bare name."""
-    from drowse.io.selectors import parse
+    from drowse.store.selectors import parse
     s = parse("honest.deceptive:sae")
     assert s.kind == "name"
     assert s.value == "honest.deceptive"
@@ -300,14 +300,14 @@ def test_parse_accepts_variant_suffix():
 
 def test_parse_rejects_unknown_variant():
     import pytest as _pt
-    from drowse.io.selectors import parse, SelectorError
+    from drowse.store.selectors import parse, SelectorError
     with _pt.raises(SelectorError):
         parse("honest:garbage")
 
 
 def test_parse_role_variant():
     """parse() with a :role-<id> suffix strips the variant, keeps Selector.value as the bare name."""
-    from drowse.io.selectors import parse
+    from drowse.store.selectors import parse
     s = parse("honest:role-pirate")
     assert s.kind == "name"
     assert s.value == "honest"
@@ -315,7 +315,7 @@ def test_parse_role_variant():
 
 
 def test_canonicalize_atom_role_variant() -> None:
-    from drowse.io.selectors import canonicalize_atom
+    from drowse.store.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("angry:role-pirate")
     assert canonical == "angry"
@@ -323,7 +323,7 @@ def test_canonicalize_atom_role_variant() -> None:
 
 
 def test_canonicalize_atom_role_with_dotted_id() -> None:
-    from drowse.io.selectors import canonicalize_atom
+    from drowse.store.selectors import canonicalize_atom
 
     canonical, variant = canonicalize_atom("happy.sad:role-mad-scientist")
     assert canonical == "happy.sad"
@@ -333,13 +333,13 @@ def test_canonicalize_atom_role_with_dotted_id() -> None:
 def test_parse_role_variant_invalid_slug():
     """Uppercase id rejected — matches the SAE precedent for `sae-FOO`."""
     import pytest as _pt
-    from drowse.io.selectors import parse, SelectorError
+    from drowse.store.selectors import parse, SelectorError
     with _pt.raises(SelectorError):
         parse("honest:role-PIRATE")
 
 
 def test_parse_role_with_namespace():
-    from drowse.io.selectors import parse
+    from drowse.store.selectors import parse
     s = parse("default/honest:role-pirate")
     assert s.kind == "name"
     assert s.value == "honest"
@@ -459,7 +459,7 @@ def test_create_authored_folder_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.manifolds import create_manifold_folder
+    from drowse.store.manifolds import create_manifold_folder
 
     _warm_index()
     create_manifold_folder(
@@ -480,7 +480,7 @@ def test_update_manifold_folder_invalidates(
 ) -> None:
     """Re-authoring node labels must not leave the old roster resolvable."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.manifolds import create_manifold_folder, update_manifold_folder
+    from drowse.store.manifolds import create_manifold_folder, update_manifold_folder
 
     domain = {"type": "box",
               "axes": [{"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
@@ -506,7 +506,7 @@ def test_merge_discover_manifolds_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.manifolds import merge_discover_manifolds
+    from drowse.store.manifolds import merge_discover_manifolds
 
     _mk_nodes("local", "a", ["alpha"])
     _mk_nodes("local", "b", ["beta"])
@@ -523,7 +523,7 @@ def test_remove_manifold_folder_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.manifolds import remove_manifold_folder
+    from drowse.store.manifolds import remove_manifold_folder
 
     _mk_nodes("local", "personas", ["pirate", "wizard"])
     assert sel.resolve_manifold_label("pirate") is not None
@@ -543,7 +543,7 @@ def test_streaming_authoring_path_invalidates(
     that call has to drop the index too.
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.manifolds import (
+    from drowse.store.manifolds import (
         append_discover_manifold_node, init_discover_manifold_folder,
     )
 
@@ -563,8 +563,8 @@ def test_bundled_materialization_invalidates(
 ) -> None:
     """A cold resolve before bootstrap must not pin an empty roster."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io import manifolds as manifolds_mod
-    from drowse.io.bootstrap import materialize_bundled_artifacts
+    from drowse.store import manifolds as manifolds_mod
+    from drowse.store.bundled import materialize_bundled_artifacts
 
     monkeypatch.setattr(manifolds_mod, "_materialized_home", None)
     sel.invalidate()
@@ -593,8 +593,7 @@ def test_single_walk_serves_all_three_views(
 ) -> None:
     """A cold compound resolve parses the manifold tree exactly once."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io import manifolds as manifolds_mod
-
+    from drowse.store import manifolds as manifolds_mod
     _mk_nodes("local", "deer.wolf", ["deer", "wolf"])
     sel.invalidate()
 

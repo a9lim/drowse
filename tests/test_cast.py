@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from drowse import CastMember, LoomTree, Recipe, SamplingConfig
-from drowse.core.session import DrowseSession
+from drowse.session.session import DrowseSession
 
 
 class _Stub:
@@ -156,7 +156,7 @@ def test_bare_member_contributes_nothing():
 
 def test_session_set_cast_member_validates_steering():
     import pytest
-    from drowse.core.steering_expr import SteeringExprError
+    from drowse.steering.grammar import SteeringExprError
 
     stub = _Stub()
     with pytest.raises(SteeringExprError):

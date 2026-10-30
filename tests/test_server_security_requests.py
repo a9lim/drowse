@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
-from drowse.core.session import DrowseSession
+from drowse.session.session import DrowseSession
 from drowse.server import create_app
 from tests.test_server_loom import _StubSession
 
@@ -181,7 +181,7 @@ def test_bias_validation_preserves_valid_values() -> None:
 @pytest.mark.parametrize("accept", ["application/json", "text/event-stream"])
 def test_retained_typed_transport_errors_keep_safe_messages(wrapped: bool, accept: str) -> None:
     import asyncio
-    from drowse.io.hf_manifolds import HFError as ManifoldHFError
+    from drowse.store.hub import HFError as ManifoldHFError
     from drowse.server.operation_ledger import register_operation_routes
     from drowse.server.sse import sse_or_json
 
@@ -214,7 +214,7 @@ def test_retained_typed_transport_errors_keep_safe_messages(wrapped: bool, accep
 
 def test_retained_operation_keeps_typed_error_status() -> None:
     import asyncio
-    from drowse.core.errors import SteeringCompositionError
+    from drowse.errors import SteeringCompositionError
     from drowse.server.operation_ledger import register_operation_routes
     from drowse.server.sse import sse_or_json
 

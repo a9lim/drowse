@@ -16,7 +16,7 @@ from drowse import (
     SamplingConfig,
     derive_seed_schedule,
 )
-from drowse.core.results import GenerationResult, RunSet
+from drowse.generation.results import GenerationResult, RunSet
 
 
 class _SweepStub:
@@ -78,7 +78,7 @@ class _SweepStub:
 
 
 def test_sweep_lands_siblings_under_user_turn():
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     stub = _SweepStub()
     sweep = DrowseSession.generate_sweep.__get__(stub, _SweepStub)
@@ -104,7 +104,7 @@ def test_sweep_lands_siblings_under_user_turn():
 
 
 def test_sweep_runset_carries_parallel_node_ids():
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     stub = _SweepStub()
     sweep = DrowseSession.generate_sweep.__get__(stub, _SweepStub)
@@ -120,7 +120,7 @@ def test_sweep_runset_carries_parallel_node_ids():
 
 
 def test_sweep_seed_schedule_is_deterministic():
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     stub = _SweepStub()
     sweep = DrowseSession.generate_sweep.__get__(stub, _SweepStub)
@@ -137,7 +137,7 @@ def test_sweep_seed_schedule_is_deterministic():
 
 
 def test_sweep_default_return_shape_is_runset():
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     stub = _SweepStub()
     sweep = DrowseSession.generate_sweep.__get__(stub, _SweepStub)

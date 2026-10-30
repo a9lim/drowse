@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
-from drowse.core.errors import DrowseError
+from drowse.errors import DrowseError
 from drowse.server.streaming import ClosingStreamingResponse, finish_worker
 
 ProgressCallback = Callable[[str], None]

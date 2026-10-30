@@ -9,9 +9,9 @@ import numpy as np
 import torch
 import transformers
 
-from drowse.core.capture import _capture_all_hidden_states
-from drowse.core.jlens import JacobianLens, lens_logits
-from drowse.core.model import LogitReadout, get_final_norm, get_layers, get_logit_softcap, get_output_projection, get_unembedding
+from drowse.fit.capture import _capture_all_hidden_states
+from drowse.lens.jlens import JacobianLens, lens_logits
+from drowse.model.loading import LogitReadout, get_final_norm, get_layers, get_logit_softcap, get_output_projection, get_unembedding
 
 
 @pytest.fixture(params=["llama", "qwen2", "qwen3", "qwen3_5_text", "gemma2", "gemma3_text", "gpt2", "gpt_neox", "opt",
@@ -122,8 +122,8 @@ def test_final_residual_identity_lens_matches_model_logits(model: Any):
 
 @pytest.mark.parametrize("ablate", [False, True])
 def test_steering_manager_matches_independent_block_intervention(model: Any, ablate: bool):
-    from drowse.core.hooks import SteeringManager
-    from drowse.core.manifold import LayerSubspace, SynthesizedSubspace
+    from drowse.steering.hooks import SteeringManager
+    from drowse.geometry.manifold import LayerSubspace, SynthesizedSubspace
 
     ids = torch.tensor([[1, 7, 11, 13, 19]])
     layers = get_layers(model)
@@ -166,7 +166,7 @@ def test_generation_logprobs_and_entropy_match_numpy(model: Any, temperature: fl
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
     from transformers import PreTrainedTokenizerFast
-    from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
+    from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
 
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=Tokenizer(WordLevel(
         {f"t{i}": i for i in range(64)}, unk_token="t0",
@@ -252,7 +252,7 @@ def test_identity_lens_preserves_native_bfloat16_normalization(model: Any, devic
 
 
 def test_token_directions_and_decomposition_include_output_projection(model: Any):
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     from tests.test_jlens_session import _StubSession
 
     dim = model.config.hidden_size

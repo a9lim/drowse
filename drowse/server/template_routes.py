@@ -1,6 +1,6 @@
 """Native template route group — ``/drowse/v1/templates/*``.
 
-The standalone templated-completion artifact (``drowse.io.templates``): a slot, a
+The standalone templated-completion artifact (``drowse.store.templates``): a slot, a
 set of candidate values, and one or more multi-turn contexts. Lifecycle routes
 (list / get / create / delete) are pure-IO; ``score`` runs the loaded model under
 the session lock to return the per-context restricted-choice value distribution
@@ -14,7 +14,7 @@ from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request
 
-from drowse.io.templates import (
+from drowse.store.templates import (
     AmbiguousTemplateError,
     TemplateFolder,
     TemplateFormatError,

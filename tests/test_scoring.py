@@ -1,4 +1,4 @@
-"""CPU tests for ``drowse.core.scoring`` — the restricted-choice logit read.
+"""CPU tests for ``drowse.generation.scoring`` — the restricted-choice logit read.
 
 The headline question this module answers is *"did steering shift the
 distribution, not just the argmax?"*  These tests pin the math that backs that
@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.scoring import (
+from drowse.generation.scoring import (
     ChoiceScore,
     ChoiceScores,
     score_choices,
@@ -458,7 +458,7 @@ def test_steering_actually_shifts_distribution():
 
 def _toy_template() -> Any:
     """A 2-value, 2-context template via the real TemplateFolder.from_payload."""
-    from drowse.io.templates import TemplateFolder
+    from drowse.store.templates import TemplateFolder
 
     return TemplateFolder.from_payload({
         "format_version": 2,

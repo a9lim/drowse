@@ -99,8 +99,8 @@ def register_session_routes(app: FastAPI) -> None:
         expression = req.expression.strip()
         if not expression:
             return {"valid": True, "expression": "", "error": None}
-        from drowse.core.errors import DrowseError
-        from drowse.core.steering_expr import format_expr, parse_expr
+        from drowse.errors import DrowseError
+        from drowse.steering.grammar import format_expr, parse_expr
 
         try:
             parsed = parse_expr(expression)

@@ -7,16 +7,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from drowse.core.instruments.types import (
+from drowse.readout.types import (
     GeometryLiveState,
     LensLiveState,
     SaeLiveState,
 )
 from fastapi.testclient import TestClient
 
-from drowse.core.errors import DrowseError
-from drowse.core.generation import GenerationConfig
-from drowse.core.results import GenerationResult, RunSet
+from drowse.errors import DrowseError
+from drowse.generation.decode import GenerationConfig
+from drowse.generation.results import GenerationResult, RunSet
 from drowse.server.ws_models import WSSamplingParams, build_sampling_config
 from tests._fakes import make_mock_session
 
@@ -225,8 +225,8 @@ class TestSessions:
         # has to assert against a roster the test owns.  Reading the developer's
         # real ``~/.drowse`` made the outcome depend on whether that home
         # happened to hold current-format bundled folders.
-        import drowse.io.selectors as selectors
-        from drowse.io.bootstrap import materialize_bundled_artifacts
+        import drowse.store.selectors as selectors
+        from drowse.store.bundled import materialize_bundled_artifacts
 
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         materialize_bundled_artifacts()
@@ -315,7 +315,7 @@ class TestSessions:
         assert body["strips_history_thinking"] is False
 
         # A think-capable strip-family grammar flips all three.
-        from drowse.core.scene import SeatWrapper, TurnGrammar
+        from drowse.model.scene import SeatWrapper, TurnGrammar
 
         session.scene_grammar = TurnGrammar(
             model_type="qwen3",
@@ -394,7 +394,7 @@ class TestProbes:
         from types import SimpleNamespace
         import torch
 
-        from drowse.core.capture import fold_directions_to_subspace
+        from drowse.fit.capture import fold_directions_to_subspace
         from tests._whitener import isotropic_whitener
 
         session, client = session_and_client
@@ -434,7 +434,7 @@ class TestProbes:
 class TestExtract:
     def test_extract_json(self, session_and_client: Any) -> None:
         import torch
-        from drowse.core.profile import Profile
+        from drowse.geometry.profile import Profile
         session, client = session_and_client
         profile = Profile({0: torch.zeros(4), 1: torch.ones(4)})
         session.extract.return_value = ("angry.calm", profile)
@@ -454,7 +454,7 @@ class TestExtract:
     def test_extract_defaults_kind_to_abstract(self, session_and_client: Any) -> None:
         """The elicitation framing is explicit on the wire, defaulted here."""
         import torch
-        from drowse.core.profile import Profile
+        from drowse.geometry.profile import Profile
         session, client = session_and_client
         session.extract.return_value = ("angry.calm", Profile({0: torch.zeros(4)}))
         resp = client.post(
@@ -470,7 +470,7 @@ class TestExtract:
     ) -> None:
         """``kind`` / ``custom_system`` reach ``session.extract`` verbatim."""
         import torch
-        from drowse.core.profile import Profile
+        from drowse.geometry.profile import Profile
         session, client = session_and_client
         session.extract.return_value = ("january.july", Profile({0: torch.zeros(4)}))
         resp = client.post(
@@ -516,7 +516,7 @@ class TestExtract:
     ) -> None:
         """The JSON branch returns what the SSE branch streams as frames."""
         import torch
-        from drowse.core.profile import Profile
+        from drowse.geometry.profile import Profile
         session, client = session_and_client
         profile = Profile({0: torch.zeros(4)})
 
@@ -554,7 +554,7 @@ class TestExtract:
     def test_extract_json_maps_a_concurrent_run_to_409(
         self, session_and_client: Any,
     ) -> None:
-        from drowse.core.session import ConcurrentExtractionError
+        from drowse.session.session import ConcurrentExtractionError
 
         session, client = session_and_client
         session.extract.side_effect = ConcurrentExtractionError("busy")
@@ -585,7 +585,7 @@ class TestExtract:
         self, session_and_client: Any,
     ) -> None:
         import torch
-        from drowse.core.profile import Profile
+        from drowse.geometry.profile import Profile
         session, client = session_and_client
         profile = Profile({0: torch.ones(4)})
         session.extract.return_value = ("honest.deceptive:role-pirate", profile)
@@ -618,7 +618,7 @@ class TestExtract:
         ``asyncio.Queue`` driven from the worker thread.
         """
         import torch
-        from drowse.core.profile import Profile
+        from drowse.geometry.profile import Profile
         session, client = session_and_client
         profile = Profile({0: torch.ones(4)})
 
@@ -660,7 +660,7 @@ class TestExtract:
         self, session_and_client: Any,
     ) -> None:
         import torch
-        from drowse.core.profile import Profile
+        from drowse.geometry.profile import Profile
         session, client = session_and_client
         profile = Profile({0: torch.ones(4)})
 
@@ -1073,8 +1073,8 @@ class TestWebSocket:
         band itself. Contract: the server emits a ``{type: "error"}``
         frame and stays open for a follow-up generate.
         """
-        from drowse.io.selectors import AmbiguousSelectorError
-        import drowse.core.steering_expr as _sx
+        from drowse.store.selectors import AmbiguousSelectorError
+        import drowse.steering.grammar as _sx
 
         session, client = session_and_client
         self._attach_generate(session, ["ok"])
@@ -1130,7 +1130,7 @@ class TestDeletedTraitsStream:
         assert resp.status_code == 404
 
     def test_session_has_no_trait_queue_plumbing(self) -> None:
-        from drowse.core.session import DrowseSession
+        from drowse.session.session import DrowseSession
 
         for attr in (
             "register_trait_queue", "unregister_trait_queue", "_trait_queues",
@@ -1144,9 +1144,9 @@ class TestDeletedTraitsStream:
 class TestScoreSingleToken:
     def test_returns_scores_without_accumulation(self):
         import torch
-        from drowse.core.monitor import Monitor
-        from drowse.core.results import ProbeReading
-        from drowse.core.capture import fold_directions_to_subspace
+        from drowse.readout.monitor import Monitor
+        from drowse.generation.results import ProbeReading
+        from drowse.fit.capture import fold_directions_to_subspace
 
         from tests._whitener import isotropic_whitener
         dim = 16
@@ -1171,8 +1171,8 @@ class TestScoreSingleToken:
 
     def test_consistent_with_measure_from_hidden(self):
         import torch
-        from drowse.core.monitor import Monitor
-        from drowse.core.capture import fold_directions_to_subspace
+        from drowse.readout.monitor import Monitor
+        from drowse.fit.capture import fold_directions_to_subspace
 
         from tests._whitener import isotropic_whitener
         dim = 16
@@ -1390,8 +1390,7 @@ class TestManifoldRoutes:
         """
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         _session, client = session_and_client
-        from drowse.io import selectors
-
+        from drowse.store import selectors
         selectors.invalidate()
         assert selectors.resolve_manifold_label("afraid") is None  # warms it
 
@@ -1443,7 +1442,7 @@ class TestManifoldRoutes:
         ``ManifoldAuthoringChangedError`` is the same conflict
         ``ConcurrentExtractionError`` models, reached from the other side.
         """
-        from drowse.core.extraction import ManifoldAuthoringChangedError
+        from drowse.fit.pipeline import ManifoldAuthoringChangedError
 
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         session, client = session_and_client
@@ -1457,7 +1456,7 @@ class TestManifoldRoutes:
     def test_fit_sse_authoring_conflict_is_a_typed_frame(
         self, session_and_client: Any, tmp_path: Any, monkeypatch: Any,
     ) -> None:
-        from drowse.core.extraction import ManifoldAuthoringChangedError
+        from drowse.fit.pipeline import ManifoldAuthoringChangedError
 
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         session, client = session_and_client
@@ -1538,7 +1537,7 @@ class TestTemplateRoutes:
         session, client = session_and_client
         client.post("/drowse/v1/templates", json=_TMPL_PAYLOAD)
 
-        from drowse.core.scoring import ChoiceScore, ChoiceScores
+        from drowse.generation.scoring import ChoiceScore, ChoiceScores
         fake = [ChoiceScores(choices=(
             ChoiceScore("Monday", "monday", (1,), 1, -1.0, -1.0, 0.7, 0.7),
             ChoiceScore("Tuesday", "tuesday", (2,), 1, -2.0, -2.0, 0.3, 0.3),
@@ -1608,7 +1607,7 @@ class TestPairwiseMetric:
 
     def test_mahalanobis_default(self, session_and_client: Any) -> None:
         import torch
-        from drowse.core.mahalanobis import LayerWhitener
+        from drowse.geometry.whitener import LayerWhitener
         session, client = self._setup(session_and_client)
         g = torch.Generator().manual_seed(4)
         acts = {L: torch.randn(80, 4, generator=g) for L in (0, 1)}
@@ -1646,12 +1645,12 @@ class TestAnalyticsMultiNodeProbe:
 
         import torch
 
-        from drowse.core.mahalanobis import LayerWhitener
-        from drowse.core.manifold import (
+        from drowse.geometry.whitener import LayerWhitener
+        from drowse.geometry.manifold import (
             CustomDomain, LayerSubspace, Manifold,
         )
-        from drowse.core.session import DrowseSession
-        from drowse.core.capture import fold_directions_to_subspace
+        from drowse.session.session import DrowseSession
+        from drowse.fit.capture import fold_directions_to_subspace
 
         session, client = session_and_client
         torch.manual_seed(3)
@@ -1698,7 +1697,7 @@ class TestAnalyticsMultiNodeProbe:
         # instrument's LOCKED ``manifolds()`` snapshot now — a bare MagicMock
         # instrument silently yields an empty roster, so wire the real one
         # (it reads the same ``session._monitor.manifolds`` stub above).
-        from drowse.core.instruments.geometry import GeometryInstrument
+        from drowse.readout.geometry import GeometryInstrument
 
         session._geometry_instrument = GeometryInstrument(session)
         # Bind the real analytics methods onto the mock so the endpoint
@@ -1768,7 +1767,7 @@ class TestNativeErrorEnvelope:
     def test_typed_drowse_error_uses_the_native_envelope(
         self, session_and_client: Any,
     ) -> None:
-        from drowse.core.errors import DrowseError
+        from drowse.errors import DrowseError
 
         class _Nope(RuntimeError, DrowseError):
             def user_message(self) -> tuple[int, str]:

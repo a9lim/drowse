@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.core.mahalanobis import LayerWhitener
-from drowse.core.manifold import fit_affine_subspace, subspace_share
-from drowse.core.topology import derive_pca_coords, neutral_layout_coord
+from drowse.geometry.whitener import LayerWhitener
+from drowse.geometry.manifold import fit_affine_subspace, subspace_share
+from drowse.geometry.topology import derive_pca_coords, neutral_layout_coord
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "browser" / "affine-fisher-fit-v1.json"

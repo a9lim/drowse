@@ -3,8 +3,8 @@ and the ScalarReading -> ProbeReading phase-1 wire bridge."""
 
 import pytest
 
-from drowse.core.errors import DrowseError, UnsupportedProbeChannelError
-from drowse.core.instruments import (
+from drowse.errors import DrowseError, UnsupportedProbeChannelError
+from drowse.readout import (
     Assignment,
     Axis,
     DepthSummary,
@@ -16,7 +16,7 @@ from drowse.core.instruments import (
     parse_gate_ref,
     validate_gate_channels,
 )
-from drowse.core.results import ProbeReading
+from drowse.generation.results import ProbeReading
 
 
 # --------------------------------------------------------------------------
@@ -197,7 +197,7 @@ def test_session_facades_are_the_instruments() -> None:
     """``session.lens`` / ``session.sae`` are the instrument objects
     themselves — the typed public faces of ``session.instruments``."""
     from drowse import GeometryInstrument, LensInstrument, SaeInstrument
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     session = DrowseSession.__new__(DrowseSession)  # lazy instruments self-heal
     inst = session.instruments
@@ -222,7 +222,7 @@ _RUN_SURFACE = ("observe", "prime_observation", "observe_aggregate", "close")
 def test_every_family_carries_the_uniform_instrument_surface() -> None:
     """Each family exposes the same instrument/run methods and starts on an
     idle passthrough run; ``close_run`` restores one."""
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     session = DrowseSession.__new__(DrowseSession)
     for family, instrument in session.instruments.items():
@@ -248,7 +248,7 @@ def test_gate_validation_is_only_where_a_channel_can_be_refused() -> None:
     strength axis, so a geometry-channel gate is a composition-preflight
     error there; geometry produces every channel, so its implementation
     accepts unconditionally."""
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     session = DrowseSession.__new__(DrowseSession)
     ref = parse_gate_ref("probe:membership")

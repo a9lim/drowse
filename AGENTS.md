@@ -12,7 +12,7 @@ the 2-node flat case; `personas` is a 107-node flat fan; `emotions` is a 20-node
 affect manifold over PAD. Every steering term — vectors, poles, `~`/`|`
 projections, `!` ablations, and `%` manifold positions — lowers at generation
 time to one unified per-layer injection (the along/onto subspace kernel,
-`core/manifold.py::subspace_inject`). Per-call coefficients, no model mutation.
+`geometry/manifold.py::subspace_inject`). Per-call coefficients, no model mutation.
 Two frontends over one engine: `DrowseSession` (programmatic) and `drowse serve`
 (HTTP APIs plus the web dashboard).
 
@@ -103,7 +103,7 @@ group prints its dispatch menu and exits 0.
 Every subcommand that takes `-c/--config` auto-loads `~/.drowse/config.yaml`
 first, then composes explicit `-c` files on top (later overrides earlier). The
 `vectors:` YAML key is a single steering expression parsed by
-`drowse.core.steering_expr.parse_expr`. Flag precedence is CLI > YAML > runner
+`drowse.steering.grammar.parse_expr`. Flag precedence is CLI > YAML > runner
 default throughout (including `--max-tokens`). `cli/AGENTS.md` has the full
 per-verb flag set and the reserved short-flag table.
 
@@ -124,16 +124,16 @@ contrast pairs were generated under a chat template whose assistant-role label
 was substituted, and the same substitution is auto-applied at steering time so
 extract baseline equals steer baseline). There is no `pca` variant. Bare names
 resolve cross-namespace and raise `AmbiguousSelectorError` on collision.
-Concepts *are* manifolds (`io.selectors` walks `manifolds_dir()`): a bare slug
-resolves through the steering grammar's bare-atom tier (`core/steering_expr`) —
+Concepts *are* manifolds (`store.selectors` walks `manifolds_dir()`): a bare slug
+resolves through the steering grammar's bare-atom tier (`steering/grammar`) —
 the bipolar-pole/name resolvers (`resolve_pole`/`resolve_manifold_name` over
 the installed 2-node `pca` manifolds) first, then
-`io.selectors.resolve_manifold_label` for a multi-node manifold node label,
+`store.selectors.resolve_manifold_label` for a multi-node manifold node label,
 raising on cross-tier collision. A steering expression composing role-augmented
 terms must agree on role; plain `:raw` terms compose with role terms but emit a
 one-time `RoleBaselineMismatchWarning`.
 
-Canonical naming: `canonical_concept_name` (module-level in `core/naming.py`)
+Canonical naming: `canonical_concept_name` (module-level in `naming.py`)
 slugs poles via `[^a-z0-9]+ → _` and joins bipolar poles with `BIPOLAR_SEP =
 "."`, so `/steer formal . casual` and `/steer formal.casual` resolve to the
 same manifold. `NAME_REGEX = ^[a-z][a-z0-9._-]{0,63}$`; `@` is forbidden (HF
@@ -142,7 +142,7 @@ revision separator), and `.` is used over `~` because HF repo names reject `~`.
 ## Steering expression grammar
 
 Every live steering surface — Python, YAML, HTTP, and CLI — speaks the grammar
-in `drowse.core.steering_expr`. `manifold bake` parses the same syntax but
+in `drowse.steering.grammar`. `manifold bake` parses the same syntax but
 accepts only namespace-qualified additive/subtractive scalar terms: dynamic
 `!`/`%`, triggers, multi-coefficients, and Mahalanobis `~`/`|` projections
 require a live model and are rejected offline. `parse_expr(text)` → `Steering`;
@@ -237,9 +237,9 @@ manifolds at one layer must be (near-)orthogonal or `OverlappingManifoldError`
 raises; the merged affine subspace is always orthogonalized against the curved
 spans. See "Manifold steering" below.
 
-A bare slug (`pirate`) resolves in `core/steering_expr`: first as a bipolar
+A bare slug (`pirate`) resolves in `steering/grammar`: first as a bipolar
 pole/name of a 2-node `pca` manifold (`resolve_pole`/`resolve_manifold_name`),
-then via `io.selectors.resolve_manifold_label` as a multi-node manifold node
+then via `store.selectors.resolve_manifold_label` as a multi-node manifold node
 label (synthesizing a label-form `ManifoldTerm`, e.g. `local/personas%pirate`).
 Cross-tier ambiguity raises `AmbiguousSelectorError`. Namespace-qualified or
 variant-suffixed forms (`alice/pirate`, `pirate:role-x`, `civilian.pirate`)
@@ -252,7 +252,7 @@ months, durations, directions. "someone who is Tuesday" is nonsense, so the
 persona-framed extraction doesn't apply. A **template** is the artifact for
 these: a `slot` token, a set of candidate `values`, and one or more multi-turn
 `contexts` whose final assistant turn carries the slot
-(`io/templates.py::TemplateFolder`, on disk at
+(`store/templates.py::TemplateFolder`, on disk at
 `~/.drowse/templates/<ns>/<name>/template.json`). Invariant: the slot appears
 **exactly once** in each context's final `assistant` string and **never** in a
 history turn (history is shared common-mode across the values; the slot lives
@@ -265,7 +265,7 @@ None ship at present; the machinery is dormant by design.
 
 The template is a first-class artifact with **two** consumers:
 
-- **The completion scorer** (`core/scoring.py::score_choices`) — for each
+- **The completion scorer** (`generation/scoring.py::score_choices`) — for each
   context, the restricted-choice logprob distribution over the values: the
   model's belief about which slot-fill comes next. Forced-choice scoring
   against the **raw** model distribution (temperature 1, no top-k/p
@@ -279,7 +279,7 @@ The template is a first-class artifact with **two** consumers:
   `session.score_choices(messages, choices, …)` / `session.score_template(name,
   steering=…)` return one `ChoiceScores` per context.
 - **A manifold fit** — `manifold from-template <tmpl>`
-  (`io/manifold_authoring.py::create_manifold_from_template`) resolves the
+  (`store/manifold_authoring.py::create_manifold_from_template`) resolves the
   template, expands its `values × contexts` into per-value node corpora (the
   slot-filled assistant turns, `corpus[i]` aligned to `contexts[i]`), and
   writes a discover folder that stores the corpus **and** a `template_ref`. At
@@ -307,7 +307,7 @@ embedded provenance at fetch); `jlens/active.json` selects the runtime
 source.
 
 **R-lens (RelP).** `lens fit` defaults to the R-lens and runs the *same*
-estimator through an LRP-modified backward graph (`core/relp.py`; RelP,
+estimator through an LRP-modified backward graph (`lens/relp.py`; RelP,
 arXiv:2508.21258): the
 LN-rule (RMSNorm `rsqrt` detached), identity-rule (the gated activation
 backprops its detached `act(x)/x` factor), and half-rule (the `gate·up`
@@ -324,13 +324,13 @@ forward); MoE and fused projections raise `RelpUnsupportedError`. Every read
 surface is estimator-agnostic — probes, atoms, gates, decompose, and the
 live wire consume whichever lens is active. The sidecar records the immutable corpus spec + token-id sha256, exact
 source/live model identities, and one payload sha256 per layer. `lens fit` runs
-the estimator (`core/jlens_fit.py::fit_jacobian_lens` — the **only** backward
+the estimator (`lens/fit.py::fit_jacobian_lens` — the **only** backward
 passes in drowse; resumable, checkpointed, OOM-adaptive — see
 `core/AGENTS.md`). The fit is compute-bound; `--layers` restriction is the one
 real wall-time lever. ~100 prompts is usable, 1000 is paper-parity; the default
 corpus is a commit-pinned FineWeb-Edu stream via the optional `datasets`
 dependency (`pip install 'drowse.ai[hf]'`), and `--hf-corpus` streams any other
-Hub dataset the same way (`io/lens.py::HfLensCorpus`), optionally spread over
+Hub dataset the same way (`lens/store.py::HfLensCorpus`), optionally spread over
 its data files (`files=K`) or mixed by weight with others (`LensCorpusMix`).
 
 Three read surfaces over either source, plus local fit and external fetch:
@@ -338,7 +338,7 @@ Three read surfaces over either source, plus local fit and external fetch:
 - **Readout** — `lens top` / `session.jlens_readout`: `softmax(W_U ·
   norm(J_l h))` ranks the vocabulary by what an intermediate activation is
   disposed to make the model say. Every readout surface also carries the
-  **layer-aggregated** view (`core/jlens.py::aggregate_readout`): per-layer
+  **layer-aggregated** view (`lens/jlens.py::aggregate_readout`): per-layer
   softmax calibrates away the cross-layer logit scale, then per token
   `strength = mean_l p_l(v)` (mean fitted-layer probability, 0..1) and a depth
   center of mass `com` (+ `spread`) weighted by the same per-layer probability
@@ -395,10 +395,10 @@ There is **one** extraction pipeline. A steering vector is the K=2 flat case of
 a manifold, so `session.extract(concept, baseline, *, kind="abstract",
 custom_system=None, …)` authors a 2-node discover-`pca` manifold under
 `manifolds/<ns>/<name>/` — node 0 the positive pole, node 1 the negative — and
-fits it via `core/extraction.py::ManifoldExtractionPipeline`. The corpus lives
+fits it via `fit/pipeline.py::ManifoldExtractionPipeline`. The corpus lives
 as the manifold's two node groups. `extract()` returns `(canonical_name,
 Profile)` where the `Profile` is the **folded** per-layer direction view of the
-fitted 2-node manifold (`core/capture.py::folded_directions`) — the in-memory
+fitted 2-node manifold (`fit/capture.py::folded_directions`) — the in-memory
 steering-vector shape callers expect, with the manifold the single on-disk
 artifact. A tensor cache hit (sidecar `nodes_sha256` matches the folder)
 short-circuits the forward passes.
@@ -458,14 +458,14 @@ degraded one). The sidecar `share_metric` / `subspace_metric` fields are
 provenance and read `mahalanobis`, the one exception being a monopolar fit's
 `subspace_metric`, which labels its raw-δ̂ basis `euclidean` (a basis-selection
 label — `concept − ν` cancels common-mode by differencing, like DiM — not a
-metric fallback). The `LayerWhitener` (`core/mahalanobis.py`) is built lazily
+metric fallback). The `LayerWhitener` (`geometry/whitener.py`) is built lazily
 from cached neutral activations and drives the closed-form LEACE `~`/`|`
 projection, the whitened/Fisher subspace fit, the whitened monitor reads, and
 `manifold compare`.
 
 ## Injection
 
-One injection kernel — `core/manifold.py::subspace_inject` — for every steering
+One injection kernel — `geometry/manifold.py::subspace_inject` — for every steering
 term. There is no angular/additive mode, no `injection_mode`/`theta_max`, no
 `_STEER_GAIN`. At dispatch (`SteeringComposer.compose_steering_entries`) each
 term is classified and lowered: vectors / poles / `~`/`|` projections / `!`
@@ -496,7 +496,7 @@ guard, and it rides the **curved path only** — the affine fast path skips it (
 flat fit can't extrapolate off-domain, so the bounded displacement can't blow
 the norm).
 
-Gain (`core/hooks.py`): the per-layer share is normalized to **mean 1** (`Σ_L
+Gain (`steering/hooks.py`): the per-layer share is normalized to **mean 1** (`Σ_L
 share_L = n_layers`) and `eff_along_L = share_L · gain`. The along-gain is
 **path-specific** — `_SUBSPACE_GAIN = 16.0` on the affine path (whitened-unit
 target, free push magnitude, overshoot-safe; live-calibrated on gemma-4-12b so
@@ -554,7 +554,7 @@ reproduces the natural cubic spline.
 A manifold lives under `~/.drowse/manifolds/<ns>/<name>/` as `manifold.json`
 (domain spec + per-node `{label, coords}` for authored; `fit_mode` +
 hyperparams + `{label}` for discover) + `nodes/NN_<label>.json` corpora — by
-hand or via the webui builder (`io.manifold_authoring`). `manifold fit`, the
+hand or via the webui builder (`store.manifold_authoring`). `manifold fit`, the
 webui fit action, and `POST .../fit` all run `ManifoldExtractionPipeline`: pool
 each node's centroid, embed coords through the domain (or derive them for
 discover mode), fit a per-layer subspace (flat `fit_affine_subspace` for
@@ -577,7 +577,7 @@ for a curved fit (a flat `pca` fit needs only `k+1`); authored nodes must be
 `pca` / `spectral` / `auto` (discover — labeled corpora only, coords derived
 per-model; `pca` is flat, `spectral` curved, `auto` picks between them), and
 `baked` (corpus-less, a precomputed direction written by `manifold bake`).
-`auto` runs `select_topology` (`core/topology.py`) at fit time: flat vs curved
+`auto` runs `select_topology` (`geometry/topology.py`) at fit time: flat vs curved
 chosen by GCV in a shared whitened-reduced metric, plus periodic (`BoxDomain`)
 axes detected by Vietoris–Rips H1 persistent homology coordinated off the
 spectral eigenpairs, with a guarded single-cycle fallback for faint or
@@ -664,7 +664,7 @@ per-step Bhattacharyya distance of a steered trajectory to it (low = natural;
 
 Complete bundled artifacts ship under `drowse/data/manifolds/`, materializing
 into `~/.drowse/manifolds/default/` on session start via the io bootstrap
-(`io/bootstrap.py`; process-scope no-op after the first call). The materializer
+(`store/bundled.py`; process-scope no-op after the first call). The materializer
 only advertises folders whose `manifold.json` and declared `nodes/*.json`
 corpus files are all present, so a partial folder in the package tree is never
 exposed as a default manifold:
@@ -747,7 +747,7 @@ with DrowseSession.from_pretrained("google/gemma-3-4b-it", device="auto") as ses
 Key contracts:
 - `generate` / `generate_stream` / `session.steering()` accept `str | Steering |
   None` only — dicts raise `TypeError`. A string is a steering expression.
-- **Cast model** (`core/scene.py`): rendering goes through the per-session
+- **Cast model** (`model/scene.py`): rendering goes through the per-session
   **scene grammar** (template autopsy + byte-exact round-trip validation;
   `session.scene_grammar`, None = raw-marker fallback). `generate(...,
   gen_seat="user")` has the model speak the user seat (the node lands
@@ -789,7 +789,7 @@ Key contracts:
   wraps `dict[int, Tensor]` (mapping interface plus `layers`, `metadata`,
   `save`/`load`, `merged`, `projected_away`, `cosine_similarity`).
 - **Instruments**: `session.geometry` / `session.lens` / `session.sae` are the
-  three read-side facades over one contract (`core/instruments/protocol.py`),
+  three read-side facades over one contract (`readout/protocol.py`),
   registered in `session.instruments`. Uniform per-family surface:
   `attach`/`detach`/`names`/`specs`, `set_live(enabled, **extras) → LiveState`
   / `live_state`, `active_source`, `validate_gate`, `probe_hash`, and
@@ -880,8 +880,8 @@ autosave tree.
 hold multiple fitted tensors per model, distinguished by filename suffix:
 `<safe>.safetensors` (raw DiM), `_sae-<release>`, `_from-<safe_src>`
 (transfer) — at most one kind per file (no `pca` suffix). `tensor_filename` /
-`parse_tensor_filename` in `io/paths.py` round-trip these. Bundled artifacts
-materialize copy-on-miss through `io/bootstrap.py::materialize_bundled_artifacts`
+`parse_tensor_filename` in `base/paths.py` round-trip these. Bundled artifacts
+materialize copy-on-miss through `store/bundled.py::materialize_bundled_artifacts`
 (templates before manifolds — the single entry point every bootstrap site uses;
 a test enforces it). io mutators invalidate the selector cache themselves;
 callers need not.
@@ -915,7 +915,7 @@ vanilla tok/s):
   fit hops to CPU for the SVD on MPS, and it forfeits
   StaticCache/`torch.compile`. Prefer affine/flat terms where coherence allows.
 - **Share baked at fit**, normalized to mean 1 at apply; gain constants and
-  their calibration live in `core/hooks.py` (see "Injection").
+  their calibration live in `steering/hooks.py` (see "Injection").
 - **Top-p via `torch.topk`**, not full-vocab sort; `top_k` (default 1024 cap)
   is a hard candidate-pool cap applied before top-p (llama.cpp/Ollama order).
 - **Monitor capture is hook-driven**, inline with generation — no second
@@ -948,7 +948,7 @@ vanilla tok/s):
 
 ## Tested architectures
 
-`_ARCH_PROFILES` in `core/model.py` is the single per-architecture registry
+`_ARCH_PROFILES` in `model/loading.py` is the single per-architecture registry
 (layer accessor + tested flag; `_LAYER_ACCESSORS`/`_TESTED_ARCHS` are derived
 views, and an invariant test keeps them coherent). A one-time `UserWarning`
 fires on load when `model_type` isn't known-working. Known working: `qwen2`,
@@ -961,7 +961,7 @@ O(N²) no-KV-cache generation with a one-time warning.
 
 Role-augmented extraction (`:role-<name>` variant) and persona manifolds need a
 chat template with a substitutable assistant-role label
-(`core/role_templates.py::SEAT_HEADERS` — one registry for both seats, with
+(`model/role_templates.py::SEAT_HEADERS` — one registry for both seats, with
 derived per-seat views). Supported: `qwen2`/`qwen3`/`qwen3_5` (ChatML),
 `gemma2`/`gemma3`/`gemma4` (`<start_of_turn>`, label is `model`), `llama`,
 `glm`, `gpt_oss`, `talkie` (`<|role|>` markers, GLM-shaped). Unsupported

@@ -8,91 +8,91 @@ from typing import TYPE_CHECKING, Any
 __version__ = "5.3.1"
 
 _EXPORTS: dict[str, tuple[str, str]] = {
-    "DrowseSession": ("drowse.core.session", "DrowseSession"),
-    "DrowseError": ("drowse.core.errors", "DrowseError"),
-    "GenState": ("drowse.core.session", "GenState"),
-    "LayerWhitener": ("drowse.core.mahalanobis", "LayerWhitener"),
-    "WhitenerError": ("drowse.core.mahalanobis", "WhitenerError"),
-    "Profile": ("drowse.core.profile", "Profile"),
-    "ProfileError": ("drowse.core.profile", "ProfileError"),
-    "SamplingConfig": ("drowse.core.sampling", "SamplingConfig"),
-    "Steering": ("drowse.core.steering", "Steering"),
-    "Trigger": ("drowse.core.triggers", "Trigger"),
-    "EventBus": ("drowse.core.events", "EventBus"),
-    "ManifoldExtracted": ("drowse.core.events", "ManifoldExtracted"),
-    "SteeringApplied": ("drowse.core.events", "SteeringApplied"),
-    "SteeringCleared": ("drowse.core.events", "SteeringCleared"),
-    "ProbeScored": ("drowse.core.events", "ProbeScored"),
-    "GenerationStarted": ("drowse.core.events", "GenerationStarted"),
-    "GenerationFinished": ("drowse.core.events", "GenerationFinished"),
-    "GenerationResult": ("drowse.core.results", "GenerationResult"),
-    "RunSet": ("drowse.core.results", "RunSet"),
-    "TokenAlt": ("drowse.core.results", "TokenAlt"),
-    "TokenEvent": ("drowse.core.results", "TokenEvent"),
-    "ProbeReadings": ("drowse.core.results", "ProbeReadings"),
-    "Manifold": ("drowse.core.manifold", "Manifold"),
-    "ProbeReading": ("drowse.core.results", "ProbeReading"),
-    "ResultCollector": ("drowse.core.results", "ResultCollector"),
-    "LoomTree": ("drowse.core.loom", "LoomTree"),
-    "LoomNode": ("drowse.core.loom", "LoomNode"),
-    "LoomMutated": ("drowse.core.loom", "LoomMutated"),
-    "Recipe": ("drowse.core.loom", "Recipe"),
-    "CastMember": ("drowse.core.loom", "CastMember"),
-    "LoomTreeError": ("drowse.core.loom", "LoomTreeError"),
-    "UnknownNodeError": ("drowse.core.loom", "UnknownNodeError"),
-    "InvalidNodeOperationError": ("drowse.core.loom", "InvalidNodeOperationError"),
-    "MutationDuringGenerationError": ("drowse.core.loom", "MutationDuringGenerationError"),
-    "derive_seed_schedule": ("drowse.core.loom", "derive_seed_schedule"),
-    "FilterClause": ("drowse.core.tree_filter", "FilterClause"),
-    "FilterParseError": ("drowse.core.tree_filter", "FilterParseError"),
-    "parse_filter": ("drowse.core.tree_filter", "parse_filter"),
-    "DiffSpan": ("drowse.core.loom_diff", "DiffSpan"),
-    "NodeDiff": ("drowse.core.loom_diff", "NodeDiff"),
-    "ReadingDelta": ("drowse.core.loom_diff", "ReadingDelta"),
-    "TokenDeltaSpan": ("drowse.core.loom_diff", "TokenDeltaSpan"),
-    "per_token_diff": ("drowse.core.loom_diff", "per_token_diff"),
-    "readings_diff": ("drowse.core.loom_diff", "readings_diff"),
-    "steering_delta": ("drowse.core.loom_diff", "steering_delta"),
-    "text_diff": ("drowse.core.loom_diff", "text_diff"),
-    "ProbeRef": ("drowse.core.transcript", "ProbeRef"),
-    "Transcript": ("drowse.core.transcript", "Transcript"),
-    "TranscriptError": ("drowse.core.transcript", "TranscriptError"),
-    "TranscriptFormatError": ("drowse.core.transcript", "TranscriptFormatError"),
-    "TranscriptModelMismatch": ("drowse.core.transcript", "TranscriptModelMismatch"),
-    "TranscriptProbeDriftError": ("drowse.core.transcript", "TranscriptProbeDriftError"),
-    "TranscriptTurn": ("drowse.core.transcript", "Turn"),
+    "DrowseSession": ("drowse.session.session", "DrowseSession"),
+    "DrowseError": ("drowse.errors", "DrowseError"),
+    "GenState": ("drowse.session.session", "GenState"),
+    "LayerWhitener": ("drowse.geometry.whitener", "LayerWhitener"),
+    "WhitenerError": ("drowse.geometry.whitener", "WhitenerError"),
+    "Profile": ("drowse.geometry.profile", "Profile"),
+    "ProfileError": ("drowse.geometry.profile", "ProfileError"),
+    "SamplingConfig": ("drowse.generation.sampling", "SamplingConfig"),
+    "Steering": ("drowse.steering.terms", "Steering"),
+    "Trigger": ("drowse.steering.triggers", "Trigger"),
+    "EventBus": ("drowse.events", "EventBus"),
+    "ManifoldExtracted": ("drowse.events", "ManifoldExtracted"),
+    "SteeringApplied": ("drowse.events", "SteeringApplied"),
+    "SteeringCleared": ("drowse.events", "SteeringCleared"),
+    "ProbeScored": ("drowse.events", "ProbeScored"),
+    "GenerationStarted": ("drowse.events", "GenerationStarted"),
+    "GenerationFinished": ("drowse.events", "GenerationFinished"),
+    "GenerationResult": ("drowse.generation.results", "GenerationResult"),
+    "RunSet": ("drowse.generation.results", "RunSet"),
+    "TokenAlt": ("drowse.generation.results", "TokenAlt"),
+    "TokenEvent": ("drowse.generation.results", "TokenEvent"),
+    "ProbeReadings": ("drowse.generation.results", "ProbeReadings"),
+    "Manifold": ("drowse.geometry.manifold", "Manifold"),
+    "ProbeReading": ("drowse.generation.results", "ProbeReading"),
+    "ResultCollector": ("drowse.generation.results", "ResultCollector"),
+    "LoomTree": ("drowse.loom.tree", "LoomTree"),
+    "LoomNode": ("drowse.loom.tree", "LoomNode"),
+    "LoomMutated": ("drowse.loom.tree", "LoomMutated"),
+    "Recipe": ("drowse.loom.tree", "Recipe"),
+    "CastMember": ("drowse.loom.tree", "CastMember"),
+    "LoomTreeError": ("drowse.loom.tree", "LoomTreeError"),
+    "UnknownNodeError": ("drowse.loom.tree", "UnknownNodeError"),
+    "InvalidNodeOperationError": ("drowse.loom.tree", "InvalidNodeOperationError"),
+    "MutationDuringGenerationError": ("drowse.loom.tree", "MutationDuringGenerationError"),
+    "derive_seed_schedule": ("drowse.loom.tree", "derive_seed_schedule"),
+    "FilterClause": ("drowse.loom.filter", "FilterClause"),
+    "FilterParseError": ("drowse.loom.filter", "FilterParseError"),
+    "parse_filter": ("drowse.loom.filter", "parse_filter"),
+    "DiffSpan": ("drowse.loom.diff", "DiffSpan"),
+    "NodeDiff": ("drowse.loom.diff", "NodeDiff"),
+    "ReadingDelta": ("drowse.loom.diff", "ReadingDelta"),
+    "TokenDeltaSpan": ("drowse.loom.diff", "TokenDeltaSpan"),
+    "per_token_diff": ("drowse.loom.diff", "per_token_diff"),
+    "readings_diff": ("drowse.loom.diff", "readings_diff"),
+    "steering_delta": ("drowse.loom.diff", "steering_delta"),
+    "text_diff": ("drowse.loom.diff", "text_diff"),
+    "ProbeRef": ("drowse.loom.transcript", "ProbeRef"),
+    "Transcript": ("drowse.loom.transcript", "Transcript"),
+    "TranscriptError": ("drowse.loom.transcript", "TranscriptError"),
+    "TranscriptFormatError": ("drowse.loom.transcript", "TranscriptFormatError"),
+    "TranscriptModelMismatch": ("drowse.loom.transcript", "TranscriptModelMismatch"),
+    "TranscriptProbeDriftError": ("drowse.loom.transcript", "TranscriptProbeDriftError"),
+    "TranscriptTurn": ("drowse.loom.transcript", "Turn"),
     # T2.3 — public types returned/raised by public methods
-    "ChoiceScores": ("drowse.core.scoring", "ChoiceScores"),
-    "ChoiceScore": ("drowse.core.scoring", "ChoiceScore"),
-    "parse_expr": ("drowse.core.steering_expr", "parse_expr"),
-    "format_expr": ("drowse.core.steering_expr", "format_expr"),
-    "ManifoldTerm": ("drowse.core.steering_expr", "ManifoldTerm"),
-    "ProjectedTerm": ("drowse.core.steering_expr", "ProjectedTerm"),
-    "AblationTerm": ("drowse.core.steering_expr", "AblationTerm"),
-    "SelectorError": ("drowse.io.selectors", "SelectorError"),
-    "AmbiguousSelectorError": ("drowse.io.selectors", "AmbiguousSelectorError"),
-    "ManifoldNotRegisteredError": ("drowse.core.session", "ManifoldNotRegisteredError"),
-    "ProfileNotRegisteredError": ("drowse.core.session", "ProfileNotRegisteredError"),
+    "ChoiceScores": ("drowse.generation.scoring", "ChoiceScores"),
+    "ChoiceScore": ("drowse.generation.scoring", "ChoiceScore"),
+    "parse_expr": ("drowse.steering.grammar", "parse_expr"),
+    "format_expr": ("drowse.steering.grammar", "format_expr"),
+    "ManifoldTerm": ("drowse.steering.grammar", "ManifoldTerm"),
+    "ProjectedTerm": ("drowse.steering.grammar", "ProjectedTerm"),
+    "AblationTerm": ("drowse.steering.grammar", "AblationTerm"),
+    "SelectorError": ("drowse.store.selectors", "SelectorError"),
+    "AmbiguousSelectorError": ("drowse.store.selectors", "AmbiguousSelectorError"),
+    "ManifoldNotRegisteredError": ("drowse.session.session", "ManifoldNotRegisteredError"),
+    "ProfileNotRegisteredError": ("drowse.session.session", "ProfileNotRegisteredError"),
     # Read-side instrument facades: the contract, the three families, and
     # the per-family live-state records ``set_live``/``live_state`` return.
-    "Instrument": ("drowse.core.instruments.protocol", "Instrument"),
-    "InstrumentRun": ("drowse.core.instruments.protocol", "InstrumentRun"),
-    "GeometryInstrument": ("drowse.core.instruments.geometry", "GeometryInstrument"),
-    "LensInstrument": ("drowse.core.instruments.lens", "LensInstrument"),
-    "SaeInstrument": ("drowse.core.instruments.sae", "SaeInstrument"),
-    "LiveState": ("drowse.core.instruments.types", "LiveState"),
-    "GeometryLiveState": ("drowse.core.instruments.types", "GeometryLiveState"),
-    "LensLiveState": ("drowse.core.instruments.types", "LensLiveState"),
-    "SaeLiveState": ("drowse.core.instruments.types", "SaeLiveState"),
-    "ScalarReading": ("drowse.core.instruments.types", "ScalarReading"),
-    "UnsupportedProbeChannelError": ("drowse.core.errors", "UnsupportedProbeChannelError"),
+    "Instrument": ("drowse.readout.protocol", "Instrument"),
+    "InstrumentRun": ("drowse.readout.protocol", "InstrumentRun"),
+    "GeometryInstrument": ("drowse.readout.geometry", "GeometryInstrument"),
+    "LensInstrument": ("drowse.lens.instrument", "LensInstrument"),
+    "SaeInstrument": ("drowse.sae.instrument", "SaeInstrument"),
+    "LiveState": ("drowse.readout.types", "LiveState"),
+    "GeometryLiveState": ("drowse.readout.types", "GeometryLiveState"),
+    "LensLiveState": ("drowse.readout.types", "LensLiveState"),
+    "SaeLiveState": ("drowse.readout.types", "SaeLiveState"),
+    "ScalarReading": ("drowse.readout.types", "ScalarReading"),
+    "UnsupportedProbeChannelError": ("drowse.errors", "UnsupportedProbeChannelError"),
     # Jacobian lens (the verbalizable-workspace readout)
-    "JacobianLens": ("drowse.core.jlens", "JacobianLens"),
-    "JSpaceDecomposition": ("drowse.core.jlens", "JSpaceDecomposition"),
-    "JacobianLensError": ("drowse.core.jlens", "JacobianLensError"),
-    "LensNotFittedError": ("drowse.core.jlens", "LensNotFittedError"),
-    "MultiTokenWordError": ("drowse.core.jlens", "MultiTokenWordError"),
-    "RelpUnsupportedError": ("drowse.core.errors", "RelpUnsupportedError"),
+    "JacobianLens": ("drowse.lens.jlens", "JacobianLens"),
+    "JSpaceDecomposition": ("drowse.lens.jlens", "JSpaceDecomposition"),
+    "JacobianLensError": ("drowse.lens.jlens", "JacobianLensError"),
+    "LensNotFittedError": ("drowse.lens.jlens", "LensNotFittedError"),
+    "MultiTokenWordError": ("drowse.lens.jlens", "MultiTokenWordError"),
+    "RelpUnsupportedError": ("drowse.errors", "RelpUnsupportedError"),
 }
 
 __all__ = [
@@ -198,11 +198,11 @@ def __dir__() -> list[str]:
 
 
 if TYPE_CHECKING:
-    from drowse.core.errors import (
+    from drowse.errors import (
         RelpUnsupportedError as RelpUnsupportedError,
         DrowseError as DrowseError,
     )
-    from drowse.core.events import (
+    from drowse.events import (
         EventBus as EventBus,
         GenerationFinished as GenerationFinished,
         GenerationStarted as GenerationStarted,
@@ -211,7 +211,7 @@ if TYPE_CHECKING:
         SteeringCleared as SteeringCleared,
         ManifoldExtracted as ManifoldExtracted,
     )
-    from drowse.core.loom import (
+    from drowse.loom.tree import (
         CastMember as CastMember,
         InvalidNodeOperationError as InvalidNodeOperationError,
         LoomMutated as LoomMutated,
@@ -223,7 +223,7 @@ if TYPE_CHECKING:
         UnknownNodeError as UnknownNodeError,
         derive_seed_schedule as derive_seed_schedule,
     )
-    from drowse.core.loom_diff import (
+    from drowse.loom.diff import (
         DiffSpan as DiffSpan,
         NodeDiff as NodeDiff,
         ReadingDelta as ReadingDelta,
@@ -233,10 +233,10 @@ if TYPE_CHECKING:
         steering_delta as steering_delta,
         text_diff as text_diff,
     )
-    from drowse.core.mahalanobis import LayerWhitener as LayerWhitener, WhitenerError as WhitenerError
-    from drowse.core.manifold import Manifold as Manifold
-    from drowse.core.profile import Profile as Profile, ProfileError as ProfileError
-    from drowse.core.results import (
+    from drowse.geometry.whitener import LayerWhitener as LayerWhitener, WhitenerError as WhitenerError
+    from drowse.geometry.manifold import Manifold as Manifold
+    from drowse.geometry.profile import Profile as Profile, ProfileError as ProfileError
+    from drowse.generation.results import (
         GenerationResult as GenerationResult,
         ProbeReading as ProbeReading,
         ProbeReadings as ProbeReadings,
@@ -245,10 +245,10 @@ if TYPE_CHECKING:
         TokenAlt as TokenAlt,
         TokenEvent as TokenEvent,
     )
-    from drowse.core.sampling import SamplingConfig as SamplingConfig
-    from drowse.core.session import GenState as GenState, DrowseSession as DrowseSession
-    from drowse.core.steering import Steering as Steering
-    from drowse.core.transcript import (
+    from drowse.generation.sampling import SamplingConfig as SamplingConfig
+    from drowse.session.session import GenState as GenState, DrowseSession as DrowseSession
+    from drowse.steering.terms import Steering as Steering
+    from drowse.loom.transcript import (
         ProbeRef as ProbeRef,
         Transcript as Transcript,
         TranscriptError as TranscriptError,
@@ -257,53 +257,53 @@ if TYPE_CHECKING:
         TranscriptProbeDriftError as TranscriptProbeDriftError,
         Turn as TranscriptTurn,  # noqa: F401
     )
-    from drowse.core.tree_filter import (
+    from drowse.loom.filter import (
         FilterClause as FilterClause,
         FilterParseError as FilterParseError,
         parse_filter as parse_filter,
     )
-    from drowse.core.triggers import Trigger as Trigger
+    from drowse.steering.triggers import Trigger as Trigger
     # T2.3 — public types returned/raised by public methods
-    from drowse.core.scoring import ChoiceScore as ChoiceScore, ChoiceScores as ChoiceScores
-    from drowse.core.steering_expr import (
+    from drowse.generation.scoring import ChoiceScore as ChoiceScore, ChoiceScores as ChoiceScores
+    from drowse.steering.grammar import (
         AblationTerm as AblationTerm,
         ManifoldTerm as ManifoldTerm,
         ProjectedTerm as ProjectedTerm,
         format_expr as format_expr,
         parse_expr as parse_expr,
     )
-    from drowse.io.selectors import (
+    from drowse.store.selectors import (
         AmbiguousSelectorError as AmbiguousSelectorError,
         SelectorError as SelectorError,
     )
-    from drowse.core.session import (
+    from drowse.session.session import (
         ManifoldNotRegisteredError as ManifoldNotRegisteredError,
         ProfileNotRegisteredError as ProfileNotRegisteredError,
     )
-    from drowse.core.jlens import (
+    from drowse.lens.jlens import (
         JacobianLens as JacobianLens,
         JacobianLensError as JacobianLensError,
         JSpaceDecomposition as JSpaceDecomposition,
         LensNotFittedError as LensNotFittedError,
         MultiTokenWordError as MultiTokenWordError,
     )
-    from drowse.core.errors import (
+    from drowse.errors import (
         UnsupportedProbeChannelError as UnsupportedProbeChannelError,
     )
-    from drowse.core.instruments.geometry import (
+    from drowse.readout.geometry import (
         GeometryInstrument as GeometryInstrument,
     )
-    from drowse.core.instruments.lens import (
+    from drowse.lens.instrument import (
         LensInstrument as LensInstrument,
     )
-    from drowse.core.instruments.protocol import (
+    from drowse.readout.protocol import (
         Instrument as Instrument,
         InstrumentRun as InstrumentRun,
     )
-    from drowse.core.instruments.sae import (
+    from drowse.sae.instrument import (
         SaeInstrument as SaeInstrument,
     )
-    from drowse.core.instruments.types import (
+    from drowse.readout.types import (
         GeometryLiveState as GeometryLiveState,
         LensLiveState as LensLiveState,
         LiveState as LiveState,

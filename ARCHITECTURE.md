@@ -52,26 +52,26 @@ steered forward.
 
 | Concern | Owner | Notes |
 |---|---|---|
-| Model/tokenizer loading and layer access | `core/model.py` | Normalizes supported Hugging Face architectures to one transformer-block interface. |
-| Session orchestration | `core/session.py` | Owns the model, loom, registries, locks, capture transaction, and public API. |
-| Token generation | `core/generation.py` | Sampling, cache advancement, thinking channels, stop handling, and token-step identity. |
-| Steering syntax | `core/steering_expr.py`, `core/steering.py` | Parses and round-trips the one expression language used everywhere. |
-| Steering resolution/composition | `core/steering_composer.py` | Resolves selectors, materializes projections, validates gates, and installs composed steering. |
-| Injection | `core/hooks.py`, `core/manifold.py` | Lowers composed terms to per-layer hooks and executes the flat or curved kernel. |
-| Hidden capture | `core/hooks.py::HiddenCapture` | Retains the minimum layer/time slices selected by the session planner. |
-| Read protocol | `core/instruments/` | Three instrument families under one prepare/plan/bind/observe contract. |
-| Geometry reads | `core/monitor.py` | Mahalanobis coordinates, distances, assignments, membership, and per-layer traces. |
-| J-lens | `core/jlens.py`, `core/jlens_fit.py` | Readout, transport, token directions, and J-space decomposition; the fit estimator lives in its own module so importing the readout never loads it. |
-| SAE runtime/training | `core/sae.py`, `core/sae_training.py` | External or local sources, feature readout, and decoder-row steering. |
-| Result shapes | `core/results.py`, `core/measurements.py`, `core/token_payloads.py` | Python results and the canonical read-side wire envelope. |
-| Conversation state | `core/loom.py` | Branching authored/generated nodes, recipes, raw tokens, measurements, cast, and persistence. |
+| Model/tokenizer loading and layer access | `model/loading.py` | Normalizes supported Hugging Face architectures to one transformer-block interface. |
+| Session orchestration | `session/session.py` | Owns the model, loom, registries, locks, capture transaction, and public API. |
+| Token generation | `generation/decode.py` | Sampling, cache advancement, thinking channels, stop handling, and token-step identity. |
+| Steering syntax | `steering/grammar.py`, `steering/terms.py` | Parses and round-trips the one expression language used everywhere. |
+| Steering resolution/composition | `steering/composer.py` | Resolves selectors, materializes projections, validates gates, and installs composed steering. |
+| Injection | `steering/hooks.py`, `geometry/manifold.py` | Lowers composed terms to per-layer hooks and executes the flat or curved kernel. |
+| Hidden capture | `steering/hooks.py::HiddenCapture` | Retains the minimum layer/time slices selected by the session planner. |
+| Read protocol | `readout/` | Three instrument families under one prepare/plan/bind/observe contract. |
+| Geometry reads | `readout/monitor.py` | Mahalanobis coordinates, distances, assignments, membership, and per-layer traces. |
+| J-lens | `lens/jlens.py`, `lens/fit.py` | Readout, transport, token directions, and J-space decomposition; the fit estimator lives in its own module so importing the readout never loads it. |
+| SAE runtime/training | `sae/backend.py`, `sae/training.py` | External or local sources, feature readout, and decoder-row steering. |
+| Result shapes | `generation/results.py`, `readout/measurements.py`, `generation/token_payloads.py` | Python results and the canonical read-side wire envelope. |
+| Conversation state | `loom/tree.py` | Branching authored/generated nodes, recipes, raw tokens, measurements, cast, and persistence. |
 | Artifact I/O | `io/` | Exact schemas, selectors, integrity, atomic publication, Hugging Face distribution, and lifecycle. |
 | HTTP/WebSocket protocols | `server/` | Thin validation/serialization layers over one session. |
 | Dashboard | `webui/`, `drowse/web/` | Svelte source plus the committed production bundle served last as an SPA. |
 | Notebook figures | `drowse/notebook/` | Plotly/pandas helpers over the public result types; optional `[notebook]` extra. |
 
 The main dependency direction is `server/cli/web -> session -> core + io`. Pure
-geometry in `core/manifold.py` does not import the session or persistence layer;
+geometry in `geometry/manifold.py` does not import the session or persistence layer;
 tensor codecs and filesystem transactions stay in `io/`.
 
 ## 3. Runtime objects and durable artifacts
@@ -139,7 +139,7 @@ The Jacobian lens and SAE are model-scoped sources, not concept manifolds.
   Drowse-owned fits use immutable shards behind a manifest, one named local
   lens per estimator (`local/default` for the standard Jacobian fit,
   `local/relp` for the R-lens — the same estimator run through the
-  LRP-modified backward graph in `core/relp.py`, forward passes
+  LRP-modified backward graph in `lens/relp.py`, forward passes
   bit-identical); external payloads (Neuronpedia, workspace-lenses J/R
   pairs) remain in the Hugging Face cache behind pinned local bindings.
 - A Drowse-trained SAE stores local encoder/decoder weights. A SAELens source
@@ -164,7 +164,7 @@ stateless calls produce results without mutating the tree.
 
 ## 4. Local state and artifact identity
 
-All Drowse-owned state resolves through `io.paths.drowse_home()` and honors
+All Drowse-owned state resolves through `base.paths.drowse_home()` and honors
 `$DROWSE_HOME`.
 
 ```text
@@ -233,7 +233,7 @@ reference distribution for centering and whitening.
 
 ### 5.2 Capturing node statistics
 
-`core/capture.py` and the fit helpers in `core/manifold.py` capture selected
+`fit/capture.py` and the fit helpers in `geometry/manifold.py` capture selected
 residual-stream layers in right-padded batches. For each row, pooling uses the
 last non-special content token; chat-template trailers and added special tokens
 are walked back before pooling.
@@ -305,7 +305,7 @@ flat fit. Curved fits do not invent a polarity and therefore do not apply DLS.
 
 ### 6.1 One grammar
 
-Every live steering surface parses through `core/steering_expr.py` and can
+Every live steering surface parses through `steering/grammar.py` and can
 round-trip with `format_expr`.
 
 ```text
@@ -365,7 +365,7 @@ another's in-subspace component.
 
 ### 6.3 Injection
 
-`core/manifold.py::subspace_inject` is the only injection kernel.
+`geometry/manifold.py::subspace_inject` is the only injection kernel.
 
 For a flat subspace, an activation is decomposed into reduced coordinates `q`
 and an off-subspace residual. The hot path updates only `q`:
@@ -430,7 +430,7 @@ the OpenAI/Ollama `x-drowse-probe-readings` header), never on the native
 per-token wire.
 
 All three families implement one instrument contract
-(`core/instruments/protocol.py`): probe registry access, `set_live`/`live_state`
+(`readout/protocol.py`): probe registry access, `set_live`/`live_state`
 returning a per-family frozen `LiveState`, `active_source`, gate validation,
 probe hashing, and `token_readout` returning the finished replay envelope. The
 `session.instruments` registry is the family enumeration the server dispatch,
@@ -502,7 +502,7 @@ the middle of the network.
 
 ### 7.4 One measurement envelope
 
-`core/measurements.py` builds the versioned record used by native WebSocket
+`readout/measurements.py` builds the versioned record used by native WebSocket
 tokens, final aggregates, persisted loom rows, and replay endpoints:
 
 ```text

@@ -14,9 +14,9 @@ from typing import Any, cast
 import pytest
 import torch
 
-from drowse.core.loom import InvalidNodeOperationError, LoomTree
-from drowse.core.generation import build_chat_input as _real_build_chat_input
-from drowse.core.scene import (
+from drowse.loom.tree import InvalidNodeOperationError, LoomTree
+from drowse.generation.decode import build_chat_input as _real_build_chat_input
+from drowse.model.scene import (
     SceneRenderError,
     SceneTurn,
     TurnGrammar,
@@ -240,7 +240,7 @@ def test_ws_submit_message_uses_structural_roles():
 
 
 def _grammar_with_closes(user_close: str, assistant_close: str) -> "TurnGrammar":
-    from drowse.core.scene import SeatWrapper, TurnGrammar
+    from drowse.model.scene import SeatWrapper, TurnGrammar
 
     return TurnGrammar(
         model_type="fake",
@@ -267,7 +267,7 @@ def _augment(
 ) -> list[str] | None:
     from typing import cast as _cast
 
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     return DrowseSession._seat_stop_augmentation(
         _cast(DrowseSession, _StopStub(grammar)), stop_list,
@@ -359,8 +359,8 @@ def test_commit_thinking_gate():
     can't render it (no grammar / no think delimiters)."""
     from typing import cast as _cast
 
-    from drowse.core.scene import SceneThinkingUnsupportedError
-    from drowse.core.session import DrowseSession
+    from drowse.model.scene import SceneThinkingUnsupportedError
+    from drowse.session.session import DrowseSession
     from tests.test_scene import QWEN_STRIP_TEMPLATE
 
     class _CommitStub:
@@ -409,7 +409,7 @@ def test_authored_same_roles_coalesce_before_scene_seating_rules():
     still permits distinct-label same-seat turns that legacy templates reject."""
     from typing import cast as _cast
 
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     from tests.test_scene import QWEN_STRIP_TEMPLATE
 
     class _WordTok:

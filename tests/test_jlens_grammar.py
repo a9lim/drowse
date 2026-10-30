@@ -10,14 +10,14 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.steering_composer import SteeringComposer
-from drowse.core.steering_expr import format_expr, parse_expr
+from drowse.steering.composer import SteeringComposer
+from drowse.steering.grammar import format_expr, parse_expr
 from drowse.cli.runners import (
     _lens_fit_source_preflight_matches,
     _try_lens_fit_noop_preflight,
 )
-from drowse.io.manifold_folder import ManifoldFormatError
-from drowse.io.manifold_authoring import create_discover_manifold_folder
+from drowse.store.manifold_folder import ManifoldFormatError
+from drowse.store.manifold_authoring import create_discover_manifold_folder
 from tests.test_jlens_session import _PROMPTS, _StubSession
 
 
@@ -86,7 +86,7 @@ def test_profile_registration_resolves_jlens_atom() -> None:
 
 
 def test_profile_registration_jlens_requires_fitted_lens() -> None:
-    from drowse.core.jlens import LensNotFittedError
+    from drowse.lens.jlens import LensNotFittedError
 
     session = _StubSession()
     composer = SteeringComposer(session)  # type: ignore[arg-type]
@@ -101,7 +101,7 @@ def test_add_probe_routes_jlens_to_lens_registry() -> None:
     ``W_U[v] @ J_l`` direction and never falling through to ``extract()``."""
     session = _StubSession()
     session.fit_jlens(_PROMPTS)
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     name = DrowseSession.add_probe(session, "jlens/g")  # type: ignore[arg-type]
     assert name == "jlens/g"
@@ -119,8 +119,8 @@ def test_lens_probe_scores_strength_channel() -> None:
     number; apples-to-apples across tokens and layers) — plus the
     per-layer ``(p_l,)`` trace, matching ``token_readout_stats`` on the
     same logits."""
-    from drowse.core.jlens import token_readout_stats
-    from drowse.core.session import DrowseSession
+    from drowse.lens.jlens import token_readout_stats
+    from drowse.session.session import DrowseSession
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS)
@@ -176,7 +176,7 @@ def test_gated_lens_probe_keys_and_gate_scalars() -> None:
     """Composer detection + the gate scalar key space: ``jlens/<word>`` =
     strength (the one channel), emitted by ``scalar_gate_keys`` over the
     native readings — no ``:fraction`` / ``:membership`` constants."""
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS)
@@ -220,8 +220,8 @@ def test_gated_lens_probe_keys_and_gate_scalars() -> None:
 def test_lens_gate_scalar_scores_only_referenced_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.core.jlens as jlens_module
-    from drowse.core.session import DrowseSession
+    import drowse.lens.jlens as jlens_module
+    from drowse.session.session import DrowseSession
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS)
@@ -296,9 +296,9 @@ def test_lens_preflight_resolves_workspace_from_model_depth() -> None:
 def test_lens_noop_preflight_requires_exact_model_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.lens import lens_paths
+    from drowse.lens.store import lens_paths
 
-    from drowse.io.lens import HfLensCorpus
+    from drowse.lens.store import HfLensCorpus
 
     corpus = HfLensCorpus("repo", "config", "a" * 40)
     expected_spec = corpus.spec
@@ -320,15 +320,15 @@ def test_lens_noop_preflight_requires_exact_model_source(
         "n_prompts": 100,
         "d_model": 6,
     }
-    from drowse.io.lens import lens_estimator_policy
+    from drowse.lens.store import lens_estimator_policy
 
     sidecar["estimator_policy"] = lens_estimator_policy()
     monkeypatch.setattr(
-        "drowse.io.lens.load_local_lens_sidecar",
+        "drowse.lens.store.load_local_lens_sidecar",
         lambda _model, _name="default": sidecar,
     )
     monkeypatch.setattr(
-        "drowse.core.model.model_source_fingerprint",
+        "drowse.model.loading.model_source_fingerprint",
         lambda *_args, **_kwargs: "source-a",
     )
     args = argparse.Namespace(
@@ -346,7 +346,7 @@ def test_lens_noop_preflight_requires_exact_model_source(
 def test_lens_noop_preflight_rejects_changed_dataset_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.lens import HfLensCorpus, lens_paths
+    from drowse.lens.store import HfLensCorpus, lens_paths
 
     old = HfLensCorpus("repo", "config", "0" * 40)
     new = HfLensCorpus("repo", "config", "1" * 40)
@@ -365,15 +365,15 @@ def test_lens_noop_preflight_rejects_changed_dataset_revision(
         "raw_prompt_count": 100, "usable_prompt_count": 100,
         "n_prompts": 100, "d_model": 6,
     }
-    from drowse.io.lens import lens_estimator_policy
+    from drowse.lens.store import lens_estimator_policy
 
     sidecar["estimator_policy"] = lens_estimator_policy()
     monkeypatch.setattr(
-        "drowse.io.lens.load_local_lens_sidecar",
+        "drowse.lens.store.load_local_lens_sidecar",
         lambda _model, _name="default": sidecar,
     )
     monkeypatch.setattr(
-        "drowse.core.model.model_source_fingerprint",
+        "drowse.model.loading.model_source_fingerprint",
         lambda *_args, **_kwargs: "source-a",
     )
     args = argparse.Namespace(
@@ -398,7 +398,7 @@ def test_lens_noop_preflight_holds_fit_lock_during_sidecar_read(
 ) -> None:
     from contextlib import contextmanager
 
-    import drowse.io.lens as lens_io
+    import drowse.lens.store as lens_io
 
     held = False
 

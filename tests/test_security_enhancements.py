@@ -12,10 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from drowse.io import atomic
-from drowse.core import loom
-
-
+from drowse.base import atomic
+from drowse.loom import tree as loom
 def test_loom_import_bounds_main_json_before_parsing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "tree.json"
     path.write_text(json.dumps(loom.LoomTree().to_dict()) + " " * 4096)

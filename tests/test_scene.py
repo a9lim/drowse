@@ -1,4 +1,4 @@
-"""Tests for ``drowse.core.scene`` — the cast-model turn stitcher.
+"""Tests for ``drowse.model.scene`` — the cast-model turn stitcher.
 
 Strategy mirrors ``test_role_templates.py``: FakeTokenizer + hand-written
 Jinja templates faithful to each family's byte shapes.  Two additional fakes
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from drowse.core.errors import DrowseError
-from drowse.core.scene import (
+from drowse.errors import DrowseError
+from drowse.model.scene import (
     SceneGrammarError,
     SceneRenderError,
     SceneThinkingUnsupportedError,

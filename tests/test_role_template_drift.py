@@ -1,4 +1,4 @@
-"""Real-tokenizer drift tests for :data:`drowse.core.role_templates.ROLE_HEADERS`.
+"""Real-tokenizer drift tests for :data:`drowse.model.role_templates.ROLE_HEADERS`.
 
 Complement to ``test_role_templates.py``.  That file uses synthetic Jinja
 templates that mirror the *registered* per-family chat-template shapes,
@@ -25,7 +25,7 @@ import os
 
 import pytest
 
-from drowse.core.role_templates import ROLE_HEADERS
+from drowse.model.role_templates import ROLE_HEADERS
 
 # Representative tokenizer per family.  Picked smallest available so the
 # download is cheap.  Public/no-auth where possible; the gated ones
@@ -127,6 +127,6 @@ def test_role_header_matches_live_template(family: str):
         f"{family} ({model_id}): registered splice key {splice_key!r} "
         f"not found in rendered chat template. The chat template likely "
         f"changed upstream — update ROLE_HEADERS[{family!r}] in "
-        f"drowse/core/role_templates.py to match. Rendered template "
+        f"drowse/model/role_templates.py to match. Rendered template "
         f"sample:\n{rendered[:300]!r}"
     )

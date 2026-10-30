@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.capture import (
+from drowse.fit.capture import (
     _capture_all_hidden_states,
     _load_json_with_override,
     _ReusablePooledCapture,

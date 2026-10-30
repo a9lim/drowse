@@ -11,7 +11,7 @@ from drowse import (
     steering_delta,
     text_diff,
 )
-from drowse.core.loom_diff import NodeDiff
+from drowse.loom.diff import NodeDiff
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ def test_session_diff_nodes_via_synthetic_session():
     """The session method is a thin wrapper; exercise via a small shim."""
     # Build a minimal stand-in that exposes ``.tree`` so we can call the
     # method via __get__ binding.  Avoids loading a real model.
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     tree, u, a1, a2 = _seed_tree_with_siblings()
 

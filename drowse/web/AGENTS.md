@@ -504,7 +504,7 @@ distribution bars. **build** — THE template editor: name, slot, values and a
 multi-turn contexts editor, opened directly or deep-linked with `params: { tab:
 "build" }` from the builder's template form. It validates
 through the one `lib/templates.ts::validateTemplateDraft`, which mirrors
-`drowse/io/templates.py::_validate_body` / `_validate_context` one-for-one — slot
+`drowse/store/templates.py::_validate_body` / `_validate_context` one-for-one — slot
 exactly once in the final assistant turn and absent from history turns, last turn
 `user`, ≥ 2 values, distinct non-empty value slugs under the engine's
 `_slug_value` — so a draft that passes locally is a draft the server accepts.

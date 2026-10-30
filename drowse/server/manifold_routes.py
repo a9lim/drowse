@@ -7,7 +7,7 @@ loaded model — it runs ``session.fit`` under the session
 lock and streams progress like ``/extract`` does.
 
 Authoring (create / update) writes ``manifold.json`` + ``nodes/*.json``
-through :mod:`drowse.io.manifolds`; steering a fitted manifold needs no
+through :mod:`drowse.store.manifolds`; steering a fitted manifold needs no
 route — a ``%`` term in any steering expression already loads the
 artifact lazily on scope entry.
 """
@@ -20,15 +20,15 @@ from typing import Any, Callable, Literal, cast
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import ConfigDict, Field
 
-from drowse.core.manifold import domain_from_spec
-from drowse.core.session import DrowseSession
-from drowse.io.hf_manifolds import (
+from drowse.geometry.manifold import domain_from_spec
+from drowse.session.session import DrowseSession
+from drowse.store.hub import (
     HFError as ManifoldHFError,
     ManifoldInstallConflict,
     install_manifold,
     search_manifolds,
 )
-from drowse.io.manifolds import (
+from drowse.store.manifolds import (
     ManifoldFolder,
     ManifoldFormatError,
     append_discover_manifold_node,
@@ -44,8 +44,8 @@ from drowse.io.manifolds import (
     remove_manifold_folder,
     update_manifold_folder,
 )
-from drowse.io.paths import manifold_dir
-from drowse.io.templates import AmbiguousTemplateError, TemplateNotFoundError
+from drowse.base.paths import manifold_dir
+from drowse.store.templates import AmbiguousTemplateError, TemplateNotFoundError
 from drowse.server.streaming import run_in_thread
 from drowse.server.app import acquire_session_lock
 from drowse.server.native_common import (
@@ -224,7 +224,7 @@ class MergeManifoldRequest(NativeRequest):
     """Body for ``POST /manifolds/merge``.
 
     Restricted to discover-mode (autofitted) sources by design — see
-    :func:`drowse.io.manifolds.merge_discover_manifolds`.  Pools the
+    :func:`drowse.store.manifolds.merge_discover_manifolds`.  Pools the
     sources' node corpora + roles into one heap, writes a fresh
     discover folder; the next ``POST .../fit`` derives coords from the
     combined heap.
@@ -315,7 +315,7 @@ def _manifold_json(
     """Serialize a :class:`ManifoldFolder` for the wire.
 
     The session-independent fields come straight from
-    :func:`drowse.io.manifolds.manifold_summary` so this route and the
+    :func:`drowse.store.manifolds.manifold_summary` so this route and the
     CLI ``manifold show -j`` emit byte-identical values for every
     key they share (``namespace`` / ``name`` / ``description`` /
     ``source`` / ``fit_mode`` / ``is_discover`` / ``node_count`` /
@@ -333,7 +333,7 @@ def _manifold_json(
     """
     out = cast(ManifoldInfo, manifold_summary(mf.folder))
 
-    from drowse.io.paths import tensor_filename
+    from drowse.base.paths import tensor_filename
 
     session_stem = tensor_filename(session.model_id).removesuffix(".safetensors")
     fitted_models = out["fitted_models"]
@@ -343,7 +343,7 @@ def _manifold_json(
     stale = False
     if fitted_for_session:
         try:
-            from drowse.core.model import loaded_model_fingerprint
+            from drowse.model.loading import loaded_model_fingerprint
 
             sidecar = mf.sidecar(session_stem)
             stale = (
@@ -640,7 +640,7 @@ def register_manifold_routes(app: FastAPI) -> None:
     ) -> ManifoldSearchResponse:
         """Search HF for ``drowse-manifold``-tagged repos matching ``q``.
 
-        Delegates to :func:`drowse.io.hf_manifolds.search_manifolds` and returns
+        Delegates to :func:`drowse.store.hub.search_manifolds` and returns
         the manifold-specific ``domain_label`` / ``node_count`` / ``fit_mode``
         fields a frontend needs to render a search result without an extra
         round-trip. Missing ``huggingface_hub`` → 503, HF transport error → 502.
@@ -918,7 +918,7 @@ def register_manifold_routes(app: FastAPI) -> None:
         """Remove a manifold folder.
 
         Delegates the actual removal to
-        :func:`drowse.io.manifolds.remove_manifold_folder` — the single
+        :func:`drowse.store.manifolds.remove_manifold_folder` — the single
         source of truth shared with the CLI ``manifold rm`` — so
         bundled-respawn semantics stay in one place.  The response
         carries that helper's ``{namespace, name, source, removed,

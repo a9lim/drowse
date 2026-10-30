@@ -14,9 +14,9 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from starlette.types import Message
 
-from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
-from drowse.core.results import GenerationResult
-from drowse.core.session import DrowseSession
+from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
+from drowse.generation.results import GenerationResult
+from drowse.session.session import DrowseSession
 from drowse.server import create_app
 from drowse.server.sse import progress_sse_response
 from tests.test_generation import _CurrentSessionStub, _StopTokenizer, _scripted_model
@@ -480,7 +480,7 @@ def test_outbound_queue_bounds_pending_thread_callbacks() -> None:
 
 
 def test_slow_tree_subscriber_is_disconnected() -> None:
-    from drowse.core.events import LoomMutated
+    from drowse.events import LoomMutated
     from drowse.server.ws_stream import MAX_WS_OUTBOUND_EVENTS
 
     async def scenario() -> None:

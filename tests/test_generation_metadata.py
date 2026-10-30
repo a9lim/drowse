@@ -6,8 +6,8 @@ from typing import Any, cast
 import pytest
 import torch
 
-from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
-from drowse.core.results import GenerationResult
+from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
+from drowse.generation.results import GenerationResult
 from tests.conftest import FakeLogitsModel
 
 

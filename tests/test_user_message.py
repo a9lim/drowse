@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 
 from drowse.cli.config_file import ConfigFileError
-from drowse.io.selectors import AmbiguousSelectorError, SelectorError
-from drowse.core.errors import (
+from drowse.store.selectors import AmbiguousSelectorError, SelectorError
+from drowse.errors import (
     AmbiguousVariantError,
     ManifoldArityError,
     OverlappingManifoldError,
@@ -26,15 +26,15 @@ from drowse.core.errors import (
     UnknownVariantError,
     WhitenerError,
 )
-from drowse.core.session import (
+from drowse.session.session import (
     ConcurrentGenerationError,
     ProfileNotRegisteredError,
 )
-from drowse.core.steering_expr import SteeringExprError
-from drowse.io.hf_manifolds import ManifoldInstallConflict
-from drowse.io.gguf_io import GGUFNotInstalled
-from drowse.io.hf import HFError
-from drowse.io.bake import MergeError
+from drowse.steering.grammar import SteeringExprError
+from drowse.store.hub import ManifoldInstallConflict
+from drowse.store.gguf import GGUFNotInstalled
+from drowse.base.hf import HFError
+from drowse.fit.bake import MergeError
 
 
 def test_base_default_status_and_message():
@@ -51,7 +51,7 @@ def test_base_empty_falls_back_to_class_name():
 # Bumping the status is a deliberate contract change; any drift here is
 # user-visible.
 _OVERRIDES: list[tuple[type[DrowseError], int]] = [
-    # core/errors.py
+    # errors.py
     (SaeBackendImportError, 400),
     (SaeReleaseNotFoundError, 400),
     (SaeModelMismatchError, 400),
@@ -65,23 +65,23 @@ _OVERRIDES: list[tuple[type[DrowseError], int]] = [
     (SteeringCompositionError, 422),
     (ManifoldArityError, 422),
     (OverlappingManifoldError, 422),
-    # core/session.py
+    # session/session.py
     (ConcurrentGenerationError, 409),
     (ProfileNotRegisteredError, 404),
-    # core/steering_expr.py
+    # steering/grammar.py
     (SteeringExprError, 400),
-    # io/selectors.py
+    # store/selectors.py
     (SelectorError, 400),
     (AmbiguousSelectorError, 400),
     # cli/config_file.py
     (ConfigFileError, 400),
-    # io/hf.py
+    # base/hf.py
     (HFError, 502),
-    # io/hf_manifolds.py
+    # store/hub.py
     (ManifoldInstallConflict, 409),
-    # io/gguf_io.py
+    # store/gguf.py
     (GGUFNotInstalled, 400),
-    # io/bake.py
+    # fit/bake.py
     (MergeError, 400),
 ]
 
@@ -280,8 +280,8 @@ def test_every_public_exception_is_a_drowse_error() -> None:
 
 def test_cancellation_errors_agree_across_preparation_families() -> None:
     """A cooperative cancel reports 409 on both background-job families."""
-    from drowse.core.jlens import JacobianLensCancelled
-    from drowse.core.sae_training import SaeTrainingCancelled
+    from drowse.lens.jlens import JacobianLensCancelled
+    from drowse.sae.training import SaeTrainingCancelled
 
     for exc in (JacobianLensCancelled("stopped"), SaeTrainingCancelled("stopped")):
         assert isinstance(exc, DrowseError)
@@ -291,7 +291,7 @@ def test_cancellation_errors_agree_across_preparation_families() -> None:
 
 def test_manifold_authoring_conflict_is_a_retryable_409() -> None:
     """Re-authoring under an in-flight fit is a conflict, not a server fault."""
-    from drowse.core.extraction import ManifoldAuthoringChangedError
+    from drowse.fit.pipeline import ManifoldAuthoringChangedError
 
     exc = ManifoldAuthoringChangedError("authoring changed during fit")
     assert isinstance(exc, DrowseError)

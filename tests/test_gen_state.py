@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from drowse import GenState
-from drowse.core.session import ConcurrentGenerationError
+from drowse.session.session import ConcurrentGenerationError
 from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
 
 _HAS_GPU = torch.cuda.is_available() or torch.backends.mps.is_available()
@@ -29,7 +29,7 @@ MODEL_ID = gpu_model_id()
 
 @pytest.fixture(scope="module")
 def session():
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     s = load_or_skip_inaccessible(
         lambda: DrowseSession.from_pretrained(MODEL_ID, device="auto", probes=["register"]),
         MODEL_ID,
@@ -53,7 +53,7 @@ class TestGenStateTransitions:
         def _tap(*args: Any, **kwargs: Any) -> None:
             observed.append(session.gen_state)
 
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
         session.generate(
             "Say hi.",
             sampling=SamplingConfig(max_tokens=4),
@@ -66,7 +66,7 @@ class TestGenStateTransitions:
 
     def test_returns_to_idle_after_success(self, session: Any) -> None:
         session.clear_history()
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
         session.generate(
             "Say hi.",
             sampling=SamplingConfig(max_tokens=4),
@@ -83,7 +83,7 @@ class TestGenStateTransitions:
         ``IDLE`` for the next call to succeed.
         """
         session.clear_history()
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
         with pytest.raises(Exception):
             session.generate(
                 "Say hi.",
@@ -108,7 +108,7 @@ class TestConcurrentGuard:
         top of the threading lock.
         """
         session.clear_history()
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
 
         captured: list[BaseException] = []
 

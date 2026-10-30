@@ -1,4 +1,4 @@
-"""Standalone template artifact (``drowse.io.templates``) — CPU-only, no model.
+"""Standalone template artifact (``drowse.store.templates``) — CPU-only, no model.
 
 Covers the multi-turn schema, the ``expand``/``score_inputs`` derived views, the
 on-disk round-trip + content hash, resolution (bare / ns-qualified / ambiguous),
@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from drowse.io.templates import (
+from drowse.store.templates import (
     AmbiguousTemplateError,
     TemplateFolder,
     TemplateFormatError,

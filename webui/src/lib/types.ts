@@ -120,7 +120,7 @@ export interface SaeTokenReadoutJSON {
 // replay endpoint (wrapped in ``{measurements}``).  It replaces the former
 // ``captured`` record and the six top-level per-token aliases (``scores`` /
 // ``per_layer_scores`` / ``probe_readings`` / ``lens_readout`` /
-// ``lens_aggregate`` / ``sae_readout``); see drowse.core.measurements.
+// ``lens_aggregate`` / ``sae_readout``); see drowse.readout.measurements.
 
 export type TokenReadoutProvenance = "captured" | "replayed";
 
@@ -184,7 +184,7 @@ export interface ManifoldNodeSpec {
 }
 
 /** PCA discover-fit diagnostics block surfaced in the inspector.
- *  Wire-shape mirror of ``drowse.core.manifold.PcaDiagnostics``.  Tensor
+ *  Wire-shape mirror of ``drowse.geometry.manifold.PcaDiagnostics``.  Tensor
  *  fields are flattened to plain number[]'s server-side; everything
  *  else is a primitive. */
 export interface ManifoldPcaDiagnostics {
@@ -195,7 +195,7 @@ export interface ManifoldPcaDiagnostics {
 }
 
 /** Spectral (Laplacian-eigenmaps) discover-fit diagnostics block.
- *  Wire-shape mirror of ``drowse.core.manifold.SpectralDiagnostics``. */
+ *  Wire-shape mirror of ``drowse.geometry.manifold.SpectralDiagnostics``. */
 export interface ManifoldSpectralDiagnostics {
   eigenvalues: number[];
   picked_k: number;
@@ -564,7 +564,7 @@ export interface WSGenerationProgressEvent {
 }
 
 /** Logit-pass (v2.3): one alternative the model considered at this
- *  position.  Wire-shape mirror of ``drowse.core.results.TokenAlt``.
+ *  position.  Wire-shape mirror of ``drowse.generation.results.TokenAlt``.
  *  ``logprob`` is the post-sampler natural-log probability under the
  *  post-temperature / post-top-p / post-top-k distribution sampling
  *  actually drew from. */
@@ -657,7 +657,7 @@ export interface WSErrorEvent {
 
 // ----------------------------------------------------- loom (v2.3) --
 
-/** Wire-shape mirror of drowse.core.loom.LoomNode.  Optional fields are
+/** Wire-shape mirror of drowse.loom.tree.LoomNode.  Optional fields are
  * absent on the wire when null/empty server-side to keep payloads slim. */
 /** One token-row inside a node's ``tokens`` / ``thinking_tokens`` array.
  *  Server-side token rows have required identity/score fields plus

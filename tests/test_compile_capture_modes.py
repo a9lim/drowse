@@ -38,11 +38,11 @@ def test_compiled_explicit_no_probes_skips_persistent_capture_hooks(
     """``probes=[]`` should take the no-capture compiled accelerator mode."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
 
-    from drowse.core import static_cache
-    from drowse.core import model as model_mod
-    from drowse.core import session as session_mod
-    from drowse.core.session import DrowseSession
-    from drowse.core.steering_composer import SteeringComposer
+    from drowse.generation import static_cache
+    from drowse.model import loading as model_mod
+    from drowse.session import session as session_mod
+    from drowse.session.session import DrowseSession
+    from drowse.steering.composer import SteeringComposer
 
     calls: dict[str, int] = {"offset": 0, "capture": 0}
     base_model = _FakeModel(device)
@@ -84,11 +84,11 @@ def test_compiled_explicit_no_probes_skips_persistent_capture_hooks(
         lambda model, device: (True, None),
     )
     monkeypatch.setattr(
-        "drowse.core.hooks.install_persistent_offset_hooks",
+        "drowse.steering.hooks.install_persistent_offset_hooks",
         _offset,
     )
     monkeypatch.setattr(
-        "drowse.core.hooks.install_persistent_capture_hooks",
+        "drowse.steering.hooks.install_persistent_capture_hooks",
         _capture,
     )
 
@@ -102,7 +102,7 @@ def test_compiled_explicit_no_probes_skips_persistent_capture_hooks(
 
 
 def test_cuda_graph_compile_owner_is_thread_local() -> None:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     session = DrowseSession.__new__(DrowseSession)
     session._cuda_graphs_active = True

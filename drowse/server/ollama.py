@@ -42,10 +42,10 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from drowse.core.errors import DrowseError
-from drowse.core.results import GenerationResult
-from drowse.core.session import ConcurrentGenerationError, DrowseSession
-from drowse.core.steering import Steering
+from drowse.errors import DrowseError
+from drowse.generation.results import GenerationResult
+from drowse.session.session import ConcurrentGenerationError, DrowseSession
+from drowse.steering.terms import Steering
 from drowse.server.model_names import aliases_for_session, known_model_names
 
 log = logging.getLogger(__name__)

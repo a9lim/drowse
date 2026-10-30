@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from drowse.io import atomic
-from drowse.io.atomic import write_bytes_atomic, write_json_atomic
+from drowse.base import atomic
+from drowse.base.atomic import write_bytes_atomic, write_json_atomic
 
 
 def test_artifact_lock_registry_releases_inactive_paths(tmp_path: Path):

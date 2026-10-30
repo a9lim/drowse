@@ -13,14 +13,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from drowse.core.errors import DrowseError
+from drowse.errors import DrowseError
 
 if TYPE_CHECKING:
     import pandas as pd
     import plotly.graph_objects as go
 
-    from drowse.core.profile import Profile
-    from drowse.core.results import ProbeReadings, ResultCollector
+    from drowse.geometry.profile import Profile
+    from drowse.generation.results import ProbeReadings, ResultCollector
 
 
 class NotebookExtraNotInstalled(ImportError, DrowseError):
@@ -199,7 +199,7 @@ def plot_probe_correlation(
     Diagonal is 1.0; off-diagonals are ``Profile.cosine_similarity(...,
     whitener=whitener)`` aggregated across shared layers.  The metric is
     Mahalanobis-only (the Euclidean path is gone), so ``whitener`` (a
-    :class:`~drowse.core.mahalanobis.LayerWhitener` covering the profiles'
+    :class:`~drowse.geometry.whitener.LayerWhitener` covering the profiles'
     layers) is **required** — a missing or non-covering whitener renders the
     affected cells as ``NaN`` (plotly handles missing values cleanly).
 

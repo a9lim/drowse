@@ -8,9 +8,9 @@ import json
 import pytest
 import torch
 
-from drowse.core.errors import DrowseError
-from drowse.core.profile import Profile, ProfileError
-from drowse.io.integrity import PROFILE_FORMAT_VERSION
+from drowse.errors import DrowseError
+from drowse.geometry.profile import Profile, ProfileError
+from drowse.base.integrity import PROFILE_FORMAT_VERSION
 
 
 def _mk(layers: Any = (0, 5, 10), dim: int = 8, dtype: Any = torch.float32) -> dict[int, torch.Tensor]:
@@ -99,7 +99,7 @@ def test_merged_union_semantics():
 def test_merged_strict_refuses_drop():
     a = Profile({0: torch.ones(4), 1: torch.ones(4)})
     b = Profile({1: torch.ones(4), 2: torch.ones(4)})
-    from drowse.io.bake import MergeError
+    from drowse.fit.bake import MergeError
     with pytest.raises(MergeError):
         Profile.merged([(a, 1.0), (b, 1.0)], strict=True)
 
@@ -224,7 +224,7 @@ def test_cosine_similarity_empty_intersection_raises():
 
 def test_cosine_similarity_missing_whitener_raises():
     """Mahalanobis-only: a missing / non-covering whitener is a hard error."""
-    from drowse.core.mahalanobis import WhitenerError
+    from drowse.geometry.whitener import WhitenerError
 
     tensors = _mk(layers=(0, 1), dim=8)
     a = Profile(tensors)
@@ -454,7 +454,7 @@ def test_merged_profile_saves(tmp_path: Path) -> None:
 
 def test_drowse_error_family_mro_contract():
     """Every drowse-raised exception is a DrowseError AND its stdlib parent."""
-    from drowse.core.errors import (
+    from drowse.errors import (
         AmbiguousVariantError,
         SaeBackendImportError,
         SaeCoverageError,

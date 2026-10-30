@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.session import DrowseSession
+from drowse.session.session import DrowseSession
 
 
 class _Sink:
@@ -41,8 +41,8 @@ def test_neutral_loader_threads_on_progress_into_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``load_or_compute_neutral_activations`` narrates the cache-miss pass."""
-    import drowse.core.capture as capture_mod
-    from drowse.io.alignment import load_or_compute_neutral_activations
+    import drowse.fit.capture as capture_mod
+    from drowse.store.alignment import load_or_compute_neutral_activations
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     seen: dict[str, Any] = {}
@@ -82,8 +82,7 @@ def test_neutral_loader_threads_on_progress_into_capture(
 
 def test_compute_neutral_activations_reports_each_capture_chunk() -> None:
     """The capture loop itself emits one line per forward chunk."""
-    from drowse.core import capture as capture_mod
-
+    from drowse.fit import capture as capture_mod
     lines: list[str] = []
     chunks: list[tuple[int, int]] = []
 
@@ -129,8 +128,7 @@ def test_whitener_build_forwards_on_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``__init__``'s eager whitener build hands the callback down."""
-    from drowse.io import alignment as alignment_mod
-
+    from drowse.store import alignment as alignment_mod
     class _Session:
         _model = object()
         _tokenizer = object()
@@ -167,7 +165,7 @@ class _BootstrapSession:
         self.fit_calls: list[tuple[Any, Any]] = []
 
     def ensure_manifold_loaded(self, key: str) -> None:
-        from drowse.core.session import ManifoldNotRegisteredError
+        from drowse.session.session import ManifoldNotRegisteredError
 
         if key not in self._fitted:
             raise ManifoldNotRegisteredError(key)
@@ -181,7 +179,7 @@ class _BootstrapSession:
 def _patch_roster(
     monkeypatch: pytest.MonkeyPatch, roster: dict[str, list[str]],
 ) -> None:
-    import drowse.io.probes_bootstrap as probes_mod
+    import drowse.store.bundled_probes as probes_mod
 
     monkeypatch.setattr(probes_mod, "load_default_manifolds", lambda: roster)
 
@@ -267,7 +265,7 @@ def test_load_model_reports_device_and_memory(
     weights / memory lines are invisible by default; the sink is how the CLI
     sees them.
     """
-    import drowse.core.model as model_mod
+    import drowse.model.loading as model_mod
 
     plan = argparse.Namespace(
         model_id="test/model", device="cpu", dtype=torch.float32,
@@ -321,7 +319,7 @@ def test_make_session_passes_the_printing_sink(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``_make_session`` is where every model-loading verb picks up narration."""
-    import drowse.core.session as session_mod
+    import drowse.session.session as session_mod
     from drowse.cli.runners import _make_session
 
     seen: dict[str, Any] = {}
@@ -397,7 +395,7 @@ def test_pack_install_runner_narrates(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """``pack install`` prints each stage the io layer reports."""
-    import drowse.io.hf_manifolds as hfm
+    import drowse.store.hub as hfm
     from drowse.cli.runners.pack import _run_pack_install
 
     def _install(
@@ -424,7 +422,7 @@ def test_install_manifold_reports_every_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The io entry point narrates resolve → download for an HF coord."""
-    import drowse.io.hf_manifolds as hfm
+    import drowse.store.hub as hfm
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
 

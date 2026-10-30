@@ -20,7 +20,7 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from drowse.core.profile import Profile
+from drowse.geometry.profile import Profile
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +322,7 @@ class TestRepeatMount:
 
 def _per_layer_scores(monitor: Any, hidden: dict[int, Any]) -> dict[str, Any]:
     """The heatmap row the token tap writes, from a live single-token read."""
-    from drowse.core.token_payloads import _per_layer_axis0
+    from drowse.generation.token_payloads import _per_layer_axis0
 
     return _per_layer_axis0(monitor.score_single_token(hidden)) or {}
 
@@ -331,8 +331,8 @@ class TestPerLayerScores:
     def test_returns_per_layer_per_probe_dict(self) -> None:
         # Two probes sharing layer 0, scored against a hidden state.  No
         # torch model needed.
-        from drowse.core.monitor import Monitor
-        from drowse.core.capture import fold_directions_to_subspace
+        from drowse.readout.monitor import Monitor
+        from drowse.fit.capture import fold_directions_to_subspace
 
         from tests._whitener import isotropic_whitener
         means = {0: torch.zeros(4)}
@@ -364,8 +364,8 @@ class TestPerLayerScores:
         assert result["0"]["warm"] == pytest.approx(0.0, abs=0.1)
 
     def test_empty_input_returns_empty(self) -> None:
-        from drowse.core.monitor import Monitor
-        from drowse.core.capture import fold_directions_to_subspace
+        from drowse.readout.monitor import Monitor
+        from drowse.fit.capture import fold_directions_to_subspace
         from tests._whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}
@@ -378,8 +378,8 @@ class TestPerLayerScores:
         assert _per_layer_scores(monitor, {}) == {}
 
     def test_layers_outside_probe_cache_omitted(self) -> None:
-        from drowse.core.monitor import Monitor
-        from drowse.core.capture import fold_directions_to_subspace
+        from drowse.readout.monitor import Monitor
+        from drowse.fit.capture import fold_directions_to_subspace
         from tests._whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}

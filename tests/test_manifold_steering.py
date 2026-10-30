@@ -16,14 +16,14 @@ import pytest
 import torch
 from torch import nn
 
-from drowse.core.hooks import (
+from drowse.steering.hooks import (
     _MANIFOLD_ALONG_GAIN,
     _MANIFOLD_ONTO_GAIN,
     _manifold_layer_shares,
     SteeringHook,
     SteeringManager,
 )
-from drowse.core.manifold import (
+from drowse.geometry.manifold import (
     BoxAxis,
     BoxDomain,
     Manifold,
@@ -32,12 +32,12 @@ from drowse.core.manifold import (
     fit_layer_subspace,
     invert_parameterization,
 )
-from drowse.core.errors import (
+from drowse.errors import (
     ManifoldArityError,
     OverlappingManifoldError,
     SteeringCompositionError,
 )
-from drowse.core.triggers import Trigger, TriggerContext
+from drowse.steering.triggers import Trigger, TriggerContext
 
 
 def fit_layer_subspace_only(*args: Any, **kwargs: Any) -> Any:

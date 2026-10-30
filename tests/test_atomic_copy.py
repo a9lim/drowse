@@ -6,10 +6,8 @@ from typing import Any
 
 import pytest
 
-from drowse.io import atomic
-from drowse.io import hf_manifolds as hfm
-
-
+from drowse.base import atomic
+from drowse.store import hub as hfm
 def test_copy_file_atomic_is_bounded_exact_and_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     source = tmp_path / "source.bin"
     payload = bytes(range(256)) * (1024 * 12 + 17)

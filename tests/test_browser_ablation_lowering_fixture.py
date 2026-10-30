@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.core.hooks import _lower_affine_subspaces
-from drowse.core.mahalanobis import LayerWhitener
-from drowse.core.manifold import synthesize_subspace
+from drowse.steering.hooks import _lower_affine_subspaces
+from drowse.geometry.whitener import LayerWhitener
+from drowse.geometry.manifold import synthesize_subspace
 
 
 FIXTURE = json.loads(

@@ -43,7 +43,7 @@ import torch
 # DROWSE_HOME is overridden to a tempdir before any from_pretrained call so the
 # session's bundled materialization doesn't touch ~/.drowse; the manifold
 # folders themselves are written to explicit package-tree paths (env-independent,
-# resumable across a kill).  io/paths.py reads os.environ at call time, so the
+# resumable across a kill).  base/paths.py reads os.environ at call time, so the
 # deferred drowse imports below are safe.
 
 REPO = Path(__file__).resolve().parent.parent
@@ -350,8 +350,8 @@ def main() -> None:
     ]
     do_neutral = NEUTRAL_TARGET in targets
 
-    from drowse.io.atomic import write_json_atomic
-    from drowse.io.manifolds import (
+    from drowse.base.atomic import write_json_atomic
+    from drowse.store.manifolds import (
         append_discover_manifold_node,
         plan_discover_generation,
     )
@@ -439,7 +439,7 @@ def main() -> None:
     if need_model or need_authored or neutral_pending:
         with tempfile.TemporaryDirectory(prefix="drowse-bundled-regen-") as tmp:
             os.environ["DROWSE_HOME"] = tmp
-            from drowse.core.session import DrowseSession
+            from drowse.session.session import DrowseSession
 
             print(f"loading generator model: {args.model}")
             session = DrowseSession.from_pretrained(

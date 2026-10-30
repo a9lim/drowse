@@ -22,16 +22,16 @@ import pytest
 import torch
 
 import drowse.cli.runners as cli_runners
-from drowse.core import capture as V
-from drowse.core import model as model_mod
-from drowse.core.events import EventBus
-from drowse.core.extraction import ManifoldExtractionPipeline
-from drowse.core.model import loaded_model_fingerprint
-from drowse.io import alignment as alignment_mod
-from drowse.io.manifold_authoring import create_discover_manifold_folder
-from drowse.io.manifold_folder import ManifoldFolder, ManifoldSidecar
-from drowse.io.manifolds import preflight_manifold_fit_noop
-from drowse.io.paths import tensor_filename
+from drowse.fit import capture as V
+from drowse.model import loading as model_mod
+from drowse.events import EventBus
+from drowse.fit.pipeline import ManifoldExtractionPipeline
+from drowse.model.loading import loaded_model_fingerprint
+from drowse.store import alignment as alignment_mod
+from drowse.store.manifold_authoring import create_discover_manifold_folder
+from drowse.store.manifold_folder import ManifoldFolder, ManifoldSidecar
+from drowse.store.manifolds import preflight_manifold_fit_noop
+from drowse.base.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
 from tests.test_manifold_extraction import (
     _CaptureTokenizer,
@@ -206,7 +206,7 @@ def test_preflight_refuses_on_a_layer_set_change(fitted: Any) -> None:
 
 
 def test_preflight_refuses_an_old_format_sidecar(fitted: Any) -> None:
-    from drowse.io.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_folder import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
     assert _preflight(fitted) is None
@@ -322,7 +322,7 @@ def test_old_format_sidecar_reads_as_a_cache_miss_not_an_error(
     untouched — and simply report no fit for that model, which is what makes
     the next fit a plain overwrite rather than a repair.
     """
-    from drowse.io.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_folder import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
 
@@ -334,7 +334,7 @@ def test_old_format_sidecar_reads_as_a_cache_miss_not_an_error(
 def test_stale_fit_is_overwritten_by_the_next_fit(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_folder import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _stub_encoder_batch)
@@ -358,8 +358,8 @@ def test_stale_fit_resolves_as_a_miss_not_a_codec_error(
     the probe, which is how a format bump could empty a session's whole roster.
     """
     from drowse import ManifoldNotRegisteredError
-    from drowse.core.steering_composer import SteeringComposer
-    from drowse.io.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.steering.composer import SteeringComposer
+    from drowse.store.manifold_folder import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
 
@@ -374,7 +374,7 @@ def test_stale_fit_resolves_as_a_miss_not_a_codec_error(
 
 def test_corrupt_sidecar_still_raises(fitted: Any) -> None:
     """Staleness is forgiven; corruption is not."""
-    from drowse.io.manifold_folder import ManifoldFormatError
+    from drowse.store.manifold_folder import ManifoldFormatError
 
     sidecar_path = fitted.tensor.with_suffix(".json")
     payload = json.loads(sidecar_path.read_text())

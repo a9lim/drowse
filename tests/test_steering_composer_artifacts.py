@@ -8,12 +8,12 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.model import loaded_model_fingerprint
-from drowse.core.steering_composer import SteeringComposer
-from drowse.core.capture import fold_directions_to_subspace
-from drowse.io.manifold_folder import ManifoldFormatError
-from drowse.io.manifolds import create_baked_manifold_folder, transfer_manifold
-from drowse.io.paths import encode_release_id
+from drowse.model.loading import loaded_model_fingerprint
+from drowse.steering.composer import SteeringComposer
+from drowse.fit.capture import fold_directions_to_subspace
+from drowse.store.manifold_folder import ManifoldFormatError
+from drowse.store.manifolds import create_baked_manifold_folder, transfer_manifold
+from drowse.base.paths import encode_release_id
 from tests._whitener import synthetic_means, synthetic_whitener
 
 
@@ -118,8 +118,8 @@ def test_transfer_variant_cold_loads_for_target_identity(
         "local", "merged", "", manifold, source_id, method="folded_vector",
         model_fingerprint=source_fp,
     )
-    from drowse.core.mahalanobis import LayerWhitener
-    from drowse.io.alignment import LayerAlignment
+    from drowse.geometry.whitener import LayerWhitener
+    from drowse.store.alignment import LayerAlignment
 
     acts = {0: torch.randn(32, 4)}
     whitener = LayerWhitener.from_neutral_activations(

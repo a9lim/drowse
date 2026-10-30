@@ -1,4 +1,4 @@
-"""``io.shards`` — the immutable per-layer generation primitive.
+"""``base.shards`` — the immutable per-layer generation primitive.
 
 The neutral cache, the alignment cache, and the Jacobian lens all publish
 per-layer payloads behind one atomic JSON pointer. These tests pin the shared
@@ -12,9 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from drowse.io import shards
-
-
+from drowse.base import shards
 def _anchor(tmp_path: Path) -> Path:
     return tmp_path / "artifact.safetensors"
 
@@ -117,8 +115,8 @@ def test_fit_lock_is_a_sibling_of_the_anchor(tmp_path: Path) -> None:
 
 def test_families_route_through_the_shared_primitive() -> None:
     """The three families must not carry private copies of this machinery."""
-    from drowse.io import alignment, lens
-
+    from drowse.store import alignment
+    from drowse.lens import store as lens
     assert alignment.generation_path is shards.generation_path
     assert alignment._json_pointer_matches is shards.json_pointer_matches
     assert lens._new_layer_generation is shards.generation_path

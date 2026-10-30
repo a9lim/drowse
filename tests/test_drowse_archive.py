@@ -11,22 +11,22 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.manifold import (
+from drowse.geometry.manifold import (
     MANIFOLD_FIT_POLICY_VERSION,
     CustomDomain,
     LayerSubspace,
     Manifold,
 )
-from drowse.io.manifold_authoring import (
+from drowse.store.manifold_authoring import (
     create_discover_manifold_folder,
     create_manifold_folder,
     create_manifold_from_template,
     iter_manifold_folders,
 )
-from drowse.io.manifold_tensors import save_manifold
-from drowse.io.manifolds import ManifoldFolder, ManifoldFormatError
-from drowse.io.paths import manifold_dir, drowse_home, tensor_filename
-from drowse.io.drowse_archive import (
+from drowse.store.manifold_tensors import save_manifold
+from drowse.store.manifolds import ManifoldFolder, ManifoldFormatError
+from drowse.base.paths import manifold_dir, drowse_home, tensor_filename
+from drowse.store.archive import (
     DROWSE_ARCHIVE_FORMAT_VERSION,
     DrowseArchiveError,
     _begin_transaction,
@@ -40,7 +40,7 @@ from drowse.io.drowse_archive import (
     install_drowse_archive,
     recover_drowse_archive_transactions,
 )
-from drowse.io.templates import (
+from drowse.store.templates import (
     TemplateFolder,
     create_template_folder,
     template_dir,
@@ -764,7 +764,7 @@ def test_rejects_symlink_special_and_encrypted_entries() -> None:
 def test_rejects_entry_total_ratio_and_count_bounds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.io.drowse_archive as module
+    import drowse.store.archive as module
 
     oversized = zipfile.ZipInfo("pack.json")
     oversized.file_size = 11
@@ -1110,7 +1110,7 @@ def test_staging_journal_precedes_copy_and_stage_is_not_discoverable() -> None:
 def test_install_cleans_stage_when_copy_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.io.drowse_archive as module
+    import drowse.store.archive as module
 
     folder = _discover()
     archive = tmp_path / "demo.drowse"
@@ -1169,7 +1169,7 @@ def test_recovery_rejects_symlinked_owned_roots(
 
 
 def test_bootstrap_recovers_pending_staging_transaction() -> None:
-    from drowse.io.bootstrap import materialize_bundled_artifacts
+    from drowse.store.bundled import materialize_bundled_artifacts
 
     source = _discover()
     root = drowse_home()
@@ -1196,7 +1196,7 @@ def test_cli_export_drowse_archive(tmp_path: Path, capsys: pytest.CaptureFixture
 
 
 def test_install_manifold_routes_local_archive(tmp_path: Path) -> None:
-    from drowse.io.hf_manifolds import install_manifold
+    from drowse.store.hub import install_manifold
 
     folder = _discover()
     output = tmp_path / "demo.drowse"
@@ -1206,7 +1206,7 @@ def test_install_manifold_routes_local_archive(tmp_path: Path) -> None:
 
 
 def test_install_manifold_rejects_missing_local_archive(tmp_path: Path) -> None:
-    from drowse.io.hf_manifolds import install_manifold
+    from drowse.store.hub import install_manifold
 
     missing = tmp_path / "missing.drowse"
     with pytest.raises(FileNotFoundError, match="Drowse archive not found"):

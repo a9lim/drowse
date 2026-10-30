@@ -24,17 +24,17 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from drowse.core.manifold import BoxAxis, BoxDomain, LayerSubspace, Manifold
-from drowse.core.manifold import (
+from drowse.geometry.manifold import BoxAxis, BoxDomain, LayerSubspace, Manifold
+from drowse.geometry.manifold import (
     fit_layer_subspace as _fit_layer_subspace_with_ev,
 )
-from drowse.core.monitor import Monitor
-from drowse.core.results import (
+from drowse.readout.monitor import Monitor
+from drowse.generation.results import (
     GenerationResult,
     ProbeReading,
     TokenEvent,
 )
-from drowse.core.session import (
+from drowse.session.session import (
     CaptureMode,
     CaptureState,
     ReadDemand,
@@ -135,9 +135,9 @@ def _stub_session() -> DrowseSession:
     # their ``plan()`` demand — a MagicMock plan would poison the capture
     # layer union.  Lens/SAE state (live config, probe registry) lives ON
     # the instruments; tests set ``session._lens_instrument.live`` etc.
-    from drowse.core.instruments.geometry import GeometryInstrument
-    from drowse.core.instruments.lens import LensInstrument
-    from drowse.core.instruments.sae import SaeInstrument
+    from drowse.readout.geometry import GeometryInstrument
+    from drowse.lens.instrument import LensInstrument
+    from drowse.sae.instrument import SaeInstrument
     session._geometry_instrument = GeometryInstrument(session)
     session._lens_instrument = LensInstrument(session)
     session._sae_instrument = SaeInstrument(session)
@@ -171,7 +171,7 @@ def _stub_session() -> DrowseSession:
     )
     # The steering collaborator owns the gating-score-callback builder; wire a
     # real one explicitly.
-    from drowse.core.steering_composer import SteeringComposer
+    from drowse.steering.composer import SteeringComposer
     session._steering_composer = SteeringComposer(session)
     return session
 
@@ -344,7 +344,7 @@ def test_geometry_detach_rejects_while_generation_holds_the_lock():
     the same exclusive section ``attach`` takes."""
     import threading as _threading
 
-    from drowse.core.session import ConcurrentExtractionError
+    from drowse.session.session import ConcurrentExtractionError
 
     session = _stub_session()
     # The MagicMock default no-ops the exclusive section; this test is
@@ -479,7 +479,7 @@ def test_geometry_roster_reads_do_not_tear_under_concurrent_detach():
     exception on either thread fails."""
     import time as _time
 
-    from drowse.core.instruments.types import ReadRequest
+    from drowse.readout.types import ReadRequest
 
     session = _stub_session()
     manifolds = {f"toy{i}": _toy_manifold() for i in range(6)}
@@ -644,7 +644,7 @@ def test_geometry_run_prime_observation_contract():
     idle.prime_observation(5, {"toy": object()})
     assert idle._memo_step is None
 
-    from drowse.core.instruments.types import ReadRequest
+    from drowse.readout.types import ReadRequest
     prep = inst.prepare(ReadRequest(final_aggregate=True))
     run = inst.bind(inst.plan(prep), prep)
 
@@ -788,7 +788,7 @@ def test_negative_step_never_caches_or_primes():
     )
     session.add_probe("toy")
     inst = session._geometry_instrument
-    from drowse.core.instruments.types import ReadRequest
+    from drowse.readout.types import ReadRequest
     prep = inst.prepare(ReadRequest(final_aggregate=True))
     run = inst.bind(inst.plan(prep), prep)
 
@@ -845,7 +845,7 @@ def test_gate_callback_consumes_the_full_incremental_memo():
 def test_token_payload_consumes_the_full_incremental_memo():
     """``build_token_probe_payload``'s FULL-incremental branch is a memo
     hit too — the payload's geometry readings ARE the sink's row."""
-    from drowse.core.token_payloads import build_token_probe_payload
+    from drowse.generation.token_payloads import build_token_probe_payload
 
     session = _stub_session()
     m = _toy_manifold()

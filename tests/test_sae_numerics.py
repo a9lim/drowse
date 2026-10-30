@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from drowse.core.sae import LocalSaeBackend, SaeLensBackend
+from drowse.sae.backend import LocalSaeBackend, SaeLensBackend
 
 
 @pytest.mark.parametrize("size", ["270m", "1b", "4b"])

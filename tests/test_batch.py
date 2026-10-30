@@ -13,11 +13,11 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import pytest
 
-from drowse.core.results import GenerationResult, ProbeReading
-from drowse.core.steering_composer import SteeringComposer
+from drowse.generation.results import GenerationResult, ProbeReading
+from drowse.steering.composer import SteeringComposer
 
 if TYPE_CHECKING:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
 
 # ---------------------------------------------------------------------------
@@ -172,9 +172,9 @@ class _ProbeBatchModel(_BatchModel):
 
 def _fast_batch_session():
     import torch
-    from drowse.core.generation import GenerationConfig, GenerationState
-    from drowse.core.session import CaptureState, GenState, DrowseSession
-    from drowse.core.triggers import TriggerContext
+    from drowse.generation.decode import GenerationConfig, GenerationState
+    from drowse.session.session import CaptureState, GenState, DrowseSession
+    from drowse.steering.triggers import TriggerContext
 
     s = DrowseSession.__new__(DrowseSession)
     model = _BatchModel()
@@ -213,7 +213,7 @@ def _fast_batch_session():
     s._active_gen_reservation = None
     s._last_token_probe_payload = None
     s._capture_state = CaptureState()
-    from drowse.core.hooks import HiddenCapture
+    from drowse.steering.hooks import HiddenCapture
     s._capture = HiddenCapture()
     s._compiled_clean_eligible = False
     s._incremental_readings = []
@@ -254,7 +254,7 @@ def _fast_batch_session():
 
 def _probe_fast_batch_session():
     import torch
-    from drowse.core.hooks import HiddenCapture
+    from drowse.steering.hooks import HiddenCapture
 
     s, _model = _fast_batch_session()
     s._layers = torch.nn.ModuleList([torch.nn.Identity()])
@@ -279,7 +279,7 @@ class TestGenerateBatch:
         # pin the SERIAL fan-out contract (prompt order, per-row steering /
         # sampling pass-through), so the one-shot fast path is declined
         # outright rather than through some incidental engine attribute.
-        from drowse.core.session import DrowseSession
+        from drowse.session.session import DrowseSession
 
         s = DrowseSession.__new__(DrowseSession)
         s._steering_composer = SteeringComposer(s)
@@ -385,7 +385,7 @@ class TestGenerateBatch:
         assert model.calls[0]["eos_token_id"] == [42, 98, 99]
 
     def test_greedy_batch_allows_seeded_sampling_config(self) -> None:
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
 
         s, model = _fast_batch_session()
 
@@ -404,7 +404,7 @@ class TestGenerateBatch:
         assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14]]
 
     def test_stochastic_seeded_batch_stays_serial(self) -> None:
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
 
         s, model = _fast_batch_session()
         capture: list[Any] = []
@@ -457,7 +457,7 @@ class TestGenerateBatch:
         assert cast(Any, s._monitor).scored == [2.0, 30.0, 100.0]
 
     def test_probe_batch_fast_path_honors_return_probe_readings_false(self) -> None:
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
 
         s, model = _probe_fast_batch_session()
 
@@ -478,7 +478,7 @@ class TestGenerateBatch:
         assert cast(Any, s._monitor).scored == []
 
     def test_sae_readout_probe_batch_fast_path_scores_per_row_aggregate(self) -> None:
-        from drowse.core.sae import MockSaeBackend
+        from drowse.sae.backend import MockSaeBackend
 
         s, model = _probe_fast_batch_session()
         cast(Any, s)._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
@@ -510,7 +510,7 @@ class TestGenerateBatch:
         ]
 
     def test_sae_readout_probe_batch_fast_path_honors_return_probe_readings_false(self) -> None:
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
 
         s, model = _probe_fast_batch_session()
         cast(Any, s)._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
@@ -573,7 +573,7 @@ class TestGenerateBatch:
         ]
 
     def test_lens_readout_probe_batch_fast_path_honors_return_probe_readings_false(self) -> None:
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
 
         s, model = _probe_fast_batch_session()
         s_any = cast(Any, s)
@@ -618,7 +618,7 @@ class TestGenerateBatch:
         assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14], [15]]
 
     def test_deterministic_fan_honors_return_probe_readings_false(self) -> None:
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
 
         s, model = _probe_fast_batch_session()
 
@@ -641,7 +641,7 @@ class TestGenerateBatch:
         assert cast(Any, s._monitor).scored == []
 
     def test_deterministic_fan_with_seed_uses_batched_generation(self) -> None:
-        from drowse.core.sampling import SamplingConfig
+        from drowse.generation.sampling import SamplingConfig
 
         s, model = _fast_batch_session()
 
@@ -671,7 +671,7 @@ class TestGenerateBatch:
 
 class TestPrefixCacheEligibility:
     def _session(self):
-        from drowse.core.session import DrowseSession
+        from drowse.session.session import DrowseSession
         session = DrowseSession.__new__(DrowseSession)
         session._steering_composer = SteeringComposer(session)
         session._profiles = {}
@@ -708,7 +708,7 @@ class TestPrefixCacheEligibility:
         assert s._steering_value_prefill_inactive("0.5 !nope~bad") is False
 
     def test_active_in_prefill_reads_the_live_stack(self) -> None:
-        from drowse.core.triggers import Trigger
+        from drowse.steering.triggers import Trigger
 
         s = self._session()
         s._steering_composer._stack = []
@@ -754,7 +754,7 @@ class TestPrefixCacheEligibility:
 
     def test_static_prefix_hit_requires_static_eligibility_and_headroom(self) -> None:
         import torch
-        from drowse.core.session import _PrefixCacheEntry
+        from drowse.session.session import _PrefixCacheEntry
 
         s = self._session()
         cache = object()
@@ -788,8 +788,8 @@ class TestPrefixCacheEligibility:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import torch
-        from drowse.core.generation import GenerationConfig
-        from drowse.core.session import CaptureState, _PrefixCacheEntry
+        from drowse.generation.decode import GenerationConfig
+        from drowse.session.session import CaptureState, _PrefixCacheEntry
 
         class _Cache:
             def __init__(self) -> None:
@@ -848,7 +848,7 @@ class TestPrefixCacheEligibility:
             seen.update(kwargs)
             return [42]
 
-        monkeypatch.setattr("drowse.core.session.generate_steered", _fake_generate)
+        monkeypatch.setattr("drowse.session.session.generate_steered", _fake_generate)
 
         out, _elapsed = s._run_generation_loop(
             torch.tensor([[1, 2, 3]], dtype=torch.long),
@@ -875,7 +875,7 @@ class TestPrefixCacheEligibility:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import torch
-        from drowse.core.generation import GenerationConfig
+        from drowse.generation.decode import GenerationConfig
 
         s = self._session()
         s._static_cache_active = True
@@ -883,7 +883,7 @@ class TestPrefixCacheEligibility:
         s.config = GenerationConfig(max_new_tokens=4)
         s._steering_composer._stack = []
         s._prefix_cache = None
-        from drowse.core.session import GenState
+        from drowse.session.session import GenState
         s._gen_phase = GenState.IDLE
         s._end_capture = lambda: None
 
@@ -900,7 +900,7 @@ class TestPrefixCacheEligibility:
             return static_cache
 
         monkeypatch.setattr(
-            "drowse.core.static_cache.make_static_cache", _make_static_cache,
+            "drowse.generation.static_cache.make_static_cache", _make_static_cache,
         )
 
         class _Model:
@@ -949,10 +949,10 @@ class TestPrefixCacheEligibility:
 
 class TestGenerateSweep:
     def _session(self):
-        from drowse.core.session import DrowseSession
+        from drowse.session.session import DrowseSession
 
         s = DrowseSession.__new__(DrowseSession)
-        from drowse.core.generation import GenerationConfig
+        from drowse.generation.decode import GenerationConfig
         s.config = GenerationConfig()
         return s
 
@@ -1099,8 +1099,8 @@ class TestBatchFastSteeringGate:
 
     @staticmethod
     def _gate(value: str | None) -> bool:
-        from drowse.core.session import DrowseSession
-        from drowse.core.steering import Steering
+        from drowse.session.session import DrowseSession
+        from drowse.steering.terms import Steering
 
         return DrowseSession._batch_fast_steering_is_always_on(
             Steering.from_value(value),
@@ -1133,9 +1133,9 @@ class TestBatchFastSteeringGate:
 
     def test_a_nondefault_steering_level_trigger_disqualifies(self) -> None:
         """Bare floats inherit ``Steering.trigger``, so it counts too."""
-        from drowse.core.session import DrowseSession
-        from drowse.core.steering import Steering
-        from drowse.core.triggers import Trigger
+        from drowse.session.session import DrowseSession
+        from drowse.steering.terms import Steering
+        from drowse.steering.triggers import Trigger
 
         steering = Steering(
             alphas={"formal.casual": 0.5}, trigger=Trigger.GENERATED_ONLY,

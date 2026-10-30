@@ -15,14 +15,14 @@ from typing import Any, Generator
 
 import pytest
 
-from drowse.io import selectors as _sel
-from drowse.core.events import EventBus, SteeringApplied, SteeringCleared
-from drowse.core.session import (
+from drowse.store import selectors as _sel
+from drowse.events import EventBus, SteeringApplied, SteeringCleared
+from drowse.session.session import (
     ConcurrentExtractionError, DrowseSession, ProfileNotRegisteredError,
 )
-from drowse.core.steering import Steering
-from drowse.core.steering_composer import SteeringComposer
-from drowse.core.triggers import Trigger
+from drowse.steering.terms import Steering
+from drowse.steering.composer import SteeringComposer
+from drowse.steering.triggers import Trigger
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +49,7 @@ class _Stub(DrowseSession):
         self._gen_lock = threading.RLock()
         # Phase guard the push/pop methods consult to reject callback
         # reentry mid-gen — stubs are always idle.
-        from drowse.core.session import GenState
+        from drowse.session.session import GenState
         self._gen_phase = GenState.IDLE
         # Internal-cleanup bypass for the phase guard; stubs never run
         # gen so it stays False.
@@ -109,7 +109,7 @@ def test_single_scope_push_pop():
 
 def test_plain_materialization_does_not_wake_whitener():
     """Only ``~``/``|`` terms need the projection-time whitener read."""
-    from drowse.core.steering_composer import SteeringComposer
+    from drowse.steering.composer import SteeringComposer
 
     class _NoWhitener:
         _profiles: dict[str, object] = {}
@@ -268,8 +268,8 @@ def test_pole_alias_resolves_to_manifold_term_with_trigger(
     bipolar-pole alias resolution moved to the manifold tier, so a bare pole
     no longer produces a signed vector.)
     """
-    from drowse.io.manifolds import create_discover_manifold_folder
-    from drowse.core.steering_expr import ManifoldTerm, parse_expr
+    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.steering.grammar import ManifoldTerm, parse_expr
     create_discover_manifold_folder(
         "default", "deer.wolf", "x", fit_mode="pca",
         node_corpora={"deer": ["a statement."], "wolf": ["b statement."]},
@@ -303,7 +303,7 @@ class TestRoleUnanimity:
     """
 
     def test_role_unanimity_violation(self):
-        from drowse.core.steering_expr import SteeringExprError
+        from drowse.steering.grammar import SteeringExprError
         s = _Stub({
             "honest.deceptive:role-pirate": None,
             "honest.deceptive:role-sage": None,
@@ -341,7 +341,7 @@ class TestRoleUnanimity:
 
     def test_plain_and_role_mixing_warns(self):
         import warnings
-        from drowse.core.errors import RoleBaselineMismatchWarning
+        from drowse.errors import RoleBaselineMismatchWarning
         s = _Stub({
             "honest.deceptive": None,
             "angry.calm:role-pirate": None,
@@ -365,7 +365,7 @@ class TestRoleUnanimity:
         """A pure role expression (no plain terms) lifts the role without
         warning."""
         import warnings
-        from drowse.core.errors import RoleBaselineMismatchWarning
+        from drowse.errors import RoleBaselineMismatchWarning
         s = _Stub({"honest.deceptive:role-pirate": None})
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")

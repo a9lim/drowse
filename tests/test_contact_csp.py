@@ -2,7 +2,7 @@ from typing import cast
 
 from fastapi.testclient import TestClient
 
-from drowse.core.session import DrowseSession
+from drowse.session.session import DrowseSession
 from drowse.server import create_app
 from tests.test_server_loom import _StubSession
 

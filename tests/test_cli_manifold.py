@@ -34,9 +34,9 @@ def _cross_process_alignment_worker(
 
     import torch
 
-    import drowse.core.model as model_mod
-    import drowse.core.session as session_mod
-    import drowse.io.alignment as alignment_mod
+    import drowse.model.loading as model_mod
+    import drowse.session.session as session_mod
+    import drowse.store.alignment as alignment_mod
     from drowse.cli import runners
 
     patch = pytest.MonkeyPatch()
@@ -134,9 +134,9 @@ def _materialize_bundles_for_cli_test(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    monkeypatch.setattr("drowse.io.manifolds._materialized_home", None)
-    from drowse.io import selectors
-    from drowse.io.manifolds import materialize_bundled_manifolds
+    monkeypatch.setattr("drowse.store.manifolds._materialized_home", None)
+    from drowse.store import selectors
+    from drowse.store.manifolds import materialize_bundled_manifolds
     selectors.invalidate()
     materialize_bundled_manifolds()
     selectors.invalidate()
@@ -328,8 +328,8 @@ def test_run_manifold_from_template_writes_folder(
     out = capsys.readouterr().out
     assert "3 nodes x 2 contexts" in out
 
-    from drowse.io.manifolds import ManifoldFolder
-    from drowse.io.paths import manifold_dir
+    from drowse.store.manifolds import ManifoldFolder
+    from drowse.base.paths import manifold_dir
     mf = ManifoldFolder.load(manifold_dir("local", "weekday"))
     assert mf.fit_mode == "auto"
     assert mf.node_labels == ["monday", "tuesday", "wednesday"]
@@ -406,7 +406,7 @@ def test_run_manifold_install_calls_backend(monkeypatch: pytest.MonkeyPatch, cap
         calls.append((target, as_, force))
         return Path("/home/.drowse/manifolds/local/circumplex")
 
-    monkeypatch.setattr("drowse.io.hf_manifolds.install_manifold", fake_install)
+    monkeypatch.setattr("drowse.store.hub.install_manifold", fake_install)
     cli.main(["pack", "install", "alice/circumplex", "-a", "local/mood", "-f"])
     assert calls == [("alice/circumplex", "local/mood", True)]
     out = capsys.readouterr().out
@@ -427,7 +427,7 @@ def test_run_manifold_search_calls_backend(monkeypatch: pytest.MonkeyPatch, caps
             "fit_mode": "authored", "tensor_models": ["gemma"],
         }]
 
-    monkeypatch.setattr("drowse.io.hf_manifolds.search_manifolds", fake_search)
+    monkeypatch.setattr("drowse.store.hub.search_manifolds", fake_search)
     cli.main(["pack", "search", "mood"])
     assert seen == ["mood"]
     out = capsys.readouterr().out
@@ -443,7 +443,7 @@ def test_run_manifold_search_empty_query_passes_none(monkeypatch: pytest.MonkeyP
         seen.append(query)
         return []
 
-    monkeypatch.setattr("drowse.io.hf_manifolds.search_manifolds", fake_search)
+    monkeypatch.setattr("drowse.store.hub.search_manifolds", fake_search)
     cli.main(["pack", "search"])
     # Empty CLI default coerces to None for the backend (list by recency).
     assert seen == [None]
@@ -457,7 +457,7 @@ def test_run_manifold_search_json(monkeypatch: pytest.MonkeyPatch, capsys: pytes
         "tags": [], "node_count": 9, "domain_label": "box(2d)",
         "fit_mode": "authored", "tensor_models": [],
     }]
-    monkeypatch.setattr("drowse.io.hf_manifolds.search_manifolds", lambda q: rows)
+    monkeypatch.setattr("drowse.store.hub.search_manifolds", lambda q: rows)
     cli.main(["pack", "search", "mood", "-j"])
     out = capsys.readouterr().out
     data = _json.loads(out)
@@ -476,7 +476,7 @@ def test_run_manifold_merge_calls_backend(monkeypatch: pytest.MonkeyPatch, capsy
         })
         return Path("/home/.drowse/manifolds/local/combined")
 
-    monkeypatch.setattr("drowse.io.manifolds.merge_discover_manifolds", fake_merge)
+    monkeypatch.setattr("drowse.store.manifolds.merge_discover_manifolds", fake_merge)
     cli.main([
         "manifold", "merge", "local/combined", "a", "alice/b",
         "--method", "spectral", "-f",
@@ -495,7 +495,7 @@ def test_run_manifold_merge_calls_backend(monkeypatch: pytest.MonkeyPatch, capsy
 def test_run_manifold_merge_one_source_errors(monkeypatch: pytest.MonkeyPatch):
     # The parser allows >=1 positional source; the runner refuses <2.
     monkeypatch.setattr(
-        "drowse.io.manifolds.merge_discover_manifolds",
+        "drowse.store.manifolds.merge_discover_manifolds",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -505,7 +505,7 @@ def test_run_manifold_merge_one_source_errors(monkeypatch: pytest.MonkeyPatch):
 
 def test_run_manifold_push_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
@@ -521,7 +521,7 @@ def test_run_manifold_push_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_pa
         })
         return (f"https://huggingface.co/{coord}", "abcdef123456")
 
-    monkeypatch.setattr("drowse.io.hf_manifolds.push_manifold", fake_push)
+    monkeypatch.setattr("drowse.store.hub.push_manifold", fake_push)
     # -a override means resolve_target_coord doesn't need whoami().
     cli.main([
         "pack", "push", "local/circumplex",
@@ -543,13 +543,13 @@ def test_run_manifold_push_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 def test_run_manifold_push_dry_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
 
     monkeypatch.setattr(
-        "drowse.io.hf_manifolds.push_manifold",
+        "drowse.store.hub.push_manifold",
         lambda f, coord, **k: (f"https://huggingface.co/{coord}", None),
     )
     cli.main([
@@ -563,7 +563,7 @@ def test_run_manifold_push_dry_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 def test_run_manifold_push_missing_folder_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "drowse.io.hf_manifolds.push_manifold",
+        "drowse.store.hub.push_manifold",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -579,7 +579,7 @@ def test_run_manifold_rm_calls_backend(monkeypatch: pytest.MonkeyPatch, capsys: 
         return {"namespace": ns, "name": name, "source": "local",
                 "removed": True, "rematerializes_on_restart": False}
 
-    monkeypatch.setattr("drowse.io.manifolds.remove_manifold_folder", fake_rm)
+    monkeypatch.setattr("drowse.store.manifolds.remove_manifold_folder", fake_rm)
     cli.main(["pack", "rm", "local/mood", "-y"])
     assert calls == [("local", "mood")]
     out = capsys.readouterr().out
@@ -592,7 +592,7 @@ def test_run_manifold_rm_local_refuses_without_yes(
     """The irrecoverable case is guarded too — a ``local/`` manifold costs
     real extraction/fit time and never re-materializes."""
     monkeypatch.setattr(
-        "drowse.io.manifolds.remove_manifold_folder",
+        "drowse.store.manifolds.remove_manifold_folder",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -605,7 +605,7 @@ def test_run_manifold_rm_local_refuses_without_yes(
 
 def test_run_manifold_rm_bundled_refuses_without_yes(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "drowse.io.manifolds.remove_manifold_folder",
+        "drowse.store.manifolds.remove_manifold_folder",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -618,7 +618,7 @@ def test_run_manifold_rm_bundled_with_yes(monkeypatch: pytest.MonkeyPatch, capsy
         return {"namespace": ns, "name": name, "source": "bundled",
                 "removed": True, "rematerializes_on_restart": True}
 
-    monkeypatch.setattr("drowse.io.manifolds.remove_manifold_folder", fake_rm)
+    monkeypatch.setattr("drowse.store.manifolds.remove_manifold_folder", fake_rm)
     cli.main(["pack", "rm", "default/personas", "-y"])
     out = capsys.readouterr().out
     assert "Removed default/personas" in out
@@ -629,7 +629,7 @@ def test_run_manifold_rm_missing_errors(monkeypatch: pytest.MonkeyPatch):
     def fake_rm(ns: str, name: str) -> dict[str, Any]:
         raise FileNotFoundError("manifold local/nope not found")
 
-    monkeypatch.setattr("drowse.io.manifolds.remove_manifold_folder", fake_rm)
+    monkeypatch.setattr("drowse.store.manifolds.remove_manifold_folder", fake_rm)
     with pytest.raises(SystemExit) as ex:
         cli.main(["pack", "rm", "local/nope", "-y"])
     assert ex.value.code == 1
@@ -646,7 +646,7 @@ def test_run_manifold_clear_calls_backend(
         calls.append({"ns": ns, "name": name, "model_scope": model_scope, "variant": variant})
         return 3
 
-    monkeypatch.setattr("drowse.io.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare ``personas`` resolves cross-namespace to the bundled ``default/personas``
     # (the only installed match) — the lifecycle verbs no longer hard-default
@@ -671,7 +671,7 @@ def test_run_manifold_clear_passes_model_scope(
         calls.append({"ns": ns, "name": name, "model_scope": model_scope, "variant": variant})
         return 1
 
-    monkeypatch.setattr("drowse.io.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare name resolves cross-namespace to bundled ``default/personas``.
     cli.main(["pack", "clear", "personas", "-m", "foo/bar"])
@@ -688,7 +688,7 @@ def test_run_manifold_refresh_tiers(monkeypatch: pytest.MonkeyPatch, capsys: pyt
                            ("bundled", "bundled"),
                            ("hf", "re-pulled from HF")):
         monkeypatch.setattr(
-            "drowse.io.manifolds.refresh_manifold",
+            "drowse.store.manifolds.refresh_manifold",
             lambda ns, name, *, model_scope=None, t=tier: t,
         )
         cli.main(["pack", "refresh", "alice/circumplex"])
@@ -708,7 +708,7 @@ def test_run_manifold_refresh_passes_model_scope(
         calls.append({"ns": ns, "name": name, "model_scope": model_scope})
         return "scoped"
 
-    monkeypatch.setattr("drowse.io.manifolds.refresh_manifold", fake_refresh)
+    monkeypatch.setattr("drowse.store.manifolds.refresh_manifold", fake_refresh)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare name resolves cross-namespace to bundled ``default/personas``.
     cli.main(["pack", "refresh", "personas", "-m", "foo/bar"])
@@ -722,7 +722,7 @@ def test_run_manifold_refresh_missing_errors(monkeypatch: pytest.MonkeyPatch):
     def fake_refresh(ns: str, name: str, *, model_scope: Any = None) -> str:
         raise FileNotFoundError("not installed")
 
-    monkeypatch.setattr("drowse.io.manifolds.refresh_manifold", fake_refresh)
+    monkeypatch.setattr("drowse.store.manifolds.refresh_manifold", fake_refresh)
     with pytest.raises(SystemExit) as ex:
         cli.main(["pack", "refresh", "local/nope"])
     assert ex.value.code == 1
@@ -734,9 +734,9 @@ def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
     """Cold transfer neither revalidates identities nor reloads target rows."""
     import torch
 
-    import drowse.core.model as model_mod
-    import drowse.core.session as session_mod
-    import drowse.io.alignment as alignment_mod
+    import drowse.model.loading as model_mod
+    import drowse.session.session as session_mod
+    import drowse.store.alignment as alignment_mod
     from drowse.cli import runners
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
@@ -828,9 +828,9 @@ def test_cold_narrow_alignment_releases_full_seed_rosters_before_fit(
 
     import torch
 
-    import drowse.core.model as model_mod
-    import drowse.core.session as session_mod
-    import drowse.io.alignment as alignment_mod
+    import drowse.model.loading as model_mod
+    import drowse.session.session as session_mod
+    import drowse.store.alignment as alignment_mod
     from drowse.cli import runners
 
     class _SessionContext:
@@ -935,9 +935,9 @@ def test_cached_alignment_keeps_model_free_offline_whitener_path(
     """A cached repeat loads target rows once and never loads model weights."""
     import torch
 
-    import drowse.core.model as model_mod
-    import drowse.core.session as session_mod
-    import drowse.io.alignment as alignment_mod
+    import drowse.model.loading as model_mod
+    import drowse.session.session as session_mod
+    import drowse.store.alignment as alignment_mod
     from drowse.cli import runners
 
     def sidecar(model_id: str) -> dict[str, Any]:
@@ -1014,9 +1014,9 @@ def test_missing_cached_alignment_fits_offline_from_proven_neutral_rows(
     """A map miss reuses both neutral caches and never loads either model."""
     import torch
 
-    import drowse.core.model as model_mod
-    import drowse.core.session as session_mod
-    import drowse.io.alignment as alignment_mod
+    import drowse.model.loading as model_mod
+    import drowse.session.session as session_mod
+    import drowse.store.alignment as alignment_mod
     from drowse.cli import runners
 
     src_acts = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [2.0, 1.0]])}
@@ -1119,9 +1119,9 @@ def test_force_refits_only_requested_layer_without_loading_models(
 ) -> None:
     import torch
 
-    import drowse.core.model as model_mod
-    import drowse.core.session as session_mod
-    import drowse.io.alignment as alignment_mod
+    import drowse.model.loading as model_mod
+    import drowse.session.session as session_mod
+    import drowse.store.alignment as alignment_mod
     from drowse.cli import runners
 
     def sidecar(model_id: str) -> dict[str, Any]:
@@ -1219,9 +1219,9 @@ def test_target_neutral_generation_race_replans_cached_alignment(
 ) -> None:
     import torch
 
-    import drowse.core.model as model_mod
-    import drowse.core.session as session_mod
-    import drowse.io.alignment as alignment_mod
+    import drowse.model.loading as model_mod
+    import drowse.session.session as session_mod
+    import drowse.store.alignment as alignment_mod
     from drowse.cli import runners
 
     target_generation = "old"
@@ -1296,9 +1296,9 @@ def test_concurrent_distinct_alignments_single_flight_shared_model_load(
 ) -> None:
     import torch
 
-    import drowse.core.model as model_mod
-    import drowse.core.session as session_mod
-    import drowse.io.alignment as alignment_mod
+    import drowse.model.loading as model_mod
+    import drowse.session.session as session_mod
+    import drowse.store.alignment as alignment_mod
     from drowse.cli import runners
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
@@ -1459,13 +1459,13 @@ def test_cross_process_distinct_alignments_single_flight_shared_model_load(
 
 def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.paths import manifold_dir, safe_model_id
+    from drowse.base.paths import manifold_dir, safe_model_id
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
     src_model = "google/gemma-3-4b-it"
     (folder / f"{safe_model_id(src_model)}.safetensors").write_bytes(b"x")
-    from drowse.io.manifolds import TransferSourceProof
+    from drowse.store.manifolds import TransferSourceProof
 
     source_proof = TransferSourceProof(
         tensor_name="source.safetensors",
@@ -1474,12 +1474,12 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
         layers=(14, 15),
     )
     monkeypatch.setattr(
-        "drowse.io.manifolds.preflight_transfer_manifold",
+        "drowse.store.manifolds.preflight_transfer_manifold",
         lambda *_args, **_kwargs: source_proof,
     )
 
     import torch
-    from drowse.io.alignment import LayerAlignment
+    from drowse.store.alignment import LayerAlignment
 
     fake_M = {
         layer: LayerAlignment(torch.eye(4), torch.eye(4), torch.zeros(4))
@@ -1521,7 +1521,7 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
         })
         return folder_arg / "Qwen__Qwen3-4B_from-google__gemma-3-4b-it.safetensors"
 
-    monkeypatch.setattr("drowse.io.manifolds.transfer_manifold", fake_transfer)
+    monkeypatch.setattr("drowse.store.manifolds.transfer_manifold", fake_transfer)
     cli.main([
         "manifold", "transfer", "local/circumplex",
         "--from", src_model, "--to", "Qwen/Qwen3-4B",
@@ -1544,14 +1544,14 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
 
 def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.paths import manifold_dir, safe_model_id
+    from drowse.base.paths import manifold_dir, safe_model_id
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
     src_model = "src/model"
     (folder / f"{safe_model_id(src_model)}.safetensors").write_bytes(b"x")
     monkeypatch.setattr(
-        "drowse.io.manifolds.preflight_transfer_manifold",
+        "drowse.store.manifolds.preflight_transfer_manifold",
         lambda *_args, **_kwargs: None,
     )
 
@@ -1568,7 +1568,7 @@ def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         ),
     )
     monkeypatch.setattr(
-        "drowse.io.manifolds.transfer_manifold",
+        "drowse.store.manifolds.transfer_manifold",
         lambda f, **k: f / "out.safetensors",
     )
     cli.main([
@@ -1588,7 +1588,7 @@ def test_run_manifold_transfer_retries_unproven_target(
 ) -> None:
     """A post-pair manifest failure must not make the CLI demand ``-f``."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.paths import manifold_dir, safe_model_id, tensor_filename
+    from drowse.base.paths import manifold_dir, safe_model_id, tensor_filename
 
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
@@ -1597,7 +1597,7 @@ def test_run_manifold_transfer_retries_unproven_target(
     tgt_model = "tgt/model"
     (folder / f"{safe_model_id(src_model)}.safetensors").write_bytes(b"source")
     monkeypatch.setattr(
-        "drowse.io.manifolds.preflight_transfer_manifold",
+        "drowse.store.manifolds.preflight_transfer_manifold",
         lambda *_args, **_kwargs: None,
     )
 
@@ -1627,7 +1627,7 @@ def test_run_manifold_transfer_retries_unproven_target(
             raise RuntimeError("injected post-pair manifest failure")
         return target
 
-    monkeypatch.setattr("drowse.io.manifolds.transfer_manifold", fail_once)
+    monkeypatch.setattr("drowse.store.manifolds.transfer_manifold", fail_once)
     argv = [
         "manifold", "transfer", "local/circumplex",
         "--from", src_model, "--to", tgt_model,
@@ -1643,13 +1643,13 @@ def test_run_manifold_transfer_trusted_target_skips_alignment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
 
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
     monkeypatch.setattr(
-        "drowse.io.manifolds.preflight_transfer_manifold",
+        "drowse.store.manifolds.preflight_transfer_manifold",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             FileExistsError("trusted transferred target exists")
         ),
@@ -1672,7 +1672,7 @@ def test_run_manifold_transfer_trusted_target_skips_alignment(
 
 def test_run_manifold_transfer_missing_source_fit_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
     folder = manifold_dir("local", "circumplex")
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
@@ -1693,7 +1693,7 @@ def test_lifecycle_bare_name_not_found_exits(monkeypatch: pytest.MonkeyPatch, tm
     """A bare name with no installed match exits 1, no backend call."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "drowse.io.manifolds.clear_manifold_tensors",
+        "drowse.store.manifolds.clear_manifold_tensors",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -1712,7 +1712,7 @@ def test_lifecycle_bare_name_resolves_local(monkeypatch: pytest.MonkeyPatch, tmp
         calls.append((ns, name))
         return 0
 
-    monkeypatch.setattr("drowse.io.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
     cli.main(["pack", "clear", "moodlite"])
     assert calls == [("local", "moodlite")]
 
@@ -1720,7 +1720,7 @@ def test_lifecycle_bare_name_resolves_local(monkeypatch: pytest.MonkeyPatch, tmp
 def test_lifecycle_bare_name_ambiguous_exits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """A bare name installed in two namespaces raises an ambiguity error (exit 2)."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.manifolds import create_manifold_folder
+    from drowse.store.manifolds import create_manifold_folder
     domain_spec = {"type": "box", "axes": [{"min": -1.0, "max": 1.0, "periodic": False}]}
     nodes = [
         {"label": "low", "coords": [-1.0], "statements": ["s."]},
@@ -1731,7 +1731,7 @@ def test_lifecycle_bare_name_ambiguous_exits(monkeypatch: pytest.MonkeyPatch, tm
         create_manifold_folder(ns, "dup", "d", domain_spec, nodes)
 
     monkeypatch.setattr(
-        "drowse.io.manifolds.clear_manifold_tensors",
+        "drowse.store.manifolds.clear_manifold_tensors",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -1748,7 +1748,7 @@ def test_lifecycle_explicit_ns_pins_without_walk(monkeypatch: pytest.MonkeyPatch
         calls.append((ns, name))
         return 0
 
-    monkeypatch.setattr("drowse.io.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
     cli.main(["pack", "clear", "alice/ghost"])
     assert calls == [("alice", "ghost")]
 
@@ -1764,7 +1764,7 @@ def _author_circumplex_lite(home: Path) -> Path:
     and ``ManifoldFolder.load`` enforces it for authored folders — so use
     enough nodes to pass load).  Just enough to drive ls / show.
     """
-    from drowse.io.manifolds import create_manifold_folder
+    from drowse.store.manifolds import create_manifold_folder
     domain_spec = {"type": "box", "axes": [{"min": -1.0, "max": 1.0, "periodic": False}]}
     nodes = [
         {"label": "low", "coords": [-1.0], "statements": ["a statement here."]},
@@ -1780,7 +1780,7 @@ def _author_circumplex_lite(home: Path) -> Path:
 def test_run_manifold_ls_verbose_shows_description(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_circumplex_lite(tmp_path)
-    from drowse.io import selectors
+    from drowse.store import selectors
     selectors.invalidate()
     cli.main(["pack", "ls", "--namespace", "local", "-v"])
     out = capsys.readouterr().out
@@ -1791,7 +1791,7 @@ def test_run_manifold_ls_verbose_shows_description(monkeypatch: pytest.MonkeyPat
 def test_run_manifold_ls_non_verbose_hides_description(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_circumplex_lite(tmp_path)
-    from drowse.io import selectors
+    from drowse.store import selectors
     selectors.invalidate()
     cli.main(["pack", "ls", "--namespace", "local"])
     out = capsys.readouterr().out
@@ -1802,7 +1802,7 @@ def test_run_manifold_ls_non_verbose_hides_description(monkeypatch: pytest.Monke
 def test_run_manifold_show_json_uses_summary_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     _author_circumplex_lite(tmp_path)
-    from drowse.io import selectors
+    from drowse.store import selectors
     selectors.invalidate()
     cli.main(["pack", "show", "local/moodlite", "-j"])
     out = capsys.readouterr().out
@@ -1827,9 +1827,9 @@ def test_run_manifold_show_json_matches_summary_helper(monkeypatch: pytest.Monke
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = _author_circumplex_lite(tmp_path)
-    from drowse.io import selectors
+    from drowse.store import selectors
     selectors.invalidate()
-    from drowse.io.manifolds import manifold_summary
+    from drowse.store.manifolds import manifold_summary
     expected = manifold_summary(folder, include_fits=True)
     assert "fitted" in expected
     cli.main(["pack", "show", "local/moodlite", "-j"])

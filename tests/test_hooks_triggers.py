@@ -13,14 +13,14 @@ import pytest
 import torch
 import torch.nn as nn
 
-from drowse.core.hooks import SteeringHook, SteeringManager
-from drowse.core.manifold import (
+from drowse.steering.hooks import SteeringHook, SteeringManager
+from drowse.geometry.manifold import (
     CustomDomain,
     LayerSubspace,
     subspace_inject,
     synthesize_subspace,
 )
-from drowse.core.triggers import Trigger, TriggerContext
+from drowse.steering.triggers import Trigger, TriggerContext
 from tests._whitener import isotropic_whitener
 
 

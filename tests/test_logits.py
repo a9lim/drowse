@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 
 from drowse import TokenAlt
-from drowse.core.results import GenerationResult, TokenEvent
-from drowse.core.sampling import SamplingConfig
-from drowse.core.loom import LoomNode, LoomTree
+from drowse.generation.results import GenerationResult, TokenEvent
+from drowse.generation.sampling import SamplingConfig
+from drowse.loom.tree import LoomNode, LoomTree
 
 
 # ---------------------------------------------------------------------------

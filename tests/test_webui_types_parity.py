@@ -120,7 +120,7 @@ def test_renamed_tree_routes_are_kebab_only(schema: dict[str, Any]) -> None:
 def test_measurements_envelope_is_named_not_opaque(schema: dict[str, Any]) -> None:
     """The read-side envelope reaches the dashboard as a real type.
 
-    ``core/measurements.py`` owns the shape; the generator renames it into
+    ``readout/measurements.py`` owns the shape; the generator renames it into
     the dashboard's vocabulary rather than forking a second declaration, so
     a component named ``Measurements`` must exist in the schema and a
     ``MeasurementsEnvelopeJSON`` interface in the output.

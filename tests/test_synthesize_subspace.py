@@ -1,4 +1,4 @@
-"""Dispatch-time subspace synthesis (drowse.core.manifold.synthesize_subspace).
+"""Dispatch-time subspace synthesis (drowse.geometry.manifold.synthesize_subspace).
 
 Pure CPU tests for the Stage-1 primitive of the full-unification arc: composing
 an active steering term set (any-rank affine push fragments + ablation
@@ -19,8 +19,8 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.mahalanobis import LayerWhitener
-from drowse.core.manifold import (
+from drowse.geometry.whitener import LayerWhitener
+from drowse.geometry.manifold import (
     CustomDomain,
     LayerSubspace,
     SynthesizedSubspace,
@@ -251,7 +251,7 @@ def test_pure_ablation_zero_target_basis_spans():
 # --------------------------------------------------------------- layer gating ---
 
 def test_rejects_layer_without_neutral():
-    from drowse.core.mahalanobis import WhitenerError
+    from drowse.geometry.whitener import WhitenerError
     u = _unit(torch.randn(8))
     with pytest.raises(WhitenerError, match=r"missing \[7\]"):
         synthesize_subspace(

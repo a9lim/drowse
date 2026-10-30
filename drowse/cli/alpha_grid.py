@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 
-from drowse.core.errors import DrowseError
+from drowse.errors import DrowseError
 
 
 class AlphaListError(ValueError, DrowseError):

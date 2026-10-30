@@ -1,4 +1,4 @@
-"""CPU tests for ``drowse.io.hf_manifolds`` — the HF distribution surface.
+"""CPU tests for ``drowse.store.hub`` — the HF distribution surface.
 
 Network-free: every huggingface_hub indirection (``_hf_snapshot_download`` /
 ``_hf_hub_download`` / ``_hf_api`` / ``HfApi``) is monkeypatched, so these run in
@@ -26,9 +26,9 @@ from typing import Any
 
 import pytest
 
-from drowse.io import hf_manifolds as hfm
-from drowse.io.hf import HFError
-from drowse.io.manifolds import MANIFOLD_FORMAT_VERSION
+from drowse.store import hub as hfm
+from drowse.base.hf import HFError
+from drowse.store.manifolds import MANIFOLD_FORMAT_VERSION
 
 
 # --------------------------------------------------------------------------- #
@@ -89,7 +89,7 @@ def _write_manifest(folder: Path, payload: dict[str, Any]) -> Path:
 
 def test_fetch_manifold_info_box_domain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A box-domain authored manifold reports ``box(1d)`` + node count + tensors."""
-    from drowse.io.paths import safe_model_id, tensor_filename
+    from drowse.base.paths import safe_model_id, tensor_filename
 
     manifest = _write_manifest(tmp_path / "repo", {
         "format_version": MANIFOLD_FORMAT_VERSION,
@@ -247,7 +247,7 @@ def test_search_manifolds_enriches_row_when_fields_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """A row missing description/tags triggers a fetch_manifold_info enrichment."""
-    from drowse.io.paths import safe_model_id, tensor_filename
+    from drowse.base.paths import safe_model_id, tensor_filename
 
     api = _FakeApi(
         models=[_FakeModel("alice/months", tags=None, desc="")],
@@ -370,7 +370,7 @@ def test_install_manifold_conflict_raises_409(
 ):
     """An existing destination without ``force`` raises ManifoldInstallConflict."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
 
     dst = manifold_dir("local", "mood")
     dst.mkdir(parents=True)
@@ -392,7 +392,7 @@ def test_install_manifold_conflict_relocate_via_as(
 ):
     """``as_`` retargets the destination namespace/name, dodging the conflict."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
 
     # Occupy local/mood, then install to alice/mood instead.
     manifold_dir("local", "mood").mkdir(parents=True)
@@ -424,7 +424,7 @@ def test_install_manifold_default_namespace_is_local(
 ):
     """Without ``as_`` the destination namespace defaults to ``local``."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
 
     seen: dict[str, Any] = {}
 
@@ -496,7 +496,7 @@ def test_install_local_manifold_bad_as_rejected(
 ):
     """``_install_local_manifold`` rejects a slash-free ``as_`` before copying."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    from drowse.io.manifolds import create_manifold_folder
+    from drowse.store.manifolds import create_manifold_folder
 
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}

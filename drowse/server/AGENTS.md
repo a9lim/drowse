@@ -236,7 +236,7 @@ A manifold is a top-level artifact, so these routes live outside
 `/sessions/{id}`; `fit` is the exception that needs the loaded model.
 `_manifold_json` is the wire serializer behind every detail-returning route: it
 builds the session-independent fields via
-`io.manifolds.manifold_summary(folder)` — byte-identical to what CLI
+`store.manifolds.manifold_summary(folder)` — byte-identical to what CLI
 `pack show -j` emits for the shared keys — then layers the session-aware
 extras: `fitted_for_session`, `stale` (sidecar `nodes_sha256` vs the folder,
 plus loaded-model fingerprint), `resolved_fit_mode` (a fitted discover folder's
@@ -257,7 +257,7 @@ listing.
 - `GET /manifolds` — every installed manifold with per-session fit status.
   `GET /manifolds/{ns}/{name}` — detail; 404 missing, 400 malformed folder.
 - `GET /manifolds/search?q=&limit=` — HF-hub proxy via
-  `io.hf_manifolds.search_manifolds`; `{query, results}`. Missing
+  `store.hub.search_manifolds`; `{query, results}`. Missing
   `huggingface_hub` → 503, HF transport error → 502.
 - `POST /manifolds` — author an *authored* artifact (box/sphere domain,
   per-node `role` optional). Returns detail + `advisories` (soft poisedness /
@@ -308,7 +308,7 @@ entry.
 
 ### template_routes.py
 
-The standalone templated-completion artifact (`io.templates`). Lifecycle is
+The standalone templated-completion artifact (`store.templates`). Lifecycle is
 pure-IO; `score` runs the loaded model.
 
 - `GET /templates` — list (`summary` + `namespace` per row).
@@ -335,7 +335,7 @@ geometry-shaped row.
 
 - `GET /probes` — Monitor rows (`family: "geometry"`, `manifold`, `top_n`,
   `layers`, `node_labels`, `node_count`, `domain`, `intrinsic_dim`,
-  `feature_space`, `is_affine` from `core.manifold.manifold_is_affine` — the
+  `feature_space`, `is_affine` from `geometry.manifold.manifold_is_affine` — the
   flat/curved discriminator the client classifies subspace-vs-manifold on — and
   `node_coords`, `null` when no per-model layout is materialized), then pinned
   lens rows (`family: "lens"`, `layers`, `intrinsic_dim: 1`,

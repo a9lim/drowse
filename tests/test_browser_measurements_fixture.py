@@ -8,16 +8,16 @@ from typing import cast
 
 import torch
 
-from drowse.core.instruments.sae import SaeInstrument
-from drowse.core.instruments.types import DepthSummary, ScalarReading
-from drowse.core.jlens import (
+from drowse.sae.instrument import SaeInstrument
+from drowse.readout.types import DepthSummary, ScalarReading
+from drowse.lens.jlens import (
     aggregate_readout_from_probabilities,
     token_readout_stats_from_probabilities,
 )
-from drowse.core.measurements import build_measurements
-from drowse.core.monitor import _depth_stats
-from drowse.core.results import ProbeReading
-from drowse.core.session import DrowseSession
+from drowse.readout.measurements import build_measurements
+from drowse.readout.monitor import _depth_stats
+from drowse.generation.results import ProbeReading
+from drowse.session.session import DrowseSession
 
 
 FIXTURE = (

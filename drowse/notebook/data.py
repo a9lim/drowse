@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias, Union
 if TYPE_CHECKING:
     import pandas as pd
 
-    from drowse.core.results import GenerationResult, ResultCollector, RunSet
+    from drowse.generation.results import GenerationResult, ResultCollector, RunSet
 
 
 DataFrameSource: TypeAlias = Union[
@@ -39,9 +39,9 @@ def to_dataframe(
 
     Accepted shapes:
 
-    * :class:`drowse.core.results.RunSet` — converts its explicit results through
+    * :class:`drowse.generation.results.RunSet` — converts its explicit results through
       ``to_dataframe`` so ``grid`` and ``node_ids`` are preserved.
-    * :class:`drowse.core.results.ResultCollector` — delegates to its own
+    * :class:`drowse.generation.results.ResultCollector` — delegates to its own
       ``to_dataframe`` (the single source of truth for column naming).
     * ``list[GenerationResult]`` — wraps each through a transient
       ``ResultCollector`` so the column shape matches programmatic
@@ -62,7 +62,7 @@ def to_dataframe(
     # ResultCollector: delegate to its own to_dataframe so column naming
     # stays in one place.  Imported here (not at module top) so users
     # without pandas don't pay an import-time cost.
-    from drowse.core.results import GenerationResult, ResultCollector, RunSet
+    from drowse.generation.results import GenerationResult, ResultCollector, RunSet
 
     if isinstance(source, RunSet):
         return source.to_dataframe()

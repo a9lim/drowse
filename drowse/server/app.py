@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 if TYPE_CHECKING:
-    from drowse.core.results import GenerationResult
+    from drowse.generation.results import GenerationResult
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.exception_handlers import http_exception_handler
@@ -29,9 +29,9 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from drowse.core.errors import DrowseError
-from drowse.core.session import ConcurrentGenerationError, GenerationStream, DrowseSession
-from drowse.core.steering import Steering
+from drowse.errors import DrowseError
+from drowse.session.session import ConcurrentGenerationError, GenerationStream, DrowseSession
+from drowse.steering.terms import Steering
 from drowse.server.request_helpers import (
     UnsupportedContentError,
     build_sampling_config,
@@ -114,7 +114,7 @@ class _SamplingBase(BaseModel):
     stream_options: StreamOptions | None = None
     # Canonical native steering field — a steering expression string
     # parsed through the shared grammar in
-    # :mod:`drowse.core.steering_expr`.  Merged over the server's default
+    # :mod:`drowse.steering.grammar`.  Merged over the server's default
     # :class:`Steering` and resolved through ``session.steering()`` so pole
     # aliases and events fire via the single canonical resolver site.
     steering: str | None = None

@@ -17,7 +17,7 @@ def test_browser_rank_one_hook_fixture_matches_python_fp32(case_index: int) -> N
     residual = torch.tensor(case["residual"], dtype=torch.float32)
     basis = torch.tensor(case["basis"], dtype=torch.float32)
     neutral = torch.tensor(case["neutral"], dtype=torch.float32)
-    from drowse.core.manifold import CustomDomain, LayerSubspace, subspace_inject
+    from drowse.geometry.manifold import CustomDomain, LayerSubspace, subspace_inject
 
     coordinate = torch.dot(residual - neutral, basis)
     result, _ = subspace_inject(

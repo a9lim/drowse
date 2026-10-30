@@ -8,7 +8,7 @@ import torch
 
 gguf = pytest.importorskip("gguf")
 
-from drowse.io.gguf_io import read_gguf_profile, write_gguf_profile
+from drowse.store.gguf import read_gguf_profile, write_gguf_profile
 
 
 def test_roundtrip_preserves_tensors(tmp_path: Path):
@@ -86,8 +86,8 @@ def test_read_rejects_empty(tmp_path: Path):
 
 
 def test_load_profile_dispatches_on_extension(tmp_path: Path):
-    """drowse.core.profile.load_profile should route .gguf to the GGUF loader."""
-    from drowse.core.profile import load_profile
+    """drowse.geometry.profile.load_profile should route .gguf to the GGUF loader."""
+    from drowse.geometry.profile import load_profile
     profile = {0: torch.randn(8), 5: torch.randn(8)}
     path = tmp_path / "dispatch.gguf"
     write_gguf_profile(profile, path, model_hint="llama")

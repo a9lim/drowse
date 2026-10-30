@@ -1,4 +1,4 @@
-"""Tests for ``drowse.core.role_templates``.
+"""Tests for ``drowse.model.role_templates``.
 
 Strategy: use a small ``FakeTokenizer`` shim with hand-written Jinja
 templates that mirror the per-family chat-template shapes drowse
@@ -21,8 +21,8 @@ from typing import Any
 import jinja2
 import pytest
 
-from drowse.core.errors import DrowseError
-from drowse.core.role_templates import (
+from drowse.errors import DrowseError
+from drowse.model.role_templates import (
     InvalidRoleError,
     ROLE_HEADERS,
     USER_ROLE_HEADERS,
@@ -721,7 +721,7 @@ def test_unsupported_error_caught_as_value_error():
 
 
 def test_registry_covers_tested_archs():
-    """Every model_type in core.model._TESTED_ARCHS has an *exact* registry
+    """Every model_type in model.loading._TESTED_ARCHS has an *exact* registry
     entry (either a RoleHeader or an explicit None).
 
     Exact-match, not suffix-stripping: the runtime ``_lookup_header`` does a
@@ -731,7 +731,7 @@ def test_registry_covers_tested_archs():
     ``qwen3_5_text``/``qwen3_5_moe`` read as covered while the code raised on
     them — so the test must mirror the lookup, not paper over it.
     """
-    from drowse.core.model import _TESTED_ARCHS
+    from drowse.model.loading import _TESTED_ARCHS
 
     missing = [arch for arch in _TESTED_ARCHS if arch not in ROLE_HEADERS]
     assert not missing, (
@@ -747,7 +747,7 @@ def test_seat_views_derive_from_one_registry():
     in two places with nothing enforcing agreement.  They are derived now, so
     key sets and per-family support cannot drift.
     """
-    from drowse.core.role_templates import SEAT_HEADERS
+    from drowse.model.role_templates import SEAT_HEADERS
 
     assert set(ROLE_HEADERS) == set(SEAT_HEADERS) == set(USER_ROLE_HEADERS)
     for model_type, seats in SEAT_HEADERS.items():
@@ -764,7 +764,7 @@ def test_seat_headers_share_delimiters_except_gpt_oss():
     gpt-oss is the sole documented divergence (Harmony renders user turns
     with ``<|message|>``); every other family's seats differ only in label.
     """
-    from drowse.core.role_templates import SEAT_HEADERS
+    from drowse.model.role_templates import SEAT_HEADERS
 
     for model_type, seats in SEAT_HEADERS.items():
         if seats.assistant is None or seats.user is None:
@@ -793,7 +793,7 @@ def test_build_chat_input_with_gen_role():
     """``build_chat_input(gen_role=...)`` routes through the per-turn render
     so the generation prompt opens with the substituted assistant label.
     """
-    from drowse.core.generation import build_chat_input
+    from drowse.generation.decode import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE
@@ -817,7 +817,7 @@ def test_build_chat_input_with_gen_role():
 
 def test_build_chat_input_with_per_turn_labels():
     """Per-message ``label`` keys drive a faithful per-turn render."""
-    from drowse.core.generation import build_chat_input
+    from drowse.generation.decode import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE
@@ -859,7 +859,7 @@ def test_per_turn_roles_follow_llama_architecture_chatml_template():
 
 def test_build_chat_input_no_labels_unchanged():
     """No labels + ``gen_role=None`` is byte-identical to the plain path."""
-    from drowse.core.generation import build_chat_input
+    from drowse.generation.decode import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE
@@ -877,7 +877,7 @@ def test_build_chat_input_gen_role_requires_model_type():
     """``gen_role=`` without ``model_type=`` raises — the family lookup is
     required to find the right role-header bytes to splice.
     """
-    from drowse.core.generation import build_chat_input
+    from drowse.generation.decode import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE
@@ -1028,7 +1028,7 @@ def test_user_role_registry_covers_tested_archs():
     """Every ``_TESTED_ARCHS`` member has an *exact* USER_ROLE_HEADERS entry
     (RoleHeader or explicit None), mirroring the assistant registry — and the
     runtime lookup, which is exact (no suffix fallback)."""
-    from drowse.core.model import _TESTED_ARCHS
+    from drowse.model.loading import _TESTED_ARCHS
 
     missing = [arch for arch in _TESTED_ARCHS if arch not in USER_ROLE_HEADERS]
     assert not missing, (
@@ -1049,7 +1049,7 @@ def test_build_chat_input_user_label_distinct_from_plain():
     (cache key keeps them separate)."""
     import torch
 
-    from drowse.core.generation import build_chat_input
+    from drowse.generation.decode import build_chat_input
 
     tok: Any = _qwen_tok()
     tok.chat_template = QWEN_TEMPLATE

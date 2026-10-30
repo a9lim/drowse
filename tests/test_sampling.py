@@ -2,7 +2,7 @@
 
 import pytest
 
-from drowse.core.sampling import SamplingConfig
+from drowse.generation.sampling import SamplingConfig
 
 
 def test_defaults():

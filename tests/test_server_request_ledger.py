@@ -5,7 +5,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, cast
 
-from drowse.core.session import DrowseSession
+from drowse.session.session import DrowseSession
 
 from drowse.server.request_ledger import RequestLedger
 

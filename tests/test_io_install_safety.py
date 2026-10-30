@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from drowse.io import hf_manifolds as hfm
-from drowse.io.manifolds import ManifoldFolder, create_discover_manifold_folder
+from drowse.store import hub as hfm
+from drowse.store.manifolds import ManifoldFolder, create_discover_manifold_folder
 
 
 @pytest.fixture

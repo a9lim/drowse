@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from drowse.core.profile import Profile
+from drowse.geometry.profile import Profile
 from drowse.server.native_common import NativeRequest
 from drowse.server.response_models import VectorInfo
 

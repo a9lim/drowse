@@ -19,19 +19,19 @@ import pytest
 import torch
 from torch import nn
 
-from drowse.core.hooks import (
+from drowse.steering.hooks import (
     _SUBSPACE_GAIN,
     SteeringManager,
     _affine_push_offset,
     _lower_affine_subspaces,
 )
-from drowse.core.mahalanobis import LayerWhitener
-from drowse.core.manifold import (
+from drowse.geometry.whitener import LayerWhitener
+from drowse.geometry.manifold import (
     CustomDomain,
     SynthesizedSubspace,
     synthesize_subspace as _synthesize_subspace,
 )
-from drowse.core.triggers import Trigger
+from drowse.steering.triggers import Trigger
 from tests._whitener import isotropic_whitener
 
 

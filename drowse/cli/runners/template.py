@@ -38,7 +38,7 @@ def _run_template_create(args: argparse.Namespace) -> None:
     """
     import json as _json
 
-    from drowse.io.templates import TemplateFormatError, create_template_folder
+    from drowse.store.templates import TemplateFormatError, create_template_folder
 
     try:
         with open(args.contexts_file) as f:
@@ -92,7 +92,7 @@ def _run_template_create(args: argparse.Namespace) -> None:
 def _run_template_ls(args: argparse.Namespace) -> None:
     import json as _json
 
-    from drowse.io.templates import iter_template_folders
+    from drowse.store.templates import iter_template_folders
 
     rows = list(iter_template_folders())
     if getattr(args, "json_output", False):
@@ -114,7 +114,7 @@ def _run_template_ls(args: argparse.Namespace) -> None:
 def _run_template_show(args: argparse.Namespace) -> None:
     import json as _json
 
-    from drowse.io.templates import (
+    from drowse.store.templates import (
         AmbiguousTemplateError, TemplateNotFoundError, resolve_template,
     )
 
@@ -142,7 +142,7 @@ def _run_template_show(args: argparse.Namespace) -> None:
 
 
 def _run_template_rm(args: argparse.Namespace) -> None:
-    from drowse.io.templates import (
+    from drowse.store.templates import (
         AmbiguousTemplateError, TemplateNotFoundError, remove_template_folder,
         resolve_template,
     )
@@ -171,9 +171,9 @@ def _run_template_score(args: argparse.Namespace) -> None:
     """``drowse template score`` — the restricted-choice value distribution."""
     import json as _json
 
-    from drowse.core.scoring import score_template
-    from drowse.core.session import DrowseSession
-    from drowse.io.templates import (
+    from drowse.generation.scoring import score_template
+    from drowse.session.session import DrowseSession
+    from drowse.store.templates import (
         AmbiguousTemplateError, TemplateNotFoundError, resolve_template,
     )
 

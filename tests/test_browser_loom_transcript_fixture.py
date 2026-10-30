@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-import drowse.core.loom as loom_module
-from drowse.core.events import EventBus, LoomMutated
-from drowse.core.loom import CastMember, LoomTree, Recipe
+import drowse.loom.tree as loom_module
+from drowse.events import EventBus, LoomMutated
+from drowse.loom.tree import CastMember, LoomTree, Recipe
 
 
 FIXTURE = (

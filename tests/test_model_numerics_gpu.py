@@ -7,10 +7,10 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.capture import _capture_all_hidden_states
-from drowse.core.generation import GenerationConfig, GenerationState, clear_generation_caches, generate_steered
-from drowse.core.jlens import JacobianLens, lens_logits
-from drowse.core.model import LogitReadout, get_final_norm, get_layers, get_logit_softcap, get_unembedding, load_model
+from drowse.fit.capture import _capture_all_hidden_states
+from drowse.generation.decode import GenerationConfig, GenerationState, clear_generation_caches, generate_steered
+from drowse.lens.jlens import JacobianLens, lens_logits
+from drowse.model.loading import LogitReadout, get_final_norm, get_layers, get_logit_softcap, get_unembedding, load_model
 from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(
@@ -88,8 +88,8 @@ def test_native_decode_matches_direct_cached_reference(loaded: tuple[Any, Any]):
 
 @pytest.mark.parametrize("ablate", [False, True])
 def test_native_steering_matches_manual_intervention(loaded: tuple[Any, Any], ablate: bool):
-    from drowse.core.hooks import SteeringManager
-    from drowse.core.manifold import LayerSubspace, SynthesizedSubspace
+    from drowse.steering.hooks import SteeringManager
+    from drowse.geometry.manifold import LayerSubspace, SynthesizedSubspace
 
     model, tokenizer = loaded
     parameter = next(model.parameters())

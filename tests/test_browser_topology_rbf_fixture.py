@@ -4,10 +4,10 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.core.manifold import eval_rbf, fit_rbf_smoothed, prepare_rbf_fit_plan
-from drowse.core.mahalanobis import LayerWhitener
-from drowse.core.manifold import CustomDomain
-from drowse.core.topology import (
+from drowse.geometry.manifold import eval_rbf, fit_rbf_smoothed, prepare_rbf_fit_plan
+from drowse.geometry.whitener import LayerWhitener
+from drowse.geometry.manifold import CustomDomain
+from drowse.geometry.topology import (
     SpectralDiagnostics,
     derive_spectral_coords,
     select_topology,

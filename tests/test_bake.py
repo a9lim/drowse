@@ -7,14 +7,14 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.io import bake
-from drowse.io.manifolds import (
+from drowse.fit import bake
+from drowse.store.manifolds import (
     ManifoldFolder, ManifoldSidecar,
     create_baked_manifold_folder, save_baked_manifold_tensor,
 )
-from drowse.io.manifold_tensors import load_manifold
-from drowse.core.capture import fold_directions_to_subspace, folded_directions
-from drowse.io.paths import encode_release_id, model_dir, safe_model_id, tensor_filename
+from drowse.store.manifold_tensors import load_manifold
+from drowse.fit.capture import fold_directions_to_subspace, folded_directions
+from drowse.base.paths import encode_release_id, model_dir, safe_model_id, tensor_filename
 from tests._whitener import isotropic_whitener
 
 
@@ -168,7 +168,7 @@ def _seed_neutral_cache(model_id: str, profile: dict[int, torch.Tensor]) -> None
     """Give offline bake the persisted metric its current contract requires."""
     import json
     from safetensors.torch import save_file
-    from drowse.io.integrity import hash_file
+    from drowse.base.integrity import hash_file
 
     md = model_dir(model_id)
     md.mkdir(parents=True, exist_ok=True)

@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
-from drowse.core.profile import Profile
+from drowse.geometry.profile import Profile
 from drowse.server.streaming import run_in_thread
 from drowse.server.app import acquire_session_lock
 from drowse.server.native_common import (

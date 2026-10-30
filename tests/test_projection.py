@@ -18,15 +18,15 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.events import EventBus
-from drowse.core.mahalanobis import WhitenerError
-from drowse.core.session import (
+from drowse.events import EventBus
+from drowse.geometry.whitener import WhitenerError
+from drowse.session.session import (
     DrowseSession, ProfileNotRegisteredError,
 )
-from drowse.core.steering_composer import SteeringComposer
-from drowse.core.steering_expr import parse_expr
-from drowse.core.triggers import Trigger
-from drowse.core.capture import project_profile
+from drowse.steering.composer import SteeringComposer
+from drowse.steering.grammar import parse_expr
+from drowse.steering.triggers import Trigger
+from drowse.fit.capture import project_profile
 from tests._whitener import synthetic_whitener
 
 
@@ -190,7 +190,7 @@ class _Stub(DrowseSession):
         # v2.2: _push_steering / _pop_steering acquire _gen_lock and
         # consult _gen_phase + _internal_steering_pop.
         self._gen_lock = threading.RLock()
-        from drowse.core.session import GenState
+        from drowse.session.session import GenState
         self._gen_phase = GenState.IDLE
         self._internal_steering_pop = False
         self._layer_means = {}
@@ -344,7 +344,7 @@ class TestLayerMeansLazy:
             called.append(args)
             return {99: torch.tensor([0.0])}
 
-        from drowse.core import session as session_mod
+        from drowse.session import session as session_mod
         monkeypatch.setattr(session_mod, "bootstrap_layer_means", _fail_bootstrap)
         result = s.layer_means
         assert set(result.keys()) == {0}
@@ -355,7 +355,7 @@ class TestLayerMeansLazy:
         """Empty ``self._layer_means`` triggers ``bootstrap_layer_means``
         on first access; result is cached on subsequent calls."""
         s = _Stub({"a": _profile_a()})
-        from drowse.core.session import DrowseSession
+        from drowse.session.session import DrowseSession
         built = {3: torch.tensor([5.0, 6.0]), 4: torch.tensor([7.0, 8.0])}
         calls: list[Any] = []
 
@@ -363,8 +363,7 @@ class TestLayerMeansLazy:
             calls.append(args)
             return built
 
-        from drowse.core import session as session_mod
-
+        from drowse.session import session as session_mod
         # Give the stub the minimal handle attributes the bootstrap call
         # looks at, so the try-block actually runs.
         s._model = object()  # pyright: ignore[reportAttributeAccessIssue]  # injecting minimal stub handle; real type is PreTrainedModel
@@ -386,9 +385,8 @@ class TestLayerMeansLazy:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Whitener bootstrap shares one neutral-cache read with mean derivation."""
-        from drowse.core.session import DrowseSession
-        from drowse.io import alignment as alignment_mod
-
+        from drowse.session.session import DrowseSession
+        from drowse.store import alignment as alignment_mod
         s = _Stub({"a": _profile_a()})
         s._model = object()  # pyright: ignore[reportAttributeAccessIssue]
         s._tokenizer = object()  # pyright: ignore[reportAttributeAccessIssue]
@@ -427,7 +425,7 @@ class TestComputeDlsAxesBipolarGuard:
         directions: dict[int, torch.Tensor],
         layer_means: dict[int, torch.Tensor] | None,
     ) -> set[int]:
-        from drowse.core.capture import compute_dls_axes
+        from drowse.fit.capture import compute_dls_axes
         node_centroids = {
             L: torch.stack([mu_pos[L].reshape(-1), mu_neg[L].reshape(-1)])
             for L in mu_pos
@@ -509,7 +507,7 @@ class TestComputeDlsAxes:
         # Three nodes, neutral at 0.  Axis 0 (x): projections {+2, 0.5, -1}
         # straddle zero ⇒ KEEP.  Axis 1 (y): projections {1, 2, 3} all
         # positive ⇒ no straddle ⇒ DROP (a common offset, not a contrast).
-        from drowse.core.capture import compute_dls_axes
+        from drowse.fit.capture import compute_dls_axes
         node_centroids = {
             7: torch.tensor([
                 [2.0, 1.0],
@@ -523,7 +521,7 @@ class TestComputeDlsAxes:
         assert out == {7: {0}}
 
     def test_n_node_disabled_keeps_every_axis(self):
-        from drowse.core.capture import compute_dls_axes
+        from drowse.fit.capture import compute_dls_axes
         node_centroids = {0: torch.randn(4, 3), 1: torch.randn(4, 3)}
         bases = {0: torch.eye(3), 1: torch.eye(3)}
         out = compute_dls_axes(node_centroids, bases, None)
@@ -531,14 +529,14 @@ class TestComputeDlsAxes:
 
     def test_n_node_missing_baseline_conservative_keep(self):
         # A layer whose neutral baseline is absent keeps every checkable axis.
-        from drowse.core.capture import compute_dls_axes
+        from drowse.fit.capture import compute_dls_axes
         node_centroids = {3: torch.randn(5, 4)}
         bases = {3: torch.eye(4)}
         out = compute_dls_axes(node_centroids, bases, {})  # empty ⇒ disabled
         assert out == {3: {0, 1, 2, 3}}
 
     def test_n_node_degenerate_row_skipped(self):
-        from drowse.core.capture import compute_dls_axes
+        from drowse.fit.capture import compute_dls_axes
         node_centroids = {0: torch.tensor([[1.0, 0.0], [-1.0, 0.0]])}
         bases = {0: torch.tensor([[1.0, 0.0], [0.0, 0.0]])}  # row 1 zero-norm
         layer_means = {0: torch.zeros(2)}
@@ -547,7 +545,7 @@ class TestComputeDlsAxes:
 
     def test_n_node_all_fail_fallback(self):
         import warnings as _warnings
-        from drowse.core.capture import compute_dls_axes
+        from drowse.fit.capture import compute_dls_axes
         # Every node on the same side of neutral on both axes ⇒ no straddle.
         node_centroids = {0: torch.tensor([[0.5, 0.7], [0.3, 0.4], [0.6, 0.9]])}
         bases = {0: torch.eye(2)}

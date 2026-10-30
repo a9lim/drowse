@@ -1,4 +1,4 @@
-"""On-disk format tests for drowse.io.manifolds — CPU-only, no model."""
+"""On-disk format tests for drowse.store.manifolds — CPU-only, no model."""
 from __future__ import annotations
 
 import json
@@ -10,8 +10,8 @@ import pytest
 
 import torch
 
-from drowse.io.alignment import LayerAlignment
-from drowse.io.manifolds import (
+from drowse.store.alignment import LayerAlignment
+from drowse.store.manifolds import (
     MANIFOLD_FORMAT_VERSION,
     BakedManifoldError,
     DiscoverGenerationPlan,
@@ -36,7 +36,7 @@ from drowse.io.manifolds import (
     transfer_manifold,
     update_manifold_folder,
 )
-from drowse.io.paths import safe_model_id, tensor_filename
+from drowse.base.paths import safe_model_id, tensor_filename
 
 
 def _alignment(dense: torch.Tensor) -> LayerAlignment:
@@ -393,7 +393,7 @@ def test_fit_parse_can_skip_historical_manifest_hashing(
     mf = ManifoldFolder.load(folder)
     mf.write_metadata()
 
-    import drowse.io.manifold_folder as folder_module
+    import drowse.store.manifold_folder as folder_module
 
     def _must_not_verify(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("fit-specific parse hashed the full manifest")
@@ -446,7 +446,7 @@ def test_update_file_hashes_only_reads_new_artifact(
     new_tensor.write_bytes(b"new tensor")
     new_sidecar.write_bytes((folder / "stub-model.json").read_bytes())
 
-    from drowse.io import manifold_folder as folder_mod
+    from drowse.store import manifold_folder as folder_mod
     real_hash = folder_mod.hash_file
     hashed: list[Path] = []
 
@@ -474,8 +474,7 @@ def test_update_file_hashes_rejects_unreadable_future_manifest(
     tensor = folder / "new-model.safetensors"
     tensor.write_bytes(b"future tensor")
 
-    from drowse.io import manifold_folder as folder_mod
-
+    from drowse.store import manifold_folder as folder_mod
     def _unexpected_hash(_path: Path) -> str:
         pytest.fail("an unreadable manifest must be rejected before payload hashing")
 
@@ -487,7 +486,7 @@ def test_update_file_hashes_rejects_unreadable_future_manifest(
 
 
 def test_bundle_drift_ignores_local_fit_transaction_state() -> None:
-    from drowse.io.manifolds import _manifest_content_sha256
+    from drowse.store.manifolds import _manifest_content_sha256
 
     base = {"format_version": MANIFOLD_FORMAT_VERSION, "name": "mood", "files": {}}
     local = {
@@ -635,10 +634,10 @@ def test_manifold_sidecar_topology_provenance_round_trips(tmp_path: Path):
     extraction tests stayed green while the round-trip lost them.
     """
     import torch
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
     )
-    from drowse.io.manifold_tensors import load_manifold, save_manifold
+    from drowse.store.manifold_tensors import load_manifold, save_manifold
 
     g = torch.Generator().manual_seed(0)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -695,10 +694,10 @@ def test_save_manifold_rejects_unknown_metadata_key(tmp_path: Path):
     load → transfer → save round-trip still works.
     """
     import torch
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
     )
-    from drowse.io.manifold_tensors import load_manifold, save_manifold
+    from drowse.store.manifold_tensors import load_manifold, save_manifold
 
     g = torch.Generator().manual_seed(0)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -858,8 +857,7 @@ def test_update_manifold_folder_does_not_hash_fitted_payloads(
         "local", "mood", "", domain, _author_nodes(["a", "b", "c"]),
     )
     _fake_fit_tensor(folder, "test/model")
-    from drowse.io import integrity
-
+    from drowse.base import integrity
     hashed: list[Path] = []
 
     def unexpected_hash(path: Path) -> str:
@@ -1049,8 +1047,7 @@ def test_iter_manifold_folders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_iter_manifold_folders_is_metadata_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import manifold_folder as manifold_folder_module
-
+    from drowse.store import manifold_folder as manifold_folder_module
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
@@ -1325,8 +1322,7 @@ def test_merge_discover_does_not_hash_source_fitted_payloads(
     ]
     for folder in folders:
         _fake_fit_tensor(folder, "test/model")
-    from drowse.io import integrity
-
+    from drowse.base import integrity
     hashed: list[Path] = []
 
     def unexpected_hash(path: Path) -> str:
@@ -1537,7 +1533,7 @@ def _fake_fit_tensor(folder: Path, model_id: str, *, release: str | None = None)
 
     No model needed — the lifecycle functions only glob/parse filenames.
     """
-    from drowse.io.paths import sidecar_filename, tensor_filename
+    from drowse.base.paths import sidecar_filename, tensor_filename
     ts = folder / tensor_filename(model_id, release=release)
     sc = folder / sidecar_filename(model_id, release=release)
     ts.write_bytes(b"placeholder-tensor")
@@ -1566,7 +1562,7 @@ def test_clear_manifold_tensors_removes_tensors_keeps_corpus(
     ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
         fitted, sidecar_path,
     )
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     capture_dir = model_dir("google/gemma-3-4b-it") / "manifold_capture"
     capture_dir.mkdir(parents=True)
@@ -1608,7 +1604,7 @@ def test_shared_capture_survives_until_last_fitted_owner_is_removed(
             fitted, sidecar_path,
         )
 
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     capture_dir = model_dir("google/gemma-3-4b-it") / "manifold_capture"
     capture_dir.mkdir(parents=True)
@@ -1632,7 +1628,7 @@ def test_clear_reaps_capture_when_sidecar_is_missing(
     )
     fitted = _fake_fit_tensor(folder, "model/a")
     fitted.with_suffix(".json").unlink()
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     capture_sha = "1" * 64
     capture_dir = model_dir("model/a") / "manifold_capture"
@@ -1656,7 +1652,7 @@ def test_clear_reaps_capture_when_both_fitted_halves_are_missing(
     fitted = _fake_fit_tensor(folder, "model/a")
     fitted.unlink()
     fitted.with_suffix(".json").unlink()
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     capture_sha = "4" * 64
     capture_dir = model_dir("model/a") / "manifold_capture"
@@ -1679,7 +1675,7 @@ def test_rm_reaps_capture_when_sidecar_is_corrupt(
     )
     fitted = _fake_fit_tensor(folder, "model/a")
     fitted.with_suffix(".json").write_text("{")
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     capture_sha = "2" * 64
     capture_dir = model_dir("model/a") / "manifold_capture"
@@ -1703,7 +1699,7 @@ def test_rm_reaps_capture_when_both_fitted_halves_are_missing(
     fitted = _fake_fit_tensor(folder, "model/a")
     fitted.unlink()
     fitted.with_suffix(".json").unlink()
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     capture_sha = "5" * 64
     capture_dir = model_dir("model/a") / "manifold_capture"
@@ -1738,7 +1734,7 @@ def test_corrupt_owner_cleanup_preserves_capture_with_readable_shared_owner(
     ManifoldFolder.load(folders[1], verify_manifest=False).update_file_hashes(
         live, live_sidecar,
     )
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     capture_dir = model_dir("model/a") / "manifold_capture"
     capture_dir.mkdir(parents=True)
@@ -1896,7 +1892,7 @@ def test_remove_manifold_folder_removes_referenced_capture_cache(
     sidecar["capture_sha256"] = capture_sha
     sidecar_path.write_text(json.dumps(sidecar))
     ManifoldFolder.load(folder, verify_manifest=False).write_metadata()
-    from drowse.io.paths import model_dir
+    from drowse.base.paths import model_dir
 
     capture_dir = model_dir("google/gemma-3-4b-it") / "manifold_capture"
     capture_dir.mkdir(parents=True)
@@ -1948,8 +1944,7 @@ def test_metadata_only_lifecycle_does_not_hash_fitted_payloads(
         "local", "mood", "", domain, _author_nodes(["a", "b", "c"]),
     )
     _fake_fit_tensor(folder, "test/model")
-    from drowse.io import integrity
-
+    from drowse.base import integrity
     hashed: list[Path] = []
 
     def unexpected_hash(path: Path) -> str:
@@ -1976,7 +1971,7 @@ def test_refresh_manifold_hf_repulls(tmp_path: Path, monkeypatch: pytest.MonkeyP
     mf.write_metadata()
 
     captured: dict[str, Any] = {}
-    import drowse.io.hf_manifolds as hfm
+    import drowse.store.hub as hfm
 
     def fake_pull(coord: str, *, target_folder: Path, force: bool, revision: str | None = None) -> Path:
         captured.update(coord=coord, target=target_folder,
@@ -2012,7 +2007,7 @@ def test_refresh_manifold_model_scope_clears_fit_no_repull(
     _fake_fit_tensor(folder, "google/gemma-3-4b-it")
     _fake_fit_tensor(folder, "Qwen/Qwen3-4B")
 
-    import drowse.io.hf_manifolds as hfm
+    import drowse.store.hub as hfm
 
     def boom(*a: object, **k: object) -> None:  # pragma: no cover - asserted not to fire
         raise AssertionError("scoped refresh must not re-pull from HF")
@@ -2034,7 +2029,7 @@ def test_refresh_manifold_missing_raises(tmp_path: Path, monkeypatch: pytest.Mon
 def test_manifold_pair_lock_identity_is_external_stable_and_bounded(
     tmp_path: Path,
 ) -> None:
-    from drowse.io.manifold_folder import manifold_pair_lock_path
+    from drowse.store.manifold_folder import manifold_pair_lock_path
 
     folder = tmp_path / "manifolds" / "local" / "mood"
     tensor = folder / ("model_" + "x" * 220 + ".safetensors")
@@ -2054,7 +2049,7 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
-    from drowse.io.manifold_folder import manifold_pair_lock
+    from drowse.store.manifold_folder import manifold_pair_lock
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -2068,7 +2063,7 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
         mf = ManifoldFolder.load(folder)
         mf.source = "hf://alice/mood@v1"
         mf.write_metadata()
-        import drowse.io.hf_manifolds as hfm
+        import drowse.store.hub as hfm
 
         monkeypatch.setattr(
             hfm,
@@ -2109,7 +2104,7 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
 def test_force_authoring_reset_waits_for_stable_pair_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.manifold_folder import manifold_pair_lock
+    from drowse.store.manifold_folder import manifold_pair_lock
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
@@ -2159,12 +2154,12 @@ def test_rectangular_affine_transfer_preserves_points_frame_and_steering(
     tmp_path: Path,
 ) -> None:
     import torch
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         CustomDomain, LayerSubspace, Manifold,
         transfer_manifold_subspaces,
     )
-    from drowse.io.manifold_tensors import load_manifold, save_manifold
-    from drowse.io.alignment import LayerAlignment
+    from drowse.store.manifold_tensors import load_manifold, save_manifold
+    from drowse.store.alignment import LayerAlignment
 
     basis = torch.tensor([
         [1.0, 0.0, 0.0, 0.0],
@@ -2224,10 +2219,10 @@ def test_rectangular_affine_transfer_preserves_points_frame_and_steering(
 
 
 def test_monopolar_affine_transfer_rebakes_positive_world_direction_share() -> None:
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
     )
-    from drowse.io.alignment import LayerAlignment
+    from drowse.store.alignment import LayerAlignment
 
     basis = torch.tensor([[1.0, 0.0, 0.0]])
     real_coord = torch.tensor([[2.5]])
@@ -2258,11 +2253,11 @@ def test_monopolar_affine_transfer_rebakes_positive_world_direction_share() -> N
 def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
     import torch
     from dataclasses import replace
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
         fit_rbf_interpolant, transfer_manifold_subspaces,
     )
-    from drowse.io.alignment import LayerAlignment
+    from drowse.store.alignment import LayerAlignment
 
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
     coords = torch.tensor([[0.0], [0.5], [1.0]])
@@ -2302,8 +2297,8 @@ def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
 
 def test_rectangular_transfer_rejects_collapsed_subspace_rank() -> None:
     import torch
-    from drowse.core.manifold import CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces
-    from drowse.io.alignment import LayerAlignment
+    from drowse.geometry.manifold import CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces
+    from drowse.store.alignment import LayerAlignment
 
     source = Manifold(
         name="collapsed", domain=CustomDomain(2), node_labels=["a", "b"],
@@ -2327,10 +2322,10 @@ def test_rectangular_transfer_rejects_collapsed_subspace_rank() -> None:
 def test_rectangular_transfer_rejects_oblique_rank_collapse() -> None:
     """Rank detection uses singular values, not unpivoted QR diagonals."""
     import torch
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
     )
-    from drowse.io.alignment import LayerAlignment
+    from drowse.store.alignment import LayerAlignment
 
     source = Manifold(
         name="oblique-collapse", domain=CustomDomain(3),
@@ -2363,7 +2358,7 @@ def _target_whitener(*, dim: int = 6, layers: tuple[int, ...] = (4, 5, 6)):
     whitener covering the transferred layers.
     """
     import torch
-    from drowse.core.mahalanobis import LayerWhitener
+    from drowse.geometry.whitener import LayerWhitener
     g = torch.Generator().manual_seed(99)
     acts = {L: torch.randn(120, dim, generator=g) for L in layers}
     means = {L: torch.zeros(dim) for L in layers}
@@ -2377,11 +2372,11 @@ def _fit_real_manifold(folder: Path, model_id: str, *, dim: int = 6, seed: int =
     """
     import torch
     from dataclasses import replace
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         MANIFOLD_FIT_POLICY_VERSION, BoxAxis, BoxDomain, Manifold,
         fit_layer_subspace, fit_rbf_interpolant,
     )
-    from drowse.io.manifold_tensors import save_manifold
+    from drowse.store.manifold_tensors import save_manifold
 
     g = torch.Generator().manual_seed(seed)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -2415,7 +2410,7 @@ def _fit_real_manifold(folder: Path, model_id: str, *, dim: int = 6, seed: int =
         mahalanobis_share={4: 1.0, 5: 2.0, 6: 3.0},
         origin=origins,
     )
-    from drowse.io.paths import tensor_filename
+    from drowse.base.paths import tensor_filename
     out = folder / tensor_filename(model_id)
     mf = ManifoldFolder.load(folder, verify_manifest=False)
     save_manifold(man, out, {
@@ -2462,7 +2457,7 @@ def test_transfer_rejects_source_generation_changed_after_preflight(
             expected_source_proof=proof,
         )
 
-    from drowse.io.paths import tensor_filename
+    from drowse.base.paths import tensor_filename
 
     assert not (
         folder / tensor_filename("tgt/model", transferred_from="src/model")
@@ -2488,7 +2483,7 @@ def test_transfer_preflight_rejects_non_object_manifest_before_payload_hash(
     _fit_real_manifold(folder, "src/model", dim=4)
     (folder / "manifold.json").write_text(root)
     monkeypatch.setattr(
-        "drowse.io.integrity.verify_integrity",
+        "drowse.base.integrity.verify_integrity",
         lambda *_args, **_kwargs: pytest.fail(
             "non-object manifest reached payload hashing"
         ),
@@ -2511,7 +2506,7 @@ def test_transfer_preflight_rejects_invalid_selected_digest_before_hashing(
     manifest["files"][source.name] = digest
     manifest_path.write_text(json.dumps(manifest))
     monkeypatch.setattr(
-        "drowse.io.integrity.verify_integrity",
+        "drowse.base.integrity.verify_integrity",
         lambda *_args, **_kwargs: pytest.fail(
             "malformed selected digest reached payload hashing"
         ),
@@ -2534,7 +2529,7 @@ def test_transfer_preflight_rejects_future_manifest_before_payload_hash(
     manifest_path.write_text(json.dumps(manifest))
 
     monkeypatch.setattr(
-        "drowse.io.integrity.verify_integrity",
+        "drowse.base.integrity.verify_integrity",
         lambda *_args, **_kwargs: pytest.fail(
             "future manifest reached payload hashing"
         ),
@@ -2546,7 +2541,7 @@ def test_transfer_preflight_rejects_future_manifest_before_payload_hash(
 
 
 def test_strict_fitted_load_rejects_non_object_manifest(tmp_path: Path) -> None:
-    from drowse.io.manifold_tensors import load_manifold
+    from drowse.store.manifold_tensors import load_manifold
 
     folder = _author_manifold(tmp_path)
     source = _fit_real_manifold(folder, "src/model", dim=4)
@@ -2562,8 +2557,8 @@ def test_strict_fitted_load_rejects_non_object_manifest(tmp_path: Path) -> None:
 def test_strict_fitted_load_normalizes_trusted_corrupt_sidecar(
     tmp_path: Path, payload: str, message: str,
 ) -> None:
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.io.integrity import hash_file
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.base.integrity import hash_file
 
     folder = _author_manifold(tmp_path)
     source = _fit_real_manifold(folder, "src/model", dim=4)
@@ -2581,7 +2576,7 @@ def test_strict_fitted_load_normalizes_trusted_corrupt_sidecar(
 def test_strict_fitted_load_rejects_invalid_digest_before_hashing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.manifold_tensors import load_manifold
+    from drowse.store.manifold_tensors import load_manifold
 
     folder = _author_manifold(tmp_path)
     source = _fit_real_manifold(folder, "src/model", dim=4)
@@ -2590,7 +2585,7 @@ def test_strict_fitted_load_rejects_invalid_digest_before_hashing(
     manifest["files"][source.name] = "invalid"
     manifest_path.write_text(json.dumps(manifest))
     monkeypatch.setattr(
-        "drowse.io.integrity.verify_integrity",
+        "drowse.base.integrity.verify_integrity",
         lambda *_args, **_kwargs: pytest.fail(
             "invalid digest reached fitted payload hashing"
         ),
@@ -2606,7 +2601,7 @@ def test_transfer_manifold_identity_alignment_preserves_geometry(
     """An identity alignment leaves the per-layer subspace unchanged and
     writes the transferred tensor at the ``_from-<safe_src>`` filename."""
     import torch
-    from drowse.io.manifold_tensors import load_manifold
+    from drowse.store.manifold_tensors import load_manifold
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -2632,7 +2627,7 @@ def test_transfer_manifold_identity_alignment_preserves_geometry(
         target_layer_means=target_whitener.layer_means,
     )
     # Filename uses the transfer variant suffix.
-    from drowse.io.paths import tensor_filename
+    from drowse.base.paths import tensor_filename
     assert out.name == tensor_filename(tgt_model, transferred_from=src_model)
 
     tgt_man = load_manifold(out)
@@ -2663,8 +2658,8 @@ def test_transfer_manifold_rebakes_share_in_target_space(
     Mahalanobis share in target space (instead of dropping it) and records
     ``share_metric == "mahalanobis"``."""
     import torch
-    from drowse.core.mahalanobis import LayerWhitener
-    from drowse.io.manifold_tensors import load_manifold
+    from drowse.geometry.whitener import LayerWhitener
+    from drowse.store.manifold_tensors import load_manifold
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -2710,7 +2705,7 @@ def test_transfer_manifold_rotation_maps_subspace(
     transferred world-space activation at a node equals Q applied to the
     source activation."""
     import torch
-    from drowse.io.manifold_tensors import load_manifold
+    from drowse.store.manifold_tensors import load_manifold
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -2749,7 +2744,7 @@ def test_transfer_manifold_drops_uncovered_layers(
 ):
     """Layers the alignment doesn't cover are dropped from the transfer."""
     import torch
-    from drowse.io.manifold_tensors import load_manifold
+    from drowse.store.manifold_tensors import load_manifold
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -2838,7 +2833,7 @@ def test_transfer_manifold_refuses_overwrite_without_force(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     import torch
-    from drowse.io.manifold_tensors import load_manifold
+    from drowse.store.manifold_tensors import load_manifold
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -2854,7 +2849,7 @@ def test_transfer_manifold_refuses_overwrite_without_force(
         source_model_fingerprint="fp:src/m", target_layer_means=w.layer_means,
         target_model_fingerprint="fp:tgt/m",
     )
-    import drowse.core.manifold as manifold_mod
+    import drowse.geometry.manifold as manifold_mod
 
     real_transfer = manifold_mod.transfer_manifold_subspaces
     monkeypatch.setattr(
@@ -2884,8 +2879,8 @@ def test_transfer_retries_pair_committed_before_manifest_update(
 ) -> None:
     """An unproven transferred pair is repaired without requiring force."""
     import torch
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.io.paths import tensor_filename
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.base.paths import tensor_filename
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -2998,7 +2993,7 @@ def test_manifold_summary_reports_transfer_variant(
 ):
     """A transferred tensor surfaces under tensor_variants as ``from-...``."""
     import torch
-    from drowse.io.manifold_tensors import load_manifold
+    from drowse.store.manifold_tensors import load_manifold
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -3018,7 +3013,7 @@ def test_manifold_summary_reports_transfer_variant(
     )
     summ = manifold_summary(folder)
     src_safe = safe_model_id("src/m")
-    from drowse.io.paths import encode_release_id
+    from drowse.base.paths import encode_release_id
     tgt_safe = safe_model_id("tgt/m")
     assert summ["tensor_variants"][src_safe] == ["raw"]
     assert summ["tensor_variants"][tgt_safe] == [
@@ -3045,8 +3040,8 @@ def test_manifold_summary_reports_template_ref(
     ``nodes/`` by hand.
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.manifolds import create_manifold_from_template
-    from drowse.io.templates import create_template_folder
+    from drowse.store.manifolds import create_manifold_from_template
+    from drowse.store.templates import create_template_folder
 
     create_template_folder(
         "local", "weekday", slot="[DAY]",
@@ -3076,12 +3071,12 @@ def test_manifold_fit_summary_surfaces_auto_topology_evidence(tmp_path: Path):
     they were written and schema-validated but no reader lifted them.
     """
     import torch
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
     )
-    from drowse.io.manifold_folder import ManifoldSidecar
-    from drowse.io.manifold_tensors import save_manifold
-    from drowse.io.manifolds import manifold_fit_summary
+    from drowse.store.manifold_folder import ManifoldSidecar
+    from drowse.store.manifold_tensors import save_manifold
+    from drowse.store.manifolds import manifold_fit_summary
 
     g = torch.Generator().manual_seed(0)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -3215,7 +3210,7 @@ def test_plan_fresh_creates_skeleton_all_pending(tmp_path: Path):
 def test_plan_force_reset_and_skeleton_share_manifest_transaction(
     tmp_path: Path,
 ) -> None:
-    from drowse.io.manifold_folder import _locked_manifest
+    from drowse.store.manifold_folder import _locked_manifest
 
     folder = tmp_path / "m"
     first = plan_discover_generation(
@@ -3372,8 +3367,7 @@ def test_plan_rejects_non_discover_existing(
 
 def test_bundled_materialization_helpers_ignore_non_json_payloads(tmp_path: Path) -> None:
     """Package-data materialization should not mirror local metadata files."""
-    from drowse.io import manifolds as M
-
+    from drowse.store import manifolds as M
     pkg = tmp_path / "pkg"
     (pkg / "nodes").mkdir(parents=True)
     (pkg / "manifold.json").write_text('{"name": "m"}')
@@ -3418,8 +3412,7 @@ def test_bundled_refresh_ignores_local_fit_proofs(
     "manifest changed", refreshed the manifest from the bundle, and wiped
     the proofs, orphaning every fitted tensor of every bundled manifold.
     """
-    from drowse.io import manifolds as M
-
+    from drowse.store import manifolds as M
     root = tmp_path / "bundled"
     pkg = root / "axis"
     (pkg / "nodes").mkdir(parents=True)
@@ -3478,8 +3471,7 @@ def test_bundled_refresh_carries_tensor_proofs_forward(
     the files.  Entries for since-deleted files and for bundle-shipped
     files are dropped.
     """
-    from drowse.io import manifolds as M
-
+    from drowse.store import manifolds as M
     root = tmp_path / "bundled"
     pkg = root / "axis"
     (pkg / "nodes").mkdir(parents=True)
@@ -3534,8 +3526,7 @@ def test_bundled_manifold_names_skips_incomplete_package_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A partial generation directory must not materialize as a bundled manifold."""
-    from drowse.io import manifolds as M
-
+    from drowse.store import manifolds as M
     root = tmp_path / "bundled"
     complete = root / "complete"
     (complete / "nodes").mkdir(parents=True)
@@ -3573,7 +3564,7 @@ def test_bundled_manifold_names_skips_incomplete_package_data(
 
 def _baked_manifold(name: str = "merged", n_layers: int = 3):
     """Build an affine R=1 Manifold (the merge/import shape) via the fold."""
-    from drowse.core.capture import fold_directions_to_subspace
+    from drowse.fit.capture import fold_directions_to_subspace
 
     directions = {i: torch.randn(8) for i in range(n_layers)}
     whitener = _target_whitener(dim=8, layers=tuple(range(n_layers)))
@@ -3588,8 +3579,8 @@ def _baked_manifold(name: str = "merged", n_layers: int = 3):
 
 def test_baked_manifold_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.core.capture import folded_directions
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.fit.capture import folded_directions
 
     manifold, directions = _baked_manifold("merged")
     folder, mf = create_baked_manifold_folder(
@@ -3619,8 +3610,8 @@ def test_baked_publication_hashes_each_new_file_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io import manifold_folder as folder_module, integrity
-
+    from drowse.store import manifold_folder as folder_module
+    from drowse.base import integrity
     real_hash = folder_module.hash_file
     hashed: list[Path] = []
 
@@ -3675,7 +3666,7 @@ def test_baked_force_replaces_manifestless_partial_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.io.paths import manifold_dir
+    from drowse.base.paths import manifold_dir
 
     folder = manifold_dir("local", "merged")
     folder.mkdir(parents=True)

@@ -1,7 +1,7 @@
 """Native probe route group — the read-side counterpart to manifold steering.
 
 One unified collection under ``/drowse/v1/sessions/{id}/probes`` covering every
-probe shape.  A Monitor probe is a :class:`~drowse.core.manifold.Manifold` — a
+probe shape.  A Monitor probe is a :class:`~drowse.geometry.manifold.Manifold` — a
 2-node concept axis is the rank-1 case, a discover / curved fit the rank-R case
 — attached via ``add_probe`` / ``remove_probe``; a ``jlens/<word>`` or
 ``sae/<id>`` selector lands on the session's readout-channel registries instead
@@ -18,11 +18,11 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
-from drowse.core.errors import DrowseError
-from drowse.core.manifold import manifold_is_affine
-from drowse.core.monitor_attach import AttachedManifoldProbe
-from drowse.core.session import DrowseSession
-from drowse.io.probes_bootstrap import load_default_manifolds
+from drowse.errors import DrowseError
+from drowse.geometry.manifold import manifold_is_affine
+from drowse.readout.monitor_attach import AttachedManifoldProbe
+from drowse.session.session import DrowseSession
+from drowse.store.bundled_probes import load_default_manifolds
 from drowse.server.native_common import NativeRequest, resolve_session_id
 from drowse.server.response_models import (
     GeometryProbeInfo,

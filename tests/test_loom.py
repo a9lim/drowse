@@ -24,7 +24,7 @@ from drowse import (
     UnknownNodeError,
     derive_seed_schedule,
 )
-from drowse.core.loom import (
+from drowse.loom.tree import (
     TOKEN_SIDECAR_FORMAT_VERSION,
     TREE_FORMAT_VERSION,
     LoomTreeError,
@@ -531,7 +531,7 @@ def _bind_check_user_send_target(tree: LoomTree):
     ``self.tree``; binding the unbound method onto a minimal stub
     sidesteps the model-load cost so we can unit-test D15.
     """
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     stub = type("S", (), {"tree": tree})()
     return DrowseSession._check_user_send_target.__get__(stub, type(stub))
 
@@ -622,7 +622,7 @@ def test_d15_engine_check_passes_for_explicit_grandparent():
 
 
 def _bind_commit_methods(tree: LoomTree, tokenizer: Any):
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     stub = type(
         "S", (),
         {
@@ -968,7 +968,7 @@ def test_recipe_survives_node_and_cast_round_trips():
     u = t.add_user_turn("hi")
     a = t.begin_assistant(u, recipe=recipe)
     t.finalize_assistant(a, text="yo")
-    from drowse.core.loom import CastMember
+    from drowse.loom.tree import CastMember
     t.set_cast_member("deer", CastMember(recipe=Recipe(steering="0.2 skittish")))
 
     t2 = LoomTree.from_dict(t.to_dict())
@@ -1282,7 +1282,7 @@ def test_cast_roster_derives_structural_and_observed_roles():
 
 def test_cast_label_validated():
     from drowse import CastMember
-    from drowse.core.role_templates import InvalidRoleError
+    from drowse.model.role_templates import InvalidRoleError
 
     t = LoomTree()
     with pytest.raises(InvalidRoleError):

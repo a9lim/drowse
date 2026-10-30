@@ -37,7 +37,7 @@ def _run_config_show(args: argparse.Namespace) -> None:
 
 def _run_config_validate(args: argparse.Namespace) -> None:
     from drowse.cli.config_file import ConfigFile, ConfigFileError
-    from drowse.core.steering_expr import referenced_selectors
+    from drowse.steering.grammar import referenced_selectors
     p = Path(args.file)
     if not p.exists():
         print(f"config validate: {p}: file not found", file=sys.stderr)
@@ -48,7 +48,7 @@ def _run_config_validate(args: argparse.Namespace) -> None:
             print(f"{p}: ok")
             return
         # Dry-run: don't install, just check resolvability.
-        from drowse.io.selectors import all_concepts
+        from drowse.store.selectors import all_concepts
         installed = {(c.namespace, c.name) for c in all_concepts()}
         installed_names = {c.name for c in all_concepts()}
         missing: list[str] = []

@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.manifold import (
+from drowse.geometry.manifold import (
     BoxAxis,
     BoxDomain,
     CustomDomain,
@@ -23,7 +23,7 @@ from drowse.core.manifold import (
     SphereDomain,
     fit_layer_subspace as _fit_layer_subspace_with_ev,
 )
-from drowse.core.monitor import (
+from drowse.readout.monitor import (
     DEFAULT_NEAREST_TOP_N,
     NEUTRAL_LABEL,
     AttachedManifoldProbe,
@@ -31,7 +31,7 @@ from drowse.core.monitor import (
     _mean_coordinate_space,
     _mean_domain_coordinates,
 )
-from drowse.core.results import ProbeReading
+from drowse.generation.results import ProbeReading
 
 
 def fit_layer_subspace(*args: Any, **kwargs: Any) -> Any:
@@ -468,7 +468,7 @@ def test_flat_scalars_emits_assignment_and_membership():
 
 def _attach_const_sigma(m: "Manifold", value: float) -> None:
     """Attach a constant-σ field to every curved layer of ``m`` (test helper)."""
-    from drowse.core.manifold import fit_rbf_smoothed
+    from drowse.geometry.manifold import fit_rbf_smoothed
     for sub in m.layers.values():
         np_, _, _ = sub.rbf_params()
         K = np_.shape[0]
@@ -480,7 +480,7 @@ def _attach_const_sigma(m: "Manifold", value: float) -> None:
 
 def _attach_per_node_sigma(m: "Manifold", sigmas: list[float]) -> None:
     """Attach a σ-field interpolating the given per-node thicknesses (test helper)."""
-    from drowse.core.manifold import fit_rbf_smoothed
+    from drowse.geometry.manifold import fit_rbf_smoothed
     for sub in m.layers.values():
         np_, _, _ = sub.rbf_params()
         K = np_.shape[0]
@@ -607,7 +607,7 @@ def test_gate_scalar_fraction_label_assignment_skip_curved_foot(
     def _fail_foot(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("gate scalar path should not solve a curved foot")
 
-    monkeypatch.setattr("drowse.core.monitor.invert_parameterization", _fail_foot)
+    monkeypatch.setattr("drowse.readout.monitor.invert_parameterization", _fail_foot)
     keys = {"curve:fraction", "curve@c", "curve~c"}
     scalars = _gate_scalars(mon, hidden, keys)
     assert scalars["curve:fraction"] == pytest.approx(full["curve:fraction"])
@@ -1144,7 +1144,7 @@ def test_prompt_capture_retains_only_selected_prefill_positions():
     """Selective prompt rows survive alongside the ordinary latest slice."""
     import torch.nn as nn
 
-    from drowse.core.hooks import HiddenCapture
+    from drowse.steering.hooks import HiddenCapture
 
     class _Pass(nn.Module):
         def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -1186,7 +1186,7 @@ def test_aggregate_tail_pools_last_content_token():
     """
     import torch.nn as nn
 
-    from drowse.core.hooks import HiddenCapture
+    from drowse.steering.hooks import HiddenCapture
 
     m = _toy_manifold(dim=8)  # curved, layers {0, 1}
     mon = _iso_monitor(m)
@@ -1245,7 +1245,7 @@ def test_aggregate_tail_clamps_when_walkback_exceeds_depth():
     """A walk-back deeper than the ring clamps to the oldest retained slice."""
     import torch.nn as nn
 
-    from drowse.core.hooks import HiddenCapture
+    from drowse.steering.hooks import HiddenCapture
 
     m = _toy_manifold(dim=8)
     D = next(iter(m.layers.values())).mean.shape[0]
@@ -1271,7 +1271,7 @@ def test_aggregate_tail_clamps_when_walkback_exceeds_depth():
 def test_tail_with_sink_can_keep_deep_tail_on_selected_layers_only():
     import torch.nn as nn
 
-    from drowse.core.hooks import HiddenCapture
+    from drowse.steering.hooks import HiddenCapture
 
     class _Pass(nn.Module):
         def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -1418,7 +1418,7 @@ def test_coords_only_mixed_flat_and_curved_roster():
 
 
 def test_depth_stats_math():
-    from drowse.core.monitor import _depth_stats
+    from drowse.readout.monitor import _depth_stats
 
     coords = {0: (1.0,), 8: (3.0,)}
     weights = {0: 0.5, 8: 0.5}
@@ -1433,7 +1433,7 @@ def test_depth_stats_math():
 
 
 def test_depth_stats_empty_and_zero_mass():
-    from drowse.core.monitor import _depth_stats
+    from drowse.readout.monitor import _depth_stats
 
     assert _depth_stats({}, {}, 8.0) == ((), ())
     # denominator unset (monitor constructed without n_layers)
@@ -1445,7 +1445,7 @@ def test_depth_stats_empty_and_zero_mass():
 
 
 def test_depth_stats_per_axis_independent():
-    from drowse.core.monitor import _depth_stats
+    from drowse.readout.monitor import _depth_stats
 
     # axis 0 reads only at L0, axis 1 only at L4 → coms split to the ends
     coords = {0: (2.0, 0.0), 4: (0.0, 2.0)}

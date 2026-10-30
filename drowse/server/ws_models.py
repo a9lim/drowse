@@ -7,8 +7,8 @@ from typing import Any, Literal
 from pydantic import Field, FiniteFloat, NonNegativeInt, model_validator
 from pydantic_core import PydanticCustomError
 
-from drowse.core.results import GenerationResult
-from drowse.core.sampling import SamplingConfig
+from drowse.generation.results import GenerationResult
+from drowse.generation.sampling import SamplingConfig
 from drowse.server import request_helpers
 from drowse.server.native_common import NativeRequest
 
@@ -38,7 +38,7 @@ class WSInputMessage(NativeRequest):
     content: str
     #: Cast label for this turn — the same per-turn ``role_label`` the loom
     #: stamps on its nodes, rendered into the constructed header by the scene
-    #: stitcher (``core.generation.build_chat_input`` reads the ``"label"``
+    #: stitcher (``generation.decode.build_chat_input`` reads the ``"label"``
     #: key).  The dashboard's auto-regen shadow replays a conversation as an
     #: explicit message list, so without this field a shadow of any
     #: custom-labelled turn was rejected outright by ``extra="forbid"`` — and

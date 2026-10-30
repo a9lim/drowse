@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from drowse.core.steering_expr import (
+from drowse.steering.grammar import (
     SteeringExprError,
     parse_expr,
     referenced_selectors,

@@ -20,7 +20,7 @@ def _enable_serve_live_lens_if_compatible(session: Any) -> bool:
         compatible = False
         model_id = getattr(session, "model_id", None)
         if isinstance(model_id, str) and model_id:
-            from drowse.io.lens_sources import (
+            from drowse.lens.sources import (
                 lens_source_preference_key,
                 list_lens_sources,
             )
@@ -95,7 +95,7 @@ def _enable_serve_live_sae_if_available(session: Any) -> bool:
     try:
         info = session.sae_info
         if info is None:
-            from drowse.io.sae import list_sae_sources
+            from drowse.sae.sources import list_sae_sources
 
             # Prepared artifacts are the cheapest and most intentional
             # default. This also repairs caches created before active.json.
@@ -114,7 +114,7 @@ def _enable_serve_live_sae_if_available(session: Any) -> bool:
                     continue
                 break
         if info is None:
-            from drowse.core.sae import list_sae_releases
+            from drowse.sae.backend import list_sae_releases
 
             release = _best_serve_sae_release(list_sae_releases(session.model_id))
             if release is None:
@@ -173,7 +173,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     steer_expr: str | None = args.steer
     default_steering = _setup_steering_vectors(session, steer_expr, verbose=True)
     if default_steering is None and config_expr:
-        from drowse.core.steering_expr import parse_expr
+        from drowse.steering.grammar import parse_expr
         default_steering = parse_expr(config_expr)
 
     from drowse.server import create_app

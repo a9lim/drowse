@@ -24,7 +24,7 @@ The barrel is load-bearing. Submodule runners call the session/config helpers
 `_pkg._make_session(...)`), so `monkeypatch.setattr("drowse.cli.runners.<name>",
 …)` reaches them. The names swapped this way are `_make_session`,
 `_print_startup`, `_print_model_info`, `_load_effective_config`, the `_fold_*`
-folders, and `_load_or_fit_transfer_alignment` (re-exported from `io.alignment`,
+folders, and `_load_or_fit_transfer_alignment` (re-exported from `store.alignment`,
 which owns the single-flight locking, under that private CLI name).
 
 ## Dispatch
@@ -65,13 +65,13 @@ intent:
   `_split_manifold_ns_name`, which defaults a bare name to `local/`; `manifold
   generate` does the same split inline.
 
-`_iter_manifold_folders` calls `io.bootstrap.materialize_bundled_artifacts`
+`_iter_manifold_folders` calls `store.bundled.materialize_bundled_artifacts`
 before walking, because CLI verbs resolve folders *before* any session exists —
 without it a first `drowse manifold fit default/personas` would miss the bundled
 folder.
 
 Templates resolve their own way: `_split_manifold_ns_name` for `create`,
-`io.templates.resolve_template` (cross-namespace) for `show`/`rm`/`score` and
+`store.templates.resolve_template` (cross-namespace) for `show`/`rm`/`score` and
 for `manifold from-template`'s source.
 
 ## Config loading
@@ -97,7 +97,7 @@ naturalness`.
 every field. Known keys (`_KNOWN_KEYS`): `model`, `vectors`, `thinking`,
 `temperature`, `top_p`, `max_tokens`, `system_prompt`, `compile`,
 `cuda_graphs`, `return_top_k`. `vectors:` is a single steering expression,
-validated at load time through `core.steering_expr.parse_expr` so a typo fails
+validated at load time through `steering.grammar.parse_expr` so a typo fails
 at config load rather than at generation. `compose` overrides field-by-field
 (`vectors` wholesale — later files replace the expression, they do not
 concatenate).
@@ -106,7 +106,7 @@ concatenate).
 so namespace-qualified references keep their install coordinates, materializes
 bundled artifacts, auto-installs HF manifolds, and reports unresolvable ones;
 `strict=True` (`-s/--strict`) raises instead of warning. A bare reference counts
-as resolved when `io.selectors.resolve_manifold_label` or `resolve_manifold_name`
+as resolved when `store.selectors.resolve_manifold_label` or `resolve_manifold_name`
 finds it (an ambiguity is a match, not a miss).
 
 ## Session construction + narration
@@ -257,7 +257,7 @@ declines the preflight on a `--role` baseline the existing corpus does not carry
 so that stays the loaded path's error rather than a silent hit.
 
 **manifold bake** — `name`, `expression`, `-f`, `-s/--strict`, `-m`. Lands a
-corpus-less baked manifold via `io.bake.merge_into_manifold`; only
+corpus-less baked manifold via `fit.bake.merge_into_manifold`; only
 namespace-qualified additive/subtractive scalar terms are accepted, since
 dynamic terms and Mahalanobis projections need a live model.
 
@@ -269,7 +269,7 @@ expression instead.
 
 **manifold transfer** — `name`, `--from SRC` / `--to TGT` (both required), `-f`,
 `-j`. Preflights the source tensor, obtains the Procrustes alignment through
-`io.alignment.load_or_fit_transfer_alignment` (a thin call — single-flight
+`store.alignment.load_or_fit_transfer_alignment` (a thin call — single-flight
 locking, cache proof, and retry-on-race live in `io`), then writes the target's
 `from-<safe_src>` tensor via `transfer_manifold`. `-f` recomputes alignment and
 transfer but reuses exact neutral caches. Re-baking shares in the target
@@ -302,9 +302,9 @@ carry stronger provenance, so sharing them is opt-in); `rm <selector> -y`;
 not per-namespace; without it the runner exits 2. These verbs are pure IO over
 `~/.drowse/manifolds/` and load no model (`install` and `search` hit HF).
 `export gguf` folds a fitted 2-node `pca` manifold to one direction via
-`io.gguf_io.export_gguf_manifold` and rejects multi-node or curved fits.
+`store.gguf.export_gguf_manifold` and rejects multi-node or curved fits.
 `export archive` writes one exact manifold closure plus its referenced
-template, when present, through `io.drowse_archive.export_drowse_archive`.
+template, when present, through `store.archive.export_drowse_archive`.
 
 **experiment fan** — `model`, `prompt`, `-g/--grid CONCEPT=ALPHAS` (required,
 repeatable), `-S/--steer EXPR` (the fixed expression composed under each grid
@@ -347,7 +347,7 @@ and a required `-m`.
   [--prompt-batch B] [--checkpoint-every N] [--layers …] [--standard] [-f] [-d] [-q]`.
   Defaults: 100 prompts, seq-len 128, dim-batch 8, prompt-batch 4 (2 on MPS),
   checkpoint every 25. All numeric fit flags are positive-only. The default
-  fits the R-lens (LRP-modified backward graph, `core/relp.py`) at
+  fits the R-lens (LRP-modified backward graph, `lens/relp.py`) at
   `local:relp`; `--standard` instead fits `local:default`. `--relp` remains an
   explicit spelling of the default. Each has its own estimator policy — the
   no-op preflight, resume, and checkpoint transactions are all name-scoped, so
@@ -355,14 +355,14 @@ and a required `-m`.
   one document per line (a JSONL line with a `text` field also works, each
   sliced to `_LENS_DOC_CHARS = 4000` before tokenization) and records
   `file:<name>`. Otherwise the fit streams a Hub corpus
-  (`io.lens.HfLensCorpus`) via the optional `datasets` dependency: the default
+  (`lens.store.HfLensCorpus`) via the optional `datasets` dependency: the default
   web-text sample (FineWeb-Edu `sample-10BT`), or `--hf-corpus`, the first N
   non-empty `text_field=F` values (default `text`) of a dataset's train split.
   `files=K` reads them round-robin from K of the split's data files instead,
   ordered by a `seed=S` (default 0) hash of their repository paths, which
   spreads a sample over a dataset whose rows are not shuffled (most Chinese
   web corpora on the Hub are ordered by crawl or score band). Repeating
-  `--hf-corpus` mixes corpora (`io.lens.LensCorpusMix`) by smooth weighted
+  `--hf-corpus` mixes corpora (`lens.store.LensCorpusMix`) by smooth weighted
   round-robin over `weight=W` (default 1; ties to the earlier flag; a corpus
   that runs dry drops out). `_pinned_lens_hf_corpus` pins every source once
   per fit (REV, default `main`, to its commit; an omitted CONFIG to the
@@ -379,7 +379,7 @@ and a required `-m`.
   it still includes layer 0 and is artifact-size/debug only, not a wall-time
   lever. `-f` restarts from zero; otherwise the fit resumes. A model-free exact
   no-op runs before corpus streaming and model load
-  (`_try_lens_fit_noop_preflight`, serialized under `io.lens.lens_fit_lock`):
+  (`_try_lens_fit_noop_preflight`, serialized under `lens.store.lens_fit_lock`):
   it matches the sidecar's source fingerprint, seq-len, layer coverage, corpus
   identity, and payload digests, then reaps a crash-left checkpoint the
   validated final artifact provably subsumes.

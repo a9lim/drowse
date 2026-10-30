@@ -22,15 +22,15 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-from drowse.core.mahalanobis import LayerWhitener, WhitenerError
-from drowse.io.alignment import (
+from drowse.geometry.whitener import LayerWhitener, WhitenerError
+from drowse.store.alignment import (
     _neutral_acts_paths,
     load_validated_neutral_cache,
     load_or_compute_neutral_activations,
     load_or_compute_neutral_activations_with_metadata,
     validate_neutral_cache_metadata,
 )
-from drowse.io.paths import model_dir
+from drowse.base.paths import model_dir
 
 MODEL_ID = "test-org/test-model"
 
@@ -85,7 +85,7 @@ def _patch_compute(
         return {idx: t.clone() for idx, t in acts.items()}
 
     # Patched on the source module so alignment's deferred import resolves it.
-    import drowse.core.capture as vectors
+    import drowse.fit.capture as vectors
 
     monkeypatch.setattr(vectors, "compute_neutral_activations", _fake_compute)
     return calls
@@ -120,7 +120,7 @@ def test_metadata_preflight_does_not_materialize_tensor_payload(
     _patch_compute(monkeypatch, _deterministic_acts())
     _compute()
 
-    import drowse.io.alignment as alignment
+    import drowse.store.alignment as alignment
 
     monkeypatch.setattr(
         alignment, "load_safetensors",
@@ -160,7 +160,7 @@ def test_metadata_returning_load_reuses_the_single_payload_digest(
     _patch_compute(monkeypatch, _deterministic_acts())
     _compute()
 
-    import drowse.io.alignment as alignment
+    import drowse.store.alignment as alignment
 
     real_hash = alignment.hash_file
     hashed: list[Path] = []
@@ -214,7 +214,7 @@ def test_concurrent_cold_neutral_cache_is_single_flight(
 def test_alignment_fit_lock_serializes_same_direction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io.alignment import alignment_fit_lock
+    from drowse.store.alignment import alignment_fit_lock
 
     _install_home(tmp_path, monkeypatch)
     entered = threading.Event()
@@ -344,7 +344,7 @@ def test_failed_neutral_pointer_publication_preserves_prior_generation(
     prior_pointer = pointer.read_bytes()
     prior_files = set(json.loads(prior_pointer)["tensor_files"].values())
 
-    import drowse.io.alignment as alignment
+    import drowse.store.alignment as alignment
 
     monkeypatch.setattr(
         alignment, "write_json_atomic",
@@ -367,7 +367,7 @@ def test_neutral_exception_after_pointer_replace_preserves_new_generation(
 ) -> None:
     _install_home(tmp_path, monkeypatch)
     _patch_compute(monkeypatch, _deterministic_acts())
-    import drowse.io.alignment as alignment
+    import drowse.store.alignment as alignment
 
     _compute()
     anchor, pointer = _neutral_acts_paths(MODEL_ID)
@@ -400,7 +400,7 @@ def test_neutral_directory_barriers_bracket_pointer_and_precede_gc(
 ) -> None:
     _install_home(tmp_path, monkeypatch)
     _patch_compute(monkeypatch, _deterministic_acts())
-    import drowse.io.alignment as alignment
+    import drowse.store.alignment as alignment
 
     events: list[str] = []
     real_write = alignment.write_json_atomic

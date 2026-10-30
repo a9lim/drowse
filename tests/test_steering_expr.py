@@ -1,4 +1,4 @@
-"""Grammar corpus for drowse.core.steering_expr.
+"""Grammar corpus for drowse.steering.grammar.
 
 Bare names that don't match an installed pack resolve to themselves with
 sign +1 (``resolve_pole`` fallthrough), so most of these tests run in an
@@ -12,17 +12,17 @@ from pathlib import Path
 
 import pytest
 
-from drowse.io import selectors as sel
-from drowse.io.manifolds import create_discover_manifold_folder
-from drowse.core.steering import Steering
-from drowse.core.steering_expr import (
+from drowse.store import selectors as sel
+from drowse.store.manifolds import create_discover_manifold_folder
+from drowse.steering.terms import Steering
+from drowse.steering.grammar import (
     ProjectedTerm,
     SteeringExprError,
     format_expr,
     parse_expr,
     referenced_selectors,
 )
-from drowse.core.triggers import Trigger
+from drowse.steering.triggers import Trigger
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +68,7 @@ def test_single_term():
 
 
 def test_implicit_coefficient():
-    from drowse.core.steering_expr import DEFAULT_COEFF
+    from drowse.steering.grammar import DEFAULT_COEFF
     s = parse_expr("honest")
     assert s.alphas == {"honest": DEFAULT_COEFF}
     assert DEFAULT_COEFF == 0.5  # contract — documented default.
@@ -90,7 +90,7 @@ def test_leading_sign_negates():
 
 
 def test_negated_bare():
-    from drowse.core.steering_expr import DEFAULT_COEFF
+    from drowse.steering.grammar import DEFAULT_COEFF
     s = parse_expr("-honest")
     assert s.alphas == {"honest": -DEFAULT_COEFF}
 
@@ -160,7 +160,7 @@ def test_namespace_disambiguates_collision(tmp_path: Path) -> None:
     # through the composite-name tier to its node-0 (+) pole, so each term
     # becomes a ``ManifoldTerm`` keyed ``<ns>/shared%pos`` — still distinct
     # per namespace, which is the behavior under test.
-    from drowse.core.steering_expr import ManifoldTerm
+    from drowse.steering.grammar import ManifoldTerm
     _mk(tmp_path, "alice", "shared", tags=[])
     _mk(tmp_path, "bob", "shared", tags=[])
     sel.invalidate()
@@ -423,7 +423,7 @@ def test_pole_alias_resolves_through_manifold(tmp_path: Path) -> None:
     # *label* tier — ``0.5 wolf`` synthesizes a label-form ``ManifoldTerm`` at
     # the ``wolf`` node (``default/deer.wolf%wolf``) rather than the old
     # signed-vector ``deer.wolf @ -0.5``.
-    from drowse.core.steering_expr import ManifoldTerm
+    from drowse.steering.grammar import ManifoldTerm
     _mk(tmp_path, "default", "deer.wolf")
     sel.invalidate()
     s = parse_expr("0.5 wolf")
@@ -436,7 +436,7 @@ def test_pole_alias_resolves_through_manifold(tmp_path: Path) -> None:
 
 
 def test_pole_positive_pole_resolves_through_manifold(tmp_path: Path) -> None:
-    from drowse.core.steering_expr import ManifoldTerm
+    from drowse.steering.grammar import ManifoldTerm
     _mk(tmp_path, "default", "deer.wolf")
     sel.invalidate()
     s = parse_expr("0.5 deer")
@@ -451,7 +451,7 @@ def test_pole_composite_name_resolves_to_node0(tmp_path: Path) -> None:
     # The composite-name tier: a 2-node ``pca`` manifold *name* (``deer.wolf``,
     # whose ``.`` skips the bare-label tier) steers toward node 0 — the
     # ``orient_to=0`` (+) pole, ``deer``.
-    from drowse.core.steering_expr import ManifoldTerm
+    from drowse.steering.grammar import ManifoldTerm
     _mk(tmp_path, "default", "deer.wolf")
     sel.invalidate()
     s = parse_expr("0.5 deer.wolf")
@@ -699,7 +699,7 @@ def test_referenced_selectors_empty_or_whitespace_returns_empty():
 # -------------------------------------------------------------- ablation ---
 
 def test_bare_ablation_defaults_to_coeff_one():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = parse_expr("!honest")
     assert set(s.alphas.keys()) == {"!honest"}
     term = s.alphas["!honest"]
@@ -711,14 +711,14 @@ def test_bare_ablation_defaults_to_coeff_one():
 
 def test_ablation_term_is_frozen():
     from dataclasses import FrozenInstanceError
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     t = AblationTerm(coeff=1.0, trigger=Trigger.BOTH, target="x")
     with pytest.raises(FrozenInstanceError):
         t.coeff = 0.5  # pyright: ignore[reportAttributeAccessIssue]  # frozen dataclass — assignment expected to raise FrozenInstanceError
 
 
 def test_ablation_explicit_coefficient():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = parse_expr("0.5 !honest")
     term = s.alphas["!honest"]
     assert isinstance(term, AblationTerm)
@@ -726,7 +726,7 @@ def test_ablation_explicit_coefficient():
 
 
 def test_ablation_negative_sign():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = parse_expr("-!honest")
     term = s.alphas["!honest"]
     assert isinstance(term, AblationTerm)
@@ -734,7 +734,7 @@ def test_ablation_negative_sign():
 
 
 def test_ablation_star_form():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = parse_expr("0.7 * !honest")
     term = s.alphas["!honest"]
     assert isinstance(term, AblationTerm)
@@ -742,7 +742,7 @@ def test_ablation_star_form():
 
 
 def test_ablation_signed_explicit():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = parse_expr("-0.3 !honest")
     term = s.alphas["!honest"]
     assert isinstance(term, AblationTerm)
@@ -750,7 +750,7 @@ def test_ablation_signed_explicit():
 
 
 def test_ablation_with_namespace(tmp_path: Path) -> None:
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     _mk(tmp_path, "bob", "custom", tags=[])
     s = parse_expr("!bob/custom")
     # Namespace prefix is preserved through to the registry key,
@@ -763,7 +763,7 @@ def test_ablation_with_namespace(tmp_path: Path) -> None:
 
 
 def test_ablation_with_trigger():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = parse_expr("!refusal@response")
     term = s.alphas["!refusal"]
     assert isinstance(term, AblationTerm)
@@ -773,7 +773,7 @@ def test_ablation_with_trigger():
 
 
 def test_ablation_with_sae_variant():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     # Variant is baked into the canonical name for plain terms (see
     # test_sae_variant_suffix_preserved), and ablation stores the full
     # variant-suffixed target verbatim.
@@ -878,7 +878,7 @@ def test_ablation_format_parse_format_is_stable(text: str) -> None:
 
 
 def test_ablation_and_plain_same_concept_coexist():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = parse_expr("0.3 honest + !honest")
     assert "honest" in s.alphas
     assert "!honest" in s.alphas
@@ -889,7 +889,7 @@ def test_ablation_and_plain_same_concept_coexist():
 
 
 def test_repeated_ablation_sums_coefficients():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = parse_expr("0.3 !honest + 0.2 !honest")
     term = s.alphas["!honest"]
     assert isinstance(term, AblationTerm)
@@ -898,7 +898,7 @@ def test_repeated_ablation_sums_coefficients():
 
 
 def test_repeated_ablation_with_matching_trigger_sums():
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = parse_expr("0.3 !honest@response + 0.2 !honest@response")
     term = s.alphas["!honest"]
     assert isinstance(term, AblationTerm)
@@ -950,7 +950,7 @@ def test_steering_str_emits_ablation():
 
 def test_direct_ablation_construction_round_trips():
     """Steering built directly with an AblationTerm round-trips through str."""
-    from drowse.core.steering_expr import AblationTerm
+    from drowse.steering.grammar import AblationTerm
     s = Steering(alphas={
         "honest": 0.3,
         "!sycophantic": AblationTerm(

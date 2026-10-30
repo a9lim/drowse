@@ -24,9 +24,9 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from drowse.core.events import EventBus
-from drowse.core.loom import LoomTree, Recipe
-from drowse.core.results import GenerationResult, RunSet
+from drowse.events import EventBus
+from drowse.loom.tree import LoomTree, Recipe
+from drowse.generation.results import GenerationResult, RunSet
 
 # ---------------------------------------------------------------------------
 # Test session factory
@@ -105,7 +105,7 @@ class _StubSession:
         self.last_per_token_scores = None
         self.last_result = None
 
-        from drowse.core.generation import GenerationState
+        from drowse.generation.decode import GenerationState
         self.generation_state = GenerationState()
 
         self.lock = asyncio.Lock()
@@ -119,7 +119,7 @@ class _StubSession:
         self.tree.reset()
 
     def restore_tree(self, data: dict[str, Any]):
-        from drowse.core.session import DrowseSession
+        from drowse.session.session import DrowseSession
         return DrowseSession.restore_tree(self, data)  # type: ignore[arg-type]
 
     def rewind(self) -> None:
@@ -134,7 +134,7 @@ class _StubSession:
 
     # ----- loom conflict check (mirrors DrowseSession._loom_conflict_check)
     def _loom_conflict_check(self, node_id: str, op: str) -> None:
-        from drowse.core.loom import MutationDuringGenerationError
+        from drowse.loom.tree import MutationDuringGenerationError
         reservation = self._active_gen_reservation
         if reservation is None:
             return
@@ -172,7 +172,7 @@ class _StubSession:
         """
         if n < 1:
             raise ValueError(f"n must be >= 1, got {n}")
-        from drowse.core.loom import derive_seed_schedule
+        from drowse.loom.tree import derive_seed_schedule
         base_seed = sampling.seed if sampling is not None else None
         schedule = derive_seed_schedule(base_seed, n) if n > 1 else [base_seed]
 
@@ -227,7 +227,7 @@ class _StubSession:
                         assert time.monotonic() < deadline
                         self._stop_event.wait(timeout=0.01)
                 full_text = prefix + token_text
-                from drowse.core.measurements import build_measurements
+                from drowse.readout.measurements import build_measurements
 
                 result = GenerationResult(
                     text=full_text, tokens=[1000 + sibling_idx],
@@ -273,7 +273,7 @@ class _StubSession:
         with ``text`` (the seeded prefix) followed by a synthetic
         continuation token.
         """
-        from drowse.core.loom import InvalidNodeOperationError
+        from drowse.loom.tree import InvalidNodeOperationError
         node = self.tree.get(node_id)
         if node.role != "user":
             raise InvalidNodeOperationError(
@@ -319,7 +319,7 @@ class _StubSession:
         base-model commit), otherwise wraps ``LoomTree.add_user_turn``
         so dedup + active-node advancement match the real session.
         """
-        from drowse.core.loom import InvalidNodeOperationError
+        from drowse.loom.tree import InvalidNodeOperationError
         if text == "":
             raise InvalidNodeOperationError(
                 "append_user_turn: text must be non-empty"
@@ -364,7 +364,7 @@ class _StubSession:
         with ``text`` as the whole turn and a synthetic ``raw_token_ids``
         derived from the (mocked) tokenizer.
         """
-        from drowse.core.loom import InvalidNodeOperationError
+        from drowse.loom.tree import InvalidNodeOperationError
         if text == "":
             raise InvalidNodeOperationError(
                 "append_assistant_turn: text must be non-empty"
@@ -410,7 +410,7 @@ class _StubSession:
         self, parent_node_id: Any, text: Any, *, role: Any,
         raw: bool = False, role_label: Any = None, thinking: Any = None,
     ):
-        from drowse.core.session import DrowseSession
+        from drowse.session.session import DrowseSession
         return DrowseSession.append_turn(
             self,  # pyright: ignore[reportArgumentType]
             parent_node_id, text, role=role, raw=raw,
@@ -421,7 +421,7 @@ class _StubSession:
     # ``self.tree``, so borrow them wholesale (same trick the loom
     # tests use for the commit methods).
     def set_cast_member(self, label: Any, **kwargs: Any):
-        from drowse.core.session import DrowseSession
+        from drowse.session.session import DrowseSession
         return DrowseSession.set_cast_member(self, label, **kwargs)  # type: ignore[arg-type]
 
     def remove_cast_member(self, label: Any) -> None:
@@ -431,7 +431,7 @@ class _StubSession:
 @pytest.fixture
 def session_and_client():
     from typing import cast
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     from drowse.server import create_app
     session = _StubSession()
     app = create_app(cast(DrowseSession, session), default_steering=None)
@@ -449,7 +449,7 @@ class TestTreeGet:
         resp = client.get("/drowse/v1/sessions/default/tree")
         assert resp.status_code == 200
         data = resp.json()
-        from drowse.core.loom import TREE_FORMAT_VERSION
+        from drowse.loom.tree import TREE_FORMAT_VERSION
 
         assert data["tree_format"] == TREE_FORMAT_VERSION
         assert data["root_id"] == session.tree.root_id
@@ -1041,8 +1041,8 @@ class TestWebSocketLoom:
         The flat pre-5.x ``result.probe_readings`` block is gone (the same
         clean break the ``token`` frame already made); it survives only on
         the OpenAI / Ollama ``x-drowse-probe-readings`` vendor extension."""
-        from drowse.core.instruments.types import ScalarReading
-        from drowse.core.results import ProbeReading
+        from drowse.readout.types import ScalarReading
+        from drowse.generation.results import ProbeReading
 
         session, client = session_and_client
         reading = ProbeReading(

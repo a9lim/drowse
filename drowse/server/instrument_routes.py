@@ -42,10 +42,10 @@ from typing import TYPE_CHECKING, Any, cast
 from fastapi import FastAPI, HTTPException
 from pydantic import Field, ValidationError
 
-from drowse.core.errors import DrowseError
-from drowse.core.jlens import LensNotFittedError, resolve_word_token
-from drowse.core.loom import InvalidNodeOperationError, UnknownNodeError
-from drowse.core.measurements import MeasurementsEnvelope
+from drowse.errors import DrowseError
+from drowse.lens.jlens import LensNotFittedError, resolve_word_token
+from drowse.loom.tree import InvalidNodeOperationError, UnknownNodeError
+from drowse.readout.measurements import MeasurementsEnvelope
 from drowse.server.streaming import run_in_thread
 from drowse.server.app import acquire_session_lock
 from drowse.server.background_job import (
@@ -71,7 +71,7 @@ from drowse.server.response_models import (
 )
 
 if TYPE_CHECKING:
-    from drowse.io.lens import LensCorpus
+    from drowse.lens.store import LensCorpus
 
 log = logging.getLogger(__name__)
 
@@ -566,7 +566,7 @@ def register_instrument_routes(app: FastAPI) -> None:
     # =====================================================================
 
     async def _lens_sources() -> SourcesResponse:
-        from drowse.io.lens_sources import list_lens_sources
+        from drowse.lens.sources import list_lens_sources
 
         return {
             "sources": [
@@ -580,8 +580,8 @@ def register_instrument_routes(app: FastAPI) -> None:
     async def _sae_sources() -> SourcesResponse:
         """Prepared sources AND provider release candidates, so the
         dashboard sees both prepared and still-needs-fetching rows."""
-        from drowse.core.sae import list_sae_releases
-        from drowse.io.sae import list_sae_sources
+        from drowse.sae.backend import list_sae_releases
+        from drowse.sae.sources import list_sae_sources
 
         rows = await run_in_thread(list_sae_sources, session.model_id)
         sources = [
@@ -660,7 +660,7 @@ def register_instrument_routes(app: FastAPI) -> None:
     # =====================================================================
 
     async def _lens_fetch_body(body: LensFetchRequest) -> None:
-        from drowse.io.lens_sources import (
+        from drowse.lens.sources import (
             NEURONPEDIA_BINDING,
             WORKSPACE_ARMS,
             fetch_lens_source,
@@ -705,7 +705,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         source_layers: "list[int] | str",
         corpus: "LensCorpus",
     ) -> None:
-        from drowse.io.lens import stream_lens_corpus
+        from drowse.lens.store import stream_lens_corpus
 
         st = lens_fit_job.state
         st["message"] = f"streaming {body.prompts} documents from {corpus}…"
@@ -767,7 +767,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         st["message"] = "load failed"
 
     async def _sae_train_body(body: SaeTrainRequest, layer: int) -> None:
-        from drowse.io.lens import stream_lens_corpus
+        from drowse.lens.store import stream_lens_corpus
 
         st = sae_train_job.state
         n_docs = max(1, math.ceil(body.tokens / body.seq_len))
@@ -819,8 +819,8 @@ def register_instrument_routes(app: FastAPI) -> None:
         return _prep_status("lens")
 
     def _start_lens_fit(fields: dict[str, Any]) -> PreparationStatusJSON:
-        from drowse.core.jlens import JacobianLensCancelled
-        from drowse.io.lens import parse_lens_corpus
+        from drowse.lens.jlens import JacobianLensCancelled
+        from drowse.lens.store import parse_lens_corpus
 
         body = LensFitRequest(**fields)
         try:
@@ -868,7 +868,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         return _prep_status("sae")
 
     def _start_sae_train(fields: dict[str, Any]) -> PreparationStatusJSON:
-        from drowse.core.sae_training import SaeTrainingCancelled
+        from drowse.sae.training import SaeTrainingCancelled
 
         body = SaeTrainRequest(**fields)
         sae_train_job.refuse_if_busy()

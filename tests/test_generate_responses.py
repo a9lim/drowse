@@ -12,10 +12,10 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core import capture as V
-from drowse.core.generation import GenerationState
-from drowse.core.session import DrowseSession, _SessionStopCriteria, _role_for, _system_for
-from drowse.core.capture import _LENGTH_DIRECTIVE
+from drowse.fit import capture as V
+from drowse.generation.decode import GenerationState
+from drowse.session.session import DrowseSession, _SessionStopCriteria, _role_for, _system_for
+from drowse.fit.capture import _LENGTH_DIRECTIVE
 
 
 class _FakeSession(DrowseSession):

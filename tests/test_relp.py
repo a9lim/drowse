@@ -1,6 +1,6 @@
 """CPU tests for the RelP (R-lens) backward rules and the dual-name fit.
 
-``core/relp.py`` keeps the estimator's forward values bit-identical —
+``lens/relp.py`` keeps the estimator's forward values bit-identical —
 custom autograd Functions return each module's own output untouched and
 only substitute the backward factor — while reading the Jacobian through
 the LRP-modified backward graph.  The sparse jlens toy (no RMSNorm /
@@ -24,15 +24,15 @@ import torch
 from torch import nn
 
 from drowse.cli.runners import _try_lens_fit_noop_preflight
-from drowse.core.errors import RelpUnsupportedError
-from drowse.core.jlens import JacobianLens
-from drowse.core.relp import (
+from drowse.errors import RelpUnsupportedError
+from drowse.lens.jlens import JacobianLens
+from drowse.lens.relp import (
     RELP_RULES,
     _act_backward_factor,
     _relp_norm_forward,
     relp_backward_rules,
 )
-from drowse.io.lens import (
+from drowse.lens.store import (
     lens_checkpoint_paths,
     lens_estimator_policy,
     lens_paths,
@@ -43,7 +43,7 @@ from drowse.io.lens import (
     save_lens,
     save_lens_checkpoint_accumulator,
 )
-from drowse.io.lens_sources import (
+from drowse.lens.sources import (
     LOCAL_SOURCE_PREFIX,
     list_lens_sources,
     load_active_lens_source,
@@ -360,7 +360,7 @@ _RELP_POLICY = lens_estimator_policy(backward_rules="relp")
 @pytest.fixture
 def relabels(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record pre-fix relabels; a post-fix fit must never need one."""
-    import drowse.io.lens as lens_io
+    import drowse.lens.store as lens_io
 
     seen: list[str] = []
     monkeypatch.setattr(
@@ -372,7 +372,7 @@ def relabels(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def _interrupt_relp_fit_after(n: int, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run a RelP fit that checkpoints every prompt and dies after ``n``."""
-    import drowse.core.jlens as jlens_mod
+    import drowse.lens.jlens as jlens_mod
 
     real_fit = jlens_mod.fit_jacobian_lens
 
@@ -392,8 +392,8 @@ def _interrupt_relp_fit_after(n: int, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _forbid_estimator(monkeypatch: pytest.MonkeyPatch) -> None:
-    import drowse.core.jlens as jlens_mod
-    import drowse.io.lens as lens_io
+    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.store as lens_io
 
     def _fail(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("a finished RelP fit must not refit or rewrite")
@@ -429,7 +429,7 @@ def test_relp_checkpoint_records_relp_policy(
 def test_interrupted_relp_fit_resumes_from_checkpoint(
     monkeypatch: pytest.MonkeyPatch, relabels: list[str],
 ) -> None:
-    import drowse.core.jlens as jlens_mod
+    import drowse.lens.jlens as jlens_mod
 
     full = _DenseStubSession().fit_jlens(
         _PROMPTS, corpus_spec="test", backward_rules="relp",
@@ -463,7 +463,7 @@ def test_interrupted_relp_fit_resumes_from_checkpoint(
 def test_promoted_relp_final_carries_relp_policy(
     monkeypatch: pytest.MonkeyPatch, relabels: list[str],
 ) -> None:
-    import drowse.io.lens as lens_io
+    import drowse.lens.store as lens_io
 
     promoted: list[bool] = []
     real_promote = lens_io.promote_lens_checkpoint
@@ -512,7 +512,7 @@ def test_finished_relp_fit_rerun_is_noop(
 def test_cli_preflight_reports_finished_relp_fit(
     monkeypatch: pytest.MonkeyPatch, relabels: list[str],
 ) -> None:
-    from drowse.io.lens import HfLensCorpus
+    from drowse.lens.store import HfLensCorpus
 
     corpus = HfLensCorpus("repo", "config", "a" * 40)
     spec = corpus.spec
@@ -523,7 +523,7 @@ def test_cli_preflight_reports_finished_relp_fit(
         checkpoint_every=len(_PROMPTS),
     )
     monkeypatch.setattr(
-        "drowse.core.model.model_source_fingerprint",
+        "drowse.model.loading.model_source_fingerprint",
         lambda *_args, **_kwargs: "source-a",
     )
     args = argparse.Namespace(

@@ -12,12 +12,12 @@ from drowse.cli.parsers import _LENS_VERBS
 from drowse.cli.runners.shared import _print_verb_menu, _drowse_error_exit
 
 if TYPE_CHECKING:
-    from drowse.io.lens import LensCorpus
+    from drowse.lens.store import LensCorpus
 
 
 #: Documents are sliced to this many characters before tokenization — the fit
 #: truncates to --seq-len tokens anyway, so tokenizing a full web page is waste.
-#: (The default-corpus streamer lives in ``io.lens`` — shared with the server's
+#: (The default-corpus streamer lives in ``lens.store`` — shared with the server's
 #: fit route — and applies the same slice.)
 _LENS_DOC_CHARS = 4000
 
@@ -49,8 +49,8 @@ def _pinned_lens_hf_corpus(args: argparse.Namespace) -> "LensCorpus | None":
     ``--hf-corpus`` names it, and repeating it names a weighted mix; unset, it
     is the default web-text sample. ``None`` for ``--corpus FILE``.
     """
-    from drowse.core.jlens import JacobianLensError
-    from drowse.io.lens import parse_lens_corpus, pin_lens_corpus
+    from drowse.lens.jlens import JacobianLensError
+    from drowse.lens.store import parse_lens_corpus, pin_lens_corpus
 
     if args.corpus is not None:
         return None
@@ -100,8 +100,8 @@ def _load_lens_corpus(
                 if len(docs) >= n:
                     break
         return docs, f"file:{path.name}"
-    from drowse.core.jlens import JacobianLensError
-    from drowse.io.lens import stream_lens_corpus
+    from drowse.lens.jlens import JacobianLensError
+    from drowse.lens.store import stream_lens_corpus
 
     print(f"Streaming {n} documents from {hf_corpus}...")
     try:
@@ -130,7 +130,7 @@ def _lens_fit_source_preflight_matches(
     if requested_layers is None or requested_layers == "all":
         return set(source_layers) >= set(range(final_idx))
     if requested_layers in {"workspace", "band"}:
-        from drowse.core.model import workspace_layer_indices
+        from drowse.model.loading import workspace_layer_indices
 
         expected = set(workspace_layer_indices(range(final_idx), raw_count))
         return set(source_layers) >= expected
@@ -147,7 +147,7 @@ def _try_lens_fit_noop_preflight(
     """Serialize the complete model-free proof/reap/report transaction."""
     if args.force:
         return False
-    from drowse.io.lens import lens_fit_lock
+    from drowse.lens.store import lens_fit_lock
 
     with lens_fit_lock(args.model, _lens_fit_name(args)):
         return _try_lens_fit_noop_preflight_locked(
@@ -173,9 +173,9 @@ def _try_lens_fit_noop_preflight_locked(
     """
     import hashlib
 
-    from drowse.core.jlens import DEFAULT_SEQ_LEN
-    from drowse.core.model import model_source_fingerprint
-    from drowse.io.lens import (
+    from drowse.lens.jlens import DEFAULT_SEQ_LEN
+    from drowse.model.loading import model_source_fingerprint
+    from drowse.lens.store import (
         lens_artifact_size,
         lens_estimator_policy,
         lens_paths,
@@ -240,8 +240,8 @@ def _try_lens_fit_noop_preflight_locked(
 
 
 def _run_lens_fit(args: argparse.Namespace) -> None:
-    from drowse.core.session import DrowseSession
-    from drowse.io.lens import (
+    from drowse.session.session import DrowseSession
+    from drowse.lens.store import (
         lens_artifact_size,
         lens_paths,
         load_local_lens_sidecar,
@@ -305,7 +305,7 @@ def _run_lens_fit(args: argparse.Namespace) -> None:
 def _run_lens_fetch(args: argparse.Namespace) -> None:
     import json as _json
 
-    from drowse.io.lens_sources import (
+    from drowse.lens.sources import (
         NEURONPEDIA_BINDING,
         WORKSPACE_ARMS,
         fetch_lens_source,
@@ -346,7 +346,7 @@ def _run_lens_fetch(args: argparse.Namespace) -> None:
 def _run_lens_ls(args: argparse.Namespace) -> None:
     import json as _json
 
-    from drowse.io.lens_sources import list_lens_sources
+    from drowse.lens.sources import list_lens_sources
 
     rows = list_lens_sources(args.model)
     if args.json_output:
@@ -361,7 +361,7 @@ def _run_lens_ls(args: argparse.Namespace) -> None:
 
 
 def _run_lens_use(args: argparse.Namespace) -> None:
-    from drowse.io.lens_sources import use_lens_source
+    from drowse.lens.sources import use_lens_source
 
     use_lens_source(args.model, args.source)
     print(f"Active Jacobian lens for {args.model}: {args.source}")
@@ -370,13 +370,13 @@ def _run_lens_use(args: argparse.Namespace) -> None:
 def _run_lens_show(args: argparse.Namespace) -> None:
     import json as _json
 
-    from drowse.io.lens import (
+    from drowse.lens.store import (
         lens_artifact_size,
         lens_paths,
         load_lens_sidecar,
         load_local_lens_sidecar,
     )
-    from drowse.io.lens_sources import (
+    from drowse.lens.sources import (
         load_active_lens_source,
         load_external_lens_binding,
         external_lens_sidecar,
@@ -389,7 +389,7 @@ def _run_lens_show(args: argparse.Namespace) -> None:
         sidecar = load_lens_sidecar(args.model)
         selected = active
     elif source.startswith("local:"):
-        from drowse.io.integrity import NAME_REGEX
+        from drowse.base.integrity import NAME_REGEX
 
         local_name = source[len("local:"):]
         if NAME_REGEX.fullmatch(local_name) is None:
@@ -398,7 +398,7 @@ def _run_lens_show(args: argparse.Namespace) -> None:
         sidecar = load_local_lens_sidecar(args.model, local_name)
         selected = {"kind": "local", "name": local_name}
     else:
-        from drowse.io.integrity import NAME_REGEX
+        from drowse.base.integrity import NAME_REGEX
 
         if NAME_REGEX.fullmatch(source) is None:
             print(
@@ -463,7 +463,7 @@ def _run_lens_show(args: argparse.Namespace) -> None:
 def _run_lens_top(args: argparse.Namespace) -> None:
     import json as _json
 
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     layers = _parse_layer_list(args.layers)
     _pkg._print_startup(args)
@@ -536,7 +536,7 @@ def _run_lens_top(args: argparse.Namespace) -> None:
 def _run_lens_decompose(args: argparse.Namespace) -> None:
     import json as _json
 
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     layers = _parse_layer_list(args.layers)
     _pkg._print_startup(args)
@@ -575,8 +575,8 @@ def _run_lens_decompose(args: argparse.Namespace) -> None:
 
 
 def _run_lens_rm(args: argparse.Namespace) -> None:
-    from drowse.io.lens import lens_paths, remove_lens
-    from drowse.io.lens_sources import (
+    from drowse.lens.store import lens_paths, remove_lens
+    from drowse.lens.sources import (
         lens_binding_path,
         load_active_lens_source,
         remove_external_lens_binding,
@@ -595,13 +595,13 @@ def _run_lens_rm(args: argparse.Namespace) -> None:
     local = source.startswith("local:")
     local_name = source[len("local:"):] if local else "default"
     if local:
-        from drowse.io.integrity import NAME_REGEX
+        from drowse.base.integrity import NAME_REGEX
 
         if NAME_REGEX.fullmatch(local_name) is None:
             print(f"no local lens source {source}", file=sys.stderr)
             sys.exit(1)
     if not local:
-        from drowse.io.integrity import NAME_REGEX
+        from drowse.base.integrity import NAME_REGEX
 
         if NAME_REGEX.fullmatch(source) is None:
             print(

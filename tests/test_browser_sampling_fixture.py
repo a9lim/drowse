@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.generation import (
+from drowse.generation.decode import (
     GenerationConfig,
     _effective_topk,
     _sampler_candidates,

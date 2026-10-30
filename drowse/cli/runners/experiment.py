@@ -34,17 +34,17 @@ def _run_experiment_naturalness(args: argparse.Namespace) -> None:
 
     import torch
 
-    from drowse.core.manifold import domain_from_spec
-    from drowse.core.naturalness import (
+    from drowse.geometry.manifold import domain_from_spec
+    from drowse.fit.naturalness import (
         compute_node_behavior_centroid,
         compute_trajectory_distributions,
         fit_behavior_manifold,
         trajectory_naturalness,
     )
-    from drowse.core.profile import Profile
-    from drowse.core.sampling import SamplingConfig
-    from drowse.core.steering_expr import ManifoldTerm, parse_expr
-    from drowse.io.manifolds import ManifoldFolder
+    from drowse.geometry.profile import Profile
+    from drowse.generation.sampling import SamplingConfig
+    from drowse.steering.grammar import ManifoldTerm, parse_expr
+    from drowse.store.manifolds import ManifoldFolder
 
     _pkg._load_effective_config(args, default_max_tokens=128)
     mfolder = Path(args.manifold)
@@ -248,7 +248,7 @@ def _run_experiment_fan(args: argparse.Namespace) -> None:
 
 
 def _run_transcript_run(args: argparse.Namespace) -> None:
-    from drowse.core.transcript import (
+    from drowse.loom.transcript import (
         Transcript, TranscriptError,
     )
 

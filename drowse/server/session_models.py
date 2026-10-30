@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pydantic import Field, FiniteFloat
 
-from drowse.core.generation import supports_thinking, thinking_is_optional
-from drowse.core.session import DrowseSession
-from drowse.core.steering import Steering
+from drowse.generation.decode import supports_thinking, thinking_is_optional
+from drowse.session.session import DrowseSession
+from drowse.steering.terms import Steering
 from drowse.server.instrument_routes import instrument_families
 from drowse.server.native_common import NativeRequest
 from drowse.server.response_models import SamplingFields, SessionInfo
@@ -53,7 +53,7 @@ def session_model_type(session: DrowseSession) -> str | None:
 
 def role_support(session: DrowseSession) -> tuple[bool, bool]:
     """``(assistant_supported, user_supported)`` for the loaded model family."""
-    from drowse.core.role_templates import ROLE_HEADERS, USER_ROLE_HEADERS
+    from drowse.model.role_templates import ROLE_HEADERS, USER_ROLE_HEADERS
 
     mt = session_model_type(session)
     if mt is None:
@@ -68,7 +68,7 @@ def default_role_labels(
     session: DrowseSession,
 ) -> tuple[str | None, str | None]:
     """The family-standard assistant/user role labels, if substitutable."""
-    from drowse.core.role_templates import ROLE_HEADERS, USER_ROLE_HEADERS
+    from drowse.model.role_templates import ROLE_HEADERS, USER_ROLE_HEADERS
 
     mt = session_model_type(session)
     if mt is None:

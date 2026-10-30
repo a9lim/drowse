@@ -7,12 +7,12 @@ from typing import Any
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from drowse.core.mahalanobis import LayerWhitener
-from drowse.core.manifold import (
+from drowse.geometry.whitener import LayerWhitener
+from drowse.geometry.manifold import (
     BoxAxis, BoxDomain, CustomDomain, Manifold, fit_affine_subspace,
     fit_layer_subspace, subspace_inject,
 )
-from drowse.core.monitor import Monitor
+from drowse.readout.monitor import Monitor
 
 
 def main():

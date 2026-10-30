@@ -13,9 +13,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.core import profile as V
-
-
+from drowse.geometry import profile as V
 class TestProvenanceRoundTrip:
     def test_save_load_preserves_diagnostics_provenance(self, tmp_path: Path) -> None:
         profile_dict = {0: torch.ones(4), 2: torch.ones(4) * 0.5}

@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.types import Message
 
-from drowse.core.session import DrowseSession
+from drowse.session.session import DrowseSession
 from drowse.server import create_app
 from tests.test_server_loom import _StubSession
 
@@ -72,7 +72,7 @@ def test_unauthenticated_body_is_never_read() -> None:
 
 
 def test_metadata_only_lens_fetch_never_executes_repository_code(tmp_path: Path) -> None:
-    from drowse.io.lens_sources import _resolve_model_for_fetch
+    from drowse.lens.sources import _resolve_model_for_fetch
 
     marker = tmp_path / "repository-code-executed"
     model = tmp_path / "model"

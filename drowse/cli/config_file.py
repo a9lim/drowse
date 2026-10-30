@@ -2,8 +2,8 @@
 
 The ``vectors:`` key is a steering expression string (the same grammar
 every surface speaks); the loader validates it and stores the raw text.
-Parsing into a :class:`~drowse.core.steering.Steering` happens at
-consumption time via :func:`drowse.core.steering_expr.parse_expr`.
+Parsing into a :class:`~drowse.steering.terms.Steering` happens at
+consumption time via :func:`drowse.steering.grammar.parse_expr`.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
-from drowse.core.errors import DrowseError
+from drowse.errors import DrowseError
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class ConfigFile:
     @classmethod
     def load_default(cls) -> Optional["ConfigFile"]:
         """Load ``~/.drowse/config.yaml`` if it exists, else return ``None``."""
-        from drowse.io.paths import drowse_home
+        from drowse.base.paths import drowse_home
         p = drowse_home() / "config.yaml"
         if not p.exists():
             return None
@@ -166,7 +166,7 @@ class ConfigFile:
             if text:
                 # Validate via the shared parser; raise a wrapped error on
                 # failure so the YAML path surfaces the column/detail.
-                from drowse.core.steering_expr import (
+                from drowse.steering.grammar import (
                     SteeringExprError, parse_expr,
                 )
                 try:
@@ -256,13 +256,13 @@ def apply_flag_overrides(cfg_in: ConfigFile, **flags: Any) -> ConfigFile:
 def _bare_concept_resolves(concept: str) -> bool:
     """True when a bare (un-namespaced) concept reference resolves to a manifold.
 
-    Mirrors the steering read path (:mod:`drowse.core.steering_expr`): a bare
+    Mirrors the steering read path (:mod:`drowse.steering.grammar`): a bare
     pole or node label resolves via :func:`resolve_manifold_label`, and a
     composite name (``happy.sad``) resolves to its 2-node ``pca`` manifold via
     :func:`resolve_manifold_name`.  An ambiguity counts as resolved (the
     reference matches more than one installed artifact, not zero).
     """
-    from drowse.io.selectors import (
+    from drowse.store.selectors import (
         AmbiguousSelectorError,
         resolve_manifold_label,
         resolve_manifold_name,
@@ -287,9 +287,9 @@ def ensure_vectors_installed(config: ConfigFile, *, strict: bool) -> list[str]:
     a list of coords that could not be installed; in strict mode, raises
     on any failure instead.
     """
-    from drowse.core.steering_expr import referenced_selectors
-    from drowse.io.bootstrap import materialize_bundled_artifacts
-    from drowse.io.paths import manifold_dir
+    from drowse.steering.grammar import referenced_selectors
+    from drowse.store.bundled import materialize_bundled_artifacts
+    from drowse.base.paths import manifold_dir
 
     if config.vectors is None:
         return []
@@ -329,7 +329,7 @@ def ensure_vectors_installed(config: ConfigFile, *, strict: bool) -> list[str]:
             missing.append(coord)
             continue
         try:
-            from drowse.io.hf_manifolds import install_manifold
+            from drowse.store.hub import install_manifold
             install_manifold(coord, force=False)
         except Exception as e:
             msg = f"vector {coord!r}: install failed ({e})"

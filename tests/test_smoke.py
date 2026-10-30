@@ -36,7 +36,7 @@ _EXTRACTION_BUDGET_S = 60.0 if _IS_MPS else 10.0
 
 @pytest.fixture(scope="module")
 def model_and_tokenizer():
-    from drowse.core.model import load_model
+    from drowse.model.loading import load_model
     # device="auto" picks cuda > mps > cpu; the skipif above guarantees a GPU.
     return load_or_skip_inaccessible(
         lambda: load_model(MODEL_ID, quantize=None, device="auto"), MODEL_ID,
@@ -45,7 +45,7 @@ def model_and_tokenizer():
 
 @pytest.fixture(scope="module")
 def layers(model_and_tokenizer: Any) -> Any:
-    from drowse.core.model import get_layers
+    from drowse.model.loading import get_layers
     model, _ = model_and_tokenizer
     return get_layers(model)
 
@@ -65,7 +65,7 @@ def _extract_profile(model: Any, tokenizer: Any, concept: str, layers: Any) -> A
     (``folded_directions``).  Same centroid-difference direction the old
     DiM extractor produced, through the surviving fold primitive.
     """
-    from drowse.core.capture import (
+    from drowse.fit.capture import (
         _encode_and_capture_all,
         fold_directions_to_subspace,
         folded_directions,
@@ -94,7 +94,7 @@ def layer_means(model_and_tokenizer: Any, layers: Any) -> Any:
     # The probe-centering mean is the per-layer mean of the neutral activation
     # stack (X.mean(0)) — same corpus, same pooling — so there is no separate
     # compute_layer_means pass.
-    from drowse.core.capture import compute_neutral_activations
+    from drowse.fit.capture import compute_neutral_activations
     model, tokenizer = model_and_tokenizer
     acts = compute_neutral_activations(model, tokenizer, layers)
     return {idx: X.mean(dim=0) for idx, X in acts.items()}
@@ -115,7 +115,7 @@ def _steer_subspace(mgr: Any, *pairs: Any) -> None:
     Anchored at zero (enough for the smoke "steering changes the output"
     assertions; the GPU gate owns strength calibration).
     """
-    from drowse.core.manifold import synthesize_subspace
+    from drowse.geometry.manifold import synthesize_subspace
 
     push: list[Any] = []
     neutral_means: dict[int, torch.Tensor] = {}
@@ -169,8 +169,8 @@ class TestVectorExtraction:
 
 class TestSteering:
     def test_steered_output_differs(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any) -> None:
-        from drowse.core.hooks import SteeringManager
-        from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
+        from drowse.steering.hooks import SteeringManager
+        from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
 
         model, tokenizer = model_and_tokenizer
         device = next(model.parameters()).device
@@ -201,8 +201,8 @@ class TestSteering:
         assert ids0 != ids1, "Steered output should differ from unsteered"
 
     def test_hook_cleanup(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any) -> None:
-        from drowse.core.hooks import SteeringManager
-        from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
+        from drowse.steering.hooks import SteeringManager
+        from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
 
         model, tokenizer = model_and_tokenizer
         p = next(model.parameters())
@@ -244,7 +244,7 @@ class TestSteering:
 
 class TestSaveLoad:
     def test_roundtrip(self, happy_profile: Any) -> None:
-        from drowse.core.profile import load_profile, save_profile
+        from drowse.geometry.profile import load_profile, save_profile
 
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "test_profile.safetensors")
@@ -265,10 +265,10 @@ class TestSaveLoad:
 
 class TestMonitor:
     def test_monitor_records_history(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any, layer_means: Any) -> None:
-        from drowse.core.hooks import SteeringManager
-        from drowse.core.monitor import Monitor
-        from drowse.core.capture import fold_directions_to_subspace
-        from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
+        from drowse.steering.hooks import SteeringManager
+        from drowse.readout.monitor import Monitor
+        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
         from tests._whitener import isotropic_whitener
 
         model, tokenizer = model_and_tokenizer
@@ -311,7 +311,7 @@ class TestMonitor:
 
         # Measure on generated text via the surviving hidden-state scoring API.
         text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-        from drowse.core.capture import _encode_and_capture_all
+        from drowse.fit.capture import _encode_and_capture_all
 
         hidden = _encode_and_capture_all(
             model, tokenizer, "How are you feeling?", text, layers, device,
@@ -337,8 +337,8 @@ class TestMonitor:
 
     def test_throughput_regression(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any, layer_means: Any) -> None:
         """Steered generation should be at least 85% of vanilla throughput."""
-        from drowse.core.hooks import SteeringManager
-        from drowse.core.generation import GenerationConfig, GenerationState, generate_steered
+        from drowse.steering.hooks import SteeringManager
+        from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
 
         model, tokenizer = model_and_tokenizer
         device = next(model.parameters()).device
@@ -413,7 +413,7 @@ class TestMonitor:
 
 class TestBuildChatInput:
     def test_chat_template_path(self, model_and_tokenizer: Any) -> None:
-        from drowse.core.generation import build_chat_input
+        from drowse.generation.decode import build_chat_input
         _, tokenizer = model_and_tokenizer
         messages = [{"role": "user", "content": "Hello"}]
         ids = build_chat_input(tokenizer, messages)
@@ -422,7 +422,7 @@ class TestBuildChatInput:
         assert ids.shape[1] > 0
 
     def test_with_system_prompt(self, model_and_tokenizer: Any) -> None:
-        from drowse.core.generation import build_chat_input
+        from drowse.generation.decode import build_chat_input
         _, tokenizer = model_and_tokenizer
         messages = [{"role": "user", "content": "Hello"}]
         ids_no_sys = build_chat_input(tokenizer, messages)
@@ -443,8 +443,8 @@ class TestAblationPerformance:
         self, model_and_tokenizer: Any, layers: Any, layer_means: Any,
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from drowse.core.sampling import SamplingConfig
-        from drowse.core.session import DrowseSession
+        from drowse.generation.sampling import SamplingConfig
+        from drowse.session.session import DrowseSession
 
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
         model, tokenizer = model_and_tokenizer
@@ -549,9 +549,9 @@ class TestDiscoverManifoldEndToEnd:
     _FIT_BUDGET_S = _EXTRACTION_BUDGET_S * 2
 
     def test_discover_pipeline(self, model_and_tokenizer: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from drowse.core.manifold import CustomDomain
-        from drowse.core.session import DrowseSession
-        from drowse.io.manifolds import create_discover_manifold_folder
+        from drowse.geometry.manifold import CustomDomain
+        from drowse.session.session import DrowseSession
+        from drowse.store.manifolds import create_discover_manifold_folder
 
         # Pin DROWSE_HOME to a per-test temp dir so the manifold folder
         # lands somewhere disposable; bundled neutrals still copy in
@@ -564,7 +564,7 @@ class TestDiscoverManifoldEndToEnd:
         session = DrowseSession(model, tokenizer, probes=[])
         try:
             # ---- 1. generate per-concept corpora (A2 conversational) ----
-            from drowse.core.capture import _load_baseline_prompts
+            from drowse.fit.capture import _load_baseline_prompts
             n_prompts = len(_load_baseline_prompts())
             t0 = time.perf_counter()
             corpora = session.generate_responses(
@@ -637,7 +637,7 @@ class TestDiscoverManifoldEndToEnd:
             )
             prompt = "Describe what you see in this room."
 
-            from drowse.core.sampling import SamplingConfig
+            from drowse.generation.sampling import SamplingConfig
             sampling = SamplingConfig(
                 temperature=0.0, max_tokens=48, seed=0,
             )

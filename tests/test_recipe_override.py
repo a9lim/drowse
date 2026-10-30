@@ -7,9 +7,9 @@ from typing import Any, cast
 import pytest
 
 from drowse import Recipe, SamplingConfig
-from drowse.core.loom import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt, LoomTree
-from drowse.core.session import DrowseSession
-from drowse.core.steering_expr import ManifoldTerm, parse_expr
+from drowse.loom.tree import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt, LoomTree
+from drowse.session.session import DrowseSession
+from drowse.steering.grammar import ManifoldTerm, parse_expr
 
 
 def test_recipe_prompt_capture_distinguishes_legacy_null_empty_and_text():
@@ -242,7 +242,7 @@ def test_compose_modifier_routes_through_overlay_in_regen_with_modifier():
     onto the parent recipe.  No model load — uses _resolve_recipe_override
     which is the pure-Python overlay path.
     """
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     from drowse import LoomTree
 
     class _StubSession:
@@ -280,7 +280,7 @@ def test_compose_modifier_routes_through_overlay_in_regen_with_modifier():
 
 def test_resolve_override_with_string_mode():
     """The session helper applies overlay onto the parent recipe + returns the kwargs."""
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     from drowse import LoomTree
 
     class _StubSession:
@@ -310,7 +310,7 @@ def test_resolve_override_with_string_mode():
 
 
 def test_resolve_override_passthrough_when_none():
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     from drowse import LoomTree
 
     class _StubSession:
@@ -327,7 +327,7 @@ def test_resolve_override_passthrough_when_none():
 
 
 def test_resolve_override_with_custom_recipe():
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     from drowse import LoomTree
 
     class _StubSession:

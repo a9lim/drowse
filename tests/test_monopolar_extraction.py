@@ -18,13 +18,13 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core import capture as V
-from drowse.core.events import EventBus
-from drowse.core.extraction import ManifoldExtractionPipeline
-from drowse.core.sae import MockSaeBackend
-from drowse.core.capture import folded_directions
-from drowse.io.manifolds import ManifoldFolder, create_discover_manifold_folder
-from drowse.io.paths import manifold_dir
+from drowse.fit import capture as V
+from drowse.events import EventBus
+from drowse.fit.pipeline import ManifoldExtractionPipeline
+from drowse.sae.backend import MockSaeBackend
+from drowse.fit.capture import folded_directions
+from drowse.store.manifolds import ManifoldFolder, create_discover_manifold_folder
+from drowse.base.paths import manifold_dir
 from tests._whitener import synthetic_whitener
 
 _DIM = 8

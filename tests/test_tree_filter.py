@@ -11,7 +11,7 @@ from drowse import (
     Recipe,
     parse_filter,
 )
-from drowse.core.tree_filter import node_token_series
+from drowse.loom.filter import node_token_series
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +330,7 @@ def test_filter_route_matches_all_three_ops():
 
     from fastapi.testclient import TestClient
 
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
     from drowse.server import create_app
     from tests.test_server_loom import _StubSession
 

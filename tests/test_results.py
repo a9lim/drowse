@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from drowse.core.results import (
+from drowse.generation.results import (
     ProbeReadings,
     ProbeReading,
     GenerationResult,
@@ -113,9 +113,9 @@ class TestGenerationResult:
     ):
         """Stored expression round-trips through ``parse_expr``."""
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        from drowse.io import selectors as _sel
+        from drowse.store import selectors as _sel
         _sel.invalidate()
-        from drowse.core.steering_expr import parse_expr
+        from drowse.steering.grammar import parse_expr
         result = GenerationResult(
             text="Hi", tokens=[1], token_count=1, tok_per_sec=5.0, elapsed=0.2,
             applied_steering="0.5 myvec + 0.3 othervec@after",
@@ -378,8 +378,8 @@ class TestMonitorScoring:
 
     @classmethod
     def _make_monitor(cls):
-        from drowse.core.monitor import Monitor
-        from drowse.core.capture import fold_directions_to_subspace
+        from drowse.readout.monitor import Monitor
+        from drowse.fit.capture import fold_directions_to_subspace
         from tests._whitener import synthetic_whitener
         probe_vec = torch.zeros(cls._DIM)
         probe_vec[0] = 1.0  # unit vector along dim 0

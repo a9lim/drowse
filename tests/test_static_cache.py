@@ -22,9 +22,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from drowse.core import static_cache as cg
-
-
+from drowse.generation import static_cache as cg
 @pytest.fixture(autouse=True)
 def _isolate_cg_module_caches():
     """Clear the module-level support/warn caches around every test.
@@ -293,7 +291,7 @@ def test_make_static_cache_early_initializes_standard_gqa_geometry(
 def test_session_reuses_and_resets_generation_static_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     class _Cache:
         def __init__(self, capacity: int) -> None:
@@ -325,7 +323,7 @@ def test_session_reuses_and_resets_generation_static_cache(
         return cache
 
     monkeypatch.setattr(
-        "drowse.core.static_cache.make_static_cache",
+        "drowse.generation.static_cache.make_static_cache",
         _make_static_cache,
     )
     session = DrowseSession.__new__(DrowseSession)

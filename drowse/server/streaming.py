@@ -61,8 +61,8 @@ class ClosingStreamingResponse(StreamingResponse):
 
 
 if TYPE_CHECKING:
-    from drowse.core.results import GenerationResult
-    from drowse.core.session import DrowseSession
+    from drowse.generation.results import GenerationResult
+    from drowse.session.session import DrowseSession
 
 
 def probe_reading_aggregate(

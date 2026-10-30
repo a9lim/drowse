@@ -16,7 +16,7 @@ from __future__ import annotations
 import torch
 import pytest
 
-from drowse.core.capture import (
+from drowse.fit.capture import (
     fold_directions_to_subspace,
     folded_directions,
     is_foldable_vector_manifold,
@@ -42,7 +42,7 @@ def _whitener(layers: list[int], dim: int):
 def test_folded_directions_rejects_curved():
     """A curved (RBF-fitted, non-affine) manifold has no single direction —
     the view must refuse it."""
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
     )
     torch.manual_seed(0)
@@ -71,7 +71,7 @@ def test_is_foldable_vector_manifold_rejects_multinode_affine():
     """A flat *rank-R>1* fit (the ``personas`` fan shape) is affine but has no
     single direction — the predicate must reject it so the direction-cosine
     analytics (correlation / pairwise) skip it instead of folding to a 500."""
-    from drowse.core.manifold import (
+    from drowse.geometry.manifold import (
         CustomDomain, LayerSubspace, Manifold,
     )
     torch.manual_seed(0)
@@ -97,7 +97,7 @@ def test_is_foldable_vector_manifold_rejects_multinode_affine():
 
 def test_is_foldable_vector_manifold_accepts_r1_and_rejects_empty():
     """The R=1 fold output is foldable; a layerless manifold is not."""
-    from drowse.core.manifold import CustomDomain, Manifold
+    from drowse.geometry.manifold import CustomDomain, Manifold
 
     d = 6
     directions = {0: torch.randn(d), 3: torch.randn(d)}

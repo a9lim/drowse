@@ -3,7 +3,7 @@
 import warnings
 from typing import Callable
 
-from drowse.core.events import (
+from drowse.events import (
     Event,
     EventBus,
     GenerationFinished,
@@ -13,7 +13,7 @@ from drowse.core.events import (
     SteeringApplied,
     SteeringCleared,
 )
-from drowse.core.triggers import Trigger
+from drowse.steering.triggers import Trigger
 
 
 def test_subscribe_and_emit():
@@ -162,18 +162,18 @@ def test_loom_mutated_is_in_the_event_union():
     """
     import typing
 
-    from drowse.core.events import LoomMutated
+    from drowse.events import LoomMutated
 
     assert LoomMutated in typing.get_args(Event)
-    # ``drowse.core.loom`` re-exports it, so the historical import path and
+    # ``drowse.loom.tree`` re-exports it, so the historical import path and
     # the owning module hand back the same class.
-    from drowse.core.loom import LoomMutated as ReExported
+    from drowse.loom.tree import LoomMutated as ReExported
 
     assert ReExported is LoomMutated
 
 
 def test_loom_mutated_rides_the_bus_as_an_event():
-    from drowse.core.loom import LoomTree
+    from drowse.loom.tree import LoomTree
 
     bus = EventBus()
     seen: list[Event] = []

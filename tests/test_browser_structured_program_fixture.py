@@ -7,17 +7,17 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.jlens import JacobianLens
-from drowse.core.manifold import (
+from drowse.lens.jlens import JacobianLens
+from drowse.geometry.manifold import (
     BoxAxis,
     BoxDomain,
     LayerSubspace,
     SphereDomain,
     subspace_inject,
 )
-from drowse.core.sae import LocalSaeBackend
-from drowse.core.steering_expr import parse_expr
-from drowse.core.triggers import TriggerContext
+from drowse.sae.backend import LocalSaeBackend
+from drowse.steering.grammar import parse_expr
+from drowse.steering.triggers import TriggerContext
 
 
 FIXTURE = (

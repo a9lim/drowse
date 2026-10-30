@@ -8,9 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from drowse.io import hf
-
-
+from drowse.base import hf
 def _write_fitted_manifold(
     folder: Path,
     model_id: str,
@@ -21,11 +19,11 @@ def _write_fitted_manifold(
 ) -> Path:
     import torch
 
-    from drowse.core.manifold import MANIFOLD_FIT_POLICY_VERSION
-    from drowse.io.manifold_tensors import save_manifold
-    from drowse.core.capture import fold_directions_to_subspace
-    from drowse.io.manifolds import ManifoldFolder
-    from drowse.io.paths import tensor_filename
+    from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION
+    from drowse.store.manifold_tensors import save_manifold
+    from drowse.fit.capture import fold_directions_to_subspace
+    from drowse.store.manifolds import ManifoldFolder
+    from drowse.base.paths import tensor_filename
     from tests._whitener import isotropic_whitener
 
     means = {0: torch.zeros(len(direction))}
@@ -97,7 +95,7 @@ def test_resolve_target_coord_uses_whoami(monkeypatch: pytest.MonkeyPatch):
 
 def _author_fake_manifold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, name: str = "mood"):
     """Author a tiny authored manifold + one fake fitted tensor under DROWSE_HOME."""
-    from drowse.io.manifolds import create_manifold_folder
+    from drowse.store.manifolds import create_manifold_folder
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -114,8 +112,8 @@ def _author_fake_manifold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, na
 
 
 def test_pull_manifold_records_revision_in_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifolds import ManifoldFolder
+    from drowse.store import hub as hfm
+    from drowse.store.manifolds import ManifoldFolder
 
     fake = _author_fake_manifold(tmp_path, monkeypatch)
     monkeypatch.setattr(hfm, "_hf_snapshot_download", lambda **kw: str(fake))
@@ -131,8 +129,8 @@ def test_pull_manifold_records_revision_in_source(tmp_path: Path, monkeypatch: p
 def test_force_pull_waits_for_existing_pair_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifold_folder import manifold_pair_lock
+    from drowse.store import hub as hfm
+    from drowse.store.manifold_folder import manifold_pair_lock
 
     source = _author_fake_manifold(tmp_path, monkeypatch)
     monkeypatch.setattr(hfm, "_hf_snapshot_download", lambda **kw: str(source))
@@ -167,8 +165,7 @@ def test_force_pull_waits_for_existing_pair_lock(
 def test_pull_recovers_backup_before_nonforce_conflict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import hf_manifolds as hfm
-
+    from drowse.store import hub as hfm
     source = _author_fake_manifold(tmp_path, monkeypatch)
     target = tmp_path / "installed" / "mood"
     backup = target.with_name("mood.bak")
@@ -191,8 +188,8 @@ def test_pull_recovers_backup_before_nonforce_conflict(
 def test_force_pull_recovered_backup_waits_for_logical_pair_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifold_folder import manifold_pair_lock
+    from drowse.store import hub as hfm
+    from drowse.store.manifold_folder import manifold_pair_lock
 
     source = _author_fake_manifold(tmp_path, monkeypatch)
     monkeypatch.setattr(hfm, "_hf_snapshot_download", lambda **_kw: str(source))
@@ -222,8 +219,7 @@ def test_force_pull_recovered_backup_waits_for_logical_pair_lock(
 
 def _capture_push_staging(monkeypatch: pytest.MonkeyPatch):
     """Hook tempfile.mkdtemp + shutil.rmtree to snapshot the push staging dir."""
-    from drowse.io import hf_manifolds as hfm
-
+    from drowse.store import hub as hfm
     captured_dir: list[Path] = []
     staged: dict[str, bytes] = {}
     real_mkdtemp = __import__("tempfile").mkdtemp
@@ -249,8 +245,8 @@ def _capture_push_staging(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_push_manifold_dry_run_stages_corpus_and_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.paths import sidecar_filename, tensor_filename
+    from drowse.store import hub as hfm
+    from drowse.base.paths import sidecar_filename, tensor_filename
     folder = _author_fake_manifold(tmp_path, monkeypatch)
     staged = _capture_push_staging(monkeypatch)
 
@@ -277,7 +273,7 @@ def test_push_manifold_dry_run_stages_corpus_and_card(tmp_path: Path, monkeypatc
 
 
 def test_push_manifold_uploads_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from drowse.io import hf_manifolds as hfm
+    from drowse.store import hub as hfm
     folder = _author_fake_manifold(tmp_path, monkeypatch)
 
     api = MagicMock()
@@ -299,9 +295,9 @@ def test_push_manifold_uploads_once(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def test_push_manifold_model_scope_and_variant_filter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifolds import ManifoldFolder
-    from drowse.io.paths import tensor_filename
+    from drowse.store import hub as hfm
+    from drowse.store.manifolds import ManifoldFolder
+    from drowse.base.paths import tensor_filename
 
     folder = _author_fake_manifold(tmp_path, monkeypatch)
     # Add a second model's tensor + an SAE variant for the first model.
@@ -332,8 +328,8 @@ def test_push_manifold_model_scope_and_variant_filter(tmp_path: Path, monkeypatc
 
 def test_push_manifold_corpus_only_when_unfitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """An unfitted manifold (no tensors) still pushes — corpus alone re-fits."""
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifolds import create_manifold_folder
+    from drowse.store import hub as hfm
+    from drowse.store.manifolds import create_manifold_folder
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -354,8 +350,8 @@ def test_push_manifold_corpus_only_when_unfitted(tmp_path: Path, monkeypatch: py
 def test_push_manifold_rejects_fitted_tensor_after_corpus_edit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifolds import ManifoldFormatError
+    from drowse.store import hub as hfm
+    from drowse.store.manifolds import ManifoldFormatError
 
     folder = _author_fake_manifold(tmp_path, monkeypatch)
     node = folder / "nodes" / "00_calm.json"
@@ -369,8 +365,7 @@ def test_push_manifold_stages_one_locked_source_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A concurrent fitted-pair replacement cannot split the push snapshot."""
-    from drowse.io import hf_manifolds as hfm
-
+    from drowse.store import hub as hfm
     folder = _author_fake_manifold(tmp_path, monkeypatch)
     tensor = next(folder.glob("*.safetensors"))
     old_tensor = tensor.read_bytes()
@@ -447,8 +442,7 @@ def test_push_manifold_freezes_candidates_before_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A lower-level new pair born after the lock scan is not re-globbed."""
-    from drowse.io import hf_manifolds as hfm
-
+    from drowse.store import hub as hfm
     folder = _author_fake_manifold(tmp_path, monkeypatch)
     staged = _capture_push_staging(monkeypatch)
     real_copy = hfm.copy_file_atomic
@@ -482,7 +476,7 @@ def test_install_manifold_requires_current_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    from drowse.io.hf_manifolds import install_manifold
+    from drowse.store.hub import install_manifold
 
     source = tmp_path / "source" / "happy.sad"
     source.mkdir(parents=True)
@@ -495,7 +489,7 @@ def test_install_manifold_requires_current_manifest(
 
 def test_install_manifold_refuses_bare_control_vector_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    from drowse.io.hf_manifolds import install_manifold
+    from drowse.store.hub import install_manifold
 
     # Only a safetensors dump — no manifold.json, no statements.json. The
     # geometry/authoring can't be recovered, so it's refused (re-author it).
@@ -510,8 +504,8 @@ def test_force_local_install_onto_itself_is_safe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    from drowse.io.hf_manifolds import install_manifold
-    from drowse.io.manifolds import ManifoldFolder
+    from drowse.store.hub import install_manifold
+    from drowse.store.manifolds import ManifoldFolder
 
     folder = _author_fake_manifold(tmp_path / "home", monkeypatch)
     manifest_before = (folder / "manifold.json").read_bytes()
@@ -526,11 +520,11 @@ def test_local_as_install_rewrites_identity_and_resolves_destination(
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("DROWSE_HOME", str(home))
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.io.manifolds import ManifoldFolder
-    from drowse.io.paths import manifold_dir, tensor_filename
-    from drowse.io.selectors import invalidate, parse, resolve
+    from drowse.store import hub as hfm
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.store.manifolds import ManifoldFolder
+    from drowse.base.paths import manifold_dir, tensor_filename
+    from drowse.store.selectors import invalidate, parse, resolve
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     installed = hfm.install_manifold(
@@ -554,11 +548,11 @@ def test_hf_as_install_rewrites_identity_and_resolves_destination(
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("DROWSE_HOME", str(home))
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifold_tensors import load_manifold
-    from drowse.io.manifolds import ManifoldFolder
-    from drowse.io.paths import manifold_dir, tensor_filename
-    from drowse.io.selectors import invalidate, parse, resolve
+    from drowse.store import hub as hfm
+    from drowse.store.manifold_tensors import load_manifold
+    from drowse.store.manifolds import ManifoldFolder
+    from drowse.base.paths import manifold_dir, tensor_filename
+    from drowse.store.selectors import invalidate, parse, resolve
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     monkeypatch.setattr(
@@ -600,8 +594,8 @@ def test_install_rejects_unmanifested_fitted_pair_during_rename(
     """Install-as never blesses a fitted half absent from source proofs."""
     home = tmp_path / "home"
     monkeypatch.setenv("DROWSE_HOME", str(home))
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.paths import manifold_dir
+    from drowse.store import hub as hfm
+    from drowse.base.paths import manifold_dir
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     tensor = next(source.glob("*.safetensors"))
@@ -638,8 +632,8 @@ def test_force_local_install_copy_failure_preserves_destination(
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("DROWSE_HOME", str(home))
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifolds import ManifoldFolder
+    from drowse.store import hub as hfm
+    from drowse.store.manifolds import ManifoldFolder
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     target = _author_fake_manifold(home, monkeypatch, name="target")
@@ -665,8 +659,8 @@ def test_local_install_recovers_backup_before_nonforce_conflict(
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("DROWSE_HOME", str(home))
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifolds import ManifoldFolder
+    from drowse.store import hub as hfm
+    from drowse.store.manifolds import ManifoldFolder
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     target = _author_fake_manifold(home, monkeypatch, name="target")
@@ -687,9 +681,9 @@ def test_force_local_install_snapshots_reserved_sibling_source(
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("DROWSE_HOME", str(home))
-    from drowse.io import hf_manifolds as hfm
-    from drowse.io.manifolds import ManifoldFolder
-    from drowse.io.paths import manifold_dir
+    from drowse.store import hub as hfm
+    from drowse.store.manifolds import ManifoldFolder
+    from drowse.base.paths import manifold_dir
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     target = manifold_dir("local", "target")

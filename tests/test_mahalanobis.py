@@ -14,13 +14,13 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.core.mahalanobis import (
+from drowse.geometry.whitener import (
     DEFAULT_RIDGE_SCALE,
     LayerWhitener,
     WhitenerError,
 )
-from drowse.core.profile import Profile
-from drowse.core.capture import project_profile
+from drowse.geometry.profile import Profile
+from drowse.fit.capture import project_profile
 
 
 # ---------------------------------------------------------------- helpers ---

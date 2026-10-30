@@ -10,7 +10,7 @@ import weakref
 import pytest
 import torch
 
-from drowse.core.generation import (
+from drowse.generation.decode import (
     GenerationConfig,
     GenerationState,
     _PenaltyState,
@@ -23,10 +23,10 @@ from drowse.core.generation import (
     _token_table_cache,
     generate_steered,
 )
-from drowse.core.instruments.types import ScalarReading
-from drowse.core.results import GenerationResult, ProbeReading
-from drowse.core.sampling import SamplingConfig
-from drowse.core.session import (
+from drowse.readout.types import ScalarReading
+from drowse.generation.results import GenerationResult, ProbeReading
+from drowse.generation.sampling import SamplingConfig
+from drowse.session.session import (
     CaptureMode,
     CaptureState,
     GenState,
@@ -34,8 +34,8 @@ from drowse.core.session import (
     ReadDemand,
     DrowseSession,
 )
-from drowse.core.steering import Steering
-from drowse.core.token_payloads import TokenProbePayload
+from drowse.steering.terms import Steering
+from drowse.generation.token_payloads import TokenProbePayload
 from tests.conftest import FakeLogitsModel
 
 
@@ -235,7 +235,7 @@ class _OffsetEchoTokenizer:
 
 
 def test_authored_prompt_targets_map_to_producer_rows_after_prefix_cache() -> None:
-    from drowse.core.loom import LoomTree, Recipe
+    from drowse.loom.tree import LoomTree, Recipe
 
     tree = LoomTree()
     user_id = tree.add_user_turn(" ab ")
@@ -289,8 +289,8 @@ def test_authored_prompt_match_excludes_generation_role_and_preserves_trim() -> 
 
 
 def test_persist_authored_prompt_capture_writes_all_measurement_channels() -> None:
-    from drowse.core.loom import LoomTree, Recipe
-    from drowse.core.session import _AuthoredPromptMatch, _AuthoredPromptTarget
+    from drowse.loom.tree import LoomTree, Recipe
+    from drowse.session.session import _AuthoredPromptMatch, _AuthoredPromptTarget
 
     tree = LoomTree()
     user_id = tree.add_user_turn("x")
@@ -374,7 +374,7 @@ def test_prepare_generation_uses_session_thinking_default(monkeypatch: pytest.Mo
     session._tokenizer = object()
     session._default_return_top_k = 0
     session.config = GenerationConfig(thinking=False)
-    monkeypatch.setattr("drowse.core.session.supports_thinking", lambda _tok: True)
+    monkeypatch.setattr("drowse.session.session.supports_thinking", lambda _tok: True)
 
     assert DrowseSession._prepare_generation_call(
         session, None, None, None,
@@ -413,7 +413,7 @@ def test_readout_top_k_shares_logit_alternative_width() -> None:
 def test_prepare_input_raw_feeds_flat_active_path():
     """raw=True walks the loom tree as flat text — no chat template, no
     role markers — and appends the call's own input."""
-    from drowse.core.loom import LoomTree
+    from drowse.loom.tree import LoomTree
 
     tree = LoomTree()
     u1 = tree.add_user_turn("once upon a ")
@@ -556,7 +556,7 @@ def test_decode_loop_hands_one_step_id_to_sink_gate_and_tap():
     one forward, and the value is ``len(generated_ids)`` before that
     forward — what lets the instrument runs' step-keyed memos pair one
     forward's gate and display reads."""
-    from drowse.core.triggers import TriggerContext
+    from drowse.steering.triggers import TriggerContext
 
     model: Any = _scripted_model([0, 1, 2])
     tokenizer: Any = _StopTokenizer()
@@ -1045,8 +1045,8 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
 ) -> None:
     import threading
 
-    import drowse.core.token_payloads as token_payloads
-    from drowse.core.triggers import TriggerContext
+    import drowse.generation.token_payloads as token_payloads
+    from drowse.steering.triggers import TriggerContext
 
     session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
     session._gen_lock = threading.Lock()
@@ -1519,7 +1519,7 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
     """Full per-token readings can truncate label channels; gates still need the
     exact requested scalar keys."""
 
-    from drowse.core.steering_composer import SteeringComposer
+    from drowse.steering.composer import SteeringComposer
 
     class Capture:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
@@ -1619,8 +1619,8 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
     score_attr: str,
     expected: dict[str, float],
 ) -> None:
-    from drowse.core.steering_composer import SteeringComposer
-    from drowse.core.steering_expr import parse_expr
+    from drowse.steering.composer import SteeringComposer
+    from drowse.steering.grammar import parse_expr
 
     class Capture:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
@@ -1668,8 +1668,8 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
 
 
 def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
-    from drowse.core.steering_composer import SteeringComposer
-    from drowse.core.steering_expr import parse_expr
+    from drowse.steering.composer import SteeringComposer
+    from drowse.steering.grammar import parse_expr
 
     class Capture:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
@@ -2166,13 +2166,13 @@ class _RecordingInstrument:
         self.requests: list[Any] = []
 
     def prepare(self, request: Any) -> Any:
-        from drowse.core.instruments.types import InstrumentPrep
+        from drowse.readout.types import InstrumentPrep
 
         self.requests.append(request)
         return InstrumentPrep(family=self.family, request=request)
 
     def plan(self, prep: Any) -> Any:
-        from drowse.core.instruments.types import InstrumentPlan
+        from drowse.readout.types import InstrumentPlan
 
         return InstrumentPlan(family=self.family, prep_token=prep.token)
 
@@ -2641,7 +2641,7 @@ def test_extract_acquires_gen_lock_against_concurrent_generation():
     """If ``_gen_lock`` is already held (generation in flight), extract
     must raise ``ConcurrentExtractionError`` rather than reading
     ``_gen_phase`` and racing the generation that's about to flip it."""
-    from drowse.core.session import ConcurrentExtractionError
+    from drowse.session.session import ConcurrentExtractionError
 
     s = _stub_session_with_lock()
     # Simulate "generation just acquired the lock" — phase still IDLE
@@ -2660,7 +2660,7 @@ def test_extract_releases_lock_on_path_through_phase_gate():
     can proceed once the phase clears."""
     import threading
 
-    from drowse.core.session import ConcurrentExtractionError
+    from drowse.session.session import ConcurrentExtractionError
 
     s: Any = DrowseSession.__new__(DrowseSession)
     s._gen_phase = GenState.RUNNING
@@ -2748,7 +2748,7 @@ def test_generation_transaction_leaves_a_popped_scope_alone():
 
 
 def test_generation_transaction_rejects_a_reentrant_generation():
-    from drowse.core.session import ConcurrentGenerationError
+    from drowse.session.session import ConcurrentGenerationError
 
     s = _transaction_stub_session()
     with s._generation_transaction():

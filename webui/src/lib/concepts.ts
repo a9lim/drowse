@@ -3,7 +3,7 @@
 // Two facts about every bundled concept are already on the wire and the
 // pickers present them: which *category* it belongs to (a category-valued
 // tag) and, for bipolar axes, its two *poles* (the canonical name split on
-// ``BIPOLAR_SEP`` — a dot). See drowse/core/session.py
+// ``BIPOLAR_SEP`` — a dot). See drowse/session/session.py
 // ``canonical_concept_name`` for the naming contract.
 
 /** The four fixed bundled categories, in display order.  Matches the

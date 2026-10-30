@@ -21,12 +21,11 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from drowse.core.steering_expr import parse_expr
-from drowse.core.triggers import ProbeGate, TriggerContext
-from drowse.io import selectors as sel
-
+from drowse.steering.grammar import parse_expr
+from drowse.steering.triggers import ProbeGate, TriggerContext
+from drowse.store import selectors as sel
 if TYPE_CHECKING:
-    from drowse.core.steering import Steering
+    from drowse.steering.terms import Steering
 
 
 @pytest.fixture(autouse=True)
@@ -107,12 +106,12 @@ class TestParseStoresNamespacedProbe:
 
     def test_unknown_colon_channel_rejected(self):
         import pytest
-        from drowse.core.steering_expr import SteeringExprError
+        from drowse.steering.grammar import SteeringExprError
         with pytest.raises(SteeringExprError, match="membership"):
             parse_expr("0.3 happy.sad @when:circumplex:bogus > 0.5")
 
     def test_new_channels_round_trip(self):
-        from drowse.core.steering_expr import format_expr
+        from drowse.steering.grammar import format_expr
         for text in (
             "0.3 happy.sad@when:circumplex:membership>0.6",
             "0.3 happy.sad@when:circumplex~elated>0.5",

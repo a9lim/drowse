@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.core.topology import (
+from drowse.geometry.topology import (
     _count_persistent_loops, _detect_periodic_axes, _laplacian_eigen,
     _periodic_neighborhoods_preserved, _rips_h1_persistence,
 )
@@ -128,7 +128,7 @@ def test_budget_exhaustion_and_invalid_thresholds_are_explicit():
 
 
 def test_periodic_fit_must_improve_on_mean_only_predictions(monkeypatch: pytest.MonkeyPatch):
-    from drowse.core import topology
+    from drowse.geometry import topology
     from tests.test_manifold_topology import _choose, _circle
 
     monkeypatch.setattr(topology, "_rbf_gcv_score", lambda *args, **kwargs: 1e20)

@@ -1,4 +1,4 @@
-"""``io.integrity`` — the shared artifact-name grammar + sha256 helpers.
+"""``base.integrity`` — the shared artifact-name grammar + sha256 helpers.
 
 Covers ``hash_file`` / ``verify_integrity``: the digest primitives behind the
 manifold integrity manifest, the neutral/alignment caches, and the lens shard
@@ -9,9 +9,7 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 
-from drowse.io import integrity
-
-
+from drowse.base import integrity
 def test_hash_file_sha256(tmp_path: Path):
     p = tmp_path / "x.txt"
     p.write_bytes(b"hello")
@@ -88,7 +86,7 @@ def test_verify_integrity_fingerprint_cache_is_bounded(
 
 def test_save_load_profile_roundtrip_slim_sidecar(tmp_path: Path):
     import torch
-    from drowse.core.profile import load_profile, save_profile
+    from drowse.geometry.profile import load_profile, save_profile
     profile = {
         0: torch.randn(8),
         14: torch.randn(8),

@@ -105,7 +105,7 @@ def _staged_authoring_folder(source: Path):
 
 
 def _run_jlens(args: argparse.Namespace) -> None:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     prompts = _load_prompts(args.corpus, args.prompts)
     with DrowseSession.from_pretrained(
@@ -135,7 +135,7 @@ def _run_jlens(args: argparse.Namespace) -> None:
 
 
 def _run_manifold(args: argparse.Namespace) -> None:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     with _staged_authoring_folder(args.folder) as staged:
         with DrowseSession.from_pretrained(
