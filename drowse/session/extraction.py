@@ -482,16 +482,24 @@ class Extraction:
         from drowse.model.fingerprint import loaded_model_fingerprint
         from drowse.store.manifold_tensors import load_manifold
 
-        model_id = self._handle.model_id
-        dst_folder = merge_into_manifold(
-            name, expression, model_id, force=force, strict=strict,
-            expected_model_fingerprint=loaded_model_fingerprint(
-                self._handle.model, model_id,
-            ),
-        )
-        tensor_path = dst_folder / tensor_filename(model_id)
-        if not tensor_path.is_file():
-            raise MergeError(f"bake produced no tensor for {model_id} at {tensor_path}")
-        profile = Profile(folded_directions(load_manifold(str(tensor_path))))
-        self._register_profile(name, profile)
-        return name, profile
+        with self._exclusive(
+            "session.bake called while another model use is in flight",
+            phase_msg="session.bake called while a generation is in flight",
+        ):
+            model_id = self._handle.model_id
+            dst_folder = merge_into_manifold(
+                name, expression, model_id, force=force, strict=strict,
+                expected_model_fingerprint=loaded_model_fingerprint(
+                    self._handle.model, model_id,
+                ),
+            )
+            # A forced bake replaced the folder under every in-memory consumer
+            # of the previous one (a loaded manifold, its folded profile, a
+            # probe reading it); drop them before the new profile lands.
+            self._evict(dst_folder.parent.name, dst_folder.name, feature=None)
+            tensor_path = dst_folder / tensor_filename(model_id)
+            if not tensor_path.is_file():
+                raise MergeError(f"bake produced no tensor for {model_id} at {tensor_path}")
+            profile = Profile(folded_directions(load_manifold(str(tensor_path))))
+            self._register_profile(name, profile)
+            return name, profile

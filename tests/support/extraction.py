@@ -65,6 +65,7 @@ def make_extraction(
     adopt: Callable[[Any, Any], None] | None = None,
     evict: Callable[..., None] | None = None,
     register_profile: Callable[[str, Any], None] | None = None,
+    exclusive: Callable[..., Any] | None = None,
     handle: Any = None,
     dls: bool = True,
 ) -> ExtractionRig:
@@ -89,7 +90,7 @@ def make_extraction(
     monkeypatch.setattr(extraction_mod, "ManifoldExtractionPipeline", _Pipeline)
     rig.extraction = Extraction(
         handle, events, cast(Any, _Corpus(rig, on_generate)),
-        exclusive=lambda *_a, **_k: nullcontext(),
+        exclusive=exclusive or (lambda *_a, **_k: nullcontext()),
         assert_unsteered=lambda: None,
         adopt=adopt or (lambda folder, _m: rig.adopted.append(Path(folder))),
         evict=evict or (
