@@ -25,7 +25,7 @@ import shutil
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from drowse.base.atomic import artifact_lock, write_json_atomic
 from drowse.base.integrity import (
@@ -35,6 +35,7 @@ from drowse.base.integrity import (
     verify_integrity,
 )
 from drowse.base.paths import parse_tensor_filename, safe_model_id
+from drowse.base.staging import promote, recover_backup, staging_area
 from drowse.store.manifold_schema import (
     FIT_MODES_DISCOVER,
     MANIFOLD_FORMAT_VERSION,
@@ -118,6 +119,38 @@ def reset_manifold_folder(folder: Path) -> None:
     with destructive_manifold_folder_transaction(folder):
         if folder.exists():
             shutil.rmtree(folder)
+
+
+@contextmanager
+def locked_manifold_folder(folder: Path) -> Iterator[None]:
+    """Take ``folder``'s manifest lock and recover a crash-left swap backup.
+
+    Every whole-folder writer enters through here, so a swap that died between
+    parking the old folder and promoting the new one is restored before the
+    writer's conflict policy or drift check reads the destination.
+    """
+    folder = Path(folder)
+    with _locked_manifest(folder):
+        recover_backup(folder)
+        yield
+
+
+def replace_manifold_folder(folder: Path, build: Callable[[Path], None]) -> None:
+    """Replace ``folder`` wholesale with the tree ``build`` writes.
+
+    ``build`` fills a fresh directory in a private staging area outside every
+    namespace (:func:`drowse.base.staging.staging_area`), which is promoted
+    over ``folder`` in one swap, so readers see the old folder or the complete
+    new one and a crash never leaves a half-built manifold discoverable.  The
+    swap runs under the destructive folder transaction, quiescing readers of
+    every extant fitted pair.  Callers hold :func:`locked_manifold_folder`.
+    """
+    folder = Path(folder)
+    with destructive_manifold_folder_transaction(folder), staging_area() as area:
+        stage = area / folder.name
+        stage.mkdir()
+        build(stage)
+        promote(stage, folder)
 
 
 # ====================================================== fitted pairs ===

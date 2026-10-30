@@ -3253,11 +3253,12 @@ def test_plan_fresh_creates_skeleton_all_pending(tmp_path: Path):
 
 
 def test_plan_force_reset_and_skeleton_share_manifest_transaction(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from drowse.store.manifold_folder import _locked_manifest
 
-    folder = tmp_path / "m"
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = tmp_path / "manifolds" / "local" / "m"
     first = plan_discover_generation(
         folder, "m", "old", fit_mode="pca", labels=["a", "b"],
     )
@@ -3311,9 +3312,12 @@ def test_plan_force_validates_before_removing_prior_folder(tmp_path: Path) -> No
     assert (folder / "manifold.json").read_bytes() == before
 
 
-def test_plan_force_recovers_partial_folder_without_manifest(tmp_path: Path) -> None:
-    folder = tmp_path / "m"
-    folder.mkdir()
+def test_plan_force_recovers_partial_folder_without_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = tmp_path / "manifolds" / "local" / "m"
+    folder.mkdir(parents=True)
     (folder / "orphan").write_text("partial")
 
     plan = plan_discover_generation(
@@ -3323,6 +3327,35 @@ def test_plan_force_recovers_partial_folder_without_manifest(tmp_path: Path) -> 
     assert plan.pending == ("a", "b")
     assert not (folder / "orphan").exists()
     assert (folder / "manifold.json").exists()
+
+
+def test_plan_force_failure_mid_skeleton_keeps_prior_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A forced re-plan swaps the skeleton in; it never rmtrees first.
+
+    The old path removed the prior folder and then wrote the skeleton in
+    place, so a failure in between lost the corpus and every fit.
+    """
+    from drowse.store import manifold_authoring
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = tmp_path / "manifolds" / "local" / "m"
+    plan = plan_discover_generation(folder, "m", "kept", fit_mode="pca", labels=["a", "b"])
+    for label in ("a", "b"):
+        append_discover_manifold_node(folder, plan.index_of[label], label, [f"{label}."])
+    before = {p.name: p.read_bytes() for p in folder.rglob("*.json")}
+
+    def boom(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("injected skeleton failure")
+
+    monkeypatch.setattr(manifold_authoring, "write_json_atomic", boom)
+    with pytest.raises(OSError, match="injected"):
+        plan_discover_generation(
+            folder, "m", "new", fit_mode="pca", labels=["c", "d"], force=True,
+        )
+    assert {p.name: p.read_bytes() for p in folder.rglob("*.json")} == before
+    assert ManifoldFolder.load(folder).node_labels == ["a", "b"]
 
 
 def test_plan_resume_reports_only_missing(tmp_path: Path):
@@ -3413,8 +3446,14 @@ def test_plan_rejects_non_discover_existing(
 def _bundled_axis_package(
     root: Path, monkeypatch: pytest.MonkeyPatch, *, description: str = "v1",
 ) -> Path:
-    """Fake ``drowse/data/manifolds/axis`` package data under ``root``."""
+    """Fake ``drowse/data/manifolds/axis`` package data under ``root``.
+
+    ``DROWSE_HOME`` is ``root``'s parent, so ``default/axis`` materializes at
+    ``<root parent>/manifolds/default/axis``.
+    """
     from drowse.store import bundled
+
+    monkeypatch.setenv("DROWSE_HOME", str(root.parent))
 
     pkg = root / "axis"
     (pkg / "nodes").mkdir(parents=True, exist_ok=True)
@@ -3464,7 +3503,7 @@ def test_bundled_copy_mirrors_only_package_json(
     (pkg / "nodes" / "notes.txt").write_text("not package data")
 
     default_dir = tmp_path / "manifolds" / "default"
-    bundled._materialize_manifold(default_dir, "axis", force=False)
+    bundled._materialize_manifold("axis", force=False)
     target = default_dir / "axis"
     assert sorted(p.name for p in target.iterdir()) == ["manifold.json", "nodes"]
     assert sorted(p.name for p in (target / "nodes").iterdir()) == [
@@ -3481,12 +3520,12 @@ def test_bundled_refresh_ignores_local_fit_proofs(
 
     _bundled_axis_package(tmp_path / "bundled", monkeypatch)
     default_dir = tmp_path / "manifolds" / "default"
-    bundled._materialize_manifold(default_dir, "axis", force=False)
+    bundled._materialize_manifold("axis", force=False)
     target = default_dir / "axis"
     proofs = _fake_fit(target)
     before = (target / "manifold.json").stat().st_ino
 
-    bundled._materialize_manifold(default_dir, "axis", force=False)
+    bundled._materialize_manifold("axis", force=False)
 
     assert json.loads((target / "manifold.json").read_text())["files"] == proofs
     assert (target / "manifold.json").stat().st_ino == before, "no-drift must not rewrite"
@@ -3501,7 +3540,7 @@ def test_bundled_update_carries_tensor_proofs_forward(
     root = tmp_path / "bundled"
     _bundled_axis_package(root, monkeypatch)
     default_dir = tmp_path / "manifolds" / "default"
-    bundled._materialize_manifold(default_dir, "axis", force=False)
+    bundled._materialize_manifold("axis", force=False)
     target = default_dir / "axis"
     proofs = _fake_fit(target)
     manifest = json.loads((target / "manifold.json").read_text())
@@ -3514,7 +3553,7 @@ def test_bundled_update_carries_tensor_proofs_forward(
 
     _bundled_axis_package(root, monkeypatch, description="v2")
     with pytest.warns(UserWarning, match="refreshed bundled manifold default/axis"):
-        bundled._materialize_manifold(default_dir, "axis", force=False)
+        bundled._materialize_manifold("axis", force=False)
 
     refreshed = json.loads((target / "manifold.json").read_text())
     assert refreshed["description"] == "v2"
@@ -3537,7 +3576,7 @@ def test_bundled_interrupted_copy_is_repaired(
 
     _bundled_axis_package(tmp_path / "bundled", monkeypatch)
     default_dir = tmp_path / "manifolds" / "default"
-    bundled._materialize_manifold(default_dir, "axis", force=False)
+    bundled._materialize_manifold("axis", force=False)
     target = default_dir / "axis"
     if damage == "manifest":
         (target / "manifold.json").unlink()
@@ -3545,7 +3584,7 @@ def test_bundled_interrupted_copy_is_repaired(
         (target / "nodes" / "01_neg.json").unlink()
 
     with pytest.warns(UserWarning, match="refreshed bundled manifold"):
-        bundled._materialize_manifold(default_dir, "axis", force=False)
+        bundled._materialize_manifold("axis", force=False)
     assert ManifoldFolder.load(target).node_labels == ["pos", "neg"]
 
 
@@ -3558,7 +3597,7 @@ def test_bundled_copy_failure_keeps_previous_folder(
     root = tmp_path / "bundled"
     _bundled_axis_package(root, monkeypatch)
     default_dir = tmp_path / "manifolds" / "default"
-    bundled._materialize_manifold(default_dir, "axis", force=False)
+    bundled._materialize_manifold("axis", force=False)
     target = default_dir / "axis"
     _bundled_axis_package(root, monkeypatch, description="v2")
 
@@ -3567,12 +3606,12 @@ def test_bundled_copy_failure_keeps_previous_folder(
 
     monkeypatch.setattr(bundled, "write_json_atomic", boom)
     with pytest.raises(OSError, match="injected"):
-        bundled._materialize_manifold(default_dir, "axis", force=False)
+        bundled._materialize_manifold("axis", force=False)
     assert json.loads((target / "manifold.json").read_text())["description"] == "v1"
     assert ManifoldFolder.load(target).node_labels == ["pos", "neg"]
-    assert not any(
-        p.name.endswith(".staging") for p in (tmp_path / "manifolds" / ".staging").iterdir()
-    )
+    from drowse.base.staging import staging_root
+
+    assert not any(staging_root().iterdir())
 
 
 def test_pack_refresh_restores_bundled_corpus(
@@ -3976,14 +4015,14 @@ def test_discovery_ignores_staging_and_misnamed_folders(
     """Crash-left stages and backups are never discovered as duplicates."""
     import shutil
 
-    from drowse.base.staging import staging_paths
+    from drowse.base.staging import backup_path, staging_root
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     folder = create_discover_manifold_folder(
         "local", "foo", "", fit_mode="pca",
         node_corpora={"a": ["a."], "b": ["b."]},
     )
-    for leftover in staging_paths(folder):
+    for leftover in (backup_path(folder), staging_root() / "in-flight" / "foo"):
         shutil.copytree(folder, leftover)
     shutil.copytree(folder, folder.with_name("foo.copy"))
 

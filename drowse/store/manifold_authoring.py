@@ -23,13 +23,13 @@ from typing import Any, Callable, Iterator, Optional, Sequence
 from drowse.base.atomic import write_json_atomic
 from drowse.base.integrity import NAME_REGEX, canonical_json, hash_file
 from drowse.base.paths import manifold_dir, manifolds_dir, tensor_filename
-from drowse.base.staging import recover_backup, stage_verify_swap
 from drowse.geometry.manifold import domain_from_spec
 from drowse.store.manifold_folder import (
     DiscoverGenerationPlan,
     ManifoldFolder,
     _locked_manifest,
-    destructive_manifold_folder_transaction,
+    locked_manifold_folder,
+    replace_manifold_folder,
     write_node_corpus,
 )
 from drowse.store.manifold_schema import (
@@ -63,7 +63,7 @@ def _lock_namespace_name(func: Any) -> Any:
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         bound = signature.bind(*args, **kwargs)
         folder = manifold_dir(str(bound.arguments[first]), str(bound.arguments[second]))
-        with _locked_manifest(folder):
+        with locked_manifold_folder(folder):
             return func(*args, **kwargs)
     return wrapped
 
@@ -243,19 +243,13 @@ def _publish_folder(
 ) -> Path:
     """Build a whole manifold folder in staging and swap it into place.
 
-    Runs inside the destructive folder transaction (manifest lock, then every
-    extant fitted pair lock), so readers of a replaced folder are quiesced.
     An existing manifest without ``force`` is a :class:`FileExistsError`; a
     directory with no manifest is a crash leftover and is replaced.
     """
-    with destructive_manifold_folder_transaction(folder):
-        recover_backup(folder, label=label, make_error=ManifoldFormatError)
+    with locked_manifold_folder(folder):
         if (folder / "manifold.json").exists() and not force:
             raise FileExistsError(f"manifold {label} already exists")
-        stage_verify_swap(
-            folder, force=True, label=label, build=build,
-            make_error=ManifoldFormatError,
-        )
+        replace_manifold_folder(folder, build)
     invalidate_selector_index()
     return folder
 
@@ -571,19 +565,24 @@ def plan_discover_generation(
     require_discover_mode(name, fit_mode)
     labels = validate_node_labels(name, labels)
     roles, kinds = resolve_node_maps(name, labels, node_roles, node_kinds)
-    sanitized_hyperparams = sanitize_hyperparams(fit_mode, hyperparams)
-    if force and folder.exists():
-        from drowse.store.manifold_folder import reset_manifold_folder
-
-        reset_manifold_folder(folder)
     meta_path = folder / "manifold.json"
-    if not meta_path.exists():
-        (folder / "nodes").mkdir(parents=True, exist_ok=True)
-        write_json_atomic(meta_path, manifest_payload(
+    if force or not meta_path.exists():
+        skeleton = manifest_payload(
             name=name, description=description, fit_mode=fit_mode,
             nodes=[ManifestNode(label, roles[label], kinds[label]) for label in labels],
-            hyperparams=sanitized_hyperparams, tags=tags or (),
-        ))
+            hyperparams=sanitize_hyperparams(fit_mode, hyperparams), tags=tags or (),
+        )
+        if force and folder.exists():
+            # One swap replaces the prior folder with the empty skeleton:
+            # there is no window where the old folder is half-removed.
+            def build(stage: Path) -> None:
+                (stage / "nodes").mkdir()
+                write_json_atomic(stage / "manifold.json", skeleton)
+
+            replace_manifold_folder(folder, build)
+        else:
+            (folder / "nodes").mkdir(parents=True, exist_ok=True)
+            write_json_atomic(meta_path, skeleton)
         invalidate_selector_index()
         return DiscoverGenerationPlan(
             folder=folder,

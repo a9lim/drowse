@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from drowse.base.staging import staging_paths
+from drowse.base.staging import backup_path, staging_root
 
 from drowse.base import hf
 def _write_fitted_manifold(
@@ -170,7 +170,7 @@ def test_pull_recovers_backup_before_nonforce_conflict(
     from drowse.store import hub as hfm
     source = _author_fake_manifold(tmp_path, monkeypatch)
     target = tmp_path / "installed" / "mood"
-    backup = staging_paths(target)[1]
+    backup = backup_path(target)
     shutil.copytree(source, backup)
     monkeypatch.setattr(
         hfm, "_hf_snapshot_download",
@@ -196,7 +196,7 @@ def test_force_pull_recovered_backup_waits_for_logical_pair_lock(
     source = _author_fake_manifold(tmp_path, monkeypatch)
     monkeypatch.setattr(hfm, "_hf_snapshot_download", lambda **_kw: str(source))
     target = tmp_path / "installed" / "mood"
-    backup = staging_paths(target)[1]
+    backup = backup_path(target)
     shutil.copytree(source, backup)
     logical_tensor = target / next(backup.glob("*.safetensors")).name
     started = threading.Event()
@@ -653,7 +653,7 @@ def test_force_local_install_copy_failure_preserves_destination(
 
     assert (target / "manifold.json").read_bytes() == manifest_before
     ManifoldFolder.load(target)
-    assert not staging_paths(target)[0].exists()
+    assert not any(staging_root().iterdir())
 
 
 def test_local_install_recovers_backup_before_nonforce_conflict(
@@ -666,7 +666,7 @@ def test_local_install_recovers_backup_before_nonforce_conflict(
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     target = _author_fake_manifold(home, monkeypatch, name="target")
-    backup = staging_paths(target)[1]
+    backup = backup_path(target)
     backup.parent.mkdir(parents=True, exist_ok=True)
     target.rename(backup)
 
@@ -679,7 +679,7 @@ def test_local_install_recovers_backup_before_nonforce_conflict(
 
 
 @pytest.mark.parametrize("suffix", [".staging", ".bak"])
-def test_force_local_install_snapshots_reserved_sibling_source(
+def test_force_local_install_snapshots_staging_area_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str,
 ) -> None:
     home = tmp_path / "home"
@@ -690,7 +690,9 @@ def test_force_local_install_snapshots_reserved_sibling_source(
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     target = manifold_dir("local", "target")
-    reserved_source = staging_paths(target)[0 if suffix == ".staging" else 1]
+    reserved_source = (
+        staging_root() / "in-flight" / "source" if suffix == ".staging" else backup_path(target)
+    )
     reserved_source.parent.mkdir(parents=True, exist_ok=True)
     source.rename(reserved_source)
 

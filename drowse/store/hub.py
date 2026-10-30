@@ -30,9 +30,9 @@ from drowse.base.hf import (
     split_revision,
 )
 from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION, ManifoldFormatError
-from drowse.store.manifold_folder import ManifoldFolder
+from drowse.store.manifold_folder import ManifoldFolder, replace_manifold_folder
 from drowse.base.integrity import NAME_REGEX
-from drowse.base.staging import recover_backup, stage_verify_swap, staging_paths
+from drowse.base.staging import recover_backup, staging_root
 
 #: Row ceiling for a Hub search.  The picker renders one card per row, so a
 #: wider result set costs a slower search for a list nobody scrolls.
@@ -146,13 +146,12 @@ def _pull_manifold_locked(
     """Download ``coord`` from HF and install into ``target_folder``.
 
     Stage-verify-swap discipline (:mod:`drowse.base.staging`):
-    the manifold folder is built under ``manifolds/.staging/``,
-    then validated by ``ManifoldFolder.load`` (which already checks
-    format version + ``NAME_REGEX`` + the ``files`` integrity manifest
-    when populated).  Only after a clean load does the staging dir
-    atomically swap into place via ``target → backup``, ``staging →
-    target``, ``rmtree backup``.  A crash mid-swap is recoverable from the
-    backup.
+    the manifold folder is built in a private staging area outside every
+    namespace, then validated by ``ManifoldFolder.load`` (which already
+    checks format version + ``NAME_REGEX`` + the ``files`` integrity
+    manifest when populated).  Only after a clean load does the stage
+    atomically swap into place (:func:`drowse.base.staging.promote`).  A
+    crash mid-swap is recoverable from the swap backup.
 
     The downloaded repository must carry the current ``manifold.json`` shape.
     """
@@ -161,7 +160,7 @@ def _pull_manifold_locked(
     # force replacement will now see the recovered folder and quiesce all its
     # fitted pair readers; a non-force install must preserve it as an existing
     # destination rather than silently overwrite it.
-    recover_backup(target_folder, label=coord, make_error=HFError)
+    recover_backup(target_folder)
     if target_folder.exists() and not force:
         raise HFError(f"{target_folder} exists; pass force=True to overwrite")
 
@@ -216,21 +215,18 @@ def _pull_manifold_locked(
                 f"{coord}: staged manifold failed re-validation after "
                 f"source stamp ({e})"
             ) from e
-        # ``stage_verify_swap`` promotes the staging dir as soon as ``build``
-        # returns, so this is the last narration point before the swap.
+        # The stage is promoted as soon as ``build`` returns, so this is the
+        # last narration point before the swap.
         _report(on_progress, f"Installing {label} into {target_folder.name}...")
 
     def _swap() -> Path:
-        return stage_verify_swap(
-            target_folder,
-            force=force,
-            label=coord,
-            build=_build,
-            make_error=HFError,
-        )
+        replace_manifold_folder(target_folder, _build)
+        return target_folder
 
     if force and target_folder.exists():
-        from drowse.store.manifold_folder import destructive_manifold_folder_transaction
+        from drowse.store.manifold_folder import (
+            destructive_manifold_folder_transaction,
+        )
 
         with destructive_manifold_folder_transaction(target_folder):
             return _swap()
@@ -813,7 +809,7 @@ def _install_local_manifold(
 
     def _install_from(source_path: Path) -> Path:
         with _locked_manifest(dst):
-            recover_backup(dst, label=str(src), make_error=ManifoldInstallConflict)
+            recover_backup(dst)
             if same_path:
                 if not force:
                     raise ManifoldInstallConflict(
@@ -857,10 +853,8 @@ def _install_local_manifold(
                 _report(on_progress, f"Installing {src.name} into {dst.name}...")
 
             def _swap() -> Path:
-                return stage_verify_swap(
-                    dst, force=force, label=str(src), build=_build,
-                    make_error=ManifoldInstallConflict,
-                )
+                replace_manifold_folder(dst, _build)
+                return dst
 
             if force and dst.exists():
                 from drowse.store.manifold_folder import (
@@ -871,11 +865,10 @@ def _install_local_manifold(
                     return _swap()
             return _swap()
 
-    reserved = {path.resolve(strict=False) for path in staging_paths(dst)}
-    if any(source_resolved.is_relative_to(path) for path in reserved):
+    if source_resolved.is_relative_to(staging_root().resolve(strict=False)):
         import tempfile
 
-        # Snapshot reserved-sibling sources before recovery/staging cleanup can
+        # Snapshot staging-area sources before recovery/staging cleanup can
         # rename or delete their only copy. This path is rare and correctness is
         # worth the extra copy; normal installs still stream source→staging once.
         with tempfile.TemporaryDirectory(prefix="drowse-local-install-") as tmp:

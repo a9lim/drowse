@@ -175,7 +175,7 @@ def test_bootstrap_entry_point_runs_templates_before_manifolds(
     monkeypatch.setattr(bundled, "bundled_manifold_names", lambda: ["probe"])
     monkeypatch.setattr(
         bundled, "_materialize_manifold",
-        lambda _dir, name, *, force: order.append(f"manifold:{name}"),
+        lambda name, *, force: order.append(f"manifold:{name}"),
     )
     bundled.materialize_bundled_artifacts()
     assert order == ["templates", "manifold:probe"]

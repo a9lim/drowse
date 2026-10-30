@@ -5018,11 +5018,11 @@ class DrowseSession:
 
         Both callers differ only in their corpus source (generate vs given); by
         the time they reach here they hold ``node_corpora`` (label → corpus) and
-        ``node_kinds`` (label → kind).  This rmtrees + re-authors the folder when
-        ``force`` or the manifest is missing (``node_corpora`` is consulted only
-        then, so a cache-hit caller may pass ``None``), then delegates to
-        :meth:`_fit_concept_manifold`.  Runs with ``_gen_lock`` already held by
-        the caller.
+        ``node_kinds`` (label → kind).  This re-authors the folder in one staged
+        swap when ``force`` or the manifest is missing (``node_corpora`` is
+        consulted only then, so a cache-hit caller may pass ``None``), then
+        delegates to :meth:`_fit_concept_manifold`.  Runs with ``_gen_lock``
+        already held by the caller.
         """
         from drowse.store.manifold_authoring import create_discover_manifold_folder
         from drowse.store.manifold_folder import ManifoldFolder
@@ -5053,15 +5053,12 @@ class DrowseSession:
                 node_roles: dict[str, str | None] | None = (
                     {label: role for label in node_corpora} if role else None
                 )
-                if folder.exists():
-                    from drowse.store.manifold_folder import reset_manifold_folder
-
-                    reset_manifold_folder(folder)
                 create_discover_manifold_folder(
                     ns, name, description, fit_mode="pca",
                     node_corpora=node_corpora,
                     hyperparams={"max_dim": 1, "var_threshold": 0.7},
                     node_roles=node_roles, node_kinds=node_kinds,
+                    force=force,
                 )
         return self._fit_concept_manifold(
             name, folder, sae=sae, sae_revision=sae_revision,

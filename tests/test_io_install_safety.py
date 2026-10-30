@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from drowse.base.staging import staging_paths
+from drowse.base.staging import backup_path, staging_root
 
 from drowse.store import hub as hfm
 from drowse.store.manifold_folder import ManifoldFolder
@@ -45,9 +45,9 @@ def test_local_install_rejects_source_links_before_copying(source: Path, tmp_pat
 
 
 @pytest.mark.parametrize("suffix", [".staging", ".bak"])
-def test_local_install_preserves_source_nested_in_reserved_sibling(source: Path, tmp_path: Path, suffix: str):
+def test_local_install_preserves_source_nested_in_staging_area(source: Path, tmp_path: Path, suffix: str):
     target = tmp_path / "home" / "manifolds" / "local" / "target"
-    reserved = staging_paths(target)[0 if suffix == ".staging" else 1]
+    reserved = staging_root() / "in-flight" if suffix == ".staging" else backup_path(target)
     nested_source = reserved / "nested" / "source"
     nested_source.parent.mkdir(parents=True)
     shutil.copytree(source, nested_source)

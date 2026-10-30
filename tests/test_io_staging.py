@@ -2,139 +2,88 @@ from pathlib import Path
 
 import pytest
 
-from drowse.base.staging import stage_verify_swap, staging_paths
+from drowse.base import staging
 
 
-class _InstallError(RuntimeError):
-    pass
+@pytest.fixture(autouse=True)
+def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    return tmp_path
 
 
-def _err(message: str) -> _InstallError:
-    return _InstallError(message)
+def _stage(text: str) -> Path:
+    stage = staging.staging_root() / "build"
+    stage.mkdir(parents=True)
+    (stage / "payload.txt").write_text(text)
+    return stage
 
 
-def test_stage_verify_swap_promotes_valid_staging(tmp_path: Path) -> None:
-    target = tmp_path / "packs" / "happy"
-
-    def build(staging: Path) -> None:
-        (staging / "payload.txt").write_text("new")
-
-    out = stage_verify_swap(
-        target,
-        force=False,
-        label="user/happy",
-        build=build,
-        make_error=_err,
-    )
-
-    assert out == target
+def test_promote_installs_a_new_target(tmp_path: Path) -> None:
+    target = tmp_path / "manifolds" / "local" / "happy"
+    staging.promote(_stage("new"), target)
     assert (target / "payload.txt").read_text() == "new"
-    assert not any(path.exists() for path in staging_paths(target))
+    assert not staging.backup_path(target).exists()
 
 
-def test_stage_verify_swap_build_failure_preserves_existing_target(tmp_path: Path) -> None:
-    target = tmp_path / "packs" / "happy"
+def test_promote_replaces_and_discards_the_backup(tmp_path: Path) -> None:
+    target = tmp_path / "manifolds" / "local" / "happy"
     target.mkdir(parents=True)
     (target / "payload.txt").write_text("old")
-
-    def build(staging: Path) -> None:
-        (staging / "payload.txt").write_text("new")
-        raise _InstallError("broken staging")
-
-    with pytest.raises(_InstallError, match="broken staging"):
-        stage_verify_swap(
-            target,
-            force=True,
-            label="user/happy",
-            build=build,
-            make_error=_err,
-        )
-
-    assert (target / "payload.txt").read_text() == "old"
-    assert not any(path.exists() for path in staging_paths(target))
+    staging.promote(_stage("new"), target)
+    assert (target / "payload.txt").read_text() == "new"
+    assert not staging.backup_path(target).exists()
 
 
-def test_stage_verify_swap_recovers_backup_before_new_build(tmp_path: Path) -> None:
-    target = tmp_path / "packs" / "happy"
-    _staging, backup = staging_paths(target)
-    backup.mkdir(parents=True)
-    (backup / "payload.txt").write_text("old")
-
-    def build(staging: Path) -> None:
-        (staging / "payload.txt").write_text("new")
-        raise _InstallError("broken staging")
-
-    with pytest.raises(_InstallError, match="broken staging"):
-        stage_verify_swap(
-            target,
-            force=True,
-            label="user/happy",
-            build=build,
-            make_error=_err,
-        )
-
-    assert (target / "payload.txt").read_text() == "old"
-    assert not any(path.exists() for path in staging_paths(target))
-
-
-def test_stage_verify_swap_refuses_existing_target_without_force(tmp_path: Path) -> None:
-    target = tmp_path / "packs" / "happy"
+def test_failed_promotion_restores_the_previous_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "manifolds" / "local" / "happy"
     target.mkdir(parents=True)
+    (target / "payload.txt").write_text("old")
+    stage = _stage("new")
+    real_rename = Path.rename
 
-    def build(_staging: Path) -> None:
-        raise AssertionError("existing target should fail before staging")
-
-    with pytest.raises(_InstallError, match="exists; pass force=True"):
-        stage_verify_swap(
-            target,
-            force=False,
-            label="user/happy",
-            build=build,
-            make_error=_err,
-        )
-
-
-def test_failed_backup_recovery_keeps_the_only_good_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    target = tmp_path / "packs" / "happy"
-    _staging, backup = staging_paths(target)
-    backup.mkdir(parents=True)
-    (backup / "payload.txt").write_text("only good copy")
-    original_rename = Path.rename
-    builds: list[Path] = []
-
-    def rename(path: Path, destination: Path) -> Path:
-        if path == backup:
-            raise PermissionError("injected recovery failure")
-        return original_rename(path, destination)
+    def rename(self: Path, destination: Path) -> Path:
+        if self == stage:
+            raise OSError("injected promotion failure")
+        return real_rename(self, destination)
 
     monkeypatch.setattr(Path, "rename", rename)
-    with pytest.raises(_InstallError):
-        stage_verify_swap(target, force=True, label="happy", build=builds.append, make_error=_err)
-    assert (backup / "payload.txt").read_text() == "only good copy"
-    assert builds == []
+    with pytest.raises(OSError, match="promotion failure"):
+        staging.promote(stage, target)
+    assert (target / "payload.txt").read_text() == "old"
 
 
-def test_recovered_install_is_not_overwritten_without_force(tmp_path: Path) -> None:
-    target = tmp_path / "packs" / "happy"
-    _staging, backup = staging_paths(target)
-    backup.mkdir(parents=True)
-    (backup / "payload.txt").write_text("recovered")
-
-    def build(staging: Path) -> None:
-        (staging / "payload.txt").write_text("replacement")
-
-    with pytest.raises(_InstallError, match="exists; pass force=True"):
-        stage_verify_swap(target, force=False, label="happy", build=build, make_error=_err)
-    assert (target / "payload.txt").read_text() == "recovered"
-
-
-def test_staging_and_backup_live_outside_the_namespace(tmp_path: Path) -> None:
-    """A crash-left stage or backup must never sit beside installed artifacts."""
+def test_backup_lives_outside_the_artifact_namespace(tmp_path: Path) -> None:
     target = tmp_path / "manifolds" / "local" / "happy"
-    staging, backup = staging_paths(target)
-    for path in (staging, backup):
-        assert path.parent == tmp_path / "manifolds" / ".staging"
-        assert not path.is_relative_to(target.parent)
-    assert staging_paths(tmp_path / "manifolds" / "local.x" / "y")[0] != staging_paths(
-        tmp_path / "manifolds" / "local" / "x.y"
-    )[0]
+    backup = staging.backup_path(target)
+    assert backup == tmp_path / ".staging" / "backup" / "manifolds" / "local" / "happy"
+    assert not backup.is_relative_to(tmp_path / "manifolds")
+
+
+def test_recover_backup_restores_a_missing_target(tmp_path: Path) -> None:
+    target = tmp_path / "manifolds" / "local" / "happy"
+    backup = staging.backup_path(target)
+    backup.mkdir(parents=True)
+    (backup / "payload.txt").write_text("old")
+    assert staging.recover_backup(target) is True
+    assert (target / "payload.txt").read_text() == "old"
+    assert not backup.exists()
+
+
+def test_recover_backup_discards_a_backup_beside_a_live_target(tmp_path: Path) -> None:
+    target = tmp_path / "manifolds" / "local" / "happy"
+    target.mkdir(parents=True)
+    (target / "payload.txt").write_text("live")
+    backup = staging.backup_path(target)
+    backup.mkdir(parents=True)
+    assert staging.recover_backup(target) is False
+    assert (target / "payload.txt").read_text() == "live"
+    assert not backup.exists()
+
+
+def test_staging_area_is_removed_after_use() -> None:
+    with staging.staging_area() as area:
+        (area / "scratch").write_text("x")
+        assert area.parent == staging.staging_root()
+    assert not area.exists()

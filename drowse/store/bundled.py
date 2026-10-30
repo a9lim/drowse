@@ -35,11 +35,10 @@ from typing import Any
 from drowse.base.atomic import write_bytes_atomic, write_json_atomic
 from drowse.base.integrity import canonical_json
 from drowse.base.paths import drowse_home, manifolds_dir, templates_dir
-from drowse.base.staging import recover_backup, stage_verify_swap
 from drowse.store.manifold_folder import (
-    _locked_manifest,
-    destructive_manifold_folder_transaction,
+    locked_manifold_folder,
     manifold_folder_tensor_paths,
+    replace_manifold_folder,
 )
 from drowse.store.manifold_schema import (
     LOCAL_STATE_KEYS,
@@ -74,9 +73,8 @@ def materialize_bundled_artifacts() -> None:
     home.mkdir(parents=True, exist_ok=True)
     recover_drowse_archive_transactions()
     _materialize_templates()
-    default_dir = manifolds_dir() / "default"
     for name in bundled_manifold_names():
-        _materialize_manifold(default_dir, name, force=False)
+        _materialize_manifold(name, force=False)
     # The installed roster may have changed; the resolver's memo must not
     # serve the pre-materialization walk.
     invalidate_selector_index()
@@ -213,22 +211,18 @@ def _stage_bundled_manifold(pkg_root: Any, target: Path, staging: Path) -> None:
     write_json_atomic(staging / "manifold.json", payload)
 
 
-def _materialize_manifold(default_dir: Path, name: str, *, force: bool) -> None:
+def _materialize_manifold(name: str, *, force: bool) -> None:
     """Bring ``default/<name>`` up to date with the bundle (or re-copy it)."""
-    target = default_dir / name
+    target = manifolds_dir() / "default" / name
     pkg_root = _resources.files("drowse.data.manifolds").joinpath(name)
-    with _locked_manifest(target):
-        recover_backup(target, label=f"default/{name}", make_error=ManifoldFormatError)
+    with locked_manifold_folder(target):
         reason = "explicit refresh" if force else _manifold_drift(pkg_root, target)
         if reason is None:
             return
         existed = target.exists()
-        with destructive_manifold_folder_transaction(target):
-            stage_verify_swap(
-                target, force=True, label=f"default/{name}",
-                build=lambda staging: _stage_bundled_manifold(pkg_root, target, staging),
-                make_error=ManifoldFormatError,
-            )
+        replace_manifold_folder(
+            target, lambda stage: _stage_bundled_manifold(pkg_root, target, stage),
+        )
     if existed and not force:
         warnings.warn(
             f"refreshed bundled manifold default/{name} — {reason}; local edits "
@@ -251,7 +245,7 @@ def refresh_bundled_manifold(name: str) -> None:
 
     if name not in bundled_manifold_names():
         raise ManifoldFormatError(f"no bundled manifold named {name!r} ships with drowse")
-    _materialize_manifold(manifolds_dir() / "default", name, force=True)
+    _materialize_manifold(name, force=True)
     invalidate_selector_index()
 
 
