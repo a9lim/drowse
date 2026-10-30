@@ -22,7 +22,7 @@ try {
     constructor(url, protocols) { calls.push({ url, protocols }); }
   };
   for (const key of [null, "synthetic +/ secret", "synthetic-unicode-\u03bb"]) {
-    api.setApiKey(key);
+    auth.setApiKey(key);
     api.connectWs();
     const { url, protocols } = calls.at(-1);
     assert.equal(url, "wss://app.example/drowse/v1/sessions/default/stream");
@@ -35,7 +35,7 @@ try {
     }
   }
 } finally {
-  api.setApiKey(null);
+  auth.setApiKey(null);
   globalThis.WebSocket = originalSocket;
   globalThis.location = originalLocation;
 }
