@@ -82,31 +82,3 @@ def test_verify_integrity_fingerprint_cache_is_bounded(
     assert len(integrity._FINGERPRINT_CACHE) == 2
     assert str((tmp_path / "0.bin").resolve()) not in integrity._FINGERPRINT_CACHE
     integrity._FINGERPRINT_CACHE.clear()
-
-
-def test_save_load_profile_roundtrip_slim_sidecar(tmp_path: Path):
-    import torch
-    from drowse.geometry.profile import load_profile, save_profile
-    profile = {
-        0: torch.randn(8),
-        14: torch.randn(8),
-    }
-    path = tmp_path / "google__gemma-2-2b-it.safetensors"
-    save_profile(profile, str(path), {
-        "method": "profile",
-        "statements_sha256": "a" * 64,
-    })
-    loaded, meta = load_profile(str(path))
-    assert sorted(loaded.keys()) == [0, 14]
-    assert meta["method"] == "profile"
-    assert meta["statements_sha256"] == "a" * 64
-    assert "drowse_version" in meta
-    # Scores no longer live on disk — shares are baked into tensor magnitudes.
-    assert "scores" not in meta
-    # No legacy keys:
-    assert "concept" not in meta
-    assert "model_id" not in meta
-    assert "num_pairs" not in meta
-    # Round-trip preserves tensor values bit-for-bit.
-    for idx in profile:
-        assert torch.allclose(profile[idx], loaded[idx])

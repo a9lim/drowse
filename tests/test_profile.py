@@ -8,7 +8,8 @@ import json
 import pytest
 import torch
 
-from drowse.geometry.profile import Profile, ProfileError
+from drowse.geometry import profile as V
+from drowse.geometry.profile import Profile, ProfileError, load_profile, save_profile
 from drowse.base.integrity import PROFILE_FORMAT_VERSION
 
 
@@ -419,3 +420,149 @@ def test_merged_profile_saves(tmp_path: Path) -> None:
 # reparents to DrowseError while preserving its stdlib MRO.
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# Persistence: format-version gate, provenance round trip
+# ---------------------------------------------------------------------------
+
+
+def test_load_profile_rejects_missing_format_version(tmp_path: Path):
+    profile = {0: torch.zeros(4)}
+    path = tmp_path / "x.safetensors"
+    save_profile(profile, str(path), {"method": "profile"})
+
+    # The current reader never infers a version for an unstamped sidecar.
+    sc_path = path.with_suffix(".json")
+    data = json.loads(sc_path.read_text())
+    data.pop("format_version", None)
+    sc_path.write_text(json.dumps(data))
+
+    with pytest.raises(ProfileError, match="need exactly"):
+        load_profile(str(path))
+
+
+@pytest.mark.parametrize("version", [1, PROFILE_FORMAT_VERSION + 1])
+def test_load_profile_rejects_non_current_format_version(
+    tmp_path: Path, version: int,
+):
+    profile = {0: torch.zeros(4)}
+    path = tmp_path / "x.safetensors"
+    save_profile(profile, str(path), {"method": "profile"})
+
+    sc_path = path.with_suffix(".json")
+    data = json.loads(sc_path.read_text())
+    data["format_version"] = version
+    sc_path.write_text(json.dumps(data))
+
+    # A stale artifact says so by version, not by whichever field the current
+    # exact-set schema happens to miss first, and names the remedy.
+    with pytest.raises(ProfileError, match="need exactly"):
+        load_profile(str(path))
+
+
+def test_load_profile_rejects_pre_cut_sidecar_by_version(tmp_path: Path):
+    """The pre-5.x fourteen-key sidecar is rejected on version, not shape.
+
+    The field set was cut without a bump, so a file stamped ``5`` already
+    failed the exact-set check; ``PROFILE_FORMAT_VERSION = 6`` makes that
+    rejection say what actually happened.
+    """
+    profile = {0: torch.zeros(4)}
+    path = tmp_path / "x.safetensors"
+    save_profile(profile, str(path), {"method": "profile"})
+
+    sc_path = path.with_suffix(".json")
+    data = json.loads(sc_path.read_text())
+    data.pop("provenance")
+    data.update({
+        "format_version": 5, "statements_sha256": "x", "components": None,
+        "bake": None, "sae_release": None, "sae_revision": None,
+        "sae_ids_by_layer": {}, "source_model_id": None,
+        "alignment_map_hash": None, "transfer_quality_estimate": None,
+        "diagnostics_by_layer": {},
+    })
+    sc_path.write_text(json.dumps(data))
+
+    with pytest.raises(ProfileError, match="format_version=5"):
+        load_profile(str(path))
+
+
+def test_save_load_profile_roundtrip_slim_sidecar(tmp_path: Path):
+    import torch
+    from drowse.geometry.profile import load_profile, save_profile
+    profile = {
+        0: torch.randn(8),
+        14: torch.randn(8),
+    }
+    path = tmp_path / "google__gemma-2-2b-it.safetensors"
+    save_profile(profile, str(path), {
+        "method": "profile",
+        "statements_sha256": "a" * 64,
+    })
+    loaded, meta = load_profile(str(path))
+    assert sorted(loaded.keys()) == [0, 14]
+    assert meta["method"] == "profile"
+    assert meta["statements_sha256"] == "a" * 64
+    assert "drowse_version" in meta
+    # Scores no longer live on disk — shares are baked into tensor magnitudes.
+    assert "scores" not in meta
+    # No legacy keys:
+    assert "concept" not in meta
+    assert "model_id" not in meta
+    assert "num_pairs" not in meta
+    # Round-trip preserves tensor values bit-for-bit.
+    for idx in profile:
+        assert torch.allclose(profile[idx], loaded[idx])
+
+
+class TestProvenanceRoundTrip:
+    def test_save_load_preserves_diagnostics_provenance(self, tmp_path: Path) -> None:
+        profile_dict = {0: torch.ones(4), 2: torch.ones(4) * 0.5}
+        # JSON object keys must be strings, so a producer stringifies its own
+        # layer keys; the schema refuses a non-string key rather than silently
+        # rewriting one.
+        diagnostics = {
+            "0": {"evr": 0.62, "inter_pair_alignment": 0.78},
+            "2": {"evr": 0.41, "inter_pair_alignment": 0.55},
+        }
+        path = tmp_path / "test.safetensors"
+        V.save_profile(profile_dict, str(path), {
+            "method": "profile",
+            "diagnostics": diagnostics,
+        })
+
+        # The blob lands nested under ``provenance`` on the wire; the exact
+        # sidecar schema stays five keys wide.
+        with open(path.with_suffix(".json")) as f:
+            raw = json.load(f)
+        assert set(raw) == {
+            "format_version", "drowse_version", "method",
+            "tensor_sha256", "provenance",
+        }
+        assert raw["provenance"]["diagnostics"] == diagnostics
+
+        # ...and flattens back to the top level on load, so the metadata the
+        # reader gets is the shape the writer accepts.
+        _, meta = V.load_profile(str(path))
+        assert meta["method"] == "profile"
+        assert meta["diagnostics"]["0"]["evr"] == pytest.approx(0.62)
+
+    def test_int_layer_keys_are_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "int-keys.safetensors"
+        with pytest.raises(V.ProfileError, match="object keys must be strings"):
+            V.save_profile({0: torch.ones(4)}, str(path), {
+                "method": "profile", "diagnostics": {0: {"evr": 0.5}},
+            })
+        assert not path.exists()
+
+    def test_sidecar_without_diagnostics_loads_clean(self, tmp_path: Path) -> None:
+        profile_dict = {0: torch.ones(4)}
+        path = tmp_path / "plain.safetensors"
+        V.save_profile(profile_dict, str(path), {"method": "profile"})
+
+        with open(path.with_suffix(".json")) as f:
+            raw = json.load(f)
+        assert raw["provenance"] == {}
+
+        _, meta = V.load_profile(str(path))
+        assert "diagnostics" not in meta
