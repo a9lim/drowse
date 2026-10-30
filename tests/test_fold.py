@@ -5,10 +5,8 @@ folds an arbitrary per-layer direction into a neutral-anchored one-pole ray —
 basis = d̂, **neutral-anchored** ``mean = P_basis(ν)``, **real** per-layer pole
 coord ``‖d‖``, the direction-magnitude share — and ``folded_directions``
 is its reverse view ``{L: δ̂_L · share_L}`` (refusing a curved manifold).
-
-The legacy bipolar-centroid fold (``_fold_centroids_to_affine_manifold``) was
-retired in the Mahalanobis-only collapse; the live 2-node-vector read goes
-through ``extraction.py``'s whitened ``fit_affine_subspace``.
+A fitted 2-node vector goes through the whitened ``fit_affine_subspace``
+instead.
 """
 
 from __future__ import annotations

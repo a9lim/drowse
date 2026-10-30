@@ -373,8 +373,8 @@ def test_neutral_competes_in_nearest_at_origin():
 
 
 def test_neutral_competes_in_aggregate_path():
-    """The end-of-gen aggregate (the per-probe ``_score_probe_full`` path, not
-    the batched one) also lets neutral compete — last content token at origin."""
+    """The end-of-generation aggregate (``Monitor.score_aggregate``) also
+    lets neutral compete — last content token at the origin."""
     rc = torch.tensor([[1.0, 1.0], [2.0, -1.0], [-1.0, 2.0]])
     m = _flat_manifold(reduced_coords=rc, labels=["a", "b", "c"])
     mon = _iso_monitor(m)

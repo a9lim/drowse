@@ -2,7 +2,7 @@
 
 :class:`LensHarness` builds the instrument with the same explicit
 dependencies the session wires, on the toy lens model from
-``tests/_jlens_toys`` (or any model passed in), and records what the session
+``tests/support/jlens_toys`` (or any model passed in), and records what the session
 callbacks would have done.  Unit tests of the lens runtime, the fit
 lifecycle and the instrument use it instead of borrowing session methods.
 """

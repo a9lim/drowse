@@ -943,30 +943,6 @@ class TestWebSocket:
             assert tokens == ["ok"]
 
 
-# ---- Deleted surfaces ------------------------------------------------------
-
-
-class TestDeletedTraitsStream:
-    """The traits SSE stream is gone — the WS ``measurements`` envelope and the
-    OpenAI/Ollama ``x-drowse-probe-readings`` extension are the live per-token
-    delivery channels."""
-
-    def test_traits_stream_route_is_not_registered(
-        self, session_and_client: Any,
-    ) -> None:
-        _, client = session_and_client
-        resp = client.get("/drowse/v1/sessions/default/traits/stream")
-        assert resp.status_code == 404
-
-    def test_session_has_no_trait_queue_plumbing(self) -> None:
-        from drowse.session.session import DrowseSession
-
-        for attr in (
-            "register_trait_queue", "unregister_trait_queue", "_trait_queues",
-        ):
-            assert not hasattr(DrowseSession, attr)
-
-
 # ---- score_single_token (monitor) ----------------------------------------
 
 

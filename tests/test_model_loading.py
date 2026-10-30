@@ -268,7 +268,7 @@ def test_mla_in_text_config_also_triggers():
         # The text_config carries deepseek_v2 — model_type is the wrapper.
         # extract_text_model takes the multimodal-wrapping branch whenever
         # the text_config's model_type is a causal-LM type, so load_model
-        # would route through _load_text_from_multimodal.  Stub it out — we
+        # would route through load_text_from_multimodal.  Stub it out — we
         # only care that attn_impl was already flipped to eager *before*
         # dispatch.
         with patch.object(model_mod, "load_text_from_multimodal") as mlm:
@@ -441,7 +441,7 @@ def test_get_memory_gb_returns_zero_when_mps_backend_unavailable(monkeypatch: py
 #
 # A multimodal checkpoint stores the text model's weights under a
 # ``language_model.`` path segment and ships an unused vision tower.
-# ``_load_text_from_multimodal`` builds the text-only model on-device and
+# ``load_text_from_multimodal`` builds the text-only model on-device and
 # streams just the text weights in, dropping the ``language_model.`` segment
 # to recover the text model's own parameter names.  This both skips the
 # vision tower and — critically on unified memory — avoids the ~2× peak of

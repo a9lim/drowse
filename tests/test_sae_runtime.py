@@ -749,8 +749,7 @@ def test_sae_bind_resolves_unit_from_meta_cache() -> None:
 @pytest.mark.parametrize("bound", [False, True])
 def test_scoring_never_memoizes(bound: bool) -> None:
     """Per-forward reuse is the step-keyed encode stash, not a reading memo:
-    the run has no per-forward read of its own, and repeated scores of
-    different hidden states read fresh, bound or idle."""
+    repeated scores of different hidden states read fresh, bound or idle."""
     inst = _instrument()
     _attach(inst, "sae/1", 1)
     if bound:
@@ -758,7 +757,6 @@ def test_scoring_never_memoizes(bound: bool) -> None:
         inst.bind(inst.plan(prep), prep)
     run = inst.current_run
     assert run.bound is bound
-    assert not hasattr(run, "observe")
     first = inst.score_probes({1: torch.tensor([0.2, 3.0, 5.0, 1.0])})
     second = inst.score_probes({1: torch.tensor([0.2, 8.0, 5.0, 1.0])})
     assert first["sae/1"].value == 3.0
