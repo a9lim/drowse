@@ -1120,26 +1120,13 @@ class LoomTree:
             ))
 
     # ------------------------------------------------------------------
-    # Predicate ops (engine surface for phase 5's UI)
+    # Predicate ops
     # ------------------------------------------------------------------
 
     def filter(self, pred: Callable[[LoomNode], bool]) -> set[str]:
         """Return the set of node ids whose nodes satisfy ``pred``."""
         with self._lock:
             return {nid for nid, node in self.nodes.items() if pred(node)}
-
-    def filter_by_expr(self, text: str) -> set[str]:
-        """Apply a filter-grammar expression to every node.
-
-        Thin wrapper over :func:`drowse.loom.filter.filter_tree` —
-        the grammar (``agg:``/``any:``/``last:``) is documented in
-        :mod:`drowse.loom.filter`.  ``agg:`` reads a node's
-        ``aggregate_readings``; ``any:`` / ``last:`` read its own
-        ``thinking_tokens``/``tokens`` rows, so no side table is needed and
-        all three ops work from any caller.
-        """
-        from drowse.loom.filter import filter_tree
-        return filter_tree(self, text)
 
     # ------------------------------------------------------------------
     # Persistence

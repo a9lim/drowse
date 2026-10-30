@@ -378,14 +378,14 @@ def register_tree_routes(app: FastAPI) -> None:
         every node id (clears the filter).  Bad expressions land as 400
         via :class:`FilterParseError`.
         """
-        from drowse.loom.filter import FilterParseError
+        from drowse.loom.filter import FilterParseError, filter_tree
 
         resolve_session_id(session_id)
         text = (expr or "").strip()
         if not text:
             return {"expr": "", "matching_node_ids": []}
         try:
-            matches = session.tree.filter_by_expr(text)
+            matches = filter_tree(session.tree, text)
         except FilterParseError as e:
             raise HTTPException(400, str(e)) from e
         return {"expr": text, "matching_node_ids": sorted(matches)}
