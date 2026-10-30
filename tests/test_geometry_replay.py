@@ -1,7 +1,7 @@
 """CPU tests for ``GeometryInstrument.token_readout`` (the geometry token replay).
 
 The instrument reads the Monitor roster at the forward a real
-:class:`~drowse.session.replay.TokenReplayer` rebuilds over a toy model.  The
+:class:`~drowse.loom.replay.TokenReplayer` rebuilds over a toy model.  The
 Monitor is stubbed (its scoring math has its own suite): these tests pin the
 geometry read — the roster's layer union drives the capture, the read forces
 the cold foot solve, the readings land in the replay envelope, and an empty

@@ -290,7 +290,7 @@ def test_monitor_branches_need_attached_monitor_probes() -> None:
 
 
 def _spy_plans(monkeypatch: pytest.MonkeyPatch) -> list[CapturePlan]:
-    import drowse.session.read_plane as read_plane
+    import drowse.generation.read_plane as read_plane
 
     plans: list[CapturePlan] = []
     real = read_plane.plan_capture

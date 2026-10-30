@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from drowse.loom.tree import LoomTree
     from drowse.model.chat import ChatTraits
     from drowse.sae.instrument import SaeInstrument
-    from drowse.session.read_plane import ReadPlane
+    from drowse.generation.read_plane import ReadPlane
     from drowse.steering.hooks import SteeringManager
 
 OnRow = Callable[[int, GenerationResult, dict[str, Any]], None]

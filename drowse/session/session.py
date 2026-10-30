@@ -61,12 +61,12 @@ from drowse.model.load import load_model
 from drowse.readout.types import InstrumentFamily, ProbeReading
 from drowse.readout.monitor import Monitor
 from drowse.readout.roster import ProbeRoster
-from drowse.session.read_plane import ReadPlane
+from drowse.generation.read_plane import ReadPlane
 from drowse.readout.geometry import GeometryInstrument
 from drowse.lens.instrument import LensInstrument
 from drowse.sae.instrument import SaeInstrument
 from drowse.sae.runtime import SaeRuntime
-from drowse.session.replay import TokenReplayer
+from drowse.loom.replay import TokenReplayer
 from drowse.store.bundled_probes import bootstrap_probe_roster
 from drowse.geometry.profile import Profile
 from drowse.generation.results import (

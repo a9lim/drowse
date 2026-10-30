@@ -164,7 +164,7 @@ def wire_stub_read_plane(stub: Any) -> Any:
     absent); the capture forwards to ``stub._capture`` per call.
     """
     from drowse.readout.roster import ProbeRoster
-    from drowse.session.read_plane import ReadPlane
+    from drowse.generation.read_plane import ReadPlane
 
     d = stub.__dict__
     attach_stub_instruments(stub)
