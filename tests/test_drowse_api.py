@@ -1768,6 +1768,21 @@ class TestNativeErrorEnvelope:
         }}
         assert client.get("/api/tags").json() == {"error": "Invalid API key"}
 
+    def test_unexpected_failures_render_in_their_protocol_envelope(self) -> None:
+        """An unclassified exception is a scrubbed 500 in the protocol's own
+        envelope, not a plain-text body an SDK cannot parse."""
+        from drowse.server import create_app
+
+        session = _mock_session()
+        session.generate.side_effect = KeyError("/secret/internal/key")
+        client = TestClient(create_app(session), raise_server_exceptions=False)
+        openai = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+        assert openai.status_code == 500
+        assert openai.json()["error"]["type"] == "server_error"
+        ollama = client.post("/api/chat", json={"stream": False, "messages": []})
+        assert ollama.status_code == 500 and set(ollama.json()) == {"error"}
+        assert "secret" not in openai.text + ollama.text
+
     def test_compat_http_exceptions_render_in_their_protocol_envelope(
         self, monkeypatch: Any,
     ) -> None:

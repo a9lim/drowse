@@ -204,8 +204,16 @@ def install_error_handlers(app: FastAPI) -> None:
         headers = getattr(exc, "headers", None) if isinstance(exc, StarletteHTTPException) else None
         return protocol_error(request.url.path, info.status, info.message, headers)
 
+    async def _render_unexpected(request: Request, exc: Exception) -> Response:
+        # Starlette re-raises after this response is sent, so the server logs
+        # the traceback once; render the scrubbed envelope only.
+        return protocol_error(
+            request.url.path, 500, "Request failed. Check the server log for details.",
+        )
+
     for exc_type in (
         StarletteHTTPException, RequestValidationError, DrowseError,
         ValueError, OSError, ImportError,
     ):
         app.add_exception_handler(exc_type, _render)
+    app.add_exception_handler(Exception, _render_unexpected)
