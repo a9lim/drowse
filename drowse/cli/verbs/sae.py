@@ -28,9 +28,12 @@ def _sae_source(model_id: str, source: str | None) -> tuple[str, str]:
         if active is None:
             raise CliError(f"no SAE source for {model_id}", exit_code=1)
         return active["kind"], active["name"]
+    from drowse.base.integrity import NAME_REGEX
+
     for kind, prefix in (("local", LOCAL_SOURCE_PREFIX), ("saelens", PROVIDER_SOURCE_PREFIX)):
-        if source.startswith(prefix) and source[len(prefix):]:
-            return kind, source[len(prefix):]
+        name = source[len(prefix):] if source.startswith(prefix) else ""
+        if name and (kind != "local" or NAME_REGEX.fullmatch(name)):
+            return kind, name
     raise CliError(f"source must be {_SOURCES_HELP}")
 
 

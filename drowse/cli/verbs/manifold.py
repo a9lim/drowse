@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from drowse.cli.context import (
-    CliError, emit_json, existing_folder, folder_or_manifold, note,
-    open_session, parse_layers, progress, resolve_manifold, split_new,
-    user_errors,
+    CliError, emit_json, existing_folder, existing_template, folder_or_manifold,
+    note, open_session, parse_layers, progress, resolve_manifold, split_new,
+    split_ref, user_errors,
 )
 from drowse.cli.spec import (
     DESCRIPTION, FORCE, JSON, MODEL_LOAD, MODEL_OPT, MODEL_REQ, NO_DLS, VERBOSE,
@@ -188,9 +188,7 @@ def run_from_template(args: argparse.Namespace) -> None:
     """Pure IO: expand a template's values x contexts into node corpora and
     write a discover folder that ``template_ref``-erences it."""
     from drowse.store.manifold_authoring import create_manifold_from_template
-    from drowse.store.templates import resolve_template
-
-    tmpl = resolve_template(args.template)
+    tmpl = existing_template(args.template)
     ref = f"{tmpl.path.parent.name}/{tmpl.name}" if tmpl.path else tmpl.name
     namespace, name = split_new(args.name or tmpl.name)
     hyperparams = {
@@ -420,7 +418,7 @@ def _fold(ref: str, model_id: str) -> _Folded:
     from drowse.store.manifold_tensors import load_manifold
     from drowse.store.selectors import AmbiguousSelectorError, canonicalize_atom
 
-    typed_ns, _, rest = ref.rpartition("/")
+    typed_ns, rest = split_ref(ref)
     name, variant = canonicalize_atom(rest)
     filename = _variant_tensor(model_id, variant)
     if typed_ns:

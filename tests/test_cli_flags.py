@@ -880,7 +880,13 @@ def test_a_folder_path_without_manifold_json_is_reported_as_such(
     ["manifold", "extract", "../x", "-m", "m/x"],
     ["manifold", "generate", "a/", "--concepts", "x", "y", "-m", "m/x"],
     ["manifold", "fit", "/personas", "-m", "m/x"],
+    ["manifold", "why", "../x", "-m", "m/x"],
+    ["manifold", "from-template", "../t"],
     ["template", "create", "../t", "--slot", "X", "--values", "a", "b", "--contexts", "c.json"],
+    ["template", "show", "../t"],
+    ["template", "rm", "../t", "-y"],
+    ["template", "score", "../t", "-m", "m/x"],
+    ["sae", "show", "m/x", "local:../x"],
 ])
 def test_malformed_references_are_one_line_usage_errors(
     argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],

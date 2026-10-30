@@ -10,8 +10,10 @@ One place for what every verb group needs:
   under the CLI flags (CLI > YAML > runner default).
 - :func:`open_session` — the one session-construction path: narrated load,
   YAML sampling defaults applied, closed on exit.
-- :func:`resolve_manifold` / :func:`split_new` — existing-manifold addressing
-  (cross-namespace) vs authoring a fresh ``ns/name`` (bare → ``local``).
+- :func:`resolve_manifold` / :func:`existing_template` / :func:`split_new` —
+  addressing an existing manifold or template (cross-namespace) vs authoring a
+  fresh ``ns/name`` (bare → ``local``); :func:`split_ref` validates the shape
+  of every such reference first.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
     from drowse.cli.config_file import ConfigFile
     from drowse.session.session import DrowseSession
     from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.templates import TemplateFolder
 
 
 class CliError(DrowseError):
@@ -232,7 +235,7 @@ def iter_manifolds(namespace: str | None = None) -> Iterator[tuple[str, "Manifol
     yield from iter_manifold_folders(namespace)
 
 
-def _split_ref(ref: str) -> tuple[str | None, str]:
+def split_ref(ref: str) -> tuple[str | None, str]:
     """``[ns/]name`` → ``(ns or None, name)``.
 
     Anything but one or two plain path components (an empty side, ``.`` /
@@ -258,7 +261,7 @@ def resolve_manifold(ref: str) -> tuple[str, str]:
     from drowse.store.bundled import materialize_bundled_artifacts
     from drowse.store.selectors import AmbiguousSelectorError
 
-    ns, name = _split_ref(ref)
+    ns, name = split_ref(ref)
     # Bundled folders materialize first, so even a pinned ``default/<name>``
     # resolves before any session has run the bootstrap.
     materialize_bundled_artifacts()
@@ -302,8 +305,17 @@ def folder_or_manifold(ref: str) -> Path:
 
 def split_new(ref: str) -> tuple[str, str]:
     """Name a manifold or template **being authored**: bare → ``local/``."""
-    ns, name = _split_ref(ref)
+    ns, name = split_ref(ref)
     return (ns or "local"), name
+
+
+def existing_template(ref: str) -> "TemplateFolder":
+    """An installed template ``[ns/]name`` (a bare name resolves across
+    namespaces); a malformed reference exits 2 before any lookup."""
+    from drowse.store.templates import resolve_template
+
+    split_ref(ref)
+    return resolve_template(ref)
 
 
 def check_steering(expression: str | None) -> None:

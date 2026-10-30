@@ -7,7 +7,8 @@ import argparse
 import json
 
 from drowse.cli.context import (
-    CliError, check_steering, emit_json, note, open_session, split_new,
+    CliError, check_steering, emit_json, existing_template, note, open_session,
+    split_new,
 )
 from drowse.cli.spec import FORCE, JSON, MODEL_LOAD, MODEL_REQ, STEER, YES, Verb, arg
 
@@ -83,9 +84,7 @@ def run_ls(args: argparse.Namespace) -> None:
 
 
 def run_show(args: argparse.Namespace) -> None:
-    from drowse.store.templates import resolve_template
-
-    t = resolve_template(args.name)
+    t = existing_template(args.name)
     if args.json_output:
         payload = t.summary()
         payload["contexts"] = [
@@ -105,9 +104,9 @@ def run_show(args: argparse.Namespace) -> None:
 
 
 def run_rm(args: argparse.Namespace) -> None:
-    from drowse.store.templates import remove_template_folder, resolve_template
+    from drowse.store.templates import remove_template_folder
 
-    t = resolve_template(args.name)
+    t = existing_template(args.name)
     namespace = t.path.parent.name if t.path else "local"
     if not args.yes:
         raise CliError(f"refusing to remove template {namespace}/{t.name}; pass -y/--yes to confirm")
@@ -119,9 +118,7 @@ def run_rm(args: argparse.Namespace) -> None:
 def run_score(args: argparse.Namespace) -> None:
     """The restricted-choice value distribution, per context."""
     from drowse.generation.scoring import score_template
-    from drowse.store.templates import resolve_template
-
-    tmpl = resolve_template(args.name)
+    tmpl = existing_template(args.name)
     check_steering(args.steer)
     with open_session(args) as session:
         per_ctx = score_template(session, tmpl, steering=args.steer)
