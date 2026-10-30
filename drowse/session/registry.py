@@ -108,7 +108,6 @@ class ArtifactRegistry:
         self._binding = binding
         self._profiles: dict[str, Tensors] = {}
         self._manifolds: dict[str, Manifold] = {}
-        self._on_change: list[Callable[[], None]] = []
         self._on_swap: list[Callable[[Swaps], None]] = []
         self._atom_resolvers: dict[str, Callable[[str], str]] = {}
         # Probe folds handed out per registry key, so an eviction or re-fit of
@@ -138,10 +137,6 @@ class ArtifactRegistry:
 
     # --------------------------------------------------------- listeners
 
-    def on_change(self, callback: Callable[[], None]) -> None:
-        """Call ``callback`` after every invalidating mutation."""
-        self._on_change.append(callback)
-
     def on_swap(self, callback: Callable[[Swaps], None]) -> None:
         """Call ``callback(swaps)`` when manifolds this registry handed out are
         replaced or evicted; ``swaps`` maps each old object's ``id`` to its
@@ -163,8 +158,6 @@ class ArtifactRegistry:
 
     def _changed(self) -> None:
         self.invalidate_analytics()
-        for callback in self._on_change:
-            callback()
 
     def _swapped(self, swaps: Swaps) -> None:
         if not swaps:

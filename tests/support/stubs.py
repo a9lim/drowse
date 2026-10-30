@@ -99,7 +99,6 @@ def wire_stub_steering(
         model=d.get("_model"), tokenizer=d.get("_tokenizer"),
         model_id=_model_id(stub), device=device, dtype=dtype,
     ))
-    registry.on_change(lambda: _drop_prefix_cache(stub))
     registry.set_atom_resolver("jlens", lambda atom: stub.lens.register_direction(atom))
     registry.set_atom_resolver("sae", lambda atom: stub.sae.register_direction(atom))
     if hasattr(stub, "_fold_profile_probe"):

@@ -746,6 +746,51 @@ def test_cached_prefix_generation_matches_full_prefill(tiny_session: Any) -> Non
     assert cached.tokens == full.tokens == again.tokens
 
 
+def test_registry_changes_keep_the_unsteered_prefix(tiny_session: Any) -> None:
+    """Registering, replacing or dropping artifacts never touches a prefill.
+
+    The cached prefix is the *unsteered* KV (``cache_prefix`` refuses inside a
+    scope), and each generation decides reuse itself through
+    ``steering_active_in_prefill``.  So registry mutations keep the entry, and
+    a generation reusing it, unsteered or under a response-only term,
+    decodes exactly what a full prefill does.
+    """
+    from tests.support.sessions import register_vectors
+
+    messages = [{"role": "user", "content": "A fixed shared instruction prefix."}]
+    greedy = SamplingConfig(max_tokens=6, temperature=0.0)
+    register_vectors(tiny_session, "a")
+    full = tiny_session.generate(messages, sampling=greedy, stateless=True).first
+    steered_full = tiny_session.generate(
+        messages, sampling=greedy, stateless=True, steering="0.5 a@response",
+    ).first
+
+    assert tiny_session.cache_prefix(messages) > 0
+    entry = tiny_session._engine.prefix_cache.entry
+    register_vectors(tiny_session, "b")
+    register_vectors(tiny_session, "a")  # replaced in place
+    tiny_session.registry.pop_profile("b")
+    tiny_session.evict_artifact("local", "b")
+    assert tiny_session._engine.prefix_cache.entry is entry
+
+    hit_calls: list[Any] = []
+    original_hit = tiny_session._engine.prefix_cache.hit
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        result = original_hit(*args, **kwargs)
+        hit_calls.append(result)
+        return result
+
+    tiny_session._engine.prefix_cache.hit = _spy
+    cached = tiny_session.generate(messages, sampling=greedy, stateless=True).first
+    steered = tiny_session.generate(
+        messages, sampling=greedy, stateless=True, steering="0.5 a@response",
+    ).first
+    assert len(hit_calls) == 2 and all(hit is not None for hit in hit_calls)
+    assert cached.tokens == full.tokens
+    assert steered.tokens == steered_full.tokens
+
+
 def test_cache_prefix_refuses_inside_a_steering_scope(tiny_session: Any) -> None:
     from tests.support.sessions import register_vectors
 

@@ -432,13 +432,14 @@ class DrowseSession:
 
 
         # -- collaborators --------------------------------------------------
-        # Artifact registry: profiles + loaded manifolds; its mutations drop
-        # the prefix cache and refresh monitor probes on a manifold swap.
+        # Artifact registry: profiles + loaded manifolds; a manifold swap
+        # refreshes the monitor probes reading it.  Its mutations leave the
+        # prefix cache alone: the cached prefix is unsteered, and reuse is
+        # gated per generation by ``steering_active_in_prefill``.
         self._registry = ArtifactRegistry(ModelBinding(
             model=self._model, tokenizer=self._tokenizer,
             model_id=self.model_id, device=self._device, dtype=self._dtype,
         ))
-        self._registry.on_change(lambda: self._engine.prefix_cache.clear())
         self._registry.on_swap(self._refresh_swapped_probes)
         self._registry.set_probe_folder(self._fold_profile_probe)
         self._registry.set_atom_resolver("jlens", lambda atom: self._lens_instrument.register_direction(atom))
