@@ -1103,8 +1103,6 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
     session._steering = SimpleNamespace(
         ctx=TriggerContext(),
         reset_manifold_feet=lambda: None,
-        has_compiled_offsets=lambda: False,
-        zero_compiled_offsets=lambda: None,
     )
     session._capture_state = CaptureState()
     session._compiled = False
@@ -1839,7 +1837,6 @@ def test_lens_only_without_final_probe_aggregate_keeps_latest_tail() -> None:
     session._capture = capture
     session._capture_buffers = {}
     session._compiled_clean_eligible = False
-    session._steering_uses_compiled_offsets = False
     session._lens_instrument.live = {"layers": [2, 4]}
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
@@ -1933,7 +1930,6 @@ def test_lens_gate_without_final_aggregate_attaches_gated_probe_layers() -> None
     session._capture = capture
     session._capture_buffers = {}
     session._compiled_clean_eligible = False
-    session._steering_uses_compiled_offsets = False
     session._lens_instrument.live = None
     session._lens_instrument.probes = {
         "jlens/g": {"layers": [3]},
@@ -1996,7 +1992,6 @@ def test_sae_only_without_final_probe_aggregate_keeps_latest_tail() -> None:
     session._capture = capture
     session._capture_buffers = {}
     session._compiled_clean_eligible = False
-    session._steering_uses_compiled_offsets = False
     session._lens_instrument.live = None
     session._lens_instrument.probes = {}
     session._sae_instrument.live = {"layer": 5}
@@ -2091,7 +2086,6 @@ def test_sae_gate_without_final_aggregate_attaches_sae_layer() -> None:
     session._capture = capture
     session._capture_buffers = {}
     session._compiled_clean_eligible = False
-    session._steering_uses_compiled_offsets = False
     session._lens_instrument.live = None
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
@@ -2318,7 +2312,6 @@ def test_monitor_probe_final_aggregate_still_attaches_capture() -> None:
     session._capture = capture
     session._capture_buffers = {}
     session._compiled_clean_eligible = False
-    session._steering_uses_compiled_offsets = False
     session._lens_instrument.live = None
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
@@ -2404,7 +2397,6 @@ def test_gate_only_without_final_probe_aggregate_narrows_capture_layers() -> Non
     session._capture = capture
     session._capture_buffers = {}
     session._compiled_clean_eligible = False
-    session._steering_uses_compiled_offsets = False
     session._lens_instrument.live = None
 
     _complete_capture_session(session)
@@ -2491,7 +2483,6 @@ def test_gate_only_capture_reuses_preplanned_gate_scalars() -> None:
     session._capture = capture
     session._capture_buffers = {}
     session._compiled_clean_eligible = False
-    session._steering_uses_compiled_offsets = False
     session._lens_instrument.live = None
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
@@ -2561,7 +2552,6 @@ def test_full_incremental_capture_deep_tail_only_for_readout_aggregate_layers() 
     session._capture = capture
     session._capture_buffers = {}
     session._compiled_clean_eligible = False
-    session._steering_uses_compiled_offsets = False
     session._lens_instrument.live = None
     session._lens_instrument.probes = {"jlens/g": {"layers": {3}}}
     session._lens_instrument.probe_layers = lambda _names=None: {3}
@@ -2691,7 +2681,6 @@ def _transaction_stub_session() -> Any:
     s._monitor = SimpleNamespace(set_subspace_coords=lambda _flag: None)
     s._close_instrument_runs = lambda: None
     s._capture_state = CaptureState()
-    s._steering = SimpleNamespace(has_compiled_offsets=lambda: False)
     return s
 
 

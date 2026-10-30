@@ -1134,7 +1134,7 @@ def test_prompt_capture_retains_only_selected_prefill_positions():
     """Selective prompt rows survive alongside the ordinary latest slice."""
     import torch.nn as nn
 
-    from drowse.steering.hooks import HiddenCapture
+    from drowse.readout.capture_buffer import HiddenCapture
 
     class _Pass(nn.Module):
         def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -1176,7 +1176,7 @@ def test_aggregate_tail_pools_last_content_token():
     """
     import torch.nn as nn
 
-    from drowse.steering.hooks import HiddenCapture
+    from drowse.readout.capture_buffer import HiddenCapture
 
     m = _toy_manifold(dim=8)  # curved, layers {0, 1}
     mon = _iso_monitor(m)
@@ -1235,7 +1235,7 @@ def test_aggregate_tail_clamps_when_walkback_exceeds_depth():
     """A walk-back deeper than the ring clamps to the oldest retained slice."""
     import torch.nn as nn
 
-    from drowse.steering.hooks import HiddenCapture
+    from drowse.readout.capture_buffer import HiddenCapture
 
     m = _toy_manifold(dim=8)
     D = next(iter(m.layers.values())).mean.shape[0]
@@ -1261,7 +1261,7 @@ def test_aggregate_tail_clamps_when_walkback_exceeds_depth():
 def test_tail_with_sink_can_keep_deep_tail_on_selected_layers_only():
     import torch.nn as nn
 
-    from drowse.steering.hooks import HiddenCapture
+    from drowse.readout.capture_buffer import HiddenCapture
 
     class _Pass(nn.Module):
         def forward(self, x: torch.Tensor) -> torch.Tensor:

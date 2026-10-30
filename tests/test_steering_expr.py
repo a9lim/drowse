@@ -914,15 +914,13 @@ def test_repeated_ablation_with_conflicting_triggers_rejected():
     assert "ablation" in msg or "trigger" in msg
 
 
-def test_normalized_entries_skips_ablation():
-    # ``normalized_entries()`` is the additive/projection view consumed by
-    # the hook manager.  Ablation entries dispatch through a separate
-    # session-level branch and must not appear here.
+def test_entries_report_ablation_alongside_additive_terms():
     s = parse_expr("0.3 honest + !sycophantic + 0.4 warm@after")
-    normalized = s.normalized_entries()
-    assert set(normalized.keys()) == {"honest", "warm"}
-    assert normalized["honest"] == (0.3, Trigger.BOTH)
-    assert normalized["warm"] == (0.4, Trigger.AFTER_THINKING)
+    entries = s.entries()
+    assert set(entries) == {"honest", "!sycophantic", "warm"}
+    assert entries["honest"] == (0.3, Trigger.BOTH)
+    assert entries["!sycophantic"] == (1.0, Trigger.BOTH)
+    assert entries["warm"] == (0.4, Trigger.AFTER_THINKING)
 
 
 def test_referenced_selectors_includes_ablation_target():

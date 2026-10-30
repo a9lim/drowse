@@ -88,7 +88,7 @@ def test_compiled_explicit_no_probes_skips_persistent_capture_hooks(
         _offset,
     )
     monkeypatch.setattr(
-        "drowse.steering.hooks.install_persistent_capture_hooks",
+        "drowse.readout.capture_buffer.install_persistent_capture_hooks",
         _capture,
     )
 

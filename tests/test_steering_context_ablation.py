@@ -49,6 +49,8 @@ def _skeleton_session() -> DrowseSession:
     session._device = torch.device("cpu")
     session._dtype = torch.float32
     session._profiles = {}
+    session._manifolds = {}
+    session._model_info = {"model_id": "stub/model"}
     session._layer_means = {1: torch.zeros(3)}
     session._steering = SteeringManager()
     session._steering_composer = SteeringComposer(session)
@@ -82,14 +84,15 @@ def test_session_steering_dispatches_ablation_to_manager():
         # 4.0: ``!`` lowers to an ablation axis (target 0) inside the merged
         # affine subspace — one ``add_subspace`` entry per trigger group, an
         # ``subspace_inject`` group on the covered layer.
-        assert session._steering.subspaces
-        synth = next(iter(session._steering.subspaces.values()))["synth"]
+        plan = session._steering.plan
+        assert plan
+        synth = plan.affine[0].synth
         assert 1 in synth.layers
         assert 1 in session._steering.hooks
-        assert session._steering.hooks[1].manifold_groups
+        assert session._steering.hooks[1].groups
 
     # Post-exit: steering cleared, hook detached.
-    assert not session._steering.subspaces
+    assert session._steering.plan is None
     assert not session._steering.hooks
 
 
@@ -112,12 +115,13 @@ def test_session_steering_string_with_ablation_end_to_end():
     session._layer_means[1] = torch.tensor([0.5, 0.0, 0.0])
 
     with session.steering("!refusal"):
-        assert session._steering.subspaces
-        synth = next(iter(session._steering.subspaces.values()))["synth"]
+        plan = session._steering.plan
+        assert plan
+        synth = plan.affine[0].synth
         assert 1 in synth.layers
-        assert session._steering.hooks[1].manifold_groups
+        assert session._steering.hooks[1].groups
 
-    assert not session._steering.subspaces
+    assert session._steering.plan is None
 
 
 @pytest.mark.parametrize("coeff", [0.15, 1.0, -0.3])
@@ -133,12 +137,10 @@ def test_ablation_coefficient_survives_affine_gain(coeff: float) -> None:
     })
     with session.steering(steering):
         hook = session._steering.hooks[1]
-        assert len(hook.manifold_groups) == 1
-        group = hook.manifold_groups[0]
-        along = float(group[5])
-        kernel_kappa = group[7]
-        assert isinstance(kernel_kappa, torch.Tensor)
-        assert along * float(kernel_kappa[0]) == pytest.approx(coeff)
+        assert len(hook.groups) == 1
+        op = hook.groups[0].op
+        assert op.scale is not None
+        assert float(op.scale[0]) == pytest.approx(coeff)
 
 
 def test_zero_ablation_coefficient_is_a_true_noop() -> None:
@@ -151,5 +153,5 @@ def test_zero_ablation_coefficient_is_a_true_noop() -> None:
         ),
     })
     with session.steering(steering):
-        assert not session._steering.subspaces
+        assert not session._steering.plan
         assert not session._steering.hooks

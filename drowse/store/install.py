@@ -34,6 +34,7 @@ from drowse.base.integrity import NAME_REGEX, hash_file
 from drowse.base.paths import manifold_dir, manifolds_dir
 from drowse.base.staging import promote, recover_backup, staging_area
 from drowse.errors import DrowseError
+from drowse.steering.grammar import RESERVED_NAMESPACES
 from drowse.store.archive import (
     LOCAL_ONLY_MANIFOLD_KEYS,
     ArchiveClosure,
@@ -203,8 +204,6 @@ def _split_as(as_: str) -> tuple[str, str]:
 
 
 def _install_destination(namespace: str, name: str) -> Path:
-    from drowse.store.manifold_authoring import RESERVED_NAMESPACES
-
     for label, component in (("namespace", namespace), ("name", name)):
         if not NAME_REGEX.fullmatch(component):
             raise ValueError(

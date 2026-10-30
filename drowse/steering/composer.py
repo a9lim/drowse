@@ -1,28 +1,20 @@
-"""SteeringComposer — the steering-resolution + stack collaborator for DrowseSession.
+"""SteeringComposer — the steering stack, resolution, and plan composition.
 
-Extracted from :mod:`drowse.session.session` (the one cluster whose seam is clean and
-whose hot-path cost is per-scope, not per-token).  Holds the LIFO steering stack
-(``_stack``) and every method that runs at steering push/pop frequency: pole-alias
-resolution, manifold/profile registration, the lowering of active entries into the
-:class:`~drowse.steering.hooks.SteeringManager`, hook (re)build, and the probe-gate
-plumbing.
-
-It reaches back into the owning session through ``self._session`` for the state it
-needs (``_profiles`` / ``_manifolds`` / ``_layer_means`` / ``_monitor`` / whitener /
-device / dtype / layers / events / ``_gen_lock`` / ``_gen_phase`` / capture state).
-Those reads happen at push/pop frequency, NOT per token, so the extra attribute hop
-is off the perf-critical path.  The ONE near-hot method is
-:meth:`build_gating_score_callback`'s returned closure (per-token under an active
-probe gate); it binds ``capture``/``monitor`` to locals before the inner ``def`` and
-reads the session's capture state through the back-ref exactly as the unextracted
-body did, so the per-token path gains no new indirection.
-
-The session exposes the artifact loaders as its public registration API and keeps
-narrow context/generation forwarders where the session boundary is meaningful.
+Holds the LIFO steering stack and everything that runs at steering push/pop
+frequency: resolving a parsed :class:`~drowse.steering.terms.Steering` to
+registry keys and loaded artifacts (:meth:`SteeringComposer.resolve`, once per
+scope), composing the flattened stack head into a
+:class:`~drowse.steering.hooks.SteeringPlan` (cached by stack head), installing
+it on the :class:`~drowse.steering.hooks.SteeringManager`, and the probe-gate
+plumbing.  It reaches the owning session through ``self._session`` at push/pop
+frequency only; the one per-token path is the closure
+:meth:`build_gating_score_callback` returns.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from collections import OrderedDict
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 import torch
 
@@ -37,8 +29,14 @@ from drowse.session.session import (
     _PROFILE_ABSENT,
     _affine_manifold_push,
 )
-from drowse.steering.terms import entry_coeff, entry_trigger
-from drowse.steering.grammar import AblationTerm, ManifoldTerm
+from drowse.steering.hooks import SteeringPlan
+from drowse.steering.terms import entry_coeff, entry_trigger, term_entry
+from drowse.steering.grammar import (
+    RESERVED_NAMESPACES,
+    AblationTerm,
+    ManifoldTerm,
+    ProjectedTerm,
+)
 
 if TYPE_CHECKING:
     from drowse.readout.types import GateRef, InstrumentFamily
@@ -46,137 +44,242 @@ if TYPE_CHECKING:
     from drowse.steering.terms import Steering
 
 
+# Variants that name a family of fitted tensors rather than one tensor; they
+# concretize against the files on disk for the loaded model.
+_BARE_VARIANTS = frozenset({"sae", "from", "role"})
+
+# Plans retained by stack head.  A ``generate(steering=…)`` composes twice
+# (push, and pop back to the outer scope), so a small LRU covers the repeats.
+_PLAN_CACHE_SIZE = 16
+
+
+def _split_key(key: str) -> tuple[str | None, str, str]:
+    """``[ns/]name[:variant]`` → ``(ns, name, variant)`` (variant ``raw`` if absent)."""
+    name_part, variant = key.rsplit(":", 1) if ":" in key else (key, "raw")
+    if "/" in name_part:
+        ns, name = name_part.split("/", 1)
+        return ns, name, variant
+    return None, name_part, variant
+
+
 def _fires_in_prefill(trigger: Trigger) -> bool:
     """True iff ``trigger`` touches the prompt residual stream.
 
     A term steers the prefill exactly when its phase includes the prompt and
-    it carries no probe gate — gates report inactive during prefill, because
-    there is no post-forward score yet (see
-    :meth:`~drowse.steering.triggers.Trigger.active`).  Both the live-stack check
-    and the pre-flight check over an incoming value reduce to this predicate.
+    it carries no probe gate (gates report inactive during prefill — there is
+    no post-forward score yet).
     """
     return trigger.prompt and trigger.gate is None
 
 
-class SteeringComposer:
-    """Owns the steering stack + steering-resolution/lowering for a session.
+@dataclass
+class _CachedPlan:
+    """A composed plan plus the registry objects it was composed from.
 
-    Instantiated once per :class:`~drowse.session.session.DrowseSession` after the
-    state it depends on exists (``_steering`` manager, ``_profiles`` /
-    ``_manifolds`` / ``_layer_means``, and the ``_monitor``).  The session holds the
-    instance as ``_steering_composer``. The stack has one owner: this collaborator.
+    The plan is reusable exactly while every dependency still resolves to the
+    same object (registries replace values rather than mutating them), so a
+    re-extract, ``unsteer``, whitener rebuild, or neutral refresh misses.
+    """
+
+    plan: SteeringPlan
+    deps: list[tuple[Callable[[], object], object]]
+
+    def valid(self) -> bool:
+        return all(get() is obj for get, obj in self.deps)
+
+
+class SteeringComposer:
+    """Owns the steering stack + steering resolution/composition for a session.
+
+    Instantiated once per :class:`~drowse.session.session.DrowseSession` and
+    held as ``_steering_composer``; the stack has one owner, this object.
     """
 
     def __init__(self, session: "DrowseSession") -> None:
         self._session = session
-        # LIFO stack of per-scope entries dicts pushed by session.steering().
-        # Each entry is ``{name: (alpha, Trigger)}`` — triggers are preserved
-        # through stack flattening so nested scopes with different trigger regimes
-        # compose cleanly.  The flattened head (later entries overwrite earlier
-        # ones) is what the steering manager installs when a generation begins.
+        # LIFO stack of resolved per-scope entries; the flattened head (later
+        # scopes overwrite earlier keys) is what gets installed.
         self._stack: list[dict[str, SteeringStackEntry]] = []
+        self._plans: OrderedDict[tuple[Any, ...], _CachedPlan] = OrderedDict()
+        # Projection memo: syn_key → (base, onto, whitener, projected).  Keeps
+        # the registered derived profile's identity stable across scopes so
+        # plans that use it stay cached.
+        self._projections: dict[str, tuple[object, object, object, object]] = {}
 
-    # ---------------------------------------------------------------- profiles
+    # ---------------------------------------------------------- resolution
+
+    def resolve(
+        self, steering: "Steering",
+    ) -> tuple[dict[str, SteeringStackEntry], dict[str, object]]:
+        """Resolve a parsed steering value to stack entries, loading artifacts.
+
+        The one resolution pass after parsing: every vector / ablation target
+        concretizes to its registry key (bare ``:sae`` / ``:role`` / ``:from``
+        variants pick the unique fitted tensor for this model) and loads, every
+        manifold term loads its artifact, and ``~``/``|`` projections
+        materialize under their synthetic key.  Failures raise here — an
+        unknown name is :class:`ProfileNotRegisteredError` — so composition
+        only ever looks loaded artifacts up.
+
+        Returns ``(entries, snapshots)``; ``snapshots`` are the projection
+        bindings this call replaced, for the scope to restore on exit.
+        """
+        snapshots = self.materialize_projections(steering)
+        profiles = self._session._profiles
+        entries: dict[str, SteeringStackEntry] = {}
+        for name, val in steering.alphas.items():
+            if isinstance(val, AblationTerm):
+                target = self.concretize_key(val.target)
+                self.ensure_profile_registered(target, role="ablation target")
+                entries[f"!{target}"] = (
+                    val if target == val.target else replace(val, target=target)
+                )
+                continue
+            if isinstance(val, ManifoldTerm):
+                manifold_key = self.concretize_key(val.manifold)
+                self.ensure_manifold_loaded(manifold_key)
+                entries[name] = (
+                    val if manifold_key == val.manifold
+                    else replace(val, manifold=manifold_key)
+                )
+                continue
+            alpha, trig = term_entry(val, steering.trigger)
+            key = name if name in profiles else self.concretize_key(name)
+            self.ensure_profile_registered(key)
+            prev = entries.get(key)
+            if isinstance(prev, tuple):
+                alpha += prev[0]
+            entries[key] = (alpha, trig)
+        return entries, snapshots
+
+    def concretize_key(self, key: str) -> str:
+        """Pin a bare ``:sae`` / ``:role`` / ``:from`` variant to its fitted tensor.
+
+        Any other key is returned unchanged.  Raises
+        :class:`~drowse.errors.UnknownVariantError` when no fitted variant
+        exists for the loaded model and
+        :class:`~drowse.errors.AmbiguousVariantError` when several do.
+        """
+        ns, name, variant = _split_key(key)
+        if variant not in _BARE_VARIANTS:
+            return key
+        import json
+
+        from drowse.base.paths import (
+            manifold_dir, manifolds_dir, parse_tensor_filename, safe_model_id,
+        )
+        from drowse.errors import AmbiguousVariantError, UnknownVariantError
+
+        if ns is not None:
+            roots = [manifold_dir(ns, name)]
+        elif manifolds_dir().exists():
+            roots = [
+                entry / name for entry in manifolds_dir().iterdir()
+                if entry.is_dir()
+            ]
+        else:
+            roots = []
+        concrete: set[str] = set()
+        safe_model = safe_model_id(self._session.model_id)
+        for folder in roots:
+            if variant == "role":
+                sidecar_path = folder / f"{safe_model}.json"
+                if not sidecar_path.exists():
+                    continue
+                with open(sidecar_path) as handle:
+                    raw_sidecar = json.load(handle)
+                roles = raw_sidecar.get("node_roles") or [
+                    None
+                ] * int(raw_sidecar.get("node_count", 0))
+                if roles and roles[0] is not None and all(
+                    role == roles[0] for role in roles
+                ):
+                    concrete.add(f"role-{roles[0]}")
+                continue
+            for tensor_path in folder.glob(f"{safe_model}_*.safetensors"):
+                parsed = parse_tensor_filename(tensor_path.name)
+                if parsed is None or parsed[1] is None:
+                    continue
+                if parsed[1].startswith(f"{variant}-"):
+                    concrete.add(parsed[1])
+        qualified = name if ns is None else f"{ns}/{name}"
+        if len(concrete) != 1:
+            error = UnknownVariantError if not concrete else AmbiguousVariantError
+            raise error(
+                f"manifold '{qualified}:{variant}' resolves to "
+                f"{sorted(concrete) or 'no fitted variants'}"
+            )
+        return f"{qualified}:{next(iter(concrete))}"
 
     def materialize_projections(self, steering: "Steering") -> dict[str, object]:
-        """Populate ``session._profiles`` with derived profiles for every
-        :class:`~drowse.steering.grammar.ProjectedTerm` in
-        ``steering.alphas``.
+        """Register the derived profile of every ``~``/``|`` term in ``steering``.
 
-        Ensures the ``base`` and ``onto`` profiles are loaded (invoking
-        the autoload path when needed), runs
-        :func:`drowse.fit.capture.project_profile` to build the derived
-        tensor dict, and registers it under the synthetic key
-        ``"<base><op><onto>"``.  The synthetic key matches what the parser
-        used for the ``Steering.alphas`` key, so downstream pole
-        resolution + hook install find the profile via the
-        ``name in self._profiles`` fast path.
+        Loads ``base`` and ``onto``, projects with the closed-form LEACE
+        projector against the session whitener (Mahalanobis-only:
+        ``project_profile`` raises ``WhitenerError`` without a covering
+        whitener), and registers the result under the synthetic key
+        ``"<base><op><onto>"``.  The projection is memoized on the identities
+        of its inputs, so re-entering the same scope reuses one profile.
 
-        Projection is Mahalanobis-only: the call site passes
-        ``session.whitener`` to ``project_profile``, which uses the
-        closed-form LEACE projector — provably erases linearly-decodable
-        concept information along ``onto``.  ``project_profile`` requires
-        the whitener to cover every projected layer (``covers_all``) and
-        raises :class:`~drowse.geometry.whitener.WhitenerError` otherwise;
-        there is no Euclidean path.  A ``probes=[]`` session that hasn't
-        built a neutral-activation cache yet therefore can't materialize a
-        ``~``/``|`` term — regenerate the neutral cache first.
-
-        Returns a snapshot dict ``{syn_key: prev_value_or_PROFILE_ABSENT}``
-        of the synthetic-projection bindings this call clobbered, so
-        the caller can restore them on scope exit.  Without this
-        nested scopes that materialize the same ``a|b`` synthetic
-        key would leak the inner tensor back into the outer scope's
-        hooks after pop — the global ``self._profiles`` registry is
-        shared across all active scopes.
+        Returns ``{syn_key: prior binding or _PROFILE_ABSENT}`` for the bindings
+        this call replaced, so the scope can restore them on exit (the
+        registry is shared across nested scopes).
         """
-        from drowse.steering.grammar import ProjectedTerm
         from drowse.fit.capture import project_profile
 
         profiles = self._session._profiles
-
         snapshots: dict[str, object] = {}
         whitener = None
         for syn_key, val in steering.alphas.items():
             if not isinstance(val, ProjectedTerm):
                 continue
-            # Do not wake the lazy neutral-activation/whitener pipeline for an
-            # ordinary steering expression.  Plain vector/manifold terms are
-            # normalized later by ``compose_steering_entries``; only an actual
-            # projection needs the whitener at materialization time.
+            # Only an actual projection wakes the lazy whitener.
             if whitener is None:
                 whitener = self._session.whitener
-            base_tensors = self.ensure_profile_registered(
-                val.base, role="projection base",
-            )
-            onto_tensors = self.ensure_profile_registered(
-                val.onto, role="projection onto",
-            )
-            projected = project_profile(
-                base_tensors, onto_tensors, val.operator,
-                whitener=whitener,
-            )
-            # Snapshot prior binding *before* overwrite so the
-            # context manager can restore on exit.  ``setdefault`` —
-            # if the same syn_key appears twice in this Steering, only
-            # the first occurrence's snapshot matters (subsequent
-            # writes are this scope's own, not the outer's).
+            base_key = self.concretize_key(val.base)
+            onto_key = self.concretize_key(val.onto)
+            base = self.ensure_profile_registered(base_key, role="projection base")
+            onto = self.ensure_profile_registered(onto_key, role="projection onto")
+            memo = self._projections.get(syn_key)
+            if memo is not None and memo[0] is base and memo[1] is onto and memo[2] is whitener:
+                projected = memo[3]
+            else:
+                projected = project_profile(
+                    base, onto, val.operator, whitener=whitener,
+                )
+                self._projections[syn_key] = (base, onto, whitener, projected)
             if syn_key not in snapshots:
-                if syn_key in profiles:
-                    snapshots[syn_key] = profiles[syn_key]
-                else:
-                    snapshots[syn_key] = _PROFILE_ABSENT
-            profiles[syn_key] = projected
+                snapshots[syn_key] = profiles.get(syn_key, _PROFILE_ABSENT)
+            profiles[syn_key] = projected  # pyright: ignore[reportArgumentType]  # memo stores the projected profile dict
         return snapshots
 
     def ensure_manifold_loaded(self, key: str) -> None:
-        """Load the manifold artifact for registry key ``key`` if absent.
+        """Load the fitted manifold for registry key ``[ns/]name[:variant]``.
 
-        ``key`` is the manifold registry key produced by the grammar:
-        ``[ns/]name[:variant]``.  ``raw`` (default) selects the
-        residual-stream tensor; ``sae-<release>`` selects the SAE-variant
-        tensor; ``from-*`` selects a cross-model transfer; ``role-*``
-        validates the canonical tensor's role baseline. A bare name searches
-        under ``manifolds/``.  The loaded :class:`Manifold` is promoted
-        onto the session device (kept fp32 — the spline math wants it).
-        Raises :class:`ManifoldNotRegisteredError` on a miss.
+        ``raw`` selects the residual-stream tensor, ``sae-<release>`` the SAE
+        fit, ``from-<src>`` a cross-model transfer, and ``role-<id>`` the
+        canonical tensor with its role baseline checked.  A bare name searches
+        every namespace (and refuses a collision).  The loaded manifold is
+        validated against the live weights and capture inputs, then promoted
+        onto the session device in fp32.  Raises
+        :class:`ManifoldNotRegisteredError` on a miss or a stale fit.
         """
         manifolds = self._session._manifolds
         if key in manifolds:
             return
+        from drowse.base.paths import (
+            encode_release_id, manifold_dir, manifolds_dir,
+            tensor_filename_for_variant,
+        )
+        from drowse.model.loading import loaded_model_fingerprint
+        from drowse.store.manifold_schema import sidecar_is_current
         from drowse.store.manifold_tensors import load_manifold
-        from drowse.base.paths import manifold_dir, manifolds_dir, tensor_filename_for_variant
 
         model_id = self._session.model_id
-
-        name_part, variant = (
-            key.rsplit(":", 1) if ":" in key else (key, "raw")
-        )
-        if "/" in name_part:
-            ns, name = name_part.split("/", 1)
+        ns, name, variant = _split_key(key)
+        if ns is not None:
             search_ns = [ns]
         else:
-            name = name_part
             root = manifolds_dir()
             search_ns = (
                 sorted(d.name for d in root.iterdir() if d.is_dir())
@@ -193,18 +296,12 @@ class SteeringComposer:
             raise ManifoldNotRegisteredError(
                 f"manifold '{key}': unsupported variant '{variant}'"
             )
-
-        # A fit from an older artifact format is a *miss*, not a corrupt
-        # artifact: the corpus is intact, so the answer is "refit", which is
-        # exactly what the no-tensor branch below already says. Screening it
-        # here keeps a format bump from raising a raw codec error out of every
-        # steering resolution and probe bootstrap on the way to that refit.
-        from drowse.store.manifold_schema import sidecar_is_current
-
+        # An older artifact format is a miss (refit), not a corrupt artifact.
         matches = [
-            (ns, path)
-            for ns, path in (
-                (ns, manifold_dir(ns, name) / fname) for ns in search_ns
+            (candidate_ns, path)
+            for candidate_ns, path in (
+                (candidate_ns, manifold_dir(candidate_ns, name) / fname)
+                for candidate_ns in search_ns
             )
             if path.exists()
             and sidecar_is_current(path.with_suffix(".json"))
@@ -215,10 +312,8 @@ class SteeringComposer:
                 f"run `drowse manifold fit` first"
             )
         if len(matches) > 1:
-            # A bare name collided across namespaces — refuse rather than
-            # silently pick one, mirroring concept selector resolution.
             from drowse.store.selectors import AmbiguousSelectorError
-            qualified = ", ".join(f"{ns}/{name}" for ns, _ in matches)
+            qualified = ", ".join(f"{m_ns}/{name}" for m_ns, _ in matches)
             raise AmbiguousSelectorError(
                 f"ambiguous manifold '{name}': matches {qualified}. "
                 f"Qualify it with a namespace."
@@ -226,12 +321,7 @@ class SteeringComposer:
         tensor_path = matches[0][1]
         manifold = load_manifold(tensor_path)
         metadata = manifold.metadata
-        from drowse.model.loading import loaded_model_fingerprint
-        from drowse.base.paths import encode_release_id
-
-        live_fingerprint = loaded_model_fingerprint(
-            self._session._model, model_id,
-        )
+        live_fingerprint = loaded_model_fingerprint(self._session._model, model_id)
         if transferred_from is not None:
             source_id = metadata.get("source_model_id")
             if (
@@ -284,197 +374,51 @@ class SteeringComposer:
             device=self._session._device, dtype=torch.float32,
         )
 
-    def resolve_pole_aliases(
-        self, entries: dict[str, tuple[float, Trigger]],
-    ) -> dict[str, tuple[float, Trigger]]:
-        """Apply pole-alias resolution + sign flipping + variant routing.
-
-        Returned keys carry the full variant-qualified name:
-        ``canonical`` for raw, ``f"{canonical}:{variant}"`` otherwise. Autoload
-        is variant-aware — ``honest:sae`` will look for a ``_sae-*`` tensor
-        file, not the raw one.
-
-        Namespace-qualified inputs (``alice/foo``) keep the namespace
-        through resolution: the prefix is split off, the bare tail is
-        canonicalized, and the prefix is re-attached to the registry key.
-        This is what lets two installed packs that share a concept name
-        across namespaces stay addressable via their fully-qualified form.
-
-        Names already in ``self._profiles`` pass through verbatim — a caller
-        who pre-registered under a specific key stays addressed by that key.
-        """
-        from drowse.store.selectors import canonicalize_atom
-
-        profiles = self._session._profiles
-
-        out: dict[str, tuple[float, Trigger]] = {}
-        for name, (alpha, trig) in entries.items():
-            if name in profiles:
-                out[name] = (float(alpha), trig)
-                continue
-            # Split namespace prefix so re-resolution scopes to the
-            # namespace the user originally typed (parser preserves it
-            # in the key when supplied).  Bare names leave ``ns=None``
-            # so cross-namespace collisions still raise.
-            ns: str | None = None
-            bare_name = name
-            if "/" in name:
-                ns, bare_name = name.split("/", 1)
-            try:
-                canonical, variant = canonicalize_atom(bare_name)
-            except Exception:
-                out[name] = (float(alpha), trig)
-                continue
-            canonical_qualified = (
-                canonical if ns is None else f"{ns}/{canonical}"
-            )
-            if variant in {"sae", "from", "role"}:
-                import json
-
-                from drowse.errors import (
-                    AmbiguousVariantError, UnknownVariantError,
-                )
-                from drowse.base.paths import (
-                    manifold_dir, manifolds_dir, parse_tensor_filename,
-                    safe_model_id,
-                )
-
-                roots = (
-                    [(ns, manifold_dir(ns, canonical))]
-                    if ns is not None else [
-                        (entry.name, entry / canonical)
-                        for entry in manifolds_dir().iterdir()
-                        if entry.is_dir()
-                    ] if manifolds_dir().exists() else []
-                )
-                concrete: set[str] = set()
-                safe_model = safe_model_id(self._session.model_id)
-                for _candidate_ns, folder in roots:
-                    if variant == "role":
-                        sidecar_path = folder / f"{safe_model}.json"
-                        if not sidecar_path.exists():
-                            continue
-                        with open(sidecar_path) as handle:
-                            raw_sidecar = json.load(handle)
-                        roles = raw_sidecar.get("node_roles") or [
-                            None
-                        ] * int(raw_sidecar.get("node_count", 0))
-                        if roles and all(role == roles[0] for role in roles):
-                            if roles[0] is not None:
-                                concrete.add(f"role-{roles[0]}")
-                        continue
-                    for tensor_path in folder.glob(f"{safe_model}_*.safetensors"):
-                        parsed = parse_tensor_filename(tensor_path.name)
-                        if parsed is None or parsed[1] is None:
-                            continue
-                        parsed_variant = parsed[1]
-                        if parsed_variant.startswith(f"{variant}-"):
-                            concrete.add(parsed_variant)
-                if len(concrete) != 1:
-                    error = (
-                        UnknownVariantError
-                        if not concrete else AmbiguousVariantError
-                    )
-                    raise error(
-                        f"manifold '{canonical_qualified}:{variant}' resolves "
-                        f"to {sorted(concrete) or 'no fitted variants'}"
-                    )
-                variant = next(iter(concrete))
-            registry_key = (
-                canonical_qualified
-                if variant == "raw"
-                else f"{canonical_qualified}:{variant}"
-            )
-            if registry_key not in profiles:
-                try:
-                    # Unified resolution folds the fitted manifold. May raise
-                    # Ambiguous/UnknownVariantError — keep the user's original
-                    # name in ``out`` so the error surfaces at hook-install
-                    # with a clear message.
-                    self.ensure_profile_registered(registry_key)
-                except Exception:
-                    out[name] = (float(alpha), trig)
-                    continue
-            # Sign-flip retired with ``resolve_pole`` — a bare pole resolves
-            # through the manifold-label tier as a ``%`` push, not a negated
-            # vector, so the canonicalized form carries no sign.
-            if registry_key in profiles:
-                prev_alpha = out.get(registry_key, (0.0, trig))[0]
-                out[registry_key] = (prev_alpha + float(alpha), trig)
-            else:
-                out[name] = (float(alpha), trig)
-        return out
-
     def ensure_profile_registered(
         self, name: str, *, role: str = "vector",
     ) -> dict[int, torch.Tensor]:
-        """Direction profile for ``name`` — registered tensor or folded manifold.
+        """Direction profile for registry key ``name``, loading it if absent.
 
-        Steering directions come from the current manifold-first runtime:
-
-        1. an in-memory baked direction already in ``_profiles`` (ad-hoc
-           ``extract``/``clone``/``merge`` results, ``~``/``|`` projection
-           derivations) — returned verbatim;
-        2. a fitted 2-node ``pca`` manifold on disk — loaded via
-           :meth:`ensure_manifold_loaded`
-           and folded by :func:`~drowse.fit.capture.folded_directions`,
-           then memoized in ``_profiles``;
-
-        Raises :class:`ProfileNotRegisteredError` when nothing resolves.
+        In order: an in-memory profile already registered (extracts, clones,
+        merges, projection derivations); a reserved instrument atom
+        (``jlens/<word|#id>`` through the fitted Jacobian lens, ``sae/<id>``
+        through the resident SAE decoder); a fitted 2-node ``pca`` manifold
+        folded to its per-layer direction.  Raises
+        :class:`ProfileNotRegisteredError` when nothing resolves.
         """
         profiles = self._session._profiles
-        existing = profiles.get(name)
-        if existing is not None:
-            return existing
-        if ":" in name:
-            canonical, variant = name.rsplit(":", 1)
-        else:
-            canonical, variant = name, "raw"
-
-        # (1b) Reserved J-lens namespace: ``jlens/<word>`` resolves lazily
-        # through the model's fitted Jacobian lens (a per-layer ``W_U[v]@J_l``
-        # direction registered into the ordinary profile registry).  Raises
-        # ``LensNotFittedError`` (with the fit command) or
-        # ``MultiTokenWordError`` — never falls through to extraction.
-        if canonical.startswith("jlens/") and variant == "raw":
-            registered = self._session.register_jlens_direction(
-                canonical.split("/", 1)[1]
+        if name in profiles:
+            return profiles[name]
+        ns, atom, variant = _split_key(name)
+        if ns in RESERVED_NAMESPACES and variant == "raw":
+            if ns == "jlens":
+                return profiles[self._session.register_jlens_direction(atom)]
+            if ns == "sae":
+                return profiles[self._session.register_sae_direction(atom)]
+            raise ProfileNotRegisteredError(
+                f"'{ns}/' atoms are reserved and not steerable yet ({name!r})"
             )
-            return profiles[registered]
-
-        # (1c) Reserved SAE namespace: ``sae/<integer>`` is the resident
-        # release's decoder row at its hook layer. It is a steering-only
-        # profile; feature probes use the encoder readout channel instead.
-        if canonical.startswith("sae/") and variant == "raw":
-            registered = self._session.register_sae_direction(
-                canonical.split("/", 1)[1]
-            )
-            return profiles[registered]
-
-        # (2) Manifold-backed direction.
-        folded = self.try_fold_manifold(name)
-        if folded is not None:
-            profiles[name] = folded
-            return folded
-
-        raise ProfileNotRegisteredError(
-            f"No profile registered for {role} '{name}'"
-        )
+        folded = self.try_fold_manifold(name, role=role)
+        profiles[name] = folded
+        return folded
 
     def try_fold_manifold(
-        self, name: str,
-    ) -> dict[int, torch.Tensor] | None:
-        """Load a 2-node ``pca`` manifold for ``name`` and fold it to a vector.
+        self, name: str, *, role: str = "vector",
+    ) -> dict[int, torch.Tensor]:
+        """Load the fitted manifold ``name`` and fold it to a direction profile.
 
-        Returns the per-layer direction dict, or ``None`` when no fitted
-        manifold resolves (so the caller falls through to porting / autoload).
-        Re-raises only when a manifold *does* load but isn't a foldable 2-node
-        affine subspace — that's a usage error, not a miss.
+        A manifold miss becomes :class:`ProfileNotRegisteredError` (chained to
+        the miss); any other load failure (ambiguity, corrupt artifact)
+        propagates as itself.  A manifold that loads but isn't a 2-node affine
+        subspace is a usage error.
         """
         try:
             self.ensure_manifold_loaded(name)
-        except Exception:
-            return None
+        except ManifoldNotRegisteredError as miss:
+            raise ProfileNotRegisteredError(
+                f"No profile registered for {role} '{name}' "
+                f"({miss.args[0] if miss.args else miss})"
+            ) from miss
         from drowse.fit.capture import folded_directions
         try:
             return folded_directions(self._session._manifolds[name])
@@ -490,32 +434,19 @@ class SteeringComposer:
         self,
         entries: dict[str, SteeringStackEntry],
     ) -> None:
-        """Push an entries dict onto the steering stack and rebuild hooks.
+        """Push an entries dict onto the steering stack and install the new head.
 
-        If ``rebuild_hooks`` raises (e.g. an unknown vector
-        name hits ``ProfileNotRegisteredError``) the just-pushed entry is
-        rolled back before the exception propagates, so the stack is
-        never left with stale half-committed state.
+        Transactional: the rebuild composes and lowers before it touches the
+        installed plan, so if it raises (a composition error, an overlapping
+        manifold) the entry is popped and the outer scope stays installed.
 
-        Thread-safety: acquires :attr:`_gen_lock` (blocking) for the
-        rebuild phase.  In-flight generations hold the lock for their
-        whole forward+sample loop, so concurrent ``session.steering()
-        .__enter__()`` from a different thread waits until the active
-        generation finishes rather than mutating hook tensors mid-step.
-        Single-threaded users pay an uncontended acquire;
-        the server's per-session asyncio lock serializes requests
-        upstream so the contention path is exercised mostly by
-        ad-hoc multi-threaded callers.
-
-        Phase guard: rejects calls from the gen worker thread when
-        :attr:`_gen_phase` is ``RUNNING`` or ``FINALIZING`` (i.e. an
-        ``on_token`` callback re-entered the API mid-step).  RLock would
-        otherwise let the same-thread caller pass straight through —
-        the lock alone protects against cross-thread races, not
-        callback reentry.  Legitimate same-thread callers reach
-        ``push`` only during ``PREAMBLE`` (the internal
-        steering scope that ``_generate_core`` opens before flipping
-        to ``RUNNING``) or ``IDLE`` (regular user code between gens).
+        Thread-safety: acquires :attr:`_gen_lock` (blocking), which in-flight
+        generations hold for their whole loop, so a push from another thread
+        waits instead of mutating hook tensors mid-step.  Phase guard: a push
+        from the generation thread while ``RUNNING`` / ``FINALIZING`` is an
+        ``on_token`` callback re-entering the API and raises (the RLock alone
+        would let it through).  Legitimate callers push during ``PREAMBLE``
+        (``_generate_core``'s own scope) or ``IDLE``.
         """
         session = self._session
         # ``_generate_core``'s internal ``steering_cm.__enter__()`` runs
@@ -560,6 +491,10 @@ class SteeringComposer:
         guarding: acquires :attr:`_gen_lock` so the rebuild can't fire
         mid-step in another thread's generation, and rejects same-
         thread callback reentry during ``RUNNING`` / ``FINALIZING``.
+
+        Unlike :meth:`push`, a failed rebuild cannot keep the previous plan:
+        that plan belongs to the scope being exited.  The stack still pops and
+        all steering is uninstalled before the error propagates.
         """
         session = self._session
         if not self._stack:
@@ -581,7 +516,16 @@ class SteeringComposer:
         with session._gen_lock:
             self._stack.pop()
             # Rebuild through the session boundary after the stack mutation.
-            session._rebuild_steering_hooks()
+            # Fail closed: when the outer head no longer composes (a profile
+            # it named was unregistered inside the inner scope), the exited
+            # inner plan must not stay installed, so steering goes off and the
+            # error propagates.  The next push or pop re-installs from the
+            # stack.
+            try:
+                session._rebuild_steering_hooks()
+            except BaseException:
+                session._steering.clear_all()
+                raise
             # Symmetric with ``push``: the cached prefix is unsteered,
             # so only invalidate when what remains on the stack still steers the
             # prefill.  Popping back to a prefill-inactive (or empty) stack keeps
@@ -920,92 +864,78 @@ class SteeringComposer:
 
     # ------------------------------------------------------------- dispatch
 
-    def compose_steering_entries(
+    def compose(
         self,
         entries: dict[str, SteeringStackEntry],
-    ) -> None:
-        """Lower the active steering entries into the ``SteeringManager`` (4.0).
+        deps: "list[tuple[Callable[[], object], object]] | None" = None,
+    ) -> SteeringPlan:
+        """Compose resolved stack entries into a fresh :class:`SteeringPlan`.
 
-        Classifies every entry and composes the one unified backend:
+        Pure with respect to the installed state: nothing on the manager
+        changes, so a raising composition leaves the outer scope installed.
 
-        - **push** terms (vectors, poles, ``~``/``|`` projections, affine-``%``
-          manifolds) and **ablation** terms (``!``) are grouped by trigger;
-          each group is synthesized into one merged affine subspace via
-          :func:`~drowse.geometry.inject.synthesize_subspace` and registered with
-          :meth:`SteeringManager.add_subspace`;
-        - **curved-``%``** manifold terms each get their own two-op via
-          :meth:`SteeringManager.add_manifold`.
+        - push terms (vectors, poles, projections, affine ``%``) and ablation
+          terms (``!``) are grouped by trigger, and each group is synthesized
+          into one merged affine subspace
+          (:func:`~drowse.geometry.inject.synthesize_subspace`);
+        - each curved ``%`` term registers on its own.
 
-        A push fragment is ``(unit-dir rows, ‖d_L‖ coord, coeff)`` so the
-        synthesizer's ``Δ = Σ coeff·(coord @ basis)`` recovers the baked
-        direction; the coeff is the term's ``along`` (the strength composes into
-        the merged target).  Ablation directions slide their axis to the
-        neutral-anchored origin (coord 0 = mean-replacement).  The neutral
-        anchor is :attr:`layer_means`; a layer with no anchor is skipped.
+        A vector lowers through the one push path: folded to a neutral-anchored
+        one-pole ray and pushed label-form, exactly like an affine ``%`` term.
+        Ablations slide their axis to the neutral-anchored origin.  ``deps``
+        (when given) collects every registry object read, for the plan cache.
         """
+        from drowse.fit.capture import fold_directions_to_subspace
         from drowse.geometry.inject import synthesize_subspace
 
         session = self._session
-        steering = session._steering
-
-        steering.clear_all()
+        record = deps.append if deps is not None else (lambda _dep: None)
+        profiles = session._profiles
+        manifolds = session._manifolds
         neutral_means = session.layer_means
-
-        # Whitened push normalization (Mahalanobis-only): hand the synthesizer the
-        # session whitener so the per-layer ``along`` budget is the whitened
-        # displacement ``‖Δ‖_M`` and the target is a whitened-unit direction —
-        # making ``along`` a scale-stable strength knob instead of inheriting each
-        # node's raw-Euclidean distance from neutral (which spans ~100× across
-        # targets).
         whitener = session.whitener
+        record((lambda: session.layer_means, neutral_means))
+        record((lambda: session.whitener, whitener))
 
-        # trigger -> {
-        #   "push": [(basis_dirs, coord_dirs, coeff)],
-        #   "ablate": [(dirs, coeff)],
-        # }
-        #
-        # Ablation coefficients must remain attached to their directions all
-        # the way into synthesis.  Dropping them here silently turned every
-        # partial ablation (``0.15 !x``) into a full ablation.
-        grouped: dict[Trigger, dict[str, list[Any]]] = {}
+        def _profile(name: str, role: str) -> dict[int, torch.Tensor]:
+            prof = self.ensure_profile_registered(name, role=role)
+            record((lambda: profiles.get(name), prof))
+            return prof
 
-        def _bucket(trigger: Trigger) -> dict[str, list[Any]]:
-            return grouped.setdefault(trigger, {"push": [], "ablate": []})
-
-        from drowse.fit.capture import fold_directions_to_subspace
-
+        plan = SteeringPlan()
+        # trigger -> push [(basis_dirs, coord_dirs, coeff)] / ablate [(dirs, coeff)]
+        # Ablation coefficients stay attached to their directions into
+        # synthesis (``0.15 !x`` is a partial ablation, not a full one).
+        grouped: dict[Trigger, tuple[list[Any], list[Any]]] = {}
         for name, entry in entries.items():
             if isinstance(entry, AblationTerm):
-                ablate_prof = self.ensure_profile_registered(
-                    entry.target, role="ablation target",
-                )
+                ablate_prof = _profile(entry.target, "ablation target")
                 ablate_dirs = {
                     L: v.to(torch.float32).reshape(-1)
                     for L, v in ablate_prof.items()
                 }
-                _bucket(entry.trigger)["ablate"].append(
+                grouped.setdefault(entry.trigger, ([], []))[1].append(
                     (ablate_dirs, entry.coeff),
                 )
                 continue
             if isinstance(entry, ManifoldTerm):
-                manifold = session._manifolds.get(entry.manifold)
+                manifold = manifolds.get(entry.manifold)
                 if manifold is None:
                     raise ManifoldNotRegisteredError(
                         f"No manifold registered for '{entry.manifold}'"
                     )
+                record((lambda key=entry.manifold: manifolds.get(key), manifold))
                 if manifold.is_affine:
                     # Affine ``%`` joins the merged subspace as a rank-R push
-                    # toward the position's per-layer coords — a node's real
-                    # coords for label form (``personas%pirate``) or the cardinal
-                    # RBF layout blend for free coord form (``personas%c0,c1,…``).
+                    # toward the position's per-layer coords.
                     basis_dirs, coord_dirs = _affine_manifold_push(
                         manifold, entry.position,
                     )
-                    _bucket(entry.trigger)["push"].append(
+                    grouped.setdefault(entry.trigger, ([], []))[0].append(
                         (basis_dirs, coord_dirs, entry.along),
                     )
                 else:
-                    steering.add_manifold(
+                    plan.add_manifold(
                         entry.manifold, manifold,
                         position=entry.position,
                         along=entry.along, onto=entry.onto,
@@ -1013,108 +943,73 @@ class SteeringComposer:
                     )
                 continue
             alpha, trigger = entry
-            # 4.0 step 6b: every in-memory direction (ad-hoc extracts, clones,
-            # merges, ``~``/``|`` projections, or a folded bundled concept)
-            # lowers through the one push path — fold it to a neutral-anchored
-            # one-pole-ray subspace and push label-form, exactly as an affine
-            # ``%`` term does.  There is no separate baked-vector fragment.
-            prof = self.ensure_profile_registered(name)
             folded = fold_directions_to_subspace(
-                name, prof, neutral_means, whitener=whitener,
+                name, _profile(name, "vector"), neutral_means, whitener=whitener,
             )
             if not folded.layers:
                 continue
             basis_dirs, coord_dirs = _affine_manifold_push(
                 folded, folded.node_labels[0],
             )
-            _bucket(trigger)["push"].append((basis_dirs, coord_dirs, alpha))
+            grouped.setdefault(trigger, ([], []))[0].append(
+                (basis_dirs, coord_dirs, alpha),
+            )
 
-        # One merged affine subspace per active trigger group.
-        for i, (trigger, terms) in enumerate(grouped.items()):
-            if not terms["push"] and not terms["ablate"]:
-                continue
+        for i, (trigger, (push, ablate)) in enumerate(grouped.items()):
             synth = synthesize_subspace(
-                terms["push"], terms["ablate"], neutral_means=neutral_means,
-                whitener=whitener,
+                push, ablate, neutral_means=neutral_means, whitener=whitener,
             )
-            if not synth.layers:
-                continue
-            steering.add_subspace(
-                f"__affine__{i}", synth, trigger=trigger,
-            )
+            if synth.layers:
+                plan.add_subspace(f"__affine__{i}", synth, trigger=trigger)
+        return plan
 
-    def install_composed_steering(self) -> None:
-        """Attach the currently-composed steering entries to model layers.
+    def plan_for(self, entries: dict[str, SteeringStackEntry]) -> SteeringPlan:
+        """The composed plan for a flattened stack head, cached by its entries.
 
-        Compiled accelerator fast path: a static-affine pure-push steering lowers to
-        the persistent branchless offset buffers (traced into the compiled
-        graph) instead of transient ctx-consulting hooks — the latter would
-        force a per-gen ``torch.compile`` recompile and graph-break at every
-        layer.  Gated on the offsets being available (compiled session) and on
-        the capture being compile-clean too: either no probes, or this gen is
-        ``_compiled_clean_eligible`` so :meth:`_begin_capture` will ride the
-        persistent capture buffers instead of transient capture hooks (slice 2).
-        Anything that isn't a constant add (curved ``%``, gate, phase, ``!``
-        ablation) returns ``None`` from :meth:`compute_static_offsets` and falls
-        through to the transient eager path.
+        Stack entries are frozen, so the head itself is the key; a hit is
+        reused only while every registry object it was composed from is still
+        the one registered.  The plan memoizes its own lowering, so a hit also
+        skips :class:`~drowse.steering.hooks.AffineOp` compilation.
         """
-        session = self._session
-        steering = session._steering
-        session._steering_uses_compiled_offsets = False
-        if (
-            session._compiled
-            and session._device.type in {"cuda", "mps"}
-            and steering.has_compiled_offsets()
-            and (
-                not session._monitor.probe_names
-                or session._compiled_clean_eligible
-            )
-        ):
-            offsets = steering.compute_static_offsets()
-            if offsets is not None:
-                steering.detach_transient_hooks()
-                steering.write_compiled_offsets(offsets)
-                session._steering_uses_compiled_offsets = True
-                return
-        # Eager / general path: zero the persistent offsets (no stale push leaks
-        # into the eager model, whose layers carry the same persistent hooks)
-        # and attach the transient ctx-consulting hooks.
-        if steering.has_compiled_offsets():
-            steering.zero_compiled_offsets()
-        steering.apply_to_model(
-            session._layers, session._device, session._dtype,
-        )
+        key = tuple(entries.items())
+        cached = self._plans.get(key)
+        if cached is not None and cached.valid():
+            self._plans.move_to_end(key)
+            return cached.plan
+        deps: list[tuple[Callable[[], object], object]] = []
+        plan = self.compose(entries, deps)
+        self._plans[key] = _CachedPlan(plan, deps)
+        self._plans.move_to_end(key)
+        while len(self._plans) > _PLAN_CACHE_SIZE:
+            self._plans.popitem(last=False)
+        return plan
 
     def rebuild_hooks(self) -> None:
-        """Tear down existing hooks and install from the flattened stack head.
+        """Install the flattened stack head (or clear, when the stack is empty).
 
-        Called on every push/pop.  When the stack is empty this is a clean
-        ``clear_all``.  One hook installation per active layer regardless of
-        nesting depth — ``compose_steering_entries`` synthesizes the merged
-        affine subspace(s) + registers curved manifolds, and
-        ``SteeringManager.apply_to_model`` lowers them to per-layer
-        ``subspace_inject`` groups.
+        The installed steering is a function of the stack: an empty stack
+        uninstalls everything (offset buffers included), and a non-empty one
+        installs its composed plan.  Composition and lowering run before the
+        manager changes, so a failure leaves the previous plan installed.
         """
+        session = self._session
+        manager = session._steering
         flat = self.flatten_stack()
         if not flat:
-            self._session._steering.clear_all()
+            manager.clear_all()
             return
-        self.compose_steering_entries(flat)
-        self.install_composed_steering()
+        plan = self.plan_for(flat)
+        manager.install(plan, session._layers, session._device, session._dtype)
 
     def snapshot_steering_alphas(self) -> dict[str, float]:
         """Flatten the active steering stack for result steering receipts.
 
-        For a plain vector entry, ``entry[0]`` is the additive alpha (the
-        strength coefficient, typically in ``[0, 1]``).
-
-        For a :class:`~drowse.steering.grammar.ManifoldTerm`, ``entry.coeff``
-        delegates to ``entry.along`` — the *slide fraction* toward the manifold
-        position (clamped ``[0, 1]`` at injection time), not an additive
-        scalar.  These two kinds are semantically different (slide fraction vs
-        additive alpha), but both are reported as a single ``float`` here for
-        a uniform telemetry snapshot.  Callers that need to distinguish them
-        should inspect the live ``Steering.alphas`` dict directly.
+        For a plain vector entry, ``entry[0]`` is the signed push alpha.  For
+        an ablation it is the ablation strength, and for a
+        :class:`~drowse.steering.grammar.ManifoldTerm` it is ``along``: the
+        push magnitude toward the position on an affine fit, a slide fraction
+        capped at 1 on a curved one.  All are reported as one ``float`` for a
+        uniform receipt; callers that need the kind read ``Steering.alphas``.
         """
         snap: dict[str, float] = {}
         for name, entry in self.flatten_stack().items():

@@ -13,19 +13,21 @@ Grammar::
     label       := NAME                                # a manifold node label
     atom        := [ns "/"] NAME ["." NAME] [":" variant]
                  | "sae" "/" INT
+                 | ("jlens" | "slens") "/" "#" INT      # exact vocab id
     trigger     := phase ["&" gate] | gate
     phase       := preset | ("first" | "after") ":" INT
     preset      := "before" | "after" | "both" | "thinking" | "response"
                  | "prompt" | "generated"
     gate        := "when" ":" probe_atom op NUM
-    probe_atom  := NAME ["." NAME] ["[" INT "]"]       # vector probe (e.g. "angry.calm"),
-                                                       # optional coord-axis index
-                                                       # (e.g. "personas[3]")
-                 | NAME ":" ("fraction" | "membership")  # subspace fraction /
-                                                       # fuzzy tube-fit density
-                 | NAME "@" NAME                       # manifold label similarity (−dist)
-                 | NAME "~" NAME                       # fuzzy soft-assignment prob ∈[0,1]
-                 | "sae" "/" INT                     # resident SAE feature
+    probe_atom  := [ns "/"] NAME ["." NAME] ["[" INT "]"]  # vector probe (e.g.
+                                                       # "angry.calm"), optional
+                                                       # coord-axis index ("personas[3]")
+                 | [ns "/"] NAME ":" ("fraction" | "membership")  # subspace
+                                                       # fraction / tube-fit density
+                 | [ns "/"] NAME "@" NAME              # manifold label similarity (−dist)
+                 | [ns "/"] NAME "~" NAME              # soft-assignment prob ∈ [0,1]
+                 | "sae" "/" INT                       # resident SAE feature
+                 | ("jlens" | "slens") "/" "#" INT     # token probe by vocab id
     op          := ">" | ">=" | "<" | "<="
     coeff       := signed_float ("," signed_float)?  # comma-run of ≤2;
                                                        # >1 value is valid
@@ -36,6 +38,13 @@ Grammar::
                                                        # to DEFAULT_COEFF = 0.5
     variant     := "raw" | "sae" | "sae-" ID
                  | "role" | "role-" ID | "from" | "from-" ID
+
+Reserved instrument namespaces (:data:`RESERVED_NAMESPACES`: ``jlens``,
+``slens``, ``sae``, ``neuron``, ``head``) name instrument units, not fitted
+concepts: the name after the ``/`` is kept verbatim (case-preserving, so
+``jlens/Paris`` and ``@when:jlens/Paris`` agree and differ from
+``jlens/paris``), takes no ``:variant``, and never routes through the
+manifold tiers.
 
 ``!`` mean-ablates the selector (``h' = h − α(h·d̂ − μ·d̂)d̂``; bare
 ``!x`` is α=1.0); it does not compose with ``~`` / ``|`` / ``%``.  The
@@ -90,13 +99,11 @@ Concept names are ASCII identifiers: letter followed by any of
 identifiers are rejected.  Bipolar pairs join with ``.``
 (``human.artificial_intelligence``).
 
-Pole aliases (``wolf`` on top of an installed ``deer.wolf``) resolve via
-:func:`drowse.store.selectors.resolve_bare_atom`'s manifold-label tier (a
-bipolar pole is itself a node label, lowered to an affine ``%`` push)
-before the term lands in
-``Steering.alphas``.  Projection terms produce :class:`ProjectedTerm`
-values; the session materializes them into derived profiles on scope
-entry.
+A bare atom resolves through :func:`drowse.store.selectors.resolve_bare_atom`
+(manifold-label tier, then 2-node manifold name, then plain canonical concept)
+before the term lands in ``Steering.alphas``; a bipolar pole is itself a node
+label, lowered to an affine ``%`` push.  Projection terms produce
+:class:`ProjectedTerm` values that the composer materializes on scope entry.
 
 Manifold steering: the ``%`` infix operator places a generation at a
 point of a fitted manifold — ``manifold % coord_list``, e.g.
@@ -107,8 +114,7 @@ domain.  The parser only collects the coordinate tuple; arity and range
 are validated at manifold-load time, when the domain is known.  A ``%``
 selector does not compose with the ``~`` / ``|`` projection operators or
 with ``!`` ablation.  Manifold terms produce :class:`ManifoldTerm` values;
-the session loads the manifold artifact and the hook does a soft
-subspace-replace.
+the composer loads the manifold artifact and lowers it into the steering plan.
 """
 from __future__ import annotations
 
@@ -122,6 +128,15 @@ from drowse.steering.triggers import Trigger
 if TYPE_CHECKING:
     from drowse.steering.terms import AlphaEntry, Steering
 
+
+#: Instrument namespaces: atoms under them name instrument units (J-/S-lens
+#: tokens, SAE features, neurons, heads), not fitted concepts.  Their names
+#: skip slug canonicalization and take no variant, and no manifold may be
+#: authored under them.
+RESERVED_NAMESPACES = frozenset({"jlens", "slens", "sae", "neuron", "head"})
+
+# Namespaces whose atom also takes the exact-vocab-id form ``#<int>``.
+_TOKEN_ID_NAMESPACES = frozenset({"jlens", "slens"})
 
 # Default coefficient when a term omits the explicit number — the observed
 # coherent-α sweet spot post-share-baking.
@@ -204,10 +219,9 @@ class ProjectedTerm:
 class AblationTerm:
     """Mean-replacement ablation entry in ``Steering.alphas``.
 
-    The composer lowers an ``AblationTerm`` to an ablate fragment in
-    ``compose_steering_entries``, which ``synthesize_subspace`` folds into the
-    merged affine subspace (per-axis ``κ = 1`` on the ablation axes), attached
-    via ``SteeringManager.add_subspace``. Stored as a value inside
+    ``SteeringComposer.compose`` lowers it to an ablate fragment that
+    ``synthesize_subspace`` folds into the merged affine subspace (per-axis
+    ``κ`` on the ablation axes). Stored as a value inside
     ``Steering.alphas``; the key is ``"!<target>"`` so ablation entries never
     collide with plain-term entries on the same concept.
     """
@@ -220,21 +234,27 @@ class AblationTerm:
 class ManifoldTerm:
     """Manifold-steering entry in ``Steering.alphas``.
 
-    Produced by a ``manifold % position`` term.  The session loads the
+    Produced by a ``manifold % position`` term.  The composer loads the
     named :class:`~drowse.geometry.manifold.Manifold` artifact on scope entry
-    and hands the hook a per-layer subspace + domain + the authoring
-    ``position`` coords; the hook runs the unified along/onto injection
+    and lowers the term into the steering plan: an affine (flat) fit joins
+    the merged push subspace, a curved fit gets its own along/onto injection
     (:func:`~drowse.geometry.inject.subspace_inject`).  Stored as a value
     inside ``Steering.alphas`` under the key ``"<manifold>%<position>"`` so
     two positions on the same manifold compose as distinct entries and
     never collide with plain / projected / ablation keys.
 
-    The two coefficients (each clamped to ``[0, 1]`` at apply time):
+    The two coefficients:
 
     - ``along`` — slide the projected foot toward ``position`` geodesically
-      in coordinate space (the principled "directional" op).
+      in coordinate space (the principled "directional" op).  On an affine
+      fit it is the signed, unclamped push magnitude (negative pushes away);
+      on a curved fit it is a fraction of the way to the position — values
+      above 1 cap at 1 and a negative value raises
+      :class:`~drowse.errors.SteeringCompositionError`, since a curved
+      position has no opposite.
     - ``onto`` — collapse the off-manifold, in-subspace residual onto the
-      surface (vacuous when the surface fills its subspace).
+      surface, a fraction in ``[0, 1]`` (vacuous when the surface fills its
+      subspace, so ignored on an affine fit).
 
     The off-*subspace* residual is always kept verbatim, which is what lets a
     manifold term compose with neighbors at zero cross-talk; ``~`` / ``|``
@@ -292,7 +312,7 @@ _SINGLE_CHAR_TOKENS = {
     ".": "DOT", "/": "SLASH", ":": "COLON", "*": "STAR",
     "+": "PLUS", "-": "MINUS", "@": "AT", "~": "TILDE",
     "|": "ORTHO", "!": "BANG", "%": "PERCENT", ",": "COMMA",
-    "[": "LBRACK", "]": "RBRACK", "&": "AMP",
+    "[": "LBRACK", "]": "RBRACK", "&": "AMP", "#": "HASH",
 }
 
 # Comparison-op tokens.  Two-char ops (``>=``, ``<=``) take precedence
@@ -618,9 +638,7 @@ class _Parser:
         - Vector probe: ``IDENT`` optionally followed by ``.IDENT`` for
           a bipolar concept (e.g. ``angry.calm``), and an optional
           ``[<i>]`` coordinate-axis index (e.g. ``personas[3]``,
-          ``angry.calm[0]``).  No namespace prefix in v2.1 (the monitor
-          is keyed by canonical concept name regardless of which pack the
-          probe came from), and no SAE variant suffix.  The index selects
+          ``angry.calm[0]``).  No variant suffix.  The index selects
           one axis of the probe's coordinate readout; an un-indexed gate
           reads axis 0 (the only axis of a 2-node concept), so existing
           ``@when:angry.calm>0.4`` gates are unchanged.
@@ -653,25 +671,14 @@ class _Parser:
         probe_tok = self._expect("IDENT")
         probe = str(probe_tok.value)
         if self._peek().kind == "SLASH":
-            # Namespaced probe: ``<ns>/<name>`` — a J-lens token probe
-            # (``jlens/fake``) or a probe attached under a qualified selector
-            # (``default/emotions``).  Consumed before the channel
-            # discriminators so every channel shape composes with a
-            # namespaced probe; stored verbatim, matching the keys
-            # ``Monitor.flat_scalars`` emits.
+            # Namespaced probe: ``<ns>/<name>`` — an instrument probe
+            # (``jlens/fake``, ``jlens/#1234``, ``sae/12``) or a probe attached
+            # under a qualified selector (``default/emotions``).  Consumed
+            # before the channel discriminators so every channel shape
+            # composes with it; stored verbatim, matching the scalar keys the
+            # instruments emit.
             self._consume()
-            if probe == "sae" and self._peek().kind == "NUM":
-                ns_rhs = self._consume()
-                feature = float(ns_rhs.value)
-                if feature != int(feature) or feature < 0:
-                    raise SteeringExprError(
-                        "SAE feature id must be a non-negative integer",
-                        col=ns_rhs.col,
-                    )
-                probe = f"sae/{int(feature)}"
-            else:
-                ns_rhs = self._expect("IDENT")
-                probe = f"{probe}/{ns_rhs.value}"
+            probe = f"{probe}/{self._namespaced_name(probe)}"
         nxt = self._peek().kind
         if nxt == "COLON":
             # Manifold subspace-fraction gate: ``<manifold>:fraction``.
@@ -819,6 +826,28 @@ class _Parser:
             return _Selector(base=base, operator=op, onto=onto)
         return _Selector(base=base, operator=None, onto=None)
 
+    def _namespaced_name(self, namespace: str) -> str:
+        """Consume the name after ``<namespace>/`` (the ``/`` already consumed).
+
+        ``sae/<int>`` takes a feature id and ``jlens``/``slens`` also take an
+        exact vocab id ``#<int>``; everything else is an identifier.
+        """
+        if namespace == "sae" and self._peek().kind == "NUM":
+            return str(self._non_negative_int("SAE feature id"))
+        if namespace in _TOKEN_ID_NAMESPACES and self._peek().kind == "HASH":
+            self._consume()
+            return f"#{self._non_negative_int('token id')}"
+        return str(self._expect("IDENT").value)
+
+    def _non_negative_int(self, what: str) -> int:
+        tok = self._expect("NUM")
+        value = float(tok.value)
+        if value != int(value) or value < 0:
+            raise SteeringExprError(
+                f"{what} must be a non-negative integer", col=tok.col,
+            )
+        return int(value)
+
     def _atom(self) -> _Atom:
         first = self._expect("IDENT")
         col = first.col
@@ -827,18 +856,7 @@ class _Parser:
         if self._peek().kind == "SLASH":
             self._consume()
             namespace = concept
-            if namespace == "sae" and self._peek().kind == "NUM":
-                second = self._consume()
-                feature = float(second.value)
-                if feature != int(feature) or feature < 0:
-                    raise SteeringExprError(
-                        "SAE feature id must be a non-negative integer",
-                        col=second.col,
-                    )
-                concept = str(int(feature))
-            else:
-                second = self._expect("IDENT")
-                concept = str(second.value)
+            concept = self._namespaced_name(namespace)
         if self._peek().kind == "DOT":
             self._consume()
             rhs = self._expect("IDENT")
@@ -848,6 +866,12 @@ class _Parser:
             self._consume()
             v = self._expect("IDENT")
             variant = str(v.value)
+            if namespace in RESERVED_NAMESPACES:
+                raise SteeringExprError(
+                    f"'{namespace}/' atoms name instrument units and take no "
+                    f"':{variant}' variant",
+                    col=v.col,
+                )
         return _Atom(
             namespace=namespace, concept=concept, variant=variant, col=col,
         )
@@ -874,7 +898,11 @@ def _resolve_atom(atom: _Atom) -> str:
     are always vector concepts and must not route through the manifold
     tiers; the plain-term path in :func:`_fold` runs the full
     :func:`~drowse.store.selectors.resolve_bare_atom` ladder instead.
+
+    A reserved instrument namespace keeps its name verbatim.
     """
+    if atom.namespace in RESERVED_NAMESPACES:
+        return f"{atom.namespace}/{atom.concept}"
     from drowse.store.selectors import canonicalize_atom
 
     raw = atom.concept
@@ -1106,7 +1134,11 @@ def _fold(
         # bare pole resolves through the label tier as an affine ``%`` push.
         # Ordering + cross-tier ``AmbiguousSelectorError`` arbitration live in
         # the resolver, not here.
-        if sel.operator is None and not term.ablation:
+        if (
+            sel.operator is None
+            and not term.ablation
+            and sel.base.namespace not in RESERVED_NAMESPACES
+        ):
             profile_key = _resolve_atom(sel.base)
             if profile_key in registered_profiles:
                 if len(term.coeffs) > 1:
@@ -1403,6 +1435,7 @@ def referenced_selectors(
 __all__ = [
     "DEFAULT_COEFF",
     "DEFAULT_ABLATION_COEFF",
+    "RESERVED_NAMESPACES",
     "AblationTerm",
     "ManifoldTerm",
     "ProjectedTerm",

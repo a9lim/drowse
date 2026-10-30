@@ -17,7 +17,8 @@ from tokenizers.pre_tokenizers import Whitespace
 from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
 
 from drowse.generation import decode as generation
-from drowse.steering.hooks import HiddenCapture, SteeringManager
+from drowse.readout.capture_buffer import HiddenCapture
+from drowse.steering.hooks import SteeringManager
 from drowse.session.session import DrowseSession
 from drowse.model.scene import SeatWrapper, TurnGrammar
 

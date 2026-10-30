@@ -203,8 +203,6 @@ def _fast_batch_session():
     s_any._steering = SimpleNamespace(
         ctx=TriggerContext(),
         reset_manifold_feet=lambda: None,
-        has_compiled_offsets=lambda: False,
-        zero_compiled_offsets=lambda: None,
     )
     s._lens_instrument.live = None
     s._lens_instrument.probes = {}
@@ -213,12 +211,11 @@ def _fast_batch_session():
     s._active_gen_reservation = None
     s._last_token_probe_payload = None
     s._capture_state = CaptureState()
-    from drowse.steering.hooks import HiddenCapture
+    from drowse.readout.capture_buffer import HiddenCapture
     s._capture = HiddenCapture()
     s._compiled_clean_eligible = False
     s._incremental_readings = []
     s._incremental_gate_scores = []
-    s._steering_uses_compiled_offsets = False
     s._last_per_token_scores = None
     s._last_result = None
     s._readout_long_tensor_cache = {}
@@ -254,7 +251,7 @@ def _fast_batch_session():
 
 def _probe_fast_batch_session():
     import torch
-    from drowse.steering.hooks import HiddenCapture
+    from drowse.readout.capture_buffer import HiddenCapture
 
     s, _model = _fast_batch_session()
     s._layers = torch.nn.ModuleList([torch.nn.Identity()])
@@ -815,6 +812,7 @@ class TestPrefixCacheEligibility:
         s_any._steering = SimpleNamespace(
             all_fast_path=lambda: True,
             static_steerable=lambda: False,
+            uses_compiled_offsets=False,
             ctx=None,
             hooks={},
         )
@@ -827,7 +825,6 @@ class TestPrefixCacheEligibility:
         s_any._tokenizer = object()
         s_any._gen_state = object()
         s._capture_state = CaptureState(persistent=False)
-        s._steering_uses_compiled_offsets = False
         s_any._capture = SimpleNamespace(
             ingest_persistent=lambda: None,
             fire_step_sink=lambda: None,

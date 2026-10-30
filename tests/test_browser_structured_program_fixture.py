@@ -143,7 +143,7 @@ def test_jlens_fixture_matches_python_token_direction() -> None:
 def test_gate_fixture_matches_python_trigger(gate_index: int) -> None:
     fixture = json.loads(FIXTURE.read_text())["gates"][gate_index]
     steering = parse_expr(fixture["expression"])
-    trigger = next(iter(steering.normalized_entries().values()))[1]
+    trigger = next(iter(steering.entries().values()))[1]
     for case in fixture["contexts"]:
         context = TriggerContext(
             is_prefill=case["prefill"],

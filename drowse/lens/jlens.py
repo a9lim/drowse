@@ -92,6 +92,36 @@ class MultiTokenWordError(ValueError, DrowseError):
         return (400, str(self) or self.__class__.__name__)
 
 
+class InvalidTokenIdError(ValueError, DrowseError):
+    """Raised when a ``jlens/#<id>`` atom is malformed or outside the vocabulary."""
+
+    def user_message(self) -> tuple[int, str]:
+        return (400, str(self) or self.__class__.__name__)
+
+
+def resolve_token_atom(tokenizer: Any, atom: str, *, vocab_size: int) -> int:
+    """Map the name after ``jlens/`` to the vocab id it addresses.
+
+    ``#<int>`` is the exact-vocab-id form: the id is taken as written and
+    bounds-checked against ``vocab_size`` (the unembedding's row count), never
+    tokenized, so it reaches tokens with no clean single-word spelling.  Any
+    other name is a word and resolves through :func:`resolve_word_token`.
+    """
+    if not atom.startswith("#"):
+        return resolve_word_token(tokenizer, atom)
+    digits = atom[1:]
+    if not (digits.isascii() and digits.isdigit()):
+        raise InvalidTokenIdError(
+            f"token-id atom {atom!r} must be '#' followed by a non-negative integer"
+        )
+    token_id = int(digits)
+    if token_id >= vocab_size:
+        raise InvalidTokenIdError(
+            f"token id {token_id} is outside this vocabulary (size {vocab_size})"
+        )
+    return token_id
+
+
 def resolve_word_token(tokenizer: Any, word: str) -> int:
     """Map a word to the single vocab id its J-lens direction should use.
 

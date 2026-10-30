@@ -188,6 +188,8 @@ class _Stub(DrowseSession):
     def __init__(self, profiles: dict[str, Any]) -> None:
         import threading
         self._profiles = dict(profiles)
+        self._manifolds = {}
+        self._model_info = {"model_id": "stub/model"}
         # v2.2: _push_steering / _pop_steering acquire _gen_lock and
         # consult _gen_phase + _internal_steering_pop.
         self._gen_lock = threading.RLock()
