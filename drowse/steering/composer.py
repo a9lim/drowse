@@ -137,8 +137,12 @@ class SteeringComposer:
                 )
                 continue
             if isinstance(val, ManifoldTerm):
-                self.ensure_manifold_loaded(val.manifold)
-                entries[name] = val
+                manifold_key = self.concretize_key(val.manifold)
+                self.ensure_manifold_loaded(manifold_key)
+                entries[name] = (
+                    val if manifold_key == val.manifold
+                    else replace(val, manifold=manifold_key)
+                )
                 continue
             alpha, trig = term_entry(val, steering.trigger)
             key = name if name in profiles else self.concretize_key(name)

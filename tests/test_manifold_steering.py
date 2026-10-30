@@ -362,7 +362,6 @@ def test_manager_steer_n2_manifold():
 
 def test_manager_position_length_mismatch_raises():
     manifold = _manifold2d(layers=(0,))
-    mgr = SteeringManager()
     plan = SteeringPlan()
     # A 2-D manifold steered with a single coordinate.  The expression itself
     # was well-formed, so this is a composition failure (422), not a parse

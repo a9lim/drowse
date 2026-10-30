@@ -193,6 +193,27 @@ def test_repeated_push_reuses_the_composed_plan(monkeypatch: pytest.MonkeyPatch)
     assert calls == [("a",), ("a",)]
 
 
+def test_bare_variant_manifold_term_concretizes_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``emotions:role%pirate`` used to reach the loader unconcretized and fail."""
+    from drowse.steering.grammar import parse_expr
+
+    session, _buffers = _session(compiled=False)
+    composer = session._steering_composer
+    monkeypatch.setattr(
+        composer, "concretize_key",
+        lambda key: key.replace(":role", ":role-pirate"),
+    )
+    loaded: list[str] = []
+    monkeypatch.setattr(composer, "ensure_manifold_loaded", loaded.append)
+    entries, _snapshots = composer.resolve(parse_expr("0.5 emotions:role%pirate"))
+    (term,) = entries.values()
+    assert isinstance(term, ManifoldTerm)
+    assert term.manifold == "emotions:role-pirate"
+    assert loaded == ["emotions:role-pirate"]
+
+
 def test_unknown_vector_raises_before_the_scope_is_entered() -> None:
     from drowse.session.session import ProfileNotRegisteredError
 
