@@ -241,7 +241,6 @@ def finalize_generation(
         }))
 
     if not stateless and assistant_node_id is not None:
-        session._stamp_raw_indices(assistant_node_id)
         # Decoded thinking-channel text, joined from the streamed token
         # rows — stamped so history re-renders can carry the block
         # through the family's think delimiters (the stitcher applies

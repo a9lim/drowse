@@ -105,6 +105,10 @@ TokenRow = dict[str, Any]
 Role = Literal["user", "assistant", "system"]
 
 
+def _copy_list(value: list[Any] | None) -> list[Any] | None:
+    return list(value) if value is not None else None
+
+
 @dataclass
 class LoomNode:
     """A single node in the loom tree.
@@ -193,9 +197,11 @@ class LoomNode:
             "recipe": self.recipe.to_dict() if self.recipe is not None else None,
         }
         if include_tokens:
-            out["tokens"] = self.tokens
-            out["thinking_tokens"] = self.thinking_tokens
-            out["raw_token_ids"] = self.raw_token_ids
+            # Copy the lists: a streaming node's lists keep growing after
+            # this snapshot is taken (rows themselves are never mutated).
+            out["tokens"] = _copy_list(self.tokens)
+            out["thinking_tokens"] = _copy_list(self.thinking_tokens)
+            out["raw_token_ids"] = _copy_list(self.raw_token_ids)
         return out
 
     @classmethod
@@ -382,6 +388,14 @@ class LoomTree:
 
     def has(self, node_id: str) -> bool:
         return node_id in self.nodes
+
+    def node_to_dict(
+        self, node_id: str, *, include_tokens: bool = False,
+    ) -> dict[str, Any]:
+        """Serialize one node under the tree lock — a stable snapshot even
+        while a generation streams rows into it."""
+        with self._lock:
+            return self.get(node_id).to_dict(include_tokens=include_tokens)
 
     def children(self, node_id: str) -> list[LoomNode]:
         with self._lock:

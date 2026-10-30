@@ -7875,32 +7875,6 @@ class DrowseSession:
             min_elapsed_for_rate=MIN_ELAPSED_FOR_RATE,
         )
 
-    def _stamp_raw_indices(self, node_id: str) -> None:
-        """Stamp each emitted token row with its ``generated_ids`` index.
-
-        ``state.emit_map`` records ``(raw_index, is_thinking)`` per emitted
-        token in emission order; the node's ``tokens`` / ``thinking_tokens``
-        rows are in that same order, split by the thinking flag.  The
-        stamped ``raw_index`` is the join key a logit fork uses to slice
-        ``raw_token_ids`` at the clicked token — emitted-token coordinates
-        don't line up with raw decode steps once delimiters (suppressed)
-        and partial-UTF-8 runs (merged) enter the picture.
-        """
-        node = self.tree.nodes.get(node_id)
-        if node is None:
-            return
-        resp_rows = node.tokens or []
-        think_rows = node.thinking_tokens or []
-        r_i = t_i = 0
-        for raw_index, is_thinking in self._gen_state.emit_map:
-            if is_thinking:
-                if t_i < len(think_rows):
-                    think_rows[t_i]["raw_index"] = raw_index
-                    t_i += 1
-            elif r_i < len(resp_rows):
-                resp_rows[r_i]["raw_index"] = raw_index
-                r_i += 1
-
     def _generation_preamble(self, input: Any, raw: bool, thinking: bool, stateless: bool = False,
                              parent_node_id: str | None = None,
                              user_role: str | None = None,
@@ -9175,6 +9149,14 @@ class DrowseSession:
                             float(perplexity) if perplexity is not None else None
                         ),
                     }
+                    # The decode loop records this emission's
+                    # ``generated_ids`` index just before the tap runs: the
+                    # join key a logit fork uses to slice ``raw_token_ids``.
+                    # Stamped here so the row is complete (and never
+                    # mutated again) once it lands in the tree.
+                    emit_map = self._gen_state.emit_map
+                    if emit_map:
+                        token_row["raw_index"] = int(emit_map[-1][0])
                     if top_alts:
                         token_row["top_alts"] = [
                             {
