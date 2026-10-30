@@ -278,7 +278,7 @@ a guarded spectral fallback. Ambient rank, coverage, and neighborhood-collapse
 checks reject unsupported charts. A periodic RBF must beat mean-only GCV before
 it can take priority over a flat approximation. Triangle-budget exhaustion
 raises rather than truncating. Sphere/Mobius type inference and some thin/3D
-tori remain unresolved; see `browser-runtime/TOPOLOGY_VALIDATION_2026-09-05.md`.
+tori remain unresolved; see `browser-runtime/TOPOLOGY_VALIDATION_2026-09-05.md` in a drowse.ai checkout.
 The historical fixture-specific loop-recovery examples below are not universal
 guarantees. Existing automatic artifacts require explicit forced refitting.
 

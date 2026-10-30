@@ -1,3 +1,2 @@
 # Vite's generated runtime includes significant whitespace in a template literal.
 drowse/web/dist/assets/*.js whitespace=-trailing-space
-browser-runtime/forks/*.patch whitespace=-blank-at-eol

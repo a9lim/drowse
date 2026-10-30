@@ -2,7 +2,7 @@ import {
   validateConversationSnapshot,
   type ConversationSnapshotV7,
 } from "./conversationSnapshot";
-import { migrateLegacyDatabase } from "../hosted/runtime/brandMigration";
+import { migrateLegacyDatabase } from "./brandMigration";
 import { isChatAccent, type ChatAccent } from "./chatAccent";
 
 const DATABASE_NAME = "drowse-saved-conversations";

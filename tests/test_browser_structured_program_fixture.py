@@ -21,9 +21,9 @@ from drowse.core.triggers import TriggerContext
 
 
 FIXTURE = (
-    Path(__file__).parents[1]
-    / "browser-runtime"
+    Path(__file__).parent
     / "fixtures"
+    / "browser"
     / "structured-program-parity-v1.json"
 )
 

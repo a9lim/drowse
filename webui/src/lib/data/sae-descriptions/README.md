@@ -16,13 +16,12 @@ from the explanation exports documented at <https://docs.neuronpedia.org/api>.
 plus the output hash and exact provider weights hash. No activation examples,
 embeddings, or conversations are included.
 
-To refresh from the current publisher exports, run from `webui/`:
+To refresh from the current publisher exports, run from `webui/` (drowse.ai's
+`sae-descriptions.test.mjs` validates the result against its hosted packs):
 
 ```sh
 node scripts/build-sae-descriptions.mjs
-node scripts/sae-descriptions.test.mjs
 npm run build
-npm run build:hosted
 ```
 
 The generator checks the current Neuronpedia model/source and HF dictionary

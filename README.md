@@ -1,6 +1,6 @@
 # Drowse
 
-[![CI](https://github.com/a9lim/drowse/actions/workflows/ci.yml/badge.svg)](https://github.com/a9lim/drowse/actions/workflows/ci.yml)
+[![CI](https://github.com/stdlogits/drowse/actions/workflows/ci.yml/badge.svg)](https://github.com/stdlogits/drowse/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
@@ -33,41 +33,15 @@ uv pip install -e ".[cuda,flash]"
 drowse serve google/gemma-3-4b-it --device cuda
 ```
 
-## Hosted browser edition status
+## Browser edition
 
-The repository includes an isolated Svelte PWA for the on-device WebGPU
-edition. The runtime and distribution locks are `verified`, enabling installation
-from the signed catalog after the browser's device checks pass. These release
-checks do not guarantee that every GPU remains stable under model load.
-The [published model files](https://huggingface.co/logitsml/drowse-web-catalog)
-are available separately; their upload alone does not establish compatibility.
-Base-model file links appear on the home page without a beta badge.
-Gemma PT still has a matched-weight numerical discrepancy; Qwen 3.5 still needs
-matched-quantization validation. Matching core packs and a signed installation
-catalog also remain required. J-lens and SAE are optional for base-model setup.
-The development fixture is deterministic test data, not real inference.
-
-The device check shows the selected GPU vendor and architecture when the browser
-exposes them. Its short compute test is not a full model-load stress test. On
-Windows, an Intel adapter gets conditional guidance for selecting a dedicated
-GPU through the browser's Windows Graphics settings. Two recorded device losses
-since the last successful load block further loads on that device profile;
-changing models or context length does not bypass that block. Software fallback
-adapters remain unsupported, including in remote sessions without hardware WebGPU.
-
-Windows Chromium on an identified Intel `gen-9` adapter is conservatively blocked
-before model loading following a reported GPU-process watchdog hang during
-initialization. Other Intel generations retain a warning. Chrome on Windows
-ignores WebGPU's `powerPreference`; Drowse cannot enumerate or select a hidden
-dedicated GPU. On dual-GPU laptops, copy
-`chrome://flags/#force-high-performance-gpu` into Chrome's address bar, enable it,
-restart Chrome, and run the device check again. Confirm that the selected adapter
-is the dedicated GPU. This changes GPU routing, not the GPU's memory capacity.
-
-The hosted edition keeps prompts, conversations, activations, and
-fitted artifacts on the device. WebGPU is mandatory for inference; it does not
-fall back to cloud inference or CPU-only inference. The existing Python server
-and bundled dashboard remain supported alongside the hosted edition.
+[drowse.ai](https://drowse.ai) runs the same dashboard in the browser, with
+inference, steering, probes, and the J-lens on the device through WebGPU and no
+server. Its source, the in-browser runtime, and its release tooling live in
+[stdlogits/drowse.ai](https://github.com/stdlogits/drowse.ai), which pins this
+repository as a submodule for the shared dashboard and the Python reference
+implementation. The Python server and the bundled dashboard described here are
+independent of it.
 
 ## WebUI
 
@@ -504,7 +478,7 @@ It never contains model weights, J-lenses, or SAEs. A fitted two-node PCA manifo
 can instead be exported as a llama.cpp control-vector GGUF with
 `drowse pack export gguf`.
 
-Hosted-browser discovery accepts only Hugging Face repositories tagged
+The drowse.ai browser edition discovers only Hugging Face repositories tagged
 `drowse-manifold` that publish exactly one `.drowse` at the repository root
 and a root `manifold.json` summary. The browser resolves the repository to an
 immutable 40-character commit, streams the archive into browser-local storage,
@@ -576,7 +550,7 @@ For questions, feedback, or research inquiries, email
 
 Please update to the latest Drowse release before filing a bug. Include the model
 ID, device, dtype or quantization mode, Drowse version, and a minimal reproduction
-in [GitHub Issues](https://github.com/a9lim/drowse/issues).
+in [GitHub Issues](https://github.com/stdlogits/drowse/issues).
 
 Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 

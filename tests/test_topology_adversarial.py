@@ -12,7 +12,7 @@ from drowse.core.topology import (
 )
 
 
-with (Path(__file__).parents[1] / "browser-runtime/fixtures/topology-adversarial-v1.csv").open() as fixture:
+with (Path(__file__).parent / "fixtures" / "browser" / "topology-adversarial-v1.csv").open() as fixture:
     CASES = list(csv.DictReader(fixture))
 
 

@@ -14,9 +14,9 @@ from drowse.core.generation import (
 
 
 FIXTURE = (
-    Path(__file__).parents[1]
-    / "browser-runtime"
+    Path(__file__).parent
     / "fixtures"
+    / "browser"
     / "sampling-parity-v1.json"
 )
 

@@ -1,5 +1,5 @@
 import { tick } from "svelte";
-import { migrateLegacyStorageItem } from "../hosted/runtime/brandMigration";
+import { migrateLegacyStorageItem } from "./brandMigration";
 
 export type Theme = "light" | "dark";
 

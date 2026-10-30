@@ -31,65 +31,14 @@ git diff --exit-code ../drowse/web/dist
 `npm run build` wipes and regenerates the committed production bundle. CI repeats
 both commands and fails if the rebuilt bundle differs.
 
-### Test the hosted app on an iPhone
+### The hosted build
 
-An iPhone must load the LAN build over trusted HTTPS for WebGPU, workers, and
-device storage to run in a secure context. Connect the Mac and iPhone to the same
-Wi-Fi network, then run:
-
-```bash
-npm run dev:hosted:ios
-```
-
-The command discovers the Mac's LAN address, creates a local development CA and
-a certificate containing the current LAN addresses, and starts the hosted Vite
-app on `0.0.0.0:4173`. It prints the exact Safari URL and the path of the public
-CA certificate to AirDrop. Private keys remain under the git-ignored
-`../browser-runtime/.local-build/https/` directory and are never printed.
-
-On the iPhone:
-
-1. AirDrop the printed `.cer` file to the iPhone and accept it.
-2. Open **Settings > General > VPN & Device Management**, select the downloaded
-   **Drowse local development CA** profile, and install it.
-3. Open **Settings > General > About > Certificate Trust Settings** and enable
-   full trust for **Drowse local development CA**.
-4. Open the printed `https://<LAN-IP>:4173/app` URL in Safari.
-5. To install it as a web app, use **Share > Add to Home Screen > Add**.
-
-Run the command again after the Mac's LAN address changes; the server certificate
-is regenerated with the new address. Use `npm run dev:hosted:ios -- --port 4180`
-to choose another port, or `--ip <address>` if automatic LAN discovery selects
-the wrong interface. Safari 26 or newer is required for WebGPU. Passing the
-compatibility screen establishes browser capabilities, but model inference still
-needs validation on each physical iPhone model and available-memory class.
-
-For an existing trusted certificate, the hosted Vite config also accepts
-`DROWSE_HTTPS_CERT` and `DROWSE_HTTPS_KEY`; set both or neither. HTTPS
-does not remove the hosted server's COOP/COEP isolation headers.
-
-#### Physical iPhone release gate
-
-Keep iPhone inference marked as a preview until a release candidate passes this
-matrix in Safari on real hardware. Record the iPhone model, iOS build, available
-storage, model variant, runtime identity, and context size with the result.
-
-- Start from cleared site data, pass the graphics and OPFS write/read/delete
-  checks over trusted HTTPS, and install the site from **Add to Home Screen**.
-- Download each offered compact model and its required J-lens; pause, resume,
-  reload, and verify hashes without restarting the download.
-- Load and generate at the 2,048-token context and 256-token output limits;
-  exercise Stop, retry, background/foreground, device loss, and a second-tab
-  takeover while generation is active.
-- Open a saved chat after killing and relaunching the web app. Confirm model,
-  avatar, branches, response settings, and generated text all persist.
-- Pan, zoom, branch, and inspect tokens in Loom in portrait, landscape, and with
-  the software keyboard open. Enable J-lens live readings only on demand.
-- On a compatible Gemma model, install the SAE separately and verify feature
-  reads and steering. Models without an SAE must keep that surface unavailable.
-- Run one 8 GB-class iPhone expected to load the compact model and one lower-
-  memory device expected to fail safely, preserve downloaded data, and require
-  an explicit retry rather than entering a reload loop.
+[drowse.ai](https://drowse.ai) builds this same source with a WebGPU runtime in
+place of the HTTP client. That shell, its runtime, and its tests live in
+[stdlogits/drowse.ai](https://github.com/stdlogits/drowse.ai), which pins this
+repository as a submodule. The `@runtime-*` aliases in `vite.config.ts` are the
+seams it swaps; keep shared code behind `lib/runtime/client.ts` (enforced by
+`scripts/check-runtime-boundary.mjs`) rather than importing the HTTP client.
 
 ## Application shape
 

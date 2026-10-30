@@ -1,4 +1,4 @@
-import type { HostedShellSnapshot } from "../hosted/ui/types";
+import type { HostedShellSnapshot } from "./shell";
 import { chatAccentPalette, isChatAccent } from "./chatAccent";
 import { icon as tabArtwork, frameCount, frameInterval, animatedStates } from "./tab-icon-artwork.mjs";
 

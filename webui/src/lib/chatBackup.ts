@@ -1,8 +1,8 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { CONVERSATION_SAMPLING_KEYS, validateConversationSnapshot, type ConversationSnapshotV7 } from "./conversationSnapshot";
 import { defaultConversationName, validateSavedConversationRecord, type ConversationLibrary, type SavedConversationRecord, type SavedConversationSummary } from "./conversationLibrary";
-import { validateHostedLoomTree } from "../hosted/runtime/sessionPersistence";
-import { migrateLegacyRecord } from "../hosted/runtime/brandMigration";
+import { validateHostedLoomTree } from "./sessionPersistence";
+import { migrateLegacyRecord } from "./brandMigration";
 
 export const CHAT_BACKUP_FORMAT = "drowse-chat-backup";
 export const CHAT_BACKUP_VERSION = 1;

@@ -1,5 +1,5 @@
 import type { HostedController, RuntimeCapabilities, RuntimeClient } from "../runtime/contracts";
-import type { HostedShellController } from "../../hosted/ui/types";
+import type { HostedShellController } from "../shell";
 import type { JobRegistry } from "./jobs";
 import type { SessionInfo } from "../types";
 

@@ -13,17 +13,17 @@ from drowse.core.manifold import synthesize_subspace
 
 FIXTURE = json.loads(
     (
-        Path(__file__).parents[1]
-        / "browser-runtime"
+        Path(__file__).parent
         / "fixtures"
+        / "browser"
         / "affine-ablation-lowering-v1.json"
     ).read_text()
 )
 COMPOSED = json.loads(
     (
-        Path(__file__).parents[1]
-        / "browser-runtime"
+        Path(__file__).parent
         / "fixtures"
+        / "browser"
         / "affine-composed-lowering-v1.json"
     ).read_text()
 )

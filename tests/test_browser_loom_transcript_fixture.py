@@ -11,9 +11,9 @@ from drowse.core.loom import CastMember, LoomTree, Recipe
 
 
 FIXTURE = (
-    Path(__file__).parents[1]
-    / "browser-runtime"
+    Path(__file__).parent
     / "fixtures"
+    / "browser"
     / "loom-operation-transcript-v1.json"
 )
 

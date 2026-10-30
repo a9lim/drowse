@@ -17,7 +17,7 @@ export function createPublicTools(hostedSite: boolean): AppTool[] {
         description: "Drowse runs language models, shapes responses with activation steering, and inspects their internal representations through geometry, lens, and SAE instruments.",
         runtime: hostedSite ? "Hosted app: inference and saved data live in this browser." : "Python dashboard: the connected server owns the model.",
         examples: ["Speak like a pirate: use style instructions for a chat model.", "Compare activation interventions: discover compatible controls and compare matched branches.", "Base models: raw continuations use a text scaffold or compatible steering."],
-        links: { app: hostedSite ? "/app" : "/", documentation: "https://github.com/a9lim/drowse", contact: "https://drowse.ai/contact", credits: "https://drowse.ai/credits" },
+        links: { app: hostedSite ? "/app" : "/", documentation: "https://github.com/stdlogits/drowse", contact: "https://drowse.ai/contact", credits: "https://drowse.ai/credits" },
       }),
     }),
     tool({
