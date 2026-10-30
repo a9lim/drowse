@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Iterable, Mapping
+from typing import Iterable, Mapping
 
 import torch
 
@@ -225,62 +225,6 @@ class LayerWhitener:
     def layer_means(self) -> dict[int, torch.Tensor]:
         """Defensive copy of the neutral means defining this metric."""
         return {layer: mean.clone() for layer, mean in self._mean.items()}
-
-    @classmethod
-    def from_cache(
-        cls,
-        model_id: str,
-        *,
-        ridge_scale: float = DEFAULT_RIDGE_SCALE,
-        expected_identity: dict[str, Any] | None = None,
-    ) -> "LayerWhitener":
-        """Load a whitener from the neutral-activation pointer (no model load).
-
-        The single offline whitener loader — used by ``manifold compare`` and
-        the cross-model transfer rebake.  Reads only
-        ``neutral_activations.json`` from ``~/.drowse/models/<safe_id>/``
-        and derives the per-layer centering mean from the activations
-        themselves (``X.mean(0)``): the neutral mean *is* the probe-centering
-        baseline (same corpus, same pooling), so there is no separate
-        ``layer_means`` cache.  Raises :class:`WhitenerError` with a
-        populating-command hint when the neutral cache is missing — offline
-        tools shouldn't silently load a model.
-
-        Use :meth:`from_neutral_activations` instead when the activations are
-        already in memory (e.g. inside a live ``DrowseSession``).
-        """
-        from drowse.base.paths import model_dir
-        from drowse.store.neutral import load_validated_neutral_cache
-
-        md = model_dir(model_id)
-        pointer_path = md / "neutral_activations.json"
-        if not pointer_path.is_file():
-            raise WhitenerError(
-                f"whitener cache missing for {model_id} "
-                f"(expected {pointer_path.name} under {md}); populate via any flow "
-                f"that loads the model + neutral activations (e.g. run any "
-                f"session-level extract on this model, or prepare a transfer "
-                f"that targets {model_id})"
-            )
-        try:
-            acts_raw, sidecar = load_validated_neutral_cache(model_id)
-            if expected_identity is not None:
-                from drowse.store.neutral import neutral_cache_identity
-
-                if neutral_cache_identity(sidecar) != expected_identity:
-                    raise ValueError("neutral cache identity changed")
-        except Exception as exc:
-            raise WhitenerError(
-                f"whitener cache for {model_id} is stale, corrupt, or legacy; "
-                "load the model once to regenerate neutral activations"
-            ) from exc
-        # ``load_validated_neutral_cache`` already rejects a non-fp32 or
-        # non-finite store (re-raised above as ``WhitenerError``), so the
-        # decoded map is the exact fp32 neutral corpus.
-        means = {layer: tensor.mean(dim=0) for layer, tensor in acts_raw.items()}
-        return cls.from_neutral_activations(
-            acts_raw, means, ridge_scale=ridge_scale,
-        )
 
     # ---- introspection -------------------------------------------------
 

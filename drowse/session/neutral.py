@@ -1,7 +1,7 @@
 """NeutralBaseline — the per-model neutral means and Mahalanobis whitener.
 
 Both read the one fp32 neutral-activation cache
-(:func:`~drowse.store.neutral.load_or_compute_neutral_activations`): the
+(:func:`~drowse.fit.neutral.load_or_compute_neutral_activations`): the
 probe-centering mean is its per-layer ``X.mean(0)`` and the whitener's
 covariance is built from the same stack, so one load produces both.
 
@@ -115,7 +115,7 @@ class NeutralBaseline:
                 "active steering scope; exit session.steering() first"
             )
         from drowse.geometry.whitener import LayerWhitener
-        from drowse.store.neutral import load_or_compute_neutral_activations
+        from drowse.fit.neutral import load_or_compute_neutral_activations
 
         try:
             acts = load_or_compute_neutral_activations(

@@ -341,10 +341,10 @@ def _merge_into_manifold_locked(
         # metric. Offline means model-free, not metric-free: current baked
         # manifolds use the same Mahalanobis unit and neutral anchor as live
         # composition.
-        from drowse.geometry.whitener import LayerWhitener
+        from drowse.store.neutral import load_neutral_whitener
 
         model_id = unsafe_model_id(sid)
-        whitener = LayerWhitener.from_cache(model_id)
+        whitener = load_neutral_whitener(model_id)
         manifold = fold_directions_to_subspace(
             name, merged, whitener.layer_means,
             whitener=whitener, label="merged",

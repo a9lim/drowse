@@ -49,7 +49,7 @@ def _seed_neutral_cache(model_id: str, *, n: int = 64, seed: int = 5) -> None:
     """Write a per-model neutral-activation disk cache.
 
     ``manifold compare`` builds its (mandatory) whitener via
-    ``LayerWhitener.from_cache(model_id)`` — there is no Euclidean path — so the
+    ``load_neutral_whitener(model_id)`` — there is no Euclidean path — so the
     sharded disk cache must exist for the layers the folded manifolds occupy. The
     probe-centering mean is derived from these activations (``X.mean(0)``), so
     there is no separate ``layer_means`` cache to seed.

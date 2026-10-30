@@ -336,7 +336,7 @@ class TestNeutralBaselineLazy:
         from contextlib import nullcontext
 
         from drowse.session.neutral import NeutralBaseline
-        from drowse.store import neutral as neutral_store
+        from drowse.fit import neutral as neutral_store
 
         def _load(*args: Any, **kwargs: Any) -> dict[int, torch.Tensor]:
             calls.append(kwargs["model_id"])
@@ -382,7 +382,7 @@ class TestNeutralBaselineLazy:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from drowse.errors import DrowseError
-        from drowse.store import neutral as neutral_store
+        from drowse.fit import neutral as neutral_store
 
         calls: list[str] = []
         baseline = self._baseline(monkeypatch, {}, calls)

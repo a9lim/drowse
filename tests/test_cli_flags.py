@@ -965,7 +965,7 @@ def _stub_folds(monkeypatch: pytest.MonkeyPatch, profiles: dict[str, Any]) -> No
     """Serve ``profiles`` (keyed ``name`` or ``name:variant``, all under
     ``default/``) through the compare/why fold helpers."""
     import drowse.cli.verbs.manifold as verbs
-    from drowse.geometry import whitener
+    from drowse.store import neutral as neutral_store
 
     def fold(ref: str, model_id: str) -> Any:
         typed_ns, _, rest = ref.rpartition("/")
@@ -980,7 +980,7 @@ def _stub_folds(monkeypatch: pytest.MonkeyPatch, profiles: dict[str, Any]) -> No
     monkeypatch.setattr(verbs, "_fold_all", lambda _m: {
         ("default", key): p for key, p in profiles.items() if ":" not in key
     })
-    monkeypatch.setattr(whitener.LayerWhitener, "from_cache", classmethod(lambda cls, _m, **_k: object()))
+    monkeypatch.setattr(neutral_store, "load_neutral_whitener", lambda _m, **_k: object())
 
 
 def test_compare_rank_all_verbose(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

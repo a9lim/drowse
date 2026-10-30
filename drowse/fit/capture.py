@@ -680,7 +680,7 @@ def compute_neutral_activations(
 
     Storage cost: ~90 · n_layers · hidden_dim · 4B in fp32 (≈ 56MB on
     a 4096-dim, 80-layer model).  Callers persist this through
-    :func:`drowse.store.neutral.load_or_compute_neutral_activations`.
+    :func:`drowse.fit.neutral.load_or_compute_neutral_activations`.
     """
     if device is None:
         device = next(model.parameters()).device

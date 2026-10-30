@@ -512,9 +512,9 @@ def _layer_rows(per_layer: dict[int, float]) -> dict[str, float]:
 def run_compare(args: argparse.Namespace) -> None:
     """Mahalanobis cosine between steering vectors: rank every other fitted
     vector (one reference), pairwise (two), or the N×N matrix (three+)."""
-    from drowse.geometry.whitener import LayerWhitener
+    from drowse.store.neutral import load_neutral_whitener
 
-    whitener = LayerWhitener.from_cache(args.model)
+    whitener = load_neutral_whitener(args.model)
 
     def cos(a: "Profile", b: "Profile") -> float:
         return a.cosine_similarity(b, whitener=whitener)

@@ -39,8 +39,10 @@ from drowse.store.alignment import (
     load_alignment_map,
     save_alignment_map,
 )
-from drowse.store.neutral import (
+from drowse.fit.neutral import (
     _load_or_compute_neutral_activations_with_metadata_locked,
+)
+from drowse.store.neutral import (
     load_validated_neutral_cache,
     neutral_cache_identity,
     neutral_fit_lock,
