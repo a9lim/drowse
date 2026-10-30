@@ -152,34 +152,10 @@ def test_steering_expr_error_carries_col_in_message():
 
 def test_server_routes_user_message_status_codes():
     """The server's exception handlers honor ``user_message()`` status."""
-    from unittest.mock import MagicMock
-
     from fastapi.testclient import TestClient
 
     from drowse.server import create_app
-
-    def _mock_session():
-        s = MagicMock()
-        s.model_id = "test/model"
-        s.model_info = {
-            "model_type": "gemma2",
-            "num_layers": 26,
-            "hidden_dim": 2304,
-            "vram_used_gb": 5.2,
-            "param_count": 2_614_000_000,
-            "dtype": "torch.bfloat16",
-        }
-        s.config = MagicMock()
-        s.config.temperature = 1.0
-        s.config.top_p = 0.9
-        s.config.max_new_tokens = 1024
-        s.config.system_prompt = None
-        s.profiles = {}
-        s.probes = {}
-        s.history = []
-        s._tokenizer = MagicMock()
-        s._tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
-        return s
+    from tests.support.server import mock_session
 
     # 409: ConcurrentGenerationError already pinned by test_server.py;
     # we add coverage for one more family per status to confirm
@@ -192,7 +168,7 @@ def test_server_routes_user_message_status_codes():
     ]
 
     for exc, expected_status in cases:
-        session = _mock_session()
+        session = mock_session()
         session.generate.side_effect = exc
         app = create_app(session)
         client = TestClient(app)

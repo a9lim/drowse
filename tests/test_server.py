@@ -27,6 +27,16 @@ def _mock_session():
     return mock_session()
 
 
+def test_mock_session_rejects_names_and_calls_the_session_lacks() -> None:
+    """The shared route mock is an autospec, so a route reaching a removed
+    session method, or calling one with a stale signature, fails."""
+    session = _mock_session()
+    with pytest.raises(AttributeError):
+        session.no_such_session_method  # noqa: B018
+    with pytest.raises(TypeError):
+        session.generate("hi", no_such_kwarg=1)
+
+
 def _single_run(**kwargs: Any) -> RunSet:
     return RunSet([GenerationResult(**kwargs)])
 

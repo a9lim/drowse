@@ -3,8 +3,9 @@
 :func:`mock_session` returns a ``MagicMock`` wired with the session surface
 the OpenAI, Ollama and native routes read on every request: model identity
 and info, a sampling config, an idle loom tree, the three instrument faces
-(idle, no probes), the Monitor, the generation state and a working event bus
-(``session._event_subscribers`` lists the live subscribers).  Keyword
+(idle, no probes), the Monitor, the generation state and a working event bus.
+It is an autospec of ``DrowseSession``: a name the class does not define
+reads as ``AttributeError`` and method calls are signature-checked.  Keyword
 overrides are applied last; :func:`script_generate` makes its
 ``generate`` stream scripted tokens.  :class:`StubSession` is a hand-written
 session over a real :class:`LoomTree` with scripted generation, for the loom
@@ -18,19 +19,20 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, create_autospec
 
 from drowse.events import EventBus
 from drowse.generation.results import GenerationResult, RunSet
 from drowse.loom.recipe import Recipe
 from drowse.loom.tree import LoomTree
 from drowse.readout.types import GeometryLiveState, LensLiveState, SaeLiveState
+from drowse.session.session import DrowseSession
 from tests.support.tokens import emit_token
 
 __all__ = ["StubSession", "mock_session", "script_generate"]
 
 
-def _event_bus(session: Any) -> Any:
+def _event_bus() -> Any:
     subscribers: list[Any] = []
 
     def _subscribe(cb: Any) -> Any:
@@ -54,13 +56,18 @@ def _event_bus(session: Any) -> Any:
     events = MagicMock()
     events.subscribe = _subscribe
     events.emit = _emit
-    session._event_subscribers = subscribers
     return events
 
 
 def mock_session(**overrides: Any) -> Any:
-    """A ``MagicMock`` shaped like an idle ``DrowseSession``."""
-    session = MagicMock()
+    """An autospec of ``DrowseSession`` shaped like an idle session.
+
+    Reading a name the class does not define raises ``AttributeError`` and
+    every method call is checked against the real signature, so a route that
+    calls a removed or renamed session method fails here instead of passing
+    against a permissive mock.
+    """
+    session = create_autospec(DrowseSession, instance=True)
     session.model_id = "test/model"
     session.model_info = {
         "model_type": "gemma2",
@@ -71,13 +78,9 @@ def mock_session(**overrides: Any) -> Any:
         "device": "cpu",
         "dtype": "torch.bfloat16",
     }
-    session._device = "cpu"
-    session._dtype = "torch.bfloat16"
-    session._created_ts = 1_700_000_000
     session.model = MagicMock()
     session.renderer.model_type = "gemma2"
     session.layers = [MagicMock() for _ in range(26)]
-    session._layers = []
 
     session.config = MagicMock()
     session.config.temperature = 1.0
@@ -139,7 +142,7 @@ def mock_session(**overrides: Any) -> Any:
     gen_state.finish_reason = "stop"
     gen_state.emit_map = []
     session.generation_state = gen_state
-    session.events = _event_bus(session)
+    session.events = _event_bus()
 
     for key, value in overrides.items():
         setattr(session, key, value)

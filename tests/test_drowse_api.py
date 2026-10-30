@@ -1460,94 +1460,65 @@ class TestAnalyticsMultiNodeProbe:
     not 500 on ``folded_directions`` (regression: a rank-8 probe attached
     while the web UI polled ``/correlation`` aborted the request)."""
 
-    def _wire(self, session_and_client: Any) -> tuple[Any, TestClient]:
-        import threading
-
+    @pytest.fixture
+    def wired(
+        self, tiny_session: Any, app_client: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[Any, TestClient]:
+        """A real session with one registered steering vector (``vx``), one
+        foldable R=1 vector probe (``vp``) and one rank-3 multi-node probe
+        (``fan``, the shape that used to crash), at the session's width."""
         import torch
 
-        from drowse.geometry.whitener import LayerWhitener
         from drowse.geometry.domains import CustomDomain
-        from drowse.geometry.subspace import LayerSubspace
-        from drowse.geometry.manifold import Manifold
-        from drowse.session.session import DrowseSession
         from drowse.geometry.fold import fold_directions_to_subspace
+        from drowse.geometry.manifold import Manifold
+        from drowse.geometry.subspace import LayerSubspace
+        from tests.support.sessions import register_vectors
 
-        session, client = session_and_client
-        torch.manual_seed(3)
-
-        # One registered steering vector + one foldable (R=1) vector probe +
-        # one rank-3 multi-node probe (the shape that used to crash), all over
-        # layers {0, 1} in dim 4.
-        vx = {0: torch.randn(4), 1: torch.randn(4)}
+        session = tiny_session
+        register_vectors(session, "vx")
+        dim = int(session.model_info["hidden_dim"])
+        layers = range(len(session.layers))
         g = torch.Generator().manual_seed(11)
-        acts = {L: torch.randn(80, 4, generator=g) for L in (0, 1)}
-        means = {L: torch.zeros(4) for L in (0, 1)}
-        whitener = LayerWhitener.from_neutral_activations(acts, means)
         vp = fold_directions_to_subspace(
-            "vp", {0: torch.randn(4), 1: torch.randn(4)}, means,
-            whitener=whitener,
+            "vp", {L: torch.randn(dim, generator=g) for L in layers},
+            session.layer_means, whitener=session.whitener,
         )
-        K, R, D = 4, 3, 4
-        basis, _ = torch.linalg.qr(torch.randn(D, R))
-        basis = basis.T.contiguous()
+        K, R = 4, 3
+        node_coords = torch.randn(K, R, generator=g)
         fan = Manifold(
             name="fan",
             domain=CustomDomain(R),
             node_labels=[f"n{i}" for i in range(K)],
-            node_coords=torch.randn(K, R),
+            node_coords=node_coords,
             layers={
                 L: LayerSubspace.affine(
-                    torch.zeros(D), basis, node_coords=torch.randn(K, R),
+                    session.layer_means[L].clone(),
+                    torch.linalg.qr(torch.randn(dim, R, generator=g))[0].T.contiguous(),
+                    node_coords=node_coords.clone(),
                 )
-                for L in (0, 1)
+                for L in layers
             },
+            mahalanobis_share={L: 1.0 for L in layers},
         )
-
-        # These stubs feed the *engine's own* analytics methods, bound real
-        # below — ``analytics_names`` / ``_live_direction_tensors`` read the
-        # session's registry and ``self._monitor`` directly, so the stub seeds
-        # a real registry and the private monitor backing.
-        from drowse.session.registry import ArtifactRegistry, ModelBinding
-
-        session._registry = ArtifactRegistry(ModelBinding(
-            model=None, tokenizer=None, model_id="stub/model",
-            device=torch.device("cpu"), dtype=torch.float32,
-        ))
-        session._registry.put_profile("vx", vx)
-        session._monitor.probe_names = ["vp", "fan"]
-        session._monitor.manifolds = {"vp": vp, "fan": fan}
-        session._gen_lock = threading.Lock()
-        # ``analytics_names`` reads the roster through the geometry
-        # instrument's LOCKED ``manifolds()`` snapshot now — a bare MagicMock
-        # instrument silently yields an empty roster, so wire the real one
-        # (it reads the same ``session._monitor.manifolds`` stub above).
-        from drowse.readout.geometry import GeometryInstrument
-        from tests.support.replay import unwired_replay
-
-        session._geometry_instrument = GeometryInstrument(
-            session, replay=unwired_replay,
+        served = {"vp": vp, "fan": fan}
+        monkeypatch.setattr(
+            session.registry, "ensure_manifold_loaded", lambda key: served[key],
         )
-        # Bind the real analytics methods onto the mock so the endpoint
-        # exercises the production fold path, not a vacuous MagicMock.
-        session.analytics_names = lambda: DrowseSession.analytics_names(session)
-        session._live_direction_tensors = (
-            lambda n: DrowseSession._live_direction_tensors(session, n)
-        )
-        session.analytics_profile = (
-            lambda n: DrowseSession.analytics_profile(session, n)
-        )
+        session.add_probe("vp")
+        session.add_probe("fan")
+        return session, app_client(session, default_steering=None)
 
-        session.whitener = whitener
-        return session, cast(TestClient, client)
-
-    def test_analytics_names_excludes_multinode(self, session_and_client: Any) -> None:
-        session, _ = self._wire(session_and_client)
+    def test_analytics_names_excludes_multinode(self, wired: Any) -> None:
+        session, _ = wired
         # The fan is dropped; the vector and the R=1 probe survive.
+        assert set(session.probes) == {"vp", "fan"}
         assert session.analytics_names() == ["vp", "vx"]
-        assert session._live_direction_tensors("fan") is None
+        assert session.analytics_profile("fan") is None
+        assert session.analytics_profile("vp") is not None
 
-    def test_correlation_skips_multinode_no_500(self, session_and_client: Any) -> None:
-        _, client = self._wire(session_and_client)
+    def test_correlation_skips_multinode_no_500(self, wired: Any) -> None:
+        _, client = wired
         r = client.get("/drowse/v1/sessions/default/correlation")
         assert r.status_code == 200
         body = r.json()
@@ -1556,13 +1527,13 @@ class TestAnalyticsMultiNodeProbe:
         # The surviving pair has a real (non-null) cosine cell.
         assert body["matrix"]["vp"]["vx"] is not None
 
-    def test_correlation_explicit_multinode_404(self, session_and_client: Any) -> None:
-        _, client = self._wire(session_and_client)
+    def test_correlation_explicit_multinode_404(self, wired: Any) -> None:
+        _, client = wired
         r = client.get("/drowse/v1/sessions/default/correlation?names=fan,vx")
         assert r.status_code == 404
 
-    def test_pairwise_multinode_404(self, session_and_client: Any) -> None:
-        _, client = self._wire(session_and_client)
+    def test_pairwise_multinode_404(self, wired: Any) -> None:
+        _, client = wired
         r = client.get("/drowse/v1/sessions/default/profiles/pairwise?a=fan&b=vx")
         assert r.status_code == 404
 

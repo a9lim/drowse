@@ -18,6 +18,7 @@ from tests.support.lens import lens_kwargs
 from drowse.sae.instrument import SaeInstrument
 from drowse.server.instrument_routes import instrument_families
 from tests.support.sae import MockSaeBackend, make_resident, sae_instrument
+from tests.support.server import mock_session
 
 _SID = "default"
 _BASE = f"/drowse/v1/sessions/{_SID}/instruments"
@@ -88,23 +89,13 @@ class _FakeSae(SaeInstrument):
 
 
 def _mock_session() -> Any:
-    session = MagicMock()
-    session.model_id = "test/model"
-    session.model_info = {
-        "model_type": "gemma2", "num_layers": 26, "hidden_dim": 2304,
-        "device": "cpu", "dtype": "torch.bfloat16",
-    }
-    session.model = MagicMock()
+    """The shared mock session with real instruments over a faked source
+    lifecycle, keyed by the registry the routes validate ``{family}`` against."""
+    # The token-validate tests script the tokenizer per test.
+    session = mock_session(tokenizer=MagicMock())
     session.model.config.model_type = "gemma2"
-    session.layers = [MagicMock() for _ in range(26)]
-    session.config = MagicMock()
-    session.config.system_prompt = None
-    session.config.thinking = None
-    session.tokenizer = MagicMock()
-
-    # The read plane: real instruments over a faked source lifecycle, keyed
-    # by the registry the routes validate ``{family}`` against.
-    session._monitor.probe_names = []
+    # ``GeometryInstrument`` still takes the session and reads its monitor.
+    session._monitor = MagicMock(probe_names=[])
     # Each family's token replay is a mock the tests script
     # (``session.<family>_replay``); the instruments build the envelope.
     session.geometry_replay = MagicMock()
