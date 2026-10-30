@@ -853,7 +853,7 @@ class DrowseSession:
             lambda *args, **kwargs: self._model.generate(*args, **kwargs),  # pyright: ignore[reportCallIssue]  # transformers stubs don't expose generate
             self._tokenizer, device=self._device,
             traits=self._chat, scene=lambda: self.scene_grammar,
-            model_type=self._resolved_model_type(),
+            model_type=self._renderer.model_type,
         )
         self._extraction = Extraction(
             self, self.events, self._corpus,
@@ -1422,13 +1422,13 @@ class DrowseSession:
                 else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
-                prompt_ids = self._renderer.prepare_input(
+                prompt_ids = self.renderer.prepare_input(
                     "", raw=True, parent_node_id=node.parent_id,
                 )
             else:
                 # Continue-mode rebuild — seat-general, mirrors
                 # :func:`drowse.session.replay.replay_token`.
-                prompt_ids = self._renderer.prepare_input(
+                prompt_ids = self.renderer.prepare_input(
                     None,
                     thinking=use_thinking,
                     parent_node_id=node.parent_id,

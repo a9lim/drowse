@@ -24,7 +24,7 @@ import torch
 
 from drowse.fit.capture import _capture_all_hidden_states
 from drowse.loom.errors import InvalidNodeOperationError
-from drowse.loom.recipe import INHERIT_SYSTEM_PROMPT
+from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT
 
 if TYPE_CHECKING:
     from drowse.session.session import DrowseSession
@@ -100,7 +100,7 @@ def replay_token(
             else bool(thinking_req) and traits.supports_thinking
         )
         if raw:
-            prompt_ids = session._prepare_input(
+            prompt_ids = session.renderer.prepare_input(
                 "", raw=True, parent_node_id=node.parent_id,
             )
         else:
@@ -108,7 +108,7 @@ def replay_token(
             # carries every prior turn with its stamped label, so the render
             # is byte-identical to the one that produced the node, for any
             # seat.
-            prompt_ids = session._prepare_input(
+            prompt_ids = session.renderer.prepare_input(
                 None,
                 thinking=use_thinking,
                 parent_node_id=node.parent_id,

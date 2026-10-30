@@ -48,7 +48,12 @@ class _TreeStubSession:
         del msg, phase_msg
         yield
 
-    def _prepare_input(
+    @property
+    def renderer(self) -> Any:
+        """The prompt renderer the replay rebuilds through: this stub."""
+        return self
+
+    def prepare_input(
         self,
         input: Any,
         raw: bool = False,

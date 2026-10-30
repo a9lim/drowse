@@ -1268,7 +1268,12 @@ class TreeLensHarness(LensHarness):
         self.prepare_calls: list[dict[str, Any]] = []
         self.steering_scopes: list[Any] = []
 
-    def _prepare_input(
+    @property
+    def renderer(self) -> Any:
+        """The prompt renderer the replay rebuilds through: this stub."""
+        return self
+
+    def prepare_input(
         self,
         input: Any,
         raw: bool = False,

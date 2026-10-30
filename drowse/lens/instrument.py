@@ -1449,7 +1449,7 @@ class LensInstrument:
         bad target, ``ValueError`` on an unfitted layer.
         """
         from drowse.loom.errors import InvalidNodeOperationError
-        from drowse.loom.recipe import INHERIT_SYSTEM_PROMPT
+        from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT
 
         host = self._replay_host
         if host is None:
@@ -1492,14 +1492,14 @@ class LensInstrument:
                 else bool(thinking_req) and supports_thinking
             )
             if raw:
-                prompt_ids = host._prepare_input(
+                prompt_ids = host.renderer.prepare_input(
                     "", raw=True, parent_node_id=node.parent_id,
                 )
             else:
                 # Continue-mode rebuild: the history walk to the parent
                 # carries every prior turn with its stamped label, so the
                 # render is byte-identical to the one that produced the node.
-                prompt_ids = host._prepare_input(
+                prompt_ids = host.renderer.prepare_input(
                     None,
                     thinking=use_thinking,
                     parent_node_id=node.parent_id,
