@@ -27,6 +27,7 @@ from drowse.events import EventBus
 from drowse.loom.recipe import Recipe
 from drowse.loom.tree import LoomTree
 from drowse.generation.results import GenerationResult, RunSet
+from tests.support.tokens import emit_token
 
 # ---------------------------------------------------------------------------
 # Test session factory
@@ -91,7 +92,6 @@ class _StubSession:
         # test can pin the ``done`` frame's aggregate channel.
         self.stub_probe_readings: dict[str, Any] = {}
         self.stub_lens_readings: dict[str, Any] = {}
-        self.token_probe_payload: dict[str, Any] = {}
         self._tokenizer = MagicMock()
         self._tokenizer.encode.side_effect = lambda text, **_: [
             3000 + i for i, _ch in enumerate(str(text))
@@ -214,7 +214,7 @@ class _StubSession:
             try:
                 token_text = f"tok{sibling_idx}"
                 if on_token is not None:
-                    on_token(token_text, False, 1000 + sibling_idx, None, None)
+                    emit_token(on_token, token_text, 1000 + sibling_idx)
                 self.tree.append_token(
                     assistant_id, {"token_id": 1000 + sibling_idx, "text": token_text},
                 )
@@ -282,8 +282,8 @@ class _StubSession:
         assistant_id = self.tree.begin_assistant(user_id)
         try:
             if on_token is not None:
-                on_token(text, False, 2000, None, None)
-                on_token("-cont", False, 2001, None, None)
+                emit_token(on_token, text, 2000)
+                emit_token(on_token, "-cont", 2001, index=1)
             self.tree.append_token(
                 assistant_id, {"token_id": 2000, "text": text},
             )

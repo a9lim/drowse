@@ -37,6 +37,7 @@ from drowse.generation.results import (
 )
 from tests._fakes import make_mock_session
 from tests._generation_stream import TestGenerationStream
+from tests.support.tokens import emit_token
 
 
 def manifold_json_stub(namespace: str, name: str, **extra: Any) -> dict[str, Any]:
@@ -162,7 +163,6 @@ def _mock_session():
     # The WS token-frame builder consults this first; a real None lets the
     # inline ``_monitor`` / ``_capture`` scoring branch run (a bare
     # MagicMock would shadow it with a truthy child mock).
-    session.token_probe_payload = {}
 
     gen_state = MagicMock()
     gen_state.finish_reason = "stop"
@@ -807,8 +807,8 @@ class TestWebSocketProbeReadings:
     ``measurements`` envelope on every ``token`` frame when probes are attached,
     and the final ``done`` event still carries the aggregate ``probe_readings``
     (plus its own aggregate-scope ``measurements`` envelope).  Manifold readings
-    are supplied by the session token tap via ``session.token_probe_payload``;
-    the WS token-frame builder only forwards that payload's envelope.
+    are supplied by the engine's token tap on each ``TokenEvent``; the WS
+    token-frame builder only forwards that event's envelope.
 
     Regression for the Phase 3c bug where the webui mini-map cursor
     stayed stuck at ``awaiting first token...`` because the WS ``token``
@@ -860,18 +860,20 @@ class TestWebSocketProbeReadings:
 
             for i, tok in enumerate(tokens):
                 if on_token is not None:
-                    if getattr(session.monitor, "probe_names", None):
-                        session.token_probe_payload = {
-                            "measurements": build_measurements(
-                                scope="token",
-                                geometry_readings=(
-                                    session.monitor.score_single_token({})
-                                ),
+                    measurements = (
+                        build_measurements(
+                            scope="token",
+                            geometry_readings=(
+                                session.monitor.score_single_token({})
                             ),
-                        }
-                    else:
-                        session.token_probe_payload = {}
-                    on_token(tok, False, 1000 + i, None, None)
+                        )
+                        if getattr(session.monitor, "probe_names", None)
+                        else None
+                    )
+                    emit_token(
+                        on_token, tok, 1000 + i, index=i,
+                        measurements=cast(dict[str, Any] | None, measurements),
+                    )
                 time.sleep(0.001)
             result = GenerationResult(
                 text="".join(tokens),

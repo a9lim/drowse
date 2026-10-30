@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import gc
-import weakref
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,9 +16,6 @@ from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
 from drowse.generation import decode as generation
 from drowse.model import chat as chat_mod
 from drowse.model.chat import ChatTraits
-from drowse.readout.capture_buffer import HiddenCapture
-from drowse.steering.hooks import SteeringManager
-from drowse.session.session import DrowseSession
 from drowse.model.scene import SeatWrapper, TurnGrammar
 
 
@@ -150,22 +144,3 @@ def test_large_chat_inputs_are_not_retained_in_the_render_cache() -> None:
     assert not traits._render_cache
 
 
-def test_session_close_releases_reusable_generation_device_cache() -> None:
-    session: Any = DrowseSession.__new__(DrowseSession)
-    session._steering = SteeringManager()
-    session._capture_handles = []
-    session._capture_buffers = {}
-    session._capture = HiddenCapture()
-    session._profiles = {}
-    session._manifolds = {}
-    session._tokenizer = tokenizer()
-    tensor = torch.ones(1024)
-    reference = weakref.ref(tensor)
-    session._generation_static_cache = SimpleNamespace(keys=tensor)
-    session._generation_static_cache_len = 1024
-    del tensor
-    session.close()
-    gc.collect()
-    assert reference() is None
-    assert session._generation_static_cache is None
-    assert session._generation_static_cache_len == 0

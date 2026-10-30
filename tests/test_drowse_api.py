@@ -21,6 +21,7 @@ from drowse.generation.decode import GenerationConfig
 from drowse.generation.results import GenerationResult, RunSet
 from drowse.server.ws_models import WSSamplingParams, build_sampling_config
 from tests._fakes import make_mock_session
+from tests.support.tokens import emit_token
 
 
 def _mock_session():
@@ -41,7 +42,6 @@ def _mock_session():
     session.sae_info = None
     session.scene_grammar = None
     session.joint_logprob_cache = {}
-    session.token_probe_payload = {}
     # Read plane: the three instrument faces the routes and session_info read.
     session.geometry.names = []
     session.geometry.specs.return_value = {}
@@ -679,7 +679,7 @@ class TestWebSocket:
                  on_token: Any = None, parent_node_id: Any = None, n: Any = 1,
                  append_same_role: Any = True) -> Any:
             for i, tok in enumerate(tokens):
-                on_token(tok, False, 1000 + i, None, None)  # pyright: ignore[reportOptionalCall]
+                emit_token(on_token, tok, 1000 + i, index=i)
                 time.sleep(0.001)
             result = GenerationResult(
                 text="".join(tokens), tokens=list(range(1000, 1000 + len(tokens))),
@@ -819,8 +819,8 @@ class TestWebSocket:
             callbacks.append(on_token)
             idx = len(callbacks) - 1
             if idx == 1:
-                callbacks[0]("late-first", False, 1999, None, None)
-                on_token("second", False, 2000, None, None)
+                emit_token(callbacks[0], "late-first", 1999)
+                emit_token(on_token, "second", 2000)
                 text = "second"
                 tokens = [2000]
             else:
@@ -931,7 +931,7 @@ class TestWebSocket:
                  append_same_role: Any = True) -> Any:
             calls.append(str(input))
             time.sleep(0.02 if input == "one" else 0.001)
-            on_token(str(input), False, 1000 + len(calls), None, None)  # pyright: ignore[reportOptionalCall]
+            emit_token(on_token, str(input), 1000 + len(calls))
             result = GenerationResult(
                 text=str(input), tokens=[1000 + len(calls)],
                 token_count=1, tok_per_sec=50.0, elapsed=0.02,

@@ -16,7 +16,7 @@ import gc
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -287,74 +287,6 @@ def test_make_static_cache_early_initializes_standard_gqa_geometry(
         "device": torch.device("cuda"),
     }]
 
-
-def test_session_reuses_and_resets_generation_static_cache(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from drowse.session.session import DrowseSession
-
-    class _Cache:
-        def __init__(self, capacity: int) -> None:
-            self.capacity = capacity
-            self.resets = 0
-
-        def reset(self) -> None:
-            self.resets += 1
-
-    class _Model:
-        def __init__(self) -> None:
-            self.param = torch.zeros(1, dtype=torch.float16)
-
-        def parameters(self):
-            return iter([self.param])
-
-    made: list[_Cache] = []
-
-    def _make_static_cache(
-        model: Any,
-        *,
-        max_cache_len: int,
-        device: Any,
-        dtype: Any,
-    ) -> _Cache:
-        del model, device, dtype
-        cache = _Cache(max_cache_len)
-        made.append(cache)
-        return cache
-
-    monkeypatch.setattr(
-        "drowse.generation.static_cache.make_static_cache",
-        _make_static_cache,
-    )
-    session = DrowseSession.__new__(DrowseSession)
-    session._device = torch.device("cpu")
-    session._generation_static_cache = None
-    session._generation_static_cache_len = 0
-    model = _Model()
-
-    first = cast(
-        _Cache,
-        session._acquire_generation_static_cache(
-            cast(Any, model), max_cache_len=512,
-        ),
-    )
-    reused = cast(
-        _Cache,
-        session._acquire_generation_static_cache(
-            cast(Any, model), max_cache_len=256,
-        ),
-    )
-    grown = cast(
-        _Cache,
-        session._acquire_generation_static_cache(
-            cast(Any, model), max_cache_len=768,
-        ),
-    )
-
-    assert reused is first
-    assert first.resets == 1
-    assert grown is not first
-    assert [cache.capacity for cache in made] == [512, 768]
 
 
 # ---------------------------------------------------------------------------

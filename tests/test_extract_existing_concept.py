@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from drowse.base.paths import manifold_dir
-from drowse.session.session import DrowseSession, GenState
+from drowse.session.session import DrowseSession
 from drowse.store import selectors
 from drowse.store.manifold_authoring import create_discover_manifold_folder
 from drowse.store.selectors import AmbiguousSelectorError
@@ -41,7 +41,7 @@ def _install(namespace: str) -> Path:
 
 def _session(fitted: list[Path], generated: list[list[str]]) -> Any:
     s: Any = DrowseSession.__new__(DrowseSession)
-    s._gen_phase = GenState.IDLE
+    s._engine = SimpleNamespace(is_generating=False)
     s._gen_lock = threading.Lock()
     s._steering_composer = SimpleNamespace(_stack=[])
 

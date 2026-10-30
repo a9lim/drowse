@@ -18,7 +18,7 @@ from transformers import (
 )
 
 from drowse.fit.capture import CaptureMode, CaptureState
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, GenerationRequestError
 from drowse.events import (
     EventBus,
     GenerationFinished,
@@ -7695,6 +7695,8 @@ class DrowseSession:
             :class:`RunSet` in every case.  It is list-like for fan-out
             and exposes ``.first`` for the common single-result case.
         """
+        if n < 1:
+            raise GenerationRequestError(f"n must be >= 1, got {n}")
         return self._generate_runset(
             input,
             steering=steering,

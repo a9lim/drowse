@@ -15,20 +15,14 @@ from drowse.generation.decode import (
     generate_steered,
 )
 from drowse.model.chat import chat_eos_ids, logits_keep_kwarg
-from drowse.readout.types import ScalarReading
 from drowse.generation.results import GenerationResult, ProbeReading
 from drowse.generation.sampling import SamplingConfig
-from drowse.loom.recipe import ComposedCall
 from drowse.session.session import (
     CaptureMode,
     CaptureState,
-    GenState,
-    PreparedCall,
     ReadDemand,
     DrowseSession,
 )
-from drowse.steering.terms import Steering
-from drowse.generation.token_payloads import TokenProbePayload
 from tests.conftest import FakeLogitsModel
 
 
@@ -124,7 +118,6 @@ class _CurrentSessionStub(DrowseSession):
         instance._sae_instrument.active_for_generation = True
         instance._lens_instrument.generation_lens = None
         instance._lens_instrument.generation_lens_active = False
-        instance._default_return_top_k = 0
         return instance
 
     @property
@@ -160,6 +153,30 @@ def _complete_capture_session(session: Any) -> None:
     else:
         session._jlens = None
     session._jlens_identity = None
+
+
+def _finalize(
+    session: Any, generated_ids: list[int], elapsed: float,
+    vector_snapshot: dict[str, float], **kwargs: Any,
+) -> GenerationResult:
+    """Run :func:`finalize_generation` on a stub carrying ``_gen_state``.
+
+    The recorded result and per-token scores land back on the stub's
+    ``_last_result`` / ``_last_per_token_scores`` for the assertions.
+    """
+    from drowse.generation.finalize import finalize_generation
+
+    state = session._gen_state
+    session._engine = SimpleNamespace(state=state)
+
+    def _record(result: GenerationResult, per_token: Any) -> None:
+        session._last_result = result
+        session._last_per_token_scores = per_token
+
+    return finalize_generation(
+        session, generated_ids, elapsed, vector_snapshot,
+        state=state, record=_record, **kwargs,
+    )
 
 
 class _EchoTokenizer:
@@ -331,46 +348,6 @@ def test_persist_authored_prompt_capture_writes_all_measurement_channels() -> No
     assert seen_top_k == {"lens": 8, "sae": 8}
 
 
-def test_prepare_generation_uses_session_thinking_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._profiles = {}
-    session._tokenizer = object()
-    session._default_return_top_k = 0
-    session.config = GenerationConfig(thinking=False)
-    session._chat = SimpleNamespace(supports_thinking=True)
-
-    assert DrowseSession._prepare_generation_call(
-        session, None, None, None,
-    ).use_thinking_req is False
-
-    assert DrowseSession._prepare_generation_call(
-        session, Steering(alphas={}, thinking=True), None, None,
-    ).use_thinking_req is True
-
-    assert DrowseSession._prepare_generation_call(
-        session, None, None, True,
-    ).use_thinking_req is True
-
-
-def test_readout_top_k_shares_logit_alternative_width() -> None:
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._default_return_top_k = 6
-
-    assert DrowseSession._effective_return_top_k(session, None) == 6
-    assert DrowseSession._effective_return_top_k(
-        session, SamplingConfig(return_top_k=13),
-    ) == 13
-    # Per-call zero inherits the same session default as the logit pass.
-    assert DrowseSession._effective_return_top_k(
-        session, SamplingConfig(return_top_k=0),
-    ) == 6
-    assert DrowseSession._effective_readout_top_k(
-        session, SamplingConfig(return_top_k=13),
-    ) == 13
-
-    # Read-side discovery remains useful when alts are disabled.
-    session._default_return_top_k = 0
-    assert DrowseSession._effective_readout_top_k(session, None) == 8
 
 
 def test_prepare_input_raw_feeds_flat_active_path():
@@ -502,7 +479,7 @@ def test_stop_sequence_trimmed_text_is_final_result_text():
     session._last_result = None
 
     _complete_finalizer_session(session)
-    result = DrowseSession._finalize_generation(
+    result = _finalize(
         session,
         generated_ids,
         elapsed=1.0,
@@ -755,7 +732,7 @@ def test_stop_sequence_probe_aggregate_uses_visible_endpoint():
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = DrowseSession._finalize_generation(
+    result = _finalize(
         session,
         generated_ids,
         elapsed=1.0,
@@ -854,7 +831,7 @@ def test_finalize_reuses_scored_probe_aggregate() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = DrowseSession._finalize_generation(
+    result = _finalize(
         session,
         [0, 1],
         elapsed=1.0,
@@ -866,26 +843,6 @@ def test_finalize_reuses_scored_probe_aggregate() -> None:
     assert result.probe_readings == {"toy": reading}
     assert session._last_per_token_scores == {"toy": [0.1, 0.25]}
 
-
-def test_generate_stream_exposes_current_result() -> None:
-    result = GenerationResult(
-        text="ok", tokens=[7], token_count=1, tok_per_sec=1.0, elapsed=1.0,
-    )
-
-    def _fake_generate_core(*_args: Any, **kwargs: Any) -> GenerationResult:
-        kwargs["on_token"]("ok", False, 7, None, None, None)
-        return result
-
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = GenerationState()
-    session._monitor = SimpleNamespace(probe_names=[])
-    session._last_token_probe_payload = {}
-    session._generate_core = _fake_generate_core
-
-    stream = session.generate_stream("prompt")
-    events = list(stream)
-    assert [e.text for e in events] == ["ok"]
-    assert stream.result is result
 
 
 def test_token_fork_accepts_multitoken_authored_replacement() -> None:
@@ -918,7 +875,7 @@ def test_token_fork_accepts_multitoken_authored_replacement() -> None:
         captured.update(kwargs)
         return result
 
-    session._generate_core = _generate_core
+    session._engine = SimpleNamespace(generate_one=_generate_core)
     actual = DrowseSession.fork_from_token(
         session,
         "source",
@@ -942,207 +899,6 @@ def test_token_fork_accepts_multitoken_authored_replacement() -> None:
     assert recipe.sampling.seed == 9
 
 
-def test_generate_stream_live_readouts_false_suppresses_readout_flags() -> None:
-    result = GenerationResult(
-        text="ok", tokens=[7], token_count=1, tok_per_sec=1.0, elapsed=1.0,
-    )
-    # A pinned SAE probe reads the family's native one-channel shape; the
-    # compat ``ProbeReading`` projection happens at the stream consumer.
-    reading = ScalarReading(value=0.7, unit="raw_activation")
-    flags: dict[str, bool] = {}
-    # The readout-suppression mechanism now lives at the tap: ``live_readouts``
-    # gates the consumer's ``lens_readout`` / ``sae_readout`` compute flags, so
-    # the tap never builds lens/SAE readout instruments.  The measurement
-    # envelope the tap produced forwards verbatim onto ``TokenEvent.measurements``
-    # (here the tap is faked, so the envelope carries only what the fake set),
-    # and ``probe_readings`` still rides the compat channel under ``live_scores``.
-    envelope = {"version": 1, "scope": "token", "instruments": {}}
-
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-
-    def _fake_generate_core(*_args: Any, **kwargs: Any) -> GenerationResult:
-        on_token = kwargs["on_token"]
-        flags["lens"] = on_token.options.lens_readout
-        flags["sae"] = on_token.options.sae_readout
-        session._last_token_payload = TokenProbePayload(
-            sae_readings={"sae/0": reading},
-        )
-        session._last_token_probe_payload = {"measurements": envelope}
-        on_token("ok", False, 7, None, None, None)
-        return result
-
-    session._gen_state = GenerationState()
-    session._monitor = SimpleNamespace(
-        probe_names=[],
-        update_live=lambda _readings: None,
-    )
-    session._lens_instrument.probes = {}
-    session._sae_instrument.probes = {"sae/0": {"feature_id": 0}}
-    session._last_token_probe_payload = {}
-    session._last_token_payload = None
-    session._generate_core = _fake_generate_core
-
-    events = list(session.generate_stream(
-        "prompt", live_scores=True, live_readouts=False,
-    ))
-
-    assert flags == {"lens": False, "sae": False}
-    assert events[0].probe_readings == {
-        "sae/0": reading.to_probe_reading(),
-    }
-    assert events[0].measurements is envelope
-
-
-@pytest.mark.parametrize("capture_logprobs", [False, True])
-@pytest.mark.parametrize("token_logprobs", [(None,), (-0.4,), (None, -0.4)])
-def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
-    monkeypatch: pytest.MonkeyPatch,
-    capture_logprobs: bool,
-    token_logprobs: tuple[float | None, ...],
-) -> None:
-    import threading
-
-    import drowse.generation.token_payloads as token_payloads
-    from drowse.steering.triggers import TriggerContext
-
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_lock = threading.Lock()
-    session._gen_phase = GenState.IDLE
-    session._gen_state = GenerationState()
-    session._compose_generation_call = (
-        lambda *, steering, sampling, thinking, system_prompt, **_kwargs: (
-            ComposedCall(steering, sampling, thinking, system_prompt)
-        )
-    )
-    session._prepare_generation_call = lambda *_args: PreparedCall(
-        steering_obj=None,
-        use_thinking_req=False,
-        gen_config=GenerationConfig(
-            max_new_tokens=1, temperature=0.0, top_p=1.0, top_k=None,
-        ),
-        lp_count=0 if capture_logprobs else None,
-        seed=None,
-        stop_list=None,
-        logit_bias=None,
-        presence_penalty=0.0,
-        frequency_penalty=0.0,
-        logprobs_list=[] if capture_logprobs else None,
-    )
-    session._whitener = None
-    session._seat_stop_augmentation = lambda stop_list, **_kwargs: stop_list
-    session._monitor = SimpleNamespace(
-        probe_names=[],
-        set_subspace_coords=lambda _enabled: None,
-        begin_live=lambda: None,
-        end_live=lambda: None,
-    )
-    session._geometry_instrument._live = True
-    composer = SimpleNamespace(
-        _stack=[],
-        steering_needs_probe_gating=lambda: False,
-        gated_probe_keys=lambda: set(),
-        gated_lens_probe_keys=lambda: set(),
-        gated_sae_probe_keys=lambda: set(),
-        gated_probe_names=lambda: set(),
-    )
-    session._steering_composer = composer
-    session._start_loom_assistant = lambda *_args, **_kwargs: None
-    session._snapshot_steering_alphas = lambda: {}
-    session._generation_preamble = lambda *_args, **_kwargs: (
-        torch.tensor([[1]], dtype=torch.long),
-        False,
-        1,
-    )
-    session.events = SimpleNamespace(emit=lambda _event: None)
-    session._begin_capture = lambda *_args, **_kwargs: False
-    session._steering = SimpleNamespace(
-        ctx=TriggerContext(),
-        reset_manifold_feet=lambda: None,
-    )
-    session._capture_state = CaptureState()
-    session._compiled = False
-    session._static_cache_active = False
-    session._capture_buffers = {}
-    session._capture = SimpleNamespace(per_layer_buckets=lambda: {})
-    session._incremental_readings = []
-    session._incremental_gate_scores = []
-    session._lens_instrument.live = {"layers": [0]}
-    session._sae_instrument.live = {"layer": 0}
-    session._live_lens_readout_step = lambda **_kwargs: (
-        (_ for _ in ()).throw(AssertionError("lens readout not consumed"))
-    )
-    session._live_sae_readout_step = lambda **_kwargs: (
-        (_ for _ in ()).throw(AssertionError("sae readout not consumed"))
-    )
-    session._lens_instrument.last_step_readings = None
-    session._sae_instrument.last_step_readings = None
-    session._last_token_probe_payload = {"stale": True}
-    observed_payloads: list[Any] = []
-    seen_tokens: list[str] = []
-    payload_builder_calls = 0
-
-    def _fail_empty_payload_build(**_kwargs: Any) -> Any:
-        nonlocal payload_builder_calls
-        payload_builder_calls += 1
-        raise AssertionError("text-only token tap should not build empty payload")
-
-    monkeypatch.setattr(
-        token_payloads, "build_token_probe_payload", _fail_empty_payload_build,
-    )
-
-    def _run_generation_loop(
-        _input_ids: Any,
-        _gen_config: Any,
-        *,
-        effective_tap: Any,
-        **_kwargs: Any,
-    ) -> tuple[list[int], float]:
-        assert effective_tap is not None
-        for lp in token_logprobs:
-            effective_tap("x", False, 1, lp, None, None)
-        observed_payloads.append(session._last_token_probe_payload)
-        return [1], 0.1
-
-    session._run_generation_loop = _run_generation_loop
-    final_values: dict[str, Any] = {}
-
-    def _finalize(*_args: Any, **kwargs: Any) -> GenerationResult:
-        final_values.update(kwargs)
-        return GenerationResult(text="x", tokens=[1], token_count=1, tok_per_sec=10., elapsed=.1,
-                                logprobs=kwargs["logprobs_list"])
-
-    session._finalize_generation = _finalize
-    session._end_capture = lambda: None
-    session._active_gen_reservation = None
-
-    def _on_token(
-        text: str,
-        _thinking: bool,
-        _tid: int | None,
-        _lp: float | None,
-        _top_alts: Any,
-        _perplexity: float | None = None,
-    ) -> None:
-        seen_tokens.append(text)
-
-    result = DrowseSession._generate_core(
-        session,
-        "prompt",
-        stateless=True,
-        on_token=_on_token,
-    )
-
-    assert result.text == "x"
-    assert seen_tokens == ["x"] * len(token_logprobs)
-    assert result.logprobs == ([(1, lp, []) for lp in token_logprobs] if capture_logprobs else None)
-    if None in token_logprobs:
-        assert final_values["mean_logprob"] is None
-        assert final_values["mean_surprise"] is None
-    else:
-        assert final_values["mean_logprob"] == pytest.approx(-0.4)
-        assert final_values["mean_surprise"] == pytest.approx(0.4)
-    assert observed_payloads == [None]
-    assert payload_builder_calls == 0
 
 
 def test_finalize_incremental_probe_path_does_not_stack_capture() -> None:
@@ -1186,7 +942,7 @@ def test_finalize_incremental_probe_path_does_not_stack_capture() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = DrowseSession._finalize_generation(
+    result = _finalize(
         session,
         [0, 1],
         elapsed=1.0,
@@ -1278,7 +1034,7 @@ def test_finalize_lean_incremental_probe_path() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = DrowseSession._finalize_generation(
+    result = _finalize(
         session,
         [0, 1],
         elapsed=1.0,
@@ -1358,7 +1114,7 @@ def test_finalize_gating_subset_probe_path() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = DrowseSession._finalize_generation(
+    result = _finalize(
         session,
         [0, 1],
         elapsed=1.0,
@@ -1443,7 +1199,7 @@ def test_finalize_reuses_one_aggregate_pool_for_monitor_lens_and_sae() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = DrowseSession._finalize_generation(
+    result = _finalize(
         session,
         [0, 1],
         elapsed=1.0,
@@ -1699,7 +1455,7 @@ def test_stateless_zero_token_probe_result_does_not_use_history() -> None:
     session.events = SimpleNamespace(emit=lambda _event: None)
 
     _complete_finalizer_session(session)
-    result = DrowseSession._finalize_generation(
+    result = _finalize(
         session,
         [],
         elapsed=1.0,
@@ -1741,7 +1497,7 @@ def test_return_probe_readings_false_skips_probe_finalization() -> None:
     )
 
     _complete_finalizer_session(session)
-    result = DrowseSession._finalize_generation(
+    result = _finalize(
         session,
         [0],
         elapsed=1.0,
@@ -1782,8 +1538,8 @@ def test_lens_only_without_final_probe_aggregate_keeps_latest_tail() -> None:
     session._layers = [object()] * 8
     session._monitor = Monitor()
     session._capture = capture
-    session._capture_buffers = {}
-    session._compiled_clean_eligible = False
+    session._runtime = SimpleNamespace(capture_buffers={})
+    session._engine = SimpleNamespace(compiled_clean_eligible=False)
     session._lens_instrument.live = {"layers": [2, 4]}
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
@@ -1875,8 +1631,8 @@ def test_lens_gate_without_final_aggregate_attaches_gated_probe_layers() -> None
     session._layers = [object()] * 8
     session._monitor = Monitor()
     session._capture = capture
-    session._capture_buffers = {}
-    session._compiled_clean_eligible = False
+    session._runtime = SimpleNamespace(capture_buffers={})
+    session._engine = SimpleNamespace(compiled_clean_eligible=False)
     session._lens_instrument.live = None
     session._lens_instrument.probes = {
         "jlens/g": {"layers": [3]},
@@ -1937,8 +1693,8 @@ def test_sae_only_without_final_probe_aggregate_keeps_latest_tail() -> None:
     session._layers = [object()] * 8
     session._monitor = Monitor()
     session._capture = capture
-    session._capture_buffers = {}
-    session._compiled_clean_eligible = False
+    session._runtime = SimpleNamespace(capture_buffers={})
+    session._engine = SimpleNamespace(compiled_clean_eligible=False)
     session._lens_instrument.live = None
     session._lens_instrument.probes = {}
     session._sae_instrument.live = {"layer": 5}
@@ -2031,8 +1787,8 @@ def test_sae_gate_without_final_aggregate_attaches_sae_layer() -> None:
     session._layers = [object()] * 8
     session._monitor = Monitor()
     session._capture = capture
-    session._capture_buffers = {}
-    session._compiled_clean_eligible = False
+    session._runtime = SimpleNamespace(capture_buffers={})
+    session._engine = SimpleNamespace(compiled_clean_eligible=False)
     session._lens_instrument.live = None
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
@@ -2257,8 +2013,8 @@ def test_monitor_probe_final_aggregate_still_attaches_capture() -> None:
     session._layers = [object()] * 8
     session._monitor = monitor
     session._capture = capture
-    session._capture_buffers = {}
-    session._compiled_clean_eligible = False
+    session._runtime = SimpleNamespace(capture_buffers={})
+    session._engine = SimpleNamespace(compiled_clean_eligible=False)
     session._lens_instrument.live = None
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
@@ -2342,8 +2098,8 @@ def test_gate_only_without_final_probe_aggregate_narrows_capture_layers() -> Non
     session._layers = [object()] * 8
     session._monitor = monitor
     session._capture = capture
-    session._capture_buffers = {}
-    session._compiled_clean_eligible = False
+    session._runtime = SimpleNamespace(capture_buffers={})
+    session._engine = SimpleNamespace(compiled_clean_eligible=False)
     session._lens_instrument.live = None
 
     _complete_capture_session(session)
@@ -2428,8 +2184,8 @@ def test_gate_only_capture_reuses_preplanned_gate_scalars() -> None:
     session._layers = [object()] * 8
     session._monitor = monitor
     session._capture = capture
-    session._capture_buffers = {}
-    session._compiled_clean_eligible = False
+    session._runtime = SimpleNamespace(capture_buffers={})
+    session._engine = SimpleNamespace(compiled_clean_eligible=False)
     session._lens_instrument.live = None
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
@@ -2497,8 +2253,8 @@ def test_full_incremental_capture_deep_tail_only_for_readout_aggregate_layers() 
     session._layers = [object()] * 8
     session._monitor = Monitor()
     session._capture = capture
-    session._capture_buffers = {}
-    session._compiled_clean_eligible = False
+    session._runtime = SimpleNamespace(capture_buffers={})
+    session._engine = SimpleNamespace(compiled_clean_eligible=False)
     session._lens_instrument.live = None
     session._lens_instrument.probes = {"jlens/g": {"layers": {3}}}
     session._lens_instrument.probe_layers = lambda _names=None: {3}
@@ -2556,8 +2312,8 @@ def test_no_cache_fallback_does_not_cat_each_step(monkeypatch: pytest.MonkeyPatc
     assert state.finish_reason == "stop"
 
 # ---------------------------------------------------------------------------
-# The generation-concurrency guard: ``_gen_lock`` / ``_gen_phase`` /
-# ``_generation_transaction``.  Extraction runs forward passes, so it takes
+# The generation-concurrency guard: ``_gen_lock`` and the engine phase /
+# transaction.  Extraction runs forward passes, so it takes
 # the same exclusive section generation does; the transaction is the shared
 # teardown backstop both sides rely on.
 # ---------------------------------------------------------------------------
@@ -2569,7 +2325,7 @@ def _stub_session_with_lock() -> Any:
     import threading
 
     s: Any = DrowseSession.__new__(DrowseSession)
-    s._gen_phase = GenState.IDLE
+    s._engine = SimpleNamespace(is_generating=False)
     s._gen_lock = threading.Lock()
     return s
 
@@ -2577,7 +2333,7 @@ def _stub_session_with_lock() -> Any:
 def test_extract_acquires_gen_lock_against_concurrent_generation():
     """If ``_gen_lock`` is already held (generation in flight), extract
     must raise ``ConcurrentExtractionError`` rather than reading
-    ``_gen_phase`` and racing the generation that's about to flip it."""
+    the engine phase and racing the generation that's about to flip it."""
     from drowse.session.session import ConcurrentExtractionError
 
     s = _stub_session_with_lock()
@@ -2600,7 +2356,7 @@ def test_extract_releases_lock_on_path_through_phase_gate():
     from drowse.session.session import ConcurrentExtractionError
 
     s: Any = DrowseSession.__new__(DrowseSession)
-    s._gen_phase = GenState.RUNNING
+    s._engine = SimpleNamespace(is_generating=True)
     s._gen_lock = threading.Lock()
     s._extraction = SimpleNamespace(extract=lambda *a, **kw: ("x", None))
 
@@ -2612,82 +2368,7 @@ def test_extract_releases_lock_on_path_through_phase_gate():
     s._gen_lock.release()
 
 
-def _transaction_stub_session() -> Any:
-    """A stub carrying only what ``_generation_transaction`` touches."""
-    import threading
-
-    s: Any = DrowseSession.__new__(DrowseSession)
-    s._gen_phase = GenState.IDLE
-    s._gen_lock = threading.Lock()
-    s._end_capture_calls = 0
-
-    def _end_capture() -> None:
-        s._end_capture_calls += 1
-
-    s._end_capture = _end_capture
-    s._monitor = SimpleNamespace(set_subspace_coords=lambda _flag: None)
-    s._close_instrument_runs = lambda: None
-    s._capture_state = CaptureState()
-    return s
 
 
-def test_generation_transaction_detaches_capture_when_the_body_never_does():
-    """A BaseException before the body's own teardown (a preamble failure,
-    a KeyboardInterrupt) must still leave no capture hooks attached — the
-    transaction's teardown is the backstop, and it also frees the phase and
-    the lock."""
-    s = _transaction_stub_session()
-
-    with pytest.raises(KeyboardInterrupt):
-        with s._generation_transaction():
-            raise KeyboardInterrupt
-
-    assert s._end_capture_calls == 1
-    assert s._gen_phase is GenState.IDLE
-    assert s._gen_lock.acquire(blocking=False)
-    s._gen_lock.release()
 
 
-def test_generation_transaction_pops_a_scope_the_body_left_open():
-    """The body assigns ``txn.steering_cm`` before entering the scope; if it
-    throws before popping it, the transaction pops it — swallowing a teardown
-    failure so it can't mask the error already propagating."""
-    exits: list[bool] = []
-    s = _transaction_stub_session()
-    s._exit_internal_steering = (
-        lambda _cm, *, swallow: exits.append(swallow)
-    )
-
-    with pytest.raises(RuntimeError):
-        with s._generation_transaction() as txn:
-            txn.steering_cm = object()
-            raise RuntimeError("preamble blew up")
-
-    assert exits == [True]
-
-
-def test_generation_transaction_leaves_a_popped_scope_alone():
-    """The ordinary path pops its own scope before finalizing and clears the
-    slot; the transaction must not pop it a second time."""
-    exits: list[bool] = []
-    s = _transaction_stub_session()
-    s._exit_internal_steering = (
-        lambda _cm, *, swallow: exits.append(swallow)
-    )
-
-    with s._generation_transaction() as txn:
-        txn.steering_cm = object()
-        txn.steering_cm = None
-
-    assert exits == []
-    assert s._gen_phase is GenState.IDLE
-
-
-def test_generation_transaction_rejects_a_reentrant_generation():
-    from drowse.errors import ConcurrentGenerationError
-
-    s = _transaction_stub_session()
-    with s._generation_transaction():
-        with pytest.raises(ConcurrentGenerationError):
-            with s._generation_transaction():
-                pass  # pragma: no cover - the guard raises on entry

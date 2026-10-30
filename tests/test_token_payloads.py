@@ -3,38 +3,22 @@
 from __future__ import annotations
 
 import math
-from types import SimpleNamespace
-from typing import Any
 
 import pytest
-import torch
 
 from drowse.generation.results import ProbeReading
-from drowse.generation.token_payloads import build_token_probe_payload
+from drowse.generation.token_payloads import TokenProbePayload
 
 
-def test_build_token_probe_payload_scores_once_and_shapes_channels() -> None:
+def test_from_geometry_shapes_scores_and_channels() -> None:
     reading = ProbeReading(
         fraction=0.5,
         nearest=[("happy", 0.1)],
         coords=(0.25,),
         coords_per_layer={3: (0.25,)},
     )
-    run = SimpleNamespace(observe=lambda _step, _hidden: {"toy": reading})
-    capture = SimpleNamespace(
-        per_layer_buckets=lambda: {3: [torch.ones(2)]},
-    )
-    capture_state = SimpleNamespace(incremental=False, lean=False)
 
-    payload = build_token_probe_payload(
-        geometry_run=run,
-        capture=capture,
-        capture_state=capture_state,
-        incremental_readings=[],
-        needs_scores=True,
-        persists_layer_scores=True,
-        assistant_node_id="node-1",
-    )
+    payload = TokenProbePayload.from_geometry({"toy": reading}, per_layer=True)
 
     assert payload.scores == {"toy": pytest.approx(0.25)}
     # Monitor readings land in the geometry family slot; ``all_readings`` is the
@@ -63,18 +47,8 @@ def test_token_payload_builds_measurement_envelope() -> None:
         coords=(0.25,),
         coords_per_layer={3: (0.25,)},
     )
-    payload = build_token_probe_payload(
-        geometry_run=SimpleNamespace(
-            observe=lambda _step, _hidden: {"toy": reading},
-        ),
-        capture=SimpleNamespace(
-            per_layer_buckets=lambda: {3: [torch.ones(2)]},
-        ),
-        capture_state=SimpleNamespace(incremental=False, lean=False),
-        incremental_readings=[],
-        needs_scores=True,
-        persists_layer_scores=True,
-        assistant_node_id="node-1",
+    payload = TokenProbePayload.from_geometry(
+        {"toy": reading}, per_layer=True,
     ).to_token_payload(
         lens={3: [(" tok", 0.25)]},
         lens_aggregate=[(" tok", 0.2, 0.6, 0.1)],
@@ -131,8 +105,6 @@ def test_token_payload_builds_measurement_envelope() -> None:
 
 
 def test_merge_readings_routes_to_named_family_slot() -> None:
-    from drowse.generation.token_payloads import TokenProbePayload
-
     geo = ProbeReading(0.0, [], coords=(0.1,))
     lens = ProbeReading(0.0, [], coords=(0.2,))
     sae = ProbeReading(0.0, [], coords=(0.3,))
@@ -155,26 +127,13 @@ def test_merge_readings_routes_to_named_family_slot() -> None:
         payload.merge_readings({"x": geo}, family="bogus")
 
 
-def test_build_token_probe_payload_reuses_incremental_reading() -> None:
+def test_from_geometry_leaves_per_layer_rows_off_unless_asked() -> None:
     reading = ProbeReading(
-        fraction=0.4,
-        nearest=[("calm", 0.2)],
-        coords=(0.75,),
+        fraction=0.4, nearest=[("calm", 0.2)], coords=(0.75,),
+        coords_per_layer={2: (0.5,)},
     )
-
-    def _memo_only(_step: int, hidden: Any) -> dict[str, ProbeReading]:
-        assert hidden == {}, "incremental reading should avoid rescoring"
-        return {}
-
-    payload = build_token_probe_payload(
-        geometry_run=SimpleNamespace(observe=_memo_only),
-        capture=SimpleNamespace(per_layer_buckets=lambda: {3: [torch.ones(2)]}),
-        capture_state=SimpleNamespace(incremental=True, lean=False),
-        incremental_readings=[{"toy": reading}],
-        needs_scores=True,
-        persists_layer_scores=False,
-        assistant_node_id="node-1",
-    )
+    payload = TokenProbePayload.from_geometry({"toy": reading}, per_layer=False)
 
     assert payload.scores == {"toy": pytest.approx(0.75)}
     assert payload.geometry_readings == {"toy": reading}
+    assert payload.per_layer_scores is None

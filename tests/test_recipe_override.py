@@ -17,6 +17,7 @@ from drowse.loom.recipe import (
 from drowse.loom.tree import LoomTree
 from drowse.session.session import DrowseSession
 from drowse.steering.grammar import ManifoldTerm, parse_expr
+from tests.support.engine import attach_engine
 
 
 def test_recipe_prompt_capture_distinguishes_legacy_null_empty_and_text():
@@ -280,7 +281,7 @@ def test_compose_without_tiers_is_the_identity():
 
 
 # ---------------------------------------------------------------------------
-# Session hook: _compose_generation_call is one call into compose_call
+# Engine hook: compose_call is one call into loom's compose_call
 # ---------------------------------------------------------------------------
 
 
@@ -296,16 +297,14 @@ def _anchored_tree() -> tuple[LoomTree, str, str]:
 
 
 def _resolve(tree: LoomTree, mode: Any, **kwargs: Any):
-    stub = cast(DrowseSession, SimpleNamespace(tree=tree))
+    engine = attach_engine(SimpleNamespace(tree=tree))
     call: dict[str, Any] = {
         "steering": None, "sampling": None, "thinking": None,
         "system_prompt": INHERIT_SYSTEM_PROMPT, "raw": False,
         "gen_seat": "assistant",
     }
     call.update(kwargs)
-    return DrowseSession._compose_generation_call(
-        stub, recipe_override=mode, **call,
-    )
+    return engine.compose_call(recipe_override=mode, **call)
 
 
 def test_resolve_override_composes_onto_the_anchor_once():
@@ -344,25 +343,24 @@ def test_resolve_override_without_anchor_layers_the_partial_on_the_call():
     {"steering": ""},
     {"steering": "   "},
 ])
-def test_composed_blank_steering_reaches_generation_as_no_steering(call: dict):
+def test_composed_blank_steering_reaches_generation_as_no_steering(
+    call: dict, tiny_session: Any,
+):
     """Regression: the ``unsteered`` / ``inverted`` modes (and an explicit
     ``steering=""``) composed ``""``, which the grammar rejects, so every
     such regen failed with "empty steering expression" on a real session."""
-    from tests.test_loom_token_rows import _stateful_tap_session
-
-    tree = LoomTree()
+    tree = tiny_session.tree
     user = tree.add_user_turn("hi")
     anchor = tree.begin_assistant(user, recipe=Recipe(sampling=SamplingConfig(seed=3)))
     tree.finalize_assistant(anchor, text="hello")
-    session = _stateful_tap_session(tree, anchor)
-    prepared: list[Any] = []
-    real_prepare = session._prepare_generation_call
-    session._prepare_generation_call = lambda steering, *rest: (
-        prepared.append(steering) or real_prepare(steering, *rest)
-    )
-    session._run_generation_loop = lambda *_args, **_kwargs: ([1], 0.1)
-    DrowseSession._generate_core(session, None, parent_node_id=user, **call)
-    assert prepared == [None]
+
+    spec = tiny_session._engine.resolve_call(None, parent_node_id=user, **call)
+    assert spec.steering_obj is None
+    result = tiny_session.generate(
+        None, parent_node_id=user, sampling=SamplingConfig(max_tokens=1),
+        append_same_role=False, **call,
+    ).first
+    assert result.applied_steering is None
 
 
 def test_anchor_recipe_resolution():

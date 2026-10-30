@@ -3,8 +3,8 @@
 The roster tier is the weakest: a cast member's recipe fills only the
 fields a call left unset, sampling merges field-wise with the call's
 non-default fields winning, and a regen's anchor + modifier compose on top
-in the same ``compose_call`` pass (``_compose_generation_call``, which
-needs only ``self.tree``, so a bare stub stands in for the session).
+in the same ``compose_call`` pass (the engine's ``compose_call``, which
+needs only the session's ``tree``, so a bare stub stands in for it).
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Any, cast
 from drowse import CastMember, LoomTree, Recipe, SamplingConfig
 from drowse.loom.recipe import INHERIT_SYSTEM_PROMPT
 from drowse.session.session import DrowseSession
+from tests.support.engine import attach_engine
 
 
 class _Stub:
@@ -33,8 +34,8 @@ def _apply(
     raw: bool = False,
     gen_seat: str = "assistant",
 ) -> tuple[Any, SamplingConfig | None, bool | None]:
-    out = DrowseSession._compose_generation_call(
-        _as_session(stub), steering=steering, sampling=sampling,
+    out = attach_engine(stub).compose_call(
+        steering=steering, sampling=sampling,
         thinking=thinking, system_prompt=INHERIT_SYSTEM_PROMPT,
         raw=raw, gen_seat=gen_seat, parent_node_id=None, recipe_override=None,
     )
@@ -142,8 +143,8 @@ def test_anchor_seed_beats_the_cast_seed_on_an_unseeded_regen():
     stub.tree.finalize_assistant(node, text="hello")
 
     def regen(sampling: SamplingConfig) -> SamplingConfig | None:
-        return DrowseSession._compose_generation_call(
-            _as_session(stub), steering=None, sampling=sampling, thinking=None,
+        return attach_engine(stub).compose_call(
+            steering=None, sampling=sampling, thinking=None,
             system_prompt=INHERIT_SYSTEM_PROMPT, raw=False, gen_seat="assistant",
             parent_node_id=node, recipe_override="cool",
         ).sampling
@@ -168,8 +169,8 @@ def test_cast_member_steering_yields_to_the_regen_anchor():
         sampling=SamplingConfig(seed=5, assistant_role="deer"),
     ))
     stub.tree.finalize_assistant(node, text="hello")
-    out = DrowseSession._compose_generation_call(
-        _as_session(stub), steering=None,
+    out = attach_engine(stub).compose_call(
+        steering=None,
         sampling=SamplingConfig(assistant_role="deer"), thinking=None,
         system_prompt=INHERIT_SYSTEM_PROMPT, raw=False, gen_seat="assistant",
         parent_node_id=node, recipe_override="hot",
