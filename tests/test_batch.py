@@ -203,6 +203,7 @@ def _fast_batch_session():
     s_any._steering = SimpleNamespace(
         ctx=TriggerContext(),
         hooks={},
+        uses_compiled_offsets=False,
         reset_manifold_feet=lambda: None,
     )
     s._lens_instrument.live = None

@@ -10243,7 +10243,7 @@ class DrowseSession:
                 eos_ids=sorted(eos_ids),
                 pad_id=pad_id,
                 steering_active=bool(
-                    self._steering.hooks or self._steering_uses_compiled_offsets
+                    self._steering.hooks or self._steering.uses_compiled_offsets
                 ),
             )
 
