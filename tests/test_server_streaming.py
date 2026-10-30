@@ -599,3 +599,147 @@ def test_stream_reports_worker_error_once_and_close_is_idempotent(
         else:
             stream.close()
     stream.close()
+
+
+# ---------------------------------------------------------------------------
+# HTTP inference keeps the event loop responsive
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/completions", "/api/chat", "/api/generate"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_http_inference_leaves_event_loop_responsive(path: str, stream: bool) -> None:
+    import httpx
+    from drowse.generation.results import GenerationResult
+    from drowse.server import create_app
+    from tests.support.server import StubSession
+
+    async def scenario() -> None:
+        entered, release = threading.Event(), threading.Event()
+        session: Any = StubSession()
+        result = GenerationResult(text="ok", tokens=[1], token_count=1, tok_per_sec=1, elapsed=0.1, finish_reason="stop")
+
+        def block() -> None:
+            entered.set()
+            release.wait(2)
+
+        def generate(*args: Any, **kwargs: Any) -> Any:
+            block()
+            return SimpleNamespace(first=result)
+
+        class Stream:
+            def __init__(self) -> None:
+                self.result = result
+
+            def __iter__(self) -> Any:
+                return self
+
+            def __next__(self) -> Any:
+                block()
+                raise StopIteration
+
+            def close(self) -> None:
+                pass
+
+        iterator = Stream()
+        session.generate = generate
+        session.generate_stream = lambda *args, **kwargs: iterator
+        app = create_app(session)
+        # Release from outside the event loop so the pre-fix failure cannot hang pytest.
+        timer = threading.Timer(0.3, release.set)
+        timer.start()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://localhost") as client:
+            task = asyncio.create_task(client.post(path, json={
+                "model": session.model_id, "stream": stream, "prompt": "hi",
+                "messages": [{"role": "user", "content": "hi"}],
+            }))
+            try:
+                assert await asyncio.to_thread(entered.wait, 2)
+                assert not release.is_set(), "inference blocked the ASGI event loop"
+                assert (await client.get("/v1/models")).status_code == 200
+            finally:
+                release.set()
+                timer.cancel()
+                response = await task
+                assert response.status_code == 200, response.text
+    asyncio.run(scenario())
+
+def test_queued_openai_stream_does_not_start_model_before_owning_lock() -> None:
+    import httpx
+    from drowse.server import create_app
+    from tests.support.server import StubSession
+
+    async def scenario() -> None:
+        session: Any = StubSession()
+        starts: list[bool] = []
+        session.generate_stream = lambda *args, **kwargs: starts.append(True)
+        app = create_app(session)
+        lock = app.state.session_lock
+        await lock.acquire()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://localhost") as client:
+            task = asyncio.create_task(client.post("/v1/chat/completions", json={
+                "model": session.model_id, "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            }))
+            try:
+                await asyncio.sleep(0.03)
+                assert starts == []
+            finally:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                lock.release()
+    asyncio.run(scenario())
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/api/chat"])
+def test_http_send_failure_joins_stream_close_without_blocking_loop(path: str) -> None:
+    from starlette.requests import ClientDisconnect
+    from drowse.server import create_app
+    from tests.support.server import StubSession
+
+    async def scenario() -> None:
+        entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+        session: Any = StubSession()
+
+        class Stream:
+            result = None
+
+            def __iter__(self) -> Any:
+                return self
+
+            def __next__(self) -> Any:
+                return SimpleNamespace(text="content", thinking=False, probe_readings=None)
+
+            def close(self) -> None:
+                entered.set()
+                assert release.wait(3)
+                closed.set()
+
+        session.generate_stream = lambda *args, **kwargs: Stream()
+        app = create_app(session)
+        scope: Any = {
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "method": "POST", "scheme": "http", "path": path, "raw_path": path.encode(),
+            "root_path": "", "query_string": b"", "headers": [(b"host", b"localhost"), (b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 1234), "server": ("127.0.0.1", 80),
+        }
+        incoming: asyncio.Queue[Any] = asyncio.Queue()
+        incoming.put_nowait({"type": "http.request", "body": json.dumps({
+            "model": session.model_id, "stream": True, "messages": [{"role": "user", "content": "hi"}],
+        }).encode()})
+
+        async def send(message: Any) -> None:
+            if message["type"] == "http.response.body" and b"content" in message["body"]:
+                raise OSError("disconnected")
+
+        task = asyncio.create_task(app(scope, incoming.get, send))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            assert app.state.session_lock.locked() and not task.done()
+            assert not closed.is_set()
+        finally:
+            release.set()
+            with pytest.raises(ClientDisconnect):
+                await task
+        assert closed.is_set() and not app.state.session_lock.locked()
+    asyncio.run(scenario())

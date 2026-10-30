@@ -1313,3 +1313,58 @@ def test_checked_generic_load_preserves_backend_options_and_fallbacks(tmp_path: 
     else:
         assert len(attempts) == 1
         assert attempts[0]["quantization_config"] is plan.load_kwargs["quantization_config"]
+
+
+# ---------------------------------------------------------------------------
+# Remote-code trust
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("trusted", [False, True])
+def test_model_configuration_requires_explicit_code_trust(tmp_path: Path, trusted: bool) -> None:
+    marker = tmp_path / "configuration-executed"
+    (tmp_path / "config.json").write_text(json.dumps({
+        "model_type": "llama", "hidden_size": 8, "num_hidden_layers": 1,
+        "num_attention_heads": 2, "intermediate_size": 16,
+        "auto_map": {"AutoConfig": "configuration_fixture.FixtureConfig"},
+    }))
+    (tmp_path / "configuration_fixture.py").write_text(
+        "from pathlib import Path\n"
+        "from transformers import LlamaConfig\n"
+        f"Path({str(marker)!r}).write_text('executed')\n"
+        "class FixtureConfig(LlamaConfig):\n    pass\n"
+    )
+    plan = model_mod._resolve_load_plan(str(tmp_path), quantize=None, device="cpu", dtype=None, trust_remote_code=trusted)
+    assert plan.config.model_type == "llama"
+    assert marker.exists() is trusted
+    assert plan.tokenizer_kwargs["trust_remote_code"] is trusted
+
+@pytest.mark.parametrize(("explicit", "environment", "trusted"), [(None, "", False), (None, "true", True), (False, "1", False), (True, "", True), (None, "false", False)])
+def test_tokenizer_code_trust_is_explicit_and_overrides_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool | None, environment: str, trusted: bool) -> None:
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+
+    marker = tmp_path / "tokenizer-executed"
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama", "hidden_size": 8, "num_hidden_layers": 1, "num_attention_heads": 2}))
+    Tokenizer(WordLevel({"[UNK]": 0, "hello": 1}, unk_token="[UNK]")).save(str(tmp_path / "tokenizer.json"))
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps({
+        "tokenizer_class": "PreTrainedTokenizerFast", "unk_token": "[UNK]",
+        "auto_map": {"AutoTokenizer": [None, "tokenization_fixture.FixtureTokenizer"]},
+    }))
+    (tmp_path / "tokenization_fixture.py").write_text(
+        "from pathlib import Path\n"
+        "from transformers import PreTrainedTokenizerFast\n"
+        f"Path({str(marker)!r}).write_text('executed')\n"
+        "class FixtureTokenizer(PreTrainedTokenizerFast):\n    pass\n"
+    )
+    monkeypatch.setattr(model_mod, "_materialize_model", lambda plan: object())
+    monkeypatch.setattr(model_mod, "_finalize_model", lambda model, *args, **kwargs: model)
+    monkeypatch.setenv("DROWSE_TRUST_REMOTE_CODE", environment)
+    _, tokenizer = model_mod.load_model(str(tmp_path), device="cpu", trust_remote_code=explicit)
+    assert tokenizer.encode("hello") == [1]
+    assert marker.exists() is trusted
+
+@pytest.mark.parametrize("value", ["true", 1, [], {}])
+def test_model_code_trust_rejects_ambiguous_non_booleans(value: Any) -> None:
+    with pytest.raises(ValueError, match="must be a boolean"):
+        model_mod.load_model("unused/model", trust_remote_code=value)

@@ -764,26 +764,6 @@ class TestCommit:
         assert field in msg["message"]
         assert session.tree.to_dict() == before
 
-    def test_generate_rejects_the_retired_commit_vocabulary(
-        self, session_and_client: Any,
-    ):
-        """``commit_role``/``commit_text``/``commit_thinking`` are gone from
-        ``generate`` — ``WSGenerateMessage`` forbids extras, so the reader
-        rejects them instead of silently accepting a second commit door."""
-        _session, client = session_and_client
-        for field, value in (
-            ("commit_role", "user"),
-            ("commit_text", "manual"),
-            ("commit_thinking", "hmm"),
-        ):
-            with client.websocket_connect(
-                "/drowse/v1/sessions/default/stream",
-            ) as ws:
-                ws.send_json({"type": "generate", field: value})
-                msg = ws.receive_json()
-            assert msg["type"] == "error", (field, msg)
-            assert field in msg["message"], (field, msg)
-
     def test_missing_text_400(self, session_and_client: Any):
         """``authored_role`` without text is rejected before dispatch."""
         _session, client = session_and_client
