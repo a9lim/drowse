@@ -249,7 +249,10 @@ class ScriptedReplies:
 
     ``replies`` is a string (every turn), a sequence (the n-th non-system,
     non-user turn of the sequence gets ``replies[n]``, the last entry
-    repeating), or a callable ``(label, prompt_text) -> reply``.
+    repeating), or a callable ``(label, prompt_text) -> reply`` invoked once
+    per generated turn per batch row (so it may keep state, e.g. answer a
+    retry differently).  Once a reply is spent the model ends the turn; if
+    end-of-turn is suppressed (``min_new_tokens``) it emits the pad token.
 
     ``prompts`` records the decoded input of every forward that started from
     an empty cache: the exact rendered prompts the model saw.
@@ -275,8 +278,9 @@ class ScriptedReplies:
         self._open_id = int(tokenizer.convert_tokens_to_ids(spec.header_open))
         self._close_ids = list(tokenizer.encode(spec.header_close, add_special_tokens=False))
         self._eos_id = int(tokenizer.convert_tokens_to_ids(spec.eos))
+        self._pad_id = int(tokenizer.pad_token_id)
         self._seqs: list[list[int]] = []
-        self._reply_cache: dict[tuple[int, ...], list[int]] = {}
+        self._row_replies: list[dict[int, list[int]]] = []
         self.prompts: list[str] = []
         self._handle: Any = None
 
@@ -300,9 +304,8 @@ class ScriptedReplies:
 
     # -- internals ---------------------------------------------------------
 
-    def _reply_for(self, label: str, prompt_ids: list[int], turn: int) -> list[int]:
-        key = tuple(prompt_ids)
-        cached = self._reply_cache.get(key)
+    def _reply_for(self, row: int, label: str, prompt_ids: list[int], turn: int) -> list[int]:
+        cached = self._row_replies[row].get(len(prompt_ids))
         if cached is not None:
             return cached
         source = self._replies
@@ -313,7 +316,7 @@ class ScriptedReplies:
         else:
             text = source[min(turn, len(source) - 1)]
         ids = list(self._tokenizer.encode(text, add_special_tokens=False))
-        self._reply_cache[key] = ids
+        self._row_replies[row][len(prompt_ids)] = ids
         return ids
 
     def _find(self, seq: list[int], needle: list[int], start: int) -> int:
@@ -323,7 +326,7 @@ class ScriptedReplies:
                 return index
         return -1
 
-    def _target(self, seq: list[int]) -> int | None:
+    def _target(self, row: int, seq: list[int]) -> int | None:
         opens = [i for i, tid in enumerate(seq) if tid == self._open_id]
         if not opens:
             return None
@@ -346,7 +349,7 @@ class ScriptedReplies:
             )
             if earlier_label not in ("system", "user"):
                 turn += 1
-        reply = self._reply_for(label, seq[:start], turn)
+        reply = self._reply_for(row, label, seq[:start], turn)
         emitted = len(seq) - start
         return reply[emitted] if emitted < len(reply) else self._eos_id
 
@@ -364,15 +367,18 @@ class ScriptedReplies:
         rows = input_ids.tolist()
         if past == 0 or len(self._seqs) != len(rows):
             self._seqs = [[] for _ in rows]
+            self._row_replies = [{} for _ in rows]
         for row, new_ids in enumerate(rows):
             seq = self._seqs[row][:past] + new_ids
             self._seqs[row] = seq
             if past == 0:
                 self.prompts.append(self._tokenizer.decode(seq))
-            target = self._target(seq)
+            target = self._target(row, seq)
             if target is None:
                 continue
             last = logits[row, -1]
             last.fill_(-30.0)
+            if target == self._eos_id:
+                last[self._pad_id] = 0.0
             last[target] = 30.0
         return output
