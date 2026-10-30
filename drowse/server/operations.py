@@ -200,13 +200,14 @@ class OperationLedger:
         with self._lock:
             if (record := self._live(request_id)) is None:
                 return
-            record["error"] = {
+            stored: dict[str, Any] = {
                 "code": str(error.get("code", "OPERATION_FAILED"))[:128],
                 "message": str(error.get("message", "Operation failed"))[:2048],
             }
             status = error.get("status")
             if type(status) is int and 400 <= status <= 599:
-                record["error"]["status"] = status
+                stored["status"] = status
+            record["error"] = stored
             self._touch(record, state)
 
     def observe(self, request_id: str, frame: dict[str, Any]) -> None:

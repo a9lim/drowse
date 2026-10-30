@@ -12,7 +12,7 @@ formatters.
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -118,7 +118,7 @@ async def run_generation(app: FastAPI, gen: CompatGeneration) -> tuple[Generatio
 
 def stream_generation(
     app: FastAPI, gen: CompatGeneration, request: Request,
-) -> "aclosing[AsyncIterator[StreamItem]]":
+) -> "aclosing[AsyncGenerator[StreamItem, None]]":
     """``async with stream_generation(...) as events: async for item in events``.
 
     Wrapped in :func:`contextlib.aclosing` so a protocol formatter that is
@@ -131,7 +131,7 @@ def stream_generation(
 
 async def _stream_generation(
     app: FastAPI, gen: CompatGeneration, request: Request,
-) -> AsyncIterator[StreamItem]:
+) -> AsyncGenerator[StreamItem, None]:
     """Stream one generation as driver events.
 
     Yields :class:`StreamStarted` once the lock is held, one
