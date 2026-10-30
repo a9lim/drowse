@@ -16,10 +16,8 @@ probe / live-workspace / token-replay surface calls per decode step, and the
 J-space decomposition.  It imports nothing beyond torch and the error
 taxonomy, so a per-step import costs a ``sys.modules`` lookup.
 
-The **estimator** — the only backward-pass code in drowse — lives in
-:mod:`drowse.lens.fit`.  ``fit_jacobian_lens`` remains reachable as
-``drowse.lens.jlens.fit_jacobian_lens`` through a lazy module ``__getattr__``,
-so importing this module never drags the estimator in.
+The **estimator** — the only backward pass through the language model — lives
+in :mod:`drowse.lens.fit`; importing this module never drags it in.
 
 One unit runs through every readout surface: the per-layer softmax probability
 ``p_l(v)``.  ``readout_probabilities`` is the single calibration primitive; a
@@ -35,7 +33,6 @@ from contextlib import contextmanager
 from typing import Any
 
 import torch
-from torch import nn
 
 from drowse.errors import DrowseError
 
@@ -229,30 +226,6 @@ class JacobianLens:
         return norms
 
     @classmethod
-    def merge(cls, lenses: Sequence["JacobianLens"]) -> "JacobianLens":
-        """Combine lenses fitted on disjoint prompt subsets
-        (``n_prompts``-weighted mean)."""
-        if not lenses:
-            raise ValueError("merge() needs at least one lens")
-        first = lenses[0]
-        for other in lenses[1:]:
-            if (
-                other.source_layers != first.source_layers
-                or other.d_model != first.d_model
-            ):
-                raise ValueError("lenses disagree on source_layers / d_model")
-        total = sum(lens.n_prompts for lens in lenses)
-        if total <= 0:
-            raise ValueError("merge() needs lenses with n_prompts > 0")
-        merged: dict[int, torch.Tensor] = {}
-        for layer in first.source_layers:
-            acc = first.jacobians[layer].clone().mul_(first.n_prompts / total)
-            for lens in lenses[1:]:
-                acc.add_(lens.jacobians[layer], alpha=lens.n_prompts / total)
-            merged[layer] = acc
-        return cls(merged, n_prompts=total, d_model=first.d_model)
-
-    @classmethod
     def merge_into(
         cls, lenses: Sequence["JacobianLens"], *, target: int = -1,
     ) -> "JacobianLens":
@@ -307,44 +280,6 @@ class JacobianLens:
         for lens in lenses:
             union.update(lens.jacobians)
         return cls(union, n_prompts=first.n_prompts, d_model=first.d_model)
-
-
-def softcap_logits(logits: torch.Tensor, cap: float | None) -> torch.Tensor:
-    if cap is None:
-        return logits
-    return (logits / cap).tanh() * cap
-
-
-def lens_logits(
-    lens: JacobianLens,
-    hidden_per_layer: Mapping[int, torch.Tensor],
-    *,
-    unembed: torch.Tensor,
-    final_norm: nn.Module,
-    logit_softcap: float | None = None,
-    layers: Sequence[int] | None = None,
-    readout: nn.Module | None = None,
-) -> dict[int, torch.Tensor]:
-    """Full-vocabulary lens readout ``W_U · norm(J_l h)`` per requested layer.
-
-    ``hidden_per_layer`` maps layer index → residual ``[..., d]``. The matvec
-    runs in the unembedding's own dtype (a fp32 copy of a ~256k-row W_U would
-    be gigabytes); ranking precision matches the model's own logit path.
-    Returns fp32 logits ``[..., vocab]`` per layer, on the unembed's device.
-    Pass ``LogitReadout(model)`` as ``readout`` for model-specific bias,
-    projection, and calibration; the default is the supplied matrix/norm path.
-    """
-    requested = list(layers) if layers is not None else lens.source_layers
-    out: dict[int, torch.Tensor] = {}
-    for layer in requested:
-        h = hidden_per_layer[layer]
-        transported = lens.transport(h.to(unembed.device), layer)
-        if readout is not None:
-            out[layer] = readout(transported).float()
-        else:
-            normed = final_norm(transported.to(unembed.dtype))
-            out[layer] = softcap_logits(normed.to(unembed.dtype) @ unembed.T, logit_softcap).float()
-    return out
 
 
 @contextmanager
@@ -512,7 +447,7 @@ def aggregate_readout(
     """Layer-aggregate a per-layer lens readout into one ranked token list.
 
     ``logits`` is ``[L, vocab]`` — one full-vocabulary lens readout row per
-    layer (:func:`lens_logits` output stacked); ``depths`` the matching
+    layer (``LogitReadout(model)(transport_rows(J, h))``); ``depths`` the matching
     normalized layer depths in ``[0, 1]`` (``layer / (n_layers − 1)``).
     Returns ``[(vocab_id, strength, com, spread), ...]`` sorted by
     descending strength.
@@ -892,17 +827,3 @@ def _atom_norms(
         block = unembed[start : start + chunk].float() @ jacobian
         norms[start : start + chunk] = block.norm(dim=-1)
     return norms
-
-
-def __getattr__(name: str) -> Any:
-    """Lazy compatibility alias for the estimator entry point.
-
-    ``fit_jacobian_lens`` moved to :mod:`drowse.lens.fit`; resolving it
-    on demand keeps ``from drowse.lens.jlens import fit_jacobian_lens``
-    working without importing the estimator when only the readout is wanted.
-    """
-    if name == "fit_jacobian_lens":
-        from drowse.lens.fit import fit_jacobian_lens
-
-        return fit_jacobian_lens
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -372,7 +372,7 @@ def relabels(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def _interrupt_relp_fit_after(n: int, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run a RelP fit that checkpoints every prompt and dies after ``n``."""
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
 
     real_fit = jlens_mod.fit_jacobian_lens
 
@@ -392,7 +392,7 @@ def _interrupt_relp_fit_after(n: int, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _forbid_estimator(monkeypatch: pytest.MonkeyPatch) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
     import drowse.lens.store as lens_io
 
     def _fail(*_args: Any, **_kwargs: Any) -> Any:
@@ -429,7 +429,7 @@ def test_relp_checkpoint_records_relp_policy(
 def test_interrupted_relp_fit_resumes_from_checkpoint(
     monkeypatch: pytest.MonkeyPatch, relabels: list[str],
 ) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
 
     full = _DenseStubSession().fit_jlens(
         _PROMPTS, corpus_spec="test", backward_rules="relp",

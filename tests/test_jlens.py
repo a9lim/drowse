@@ -21,14 +21,14 @@ from drowse.lens.jlens import (
     aggregate_readout,
     aggregate_readout_from_probabilities,
     aggregate_readout_tensors_from_probabilities,
-    fit_jacobian_lens,
-    lens_logits,
+    transport_rows,
     readout_probabilities,
     resolve_word_token,
     topk_probabilities,
     token_readout_stats,
     token_readout_stats_from_probabilities,
 )
+from drowse.lens.fit import fit_jacobian_lens
 from drowse.model.loading import get_final_norm, get_unembedding
 from tests._jlens_toys import TOY_D as _D
 from tests._jlens_toys import TOY_VOCAB as _VOCAB
@@ -184,31 +184,7 @@ def test_replicated_vjp_mode_matches_exact_jacobian() -> None:
         assert torch.allclose(lens.jacobians[source], exact, atol=1e-5)
 
 
-def test_scalar_vjp_mode_matches_exact_jacobian_without_replication() -> None:
-    model = _frozen_model(n_layers=3)
-    tokenizer = _CharTokenizer()
-    prompt = "the quick brown fox js"
-    seen_batches: list[int] = []
-    real_forward = model.forward
-
-    def counted_forward(input_ids: torch.Tensor, **kwargs: Any) -> Any:
-        seen_batches.append(int(input_ids.shape[0]))
-        return real_forward(input_ids=input_ids, **kwargs)
-
-    model.forward = counted_forward  # type: ignore[method-assign]
-    lens = fit_jacobian_lens(
-        model, tokenizer, [prompt], _layers(model),
-        dim_batch=4, skip_first=16, vjp_mode="scalar",
-    )
-
-    ids = tokenizer(prompt)["input_ids"]
-    for source in (0, 1):
-        exact = _exact_jacobian(model, ids, source, skip_first=16)
-        assert torch.allclose(lens.jacobians[source], exact, atol=1e-5)
-    assert seen_batches and set(seen_batches) == {1}
-
-
-def test_fit_averages_over_prompts_and_merge_agrees() -> None:
+def test_fit_weights_prompts_equally() -> None:
     model = _frozen_model(n_layers=2)
     tokenizer = _CharTokenizer()
     p1 = "a prompt that is long enough."
@@ -217,11 +193,11 @@ def test_fit_averages_over_prompts_and_merge_agrees() -> None:
     joint = fit_jacobian_lens(model, tokenizer, [p1, p2], _layers(model), dim_batch=3)
     solo1 = fit_jacobian_lens(model, tokenizer, [p1], _layers(model), dim_batch=3)
     solo2 = fit_jacobian_lens(model, tokenizer, [p2], _layers(model), dim_batch=3)
-    merged = JacobianLens.merge([solo1, solo2])
 
-    assert joint.n_prompts == merged.n_prompts == 2
+    assert joint.n_prompts == 2
     for layer in joint.source_layers:
-        assert torch.allclose(joint.jacobians[layer], merged.jacobians[layer], atol=1e-6)
+        mean = (solo1.jacobians[layer] + solo2.jacobians[layer]) / 2
+        assert torch.allclose(joint.jacobians[layer], mean, atol=1e-6)
 
 
 def test_ragged_prompt_microbatch_matches_single_prompt_graphs() -> None:
@@ -615,22 +591,6 @@ def test_fit_resume_reuses_prefix_matrices_as_single_accumulator() -> None:
         assert torch.allclose(resumed.jacobians[layer], full.jacobians[layer])
 
 
-def test_fit_skips_terminal_periodic_checkpoint() -> None:
-    model = _frozen_model(n_layers=2)
-    tokenizer = _CharTokenizer()
-    prompt = "a prompt that is long enough."
-    seen: list[int] = []
-
-    fit_jacobian_lens(
-        model, tokenizer, [prompt] * 2, _layers(model),
-        dim_batch=3, prompt_batch=2, checkpoint_every=2,
-        suppress_terminal_checkpoint=True,
-        checkpoint_accumulator_cb=lambda _sums, count, _dim: seen.append(count),
-    )
-
-    assert seen == []
-
-
 def test_fit_cancellation_persists_completed_prefix_and_removes_hooks() -> None:
     import threading
 
@@ -758,7 +718,7 @@ def test_source_layers_must_not_be_empty() -> None:
         )
 
 
-def test_lens_logits_matches_model_at_identity_transport() -> None:
+def test_identity_transport_readout_matches_model_logits() -> None:
     """With J_l = I at the last source layer... the readout must equal running
     the remaining blocks' *absence* — i.e. norm+unembed of the residual itself
     (the logit-lens identity check)."""
@@ -770,13 +730,14 @@ def test_lens_logits_matches_model_at_identity_transport() -> None:
             h = block(h)
         expected = model(input_ids=ids).logits
 
+    from drowse.model.loading import LogitReadout
+
     lens = JacobianLens({1: torch.eye(_D)}, n_prompts=1, d_model=_D)
-    out = lens_logits(
-        lens, {1: h},
-        unembed=get_unembedding(cast(Any, model)),
-        final_norm=get_final_norm(cast(Any, model)),
-    )
-    assert torch.allclose(out[1], expected.squeeze(0).float(), atol=1e-5)
+    rows = h.reshape(-1, _D)
+    out = LogitReadout(cast(Any, model))(transport_rows(
+        lens.jacobians[1].expand(rows.shape[0], _D, _D), rows,
+    ))
+    assert torch.allclose(out.float(), expected.squeeze(0).float(), atol=1e-5)
 
 
 def test_transport_unknown_layer_raises() -> None:
@@ -1026,13 +987,6 @@ def test_resolve_word_token_decode_mismatch_raises() -> None:
         resolve_word_token(tok, "fake")
 
 
-def test_merge_rejects_mismatched_lenses() -> None:
-    a = JacobianLens({0: torch.eye(_D)}, n_prompts=1, d_model=_D)
-    b = JacobianLens({1: torch.eye(_D)}, n_prompts=1, d_model=_D)
-    with pytest.raises(ValueError, match="disagree"):
-        JacobianLens.merge([a, b])
-
-
 # --------------------------------------------------------------------------
 # module split: readout stays import-light, the estimator loads on demand
 # --------------------------------------------------------------------------
@@ -1052,13 +1006,3 @@ def test_readout_module_does_not_import_the_estimator() -> None:
         capture_output=True, text=True, check=True,
     )
     assert out.stdout.strip() == "False"
-
-
-def test_fit_jacobian_lens_stays_reachable_from_the_readout_module() -> None:
-    """The compatibility alias resolves to the estimator's own function."""
-    import drowse.lens.jlens as jlens_module
-    import drowse.lens.fit as fit_module
-
-    assert jlens_module.fit_jacobian_lens is fit_module.fit_jacobian_lens
-    with pytest.raises(AttributeError):
-        jlens_module.definitely_not_a_lens_symbol  # noqa: B018

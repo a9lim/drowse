@@ -16,8 +16,8 @@ averaged within each prompt and prompt Jacobians are then summed, preserving
 exact equal-prompt weighting even for ragged lengths. The first
 ``SKIP_FIRST_POSITIONS`` positions (attention sinks) and the final position are
 excluded from both cotangents and the source mean. Backends without batched-VJP
-coverage fall back to exact unreplicated scalar VJPs; replicated VJPs remain an
-explicit reference mode.
+coverage fall back to replicated VJPs (the forward graph replicated per output
+row block), which are also the explicit reference mode.
 
 The fit builds its own autograd-enabled forward (``torch.enable_grad()`` + a
 grad-seeding output hook on the first fitted block) — the ``inference_mode``
@@ -46,7 +46,6 @@ resumed, and loaded lenses retain the estimator's precision.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -117,7 +116,7 @@ def _output_tensor(output: Any) -> torch.Tensor:
 
 
 class _BatchedVjpUnavailable(RuntimeError):
-    """Internal signal: retry the current prompt with scalar VJPs."""
+    """Internal signal: retry the current prompt with replicated VJPs."""
 
     def __init__(self, committed_until: int) -> None:
         super().__init__("batched VJP unavailable")
@@ -136,15 +135,7 @@ class _PromptRowsCommitted(RuntimeError):
         self.committed_until = committed_until
 
 
-def _resolve_vjp_mode(mode: str) -> str:
-    env = os.environ.get("DROWSE_JLENS_VJP")
-    raw = (env or mode).strip().lower()
-    if raw not in {"auto", "batched", "scalar", "replicated"}:
-        raise ValueError(
-            "vjp_mode must be 'auto', 'batched', 'scalar', or 'replicated' "
-            f"(got {mode!r})"
-        )
-    return raw
+_VJP_MODES = frozenset({"auto", "batched", "replicated"})
 
 
 def _looks_like_batched_vjp_unsupported(exc: RuntimeError) -> bool:
@@ -285,7 +276,6 @@ def fit_jacobian_lens(
     input_id_rows: Sequence[Sequence[int]] | None = None,
     vjp_mode: str = "auto",
     cancel_event: Any | None = None,
-    suppress_terminal_checkpoint: bool = False,
     initial_lens: JacobianLens | None = None,
 ) -> JacobianLens:
     """Fit ``J_l`` for every source layer over ``prompts``.
@@ -306,8 +296,8 @@ def fit_jacobian_lens(
     instead of tokenizing the corpus a second time.  ``vjp_mode="batched"``
     computes each output-dim block with ``is_grads_batched=True`` from a single
     prompt forward instead of replicating the forward graph; ``"auto"`` tries
-    that path first and falls back to exact scalar VJPs if the backend lacks
-    vmap coverage. ``prompt_batch`` controls consecutive ragged prompts per
+    that path first and falls back to replicated VJPs if the backend lacks
+    vmap coverage; ``"replicated"`` forces that reference path. ``prompt_batch`` controls consecutive ragged prompts per
     graph (CPU/CUDA default 4, MPS default 2); both prompt and output-dimension
     batch widths back off independently on device OOM and stay below a proven
     failure ceiling for the rest of the fit.
@@ -354,7 +344,11 @@ def fit_jacobian_lens(
             "input_id_rows must be aligned with prompts "
             f"({len(input_id_rows)} != {len(prompts)})"
         )
-    requested_vjp_mode = _resolve_vjp_mode(vjp_mode)
+    if vjp_mode not in _VJP_MODES:
+        raise ValueError(
+            f"vjp_mode must be one of {sorted(_VJP_MODES)}, got {vjp_mode!r}"
+        )
+    requested_vjp_mode = vjp_mode
 
     # Prepare once. Session orchestration normally supplies token IDs it already
     # hashed for resume; direct callers get the same one-time tokenization here.
@@ -404,7 +398,7 @@ def fit_jacobian_lens(
     fit_started = time.perf_counter()
     active_dim_batch = int(dim_batch)
     target_prompt_batch = int(
-        1 if requested_vjp_mode in {"scalar", "replicated"}
+        1 if requested_vjp_mode == "replicated"
         else (
             prompt_batch
             if prompt_batch is not None
@@ -656,15 +650,9 @@ def fit_jacobian_lens(
                     active_prompt_batch = target_prompt_batch
                 # Persist after the first complete microbatch that crosses the
                 # cadence.  Do not fracture an otherwise healthy prompt batch
-                # merely to land on an exact count, and do not write a complete
-                # terminal checkpoint immediately before the durable artifact.
-                if (
-                    n_done >= next_checkpoint
-                    and (
-                        cursor < len(prepared_rows)
-                        or not suppress_terminal_checkpoint
-                    )
-                ):
+                # merely to land on an exact count.  A terminal checkpoint is
+                # promoted to the durable artifact, not rewritten.
+                if n_done >= next_checkpoint:
                     if checkpoint_accumulator_cb is not None:
                         checkpoint_accumulator_cb(
                             state["acc"],
@@ -768,27 +756,21 @@ def _accumulate_prompt_jacobian(
                 "Jacobian-lens fit cancelled before the next prompt group"
             )
         vjp_mode = str(state["vjp_mode"])
-        if vjp_mode != "batched" and prompt_count != 1:
+        batched = vjp_mode == "batched"
+        if not batched and prompt_count != 1:
             raise ValueError(f"{vjp_mode} VJP requires prompt_batch=1")
-        if vjp_mode == "scalar":
-            batch = 1
-        if vjp_mode == "replicated":
+        if not batched:
             batch = min(batch, _ROW_STRIPE)
-        forward_batch = prompt_count if vjp_mode in {"batched", "scalar"} else batch
-        replicated = (
-            ids if vjp_mode in {"batched", "scalar"}
-            else ids.expand(forward_batch, -1)
-        )
+        forward_batch = prompt_count if batched else batch
+        replicated = ids if batched else ids.expand(forward_batch, -1)
         replicated_mask = (
             attention_mask
-            if vjp_mode in {"batched", "scalar"} or attention_mask is None
+            if batched or attention_mask is None
             else attention_mask.expand(forward_batch, -1)
         )
         hook_state: dict[str, Any] = state["hook_state"]
         hook_state["source_counts"] = (
-            source_counts
-            if vjp_mode in {"batched", "scalar"}
-            else source_counts.expand(forward_batch)
+            source_counts if batched else source_counts.expand(forward_batch)
         )
         hook_state["source_start"] = int(skip_first)
         try:
@@ -1099,11 +1081,11 @@ def _accumulate_prompt_jacobian(
         batch_rows = torch.arange(batch, device=device)
         batched_outputs = (
             (final * valid_mask.unsqueeze(-1)).sum(dim=(0, 1))
-            if vjp_mode in {"batched", "scalar"} else None
+            if batched else None
         )
         batched_eye = (
             torch.eye(batch, dtype=final.dtype, device=device)
-            if vjp_mode == "batched" else None
+            if batched else None
         )
         dim_start = int(row_start)
         pass_idx = 0
@@ -1127,7 +1109,7 @@ def _accumulate_prompt_jacobian(
             try:
                 grads = _grad_row_block(
                     final, source_tensors, valid_mask, dims,
-                    mode=vjp_mode,
+                    batched=batched,
                     retain_graph=dim_start + n_dims < d_model,
                     cotangent=cot,
                     prev_dims=prev_dims,
@@ -1137,7 +1119,7 @@ def _accumulate_prompt_jacobian(
             except RuntimeError as exc:
                 if (
                     state["requested_vjp_mode"] == "auto"
-                    and vjp_mode == "batched"
+                    and batched
                     and _looks_like_batched_vjp_unsupported(exc)
                 ):
                     raise _BatchedVjpUnavailable(committed_until) from exc
@@ -1149,7 +1131,7 @@ def _accumulate_prompt_jacobian(
                 raise JacobianLensCancelled(
                     "Jacobian-lens fit cancelled during an active prompt group"
                 )
-            if vjp_mode == "replicated":
+            if not batched:
                 if cot is None:
                     cot = torch.zeros_like(final)
                 prev_dims = dims
@@ -1161,9 +1143,7 @@ def _accumulate_prompt_jacobian(
                     flush_stripe(dim_start)
                 stripe_offset = dim_start - stripe_start
             for l, g in zip(sources, grads):
-                block = _source_grad_block(
-                    g, mode=vjp_mode, n_dims=n_dims,
-                )
+                block = _source_grad_block(g, batched=batched, n_dims=n_dims)
                 if device.type != "cpu":
                     assert stripe_rows is not None
                     if device.type == "cuda":
@@ -1203,26 +1183,20 @@ def _grad_row_block(
     valid_mask: torch.Tensor,
     dims: torch.Tensor,
     *,
-    mode: str,
+    batched: bool,
     retain_graph: bool,
     cotangent: torch.Tensor | None,
     prev_dims: torch.Tensor | None,
     batched_outputs: torch.Tensor | None,
     batched_eye: torch.Tensor | None,
 ) -> tuple[torch.Tensor, ...]:
-    if mode == "batched":
+    if batched:
         assert batched_outputs is not None and batched_eye is not None
         outputs = batched_outputs[dims]
         eye = batched_eye[:dims.numel(), :dims.numel()]
         return torch.autograd.grad(
             outputs, source_tensors, grad_outputs=eye,
             retain_graph=retain_graph, is_grads_batched=True,
-        )
-    if mode == "scalar":
-        assert batched_outputs is not None and dims.numel() == 1
-        return torch.autograd.grad(
-            batched_outputs[dims[0]], source_tensors,
-            retain_graph=retain_graph,
         )
 
     if cotangent is None:
@@ -1242,15 +1216,15 @@ def _grad_row_block(
 def _source_grad_block(
     grad: torch.Tensor,
     *,
-    mode: str,
+    batched: bool,
     n_dims: int,
 ) -> torch.Tensor:
-    if mode == "batched":
+    if batched:
         # [n_dims, B, D] — source-position means were collapsed by the
         # transparent probe identity inside autograd. Preserve equal-prompt
         # weighting by summing those per-prompt Jacobians.
         return grad[:n_dims].to(torch.float32).sum(dim=1)
-    # [replicated_batch,D] (or [1,D] scalar) is already mean-position reduced.
+    # [replicated_batch,D] is already mean-position reduced.
     return grad[:n_dims].to(torch.float32)
 
 

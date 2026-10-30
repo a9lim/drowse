@@ -2229,8 +2229,8 @@ class DrowseSession:
             JacobianLens,
             JacobianLensCancelled,
             JacobianLensError,
-            fit_jacobian_lens,
         )
+        from drowse.lens.fit import fit_jacobian_lens
         from drowse.lens.store import (
             LENS_FORMAT_VERSION,
             load_local_lens as load_lens,

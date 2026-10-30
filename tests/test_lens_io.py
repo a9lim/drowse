@@ -395,37 +395,6 @@ def test_save_load_checkpoint_round_trip() -> None:
     assert sidecar["usable_prompt_count"] == 12
 
 
-def test_checkpoint_accumulator_is_self_contained_and_merges_prefix() -> None:
-    base = _lens(n_layers=2, n_prompts=3)
-    tail = _lens(n_layers=2, n_prompts=2)
-    sums = {layer: J * tail.n_prompts for layer, J in tail.jacobians.items()}
-
-    save_lens_checkpoint_accumulator(
-        sums, tail.n_prompts, _D, _MODEL,
-        base=base,
-        corpus_spec="test-corpus",
-        corpus_sha256=_digest("abc123"),
-        seq_len=128,
-        dim_batch=8,
-        skip_first=16,
-        model_layer_count=3,
-        consumed_prefix_sha256=_digest("consumed-prefix"),
-    )
-
-    loaded = load_lens_checkpoint(_MODEL)
-    assert loaded is not None
-    got, sidecar = loaded
-    expected = JacobianLens.merge([base, tail])
-    assert got.n_prompts == expected.n_prompts == 5
-    assert sidecar["base_n_prompts"] == 0
-    assert sidecar["partial_n_prompts"] == 5
-    assert sidecar["model_layer_count"] == 3
-    for layer in got.source_layers:
-        assert torch.allclose(
-            got.jacobians[layer], expected.jacobians[layer], atol=2e-3,
-        )
-
-
 def test_load_lens_sidecar_validates_tensor_header_without_materializing() -> None:
     _save(_lens())
     sidecar = load_lens_sidecar(_MODEL)

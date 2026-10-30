@@ -1265,7 +1265,7 @@ def test_fit_jlens_tops_up_a_hub_corpus_by_prefix(
     """A larger read of the same pinned Hub corpus fits only the new rows."""
     import datasets
 
-    import drowse.lens.jlens as jlens_module
+    import drowse.lens.fit as jlens_module
     from drowse.lens.store import (
         HfLensCorpus,
         _collect_lens_corpus,
@@ -1307,7 +1307,7 @@ def test_fit_jlens_tops_up_a_corpus_mix_by_prefix(
     """Growing a fit on a weighted mix fits only the newly scheduled rows."""
     import datasets
 
-    import drowse.lens.jlens as jlens_module
+    import drowse.lens.fit as jlens_module
     from drowse.lens.store import (
         HfLensCorpus,
         LensCorpusMix,
@@ -1349,7 +1349,7 @@ def test_fit_jlens_tops_up_a_corpus_mix_by_prefix(
 def test_fit_jlens_changed_prefix_restarts_from_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_module
+    import drowse.lens.fit as jlens_module
 
     _StubSession().fit_jlens(_PROMPTS[:2], force=True)
     changed = ["a changed first prompt that is long enough", *_PROMPTS[1:]]
@@ -1369,7 +1369,7 @@ def test_fit_jlens_changed_prefix_restarts_from_zero(
 def test_fit_jlens_loaded_weight_change_invalidates_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_module
+    import drowse.lens.fit as jlens_module
 
     first = _StubSession()
     first.fit_jlens(_PROMPTS)
@@ -1634,7 +1634,7 @@ def test_fit_jlens_extends_real_prefix_checkpoint_without_full_artifact() -> Non
 def test_fit_jlens_checkpoint_survives_two_interruptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
     import drowse.lens.store as lens_io
 
     full = _StubSession().fit_jlens(_PROMPTS, force=True)
@@ -1702,7 +1702,7 @@ def test_fit_jlens_checkpoint_survives_two_interruptions(
 def test_corrupt_farther_checkpoint_falls_back_to_durable_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
 
     session = _StubSession()
     durable = session.fit_jlens(_PROMPTS[:2], force=True)
@@ -1799,7 +1799,7 @@ def test_matching_checkpoint_evicts_incompatible_resident_before_load(
 def test_resident_prefix_is_reloaded_after_resume_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS[:2], force=True)
@@ -1834,7 +1834,7 @@ def test_subset_resume_releases_unrequested_resident_matrices(
     import gc
     import weakref
 
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS[:2], force=True, source_layers=[0, 1])
@@ -1901,7 +1901,7 @@ def test_finalization_failure_rebuilds_evicted_resident(
 def test_fit_jlens_missing_layer_topup_resumes_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
     import drowse.lens.store as lens_io
     from drowse.base import integrity
     full = _StubSession().fit_jlens(
