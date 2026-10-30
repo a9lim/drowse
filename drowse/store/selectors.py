@@ -16,9 +16,10 @@ dependency.  CLI runners parse argv with :func:`parse` and pass the resulting
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from drowse.errors import DrowseError
 from drowse.naming import canonical_concept_name
@@ -115,19 +116,63 @@ class _ManifoldIndex:
     names: list["ResolvedManifoldName"]
 
 
-# One memoized walk keyed by the manifolds root.  Walking opens and parses
-# every ``manifold.json``, and a single compound steering expression hits all
-# three views, so the walk runs once and the views are projected from it.
-# Cleared by ``invalidate()``, which every store mutator calls for itself.
-_index_cache: dict[Path, _ManifoldIndex] = {}
+# One memoized walk per manifolds root.  Walking opens and parses every
+# ``manifold.json``, and a single compound steering expression hits all three
+# views, so the walk runs once and the views are projected from it.  The memo
+# is keyed on a stat fingerprint of the tree, so a manifold created, installed,
+# fitted, or removed by *another process* (a CLI run beside ``drowse serve``)
+# is seen on the next resolve.  In-process mutators still call
+# :func:`invalidate`, which covers changes inside one timestamp tick.
+_index_cache: dict[Path, tuple[tuple[Any, ...], _ManifoldIndex]] = {}
+
+
+def _tree_fingerprint(root: Path) -> tuple[Any, ...]:
+    """Cheap identity of everything the index walk reads.
+
+    The namespace / folder listings plus, per manifold, the ``manifold.json``
+    inode + mtime (atomic replaces change the inode) and the ``nodes/``
+    directory mtime (a completing corpus file makes a folder discoverable).
+    About three ``stat`` calls per installed manifold.
+    """
+    def stamp(path: str) -> tuple[int, int] | None:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return (st.st_ino, st.st_mtime_ns)
+
+    try:
+        namespaces = sorted(
+            (entry.name, entry.path) for entry in os.scandir(root)
+            if entry.is_dir() and NAME_REGEX.match(entry.name)
+        )
+    except OSError:
+        return ()
+    parts: list[Any] = []
+    for ns_name, ns_path in namespaces:
+        try:
+            folders = sorted(
+                (entry.name, entry.path) for entry in os.scandir(ns_path)
+                if entry.is_dir() and NAME_REGEX.match(entry.name)
+            )
+        except OSError:
+            continue
+        for name, path in folders:
+            parts.append((
+                ns_name, name,
+                stamp(os.path.join(path, "manifold.json")),
+                stamp(os.path.join(path, "nodes")),
+            ))
+    return tuple(parts)
 
 
 def _manifold_index() -> _ManifoldIndex:
-    """Walk ``manifolds_dir()`` once and project the three selector views."""
+    """Walk ``manifolds_dir()`` once per tree state and project the three views."""
     root = manifolds_dir()
+    fingerprint = _tree_fingerprint(root)
     cached = _index_cache.get(root)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
     # ``manifold_authoring`` calls :func:`invalidate` from its mutators, so the
     # walk is imported at call time.
     from drowse.store.manifold_authoring import iter_manifold_folders
@@ -155,7 +200,7 @@ def _manifold_index() -> _ManifoldIndex:
             ))
 
     index = _ManifoldIndex(concepts=concepts, labels=labels, names=names)
-    _index_cache[root] = index
+    _index_cache[root] = (fingerprint, index)
     return index
 
 

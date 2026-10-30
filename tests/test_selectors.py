@@ -589,6 +589,43 @@ def test_single_walk_serves_all_three_views(
     assert walks == 1
 
 
+def test_index_sees_out_of_process_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A manifold written by another process resolves without invalidate().
+
+    The memo used to be keyed on the root path alone, so a running server
+    never saw a label created by a separate CLI process until restart.
+    """
+    import shutil
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    staged = _mk_nodes("local", "deer.wolf", ["deer", "wolf"])
+    sel.invalidate()
+    assert sel.resolve_manifold_label("deer") is not None
+    assert sel.resolve_manifold_label("pirate") is None
+
+    # "Another process": copy a complete folder into place and rewrite its
+    # manifest without any in-process invalidation.
+    other = staged.with_name("personas")
+    shutil.copytree(staged, other)
+    manifest = json.loads((other / "manifold.json").read_text())
+    manifest["name"] = "personas"
+    manifest["nodes"] = [
+        {"label": "pirate", "role": None, "kind": None},
+        {"label": "wizard", "role": None, "kind": None},
+    ]
+    (other / "nodes" / "00_deer.json").rename(other / "nodes" / "00_pirate.json")
+    (other / "nodes" / "01_wolf.json").rename(other / "nodes" / "01_wizard.json")
+    (other / "manifold.json").write_text(json.dumps(manifest))
+
+    hit = sel.resolve_manifold_label("pirate")
+    assert hit is not None and hit.manifold_key == "local/personas"
+
+    shutil.rmtree(other)
+    assert sel.resolve_manifold_label("pirate") is None
+
+
 def test_bare_label_survives_a_bad_sidecar(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
