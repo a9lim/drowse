@@ -134,7 +134,10 @@ const releaseMetadata: Plugin = {
     for (const route of prerenderedRoutes) {
       const page = prerendered[route.key];
       const name = `prerender-${route.key.replace(/[^a-z0-9]+/g, "-").replace(/-$/, "")}.css`;
-      prerenderedPages.set(route.key, { body: page.body, style: this.getFileName(this.emitFile({ type: "asset", name, source: page.css })) });
+      // Pages with identical CSS (About and Privacy) would share one deduplicated asset under the first
+      // page's name, leaving the second page's link pointing at a file that was never written.
+      const source = `/* ${route.key} */\n${page.css}`;
+      prerenderedPages.set(route.key, { body: page.body, style: this.getFileName(this.emitFile({ type: "asset", name, source })) });
     }
   },
   transformIndexHtml(html) {

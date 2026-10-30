@@ -188,7 +188,14 @@ export function assertSecurityHeaders(response, distributionLock) {
     "Deployed CSP directive set differs from the hosted policy",
   );
   for (const [name, tokens] of expected) {
-    assert.deepEqual(actual.get(name), tokens, `CSP ${name} must be ${tokens.join(" ")}`);
+    let found = actual.get(name);
+    // The build allows its own inline theme script by hash; any other script-src token must match exactly.
+    if (name === "script-src") {
+      const hashes = found.filter((token) => token.startsWith("'sha256-"));
+      for (const hash of hashes) assert.match(hash, /^'sha256-[a-z0-9+/]{43}='$/, `CSP script-src has a malformed hash ${hash}`);
+      found = found.filter((token) => !token.startsWith("'sha256-"));
+    }
+    assert.deepEqual(found, tokens, `CSP ${name} must be ${tokens.join(" ")}`);
   }
 }
 
