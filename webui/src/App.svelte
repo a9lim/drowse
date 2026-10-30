@@ -2,11 +2,9 @@
   import FluentIcon from "./lib/ui/FluentIcon.svelte";
   import SidebarIcon from "./lib/ui/SidebarIcon.svelte";
   import { tokenInspectorUi, dockTokenDetails, hideTokenDetails, toolPresentation, setToolPresentation, restoreToolPresentation, openToolInSidebar } from "./lib/stores/drawers.svelte";
-  import ManifoldBuilderDrawer from "./drawers/ManifoldBuilderDrawer.svelte";
   import ManifoldJobProgress from "./lib/ui/ManifoldJobProgress.svelte";
   import { manifoldJobs } from "./lib/stores/manifoldJobs.svelte";
   import ToolDirectory from "./panels/ToolDirectory.svelte";
-  import TokenDrilldownDrawer from "./drawers/TokenDrilldownDrawer.svelte";
   import BottomSheet from "./lib/ui/BottomSheet.svelte";
   import { MOBILE_SHEET_QUERY } from "./lib/bottomSheet";
   import "./lib/style/workspace.css";
@@ -17,7 +15,7 @@
 
   import { onMount, tick } from "svelte";
   import { registerWorkspaceController } from "./lib/workspaceController";
-  import { mountWorkspaceWebMcp, refreshWebMcp } from "./lib/webmcp";
+  import { loadWebMcp } from "./lib/webmcp/loader";
   import { sessionState } from "./lib/stores/session.svelte";
   import { attachPersistence } from "./lib/stores/persistence.svelte";
   import { fade, fly } from "svelte/transition";
@@ -63,6 +61,7 @@
   // host below renders whichever row ``drawerState.open`` names, so there
   // is no per-drawer branch here to fall out of sync with the union.
   import { DRAWERS, drawerParams } from "./drawers";
+  import DrawerOutlet from "./drawers/DrawerOutlet.svelte";
 
   import {
     bootstrap,
@@ -108,11 +107,17 @@
   const webMcpModelId = $derived(sessionState.info?.model_id);
   const webMcpInstruments = $derived(JSON.stringify(sessionState.info?.instruments));
   $effect(() => {
-    if (bootStatus === "ready" && webMcpModelId) return mountWorkspaceWebMcp();
+    if (bootStatus !== "ready" || !webMcpModelId) return;
+    const webMcp = loadWebMcp();
+    if (!webMcp) return;
+    let unmount: (() => void) | null = null;
+    let cancelled = false;
+    void webMcp.then(module => { if (!cancelled) unmount = module.mountWorkspaceWebMcp(); });
+    return () => { cancelled = true; unmount?.(); };
   });
   $effect(() => {
     webMcpInstruments;
-    refreshWebMcp();
+    void loadWebMcp()?.then(module => module.refreshWebMcp());
   });
   $effect(() => {
     if (bootStatus === "ready") return attachPersistence();
@@ -693,7 +698,7 @@
         data-open={dockedTokenDetails && !sideToolOpen} aria-hidden={!dockedTokenDetails || sideToolOpen}
         inert={!dockedTokenDetails || drawerState.open !== null} role={narrowScreen ? undefined : "complementary"} aria-label={narrowScreen ? undefined : "Generated word details"}>
         {#if tokenInspectorUi.docked}
-          <TokenDrilldownDrawer docked mobile={narrowScreen} onclose={dismiss} params={tokenInspectorUi.params} active={dockedTokenDetails && drawerState.open === null} />
+          <DrawerOutlet name="token_drilldown" docked mobile={narrowScreen} onclose={dismiss} params={tokenInspectorUi.params} active={dockedTokenDetails && drawerState.open === null} />
         {/if}
         </div>
         {/snippet}
@@ -744,11 +749,11 @@
           {#if modalDrawerOpen}<ManifoldJobProgress compact />{/if}
           {#if builderVisited}
             <div class="tool-content" hidden={drawerState.open !== "manifold_builder"} inert={drawerState.open !== "manifold_builder"}>
-              <ManifoldBuilderDrawer params={builderParams} />
+              <DrawerOutlet name="manifold_builder" params={builderParams} />
             </div>
           {/if}
           {#if drawerState.open !== null && drawerState.open !== "manifold_builder"}
-            <entry.component params={drawerParams(drawerState.open, drawerState.params)} mobile={mobileTokenDrawer} onclose={dismiss} />
+            <DrawerOutlet name={drawerState.open} params={drawerParams(drawerState.open, drawerState.params)} mobile={mobileTokenDrawer} onclose={dismiss} />
           {/if}
         </div>
           {/snippet}
