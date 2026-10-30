@@ -36,19 +36,11 @@ def session_config_dict(session: DrowseSession) -> SamplingFields:
     }
 
 
-def session_model_type(session: DrowseSession) -> str | None:
-    """Resolve the loaded model's ``model_type`` through multimodal wrappers."""
-    model_cfg = session.model.config
-    text_cfg = getattr(model_cfg, "text_config", None)
-    mt = getattr(text_cfg, "model_type", None) if text_cfg is not None else None
-    return mt or getattr(model_cfg, "model_type", None)
-
-
 def role_support(session: DrowseSession) -> tuple[bool, bool]:
     """``(assistant_supported, user_supported)`` for the loaded model family."""
     from drowse.model.role_templates import resolve_seat_headers
 
-    mt = session_model_type(session)
+    mt = session.renderer.model_type
     seats = resolve_seat_headers(session.tokenizer, mt) if mt is not None else None
     if seats is None:
         return (False, False)
@@ -61,7 +53,7 @@ def default_role_labels(
     """The family-standard assistant/user role labels, if substitutable."""
     from drowse.model.role_templates import resolve_seat_headers
 
-    mt = session_model_type(session)
+    mt = session.renderer.model_type
     seats = resolve_seat_headers(session.tokenizer, mt) if mt is not None else None
     if seats is None:
         return (None, None)

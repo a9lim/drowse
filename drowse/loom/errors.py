@@ -39,10 +39,10 @@ class InvalidNodeOperationError(ValueError, LoomTreeError):
 class MutationDuringGenerationError(RuntimeError, LoomTreeError):
     """Raised when a tree mutation conflicts with an in-flight generation.
 
-    The ``_gen_lock`` holder owns the subtree rooted at the user-parent of
-    its target.  Decoration ops and branches are always free; edits and
-    deletes on that reservation refuse with this error (HTTP layer maps
-    to 409).
+    A generation reserves the subtree rooted at the parent of the node it
+    streams into (:meth:`LoomTree.reserve`).  Decoration ops, branches and
+    new turns are always free; edits, appends and deletes touching that
+    reservation, and a reset, refuse with this error (HTTP 409).
     """
 
     def user_message(self) -> tuple[int, str]:

@@ -9,7 +9,7 @@ from typing import Any, cast
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
-from drowse.server.runtime import resolve_session_id, run_in_thread, session_lock
+from drowse.server.runtime import run_in_thread, session_lock, session_router
 from drowse.server.response_models import (
     ActivePathJSON,
     CastMemberResponse,
@@ -64,9 +64,10 @@ def _remember_joint_logprobs(cache: dict[Any, Any], key: Any, value: Any) -> Non
 def register_tree_routes(app: FastAPI) -> None:
     """Mount the loom ``tree/*`` routes."""
     session = app.state.session
+    router = session_router()
 
-    @app.get("/drowse/v1/sessions/{session_id}/tree")
-    def get_tree(session_id: str) -> LoomTreeJSON:
+    @router.get("/tree")
+    def get_tree() -> LoomTreeJSON:
         """Full tree as JSON, token rows included.
 
         :meth:`LoomTree.to_dict` with the configured ``cast`` replaced by the
@@ -74,12 +75,11 @@ def register_tree_routes(app: FastAPI) -> None:
         Surfaces hydrate their state from this on bootstrap and reconcile
         via the WS ``tree_mutated`` delta stream after.
         """
-        resolve_session_id(session_id)
         return tree_to_json(session)
 
-    @app.put("/drowse/v1/sessions/{session_id}/tree")
+    @router.put("/tree")
     async def restore_tree(
-        session_id: str, req: TreeRestoreRequest,
+        req: TreeRestoreRequest,
     ) -> TreeRestoreResponse:
         """Atomically restore a complete Loom tree from its JSON form.
 
@@ -88,7 +88,6 @@ def register_tree_routes(app: FastAPI) -> None:
         :meth:`LoomTree.from_dict`; model mismatch is refused because saved
         token ids and stamped generation recipes are model-specific.
         """
-        resolve_session_id(session_id)
         async with session_lock(app):
             session.restore_tree(req.tree)
         return {
@@ -98,20 +97,19 @@ def register_tree_routes(app: FastAPI) -> None:
             "nodes": len(session.tree.nodes),
         }
 
-    @app.get("/drowse/v1/sessions/{session_id}/tree/active")
-    def get_tree_active(session_id: str) -> ActivePathJSON:
+    @router.get("/tree/active")
+    def get_tree_active() -> ActivePathJSON:
         """Active path: chat messages + parallel node-id list.
 
         Cheaper than the full tree for surfaces that only need the
         currently-rendered conversation. The node-id list is parallel to
         ``messages`` so a click on message ``i`` maps to ``node_ids[i]``.
         """
-        resolve_session_id(session_id)
         return active_path_json(session)
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/navigate")
+    @router.post("/tree/navigate")
     async def tree_navigate(
-        session_id: str, req: TreeNavigateRequest,
+        req: TreeNavigateRequest,
     ) -> ActivePathJSON:
         """Re-point the active node.
 
@@ -119,13 +117,12 @@ def register_tree_routes(app: FastAPI) -> None:
         to its original target, the user simply sees a different active
         path.
         """
-        resolve_session_id(session_id)
         session.tree.navigate(req.node_id)
         return active_path_json(session)
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/edit")
+    @router.post("/tree/edit")
     async def tree_edit(
-        session_id: str, req: TreeEditRequest,
+        req: TreeEditRequest,
     ) -> LoomNodeDetailJSON:
         """In-place text replacement.
 
@@ -133,13 +130,12 @@ def register_tree_routes(app: FastAPI) -> None:
         generation (mapped via ``DrowseError.user_message``); 404 on
         unknown id; 400 on root-edit or other invalid ops.
         """
-        resolve_session_id(session_id)
         session.tree.edit(req.node_id, req.text)
         return node_json(session, req.node_id)
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/branch")
+    @router.post("/tree/branch")
     async def tree_branch(
-        session_id: str, req: TreeBranchRequest,
+        req: TreeBranchRequest,
     ) -> TreeBranchResponse:
         """Always-sibling — create a new node next to ``node_id``.
 
@@ -149,7 +145,6 @@ def register_tree_routes(app: FastAPI) -> None:
         the new node and (if it became active) re-render the chat
         without a follow-up fetch.
         """
-        resolve_session_id(session_id)
         new_id = session.tree.branch(
             req.node_id, req.text, role=req.role,
         )
@@ -159,9 +154,9 @@ def register_tree_routes(app: FastAPI) -> None:
             "active_path": active_path_json(session),
         }
 
-    @app.delete("/drowse/v1/sessions/{session_id}/tree/{node_id}")
+    @router.delete("/tree/{node_id}")
     async def tree_delete(
-        session_id: str, node_id: str,
+        node_id: str,
     ) -> TreeDeleteResponse:
         """Subtree delete.
 
@@ -172,48 +167,44 @@ def register_tree_routes(app: FastAPI) -> None:
         the new ``active_node_id`` on the mutation event.  Returns
         ``{removed: <count>}``.
         """
-        resolve_session_id(session_id)
         removed = session.tree.delete_subtree(node_id)
         return {"removed": removed}
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/star")
+    @router.post("/tree/star")
     async def tree_star(
-        session_id: str, req: TreeStarRequest,
+        req: TreeStarRequest,
     ) -> LoomNodeDetailJSON:
         """Toggle a node's ``starred`` flag.
 
         Decoration-only; never raises a concurrency conflict.
         """
-        resolve_session_id(session_id)
         session.tree.star(req.node_id, req.on)
         return node_json(session, req.node_id)
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/note")
+    @router.post("/tree/note")
     async def tree_note(
-        session_id: str, req: TreeNoteRequest,
+        req: TreeNoteRequest,
     ) -> LoomNodeDetailJSON:
         """Set a node's free-text ``notes`` annotation.
 
         Decoration-only; never raises a concurrency conflict.
         """
-        resolve_session_id(session_id)
         session.tree.annotate(req.node_id, req.text)
         return node_json(session, req.node_id)
 
-    @app.get("/drowse/v1/sessions/{session_id}/tree/cast")
-    def tree_cast(session_id: str) -> CastRosterResponse:
+    @router.get("/tree/cast")
+    def tree_cast() -> CastRosterResponse:
         """The tree's effective cast roster: label → member (recipe + notes
         + origin).
 
         Also rides the full-tree GET (``cast`` key) and every
         ``tree_mutated`` frame — this endpoint is the cheap standalone read.
         """
-        resolve_session_id(session_id)
         return {"cast": cast_json(session)}
 
-    @app.put("/drowse/v1/sessions/{session_id}/tree/cast/{label}")
+    @router.put("/tree/cast/{label}")
     async def tree_cast_put(
-        session_id: str, label: str, req: CastMemberRequest,
+        label: str, req: CastMemberRequest,
     ) -> CastMemberResponse:
         """Create or replace the cast member under ``label``.
 
@@ -221,7 +212,6 @@ def register_tree_routes(app: FastAPI) -> None:
         syntax up front (400 via ``DrowseError.user_message`` on either).
         Decoration-tier — never a concurrency conflict.
         """
-        resolve_session_id(session_id)
         member = session.set_cast_member(
             label,
             steering=req.steering,
@@ -231,17 +221,14 @@ def register_tree_routes(app: FastAPI) -> None:
         )
         return {"label": label, "member": member.to_dict()}
 
-    @app.delete(
-        "/drowse/v1/sessions/{session_id}/tree/cast/{label}", status_code=204,
-    )
-    async def tree_cast_delete(session_id: str, label: str):
+    @router.delete("/tree/cast/{label}", status_code=204)
+    async def tree_cast_delete(label: str):
         """Drop the cast member under ``label`` (no-op when absent)."""
-        resolve_session_id(session_id)
         session.remove_cast_member(label)
         return None
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/reset", status_code=204)
-    async def tree_reset(session_id: str):
+    @router.post("/tree/reset", status_code=204)
+    async def tree_reset():
         """Drop the entire tree and rebuild a fresh root.
 
         Equivalent to ``session.clear_history()``; 409 when a generation
@@ -249,14 +236,13 @@ def register_tree_routes(app: FastAPI) -> None:
         race the gen path because the gen path owns the streaming target
         in the tree itself).
         """
-        resolve_session_id(session_id)
         async with session_lock(app):
             session.clear_history()
         return Response(status_code=204)
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/transcript")
+    @router.post("/tree/transcript")
     def tree_transcript(
-        session_id: str, req: TreeTranscriptRequest,
+        req: TreeTranscriptRequest,
     ) -> TranscriptResponse:
         """Render the path ending at ``node_id`` (or active) as transcript YAML.
 
@@ -267,7 +253,6 @@ def register_tree_routes(app: FastAPI) -> None:
         """
         from drowse.loom.transcript import Transcript
 
-        resolve_session_id(session_id)
         leaf = req.node_id if req.node_id is not None else session.tree.active_node_id
         # Validate the id before touching the renderer so the 404 lands
         # cleanly through the existing ``DrowseError`` handler.
@@ -275,9 +260,9 @@ def register_tree_routes(app: FastAPI) -> None:
         transcript = Transcript.from_path(leaf, session)
         return {"yaml": transcript.to_yaml(), "node_id": leaf}
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/transcript/load")
+    @router.post("/tree/transcript/load")
     async def tree_transcript_load(
-        session_id: str, req: TreeTranscriptLoadRequest,
+        req: TreeTranscriptLoadRequest,
     ) -> TranscriptLoadResponseJSON:
         """Import a transcript YAML into the live session tree.
 
@@ -298,7 +283,6 @@ def register_tree_routes(app: FastAPI) -> None:
             TranscriptFormatError,
         )
 
-        resolve_session_id(session_id)
         mode = req.mode
         try:
             transcript = Transcript.from_yaml(req.yaml)
@@ -336,9 +320,9 @@ def register_tree_routes(app: FastAPI) -> None:
             "guards": captured,
         }
 
-    @app.get("/drowse/v1/sessions/{session_id}/tree/edge-label")
+    @router.get("/tree/edge-label")
     def tree_edge_label(
-        session_id: str, parent_id: str, child_id: str,
+        parent_id: str, child_id: str,
     ) -> EdgeLabelResponse:
         """Steering-delta label for the parent → child edge.
 
@@ -349,13 +333,12 @@ def register_tree_routes(app: FastAPI) -> None:
         """
         from drowse.loom.diff import steering_delta
 
-        resolve_session_id(session_id)
         parent = session.tree.get(parent_id)
         child = session.tree.get(child_id)
         return {"label": steering_delta(parent.steering_expr, child.steering_expr)}
 
-    @app.get("/drowse/v1/sessions/{session_id}/tree/filter")
-    def tree_filter(session_id: str, expr: str = "") -> FilterMatchesJSON:
+    @router.get("/tree/filter")
+    def tree_filter(expr: str = "") -> FilterMatchesJSON:
         """Apply a filter-grammar expression and return matching node ids.
 
         Grammar in :mod:`drowse.loom.filter` — comma-AND'd
@@ -367,7 +350,6 @@ def register_tree_routes(app: FastAPI) -> None:
         """
         from drowse.loom.filter import FilterParseError, filter_tree
 
-        resolve_session_id(session_id)
         text = (expr or "").strip()
         if not text:
             return {"expr": "", "matching_node_ids": []}
@@ -377,8 +359,8 @@ def register_tree_routes(app: FastAPI) -> None:
             raise HTTPException(400, str(e)) from e
         return {"expr": text, "matching_node_ids": sorted(matches)}
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/diff")
-    def tree_diff(session_id: str, req: TreeDiffRequest) -> NodeDiffJSON:
+    @router.post("/tree/diff")
+    def tree_diff(req: TreeDiffRequest) -> NodeDiffJSON:
         """Cross-branch diff between two generated nodes.
 
         Returns a JSON view of :class:`NodeDiff` (text spans + readings
@@ -388,7 +370,6 @@ def register_tree_routes(app: FastAPI) -> None:
         """
         from drowse.loom.diff import per_token_diff, steering_delta
 
-        resolve_session_id(session_id)
         diff = session.diff_nodes(req.a_id, req.b_id)
         a_node = session.tree.get(req.a_id)
         b_node = session.tree.get(req.b_id)
@@ -471,9 +452,9 @@ def register_tree_routes(app: FastAPI) -> None:
             "per_token": per_token_spans,
         })
 
-    @app.post("/drowse/v1/sessions/{session_id}/tree/joint-logprobs")
+    @router.post("/tree/joint-logprobs")
     async def tree_joint_logprobs(
-        session_id: str, req: JointLogprobsRequest,
+        req: JointLogprobsRequest,
     ) -> JointLogprobsJSON:
         """Cross-evaluation between two sibling generated nodes.
 
@@ -502,7 +483,6 @@ def register_tree_routes(app: FastAPI) -> None:
             reorient_for_request,
         )
 
-        resolve_session_id(session_id)
         if req.a_id == req.b_id:
             raise HTTPException(400, "a_id and b_id must differ")
         if req.a_id not in session.tree.nodes:
@@ -528,3 +508,5 @@ def register_tree_routes(app: FastAPI) -> None:
             JointLogprobsJSON,
             reorient_for_request(hit, req.a_id, req.b_id).to_dict(),
         )
+
+    app.include_router(router)

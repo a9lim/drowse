@@ -352,7 +352,7 @@ def _branch_inputs(session: "DrowseSession", node_id: str) -> _ReplayBranch:
     # Rebuild the exact prompt that opened this generated node.  Recipe
     # presence is the capability boundary; the structural seat may be
     # either human or model, and scene histories need not alternate.
-    prompt_tensor = session._prepare_input(
+    prompt_tensor = session.renderer.prepare_input(
         None,
         thinking=thinking,
         parent_node_id=node.parent_id,
@@ -380,7 +380,7 @@ def _branch_inputs(session: "DrowseSession", node_id: str) -> _ReplayBranch:
             system_prompt=system_prompt,
             thinking=thinking,
             add_generation_prompt=False,
-            model_type=session._resolved_model_type() if has_labels else None,
+            model_type=session.renderer.model_type if has_labels else None,
             scene=session.scene_grammar,
             gen_seat=node.role,
         )

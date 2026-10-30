@@ -25,6 +25,7 @@ from drowse import (
     derive_seed_schedule,
 )
 from drowse.loom.errors import LoomTreeError
+from drowse.loom.ops import append_turn, check_user_send_target
 from drowse.loom.tree import TOKEN_SIDECAR_FORMAT_VERSION, TREE_FORMAT_VERSION
 
 
@@ -546,26 +547,15 @@ def test_add_user_turn_no_dedup_when_text_differs():
 # ---------------------------------------------------------------------------
 # Active-node send role table
 #
-# These tests verify the engine-side reject when the resolved parent for
-# a new user turn is itself a user node — the "user turn already waiting
-# for an assistant" case. The
-# reject lives in ``session._generate_core``, so we exercise it through
-# the session entry rather than the bare ``tree.add_user_turn`` (which
-# is allowed to land a user-under-user for the auto-regen seed path).
-# We monkey-patch the session shape minimally to avoid loading a model.
+# A new user turn may not hang under a user node (the "user turn already
+# waiting for an assistant" case) on a legacy chat template.  The bare
+# ``tree.add_user_turn`` allows it (the auto-regen seed path needs it), so
+# the rule lives in ``drowse.loom.ops.check_user_send_target``.
 # ---------------------------------------------------------------------------
 
 
 def _bind_check_user_send_target(tree: LoomTree):
-    """Return a callable bound to a stub session exposing only ``tree``.
-
-    ``DrowseSession._check_user_send_target`` only reaches into
-    ``self.tree``; binding the unbound method onto a minimal stub
-    sidesteps the model-load cost so we can unit-test D15.
-    """
-    from drowse.session.session import DrowseSession
-    stub = type("S", (), {"tree": tree})()
-    return DrowseSession._check_user_send_target.__get__(stub, type(stub))
+    return lambda parent_node_id: check_user_send_target(tree, parent_node_id)
 
 
 def test_d15_engine_check_rejects_leaf_user_send():
@@ -646,40 +636,33 @@ def test_d15_engine_check_passes_for_explicit_grandparent():
 
 
 # ---------------------------------------------------------------------------
-# Authored turns — session.append_user_turn / append_assistant_turn
+# Authored turns — drowse.loom.ops.append_turn
 # ---------------------------------------------------------------------------
-# These exercise the Ctrl+Enter "commit" primitives.  Both methods only
-# touch ``self.tree`` and ``self._tokenizer``; binding them onto a minimal
-# stub lets us unit-test the contract without loading a model.
+# The Ctrl+Enter "commit" primitive: one seat-generic append with one
+# validation.  ``grammar=None`` keeps the legacy seating guards active.
+
+
+class _CharTokenizer:
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        del add_special_tokens
+        return [ord(char) for char in text]
 
 
 def _bind_commit_methods(tree: LoomTree, tokenizer: Any):
-    from drowse.session.session import DrowseSession
-    stub = type(
-        "S", (),
-        {
-            "tree": tree,
-            "_tokenizer": tokenizer,
-            # ``append_user_turn`` reaches into ``_check_user_send_target``
-            # for the D15 guard; bind the unbound method onto the same
-            # stub so the lookup chain resolves.
-            "_check_user_send_target":
-                DrowseSession._check_user_send_target,
-            # Real sessions always expose ``scene_grammar``; None keeps
-            # the legacy commit-seating guards active for these tests.
-            "scene_grammar": None,
-        },
-    )()
-    return (
-        DrowseSession.append_user_turn.__get__(stub, type(stub)),
-        DrowseSession.append_assistant_turn.__get__(stub, type(stub)),
-    )
+    def append_user(parent: str | None, text: str, **kwargs: Any) -> str:
+        return append_turn(tree, tokenizer, None, parent, text, seat="user", **kwargs)
+
+    def append_assistant(parent: str | None, text: str, **kwargs: Any) -> str:
+        return append_turn(
+            tree, tokenizer, None, parent, text, seat="assistant", **kwargs,
+        )
+
+    return append_user, append_assistant
 
 
 def test_append_user_turn_lands_under_root():
-    from unittest.mock import MagicMock
     t = LoomTree()
-    append_user, _ = _bind_commit_methods(t, MagicMock())
+    append_user, _ = _bind_commit_methods(t, _CharTokenizer())
     new_id = append_user(None, "hi")
     assert t.nodes[new_id].role == "user"
     assert t.nodes[new_id].text == "hi"
@@ -704,13 +687,12 @@ def test_append_user_turn_dedups_same_text_sibling():
     """``add_user_turn``'s dedup applies — re-issuing the same text under
     the same parent returns the existing sibling rather than growing
     the tree."""
-    from unittest.mock import MagicMock
     t = LoomTree()
     u1 = t.add_user_turn("hi")
     a1 = t.begin_assistant(u1)
     t.finalize_assistant(a1, text="hello")
     t.navigate(a1)
-    append_user, _ = _bind_commit_methods(t, MagicMock())
+    append_user, _ = _bind_commit_methods(t, _CharTokenizer())
     u2 = append_user(None, "more")
     t.navigate(a1)
     u2b = append_user(None, "more")
@@ -718,9 +700,8 @@ def test_append_user_turn_dedups_same_text_sibling():
 
 
 def test_append_user_turn_empty_text_raises():
-    from unittest.mock import MagicMock
     t = LoomTree()
-    append_user, _ = _bind_commit_methods(t, MagicMock())
+    append_user, _ = _bind_commit_methods(t, _CharTokenizer())
     with pytest.raises(InvalidNodeOperationError, match="non-empty"):
         append_user(None, "")
 
@@ -844,6 +825,42 @@ def test_append_assistant_turn_lands_sibling_of_in_flight_assistant():
     assert authored != streaming
     assert t.nodes[authored].parent_id == u1
     assert t.nodes[streaming].parent_id == u1
+
+
+def test_append_user_turn_refuses_empty_tokenization():
+    """Regression (F13): both seats share one validation.  A user span the
+    tokenizer drops entirely is refused like an assistant one, instead of
+    landing a turn that renders as nothing."""
+    from unittest.mock import MagicMock
+    t = LoomTree()
+    tok = MagicMock()
+    tok.encode.return_value = []
+    append_user, _ = _bind_commit_methods(t, tok)
+    with pytest.raises(InvalidNodeOperationError, match="tokenized to an empty"):
+        append_user(None, "\u200b")
+    assert t.active_node_id == t.root_id
+    assert len(t.nodes) == 1
+
+
+def test_flat_append_frees_seating_on_both_seats():
+    """Regression (F13): flat (base-model) mode treats the seat as
+    authorship provenance for both seats.  The assistant seat used to keep
+    the legacy user-parent guard even when flat."""
+    t = LoomTree()
+    append_user, append_assistant = _bind_commit_methods(t, _CharTokenizer())
+    u1 = append_user(None, "one")
+    u2 = append_user(u1, "two", role_label="narrator", flat=True)
+    a1 = append_assistant(u2, "three")
+    a2 = append_assistant(a1, "four", role_label="narrator", flat=True)
+    assert [t.nodes[n].parent_id for n in (u2, a1, a2)] == [u1, u2, a1]
+    with pytest.raises(InvalidNodeOperationError, match="not a user node"):
+        append_assistant(a2, "five")  # legacy seating still applies unflat
+
+
+def test_append_turn_rejects_an_unknown_seat():
+    t = LoomTree()
+    with pytest.raises(InvalidNodeOperationError, match="seat must be"):
+        append_turn(t, _CharTokenizer(), None, None, "hi", seat="system")
 
 
 # ---------------------------------------------------------------------------

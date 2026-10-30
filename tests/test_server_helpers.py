@@ -139,7 +139,7 @@ class TestWSInputMessageLabel:
 
     ``build_chat_input`` reads a per-turn ``"label"`` key (rendered into the
     constructed header by the scene stitcher; parity covered in
-    tests/test_scene_wiring.py), and ``_prepare_input`` forwards a list input
+    tests/test_scene_wiring.py), and ``PromptRenderer.prepare_input`` forwards a list input
     to it verbatim — so accepting the field here is what makes the dashboard's
     labelled shadow replay render the prompt it is shadowing.
     """

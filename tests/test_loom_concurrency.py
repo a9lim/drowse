@@ -1,13 +1,9 @@
 """LoomTree concurrency tests — gen reservation vs mutators.
 
-The session sets ``_active_gen_reservation`` to the user-parent of the
-streaming assistant node while a generation is in flight.  Its
-``_loom_conflict_check`` consults this and raises
-:class:`MutationDuringGenerationError` (HTTP 409) on conflicting ops.
-
-These tests reproduce that protocol by wiring an equivalent conflict-
-check function directly into a :class:`LoomTree`, so the rules can be
-verified without loading a model.
+A generation reserves the subtree it streams into (``LoomTree.reserve`` on
+the parent of the streaming node) while it is in flight; the tree refuses
+conflicting mutations with :class:`MutationDuringGenerationError` (HTTP 409).
+CPU-only: no model is loaded.
 """
 from __future__ import annotations
 
@@ -16,6 +12,7 @@ import pytest
 from drowse import (
     LoomTree,
     MutationDuringGenerationError,
+    Recipe,
 )
 
 
@@ -34,28 +31,7 @@ def _mk_tree_with_reservation():
 
     Reservation = u1 (the user-parent of the streaming assistant).
     """
-    state: dict[str, str | None] = {"reservation": None}
-
-    def conflict_check(node_id: str, op: str) -> None:
-        reservation = state["reservation"]
-        if reservation is None:
-            return
-        if op in ("add_user_turn", "begin_assistant", "finalize_assistant",
-                  "branch", "star", "note", "navigate"):
-            return
-        if op == "reset":
-            raise MutationDuringGenerationError(
-                "cannot reset tree while a generation is in flight"
-            )
-        if (node_id == reservation
-                or t.is_ancestor_of(reservation, node_id)
-                or t.is_ancestor_of(node_id, reservation)):
-            raise MutationDuringGenerationError(
-                f"cannot {op} on node inside reservation {reservation}"
-            )
-
     t = LoomTree()
-    t.set_conflict_check(conflict_check)
     u1 = t.add_user_turn("hi")
     a1 = t.begin_assistant(u1)
     t.finalize_assistant(a1, text="hello")
@@ -65,9 +41,9 @@ def _mk_tree_with_reservation():
     u_other = t.add_user_turn("how are you")
     a_other = t.begin_assistant(u_other)
     t.finalize_assistant(a_other, text="fine")
-    # Set reservation = u1, mid-gen on a1's subtree.
-    state["reservation"] = u1
-    return t, state, u1, a1, a2, u_other, a_other
+    # Reserve u1, mid-gen on a1's subtree.
+    t.reserve(u1)
+    return t, u1, a1, a2, u_other, a_other
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +52,7 @@ def _mk_tree_with_reservation():
 
 
 def test_branch_in_reservation_is_free():
-    t, state, u1, a1, a2, _, _ = _mk_tree_with_reservation()
+    t, u1, a1, a2, _, _ = _mk_tree_with_reservation()
     # Branching off a sibling under the reserved subtree is allowed —
     # creating a sibling doesn't disturb the streaming target.
     new_id = t.branch(a1, "another alt")
@@ -85,13 +61,13 @@ def test_branch_in_reservation_is_free():
 
 
 def test_star_in_reservation_is_free():
-    t, state, u1, a1, *_ = _mk_tree_with_reservation()
+    t, u1, a1, *_ = _mk_tree_with_reservation()
     t.star(a1, True)
     assert t.nodes[a1].starred is True
 
 
 def test_annotate_in_reservation_is_free():
-    t, state, u1, a1, *_ = _mk_tree_with_reservation()
+    t, u1, a1, *_ = _mk_tree_with_reservation()
     t.annotate(a1, "looked promising")
     assert t.nodes[a1].notes == "looked promising"
 
@@ -101,13 +77,13 @@ def test_navigate_during_gen_is_free():
     navigate back at any time.  Phase 1 spec: 'navigate-away during gen
     leaves the gen attached to its original target'.
     """
-    t, state, u1, a1, a2, u_other, a_other = _mk_tree_with_reservation()
+    t, u1, a1, a2, u_other, a_other = _mk_tree_with_reservation()
     t.navigate(a_other)
     assert t.active_node_id == a_other
 
 
 def test_branch_outside_reservation_is_free():
-    t, state, _, _, _, _, a_other = _mk_tree_with_reservation()
+    t, _, _, _, _, a_other = _mk_tree_with_reservation()
     new_id = t.branch(a_other, "fine too")
     assert new_id in t.nodes
 
@@ -118,7 +94,7 @@ def test_branch_outside_reservation_is_free():
 
 
 def test_edit_in_reservation_refused():
-    t, state, u1, a1, *_ = _mk_tree_with_reservation()
+    t, u1, a1, *_ = _mk_tree_with_reservation()
     with pytest.raises(MutationDuringGenerationError) as exc:
         t.edit(a1, "edited mid-gen")
     code, _ = exc.value.user_message()
@@ -128,7 +104,7 @@ def test_edit_in_reservation_refused():
 def test_edit_on_user_parent_refused():
     """Editing the user-parent of the streaming assistant is refused too —
     the reservation covers the subtree rooted at the user parent."""
-    t, state, u1, *_ = _mk_tree_with_reservation()
+    t, u1, *_ = _mk_tree_with_reservation()
     with pytest.raises(MutationDuringGenerationError):
         t.edit(u1, "different prompt")
 
@@ -137,20 +113,20 @@ def test_edit_on_sibling_in_reservation_refused():
     """Even a non-target sibling inside the reservation refuses — phase 1
     spec: 'editing a non-target node in the reservation can corrupt token-
     score replay for downstream readers'."""
-    t, state, u1, a1, a2, *_ = _mk_tree_with_reservation()
+    t, u1, a1, a2, *_ = _mk_tree_with_reservation()
     with pytest.raises(MutationDuringGenerationError):
         t.edit(a2, "edited sibling")
 
 
 def test_delete_subtree_intersecting_reservation_refused():
-    t, state, u1, a1, *_ = _mk_tree_with_reservation()
+    t, u1, a1, *_ = _mk_tree_with_reservation()
     t.navigate(t.root_id)  # nav away first so it's not an ancestor of active
     with pytest.raises(MutationDuringGenerationError):
         t.delete_subtree(u1)
 
 
 def test_reset_during_gen_refused():
-    t, state, *_ = _mk_tree_with_reservation()
+    t, *_ = _mk_tree_with_reservation()
     with pytest.raises(MutationDuringGenerationError):
         t.reset()
 
@@ -161,13 +137,13 @@ def test_reset_during_gen_refused():
 
 
 def test_edit_outside_reservation_succeeds():
-    t, state, _, _, _, _, a_other = _mk_tree_with_reservation()
+    t, _, _, _, _, a_other = _mk_tree_with_reservation()
     t.edit(a_other, "fine, you?")
     assert t.nodes[a_other].text == "fine, you?"
 
 
 def test_delete_subtree_outside_reservation_succeeds():
-    t, state, _, _, _, u_other, a_other = _mk_tree_with_reservation()
+    t, _, _, _, u_other, a_other = _mk_tree_with_reservation()
     t.navigate(t.root_id)
     n = t.delete_subtree(u_other)
     assert n == 2  # u_other + a_other
@@ -179,16 +155,16 @@ def test_delete_subtree_outside_reservation_succeeds():
 
 
 def test_clearing_reservation_lifts_lock():
-    t, state, u1, a1, *_ = _mk_tree_with_reservation()
-    state["reservation"] = None
+    t, u1, a1, *_ = _mk_tree_with_reservation()
+    t.reserve(None)
     # Now edits are free again.
     t.edit(a1, "post-gen edit")
     assert t.nodes[a1].text == "post-gen edit"
 
 
 def test_reset_after_clearing_succeeds():
-    t, state, *_ = _mk_tree_with_reservation()
-    state["reservation"] = None
+    t, *_ = _mk_tree_with_reservation()
+    t.reserve(None)
     t.reset()
     assert len(t.nodes) == 1  # synthetic root only
 
@@ -203,3 +179,27 @@ def test_mutation_during_generation_user_message_is_409():
     code, msg = err.user_message()
     assert code == 409
     assert "test" in msg
+
+
+def test_authored_append_into_reservation_refused():
+    t, u1, a1, *_ = _mk_tree_with_reservation()
+    with pytest.raises(MutationDuringGenerationError):
+        t.append_authored(a1, " more", raw_token_ids=[1])
+
+
+def test_generation_entry_points_stay_free_under_a_reservation():
+    """The generation path itself adds turns inside its own reservation."""
+    t, u1, a1, *_ = _mk_tree_with_reservation()
+    assert t.reservation == u1
+    sibling = t.begin_assistant(u1)
+    t.finalize_assistant(sibling, text="another")
+    t.begin_continuation(sibling, Recipe())
+    t.navigate(a1)
+    assert t.add_user_turn("next") in t.nodes
+
+
+def test_a_loaded_tree_starts_unreserved():
+    t, u1, a1, *_ = _mk_tree_with_reservation()
+    loaded = LoomTree.from_dict(t.to_dict())
+    assert loaded.reservation is None
+    loaded.edit(a1, "free in the copy")

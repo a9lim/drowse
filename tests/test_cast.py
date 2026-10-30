@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from drowse import CastMember, LoomTree, Recipe, SamplingConfig
-from drowse.loom.recipe import INHERIT_SYSTEM_PROMPT
+from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT
 from drowse.session.session import DrowseSession
 
 

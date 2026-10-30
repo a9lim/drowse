@@ -27,8 +27,7 @@ def _mock_session():
     # Shared native-API wiring lives in tests/_fakes.py; the routes here need
     # a real GenerationConfig rather than the shared config mock.
     session = make_mock_session(config=GenerationConfig())
-    session.model = MagicMock()
-    session.model.config.model_type = "gemma2"
+    session.renderer.model_type = "gemma2"
 
     session.tree = MagicMock()
     session.tree.messages_for.return_value = []
@@ -250,10 +249,7 @@ class TestSessions:
     def _set_family(session: Any, model_type: str) -> None:
         """Pin the mock session's resolved model_type so the role-header
         registries (and thus role-support gating) see a real family."""
-        session.model = MagicMock()
-        session.model.config = MagicMock()
-        session.model.config.text_config = None
-        session.model.config.model_type = model_type
+        session.renderer.model_type = model_type
 
     def test_session_info_exposes_role_support(self, session_and_client: Any) -> None:
         """Per-message role boxes gate on these flags — keep them on the wire."""
@@ -778,7 +774,7 @@ class TestWebSocket:
         """The dashboard's auto-regen shadow replays a conversation as an
         explicit message list carrying each turn's cast ``label``.  The wire
         message is the same shape a loom-derived message dict is, so the
-        label reaches ``_prepare_input`` verbatim — re-rendering the shadow
+        label reaches ``PromptRenderer.prepare_input`` verbatim — re-rendering the shadow
         under default labels would be a different prompt than the one being
         shadowed."""
         session, client = session_and_client

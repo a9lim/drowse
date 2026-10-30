@@ -4,7 +4,7 @@ The session under test is a thin wrapper around a real :class:`LoomTree`
 plus a generation stub — no model, no GPU.  This exercises:
 
 - REST routes under ``/drowse/v1/sessions/{id}/tree`` (CRUD, transcript)
-- Concurrency conflict 409 mapping when ``_active_gen_reservation`` is set
+- Concurrency conflict 409 mapping while the tree holds a generation reservation
 - WS ``parent_node_id`` + ``n>1`` fan-out (siblings created, started/done
   tagged with ``node_id`` and complete ``tree_mutated`` events
   fire)
@@ -58,12 +58,8 @@ class _StubSession:
         self._created_ts = 1_700_000_000
 
         self.events = EventBus()
-        self.tree = LoomTree(
-            events=self.events,
-            model_id=self.model_id,
-            conflict_check=self._loom_conflict_check,
-        )
-        self._active_gen_reservation: str | None = None
+        self.tree = LoomTree(events=self.events, model_id=self.model_id)
+        self.scene_grammar = None
 
         cfg = MagicMock()
         cfg.temperature = 1.0
@@ -130,31 +126,6 @@ class _StubSession:
         self._stop_event.set()
         self.generation_state.request_stop()
 
-    # ----- loom conflict check (mirrors DrowseSession._loom_conflict_check)
-    def _loom_conflict_check(self, node_id: str, op: str) -> None:
-        from drowse.loom.errors import MutationDuringGenerationError
-        reservation = self._active_gen_reservation
-        if reservation is None:
-            return
-        if op in (
-            "add_user_turn", "begin_assistant", "finalize_assistant",
-            "branch", "star", "note", "navigate",
-        ):
-            return
-        if op == "reset":
-            raise MutationDuringGenerationError(
-                "cannot reset tree while a generation is in flight"
-            )
-        if (
-            node_id == reservation
-            or self.tree.is_ancestor_of(reservation, node_id)
-            or self.tree.is_ancestor_of(node_id, reservation)
-        ):
-            raise MutationDuringGenerationError(
-                f"cannot {op} on a node inside an in-flight generation's "
-                f"reservation (reservation root: {reservation})"
-            )
-
     # ----- generation entry point --------------------------------------
     def generate(self, input: Any, *, steering: Any = None, sampling: Any = None,
                  stateless: bool = False, raw: bool = False, thinking: Any = None,
@@ -185,7 +156,7 @@ class _StubSession:
                 anchor_id = self.tree.add_user_turn(
                     str(input), parent_id=parent_node_id,
                 )
-            self._active_gen_reservation = anchor_id
+            self.tree.reserve(anchor_id)
             role_label = None
             if sampling is not None and not raw:
                 role_label = (
@@ -257,7 +228,7 @@ class _StubSession:
                 self._last_result = result
                 self.last_result = result
             finally:
-                self._active_gen_reservation = None
+                self.tree.reserve(None)
         return RunSet(results)
 
     # ----- answer-prefill entry point ----------------------------------
@@ -278,7 +249,7 @@ class _StubSession:
                 f"prefill_assistant: {node_id!r} is a {node.role} node"
             )
         user_id = self.tree.add_user_turn(node.text, parent_id=node.parent_id)
-        self._active_gen_reservation = user_id
+        self.tree.reserve(user_id)
         assistant_id = self.tree.begin_assistant(user_id)
         try:
             if on_token is not None:
@@ -302,108 +273,10 @@ class _StubSession:
             self._last_result = result
             self.last_result = result
         finally:
-            self._active_gen_reservation = None
+            self.tree.reserve(None)
         return result
 
-    # ----- commit entry points (Ctrl+Enter on either surface) ----------
-    def append_user_turn(
-        self, parent_node_id: Any, text: Any, *, allow_any_parent: bool = False, role_label: Any = None, thinking: Any = None
-    ):
-        """Stub commit-user.
-
-        Mirrors ``DrowseSession.append_user_turn``: refuses anchoring
-        under a user-role parent (the same D15 rule the normal-send
-        path enforces) unless ``allow_any_parent`` is set (flat /
-        base-model commit), otherwise wraps ``LoomTree.add_user_turn``
-        so dedup + active-node advancement match the real session.
-        """
-        from drowse.loom.errors import InvalidNodeOperationError
-        if text == "":
-            raise InvalidNodeOperationError(
-                "append_user_turn: text must be non-empty"
-            )
-        resolved_parent = (
-            parent_node_id
-            if parent_node_id is not None
-            else self.tree.active_node_id
-        )
-        parent = (
-            self.tree.nodes.get(resolved_parent)
-            if resolved_parent is not None
-            else None
-        )
-        if (
-            parent is not None
-            and parent.role == "user"
-            and parent.role_label == role_label
-        ):
-            raw_token_ids = self._tokenizer.encode(
-                parent.text + text, add_special_tokens=False,
-            )
-            return self.tree.append_authored(
-                parent.id, text, thinking_text=thinking,
-                raw_token_ids=raw_token_ids,
-            )
-        if not allow_any_parent and parent is not None and parent.role == "user":
-            raise InvalidNodeOperationError(
-                f"cannot send a new user turn from a user node "
-                f"({resolved_parent}): the active turn is already "
-                f"waiting for an assistant."
-            )
-        return self.tree.add_user_turn(
-            text, parent_id=parent_node_id, role_label=role_label,
-            thinking_text=thinking)
-
-    def append_assistant_turn(self, user_node_id: Any, text: Any, *, role_label: Any = None, thinking: Any = None):
-        """Stub commit-assistant.
-
-        Mirrors ``DrowseSession.append_assistant_turn``: refuses non-user
-        parents, lands a finalized assistant sibling under the user node
-        with ``text`` as the whole turn and a synthetic ``raw_token_ids``
-        derived from the (mocked) tokenizer.
-        """
-        from drowse.loom.errors import InvalidNodeOperationError
-        if text == "":
-            raise InvalidNodeOperationError(
-                "append_assistant_turn: text must be non-empty"
-            )
-        node = self.tree.get(user_node_id)
-        if node.role == "assistant" and node.role_label == role_label:
-            raw_token_ids = self._tokenizer.encode(
-                node.text + text, add_special_tokens=False,
-            )
-            return self.tree.append_authored(
-                node.id, text, thinking_text=thinking,
-                raw_token_ids=raw_token_ids,
-            )
-        if node.role != "user" and getattr(self, "scene_grammar", None) is None:
-            raise InvalidNodeOperationError(
-                f"append_assistant_turn: {user_node_id!r} is a "
-                f"{node.role} node, not a user node"
-            )
-        # Stub tokenization: one synthetic id per word so tests can
-        # assert ``raw_token_ids`` was populated without a real model.
-        raw_token_ids = [3000 + i for i, _ in enumerate(text.split())]
-        if not raw_token_ids:
-            raise InvalidNodeOperationError(
-                f"append_assistant_turn: {text!r} tokenized to an "
-                f"empty sequence"
-            )
-        new_id = self.tree.begin_assistant(
-            user_node_id, recipe=None, role_label=role_label)
-        authored = self.tree.nodes[new_id]
-        authored.tokens = None
-        authored.thinking_tokens = None
-        self.tree.finalize_assistant(
-            new_id,
-            text=text,
-            applied_steering=None,
-            finish_reason="stop",
-            raw_token_ids=raw_token_ids,
-            thinking_text=thinking,
-        )
-        return new_id
-
+    # ----- commit entry point (Ctrl+Enter on either surface) -----------
     def append_turn(
         self, parent_node_id: Any, text: Any, *, role: Any,
         raw: bool = False, role_label: Any = None, thinking: Any = None,
@@ -666,7 +539,7 @@ class TestTreeEdit:
         session, client = session_and_client
         u1 = session.tree.add_user_turn("hi")
         # Simulate an in-flight gen reserving u1's subtree.
-        session._active_gen_reservation = u1
+        session.tree.reserve(u1)
         resp = client.post(
             "/drowse/v1/sessions/default/tree/edit",
             json={"node_id": u1, "text": "no edit during gen"},
@@ -714,7 +587,7 @@ class TestTreeBranch:
         while a gen reservation is held."""
         session, client = session_and_client
         u1 = session.tree.add_user_turn("hi")
-        session._active_gen_reservation = u1
+        session.tree.reserve(u1)
         resp = client.post(
             "/drowse/v1/sessions/default/tree/branch",
             json={"node_id": u1, "text": "alternative"},
@@ -761,7 +634,7 @@ class TestTreeDelete:
         u1 = session.tree.add_user_turn("a")
         u2 = session.tree.add_user_turn("b", parent_id=session.tree.root_id)
         session.tree.navigate(u2)  # so deleting u1 is otherwise allowed
-        session._active_gen_reservation = u1
+        session.tree.reserve(u1)
         resp = client.delete(f"/drowse/v1/sessions/default/tree/{u1}")
         assert resp.status_code == 409
 
@@ -812,7 +685,7 @@ class TestTreeReset:
     def test_reset_409_during_reservation(self, session_and_client: Any):
         session, client = session_and_client
         u1 = session.tree.add_user_turn("x")
-        session._active_gen_reservation = u1
+        session.tree.reserve(u1)
         resp = client.post("/drowse/v1/sessions/default/tree/reset")
         assert resp.status_code == 409
 

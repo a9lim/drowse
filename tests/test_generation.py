@@ -19,6 +19,7 @@ from drowse.readout.types import ScalarReading
 from drowse.generation.results import GenerationResult, ProbeReading
 from drowse.generation.sampling import SamplingConfig
 from drowse.loom.recipe import ComposedCall
+from drowse.loom.tree import LoomTree
 from drowse.session.session import (
     CaptureMode,
     CaptureState,
@@ -107,10 +108,17 @@ def _stub_instruments(
     }
 
 
+def _stub_renderer() -> Any:
+    """A renderer with no scene grammar whose seat stops pass through."""
+    return SimpleNamespace(
+        scene_grammar=None,
+        seat_stop_strings=lambda stop_list, **_kwargs: stop_list,
+    )
+
+
 def _complete_finalizer_session(session: Any) -> None:
     """Install the current finalizer collaborator roster on a narrow stub."""
-    session._scene_grammar = None
-    session._scene_grammar_resolved = True
+    session._renderer = _stub_renderer()
 
 
 class _CurrentSessionStub(DrowseSession):
@@ -163,175 +171,6 @@ def _complete_capture_session(session: Any) -> None:
     session._lens_instrument.resident = lambda: lens
 
 
-class _EchoTokenizer:
-    """Minimal tokenizer: encodes text to a tensor of its char codes."""
-
-    name_or_path = "echo-tokenizer"
-
-    def encode(self, text: str, return_tensors: str | None = None) -> Any:
-        ids = [ord(c) for c in text]
-        if return_tensors == "pt":
-            return torch.tensor([ids], dtype=torch.long)
-        return ids
-
-
-def _decode_echo(ids: torch.Tensor) -> str:
-    return "".join(chr(int(t)) for t in ids[0])
-
-
-class _OffsetEchoTokenizer:
-    """Character tokenizer with exact fast-tokenizer-style offsets."""
-
-    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
-        del add_special_tokens
-        return [ord(char) for char in text]
-
-    def __call__(self, text: str, **_kwargs: Any) -> dict[str, Any]:
-        return {
-            "input_ids": self.encode(text),
-            "offset_mapping": [(i, i + 1) for i in range(len(text))],
-        }
-
-    def decode(self, ids: Any, **_kwargs: Any) -> str:
-        return "".join(chr(int(tid)) for tid in ids)
-
-
-def test_authored_prompt_targets_map_to_producer_rows_after_prefix_cache() -> None:
-    from drowse.loom.recipe import Recipe
-    from drowse.loom.tree import LoomTree
-
-    tree = LoomTree()
-    user_id = tree.add_user_turn(" ab ")
-    assistant_id = tree.begin_assistant(user_id, recipe=Recipe())
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._tokenizer = _OffsetEchoTokenizer()
-    session.tree = tree
-
-    targets = DrowseSession._pending_authored_prompt_targets(
-        session, assistant_id, raw=False,
-    )
-    assert len(targets) == 1
-    assert "".join(targets[0].token_texts) == " ab "
-
-    prompt = torch.tensor(
-        [[1, *targets[0].token_ids, 2]], dtype=torch.long,
-    )
-    matches, producer_positions = DrowseSession._match_authored_prompt_targets(
-        session, targets, prompt, cache_position_offset=2,
-    )
-
-    assert producer_positions == [0, 1]
-    # The first authored token and its producer are already in the cached
-    # prefix. Later tokens map to suffix-local producer rows.
-    assert matches[0].capture_columns == (None, None, 0, 1)
-
-
-def test_authored_prompt_match_excludes_generation_role_and_preserves_trim() -> None:
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._tokenizer = _OffsetEchoTokenizer()
-    target = DrowseSession._tokenize_authored_prompt_text(
-        session, "node", " assistant ", thinking=False,
-    )
-    assert target is not None
-    content_ids = session._tokenizer.encode("assistant")
-    # The same word appears again in the synthetic generation header. The
-    # no-generation render length bounds matching to visible message content.
-    prompt = torch.tensor(
-        [[1, *content_ids, 2, *content_ids, 3]], dtype=torch.long,
-    )
-    matches, _positions = DrowseSession._match_authored_prompt_targets(
-        session,
-        [target],
-        prompt,
-        cache_position_offset=0,
-        search_end=2 + len(content_ids),
-    )
-
-    assert matches[0].token_positions[0] == 1
-    assert "".join(matches[0].target.token_texts) == " assistant "
-
-
-def test_persist_authored_prompt_capture_writes_all_measurement_channels() -> None:
-    from drowse.loom.recipe import Recipe
-    from drowse.loom.tree import LoomTree
-    from drowse.session.session import _AuthoredPromptMatch, _AuthoredPromptTarget
-
-    tree = LoomTree()
-    user_id = tree.add_user_turn("x")
-    tree.begin_assistant(user_id, recipe=Recipe(steering="0.2 formal"))
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session.tree = tree
-    session._capture = SimpleNamespace(
-        prompt_stacked=lambda: {0: torch.tensor([[3.0, 4.0]])},
-    )
-
-    def _reading(value: float) -> ProbeReading:
-        return ProbeReading(
-            fraction=0.0,
-            nearest=[],
-            coords=(value,),
-            coords_per_layer={0: (value,)},
-        )
-
-    session._monitor = SimpleNamespace(
-        score_single_token=lambda _hidden: {"formal": _reading(0.25)},
-    )
-    session._lens_instrument.live = {"source": "local:default"}
-    session._sae_instrument.live = {"source": "saelens:test", "layer": 0}
-    seen_top_k: dict[str, int] = {}
-
-    def _lens_capture(_hidden: Any, *, top_k: int) -> Any:
-        seen_top_k["lens"] = top_k
-        return (
-            {0: [("yes", 0.8)]},
-            [("yes", 0.8, 0.5, 0.1)],
-            {0: [9]},
-            {"jlens/yes": _reading(0.8)},
-        )
-
-    def _sae_capture(_hidden: Any, *, top_k: int) -> Any:
-        seen_top_k["sae"] = top_k
-        return (
-            [(12, 1.5, "feature", 3.0)],
-            {"sae/12": _reading(0.5)},
-        )
-
-    session._authored_lens_capture = _lens_capture
-    session._authored_sae_capture = _sae_capture
-    match = _AuthoredPromptMatch(
-        _AuthoredPromptTarget(user_id, False, (120,), ("x",)),
-        (1,),
-        (0,),
-    )
-
-    DrowseSession._persist_authored_prompt_captures(
-        session,
-        [match],
-        monitor_active=True,
-        lens_active=True,
-        sae_active=True,
-        readout_top_k=8,
-        persist_per_layer_scores=True,
-        steering="0.2 formal",
-    )
-
-    tokens = tree.nodes[user_id].tokens
-    assert tokens is not None
-    row = tokens[0]
-    assert row["text"] == "x"
-    assert row["probes"] == {
-        "formal": 0.25,
-        "jlens/yes": 0.8,
-        "sae/12": 0.5,
-    }
-    instruments = row["measurements"]["instruments"]
-    assert set(instruments) == {"geometry", "lens", "sae"}
-    assert instruments["geometry"]["readings"]["formal"]["coords"] == [0.25]
-    assert instruments["lens"]["readout"]["layers"][0]["tokens"][0]["id"] == 9
-    assert instruments["sae"]["readout"]["features"][0]["id"] == 12
-    assert seen_top_k == {"lens": 8, "sae": 8}
-
-
 def test_prepare_generation_uses_session_thinking_default(monkeypatch: pytest.MonkeyPatch) -> None:
     session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
     wire_stub_steering(session)
@@ -372,40 +211,6 @@ def test_readout_top_k_shares_logit_alternative_width() -> None:
     # Read-side discovery remains useful when alts are disabled.
     session._default_return_top_k = 0
     assert DrowseSession._effective_readout_top_k(session, None) == 8
-
-
-def test_prepare_input_raw_feeds_flat_active_path():
-    """raw=True walks the loom tree as flat text — no chat template, no
-    role markers — and appends the call's own input."""
-    from drowse.loom.tree import LoomTree
-
-    tree = LoomTree()
-    u1 = tree.add_user_turn("once upon a ")
-    a1 = tree.begin_assistant(u1)
-    tree.finalize_assistant(a1, text="time")
-
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._tokenizer = _EchoTokenizer()
-    session._device = torch.device("cpu")
-    session.tree = tree
-
-    # Non-stateless: prefix is the flattened active path; input rides on top.
-    ids = DrowseSession._prepare_input(
-        session, " the fox", raw=True, parent_node_id=a1,
-    )
-    assert _decode_echo(ids) == "once upon a time the fox"
-
-    # Stateless: the tree is ignored — only the input string is encoded.
-    ids = DrowseSession._prepare_input(
-        session, " the fox", raw=True, stateless=True, parent_node_id=a1,
-    )
-    assert _decode_echo(ids) == " the fox"
-
-    # Empty input is a bare continuation — just the flattened buffer.
-    ids = DrowseSession._prepare_input(
-        session, "", raw=True, parent_node_id=a1,
-    )
-    assert _decode_echo(ids) == "once upon a time"
 
 
 def _scripted_logits(
@@ -889,61 +694,6 @@ def test_generate_stream_exposes_current_result() -> None:
     assert stream.result is result
 
 
-def test_token_fork_accepts_multitoken_authored_replacement() -> None:
-    result = GenerationResult(
-        text="kept replacement", tokens=[10, 41, 42], token_count=3,
-        tok_per_sec=1.0, elapsed=1.0,
-    )
-    captured: dict[str, Any] = {}
-    recipe = SimpleNamespace(
-        steering="0.2 calm",
-        sampling=SamplingConfig(max_tokens=4, seed=9),
-        thinking=False,
-    )
-    node = SimpleNamespace(
-        raw_token_ids=[10, 11, 12],
-        parent_id="parent",
-        recipe=recipe,
-        role="assistant",
-        role_label="guide",
-    )
-    session: Any = DrowseSession.__new__(DrowseSession)
-    attach_stub_instruments(session)
-    session.tree = SimpleNamespace(get=lambda node_id: node)
-    session._tokenizer = SimpleNamespace(
-        encode=lambda text, add_special_tokens: [41, 42],
-    )
-    session.config = GenerationConfig(max_new_tokens=16)
-
-    def _generate_core(input_text: Any, **kwargs: Any) -> GenerationResult:
-        captured["input"] = input_text
-        captured.update(kwargs)
-        return result
-
-    session._generate_core = _generate_core
-    actual = DrowseSession.fork_from_token(
-        session,
-        "source",
-        1,
-        replacement_text="replacement phrase",
-    )
-
-    assert actual is result
-    assert captured["forced_prefix"] == [10, 41, 42]
-    assert captured["parent_node_id"] == "parent"
-    assert captured["gen_seat"] == "assistant"
-    assert captured["steering"] == "0.2 calm"
-    assert captured["thinking"] is False
-    assert captured["sampling"].max_tokens == 7
-    assert captured["sampling"].seed == 9
-    assert captured["sampling"].assistant_role == "guide"
-
-    DrowseSession.fork_from_token(session, "source", 1, 11, seed=123)
-    assert captured["forced_prefix"] == [10, 11]
-    assert captured["sampling"].seed == 123
-    assert recipe.sampling.seed == 9
-
-
 def test_generate_stream_live_readouts_false_suppresses_readout_flags() -> None:
     result = GenerationResult(
         text="ok", tokens=[7], token_count=1, tok_per_sec=1.0, elapsed=1.0,
@@ -1030,7 +780,8 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
         frequency_penalty=0.0,
         logprobs_list=[] if capture_logprobs else None,
     )
-    session._seat_stop_augmentation = lambda stop_list, **_kwargs: stop_list
+    session._renderer = _stub_renderer()
+    session._tokenizer = None  # no measuring channel: nothing is tokenized
     session._monitor = SimpleNamespace(
         probe_names=[],
         set_subspace_coords=lambda _enabled: None,
@@ -1115,7 +866,7 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
 
     session._finalize_generation = _finalize
     session._end_capture = lambda: None
-    session._active_gen_reservation = None
+    session.tree = LoomTree()
 
     def _on_token(
         text: str,
@@ -2630,22 +2381,25 @@ def _transaction_stub_session() -> Any:
     s._monitor = SimpleNamespace(set_subspace_coords=lambda _flag: None)
     s._close_instrument_runs = lambda: None
     s._capture_state = CaptureState()
+    s.tree = LoomTree()
     return s
 
 
 def test_generation_transaction_detaches_capture_when_the_body_never_does():
     """A BaseException before the body's own teardown (a preamble failure,
     a KeyboardInterrupt) must still leave no capture hooks attached — the
-    transaction's teardown is the backstop, and it also frees the phase and
-    the lock."""
+    transaction's teardown is the backstop, and it also frees the phase, the
+    lock and the loom reservation."""
     s = _transaction_stub_session()
 
     with pytest.raises(KeyboardInterrupt):
         with s._generation_transaction():
+            s.tree.reserve(s.tree.root_id)
             raise KeyboardInterrupt
 
     assert s._end_capture_calls == 1
     assert s._gen_phase is GenState.IDLE
+    assert s.tree.reservation is None
     assert s._gen_lock.acquire(blocking=False)
     s._gen_lock.release()
 

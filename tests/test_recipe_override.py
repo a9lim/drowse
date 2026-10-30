@@ -5,15 +5,13 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import torch
 
 from drowse import Recipe, SamplingConfig
 from drowse.loom.errors import LoomTreeError
-from drowse.loom.recipe import (
-    INHERIT_SYSTEM_PROMPT,
-    InheritSystemPrompt,
-    compose_call,
-    derive_seed_schedule,
-)
+from drowse.generation.render import PromptRenderer
+from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt
+from drowse.loom.recipe import compose_call, derive_seed_schedule
 from drowse.loom.tree import LoomTree
 from drowse.session.session import DrowseSession
 from drowse.steering.grammar import ManifoldTerm, parse_expr
@@ -35,6 +33,18 @@ def test_recipe_prompt_capture_distinguishes_legacy_null_empty_and_text():
     assert composed.system_prompt is None
 
 
+def _renderer(tree: LoomTree, default_prompt: str | None) -> PromptRenderer:
+    return PromptRenderer(
+        tokenizer=None,
+        model=None,
+        traits=cast(Any, None),
+        device=torch.device("cpu"),
+        history=lambda: tree,
+        default_system_prompt=lambda: default_prompt,
+        steering_role=lambda: None,
+    )
+
+
 @pytest.mark.parametrize("prompt", [INHERIT_SYSTEM_PROMPT, None, "", "Speak like a pirate"])
 @pytest.mark.parametrize("raw", [False, True])
 def test_finalized_generation_recipe_keeps_prompt_through_probe_hashing(
@@ -44,7 +54,7 @@ def test_finalized_generation_recipe_keeps_prompt_through_probe_hashing(
     parent = tree.add_user_turn("Describe a voyage")
     session = cast(Any, SimpleNamespace(
         tree=tree,
-        config=SimpleNamespace(system_prompt="Current default instruction"),
+        _renderer=_renderer(tree, "Current default instruction"),
         _monitor=SimpleNamespace(probe_names=["calm", "missing"]),
         _probe_hash=lambda name: "calm-sha256" if name == "calm" else None,
     ))
@@ -125,7 +135,7 @@ def test_fan_siblings_round_trip_with_their_sampling_blocks():
     parent = tree.add_user_turn("Describe a voyage")
     session = cast(Any, SimpleNamespace(
         tree=tree,
-        config=SimpleNamespace(system_prompt=None),
+        _renderer=_renderer(tree, None),
         _monitor=SimpleNamespace(probe_names=[]),
         _probe_hash=lambda _name: None,
     ))
@@ -417,6 +427,40 @@ def test_invert_manifold_term():
     assert isinstance(term, ManifoldTerm)
     assert term.along == pytest.approx(-0.6)
     assert term.onto == pytest.approx(0.3)
+
+
+def test_inverted_regen_of_a_curved_term_is_refused_at_composition():
+    """The ``inverted`` modifier negates a ``%`` term's ``along``; on a
+    curved fit that has no opposite, so composing the inverted recipe raises
+    (422) instead of silently clamping to a no-op.  The loom can't know the
+    curvature (it is per-model), so the refusal is the composer's: pin the
+    hand-off between the two."""
+    from drowse.errors import SteeringCompositionError
+    from drowse.geometry.domains import BoxAxis, BoxDomain
+    from drowse.geometry.manifold import Manifold
+    from drowse.steering.hooks import SteeringPlan
+
+    anchor = Recipe(steering="0.5 months%january + 0.3 calm")
+    inverted = anchor.compose_modifier("inverted")
+    assert inverted.steering is not None
+    terms = parse_expr(inverted.steering).alphas
+    (term,) = [t for t in terms.values() if isinstance(t, ManifoldTerm)]
+    assert term.along == pytest.approx(-0.5)
+
+    loop = Manifold(
+        name="months",
+        domain=BoxDomain([BoxAxis("t", periodic=True, period=12.0)]),
+        node_labels=["january", "february", "march"],
+        node_coords=torch.tensor([[0.0], [1.0], [2.0]]),
+        layers={},
+        feature_space="raw",
+    )
+    plan = SteeringPlan()
+    with pytest.raises(SteeringCompositionError, match="cannot be negated or inverted"):
+        plan.add_manifold(
+            "months", loop, term.position, along=term.along, onto=term.onto,
+        )
+    assert not plan
 
 
 # ---------------------------------------------------------------------------

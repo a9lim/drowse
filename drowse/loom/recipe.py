@@ -18,19 +18,14 @@ from __future__ import annotations
 import re
 import secrets
 from dataclasses import dataclass, field, fields, replace
-from enum import Enum
 from typing import Any, Callable, NamedTuple
 
-from drowse.generation.sampling import SamplingConfig
+from drowse.generation.sampling import (
+    INHERIT_SYSTEM_PROMPT,
+    InheritSystemPrompt,
+    SamplingConfig,
+)
 from drowse.loom.errors import LoomTreeError, require_fields
-
-
-class InheritSystemPrompt(Enum):
-    """Sentinel: the recipe captured no system prompt; inherit the session's."""
-    VALUE = "session_default"
-
-
-INHERIT_SYSTEM_PROMPT = InheritSystemPrompt.VALUE
 
 # The persisted recipe shape (tree_format 2 / transcript v2).  ``seed`` is a
 # top-level key on disk and on the wire; in memory it is ``sampling.seed``.
@@ -548,6 +543,32 @@ class CastMember:
     recipe: Recipe | None = None
     notes: str = ""
 
+    @classmethod
+    def from_parts(
+        cls,
+        *,
+        steering: str | None = None,
+        sampling: SamplingConfig | None = None,
+        thinking: bool | None = None,
+        seed: int | None = None,
+        notes: str = "",
+    ) -> "CastMember":
+        """Build a member, validating its steering expression now.
+
+        A typo surfaces at authoring time (``SteeringExprError``) rather than
+        on the member's first generation.  A member whose fields are all
+        unset is a bare named label: legal, it contributes no defaults.
+        """
+        if steering:
+            from drowse.steering.grammar import parse_expr
+            parse_expr(steering)
+        recipe = None
+        if any(part is not None for part in (steering, sampling, thinking, seed)):
+            recipe = Recipe.from_parts(
+                steering=steering, sampling=sampling, thinking=thinking, seed=seed,
+            )
+        return cls(recipe=recipe, notes=notes)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "recipe": self.recipe.to_dict() if self.recipe is not None else None,
@@ -618,8 +639,6 @@ __all__ = [
     "CALL_ONLY_SAMPLING_FIELDS",
     "CastMember",
     "ComposedCall",
-    "INHERIT_SYSTEM_PROMPT",
-    "InheritSystemPrompt",
     "Recipe",
     "compose_call",
     "derive_seed_schedule",

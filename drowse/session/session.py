@@ -56,21 +56,13 @@ from drowse.generation.token_callback import (
     TokenConsumerOptions,
     consumer_options,
 )
-from drowse.model.scene import (
-    SceneGrammarError,
-    TurnGrammar,
-    extract_turn_grammar,
-    validate_turn_grammar,
-)
+from drowse.model.scene import TurnGrammar
+from drowse.generation.render import PromptRenderer
+from drowse.session.authored_capture import AuthoredPromptCapture, plan_authored_capture
 from drowse.events import LoomMutated
-from drowse.loom.errors import (
-    InvalidNodeOperationError,
-    LoomTreeError,
-    MutationDuringGenerationError,
-)
+from drowse.loom.errors import InvalidNodeOperationError
+from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt
 from drowse.loom.recipe import (
-    INHERIT_SYSTEM_PROMPT,
-    InheritSystemPrompt,
     CastMember,
     ComposedCall,
     Recipe,
@@ -78,6 +70,13 @@ from drowse.loom.recipe import (
     derive_seed_schedule,
 )
 from drowse.loom.tree import LoomTree
+from drowse.loom.diff import node_diff
+from drowse.loom.ops import (
+    append_turn,
+    begin_generation_turn,
+    plan_fork,
+    plan_prefill,
+)
 from drowse.model.arch import get_layers, get_model_info
 from drowse.model.load import load_model
 from drowse.readout.types import (
@@ -147,39 +146,6 @@ _AGG_TAIL_DEPTH = AGG_TAIL_DEPTH
 # (``_try_prefix_cache_hit`` requires it), so the cached length is capped at
 # ``min_row_len - 1``.
 _PREFIX_CACHE_MIN_TOKENS = 16
-
-
-@dataclass(slots=True)
-class _AuthoredPromptTarget:
-    """One visible authored node channel awaiting its first prompt capture."""
-
-    node_id: str
-    thinking: bool
-    token_ids: tuple[int, ...]
-    token_texts: tuple[str, ...]
-
-
-@dataclass(slots=True)
-class _AuthoredPromptMatch:
-    """A target located in the full rendered prompt token sequence."""
-
-    target: _AuthoredPromptTarget
-    token_positions: tuple[int, ...]
-    capture_columns: tuple[int | None, ...] = ()
-
-
-@dataclass(slots=True)
-class _AuthoredPromptCapture:
-    """Per-generation policy for loom-authored prefill measurements."""
-
-    targets: list[_AuthoredPromptTarget]
-    monitor_active: bool
-    lens_active: bool
-    sae_active: bool
-    readout_top_k: int
-    persist_per_layer_scores: bool
-    steering: str | None
-    search_end: int | None = None
 
 
 @dataclass(slots=True)
@@ -715,13 +681,18 @@ class DrowseSession:
         self._generation_static_cache: object | None = None
         self._generation_static_cache_len: int = 0
 
-        # Scene grammar (the cast model's stitcher): lazily autopsied +
-        # round-trip-validated against the live chat template on first
-        # access.  ``None`` after resolution = scene mode unavailable
-        # (base model, label-free family, or validation failure) — every
-        # render falls back to the standard chat-template paths.
-        self._scene_grammar: TurnGrammar | None = None
-        self._scene_grammar_resolved: bool = False
+        # Prompt rendering: model type, the lazily validated scene grammar,
+        # system-prompt resolution, the loom-path render, seat stop strings.
+        # The steering role is read lazily from the composer (built below).
+        self._renderer = PromptRenderer(
+            tokenizer=tokenizer,
+            model=model,
+            traits=self._chat,
+            device=self._device,
+            history=lambda: self.tree,
+            default_system_prompt=lambda: self.config.system_prompt,
+            steering_role=lambda: self._steering_composer.active_role,
+        )
 
         # Synchronous event bus.  Emits on extraction, steering enter/exit,
         # probe scoring, generation start/finish.  Subscribers run on the
@@ -788,7 +759,6 @@ class DrowseSession:
         self.tree = LoomTree(
             events=self.events,
             model_id=self._model_info["model_id"],
-            conflict_check=self._loom_conflict_check,
         )
         self._joint_logprob_cache: dict[tuple[str, str], Any] = {}
 
@@ -803,11 +773,6 @@ class DrowseSession:
 
         self.events.subscribe(_invalidate_tree_analysis_caches)
 
-        # Subtree root reserved by an in-flight generation (the user-parent
-        # of the streaming assistant target).  None while idle; set by
-        # ``_generate_core`` before token streaming begins, cleared in the
-        # outermost ``finally``.  Consulted by :meth:`_loom_conflict_check`.
-        self._active_gen_reservation: str | None = None
         self._last_result: GenerationResult | None = None
         self._last_per_token_scores: dict[str, list[float]] | None = None
         self._last_token_probe_payload: dict[str, Any] | None = None
@@ -1224,13 +1189,6 @@ class DrowseSession:
         edits."""
         return self._joint_logprob_cache
 
-    @property
-    def loom_conflict_check(self) -> "Callable[[str, str], None]":
-        """The bound tree-mutation conflict checker, for handing to a freshly
-        loaded :class:`LoomTree` via ``set_conflict_check`` — raises
-        :class:`MutationDuringGenerationError` on a conflicting op."""
-        return self._loom_conflict_check
-
     def ensure_manifold_loaded(self, key: str) -> Manifold:
         """The manifold artifact for registry key ``key``, loading it if absent.
 
@@ -1464,13 +1422,13 @@ class DrowseSession:
                 else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
-                prompt_ids = self._prepare_input(
+                prompt_ids = self._renderer.prepare_input(
                     "", raw=True, parent_node_id=node.parent_id,
                 )
             else:
                 # Continue-mode rebuild — seat-general, mirrors
                 # :func:`drowse.session.replay.replay_token`.
-                prompt_ids = self._prepare_input(
+                prompt_ids = self._renderer.prepare_input(
                     None,
                     thinking=use_thinking,
                     parent_node_id=node.parent_id,
@@ -1735,7 +1693,7 @@ class DrowseSession:
                         # mutators (edit / delete on this subtree) need to be
                         # free again now that the streaming target is no
                         # longer live.
-                        self._active_gen_reservation = None
+                        self.tree.reserve(None)
                         self._last_token_probe_payload = None
                         self._last_token_payload = None
                     finally:
@@ -2641,19 +2599,10 @@ class DrowseSession:
                 out[name] = d
         return out
 
-    # -- Cross-branch diff --
+    # -- Conversation (loom) --
 
     def diff_nodes(self, a_id: str, b_id: str) -> Any:
-        """Return a :class:`drowse.loom.diff.NodeDiff` between two nodes.
-
-        Both nodes are looked up in :attr:`tree`; the diff bundles the
-        word-level text diff and the readings delta table.  ``parent_id``
-        on the returned diff is the shared parent when both nodes
-        share one (the common sibling-comparison case); ``None``
-        otherwise.
-        """
-        from drowse.loom.diff import node_diff
-
+        """Return a :class:`drowse.loom.diff.NodeDiff` between two nodes."""
         return node_diff(self.tree, a_id, b_id)
 
     def fork_from_token(
@@ -2668,98 +2617,17 @@ class DrowseSession:
     ) -> GenerationResult:
         """Regenerate ``node_id`` as a sibling with a replacement at one token.
 
-        Replays the assistant node's raw decode sequence up to
-        ``raw_index``, forces either ``alt_token_id`` or the tokenization of
-        ``replacement_text`` at that position, then samples the continuation
-        freely.  Authored text may span multiple model tokens.  The node's
-        steering, sampling, and thinking recipe is reused.  By default the
-        original seed is re-applied and the sampler still draws every forced
-        step, preserving the RNG stream through the fork point for a clean
-        counterfactual.  Passing ``seed`` instead requests a newly sampled
-        ending while keeping the forced prefix fixed.
-
-        Lands as a sibling under the same parent turn, occupying the same
-        seat as the source node (a user-seat generated node forks into
-        user-seat siblings — the cast model).  Raises
-        :class:`InvalidNodeOperationError` when the node has no
-        ``raw_token_ids`` capability (legacy or transcript-loaded node), or
-        when ``raw_index`` is out of range.
+        Forces ``alt_token_id`` (or the tokenization of ``replacement_text``)
+        at ``raw_index`` of the node's raw decode sequence and samples the
+        rest under the node's recipe; see :func:`drowse.loom.ops.plan_fork`.
         """
-        from dataclasses import replace as _replace
-
-        node = self.tree.get(node_id)
-        raw = node.raw_token_ids
-        if not raw:
-            raise InvalidNodeOperationError(
-                f"fork_from_token: {node_id!r} has no raw token record "
-                f"(transcript-loaded node — not forkable)"
-            )
-        if not 0 <= raw_index < len(raw):
-            raise InvalidNodeOperationError(
-                f"fork_from_token: raw_index {raw_index} out of range "
-                f"[0, {len(raw)}) for {node_id!r}"
-            )
-        if node.parent_id is None:
-            raise InvalidNodeOperationError(
-                f"fork_from_token: {node_id!r} has no parent to anchor "
-                f"the forked sibling under"
-            )
-        if (alt_token_id is None) == (replacement_text is None):
-            raise InvalidNodeOperationError(
-                "fork_from_token: provide exactly one alternative token id "
-                "or replacement text"
-            )
-        if replacement_text is not None:
-            replacement_ids = [
-                int(t) for t in self._tokenizer.encode(
-                    replacement_text, add_special_tokens=False,
-                )
-            ]
-            if not replacement_ids:
-                raise InvalidNodeOperationError(
-                    "fork_from_token: replacement text tokenized to an empty "
-                    "sequence"
-                )
-        else:
-            assert alt_token_id is not None
-            replacement_ids = [int(alt_token_id)]
-        forced_prefix = [int(t) for t in raw[:raw_index]] + replacement_ids
-
-        recipe = node.recipe
-        base_sampling = (
-            recipe.sampling
-            if (recipe is not None and recipe.sampling is not None)
-            else SamplingConfig()
+        turn = plan_fork(
+            self.tree, self._tokenizer, node_id, raw_index, alt_token_id,
+            replacement_text=replacement_text, seed=seed,
+            default_max_tokens=self.config.max_new_tokens,
         )
-        # The forced prefix burns ``len(forced_prefix)`` decode steps
-        # before the continuation starts — extend the token budget by
-        # that much so a deep fork keeps the original continuation
-        # headroom rather than stopping just past the fork point.
-        base_max = base_sampling.max_tokens or self.config.max_new_tokens
-        fork_sampling = _replace(
-            base_sampling, max_tokens=len(forced_prefix) + base_max,
-            **({"seed": seed} if seed is not None else {}),
-        )
-        # The sibling inherits the source node's label on its own seat —
-        # the tree's stamped label wins over whatever the recipe's
-        # sampling boxes held.
-        if node.role == "user":
-            fork_sampling = _replace(fork_sampling, user_role=node.role_label)
-        else:
-            fork_sampling = _replace(
-                fork_sampling, assistant_role=node.role_label,
-            )
-
         return self._generate_core(
-            None,
-            steering=recipe.steering if recipe is not None else None,
-            sampling=fork_sampling,
-            thinking=recipe.thinking if recipe is not None else None,
-            on_token=on_token,
-            parent_node_id=node.parent_id,
-            forced_prefix=forced_prefix,
-            gen_seat=node.role,
-            system_prompt=getattr(recipe, "system_prompt", INHERIT_SYSTEM_PROMPT),
+            turn.input, on_token=on_token, **turn.generate_kwargs(),
         )
 
     def prefill_assistant(
@@ -2771,138 +2639,18 @@ class DrowseSession:
         sampling: SamplingConfig | None = None,
         on_token: TokenCallback | None = None,
     ) -> GenerationResult:
-        """Answer-prefill — seed the assistant reply under a user node.
+        """Generate an assistant reply to user node ``node_id`` that opens with ``text``.
 
-        Generates an assistant child of the user node ``node_id`` whose
-        response *begins* with ``text``, then samples the continuation
-        freely.  ``text`` is tokenized and handed to the engine as a
-        ``forced_prefix`` — the same logit primitive :meth:`fork_from_token`
-        rides — so the first ``len(forced_prefix)`` decode steps emit
-        exactly those ids before free sampling takes over.  The result
-        lands as a sibling assistant node under ``node_id`` (the dedup
-        path :meth:`fork_from_token` uses: anchor at the user node's
-        parent so ``add_user_turn`` re-uses the existing user turn).
-
-        Prefill is an *answer* prefill: ``text`` is the start of the
-        response, so the thinking channel is skipped entirely
-        (``thinking=False``).  Unlike a fork there's no source recipe to
-        inherit — ``steering`` / ``sampling`` are honored exactly as a
-        normal :meth:`generate` call.  The token budget is bumped by
-        ``len(forced_prefix)`` so the continuation keeps full headroom
-        rather than stopping just past the seeded span.
-
-        Raises :class:`InvalidNodeOperationError` when ``node_id`` isn't a
-        user node, or when ``text`` tokenizes to an empty sequence.
+        See :func:`drowse.loom.ops.plan_prefill`.
         """
-        from dataclasses import replace as _replace
-
-        node = self.tree.get(node_id)
-        if node.role != "user":
-            raise InvalidNodeOperationError(
-                f"prefill_assistant: {node_id!r} is a {node.role} node, "
-                f"not a user node — prefill seeds the assistant reply "
-                f"that hangs off a user turn"
-            )
-        forced_prefix = list(
-            self._tokenizer.encode(text, add_special_tokens=False)
+        turn = plan_prefill(
+            self.tree, self._tokenizer, node_id, text,
+            steering=steering, sampling=sampling,
+            default_max_tokens=self.config.max_new_tokens,
         )
-        if not forced_prefix:
-            raise InvalidNodeOperationError(
-                f"prefill_assistant: {text!r} tokenized to an empty "
-                f"sequence — nothing to prefill"
-            )
-
-        base_sampling = sampling if sampling is not None else SamplingConfig()
-        base_max = base_sampling.max_tokens or self.config.max_new_tokens
-        prefill_sampling = _replace(
-            base_sampling, max_tokens=len(forced_prefix) + base_max,
-        )
-
         return self._generate_core(
-            node.text,
-            steering=steering,
-            sampling=prefill_sampling,
-            thinking=False,
-            on_token=on_token,
-            parent_node_id=node.parent_id,
-            forced_prefix=forced_prefix,
+            turn.input, on_token=on_token, **turn.generate_kwargs(),
         )
-
-    # -- Authored turns (no-generation commits) --
-
-    def _check_thinking_commit(self, thinking: str | None) -> None:
-        """Refuse a committed thinking block the renderer can't carry.
-
-        Committed thinking renders through the scene stitcher's family
-        think delimiters — a family without them (gemma), a channel-
-        thinking family (gpt-oss), or a template-fallback family (GLM)
-        would raise at the *next* render, long after the commit.  Fail
-        at commit time instead, with the same error the renderer uses.
-        """
-        if thinking is None:
-            return
-        from drowse.model.scene import SceneThinkingUnsupportedError
-
-        grammar = self.scene_grammar
-        if grammar is None or grammar.think_open is None:
-            raise SceneThinkingUnsupportedError(
-                "this model family has no scene-mode think delimiters — "
-                "a committed thinking block could not be rendered"
-            )
-
-    def append_user_turn(
-        self,
-        parent_node_id: str | None,
-        text: str,
-        *,
-        allow_any_parent: bool = False,
-        role_label: str | None = None,
-        thinking: str | None = None,
-    ) -> str:
-        """Append a user-seat span without generating.
-
-        If the selected parent already has the user structural role and the
-        same effective ``role_label``, ``text`` is concatenated exactly onto
-        that node. Otherwise a new user-role child is created. Legacy chat
-        templates reject the latter user-under-user shape; scene renderers
-        accept it.
-
-        ``allow_any_parent`` skips the user-under-user guard: in flat
-        (base-model) mode the role tag is authorship provenance, not a
-        turn-taking constraint, so an authored span may hang under a
-        node of any role.
-
-        ``text`` must be non-empty (whitespace-only is honored, but a
-        completely empty string raises) — empty appends should be
-        no-op'd at the surface, not sent over the wire.
-        """
-        if text == "":
-            raise InvalidNodeOperationError(
-                "append_user_turn: text must be non-empty"
-            )
-        if thinking is not None:
-            self._check_thinking_commit(thinking)
-        parent_id = parent_node_id or self.tree.active_node_id
-        parent = self.tree.get(parent_id)
-        if parent.role == "user" and parent.role_label == role_label:
-            combined = parent.text + text
-            raw_token_ids = list(
-                self._tokenizer.encode(combined, add_special_tokens=False)
-            )
-            return self.tree.append_authored(
-                parent_id,
-                text,
-                thinking_text=thinking,
-                raw_token_ids=raw_token_ids,
-            )
-
-        # A different role label is a genuinely new turn.  Scene mode lifts
-        # the legacy user-under-user guard for that shape.
-        if not allow_any_parent and self.scene_grammar is None:
-            self._check_user_send_target(parent_node_id)
-        return self.tree.add_user_turn(
-            text, parent_id=parent_node_id, role_label=role_label,
-            thinking_text=thinking)
 
     def append_turn(
         self,
@@ -2914,120 +2662,15 @@ class DrowseSession:
         role_label: str | None = None,
         thinking: str | None = None,
     ) -> str:
-        """Append one authored span in a structural chat-template role.
+        """Commit one authored span in seat ``role`` without generating.
 
-        This is the role-neutral append primitive. The specialized
-        :meth:`append_user_turn` and :meth:`append_assistant_turn` methods
-        retain their role-specific validation and concatenation behavior.
+        ``raw`` is flat (base-model) mode, where seating is free; see
+        :func:`drowse.loom.ops.append_turn`.
         """
-        if role == "user":
-            return self.append_user_turn(
-                parent_node_id,
-                text,
-                allow_any_parent=raw,
-                role_label=role_label,
-                thinking=thinking,
-            )
-        if role != "assistant":
-            raise ValueError(
-                f"role must be 'user' or 'assistant', got {role!r}"
-            )
-        parent = parent_node_id or self.tree.active_node_id
-        return self.append_assistant_turn(
-            parent,
-            text,
-            role_label=role_label,
-            thinking=thinking,
+        return append_turn(
+            self.tree, self._tokenizer, self.scene_grammar, parent_node_id,
+            text, seat=role, flat=raw, role_label=role_label, thinking=thinking,
         )
-
-    def append_assistant_turn(
-        self,
-        user_node_id: str,
-        text: str,
-        *,
-        role_label: str | None = None,
-        thinking: str | None = None,
-    ) -> str:
-        """Append an assistant-role span without generating.
-
-        If ``user_node_id`` is already an assistant structural role under the
-        same effective ``role_label``, ``text`` is concatenated exactly onto
-        that node. Otherwise an authored assistant child is created with no
-        sampling or steering. Authored messages keep ``recipe=None`` and carry
-        tokenized full text so they remain forkable.
-
-        Raises :class:`InvalidNodeOperationError` when ``user_node_id``
-        isn't a user node on a legacy-render family (scene mode frees
-        the seating — the parameter name is historic), when ``text`` is
-        empty, or when it tokenizes to an empty sequence.  Returns the
-        new assistant node id; the loom's active node advances to it.
-        """
-        if text == "":
-            raise InvalidNodeOperationError(
-                "append_assistant_turn: text must be non-empty"
-            )
-        if thinking is not None:
-            self._check_thinking_commit(thinking)
-        node = self.tree.get(user_node_id)
-        if node.role == "assistant" and node.role_label == role_label:
-            combined = node.text + text
-            raw_token_ids = list(
-                self._tokenizer.encode(combined, add_special_tokens=False)
-            )
-            if not raw_token_ids:
-                raise InvalidNodeOperationError(
-                    f"append_assistant_turn: {combined!r} tokenized to an "
-                    f"empty sequence — nothing to append"
-                )
-            return self.tree.append_authored(
-                user_node_id,
-                text,
-                thinking_text=thinking,
-                raw_token_ids=raw_token_ids,
-            )
-        # Scene mode lifts the user-parent requirement: the stitcher
-        # renders arbitrary seat sequences, so an authored assistant
-        # turn may hang under any node (a/a, assistant-first shapes).
-        # Legacy-render families keep the strict guard — their
-        # templates can't render the freed shapes.
-        if node.role != "user" and self.scene_grammar is None:
-            raise InvalidNodeOperationError(
-                f"append_assistant_turn: {user_node_id!r} is a "
-                f"{node.role} node, not a user node — an authored "
-                f"assistant turn hangs off a user turn (free seating "
-                f"requires scene mode)"
-            )
-        raw_token_ids = list(
-            self._tokenizer.encode(text, add_special_tokens=False)
-        )
-        if not raw_token_ids:
-            raise InvalidNodeOperationError(
-                f"append_assistant_turn: {text!r} tokenized to an "
-                f"empty sequence — nothing to append"
-            )
-
-        new_id = self.tree.begin_assistant(
-            user_node_id, recipe=None, role_label=role_label)
-        # Drop the empty token blobs ``begin_assistant`` seeded — an
-        # authored turn has no per-token scores; ``None`` matches the
-        # transcript-loaded shape so renderers/saves treat it the same.
-        try:
-            authored = self.tree.nodes[new_id]
-            authored.tokens = None
-            authored.thinking_tokens = None
-        except KeyError:  # pragma: no cover — begin_assistant just added it
-            pass
-        self.tree.finalize_assistant(
-            new_id,
-            text=text,
-            applied_steering=None,
-            finish_reason="stop",
-            raw_token_ids=raw_token_ids,
-            thinking_text=thinking,
-        )
-        return new_id
-
-    # -- Cast roster --
 
     def set_cast_member(
         self,
@@ -3038,31 +2681,12 @@ class DrowseSession:
         thinking: bool | None = None,
         seed: int | None = None,
         notes: str = "",
-    ) -> "CastMember":
-        """Create or replace the cast member under ``label``.
-
-        Convenience over :meth:`LoomTree.set_cast_member` that builds the
-        member's :class:`Recipe` from parts and validates the steering
-        expression *now* (``parse_expr``) so a typo surfaces at authoring
-        time, not on the member's first generation.  A member whose
-        fields are all unset is a bare named label — legal, it just
-        contributes no defaults.
-        """
-        if steering:
-            from drowse.steering.grammar import parse_expr
-            parse_expr(steering)  # raises SteeringExprError on bad syntax
-        recipe: Recipe | None = None
-        if (
-            steering is not None
-            or sampling is not None
-            or thinking is not None
-            or seed is not None
-        ):
-            recipe = Recipe.from_parts(
-                steering=steering, sampling=sampling, thinking=thinking,
-                seed=seed,
-            )
-        member = CastMember(recipe=recipe, notes=notes)
+    ) -> CastMember:
+        """Create or replace the cast member under ``label`` (steering validated now)."""
+        member = CastMember.from_parts(
+            steering=steering, sampling=sampling, thinking=thinking,
+            seed=seed, notes=notes,
+        )
         self.tree.set_cast_member(label, member)
         return member
 
@@ -3070,148 +2694,26 @@ class DrowseSession:
         """Drop the cast member under ``label`` (no-op when absent)."""
         self.tree.remove_cast_member(label)
 
-    @property
-    def cast(self) -> "dict[str, CastMember]":
-        """Read view of the tree's cast roster (label → member)."""
-        return dict(self.tree.cast)
-
-    # -- History / loom tree --
-
-    def _check_user_send_target(self, parent_node_id: str | None) -> None:
-        """Refuse sending a new user turn from a user-role node.
-
-        A fresh user turn is invalid when the resolved parent is itself a
-        user node: that node is already
-        waiting for an assistant.  Allowing it would corrupt the tree
-        shape (user-under-user) and break the v2 chat-message flatten.
-
-        Resolved parent = ``parent_node_id`` when passed, else the active
-        node.  Internal regen paths pass ``parent_node_id=<grandparent>``
-        explicitly so add_user_turn's dedup re-uses the existing user
-        sibling rather than triggering this reject.
-
-        Raises :class:`InvalidNodeOperationError` (HTTP 400) on violation.
-        """
-        target_parent_id = (
-            parent_node_id if parent_node_id is not None
-            else self.tree.active_node_id
-        )
-        parent_node = (
-            self.tree.nodes.get(target_parent_id)
-            if target_parent_id is not None else None
-        )
-        if parent_node is not None and parent_node.role == "user":
-            raise InvalidNodeOperationError(
-                f"cannot send a new user turn from a user node "
-                f"({target_parent_id}): the active turn is already "
-                f"waiting for an assistant.  Use /regen to redo the "
-                f"assistant, or navigate away first."
-            )
-
-    def _loom_conflict_check(self, node_id: str, op: str) -> None:
-        """Tree-mutation conflict checker — see :mod:`drowse.loom.tree`.
-
-        The :class:`LoomTree` calls this at the entry of every mutator;
-        we raise :class:`MutationDuringGenerationError` (HTTP 409) when
-        the requested op conflicts with an in-flight generation's
-        subtree reservation.
-
-        Rules:
-
-        - Decoration ops (``star``, ``note``) and ``branch`` never raise.
-        - ``add_user_turn`` / ``begin_assistant`` / ``finalize_assistant``
-          run from inside the gen path itself; never raise here.
-        - ``edit``, ``delete_subtree``, and ``reset`` raise when the
-          target intersects ``self._active_gen_reservation``.
-
-        ``self._active_gen_reservation`` is the user-parent of the
-        streaming assistant node; the subtree rooted at that node is
-        reserved.
-        """
-        reservation = self._active_gen_reservation
-        if reservation is None:
-            return  # idle — every op is free
-        if op in ("add_user_turn", "begin_assistant", "finalize_assistant",
-                  "branch", "star", "note", "navigate"):
-            return
-        # ``op`` is "edit", "delete_subtree", "reset", or some future
-        # mutator: refuse when ``node_id`` is the reservation root, a
-        # descendant of it, or — for "reset" — anything at all.
-        if op == "reset":
-            raise MutationDuringGenerationError(
-                "cannot reset tree while a generation is in flight"
-            )
-        if node_id == reservation or self.tree.is_ancestor_of(reservation, node_id) \
-                or self.tree.is_ancestor_of(node_id, reservation):
-            raise MutationDuringGenerationError(
-                f"cannot {op} on a node inside an in-flight generation's "
-                f"reservation (reservation root: {reservation})"
-            )
-
     def rewind(self) -> None:
-        """Walk the active node back one user→assistant pair.
-
-        Non-destructive: the rewound pair stays in the
-        tree as a dead branch, navigable back via the sidebar / loom
-        screen.  ``clear_history`` is the destructive verb.
-        """
+        """Walk the active node back one submission (non-destructive)."""
         self.tree.rewind()
 
     def clear_history(self) -> None:
-        """Reset the tree to a fresh root.
-
-        Destructive — drops every branch.  Matches user expectation
-        of ``/clear`` meaning wipe.  Use :meth:`rewind` for the
-        non-destructive step-back.
-        """
+        """Reset the tree to a fresh root (destructive; refused mid-generation)."""
         self.tree.reset()
 
     def restore_tree(self, data: dict[str, Any]) -> LoomTree:
         """Atomically replace the live conversation with a validated tree.
 
-        The caller must hold the server's async session lock (or otherwise
-        guarantee that no generation is in flight).  Imported files are
-        model-bound: recipes and token ids are not portable across models,
-        so a mismatch is rejected instead of producing a subtly corrupt
-        continuation.  Runtime session identity is retained while every
-        conversation-owned field (branches, recipes, cast, tokens, notes)
-        comes from the file.
+        The caller must guarantee no generation is in flight (the server
+        holds its session lock).  A tree saved under another model is
+        refused; see :meth:`LoomTree.replacing`.
         """
-        restored = LoomTree.from_dict(
-            data,
-            events=self.events,
-            conflict_check=self._loom_conflict_check,
-        )
-        if restored.model_id not in (None, self.model_id):
-            raise LoomTreeError(
-                f"tree model {restored.model_id!r} does not match loaded model "
-                f"{self.model_id!r}"
-            )
-
-        old_tree = self.tree
-        old_ids = set(old_tree.nodes)
-        restored.model_id = self.model_id
-        restored.session_id = old_tree.session_id
-        # A restore is a mutation of this live session even when the file was
-        # saved at a lower revision.  Preserve monotonic wire revisions so
-        # connected clients can apply the replacement without a special
-        # rollback rule.
-        restored.rev = max(old_tree.rev, restored.rev) + 1
+        previous = self.tree
+        restored = LoomTree.replacing(previous, data, model_id=self.model_id)
         self.tree = restored
         self._joint_logprob_cache.clear()
-
-        new_ids = set(restored.nodes)
-        # LoomTree deliberately accepts the session EventBus through a
-        # cycle-breaking duck-typed boundary; emit through that same typed
-        # adapter rather than widening the core lifecycle Event union here.
-        restored._emit(LoomMutated(  # pyright: ignore[reportPrivateUsage]
-            op="restore",
-            rev=restored.rev,
-            added=tuple(nid for nid in restored.nodes if nid not in old_ids),
-            removed=tuple(nid for nid in old_tree.nodes if nid not in new_ids),
-            updated=tuple(nid for nid in restored.nodes if nid in old_ids),
-            active_node_id=restored.active_node_id,
-        ))
+        restored.announce_replacement(previous)
         return restored
 
     # -- Prefix KV cache --
@@ -3449,157 +2951,15 @@ class DrowseSession:
 
     # -- Generation helpers --
 
-    def _resolved_model_type(self) -> str | None:
-        """``model_type`` with the multimodal ``text_config`` unwrap."""
-        model_cfg = getattr(self._model, "config", None)
-        text_cfg = (
-            getattr(model_cfg, "text_config", None)
-            if model_cfg is not None else None
-        )
-        model_type = (
-            getattr(text_cfg, "model_type", None)
-            if text_cfg is not None else None
-        )
-        if model_type is None and model_cfg is not None:
-            model_type = getattr(model_cfg, "model_type", None)
-        return model_type
+    @property
+    def renderer(self) -> PromptRenderer:
+        """The session's :class:`~drowse.generation.render.PromptRenderer`."""
+        return self._renderer
 
     @property
     def scene_grammar(self) -> TurnGrammar | None:
-        """The validated turn grammar for the loaded chat template, or None.
-
-        Lazily runs the template autopsy + byte-exact round-trip validation
-        (``model/scene.py``) once per session.  A passing grammar makes the
-        stitcher the render authority — arbitrary seat sequences, per-turn
-        cast labels, generation prompts on either seat — with renders
-        bit-identical to ``apply_chat_template`` on standard alternating
-        conversations.  ``None`` = scene mode unavailable (base model,
-        label-free family like mistral, or a template shape that defeated
-        the autopsy); rendering falls back to the chat-template paths and a
-        one-time warning names the reason.
-        """
-        if not self._scene_grammar_resolved:
-            self._scene_grammar_resolved = True
-            self._scene_grammar = None
-            template = getattr(self._tokenizer, "chat_template", None)
-            if template:
-                think = (
-                    ("<think>", "</think>") if "<think>" in template else None
-                )
-                try:
-                    grammar = extract_turn_grammar(
-                        self._tokenizer,
-                        self._resolved_model_type() or "",
-                        think_delimiters=think,
-                    )
-                    validate_turn_grammar(grammar, self._tokenizer)
-                    self._scene_grammar = grammar
-                except SceneGrammarError as e:
-                    _log.warning(
-                        "scene mode unavailable for this model (%s); "
-                        "rendering falls back to the chat template", e,
-                    )
-        return self._scene_grammar
-
-    def _prepare_input(
-        self, input: Any, raw: bool = False, thinking: bool = False,
-        stateless: bool = False,
-        parent_node_id: str | None = None,
-        user_role: str | None = None,
-        assistant_role: str | None = None,
-        to_device: bool = True,
-        gen_seat: str = "assistant",
-        add_generation_prompt: bool = True,
-        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
-    ) -> torch.Tensor:
-        if raw and (isinstance(input, str) or input is None):
-            # Flat (base-model / completion) path: no chat template, no
-            # role markers.  The model sees the active-path text verbatim
-            # — every node along the loom path concatenated — plus this
-            # call's own ``input``.  ``stateless`` skips the tree walk so
-            # the buffer is purely ``input``.  ``input=None`` is a bare
-            # continuation (no new span).
-            prefix = "" if stateless else self.tree.flat_text(parent_node_id)
-            encoded = self._tokenizer.encode(
-                prefix + (input or ""), return_tensors="pt",
-            )
-            ids = cast(torch.Tensor, encoded)  # return_tensors="pt" gives Tensor, not list[int]
-            return ids.to(self._device) if to_device else ids
-        if isinstance(input, str) or input is None:
-            if stateless:
-                prior: list[dict[str, Any]] = []
-            else:
-                # Walk the path to ``parent_node_id`` (or the active node).
-                # Loom: the model sees the conversation along whatever path
-                # the user is currently focused on, not a single flat log.
-                # ``with_labels`` carries each prior turn's stamped
-                # ``role_label`` so the render is faithful per-turn — earlier
-                # turns render with the roles they were *sent* with.
-                prior = self.tree.messages_for(parent_node_id, with_labels=True)
-            # The new user turn carries this send's user-role label.
-            # ``input=None`` is a continue: no new turn, the generation
-            # prompt opens directly after the existing history (the a/a and
-            # u-continue shapes of the cast model).
-            if input is None:
-                messages = prior
-            else:
-                messages = prior + [
-                    {"role": "user", "content": input, "label": user_role}
-                ]
-        elif isinstance(input, list):
-            messages = list(input)
-        else:
-            raise TypeError(f"Unsupported input type: {type(input)}")
-        # Generation-prompt label.  Assistant seat: a role-augmented steering
-        # scope (the composer's ``active_role``, transient, set for
-        # ``:role-<slug>`` vectors / persona manifolds) wins so steer
-        # baseline matches extract baseline; otherwise this send's
-        # ``assistant_role`` box drives the to-be-generated turn.  User
-        # seat: the ``user_role`` box labels the turn being generated (the
-        # elicitation-baseline contract is an assistant-seat construct, so
-        # the steering role doesn't apply there).  Prior turns' labels ride
-        # on the messages themselves (above).
-        steer_role = self._steering_composer.active_role
-        if gen_seat == "assistant":
-            gen_role = steer_role if steer_role is not None else assistant_role
-            if (
-                add_generation_prompt
-                and steer_role is not None
-                and assistant_role is not None
-                and steer_role != assistant_role
-            ):
-                # The steering scope's role baseline wins over the send's
-                # label (extract baseline = steer baseline), but the caller
-                # asked for a different header — say so rather than
-                # silently rendering a turn they didn't label.
-                import warnings as _warnings
-                from drowse.errors import RoleBaselineMismatchWarning
-                _warnings.warn(
-                    f"steering scope implies role {steer_role!r} but this "
-                    f"send labels the generated turn {assistant_role!r}; "
-                    f"the steering role wins for the generation header",
-                    RoleBaselineMismatchWarning,
-                    stacklevel=2,
-                )
-        else:
-            gen_role = user_role
-        model_type_for_role: str | None = None
-        any_label = gen_role is not None or any(
-            isinstance(m, dict) and m.get("label") for m in messages
-        )
-        if any_label:
-            model_type_for_role = self._resolved_model_type()
-        ids = build_chat_input(
-            self._tokenizer, messages, self.config.system_prompt if isinstance(system_prompt, InheritSystemPrompt) else system_prompt,
-            thinking=thinking,
-            add_generation_prompt=add_generation_prompt,
-            gen_role=gen_role,
-            model_type=model_type_for_role,
-            scene=self.scene_grammar,
-            traits=self.chat_traits,
-            gen_seat=gen_seat,
-        )
-        return ids.to(self._device) if to_device else ids
+        """The validated turn grammar for the loaded chat template, or None."""
+        return self._renderer.scene_grammar
 
     def _finalize_generation(
         self, generated_ids: list[int], elapsed: float,
@@ -3646,10 +3006,10 @@ class DrowseSession:
         ``assistant_role`` are this send's per-message role labels (the
         roleplay scaffold): the new user turn renders under ``user_role``
         and the generation prompt under ``assistant_role`` (a role-bearing
-        steering scope overrides the latter inside ``_prepare_input``).
+        steering scope overrides the latter inside the renderer).
         """
         use_thinking = thinking and self.chat_traits.supports_thinking
-        input_ids = self._prepare_input(
+        input_ids = self._renderer.prepare_input(
             input, raw=raw, thinking=use_thinking, stateless=stateless,
             parent_node_id=parent_node_id,
             user_role=user_role, assistant_role=assistant_role,
@@ -3658,387 +3018,6 @@ class DrowseSession:
         )
         self._gen_state.reset()
         return input_ids, use_thinking, int(input_ids.shape[1])
-
-    def _tokenize_authored_prompt_text(
-        self,
-        node_id: str,
-        text: str,
-        *,
-        thinking: bool,
-    ) -> _AuthoredPromptTarget | None:
-        """Tokenize visible authored text without changing its rendered bytes.
-
-        Fast-tokenizer offsets let the loom keep the user's exact whitespace
-        while assigning each span to the model token that consumed it.  A slow
-        tokenizer falls back to one-token decodes only when they concatenate
-        byte-for-byte to the original text; otherwise the channel is left plain
-        instead of replacing authored copy with a normalized reconstruction.
-        """
-        token_ids = tuple(int(tid) for tid in self._tokenizer.encode(
-            text, add_special_tokens=False,
-        ))
-        if not token_ids:
-            return None
-
-        pieces: tuple[str, ...] | None = None
-        try:
-            encoded = self._tokenizer(
-                text,
-                add_special_tokens=False,
-                return_offsets_mapping=True,
-            )
-            encoded_ids = encoded["input_ids"]
-            offsets = encoded["offset_mapping"]
-            if isinstance(encoded_ids, torch.Tensor):
-                encoded_ids = encoded_ids.detach().to("cpu").tolist()
-            if encoded_ids and isinstance(encoded_ids[0], list):
-                encoded_ids = encoded_ids[0]
-            if isinstance(offsets, torch.Tensor):
-                offsets = offsets.detach().to("cpu").tolist()
-            if offsets and isinstance(offsets[0], list) and len(offsets) == 1:
-                offsets = offsets[0]
-            if tuple(int(tid) for tid in encoded_ids) == token_ids:
-                cursor = 0
-                spans: list[str] = []
-                valid = len(offsets) == len(token_ids)
-                for raw_start, raw_end in offsets:
-                    start, end = int(raw_start), int(raw_end)
-                    if start < 0 or end < start or end > len(text) or end < cursor:
-                        valid = False
-                        break
-                    # Attach gaps (usually leading spaces omitted by a word
-                    # token's formal offset) to the following visible token.
-                    spans.append(text[cursor:end])
-                    cursor = end
-                if valid and spans:
-                    spans[-1] += text[cursor:]
-                    if "".join(spans) == text:
-                        pieces = tuple(spans)
-        except (KeyError, TypeError, ValueError, NotImplementedError):
-            pass
-
-        if pieces is None:
-            decoded: list[str] = []
-            try:
-                for tid in token_ids:
-                    try:
-                        piece = self._tokenizer.decode(
-                            [tid],
-                            skip_special_tokens=False,
-                            clean_up_tokenization_spaces=False,
-                        )
-                    except TypeError:
-                        piece = self._tokenizer.decode(
-                            [tid], skip_special_tokens=False,
-                        )
-                    decoded.append(str(piece))
-            except (AttributeError, TypeError, ValueError):
-                return None
-            if "".join(decoded) != text:
-                return None
-            pieces = tuple(decoded)
-
-        return _AuthoredPromptTarget(
-            node_id=node_id,
-            thinking=thinking,
-            token_ids=token_ids,
-            token_texts=pieces,
-        )
-
-    def _pending_authored_prompt_targets(
-        self,
-        assistant_node_id: str | None,
-        *,
-        raw: bool,
-    ) -> list[_AuthoredPromptTarget]:
-        """Uncaptured authored channels on the prompt path, in render order."""
-        if assistant_node_id is None:
-            return []
-        generated = self.tree.nodes.get(assistant_node_id)
-        if generated is None or generated.parent_id is None:
-            return []
-        targets: list[_AuthoredPromptTarget] = []
-        for node in self.tree.path_to(generated.parent_id):
-            if node.id == self.tree.root_id or node.recipe is not None:
-                continue
-            # Raw/flat rendering ignores thinking_text; chat rendering places
-            # authored thinking before the visible response content.
-            if not raw and node.thinking_text and node.thinking_tokens is None:
-                target = self._tokenize_authored_prompt_text(
-                    node.id, node.thinking_text, thinking=True,
-                )
-                if target is not None:
-                    targets.append(target)
-            if node.text and node.tokens is None:
-                target = self._tokenize_authored_prompt_text(
-                    node.id, node.text, thinking=False,
-                )
-                if target is not None:
-                    targets.append(target)
-        return targets
-
-    @staticmethod
-    def _rfind_token_subsequence(
-        haystack: list[int],
-        needle: tuple[int, ...],
-        end: int,
-    ) -> int:
-        """Rightmost exact token subsequence ending at or before ``end``."""
-        width = len(needle)
-        for start in range(min(end, len(haystack)) - width, -1, -1):
-            if tuple(haystack[start:start + width]) == needle:
-                return start
-        return -1
-
-    def _match_authored_prompt_targets(
-        self,
-        targets: list[_AuthoredPromptTarget],
-        input_ids: torch.Tensor,
-        *,
-        cache_position_offset: int,
-        search_end: int | None = None,
-    ) -> tuple[list[_AuthoredPromptMatch], list[int]]:
-        """Locate visible text in the full prompt and map producer rows.
-
-        Matching walks backward because the generation prompt follows the last
-        visible message and duplicate authored lines are common during rerolls.
-        Positions are first resolved in the full prompt, then translated into
-        the suffix-local coordinates of a KV-prefix hit.  The first suffix token
-        has no producer row in the new forward and is therefore left unscored.
-        """
-        full_ids = [
-            int(tid) for tid in input_ids[0].detach().to("cpu").tolist()
-        ]
-        limit = min(
-            len(full_ids),
-            int(search_end) if search_end is not None else len(full_ids),
-        )
-        reversed_matches: list[_AuthoredPromptMatch] = []
-        for target in reversed(targets):
-            start = self._rfind_token_subsequence(
-                full_ids, target.token_ids, limit,
-            )
-            # Gemma-family templates trim message content before tokenizing.
-            # Preserve the loom's verbatim authored whitespace, but if the
-            # exact standalone token sequence is absent, retry the stripped
-            # content and attach the trimmed edge bytes to its first/last
-            # visible token span. Whitespace the template removed has no model
-            # position of its own, so this is the only faithful display mapping.
-            if start < 0:
-                original_text = "".join(target.token_texts)
-                stripped_text = original_text.strip()
-                if stripped_text and stripped_text != original_text:
-                    stripped_target = self._tokenize_authored_prompt_text(
-                        target.node_id,
-                        stripped_text,
-                        thinking=target.thinking,
-                    )
-                    if stripped_target is not None:
-                        pieces = list(stripped_target.token_texts)
-                        left = original_text[:len(original_text) - len(
-                            original_text.lstrip()
-                        )]
-                        right = original_text[len(original_text.rstrip()):]
-                        pieces[0] = left + pieces[0]
-                        pieces[-1] += right
-                        stripped_target.token_texts = tuple(pieces)
-                        stripped_start = self._rfind_token_subsequence(
-                            full_ids, stripped_target.token_ids, limit,
-                        )
-                        if stripped_start >= 0:
-                            target = stripped_target
-                            start = stripped_start
-            if start < 0:
-                _log.debug(
-                    "authored prompt capture skipped node %s: content tokens "
-                    "not found verbatim in rendered prompt",
-                    target.node_id,
-                )
-                continue
-            positions = tuple(range(start, start + len(target.token_ids)))
-            reversed_matches.append(_AuthoredPromptMatch(target, positions))
-            limit = start
-        matches = list(reversed(reversed_matches))
-
-        effective_producers = sorted({
-            token_position - 1 - cache_position_offset
-            for match in matches
-            for token_position in match.token_positions
-            if token_position - 1 >= cache_position_offset
-        })
-        producer_to_column = {
-            producer: column
-            for column, producer in enumerate(effective_producers)
-        }
-        for match in matches:
-            match.capture_columns = tuple(
-                producer_to_column.get(
-                    token_position - 1 - cache_position_offset
-                )
-                if token_position - 1 >= cache_position_offset
-                else None
-                for token_position in match.token_positions
-            )
-        return matches, effective_producers
-
-    def _authored_lens_capture(
-        self,
-        hidden: dict[int, torch.Tensor],
-        *,
-        top_k: int,
-    ) -> tuple[
-        dict[int, list[tuple[str, float]]],
-        list[tuple[str, float, float, float]],
-        dict[int, list[int]],
-        dict[str, ScalarReading],
-    ] | None:
-        """Live J-LENS payload for one retained authored producer row
-        (delegates to :meth:`LensInstrument.authored_capture`; the
-        token-matching orchestration stays session-side)."""
-        return self._lens_instrument.authored_capture(hidden, top_k=top_k)
-
-    def _authored_sae_capture(
-        self,
-        hidden: dict[int, torch.Tensor],
-        *,
-        top_k: int,
-    ) -> tuple[
-        list[tuple[int, float, str | None, float | None]],
-        dict[str, ScalarReading],
-    ] | None:
-        """Live SAE payload for one retained authored producer row
-        (delegates to :meth:`SaeInstrument.authored_capture`)."""
-        return self._sae_instrument.authored_capture(hidden, top_k=top_k)
-
-    def _persist_authored_prompt_captures(
-        self,
-        matches: list[_AuthoredPromptMatch],
-        *,
-        monitor_active: bool,
-        lens_active: bool,
-        sae_active: bool,
-        readout_top_k: int,
-        persist_per_layer_scores: bool,
-        steering: str | None,
-    ) -> None:
-        """Score selected prefill rows and attach them to authored loom nodes."""
-        prompt_rows = self._capture.prompt_stacked()
-        if not matches or not prompt_rows:
-            return
-        from drowse.generation.token_payloads import TokenProbePayload
-
-        output_rows: list[list[dict[str, Any]]] = [
-            [
-                {
-                    "token_id": int(tid),
-                    "text": text,
-                    "logprob": None,
-                    "perplexity": None,
-                }
-                for tid, text in zip(
-                    match.target.token_ids,
-                    match.target.token_texts,
-                    strict=True,
-                )
-            ]
-            for match in matches
-        ]
-        ordered: list[tuple[int, int, int, int]] = []
-        for match_index, match in enumerate(matches):
-            for token_index, (token_position, column) in enumerate(zip(
-                match.token_positions, match.capture_columns, strict=True,
-            )):
-                if column is not None:
-                    ordered.append((token_position, match_index, token_index, column))
-
-        populated_matches: set[int] = set()
-        for _position, match_index, token_index, column in sorted(ordered):
-            hidden = {
-                layer: rows[column]
-                for layer, rows in prompt_rows.items()
-                if column < int(rows.shape[0])
-            }
-            if not hidden:
-                continue
-            payload = TokenProbePayload()
-            if monitor_active:
-                payload.merge_readings(
-                    self._monitor.score_single_token(hidden),
-                    family="geometry",
-                    per_layer=persist_per_layer_scores,
-                )
-
-            lens_payload = lens_aggregate = lens_token_ids = None
-            if lens_active:
-                lens_capture = self._authored_lens_capture(
-                    hidden, top_k=readout_top_k,
-                )
-                if lens_capture is not None:
-                    (
-                        lens_payload,
-                        lens_aggregate,
-                        lens_token_ids,
-                        lens_readings,
-                    ) = lens_capture
-                    payload.merge_readings(
-                        lens_readings,
-                        family="lens",
-                        per_layer=persist_per_layer_scores,
-                    )
-
-            sae_payload = None
-            if sae_active:
-                sae_capture = self._authored_sae_capture(
-                    hidden, top_k=readout_top_k,
-                )
-                if sae_capture is not None:
-                    sae_payload, sae_readings = sae_capture
-                    payload.merge_readings(
-                        sae_readings,
-                        family="sae",
-                        per_layer=persist_per_layer_scores,
-                    )
-
-            shaped = payload.to_token_payload(
-                lens=lens_payload,
-                lens_aggregate=lens_aggregate,
-                lens_token_ids=lens_token_ids,
-                lens_source=(
-                    self._lens_instrument.live.get("source")
-                    if self._lens_instrument.live is not None else None
-                ),
-                sae=sae_payload,
-                sae_source=(
-                    self._sae_instrument.live.get("source")
-                    if self._sae_instrument.live is not None else None
-                ),
-                sae_layer=(
-                    int(self._sae_instrument.live["layer"])
-                    if self._sae_instrument.live is not None else None
-                ),
-                steering=steering,
-            )
-            measurements = shaped.get("measurements")
-            if not measurements:
-                continue
-            row = output_rows[match_index][token_index]
-            if payload.scores:
-                row["probes"] = {
-                    name: round(float(value), 6)
-                    for name, value in payload.scores.items()
-                }
-            if payload.per_layer_scores:
-                row["per_layer_scores"] = payload.per_layer_scores
-            row["measurements"] = measurements
-            populated_matches.add(match_index)
-
-        for match_index in sorted(populated_matches):
-            match = matches[match_index]
-            self.tree.set_authored_token_scores(
-                match.target.node_id,
-                output_rows[match_index],
-                thinking=match.target.thinking,
-            )
 
     def _compose_gen_config(
         self, sampling: SamplingConfig | None,
@@ -4067,39 +3046,6 @@ class DrowseSession:
         return _replace(self.config, **overrides)
 
     # -- Generation: core --
-
-    def _seat_stop_augmentation(
-        self,
-        stop_list: list[str] | None,
-        *,
-        gen_seat: str,
-        raw: bool,
-    ) -> list[str] | None:
-        """Add the gen seat's close segment as a stop string when needed.
-
-        Convention 2 (the cast model): generating into a seat stops on
-        that seat's terminator.  On every validated family the two seats
-        share a terminator, which the engine's EOS-id union already
-        catches — so the assistant path (and any shared-close family)
-        adds nothing and keeps its zero-cost no-stop-list fast path.
-        Only a non-assistant-seat gen on a family whose seat closes
-        *differ* (gpt-oss: user ``<|end|>`` vs assistant ``<|return|>``)
-        gains a stop string, guaranteeing the stop even where the
-        seat's terminator escapes the EOS union.  Raw / flat mode has
-        no seat closes.
-        """
-        if raw or gen_seat == "assistant":
-            return stop_list
-        grammar = self.scene_grammar
-        if grammar is None:
-            return stop_list
-        close = grammar.seat(gen_seat).close.strip()
-        if not close or close == grammar.assistant.close.strip():
-            return stop_list
-        out = list(stop_list) if stop_list else []
-        if close not in out:
-            out.append(close)
-        return out
 
     def _compose_generation_call(
         self,
@@ -4242,67 +3188,28 @@ class DrowseSession:
         continuation_node_id: str | None = None,
         system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
     ) -> str | None:
-        """Create the loom nodes for a stateful generation.
+        """Open the loom node a stateful generation streams into.
 
-        ``gen_seat`` is the seat the generated node occupies (the cast
-        model: "generated" is provenance, not a seat).  An explicit
-        non-assistant seat implies scene mode, where seating is free — the
-        user-under-user guard is skipped. ``continuation_node_id`` reuses an
-        existing same-role message whose text the caller will replay as the
-        forced decode prefix.
+        Stamps the generation receipt (steering, sampling, thinking, the
+        resolved system prompt and the probe roster with its hashes) and
+        delegates the node rules to :func:`drowse.loom.ops.begin_generation_turn`.
         """
         if stateless:
             return None
-
-        # Per-message role labels (roleplay scaffold) ride this send's
-        # SamplingConfig and are stamped onto the nodes at creation — the
-        # turn keeps its role regardless of later box changes.  Raw / flat
-        # mode has no chat template, so role labels don't apply there.
-        user_role = sampling.user_role if sampling is not None and not raw else None
-        assistant_role = (
-            sampling.assistant_role if sampling is not None and not raw else None
-        )
-
-        if isinstance(input, str) and raw:
-            # Flat (base-model) path: no user/assistant turn pairing.  A
-            # non-empty ``input`` is a typed span recorded as its own
-            # node; an empty ``input`` is a bare continuation that just
-            # extends the active leaf.  ``_check_user_send_target`` is
-            # skipped — in flat mode the role tag is authorship
-            # provenance, not a turn-taking constraint, so a span may
-            # hang under a node of any role.
-            if input != "":
-                user_node_id = self.tree.add_user_turn(
-                    input, parent_id=parent_node_id)
-            else:
-                user_node_id = parent_node_id or self.tree.active_node_id
-        elif isinstance(input, str):
-            if gen_seat == "assistant":
-                self._check_user_send_target(parent_node_id)
-            user_node_id = self.tree.add_user_turn(
-                input, parent_id=parent_node_id, role_label=user_role)
-        else:
-            # ``input=None`` (generate — no new authored turn) or a raw
-            # messages list: anchor directly on the parent.
-            user_node_id = parent_node_id or self.tree.active_node_id
-
-        self._active_gen_reservation = user_node_id
         recipe = Recipe(
             steering=str(steering_obj) if steering_obj is not None else None,
             sampling=sampling,
             thinking=use_thinking_req,
-            system_prompt=None if raw else self.config.system_prompt if isinstance(system_prompt, InheritSystemPrompt) else system_prompt,
+            system_prompt=(
+                None if raw else self._renderer.resolve_system_prompt(system_prompt)
+            ),
             probes=list(self._monitor.probe_names),
         ).with_probe_hashes(self._probe_hash)
-        # The generated node's label follows its seat (user-seat gens are
-        # labeled by the ``user_role`` box, assistant-seat by ``assistant_role``).
-        gen_label = user_role if gen_seat == "user" else assistant_role
-        if continuation_node_id is not None:
-            return self.tree.begin_continuation(
-                continuation_node_id, recipe=recipe,
-            )
-        return self.tree.begin_assistant(
-            user_node_id, recipe=recipe, role_label=gen_label, seat=gen_seat)
+        return begin_generation_turn(
+            self.tree, input, raw=raw, parent_node_id=parent_node_id,
+            sampling=sampling, recipe=recipe, gen_seat=gen_seat,
+            continuation_node_id=continuation_node_id,
+        )
 
     def _compiled_graph_thread_safe(self) -> bool:
         """Whether this thread owns PyTorch's warmed CUDA graph tree."""
@@ -4358,7 +3265,7 @@ class DrowseSession:
         lp_count: int | None,
         forced_prefix: list[int] | None = None,
         want_perplexity: bool = True,
-        authored_capture: _AuthoredPromptCapture | None = None,
+        authored_capture: AuthoredPromptCapture | None = None,
     ) -> tuple[list[int], float]:
         """Run the decode loop once capture and steering are installed."""
         cached_pkv = None
@@ -4394,22 +3301,18 @@ class DrowseSession:
                 suffix_ids, cached_pkv, cache_position_offset, cached_static = hit
                 effective_input_ids = suffix_ids
 
-        authored_matches: list[_AuthoredPromptMatch] = []
+        prompt_capture_pending = False
         if authored_capture is not None:
-            authored_matches, prompt_positions = self._match_authored_prompt_targets(
-                authored_capture.targets,
-                input_ids,
-                cache_position_offset=cache_position_offset,
-                search_end=authored_capture.search_end,
-            )
-            self._capture.set_prompt_positions(prompt_positions)
+            self._capture.set_prompt_positions(authored_capture.match(
+                input_ids, cache_position_offset=cache_position_offset,
+            ))
+            prompt_capture_pending = bool(authored_capture.matches)
 
         base_step_callback = (
             self._capture.ingest_persistent
             if self._capture_state.persistent
             else self._capture.fire_step_sink
         )
-        prompt_capture_pending = bool(authored_matches)
 
         def _step_callback(step_id: int) -> None:
             nonlocal prompt_capture_pending
@@ -4419,17 +3322,7 @@ class DrowseSession:
             # produces generated token 0.
             if prompt_capture_pending and authored_capture is not None:
                 prompt_capture_pending = False
-                self._persist_authored_prompt_captures(
-                    authored_matches,
-                    monitor_active=authored_capture.monitor_active,
-                    lens_active=authored_capture.lens_active,
-                    sae_active=authored_capture.sae_active,
-                    readout_top_k=authored_capture.readout_top_k,
-                    persist_per_layer_scores=(
-                        authored_capture.persist_per_layer_scores
-                    ),
-                    steering=authored_capture.steering,
-                )
+                authored_capture.persist(self._capture.prompt_stacked())
             base_step_callback(step_id)
 
         start = time.monotonic()
@@ -4673,7 +3566,7 @@ class DrowseSession:
             frequency_penalty = prepared.frequency_penalty
             logprobs_list = prepared.logprobs_list
             readout_top_k = self._effective_readout_top_k(sampling)
-            stop_list = self._seat_stop_augmentation(
+            stop_list = self._renderer.seat_stop_strings(
                 stop_list, gen_seat=gen_seat, raw=raw,
             )
             return_probe_readings = bool(
@@ -4977,7 +3870,7 @@ class DrowseSession:
             # creates becomes the active leaf, and ``messages_for(None)`` later
             # walks INCLUDING that empty assistant — producing a trailing
             # empty-content assistant message AND a duplicated trailing user
-            # turn after ``_prepare_input`` re-appends ``input``.  Strict chat
+            # turn after the render re-appends ``input``.  Strict chat
             # templates (Mistral 3) reject the empty assistant outright with
             # ``Assistant message must have a string or a list of chunks ...``;
             # permissive templates render the duplicate user silently and
@@ -5025,17 +3918,18 @@ class DrowseSession:
             want_hidden = bool(sampling and sampling.return_hidden)
             self._lens_instrument.active_for_generation = _has_lens_consumer
             self._sae_instrument.active_for_generation = _has_sae_consumer
-            authored_targets = self._pending_authored_prompt_targets(
-                assistant_node_id, raw=raw,
-            )
-            authored_channels_active = bool(
-                (_live_scores_on and _has_monitor_probes)
-                or _has_lens_consumer
-                or _has_sae_consumer
-            )
-            authored_search_end: int | None = None
-            if authored_targets and authored_channels_active and not raw:
-                content_only_ids = self._prepare_input(
+            # F11: nothing is tokenized unless a channel will measure the rows.
+            authored_capture = plan_authored_capture(
+                self.tree, self._tokenizer, assistant_node_id, raw=raw,
+                monitor=self._monitor,
+                lens=self._lens_instrument,
+                sae=self._sae_instrument,
+                monitor_active=bool(_live_scores_on and _has_monitor_probes),
+                lens_active=_has_lens_consumer,
+                sae_active=_has_sae_consumer,
+                readout_top_k=readout_top_k,
+                persist_per_layer_scores=_persists_layer_scores,
+                content_end=lambda: int(self._renderer.prepare_input(
                     input,
                     raw=False,
                     thinking=use_thinking,
@@ -5051,31 +3945,7 @@ class DrowseSession:
                     gen_seat=gen_seat,
                     system_prompt=system_prompt,
                     add_generation_prompt=False,
-                )
-                authored_search_end = int(content_only_ids.shape[1])
-            authored_recipe_steering = None
-            if assistant_node_id is not None:
-                authored_recipe_node = self.tree.nodes.get(assistant_node_id)
-                if (
-                    authored_recipe_node is not None
-                    and authored_recipe_node.recipe is not None
-                ):
-                    authored_recipe_steering = (
-                        authored_recipe_node.recipe.steering
-                    )
-            authored_capture = (
-                _AuthoredPromptCapture(
-                    targets=authored_targets,
-                    monitor_active=bool(_live_scores_on and _has_monitor_probes),
-                    lens_active=_has_lens_consumer,
-                    sae_active=_has_sae_consumer,
-                    readout_top_k=readout_top_k,
-                    persist_per_layer_scores=_persists_layer_scores,
-                    steering=authored_recipe_steering,
-                    search_end=authored_search_end,
-                )
-                if authored_targets and authored_channels_active
-                else None
+                ).shape[1]),
             )
             # Fold every consumer of this generation into one read demand.
             # Per-token scoring is only needed when something consumes a
@@ -5832,7 +4702,7 @@ class DrowseSession:
         user_role = sampling.user_role if sampling is not None else None
         assistant_role = sampling.assistant_role if sampling is not None else None
         for prompt in prompts:
-            ids = self._prepare_input(
+            ids = self._renderer.prepare_input(
                 prompt,
                 raw=raw,
                 thinking=False,
@@ -6252,7 +5122,7 @@ class DrowseSession:
         """
         rendered: list[torch.Tensor] = []
         for prompt in prompts:
-            ids = self._prepare_input(
+            ids = self._renderer.prepare_input(
                 prompt, raw=raw, stateless=True, to_device=False,
             )
             # Prefix discovery is scalar-heavy Python work. Keep the token

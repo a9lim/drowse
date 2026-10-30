@@ -23,6 +23,7 @@ from torch import nn
 
 from drowse.errors import SteeringCompositionError
 from drowse.events import EventBus
+from drowse.loom.tree import LoomTree
 from drowse.session.session import DrowseSession, GenState
 from drowse.steering.grammar import ManifoldTerm
 from drowse.steering.hooks import SteeringManager, install_persistent_offset_hooks
@@ -77,6 +78,7 @@ def _session(*, compiled: bool = True) -> tuple[DrowseSession, dict[int, torch.T
     s._close_instrument_runs = lambda: None
     s._prefix_cache = None
     s.events = EventBus()
+    s.tree = LoomTree()
     wire_stub_steering(
         session,
         profiles={"a": {1: _unit(0)}, "b": {1: _unit(1)}},

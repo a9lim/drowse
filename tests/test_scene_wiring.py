@@ -254,11 +254,6 @@ def _grammar_with_closes(user_close: str, assistant_close: str) -> "TurnGrammar"
     )
 
 
-class _StopStub:
-    def __init__(self, grammar: "TurnGrammar | None") -> None:
-        self.scene_grammar = grammar
-
-
 def _augment(
     grammar: "TurnGrammar | None",
     stop_list: list[str] | None,
@@ -266,14 +261,9 @@ def _augment(
     gen_seat: str = "user",
     raw: bool = False,
 ) -> list[str] | None:
-    from typing import cast as _cast
+    from drowse.generation.render import seat_stop_strings
 
-    from drowse.session.session import DrowseSession
-
-    return DrowseSession._seat_stop_augmentation(
-        _cast(DrowseSession, _StopStub(grammar)), stop_list,
-        gen_seat=gen_seat, raw=raw,
-    )
+    return seat_stop_strings(grammar, stop_list, gen_seat=gen_seat, raw=raw)
 
 
 def test_seat_stop_added_when_closes_differ():
@@ -355,120 +345,96 @@ def test_loom_thinking_text_round_trips():
     assert d["thinking_text"] == "let me think"
 
 
+class _WordTok:
+    def encode(self, text: str, **_: Any) -> list[int]:
+        return [3000 + i for i, _w in enumerate(text.split())]
+
+
 def test_commit_thinking_gate():
     """Committed thinking is refused at commit time when the family
     can't render it (no grammar / no think delimiters)."""
-    from typing import cast as _cast
-
+    from drowse.loom.ops import append_turn
     from drowse.model.scene import SceneThinkingUnsupportedError
-    from drowse.session.session import DrowseSession
     from tests.test_scene import QWEN_STRIP_TEMPLATE
 
-    class _CommitStub:
-        # The real gate, borrowed the way test_loom's
-        # _bind_commit_methods borrows session methods.
-        _check_thinking_commit = DrowseSession._check_thinking_commit
-
-        def __init__(self, grammar: Any) -> None:
-            self.scene_grammar = grammar
-            self.tree = LoomTree()
-
-        def _check_user_send_target(self, parent_node_id: Any) -> None:
-            return None
-
-    def commit(stub: Any, thinking: str | None) -> str:
-        return DrowseSession.append_user_turn(
-            _cast(DrowseSession, stub), None, "hm", thinking=thinking,
+    def commit(grammar: Any, thinking: str | None) -> tuple[LoomTree, str]:
+        tree = LoomTree()
+        node_id = append_turn(
+            tree, _WordTok(), grammar, None, "hm", seat="user",
+            thinking=thinking,
         )
+        return tree, node_id
 
     # No grammar at all (fallback family).
     with pytest.raises(SceneThinkingUnsupportedError):
-        commit(_CommitStub(None), "let me think")
+        commit(None, "let me think")
 
     # Grammar without think delimiters (gemma-shaped).
     tok = _tok(GEMMA_STRICT_TEMPLATE)
     no_think = extract_turn_grammar(tok, "gemma3")
     with pytest.raises(SceneThinkingUnsupportedError):
-        commit(_CommitStub(no_think), "let me think")
+        commit(no_think, "let me think")
 
     # Think-capable grammar: commit lands with the block stored.
     tok2 = _tok(QWEN_STRIP_TEMPLATE)
     think_ok = extract_turn_grammar(
         tok2, "qwen3", think_delimiters=("<think>", "</think>"),
     )
-    stub = _CommitStub(think_ok)
-    node_id = commit(stub, "let me think")
-    assert stub.tree.nodes[node_id].thinking_text == "let me think"
-    # thinking=None never consults the grammar (stub with grammar=None).
-    none_stub = _CommitStub(None)
-    nid = commit(none_stub, None)
-    assert none_stub.tree.nodes[nid].thinking_text is None
+    tree, node_id = commit(think_ok, "let me think")
+    assert tree.nodes[node_id].thinking_text == "let me think"
+    # thinking=None never consults the grammar.
+    tree, nid = commit(None, None)
+    assert tree.nodes[nid].thinking_text is None
 
 
 def test_authored_same_roles_coalesce_before_scene_seating_rules():
     """Same effective roles append in place on every renderer; scene mode
     still permits distinct-label same-seat turns that legacy templates reject."""
-    from typing import cast as _cast
-
-    from drowse.session.session import DrowseSession
+    from drowse.loom.ops import append_turn
     from tests.test_scene import QWEN_STRIP_TEMPLATE
 
-    class _WordTok:
-        def encode(self, text: str, **_: Any) -> list[int]:
-            return [3000 + i for i, _w in enumerate(text.split())]
+    def appender(grammar: Any) -> tuple[LoomTree, Any]:
+        tree = LoomTree()
 
-    class _SeatStub:
-        _check_thinking_commit = DrowseSession._check_thinking_commit
-        _check_user_send_target = DrowseSession._check_user_send_target
+        def add(parent: str | None, text: str, seat: str, **kwargs: Any) -> str:
+            return append_turn(
+                tree, _WordTok(), grammar, parent, text, seat=seat, **kwargs,
+            )
 
-        def __init__(self, grammar: Any) -> None:
-            self.scene_grammar = grammar
-            self.tree = LoomTree()
-            self._tokenizer = _WordTok()
-
-    def as_sess(stub: Any) -> DrowseSession:
-        return _cast(DrowseSession, stub)
+        return tree, add
 
     tok = _tok(QWEN_STRIP_TEMPLATE)
     grammar = extract_turn_grammar(tok, "qwen3")
 
     # Matching roles coalesce, regardless of renderer.
-    stub = _SeatStub(grammar)
-    u1 = DrowseSession.append_user_turn(as_sess(stub), None, "one")
-    u2 = DrowseSession.append_user_turn(as_sess(stub), u1, " two")
+    tree, add = appender(grammar)
+    u1 = add(None, "one", "user")
+    u2 = add(u1, " two", "user")
     assert u2 == u1
-    assert stub.tree.nodes[u1].text == "one two"
-    a1 = DrowseSession.append_assistant_turn(as_sess(stub), u1, "three")
-    a2 = DrowseSession.append_assistant_turn(as_sess(stub), a1, " four")
+    assert tree.nodes[u1].text == "one two"
+    a1 = add(u1, "three", "assistant")
+    a2 = add(a1, " four", "assistant")
     assert a2 == a1
-    assert stub.tree.nodes[a1].text == "three four"
-    root_a = DrowseSession.append_assistant_turn(
-        as_sess(stub), stub.tree.root_id, "first",
-    )
-    assert stub.tree.nodes[root_a].role == "assistant"
+    assert tree.nodes[a1].text == "three four"
+    root_a = add(tree.root_id, "first", "assistant")
+    assert tree.nodes[root_a].role == "assistant"
 
     # Distinct labels are distinct messages; scene mode can render the
     # resulting same-seat adjacency.
-    u3 = DrowseSession.append_user_turn(
-        as_sess(stub), u1, "other", role_label="narrator",
-    )
+    u3 = add(u1, "other", "user", role_label="narrator")
     assert u3 != u1
-    assert stub.tree.nodes[u3].parent_id == u1
+    assert tree.nodes[u3].parent_id == u1
 
     # Legacy templates coalesce matching labels but still reject distinct
     # same-seat messages.
-    legacy = _SeatStub(None)
-    lu = DrowseSession.append_user_turn(as_sess(legacy), None, "one")
-    lu2 = DrowseSession.append_user_turn(as_sess(legacy), lu, " two")
+    legacy, add_legacy = appender(None)
+    lu = add_legacy(None, "one", "user")
+    lu2 = add_legacy(lu, " two", "user")
     assert lu2 == lu
     with pytest.raises(InvalidNodeOperationError):
-        DrowseSession.append_user_turn(
-            as_sess(legacy), lu, "two", role_label="narrator",
-        )
-    la = DrowseSession.append_assistant_turn(as_sess(legacy), lu, "reply")
-    la2 = DrowseSession.append_assistant_turn(as_sess(legacy), la, " again")
+        add_legacy(lu, "two", "user", role_label="narrator")
+    la = add_legacy(lu, "reply", "assistant")
+    la2 = add_legacy(la, " again", "assistant")
     assert la2 == la
     with pytest.raises(InvalidNodeOperationError):
-        DrowseSession.append_assistant_turn(
-            as_sess(legacy), la, "again", role_label="narrator",
-        )
+        add_legacy(la, "again", "assistant", role_label="narrator")

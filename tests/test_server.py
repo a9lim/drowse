@@ -36,7 +36,7 @@ def _mock_session():
         "dtype": "torch.bfloat16",
     }
     session.model = MagicMock()
-    session.model.config.model_type = "gemma2"
+    session.renderer.model_type = "gemma2"
     session.layers = [MagicMock() for _ in range(26)]
 
     session.config = MagicMock()

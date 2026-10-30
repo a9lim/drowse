@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from drowse.generation.results import GenerationResult, ProbeReading
+from drowse.loom.tree import LoomTree
 from tests.support.sae import make_resident
 from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
@@ -208,7 +209,7 @@ def _fast_batch_session():
     s._lens_instrument.live = None
     s._lens_instrument.probes = {}
     s._sae_instrument.probes = {}
-    s._active_gen_reservation = None
+    s.tree = LoomTree()
     s._last_token_probe_payload = None
     s._capture_state = CaptureState()
     from drowse.readout.capture_buffer import HiddenCapture
@@ -242,7 +243,7 @@ def _fast_batch_session():
         }
         return torch.tensor([mapping[input]], dtype=torch.long)
 
-    s._prepare_input = _prepare_input
+    s._renderer = SimpleNamespace(prepare_input=_prepare_input)
     return s, model
 
 
@@ -740,7 +741,7 @@ class TestPrefixCacheEligibility:
             suffix = 100 if input == "a" else 101
             return torch.tensor([common + [suffix]], dtype=torch.long)
 
-        cast(Any, s)._prepare_input = _prepare_input
+        cast(Any, s)._renderer = SimpleNamespace(prepare_input=_prepare_input)
 
         prefix = s._batch_common_prefix_ids(["a", "b"], raw=False)
 

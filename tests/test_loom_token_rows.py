@@ -60,7 +60,10 @@ def _stateful_tap_session(tree: LoomTree, node_id: str) -> Any:
         frequency_penalty=0.0,
         logprobs_list=None,
     )
-    session._seat_stop_augmentation = lambda stop_list, **_kwargs: stop_list
+    session._renderer = SimpleNamespace(
+        scene_grammar=None,
+        seat_stop_strings=lambda stop_list, **_kwargs: stop_list,
+    )
     session._monitor = SimpleNamespace(
         probe_names=[],
         set_subspace_coords=lambda _enabled: None,
@@ -77,7 +80,7 @@ def _stateful_tap_session(tree: LoomTree, node_id: str) -> Any:
         gated_probe_names=lambda: set(),
     )
     session._start_loom_assistant = lambda *_args, **_kwargs: node_id
-    session._pending_authored_prompt_targets = lambda *_args, **_kwargs: []
+    session._tokenizer = None  # no measuring channel: nothing is tokenized
     session._snapshot_steering_alphas = lambda: {}
     session._generation_preamble = lambda *_args, **_kwargs: (
         torch.tensor([[1]], dtype=torch.long),
@@ -103,7 +106,6 @@ def _stateful_tap_session(tree: LoomTree, node_id: str) -> Any:
     session._sae_instrument.last_step_readings = None
     session._last_token_probe_payload = None
     session._end_capture = lambda: None
-    session._active_gen_reservation = None
     session._finalize_generation = lambda *_args, **_kwargs: GenerationResult(
         text="ab", tokens=[1], token_count=1, tok_per_sec=10.0, elapsed=0.1,
     )
