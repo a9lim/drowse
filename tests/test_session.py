@@ -245,8 +245,12 @@ class TestStreamingGeneration:
             tokens.append(event)
         assert len(tokens) > 0
         assert all(isinstance(t.text, str) for t in tokens)
-        assert session.last_result is not None
-        assert session.last_result.token_count == len(tokens)
+        result = session.last_result
+        assert result is not None
+        # A character spanning several tokens (an emoji, say) streams as one
+        # merged event, so events can be fewer than tokens; the text matches.
+        assert len(tokens) <= result.token_count
+        assert "".join(t.text for t in tokens) == result.text
 
     def test_stream_with_alphas(self, session: DrowseSession) -> None:
         name, profile = session.extract_from_corpora(
