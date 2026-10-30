@@ -29,7 +29,6 @@ from drowse.store.install import install_manifold
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_schema import ManifoldFormatError, domain_label, min_nodes
 from drowse.store.manifold_authoring import (
-    append_discover_manifold_node,
     create_discover_manifold_folder,
     create_manifold_folder,
     create_manifold_from_template,
@@ -134,7 +133,7 @@ class CreateManifoldFromTemplateRequest(NativeRequest):
 class GenerateManifoldRequest(NativeRequest):
     """LLM-author a discover-mode manifold from a flat concept list.
 
-    Wraps :meth:`DrowseSession.generate_responses` — produces one
+    Wraps :meth:`DrowseSession.generate_manifold` — produces one
     conversational corpus per concept (in-character responses to the shared
     baseline prompts, selected by ``kind``).  No coords supplied; the fit
     derives them per-model.
@@ -629,16 +628,13 @@ def register_manifold_routes(app: FastAPI) -> None:
                 node_kinds={c: req.kind for c in req.concepts},
                 force=req.force,
             )
-            for concept in plan.pending:
-                corpora = session.generate_responses(
-                    [concept], [req.kind],
-                    roles={concept: concept} if node_roles else None,
-                    custom_system=req.custom_system,
-                    samples_per_prompt=req.samples_per_prompt,
-                    on_progress=on_progress,
-                )
-                append_discover_manifold_node(folder, plan.index_of[concept], concept, corpora[concept])
-            session.evict_artifact(req.namespace, req.name)
+            # Evicts the folder's in-memory consumers itself, and refuses
+            # (409) while another model op or a generation is in flight.
+            session.generate_manifold(
+                plan, custom_system=req.custom_system,
+                samples_per_prompt=req.samples_per_prompt,
+                on_progress=on_progress,
+            )
             body = detail(req.namespace, req.name)
             body["done"] = True
             return body

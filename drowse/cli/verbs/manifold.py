@@ -132,9 +132,7 @@ def run_generate(args: argparse.Namespace) -> None:
     leaves inspectable corpora, and ``manifold fit`` resumes from them.
     """
     from drowse.base.paths import manifold_dir
-    from drowse.store.manifold_authoring import (
-        append_discover_manifold_node, plan_discover_generation,
-    )
+    from drowse.store.manifold_authoring import plan_discover_generation
 
     _require_custom_system(args)
     if len(args.concepts) < 2:
@@ -169,17 +167,11 @@ def run_generate(args: argparse.Namespace) -> None:
             f"generating {args.samples_per_prompt} response(s) per baseline "
             f"prompt for {len(plan.pending)} concept(s)..."
         )
-        for concept in plan.pending:
-            corpora = session.generate_responses(
-                [concept], [args.kind],
-                roles={concept: concept} if node_roles else None,
-                custom_system=args.custom_system,
-                samples_per_prompt=args.samples_per_prompt,
-                on_progress=progress,
-            )
-            append_discover_manifold_node(
-                folder, plan.index_of[concept], concept, corpora[concept],
-            )
+        session.generate_manifold(
+            plan, custom_system=args.custom_system,
+            samples_per_prompt=args.samples_per_prompt, seed=args.seed,
+            on_progress=progress,
+        )
     print(f"wrote {namespace}/{name} ({n_total} nodes)")
     note(f"  -> run `drowse manifold fit {namespace}/{name} -m MODEL` to fit")
 
@@ -512,9 +504,9 @@ def _layer_rows(per_layer: dict[int, float]) -> dict[str, float]:
 def run_compare(args: argparse.Namespace) -> None:
     """Mahalanobis cosine between steering vectors: rank every other fitted
     vector (one reference), pairwise (two), or the N×N matrix (three+)."""
-    from drowse.geometry.whitener import LayerWhitener
+    from drowse.store.neutral import load_neutral_whitener
 
-    whitener = LayerWhitener.from_cache(args.model)
+    whitener = load_neutral_whitener(args.model)
 
     def cos(a: "Profile", b: "Profile") -> float:
         return a.cosine_similarity(b, whitener=whitener)
@@ -739,6 +731,9 @@ GROUP = Verb(
                 KIND, SYSTEM,
                 arg("--samples-per-prompt", type=positive_int, default=1, metavar="K",
                     help="In-character responses per baseline prompt (default: 1)"),
+                arg("--seed", type=int, default=None, metavar="S",
+                    help="Seed the sampler: each node's corpus is reproducible "
+                         "from S and its node index (default: unseeded)"),
                 arg("--role-per-node", action="store_true",
                     help="Use each concept slug as its node's assistant-role "
                          "substitution (a persona manifold; needs a family "

@@ -477,7 +477,7 @@ def register_tree_routes(app: FastAPI) -> None:
         queues FIFO at the lock rather than 409ing, and a lock timeout is
         a 503 — the forwards never run unlocked.
         """
-        from drowse.generation.joint_logprobs import (
+        from drowse.loom.joint_logprobs import (
             compute_joint_logprobs,
             _cache_key,
             reorient_for_request,

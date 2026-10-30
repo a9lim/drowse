@@ -31,9 +31,10 @@ from drowse.errors import (
 from drowse.errors import ProfileNotRegisteredError
 from drowse.steering.grammar import SteeringExprError
 from drowse.store.install import ManifoldInstallConflict
-from drowse.store.gguf import GGUFNotInstalled
+from drowse.geometry.gguf import GGUFNotInstalled
 from drowse.base.hf import HFError
-from drowse.fit.bake import MergeError
+from drowse.errors import MergeError
+from drowse.loom.errors import RecipeOverrideError
 
 
 def test_base_default_status_and_message():
@@ -79,10 +80,12 @@ _OVERRIDES: list[tuple[type[DrowseError], int]] = [
     (HFError, 502),
     # store/install.py
     (ManifoldInstallConflict, 409),
-    # store/gguf.py
+    # geometry/gguf.py
     (GGUFNotInstalled, 400),
-    # fit/bake.py
+    # errors.py (offline merge / bake)
     (MergeError, 400),
+    # loom/errors.py
+    (RecipeOverrideError, 400),
 ]
 
 
@@ -174,10 +177,6 @@ def test_server_routes_user_message_status_codes():
         s.profiles = {}
         s.probes = {}
         s.history = []
-        gs = MagicMock()
-        gs.finish_reason = "stop"
-        s._gen_state = gs
-        s._last_result = None
         s._tokenizer = MagicMock()
         s._tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
         return s

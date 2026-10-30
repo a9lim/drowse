@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 from drowse.loom.recipe import Recipe
 from drowse.loom.tree import LoomTree
 from drowse.session.authored_capture import (

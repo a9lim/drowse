@@ -91,7 +91,7 @@ def test_merged_union_semantics():
 def test_merged_strict_refuses_drop():
     a = Profile({0: torch.ones(4), 1: torch.ones(4)})
     b = Profile({1: torch.ones(4), 2: torch.ones(4)})
-    from drowse.fit.bake import MergeError
+    from drowse.errors import MergeError
     with pytest.raises(MergeError):
         Profile.merged([(a, 1.0), (b, 1.0)], strict=True)
 

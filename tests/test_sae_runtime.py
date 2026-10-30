@@ -591,7 +591,7 @@ def test_stream_aggregate_keeps_lens_and_sae_probe_readings() -> None:
     # lens/SAE probes live on their own session registries (readout channels,
     # not the Monitor), so the filter must union all three rosters — it used
     # to drop their end-of-gen aggregates from every streaming done frame.
-    from drowse.generation.results import ProbeReading
+    from drowse.readout.types import ProbeReading
     from drowse.server.compat import probe_reading_aggregate
 
     readings = {

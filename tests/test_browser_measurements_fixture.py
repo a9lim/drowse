@@ -14,7 +14,7 @@ from drowse.lens.jlens import (
 )
 from drowse.readout.measurements import build_measurements
 from drowse.readout.monitor import _depth_stats
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 from tests.support.sae import make_resident, stub_sae_instrument
 
 

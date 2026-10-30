@@ -751,7 +751,7 @@ class TestTokenReadout:
 
     @staticmethod
     def _geometry_readings() -> dict[str, Any]:
-        from drowse.generation.results import ProbeReading
+        from drowse.readout.types import ProbeReading
 
         return {
             "formal.casual": ProbeReading(

@@ -45,7 +45,7 @@ from typing import Any, Literal, Mapping, cast
 from typing_extensions import NotRequired, TypedDict
 
 from drowse.readout.types import Reading, ScalarReading, reading_axis0
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 
 MEASUREMENTS_VERSION = 1
 

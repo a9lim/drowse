@@ -31,9 +31,9 @@ from drowse.geometry.subspace import fit_curved_subspace
 from drowse.readout.monitor import Monitor
 from drowse.generation.results import (
     GenerationResult,
-    ProbeReading,
     TokenEvent,
 )
+from drowse.readout.types import ProbeReading
 from drowse.generation.decode import GenerationState
 from drowse.readout.planner import CaptureMode, CaptureState, ReadDemand
 from drowse.session.session import DrowseSession

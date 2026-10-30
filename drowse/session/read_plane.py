@@ -32,9 +32,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 import torch
 
 from drowse.errors import DrowseError
-from drowse.fit.capture import last_content_index
+from drowse.model.tokens import last_content_index
 from drowse.generation.finalize import FinalReads
-from drowse.generation.results import ProbeReading
 from drowse.readout.planner import (
     CaptureMode,
     CapturePlan,
@@ -45,7 +44,7 @@ from drowse.readout.planner import (
     resolve_read_demand,
 )
 from drowse.readout.measurements import live_sources
-from drowse.readout.types import AGG_TAIL_DEPTH, InstrumentPlan, ReadRequest
+from drowse.readout.types import AGG_TAIL_DEPTH, InstrumentPlan, ProbeReading, ReadRequest
 
 if TYPE_CHECKING:
     from drowse.generation.decode import GenerationState

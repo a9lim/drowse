@@ -84,6 +84,18 @@ def test_raw_render_feeds_flat_active_path() -> None:
     assert _decode_echo(ids) == "once upon a time"
 
 
+def test_unsupported_input_type_is_a_typed_400() -> None:
+    """An input that is neither text, ``None`` nor a message list is the
+    caller's mistake: a ``GenerationRequestError`` (400), not a bare
+    ``TypeError`` the server would scrub to a 500."""
+    from drowse.errors import GenerationRequestError
+
+    renderer = _renderer(byte_tokenizer(), LoomTree())
+    with pytest.raises(GenerationRequestError, match="unsupported input type int") as error:
+        renderer.prepare_input(42)
+    assert error.value.user_message()[0] == 400
+
+
 def test_model_type_prefers_the_text_config() -> None:
     wrapped = SimpleNamespace(config=SimpleNamespace(
         model_type="gemma3", text_config=SimpleNamespace(model_type="gemma3_text"),

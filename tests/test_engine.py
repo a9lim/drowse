@@ -350,6 +350,7 @@ def test_tap_hands_a_consumer_one_event_matching_the_loom_row() -> None:
     (event,) = events
     assert (event.text, event.token_id, event.index, event.raw_index) == (" a", 7, 0, 4)
     assert event.top_alts == alts and event.perplexity == 1.5
+    assert event.measurements is not None and event.probe_readings is not None
     lens = event.measurements["instruments"]["lens"]
     assert lens["binding"] == {"source": "local:default", "steering": "0.3 calm"}
     assert lens["readings"]["jlens/a"]["value"] == 0.25
@@ -390,8 +391,8 @@ def test_tap_skips_the_compat_projection_unless_the_consumer_asks() -> None:
 
 @pytest.mark.parametrize("mode", ["INCREMENTAL", "LEAN_INCREMENTAL"])
 def test_tap_reuses_the_capture_sinks_row_instead_of_rescoring(mode: str) -> None:
-    from drowse.generation.results import ProbeReading
     from drowse.readout.planner import CaptureMode, CaptureState
+    from drowse.readout.types import ProbeReading
     from tests.support.read_plane import make_read_plane
 
     reading = ProbeReading(fraction=0.4, nearest=[("calm", 0.2)], coords=(0.75,))
@@ -418,6 +419,7 @@ def test_tap_reuses_the_capture_sinks_row_instead_of_rescoring(mode: str) -> Non
     )
     tap("x", False, 1, None, None, None, 0)
     assert events[0].probe_readings == {"toy": reading}
+    assert events[0].measurements is not None
     assert events[0].measurements["scores"] == {"toy": pytest.approx(0.75)}
 
 
@@ -546,7 +548,8 @@ def test_prepare_installs_capture_hooks_only_for_a_probed_session(
 ) -> None:
     """``probes=[]`` takes the no-capture compiled mode: the offset hooks
     are installed (and handed to steering), the capture hooks are not."""
-    from drowse.generation import compile_runtime, static_cache
+    from drowse.generation import compile_runtime
+    from drowse.model import static_cache
 
     calls = {"offset": 0, "capture": 0}
     handle = SimpleNamespace(remove=lambda: None)
@@ -620,7 +623,7 @@ def test_prepare_drops_the_hooks_when_compile_falls_back(
 def test_runtime_reuses_resets_and_releases_the_generation_static_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.generation import static_cache
+    from drowse.model import static_cache
 
     class _Cache:
         def __init__(self, capacity: int) -> None:
@@ -758,6 +761,51 @@ def test_cached_prefix_generation_matches_full_prefill(tiny_session: Any) -> Non
 
     assert all(hit is not None for hit in hit_calls) and len(hit_calls) == 2
     assert cached.tokens == full.tokens == again.tokens
+
+
+def test_registry_changes_keep_the_unsteered_prefix(tiny_session: Any) -> None:
+    """Registering, replacing or dropping artifacts never touches a prefill.
+
+    The cached prefix is the *unsteered* KV (``cache_prefix`` refuses inside a
+    scope), and each generation decides reuse itself through
+    ``steering_active_in_prefill``.  So registry mutations keep the entry, and
+    a generation reusing it, unsteered or under a response-only term,
+    decodes exactly what a full prefill does.
+    """
+    from tests.support.sessions import register_vectors
+
+    messages = [{"role": "user", "content": "A fixed shared instruction prefix."}]
+    greedy = SamplingConfig(max_tokens=6, temperature=0.0)
+    register_vectors(tiny_session, "a")
+    full = tiny_session.generate(messages, sampling=greedy, stateless=True).first
+    steered_full = tiny_session.generate(
+        messages, sampling=greedy, stateless=True, steering="0.5 a@response",
+    ).first
+
+    assert tiny_session.cache_prefix(messages) > 0
+    entry = tiny_session._engine.prefix_cache.entry
+    register_vectors(tiny_session, "b")
+    register_vectors(tiny_session, "a")  # replaced in place
+    tiny_session.registry.pop_profile("b")
+    tiny_session.evict_artifact("local", "b")
+    assert tiny_session._engine.prefix_cache.entry is entry
+
+    hit_calls: list[Any] = []
+    original_hit = tiny_session._engine.prefix_cache.hit
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        result = original_hit(*args, **kwargs)
+        hit_calls.append(result)
+        return result
+
+    tiny_session._engine.prefix_cache.hit = _spy
+    cached = tiny_session.generate(messages, sampling=greedy, stateless=True).first
+    steered = tiny_session.generate(
+        messages, sampling=greedy, stateless=True, steering="0.5 a@response",
+    ).first
+    assert len(hit_calls) == 2 and all(hit is not None for hit in hit_calls)
+    assert cached.tokens == full.tokens
+    assert steered.tokens == steered_full.tokens
 
 
 def test_cache_prefix_refuses_inside_a_steering_scope(tiny_session: Any) -> None:

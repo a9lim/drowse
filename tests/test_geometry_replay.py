@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 from drowse.loom.errors import UnknownNodeError
 from drowse.loom.recipe import Recipe
 from drowse.readout.geometry import GeometryInstrument

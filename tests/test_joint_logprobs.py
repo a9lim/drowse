@@ -1,5 +1,5 @@
 """Tests for the cross-branch joint-logprob computation
-(``drowse.generation.joint_logprobs``).
+(``drowse.loom.joint_logprobs``).
 
 Covers the pure-math helpers in isolation — building a real model would
 load weights and a tokenizer, but the inner alignment + lookup is a
@@ -20,7 +20,7 @@ import torch
 from drowse.model.chat import ChatTraits
 
 from drowse.generation.decode import GenerationConfig, build_chat_input
-from drowse.generation.joint_logprobs import (
+from drowse.loom.joint_logprobs import (
     JointLogprobRow,
     JointLogprobs,
     SamplerRows,
@@ -501,7 +501,7 @@ def test_gated_replay_passes_the_forward_step_to_the_gate_callback():
     zero-arg call TypeErrors under the step-aware contract (sol's observe
     round-2 P1: the rest of this suite never exercises gated steering, so
     the regression was invisible here)."""
-    from drowse.generation.joint_logprobs import compute_joint_logprobs
+    from drowse.loom.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
     steps: list[int] = []
@@ -527,7 +527,7 @@ def test_gated_replay_passes_the_forward_step_to_the_gate_callback():
 
 @pytest.mark.parametrize("offset", [-1000., 0., 1000.])
 def test_joint_replay_preserves_finite_logit_offsets(offset: float):
-    from drowse.generation.joint_logprobs import compute_joint_logprobs
+    from drowse.loom.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
     vocab = len(session.tokenizer._vocab) + 16
@@ -549,7 +549,7 @@ def test_joint_replay_preserves_finite_logit_offsets(offset: float):
 
 
 def test_compute_joint_logprobs_runs_end_to_end_on_mock():
-    from drowse.generation.joint_logprobs import compute_joint_logprobs
+    from drowse.loom.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
     result = compute_joint_logprobs(session, "a1", "a2")
@@ -586,7 +586,7 @@ def test_joint_logprobs_closes_runs_on_replay_failure():
     """A mid-replay model failure must still close every bound run — the
     bind happens inside the replay ``try`` so even a partial-bind failure
     reaches the teardown."""
-    from drowse.generation.joint_logprobs import compute_joint_logprobs
+    from drowse.loom.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
     session.force_stepwise_gated()
@@ -604,7 +604,7 @@ def test_joint_logprobs_closes_runs_on_replay_failure():
 def test_joint_logprobs_closes_runs_when_detach_raises():
     """Teardown is exception-hard: a raising hook detach must not skip run
     closure (a leaked bound run pins a stale lens between generations)."""
-    from drowse.generation.joint_logprobs import compute_joint_logprobs
+    from drowse.loom.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
     session.force_stepwise_gated()
@@ -619,7 +619,7 @@ def test_joint_logprobs_closes_runs_when_detach_raises():
 
 
 def test_compute_joint_logprobs_to_dict_round_trip():
-    from drowse.generation.joint_logprobs import compute_joint_logprobs
+    from drowse.loom.joint_logprobs import compute_joint_logprobs
 
     session: Any = _MockSession()
     result = compute_joint_logprobs(session, "a1", "a2")
@@ -692,7 +692,7 @@ def _long_branch_session(calls: list[int]) -> Any:
 
 def test_teacher_forced_replay_matches_stepwise_replay():
     """The chunked teacher-forced path reproduces the per-step replay."""
-    from drowse.generation.joint_logprobs import compute_joint_logprobs
+    from drowse.loom.joint_logprobs import compute_joint_logprobs
 
     forced_calls: list[int] = []
     forced = compute_joint_logprobs(
@@ -711,7 +711,7 @@ def test_teacher_forced_replay_matches_stepwise_replay():
 
 
 def test_replay_keeps_only_the_sampler_pool_per_row():
-    from drowse.generation.joint_logprobs import (
+    from drowse.loom.joint_logprobs import (
         _branch_inputs as branch_inputs,
         _replay_branch_logprobs,
     )

@@ -25,7 +25,7 @@ from drowse.generation.sampling import (
     InheritSystemPrompt,
     SamplingConfig,
 )
-from drowse.loom.errors import LoomTreeError, require_fields
+from drowse.loom.errors import LoomTreeError, RecipeOverrideError, require_fields
 
 # The persisted recipe shape (tree_format 2 / transcript v2).  ``seed`` is a
 # top-level key on disk and on the wire; in memory it is ``sampling.seed``.
@@ -284,7 +284,7 @@ class Recipe:
         A :class:`Recipe` instance passes through unchanged. Other strings
         use the dashboard's comma-separated partial-recipe grammar, for
         example ``"seed=42, temperature=1.5"`` or ``"steering=0.5 calm"``.
-        Unknown fields and malformed values raise ``ValueError``.
+        Unknown fields and malformed values raise :class:`RecipeOverrideError`.
         """
         if isinstance(mode, Recipe):
             return mode
@@ -427,7 +427,7 @@ def _parse_recipe_modifier(value: str) -> Recipe:
     text = value.strip()
     matches = list(_RECIPE_MODIFIER_FIELD.finditer(text))
     if not matches or matches[0].start() != 0:
-        raise ValueError(
+        raise RecipeOverrideError(
             f"unknown recipe-override mode {value!r}; valid: unsteered, "
             "inverted, reseed, cool, hot, or a partial recipe such as "
             "'seed=42, temperature=1.5'"
@@ -437,13 +437,13 @@ def _parse_recipe_modifier(value: str) -> Recipe:
     for index, match in enumerate(matches):
         key = match.group(1)
         if key not in _RECIPE_MODIFIER_FIELDS:
-            raise ValueError(f"unknown custom recipe field {key!r}")
+            raise RecipeOverrideError(f"unknown custom recipe field {key!r}")
         if key in parsed:
-            raise ValueError(f"duplicate custom recipe field {key!r}")
+            raise RecipeOverrideError(f"duplicate custom recipe field {key!r}")
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         raw = text[match.end():end].strip()
         if key != "steering" and not raw:
-            raise ValueError(f"custom recipe field {key!r} requires a value")
+            raise RecipeOverrideError(f"custom recipe field {key!r} requires a value")
         parsed[key] = raw
 
     steering = parsed.get("steering")
@@ -456,7 +456,7 @@ def _parse_recipe_modifier(value: str) -> Recipe:
     if "thinking" in parsed:
         raw_thinking = parsed["thinking"]
         if raw_thinking not in {"true", "false"}:
-            raise ValueError("custom recipe field 'thinking' must be true or false")
+            raise RecipeOverrideError("custom recipe field 'thinking' must be true or false")
         thinking = raw_thinking == "true"
 
     sampling_values: dict[str, Any] = {}
@@ -489,9 +489,9 @@ def _recipe_modifier_float(values: dict[str, str], key: str) -> float | None:
     try:
         result = float(values[key])
     except ValueError as error:
-        raise ValueError(f"custom recipe field {key!r} must be a number") from error
+        raise RecipeOverrideError(f"custom recipe field {key!r} must be a number") from error
     if not (-float("inf") < result < float("inf")):
-        raise ValueError(f"custom recipe field {key!r} must be finite")
+        raise RecipeOverrideError(f"custom recipe field {key!r} must be finite")
     return result
 
 
@@ -501,7 +501,7 @@ def _recipe_modifier_int(values: dict[str, str], key: str) -> int | None:
     try:
         result = int(values[key])
     except ValueError as error:
-        raise ValueError(f"custom recipe field {key!r} must be an integer") from error
+        raise RecipeOverrideError(f"custom recipe field {key!r} must be an integer") from error
     return result
 
 
@@ -520,7 +520,7 @@ def _recipe_modifier_range(
             if maximum is not None
             else f"{minimum:g} or greater"
         )
-        raise ValueError(f"custom recipe field {key!r} must be {requirement}")
+        raise RecipeOverrideError(f"custom recipe field {key!r} must be {requirement}")
 
 
 # ---------------------------------------------------------------------------

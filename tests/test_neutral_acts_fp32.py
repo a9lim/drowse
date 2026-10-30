@@ -24,11 +24,14 @@ from safetensors.torch import load_file, save_file
 
 from drowse.errors import WhitenerError
 from drowse.geometry.whitener import LayerWhitener
-from drowse.store.neutral import (
-    _neutral_acts_paths,
-    load_validated_neutral_cache,
+from drowse.fit.neutral import (
     load_or_compute_neutral_activations,
     load_or_compute_neutral_activations_with_metadata,
+)
+from drowse.store.neutral import (
+    _neutral_acts_paths,
+    load_neutral_whitener,
+    load_validated_neutral_cache,
     validate_neutral_cache_metadata,
 )
 from drowse.base.paths import model_dir
@@ -87,7 +90,7 @@ def _patch_compute(
         calls["n"] += 1
         return {idx: t.clone() for idx, t in acts.items()}
 
-    # Patched on the source module so alignment's deferred import resolves it.
+    # Patched on the source module: fit.neutral calls it through the module.
     import drowse.fit.capture as vectors
 
     monkeypatch.setattr(vectors, "compute_neutral_activations", _fake_compute)
@@ -284,10 +287,10 @@ def test_sidecar_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert sc["n_layers"] == 3
 
 
-def test_from_cache_rejects_stale_bf16(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``LayerWhitener.from_cache`` refuses a stale bf16 neutral cache.
+def test_load_neutral_whitener_rejects_stale_bf16(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``load_neutral_whitener`` refuses a stale bf16 neutral cache.
 
-    ``from_cache`` (the offline ``manifold compare`` + transfer-rebake path)
+    The offline loader (the offline ``manifold compare`` + transfer-rebake path)
     can't recompute — no model is loaded — so it must fail loud rather than
     build a bf16-sourced whitener, which would reopen the precision seam the
     fp32 store closes.  The rejection is decided by the neutral-activation
@@ -305,7 +308,7 @@ def test_from_cache_rejects_stale_bf16(tmp_path: Path, monkeypatch: pytest.Monke
     save_file({"layer_0": acts[0].to(torch.bfloat16)}, str(shard))
 
     with pytest.raises(WhitenerError, match="corrupt|legacy"):
-        LayerWhitener.from_cache(MODEL_ID)
+        load_neutral_whitener(MODEL_ID)
 
 
 def test_selective_load_reads_only_requested_neutral_shard(
@@ -423,11 +426,11 @@ def test_neutral_directory_barriers_bracket_pointer_and_precede_gc(
     assert events == ["barrier", "pointer", "barrier", "gc", "barrier"]
 
 
-def test_from_cache_builds_without_layer_means(
+def test_load_neutral_whitener_builds_without_layer_means(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``from_cache`` derives centering means from the neutral cache alone.
+    """``load_neutral_whitener`` derives centering means from the neutral cache alone.
 
     The neutral mean *is* the probe-centering baseline (same corpus, same
     pooling), so the offline whitener loader reads only
@@ -438,7 +441,7 @@ def test_from_cache_builds_without_layer_means(
     _patch_compute(monkeypatch, acts)
     _compute()
 
-    got = LayerWhitener.from_cache(MODEL_ID)
+    got = load_neutral_whitener(MODEL_ID)
     expected = LayerWhitener.from_neutral_activations(
         acts,
         {i: t.mean(dim=0) for i, t in acts.items()},

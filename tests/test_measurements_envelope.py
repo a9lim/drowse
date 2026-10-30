@@ -22,13 +22,12 @@ import pytest
 
 from tests.support.lens import stub_lens_kwargs
 
-from drowse.readout.types import DepthSummary, ScalarReading
+from drowse.readout.types import DepthSummary, ProbeReading, ScalarReading
 from drowse.readout.measurements import (
     MEASUREMENTS_VERSION,
     build_measurements,
     live_sources,
 )
-from drowse.generation.results import ProbeReading
 
 # The eight fields a synthesized ``ProbeReading`` used to ship for every
 # lens/SAE probe on every token — constants masquerading as measurements.

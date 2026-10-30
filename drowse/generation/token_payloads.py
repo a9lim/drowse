@@ -14,7 +14,7 @@ from drowse.readout.types import (
     reading_per_layer_axis0,
 )
 from drowse.readout.measurements import build_measurements
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 
 #: Per-family reading slot names, keyed by the ``family`` argument to
 #: :meth:`TokenProbePayload.merge_readings`.  One slot per member of

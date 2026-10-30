@@ -156,7 +156,7 @@ class LoomNode:
     edited_at: float | None = None
     edit_count: int = 0
     # Mean chosen-token logprob over the non-thinking response span,
-    # computed in :meth:`DrowseSession._generate_core` and stamped at
+    # rolled up by the engine's token tap (``session.engine.TokenTap``) and stamped at
     # :meth:`LoomTree.finalize_assistant` time. ``None`` for authored and
     # transcript-imported nodes. ``mean_surprise``
     # caches ``-mean_logprob`` so the sidebar's "sort by surprise" mode
@@ -826,8 +826,8 @@ class LoomTree:
         generated node (or the authored block on a committed one);
         ``None`` leaves the node's prior value untouched.
 
-        ``mean_logprob`` / ``mean_surprise`` are the per-turn rollups
-        computed in :meth:`DrowseSession._generate_core` from the engine's
+        ``mean_logprob`` / ``mean_surprise`` are the per-turn rollups the
+        engine's token tap (``session.engine.TokenTap``) computes from the
         chosen-token logprob stream (response span only — thinking tokens
         are excluded by construction).  ``None`` when logprob capture
         wasn't live (no on_token consumer + no logprobs request).

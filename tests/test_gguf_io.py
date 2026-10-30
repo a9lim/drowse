@@ -8,7 +8,7 @@ import torch
 
 gguf = pytest.importorskip("gguf")
 
-from drowse.store.gguf import read_gguf_profile, write_gguf_profile
+from drowse.geometry.gguf import read_gguf_profile, write_gguf_profile
 
 
 def test_roundtrip_preserves_tensors(tmp_path: Path):

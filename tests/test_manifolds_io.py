@@ -2069,6 +2069,49 @@ def test_refresh_manifold_missing_raises(tmp_path: Path, monkeypatch: pytest.Mon
         refresh_manifold("local", "nope")
 
 
+@pytest.mark.parametrize(("namespace", "source", "expected"), [
+    ("local", None, None),
+    ("alice", "hf://alice/mood@v1", "hf://alice/mood@v1"),
+    ("alice", "bundled", "bundled"),
+])
+def test_manifold_upstream_is_the_refresh_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    namespace: str, source: str | None, expected: str | None,
+) -> None:
+    """One predicate decides the tier for ``pack refresh`` and for ``extract``'s
+    refusal to regenerate an upstream-backed corpus in place."""
+    from drowse.session.extraction import _upstream_source
+    from drowse.store.manifold_lifecycle import manifold_upstream
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    domain = {"type": "box", "axes": [
+        {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
+    folder, _ = create_manifold_folder(
+        namespace, "mood", "", domain, _author_nodes(["a", "b", "c"]),
+    )
+    if source is not None:
+        mf = ManifoldFolder.load(folder)
+        mf.source = source
+        mf.write_metadata()
+    assert manifold_upstream(namespace, folder) == expected
+    assert _upstream_source(namespace, folder) == expected
+
+
+def test_manifold_upstream_never_reads_a_default_manifest(tmp_path: Path) -> None:
+    """``default/`` is bundled by namespace, so a damaged shipped manifest can
+    still be refreshed; ``extract`` reads an unreadable non-default one as local."""
+    from drowse.session.extraction import _upstream_source
+    from drowse.store.manifold_lifecycle import manifold_upstream
+
+    folder = tmp_path / "damaged"
+    folder.mkdir()
+    (folder / "manifold.json").write_text("{not json")
+    assert manifold_upstream("default", folder) == "bundled"
+    with pytest.raises(ValueError):
+        manifold_upstream("alice", folder)
+    assert _upstream_source("alice", folder) is None
+
+
 def test_manifold_pair_lock_identity_is_external_stable_and_bounded(
     tmp_path: Path,
 ) -> None:

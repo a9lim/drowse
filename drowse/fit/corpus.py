@@ -24,10 +24,12 @@ import torch
 from drowse.fit import capture as _capture
 from drowse.generation.decode import build_chat_input
 from drowse.naming import BIPOLAR_SEP, _slug
+from drowse.store.manifold_authoring import append_discover_manifold_node
 
 if TYPE_CHECKING:
     from drowse.model.chat import ChatTraits
     from drowse.model.scene import TurnGrammar
+    from drowse.store.manifold_folder import DiscoverGenerationPlan
 
 # Token cap per in-character response.
 RESPONSE_MAX_TOKENS = 256
@@ -146,6 +148,7 @@ class CorpusGenerator:
         custom_system: str | None = None,
         samples_per_prompt: int = 1,
         max_new_tokens: int = RESPONSE_MAX_TOKENS,
+        seed: int | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> dict[str, list[str]]:
         """Each concept's in-character corpus, keyed by concept.
@@ -157,12 +160,16 @@ class CorpusGenerator:
         ``abstract``/``concrete`` raise ``RoleSubstitutionUnsupportedError`` on
         a family without a substitutable role header.  Each list holds
         ``max(1, samples_per_prompt) * len(baseline_prompts)`` responses.
+        ``seed`` seeds the sampler once before the first concept, so a seeded
+        call reproduces its corpora on the same device.
         """
         if any((k or "abstract") == "custom" for k in kinds) and not custom_system:
             raise ValueError(
                 "generate_responses: kind='custom' requires custom_system "
                 "(a system template with a {c} placeholder)"
             )
+        if seed is not None:
+            torch.manual_seed(seed)
         roles = roles or {}
         out: dict[str, list[str]] = {}
         for concept, kind in zip(concepts, kinds, strict=True):
@@ -180,6 +187,43 @@ class CorpusGenerator:
                 max_new_tokens=max_new_tokens, on_progress=on_progress,
             )
         return out
+
+    def fill(
+        self,
+        plan: "DiscoverGenerationPlan",
+        *,
+        custom_system: str | None = None,
+        samples_per_prompt: int = 1,
+        seed: int | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> None:
+        """Generate and write the corpus of every pending node of a discover plan.
+
+        Nodes run in node order, each under its manifest ``kind`` and ``role``
+        (:attr:`DiscoverGenerationPlan.kinds` / ``roles``), and each lands on
+        disk as soon as it is done: a run that dies part-way keeps the nodes it
+        finished, and the next plan resumes from them.  With ``seed`` a node is
+        seeded with ``seed + <its node index>``, so its corpus depends only on
+        the seed and its position, and a resumed run writes what a full run
+        would have.
+        """
+        total = len(plan.index_of)
+        for label in plan.pending:
+            index = plan.index_of[label]
+            corpus = self.responses(
+                [label], [plan.kinds[label]],
+                roles={label: plan.roles[label]},
+                custom_system=custom_system,
+                samples_per_prompt=samples_per_prompt,
+                seed=None if seed is None else seed + index,
+                on_progress=on_progress,
+            )[label]
+            append_discover_manifold_node(plan.folder, index, label, corpus)
+            if on_progress:
+                on_progress(
+                    f"Wrote node {label!r} ({index + 1}/{total}, "
+                    f"{len(corpus)} responses)"
+                )
 
     def neutral_responses(
         self,

@@ -252,8 +252,7 @@ class GenerationState:
         # content token from ``generated_ids`` on that path.
         self.response_aggregate_index: int | None = None
         # Explicit stop requests ever made (``request_stop``).  ``reset`` never
-        # clears it and the end-of-generation ``stop_requested.set()`` never
-        # bumps it, so a multi-row runner can tell a user stop apart from one
+        # clears it, so a multi-row runner tells a user stop apart from one
         # row finishing by comparing it across rows.
         self.stop_count: int = 0
 
@@ -613,7 +612,7 @@ def generate_steered(
     sized for the upcoming decode) with explicit ``cache_position``s, so the
     kernel shapes a compiled artifact saw on warmup don't change as the cache
     grows.  The caller probes StaticCache support
-    (:func:`drowse.generation.static_cache.is_static_cache_supported`).
+    (:func:`drowse.model.static_cache.is_static_cache_supported`).
 
     ``forced_prefix`` (logit fork) is a list of token ids to *force* for
     the first ``len(forced_prefix)`` decode steps instead of using the

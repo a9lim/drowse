@@ -447,32 +447,19 @@ def main() -> None:
             )
             for name in need_model:
                 spec, plan = _SPEC_BY_NAME[name], plans[name]
-                folder = out_root / name
-                poles = list(plan.pending)
-                tot = len(plan.index_of)
                 print(
-                    f"\n[{name}] generating {len(poles)} node(s) as "
+                    f"\n[{name}] generating {len(plan.pending)} node(s) as "
                     f"{spec.kind!r} ({args.samples_per_prompt} response(s) per "
                     f"baseline prompt each)..."
                 )
                 t0 = time.time()
-                for label in poles:
-                    corpora = session.generate_responses(
-                        [label], [spec.kind],
-                        custom_system=spec.system,
-                        samples_per_prompt=args.samples_per_prompt,
-                        on_progress=lambda msg, _n=name: print(
-                            f"  [{_n}] {msg}", flush=True,
-                        ),
-                    )
-                    append_discover_manifold_node(
-                        folder, plan.index_of[label], label, corpora[label],
-                    )
-                    print(
-                        f"  [{name}] [{plan.index_of[label] + 1}/{tot}] wrote "
-                        f"node {label!r} ({len(corpora[label])} responses)",
-                        flush=True,
-                    )
+                session.generate_manifold(
+                    plan, custom_system=spec.system,
+                    samples_per_prompt=args.samples_per_prompt,
+                    on_progress=lambda msg, _n=name: print(
+                        f"  [{_n}] {msg}", flush=True,
+                    ),
+                )
                 print(f"[{name}] generation finished in {time.time() - t0:.1f}s")
 
             # Authored manifolds: fill nodes/ only; manifold.json is preserved.

@@ -57,7 +57,7 @@ from drowse.loom.ops import (
 )
 from drowse.model.arch import get_layers, get_model_info
 from drowse.model.load import load_model
-from drowse.readout.types import InstrumentFamily
+from drowse.readout.types import InstrumentFamily, ProbeReading
 from drowse.readout.monitor import Monitor
 from drowse.readout.roster import ProbeRoster
 from drowse.session.read_plane import ReadPlane
@@ -70,7 +70,6 @@ from drowse.store.bundled_probes import bootstrap_probe_roster
 from drowse.geometry.profile import Profile
 from drowse.generation.results import (
     GenerationResult,
-    ProbeReading,
     RunSet,
 )
 from drowse.generation.sampling import SamplingConfig
@@ -81,6 +80,7 @@ from drowse.geometry.manifold import Manifold
 if TYPE_CHECKING:
     from drowse.readout.protocol import Instrument
     from drowse.generation.scoring import ChoiceScores
+    from drowse.store.manifold_folder import DiscoverGenerationPlan
     from drowse.store.templates import TemplateFolder
 
 _log = logging.getLogger(__name__)
@@ -336,13 +336,14 @@ class DrowseSession:
 
 
         # -- collaborators --------------------------------------------------
-        # Artifact registry: profiles + loaded manifolds; its mutations drop
-        # the prefix cache and refresh monitor probes on a manifold swap.
+        # Artifact registry: profiles + loaded manifolds; a manifold swap
+        # refreshes the monitor probes reading it.  Its mutations leave the
+        # prefix cache alone: the cached prefix is unsteered, and reuse is
+        # gated per generation by ``steering_active_in_prefill``.
         self._registry = ArtifactRegistry(ModelBinding(
             model=self._model, tokenizer=self._tokenizer,
             model_id=self.model_id, device=self._device, dtype=self._dtype,
         ))
-        self._registry.on_change(lambda: self._engine.prefix_cache.clear())
         self._registry.on_swap(lambda swaps: self._roster.swap(swaps))
         self._registry.set_probe_folder(self._fold_profile_probe)
         self._registry.set_atom_resolver("jlens", lambda atom: self._lens_instrument.register_direction(atom))
@@ -866,12 +867,33 @@ class DrowseSession:
         custom_system: str | None = None,
         samples_per_prompt: int = 1,
         max_new_tokens: int = RESPONSE_MAX_TOKENS,
+        seed: int | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> dict[str, list[str]]:
         """Each concept's in-character corpus; see :meth:`CorpusGenerator.responses`."""
         return self._corpus.responses(
             concepts, kinds, roles=roles, custom_system=custom_system,
             samples_per_prompt=samples_per_prompt, max_new_tokens=max_new_tokens,
+            seed=seed, on_progress=on_progress,
+        )
+
+    def generate_manifold(
+        self,
+        plan: "DiscoverGenerationPlan",
+        *,
+        custom_system: str | None = None,
+        samples_per_prompt: int = 1,
+        seed: int | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> None:
+        """Fill a discover plan's pending node corpora; see :meth:`Extraction.generate_manifold`.
+
+        ``plan`` comes from
+        :func:`~drowse.store.manifold_authoring.plan_discover_generation`.
+        """
+        self._extraction.generate_manifold(
+            plan, custom_system=custom_system,
+            samples_per_prompt=samples_per_prompt, seed=seed,
             on_progress=on_progress,
         )
 

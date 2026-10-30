@@ -17,8 +17,7 @@ not variants of this one:
   ``LensInstrument`` / ``SaeInstrument`` objects over a faked source
   lifecycle, and no probe/profile collections at all.
 - ``test_user_message.py``:  a nested single-test helper wired on the
-  private attribute names (``_gen_state`` / ``_last_result`` /
-  ``_tokenizer``).
+  private ``_tokenizer``.
 - ``test_web.py``:  ``_mock_session_with_vectors`` has a different signature
   (takes a ``vectors`` dict), exposes analytics helpers, and wires
   ``whitener``.

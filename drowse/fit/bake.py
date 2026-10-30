@@ -14,56 +14,14 @@ from typing import Any, Optional
 
 import torch
 
-from drowse.errors import DrowseError
+from drowse.errors import MergeError
 from drowse.base.paths import safe_model_id, unsafe_model_id
+from drowse.geometry.profile import linear_sum
 
 log = logging.getLogger(__name__)
 
 
 Profile = dict[int, torch.Tensor]
-
-
-class MergeError(ValueError, DrowseError):
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
-
-
-def linear_sum(
-    components: list[tuple[Profile, float]],
-    *,
-    strict: bool = False,
-) -> Profile:
-    """Compute ``merged[l] = sum_i alpha_i * vec_i[l]`` per touched layer.
-
-    The layer set is the union, matching live expression composition: an
-    absent component contributes zero rather than deleting the entire layer.
-    ``strict=True`` rejects non-identical component coverage.
-    """
-    if len(components) < 1:
-        raise MergeError("linear_sum requires at least one component")
-    layer_sets = [set(p.keys()) for p, _ in components]
-    union = set.union(*layer_sets)
-    if not union:
-        raise MergeError("merge components have no layers")
-    if strict and any(layers != layer_sets[0] for layers in layer_sets[1:]):
-        coverage = [sorted(layers) for layers in layer_sets]
-        raise MergeError(
-            "merge: component layer coverage differs under --strict: "
-            f"{coverage}"
-        )
-
-    out: Profile = {}
-    for layer in sorted(union):
-        first_vec = next(profile[layer] for profile, _ in components if layer in profile)
-        merged = torch.zeros_like(first_vec, dtype=torch.float32)
-        for profile, alpha in components:
-            if layer in profile:
-                merged = (
-                    merged
-                    + float(alpha) * profile[layer].to(dtype=torch.float32)
-                )
-        out[layer] = merged
-    return out
 
 
 def _manifold_tensor_path(ns: str, name: str, sid: str, variant: Optional[str]) -> "Path | None":
@@ -383,10 +341,10 @@ def _merge_into_manifold_locked(
         # metric. Offline means model-free, not metric-free: current baked
         # manifolds use the same Mahalanobis unit and neutral anchor as live
         # composition.
-        from drowse.geometry.whitener import LayerWhitener
+        from drowse.store.neutral import load_neutral_whitener
 
         model_id = unsafe_model_id(sid)
-        whitener = LayerWhitener.from_cache(model_id)
+        whitener = load_neutral_whitener(model_id)
         manifold = fold_directions_to_subspace(
             name, merged, whitener.layer_means,
             whitener=whitener, label="merged",

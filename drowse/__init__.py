@@ -31,7 +31,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "TokenEvent": ("drowse.generation.results", "TokenEvent"),
     "ProbeReadings": ("drowse.generation.results", "ProbeReadings"),
     "Manifold": ("drowse.geometry.manifold", "Manifold"),
-    "ProbeReading": ("drowse.generation.results", "ProbeReading"),
+    "ProbeReading": ("drowse.readout.types", "ProbeReading"),
     "ResultCollector": ("drowse.generation.results", "ResultCollector"),
     "LoomTree": ("drowse.loom.tree", "LoomTree"),
     "LoomNode": ("drowse.loom.tree", "LoomNode"),
@@ -42,6 +42,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "UnknownNodeError": ("drowse.loom.errors", "UnknownNodeError"),
     "InvalidNodeOperationError": ("drowse.loom.errors", "InvalidNodeOperationError"),
     "MutationDuringGenerationError": ("drowse.loom.errors", "MutationDuringGenerationError"),
+    "RecipeOverrideError": ("drowse.loom.errors", "RecipeOverrideError"),
     "derive_seed_schedule": ("drowse.loom.recipe", "derive_seed_schedule"),
     "FilterClause": ("drowse.loom.filter", "FilterClause"),
     "FilterParseError": ("drowse.loom.filter", "FilterParseError"),
@@ -132,6 +133,7 @@ __all__ = [
     "UnknownNodeError",
     "InvalidNodeOperationError",
     "MutationDuringGenerationError",
+    "RecipeOverrideError",
     "derive_seed_schedule",
     "FilterClause",
     "FilterParseError",
@@ -220,6 +222,7 @@ if TYPE_CHECKING:
         InvalidNodeOperationError as InvalidNodeOperationError,
         LoomTreeError as LoomTreeError,
         MutationDuringGenerationError as MutationDuringGenerationError,
+        RecipeOverrideError as RecipeOverrideError,
         UnknownNodeError as UnknownNodeError,
     )
     from drowse.loom.recipe import (
@@ -244,7 +247,6 @@ if TYPE_CHECKING:
     from drowse.geometry.profile import Profile as Profile, ProfileError as ProfileError
     from drowse.generation.results import (
         GenerationResult as GenerationResult,
-        ProbeReading as ProbeReading,
         ProbeReadings as ProbeReadings,
         ResultCollector as ResultCollector,
         RunSet as RunSet,
@@ -318,6 +320,7 @@ if TYPE_CHECKING:
         GeometryLiveState as GeometryLiveState,
         LensLiveState as LensLiveState,
         LiveState as LiveState,
+        ProbeReading as ProbeReading,
         SaeLiveState as SaeLiveState,
         ScalarReading as ScalarReading,
     )

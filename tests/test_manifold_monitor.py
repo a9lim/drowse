@@ -29,7 +29,7 @@ from drowse.readout.monitor_attach import (
     NEUTRAL_LABEL,
     AttachedManifoldProbe,
 )
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 
 
 def _iso_monitor(m: "Manifold", *, n_layers: int | None = None) -> Monitor:

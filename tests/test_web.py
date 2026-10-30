@@ -78,8 +78,6 @@ def _mock_session_with_vectors(vectors: dict[str, Profile]):
     session.analytics_profile = lambda name: vectors.get(name)
     session._tokenizer = MagicMock()
     session._layers = []
-    session._gen_state = MagicMock()
-    session._gen_state.finish_reason = "stop"
     session.whitener = _IdentityWhitener()
 
     session.events = MagicMock()

@@ -62,7 +62,7 @@ from drowse.lens.jlens import (
     token_readout_stats_from_probabilities,
     transport_rows,
 )
-from drowse.lens.layers import LayerSelector
+from drowse.model.layers import LayerSelector
 from drowse.lens.lifecycle import LensFitRequest, LensFitter, LiveConfig
 from drowse.lens.runtime import CaptureHidden, LensRuntime, select_rows
 from drowse.readout.protocol import LatestSlices

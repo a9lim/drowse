@@ -39,7 +39,7 @@ from drowse.errors import ManifoldNotRegisteredError, ProfileNotRegisteredError
 from drowse.geometry.fold import folded_directions, is_foldable_vector_manifold
 from drowse.geometry.manifold import Manifold
 from drowse.geometry.profile import Profile
-from drowse.steering.grammar import RESERVED_NAMESPACES
+from drowse.naming import RESERVED_NAMESPACES
 
 Tensors = dict[int, torch.Tensor]
 
@@ -108,7 +108,6 @@ class ArtifactRegistry:
         self._binding = binding
         self._profiles: dict[str, Tensors] = {}
         self._manifolds: dict[str, Manifold] = {}
-        self._on_change: list[Callable[[], None]] = []
         self._on_swap: list[Callable[[Swaps], None]] = []
         self._atom_resolvers: dict[str, Callable[[str], str]] = {}
         # Probe folds handed out per registry key, so an eviction or re-fit of
@@ -138,10 +137,6 @@ class ArtifactRegistry:
 
     # --------------------------------------------------------- listeners
 
-    def on_change(self, callback: Callable[[], None]) -> None:
-        """Call ``callback`` after every invalidating mutation."""
-        self._on_change.append(callback)
-
     def on_swap(self, callback: Callable[[Swaps], None]) -> None:
         """Call ``callback(swaps)`` when manifolds this registry handed out are
         replaced or evicted; ``swaps`` maps each old object's ``id`` to its
@@ -163,8 +158,6 @@ class ArtifactRegistry:
 
     def _changed(self) -> None:
         self.invalidate_analytics()
-        for callback in self._on_change:
-            callback()
 
     def _swapped(self, swaps: Swaps) -> None:
         if not swaps:
@@ -180,7 +173,9 @@ class ArtifactRegistry:
             if artifact_key_matches(key, namespace, name, feature)
         ]
 
-    def fold_probe(self, key: str, tensors: Mapping[int, torch.Tensor]) -> Manifold:
+    def fold_probe(
+        self, key: str, tensors: "Mapping[int, torch.Tensor] | Profile",
+    ) -> Manifold:
         """Fold ``tensors`` (the direction registered or extracted under
         ``key``) into the ray a probe reads, and track it.
 
@@ -190,7 +185,8 @@ class ArtifactRegistry:
         """
         if self._probe_folder is None:
             raise RuntimeError("ArtifactRegistry.fold_probe: no probe folder installed")
-        manifold = self._probe_folder(key, tensors)
+        source = tensors.as_dict() if isinstance(tensors, Profile) else tensors
+        manifold = self._probe_folder(key, source)
         self._track_fold(key, manifold)
         return manifold
 

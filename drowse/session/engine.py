@@ -59,7 +59,7 @@ from drowse.generation.sampling import (
     InheritSystemPrompt,
     SamplingConfig,
 )
-from drowse.generation.static_cache import make_static_cache
+from drowse.model.static_cache import make_static_cache
 from drowse.generation.token_callback import (
     TokenCallback,
     TokenConsumer,

@@ -52,7 +52,7 @@ from drowse.store.manifold_schema import (
     validate_node_role,
 )
 # No manifold may be authored under an instrument namespace (it would shadow it).
-from drowse.steering.grammar import RESERVED_NAMESPACES
+from drowse.naming import RESERVED_NAMESPACES
 # Every authoring entry point that changes the installed manifold roster drops
 # the resolver's memoized walks itself — callers carry no invalidation duty.
 from drowse.store.selectors import invalidate as invalidate_selector_index
@@ -590,6 +590,8 @@ def plan_discover_generation(
             pending=tuple(labels),
             added=(),
             resumed=False,
+            kinds=dict(kinds),
+            roles=dict(roles),
         )
 
     spec = parse_manifest(load_manifest_data(meta_path), location=str(meta_path))
@@ -623,6 +625,8 @@ def plan_discover_generation(
         ),
         added=tuple(new_labels),
         resumed=True,
+        kinds={node.label: node.kind for node in nodes},
+        roles={node.label: node.role for node in nodes},
     )
 
 

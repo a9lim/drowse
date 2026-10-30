@@ -15,7 +15,7 @@ lens readout channel, and SAE feature reads — speak the types defined here.
   emits).
 * **ScalarReading** is the honest reading shape for the single-channel
   families (lens strength, SAE feature activation).  The geometry family
-  carries the full :class:`~drowse.generation.results.ProbeReading`.
+  carries the full :class:`ProbeReading`.
   ``ScalarReading.to_probe_reading()`` is the compatibility projection
   older callers consume; the versioned measurement envelope carries the
   family-native scalar shape.
@@ -38,12 +38,9 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal, Mapping, TYPE_CHECKING, Union
+from typing import Any, ClassVar, Literal, Mapping, Union
 
 from drowse.errors import UnsupportedProbeChannelError
-
-if TYPE_CHECKING:
-    from drowse.generation.results import ProbeReading
 
 
 #: The three read families.  THE enumeration — ``session.instruments`` is
@@ -235,6 +232,122 @@ UNIT_RAW_ACTIVATION = "raw_activation"
 
 
 @dataclass
+class ProbeReading:
+    """Subspace-probe reading for one attached fit (flat or curved).
+
+    The **single** unified readout: a live per-token reading (gate / stream)
+    and the end-of-generation aggregate are the same shape — the aggregate
+    is just this reading evaluated at the pooled last-content token.  Every
+    field is populated for both flat and curved fits (the old flat/curved
+    asymmetry — flat-no-nearest, curved-no-coords — is gone; both run the
+    full per-layer geometry each token):
+
+    * ``coords`` — EV-weighted whitened in-subspace coordinate in the fit's
+      domain frame (``M_R⁻¹ B Σ⁻¹ (h − mean)`` mapped through the affine
+      inverse for a flat fit, the ``invert_parameterization`` foot solve for
+      a curved fit), an ``R``-tuple for a rank-``R`` fit (a 1-tuple for a
+      2-node concept axis).  Neutral-anchored, pole-normalized at rank-1
+      (``1.0`` at the positive node).
+    * ``fraction`` — ``||P_M(h−mean)||_M / ||h−mean||_M`` EV-weighted across
+      layers, the share of the centered activation living in the subspace,
+      ∈ [0, 1].
+    * ``nearest`` — top-N node labels by EV-weighted whitened distance,
+      ascending (ranked by **raw** whitened distance — literally nearest).  The
+      reported distance is rescaled into the probe's **typical label-spacing**
+      units (divided by ``AttachedManifoldProbe.label_scale``, the median node
+      nearest-neighbor whitened distance), so an ``@label`` gate threshold is
+      portable across probes (raw whitened distance spans ~60× by fit); the scale
+      is a per-probe constant, so the ranking is unchanged.  The synthetic label
+      ``"neutral"`` competes here as the frame anchor (the per-model neutral
+      mean): it is never a stored node, only a candidate the readout ranks, so it
+      surfaces when the activation sits closer to the origin than to any node.
+      Suppressed when a manifold already carries a real node named ``neutral``.
+    * ``residual`` — EV-weighted normalized off-manifold residual
+      ``dist_L / ||c_L||``; identically ``0.0`` for a flat fit (the surface
+      fills its subspace), the off-surface distance for a curved fit.
+
+    The ``*_per_layer`` maps carry the un-EV-collapsed per-layer trace of
+    the same three geometric quantities (coords / fraction / residual).
+
+    **Fuzzy-manifold readout** (the soft, distributional view of ``nearest`` /
+    ``residual``):
+
+    * ``assignment`` — a soft node-assignment posterior: ``(label, prob)`` over
+      the candidate nodes (+ the neutral anchor),
+      ``softmax(−d²_M / 2τ² − R·log(τ))`` with a per-node bandwidth ``τ`` and
+      Gaussian log-volume correction (a curved fit's within-node σ-field mapped into the
+      whitened metric, a flat fit's local layout scale).  The *distributional*
+      counterpart to the argmax ``nearest`` — ships the shape instead of the
+      winner.  Top-N by probability, descending; sums to ≤ 1 (the reported
+      head of the full simplex).  Empty when no bandwidth is available.
+    * ``membership`` — graded tube-fit ∈ [0, 1]: ``exp(−residual² / 2σ²)`` at the
+      foot under the within-node thickness ``σ(z)``, EV-averaged.  Distinguishes
+      *off-surface* (a real residual relative to a thin tube) from
+      *on-surface-but-diffuse* — the density taper a hard ``residual`` threshold
+      can't express.  ``1.0`` for a flat fit (the surface fills its subspace) and
+      for a curved fit with no σ-field (no tube information).
+
+    **Depth statistics** (where in the layer stack the probe reads):
+
+    * ``depth_com`` / ``depth_spread`` — per-axis depth center of mass (+ std)
+      of the per-layer coordinate trace, in normalized depth (0 = first
+      block, 1 = last).  Mass per layer is ``share_weight_L · |coord_L|`` —
+      where the probe's signal actually reads, weighted the same way the
+      cross-layer aggregate coordinate is.  Aligned with ``coords`` (one
+      entry per domain axis).  Empty when the reading carries no per-layer
+      trace (lean per-token modes) or the monitor wasn't given the model
+      depth.
+    """
+    fraction: float
+    nearest: list[tuple[str, float]]
+    coords: tuple[float, ...] = ()
+    residual: float = 0.0
+    fraction_per_layer: dict[int, float] = field(default_factory=dict)
+    coords_per_layer: dict[int, tuple[float, ...]] = field(default_factory=dict)
+    residual_per_layer: dict[int, float] = field(default_factory=dict)
+    assignment: list[tuple[str, float]] = field(default_factory=list)
+    membership: float = 1.0
+    depth_com: tuple[float, ...] = ()
+    depth_spread: tuple[float, ...] = ()
+    # Per-layer reduced subspace coords in the **whitened** frame
+    # (``cdist_query = c @ chol``, the same metric ``node_white`` lives in) — the
+    # current hidden state's position for the probe-inspector geometry plot +
+    # fading trajectory trail.  Empty by default; populated only when the session
+    # sets ``Monitor.set_subspace_coords(True)`` (the ``persist_subspace_coords``
+    # generate flag, on while the dashboard inspector is open), so the default
+    # hot path neither computes nor serializes it.  Keyed by layer index → the
+    # layer's ``(R,)`` whitened coords (R = that layer's subspace rank).
+    subspace_coords_per_layer: dict[int, tuple[float, ...]] = field(
+        default_factory=dict,
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "fraction": self.fraction,
+            "nearest": [[label, dist] for label, dist in self.nearest],
+            "coords": list(self.coords),
+            "residual": self.residual,
+            "fraction_per_layer": {
+                str(k): float(v) for k, v in self.fraction_per_layer.items()
+            },
+            "coords_per_layer": {
+                str(k): list(v) for k, v in self.coords_per_layer.items()
+            },
+            "residual_per_layer": {
+                str(k): float(v) for k, v in self.residual_per_layer.items()
+            },
+            "assignment": [[label, prob] for label, prob in self.assignment],
+            "membership": self.membership,
+            "depth_com": list(self.depth_com),
+            "depth_spread": list(self.depth_spread),
+            "subspace_coords_per_layer": {
+                str(k): list(v)
+                for k, v in self.subspace_coords_per_layer.items()
+            },
+        }
+
+
+@dataclass
 class ScalarReading:
     """One-channel reading for the lens and SAE families.
 
@@ -293,8 +406,6 @@ class ScalarReading:
         families by one reading type; the versioned measurement envelope
         carries the native single-channel scalar reading instead.
         """
-        from drowse.generation.results import ProbeReading
-
         return ProbeReading(
             fraction=0.0,
             nearest=[],
@@ -309,10 +420,10 @@ class ScalarReading:
 
 
 #: What a family's ``score_probes`` returns: the geometry family's full
-#: whitened :class:`~drowse.generation.results.ProbeReading`, or the single-axis
+#: whitened :class:`ProbeReading`, or the single-axis
 #: families' :class:`ScalarReading`.  The three helpers below are the only
 #: places a consumer needs to care which.
-Reading = Union["ProbeReading", ScalarReading]
+Reading = Union[ProbeReading, ScalarReading]
 
 
 def reading_axis0(reading: "Reading") -> float:

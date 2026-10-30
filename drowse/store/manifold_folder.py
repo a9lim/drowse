@@ -632,7 +632,9 @@ class DiscoverGenerationPlan:
     ``index_of`` maps each label to its on-disk node index; ``pending`` is the
     declared labels whose corpus file is not yet on disk (node order);
     ``added`` is the labels appended this call; ``resumed`` is ``True`` when
-    an existing ``manifold.json`` was found.
+    an existing ``manifold.json`` was found.  ``kinds`` / ``roles`` are every
+    declared node's manifest ``kind`` and ``role``, the frame its corpus is
+    generated under.
     """
 
     folder: Path
@@ -640,3 +642,5 @@ class DiscoverGenerationPlan:
     pending: tuple[str, ...]
     added: tuple[str, ...]
     resumed: bool
+    kinds: dict[str, str | None]
+    roles: dict[str, str | None]

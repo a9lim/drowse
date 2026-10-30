@@ -22,7 +22,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from drowse.generation import static_cache as cg
+from drowse.model import static_cache as cg
 @pytest.fixture(autouse=True)
 def _isolate_cg_module_caches():
     """Clear the module-level support/warn caches around every test.

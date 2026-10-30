@@ -1,9 +1,8 @@
-"""Concept name canonicalization — the on-disk slug + bipolar-pole grammar.
+"""Concept naming rules — the on-disk slug, the bipolar-pole join, reserved namespaces.
 
-Pure string normalization, no model or IO, so both :mod:`drowse.session.session`
-and :mod:`drowse.store.selectors` can share it without the import cycle that a
-``session.session`` home forced (selectors resolves bare atoms through
-:func:`canonical_concept_name`).
+Pure string rules, no model or IO, at the bottom of the layer order so the
+store, the steering grammar and the session share one definition
+(:func:`canonical_concept_name`, :data:`RESERVED_NAMESPACES`).
 """
 from __future__ import annotations
 
@@ -11,6 +10,12 @@ import re
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 BIPOLAR_SEP = "."
+
+#: Instrument namespaces: atoms under them name instrument units (J-/S-lens
+#: tokens, SAE features, neurons, heads), not fitted concepts.  Their names
+#: skip slug canonicalization and take no variant, and no manifold may be
+#: authored under them.
+RESERVED_NAMESPACES = frozenset({"jlens", "slens", "sae", "neuron", "head"})
 
 
 def _slug(s: str) -> str:

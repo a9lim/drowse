@@ -8,8 +8,8 @@ that callers stop passing bare ``dict[int, Tensor]`` around.
 
 The underlying tensors are "baked": the per-layer Mahalanobis share is
 folded into the magnitude at extraction time (see
-``extraction.ManifoldExtractionPipeline`` /
-``vectors.fold_directions_to_subspace``).  A ``Profile`` is just a thin
+:class:`drowse.fit.pipeline.ManifoldExtractionPipeline` /
+:func:`drowse.geometry.fold.fold_directions_to_subspace`).  A ``Profile`` is just a thin
 wrapper; the dict stays the canonical shape at rest and the unified
 subspace kernel reads the baked magnitudes as per-layer weights.
 """
@@ -30,6 +30,7 @@ from safetensors.torch import load as load_safetensors, save as save_safetensors
 # ``ProfileError`` is defined in :mod:`drowse.errors` (the single home
 # for the engine's error taxonomy) and re-exported here so
 # ``from drowse.geometry.profile import ProfileError`` keeps working.
+from drowse.errors import MergeError
 from drowse.errors import ProfileError as ProfileError
 
 log = logging.getLogger(__name__)
@@ -193,7 +194,7 @@ def save_profile(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # fp32 write invariant: every drowse safetensor writer enforces fp32
-    # on disk (matches gguf_io.py's ``.to(dtype=torch.float32)``), so the
+    # on disk (matches geometry/gguf.py's ``.to(dtype=torch.float32)``), so the
     # stored dtype is a guarantee rather than a coincidence of the caller.
     tensors = {
         f"layer_{idx}": vec.to(dtype=torch.float32).contiguous().cpu()
@@ -223,12 +224,51 @@ def save_profile(
     log.info("Saved profile (%d layers) to %s", len(profile), path)
 
 
+def linear_sum(
+    components: list[tuple[dict[int, torch.Tensor], float]],
+    *,
+    strict: bool = False,
+) -> dict[int, torch.Tensor]:
+    """Compute ``merged[l] = sum_i alpha_i * vec_i[l]`` per touched layer.
+
+    The layer set is the union, matching live expression composition: an
+    absent component contributes zero rather than deleting the entire layer.
+    ``strict=True`` rejects non-identical component coverage.  Shared by
+    :meth:`Profile.merged` and the offline ``manifold bake`` merge.
+    """
+    if len(components) < 1:
+        raise MergeError("linear_sum requires at least one component")
+    layer_sets = [set(p.keys()) for p, _ in components]
+    union = set.union(*layer_sets)
+    if not union:
+        raise MergeError("merge components have no layers")
+    if strict and any(layers != layer_sets[0] for layers in layer_sets[1:]):
+        coverage = [sorted(layers) for layers in layer_sets]
+        raise MergeError(
+            "merge: component layer coverage differs under --strict: "
+            f"{coverage}"
+        )
+
+    out: dict[int, torch.Tensor] = {}
+    for layer in sorted(union):
+        first_vec = next(profile[layer] for profile, _ in components if layer in profile)
+        merged = torch.zeros_like(first_vec, dtype=torch.float32)
+        for profile, alpha in components:
+            if layer in profile:
+                merged = (
+                    merged
+                    + float(alpha) * profile[layer].to(dtype=torch.float32)
+                )
+        out[layer] = merged
+    return out
+
+
 def load_profile(path: str | pathlib.Path) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
     """Load a baked vector profile and its metadata.
 
     Dispatches on file extension: ``.safetensors`` reads the companion
     ``.json`` sidecar; ``.gguf`` reads the control-vector metadata embedded
-    in the GGUF header (see :mod:`drowse.store.gguf`). Both paths yield the
+    in the GGUF header (see :mod:`drowse.geometry.gguf`). Both paths yield the
     same ``(profile, metadata)`` shape — callers don't need to branch.
 
     The returned metadata is the sidecar's identity fields plus the
@@ -237,7 +277,7 @@ def load_profile(path: str | pathlib.Path) -> tuple[dict[int, torch.Tensor], dic
     """
     path = pathlib.Path(path)
     if path.suffix == ".gguf":
-        from drowse.store.gguf import read_gguf_profile
+        from drowse.geometry.gguf import read_gguf_profile
 
         return read_gguf_profile(path)
 
@@ -364,7 +404,7 @@ class Profile:
         """Return the underlying dict (shared reference, not a copy).
 
         Internal helper for call sites that work on the raw tensor dict
-        (hooks, merge.linear_sum, monitor). Do not mutate.
+        (hooks, :func:`linear_sum`, monitor). Do not mutate.
         """
         return self._tensors
 
@@ -407,12 +447,10 @@ class Profile:
     ) -> "Profile":
         """Linear combination: ``sum(alpha_i * profile_i)`` per layer.
 
-        Delegates to :func:`drowse.fit.bake.linear_sum`. Layer coverage is the
-        union, matching live expression composition (an absent term contributes
-        zero); ``strict=True`` requires identical coverage.
+        Delegates to :func:`linear_sum`. Layer coverage is the union, matching
+        live expression composition (an absent term contributes zero);
+        ``strict=True`` requires identical coverage.
         """
-        from drowse.fit.bake import linear_sum
-
         pairs = [(p.as_dict(), float(a)) for p, a in components]
         if len(pairs) < 2:
             raise ProfileError("Profile.merged requires at least two components")

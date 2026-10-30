@@ -7,7 +7,9 @@ from typing import Any
 import pytest
 import torch
 
+from drowse.errors import MergeError
 from drowse.fit import bake
+from drowse.geometry.profile import linear_sum
 from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_schema import ManifoldSidecar
@@ -33,13 +35,13 @@ def test_parse_expr_two_components(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 def test_bare_component_rejected():
     """Components without a namespace prefix are rejected."""
-    with pytest.raises(bake.MergeError, match="namespace"):
+    with pytest.raises(MergeError, match="namespace"):
         bake.merge_into_manifold("x", "0.5 a", model=None)
 
 
 def test_trigger_rejected():
     """Merge expressions don't accept trigger annotations."""
-    with pytest.raises(bake.MergeError, match="trigger"):
+    with pytest.raises(MergeError, match="trigger"):
         bake.merge_into_manifold(
             "x", "0.5 default/happy@after", model=None,
         )
@@ -48,7 +50,7 @@ def test_trigger_rejected():
 @pytest.mark.parametrize("operator", ["~", "|"])
 def test_projection_operator_rejected(operator: str):
     """Offline bake cannot replace live Mahalanobis projection with Euclidean."""
-    with pytest.raises(bake.MergeError, match="Mahalanobis"):
+    with pytest.raises(MergeError, match="Mahalanobis"):
         bake.merge_into_manifold(
             "x", f"0.5 default/happy{operator}default/sad", model=None,
         )
@@ -63,17 +65,17 @@ def test_projection_operator_rejected(operator: str):
     ],
 )
 def test_dynamic_or_multicoeff_term_rejected(expression: str, message: str):
-    with pytest.raises(bake.MergeError, match=message):
+    with pytest.raises(MergeError, match=message):
         bake.merge_into_manifold("x", expression, model=None)
 
 
 def test_empty_expression_rejected():
-    with pytest.raises(bake.MergeError):
+    with pytest.raises(MergeError):
         bake.merge_into_manifold("x", "", model=None)
 
 
 def test_invalid_syntax_rejected():
-    with pytest.raises(bake.MergeError):
+    with pytest.raises(MergeError):
         bake.merge_into_manifold("x", "0.5 default/happy +", model=None)
 
 
@@ -82,7 +84,7 @@ def test_invalid_syntax_rejected():
 def test_linear_sum_equal_layers():
     a = {0: torch.tensor([1.0, 0.0]), 1: torch.tensor([0.0, 1.0])}
     b = {0: torch.tensor([2.0, 0.0]), 1: torch.tensor([0.0, 2.0])}
-    out = bake.linear_sum([(a, 0.5), (b, 0.25)])
+    out = linear_sum([(a, 0.5), (b, 0.25)])
     assert torch.allclose(out[0], torch.tensor([1.0, 0.0]))
     assert torch.allclose(out[1], torch.tensor([0.0, 1.0]))
 
@@ -93,7 +95,7 @@ def test_linear_sum_layer_union_matches_live_composition():
          2: torch.tensor([1.0, 1.0])}
     b = {1: torch.tensor([0.0, 2.0]),
          2: torch.tensor([2.0, 2.0])}
-    out = bake.linear_sum([(a, 1.0), (b, 1.0)])
+    out = linear_sum([(a, 1.0), (b, 1.0)])
     assert sorted(out.keys()) == [0, 1, 2]
     assert torch.allclose(out[0], a[0])
 
@@ -101,7 +103,7 @@ def test_linear_sum_layer_union_matches_live_composition():
 def test_linear_sum_disjoint_layers_uses_union():
     a = {0: torch.tensor([1.0])}
     b = {1: torch.tensor([2.0])}
-    out = bake.linear_sum([(a, 1.0), (b, 1.0)])
+    out = linear_sum([(a, 1.0), (b, 1.0)])
     assert sorted(out) == [0, 1]
     assert torch.equal(out[0], a[0])
     assert torch.equal(out[1], b[1])
@@ -110,13 +112,13 @@ def test_linear_sum_disjoint_layers_uses_union():
 def test_linear_sum_strict_rejects_different_layer_coverage():
     a = {0: torch.tensor([1.0]), 1: torch.tensor([2.0])}
     b = {1: torch.tensor([3.0])}
-    with pytest.raises(bake.MergeError, match="coverage differs"):
-        bake.linear_sum([(a, 1.0), (b, 1.0)], strict=True)
+    with pytest.raises(MergeError, match="coverage differs"):
+        linear_sum([(a, 1.0), (b, 1.0)], strict=True)
 
 
 def test_linear_sum_single_component():
     a = {0: torch.tensor([2.0, 3.0])}
-    out = bake.linear_sum([(a, 0.5)])
+    out = linear_sum([(a, 0.5)])
     assert torch.allclose(out[0], torch.tensor([1.0, 1.5]))
 
 
@@ -202,7 +204,7 @@ def test_shared_models_empty_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     profile = {0: torch.tensor([1.0])}
     _make_concept_with_tensors(tmp_path, "default", "happy", {"gemma": profile})
     _make_concept_with_tensors(tmp_path, "a9lim", "archaic", {"qwen": profile})
-    with pytest.raises(bake.MergeError, match="no shared models"):
+    with pytest.raises(MergeError, match="no shared models"):
         bake.shared_models("0.5 default/happy + 0.5 a9lim/archaic")
 
 
@@ -252,7 +254,7 @@ def test_role_variant_uses_and_validates_canonical_tensor(
     )
 
     assert bake.shared_models("default/happy:role-pirate") == [safe_model_id("gemma")]
-    with pytest.raises(bake.MergeError, match="no shared models"):
+    with pytest.raises(MergeError, match="no shared models"):
         bake.shared_models("default/happy:raw")
     dst = bake.merge_into_manifold(
         "pirate_happy", "default/happy:role-pirate", model=None,
@@ -336,7 +338,7 @@ def test_merge_into_manifold_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path:
         "bard", "0.5 default/happy + 0.5 a9lim/archaic",
         model=None, force=False,
     )
-    with pytest.raises(bake.MergeError, match="exists"):
+    with pytest.raises(MergeError, match="exists"):
         bake.merge_into_manifold(
             "bard", "0.5 default/happy + 0.5 a9lim/archaic",
             model=None, force=False,

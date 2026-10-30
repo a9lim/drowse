@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from drowse.generation.results import ProbeReading
+from drowse.readout.types import ProbeReading
 from drowse.generation.token_payloads import TokenProbePayload
 
 

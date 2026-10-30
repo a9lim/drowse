@@ -41,7 +41,7 @@ def test_neutral_loader_threads_on_progress_into_capture(
 ) -> None:
     """``load_or_compute_neutral_activations`` narrates the cache-miss pass."""
     import drowse.fit.capture as capture_mod
-    from drowse.store.neutral import load_or_compute_neutral_activations
+    from drowse.fit.neutral import load_or_compute_neutral_activations
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
     seen: dict[str, Any] = {}
@@ -129,7 +129,7 @@ def test_whitener_build_forwards_on_progress(
     from contextlib import nullcontext
 
     from drowse.session.neutral import NeutralBaseline
-    from drowse.store import neutral as alignment_mod
+    from drowse.fit import neutral as alignment_mod
 
     seen: dict[str, Any] = {}
 

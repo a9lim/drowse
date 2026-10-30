@@ -41,7 +41,7 @@ def run_compile_probes(compiled: Any, model: PreTrainedModel, device: str | torc
         _ = out.logits[:, -1, :].argmax().item()
 
     def _probe_static(prefill_len: int) -> None:
-        from drowse.generation.static_cache import make_static_cache
+        from drowse.model.static_cache import make_static_cache
         dtype = next(model.parameters()).dtype
         try:
             cache = make_static_cache(

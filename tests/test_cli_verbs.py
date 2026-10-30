@@ -104,7 +104,7 @@ def _parser_at(argv: list[str]) -> argparse.ArgumentParser:
     ["manifold", "compare", "a.b"],        # -m is required
     ["manifold", "extract", "happy", "--sae", "r", "--role", "pirate", "-m", "x"],
     ["manifold", "extract", "happy", "-m", "x", "--namespace", "alice"],
-    ["manifold", "generate", "x", "--concepts", "a", "b", "-m", "x", "--seed", "1"],
+    ["manifold", "generate", "x", "--concepts", "a", "b", "-m", "x", "--seed", "one"],
     ["manifold", "compare", "a", "-m", "x", "--ridge-scale", "2"],
     ["lens", "fit", "m", "--corpus", "f", "--hf-corpus", "org/data"],
     ["lens", "fit", "m", "--standard"], ["lens", "fit", "m", "--relp"],
@@ -131,6 +131,9 @@ def test_rejected_argv(argv: list[str]) -> None:
     (["manifold", "fit", "x", "-m", "m", "--smoothing", "0.25", "--method", "auto"],
      {"smoothing": 0.25, "method": "auto"}),
     (["manifold", "fit", "x", "-m", "m", "--smoothing", "auto"], {"smoothing": "auto"}),
+    (["manifold", "generate", "x", "--concepts", "a", "b", "-m", "m"], {"seed": None}),
+    (["manifold", "generate", "x", "--concepts", "a", "b", "-m", "m", "--seed", "7"],
+     {"seed": 7}),
     (["manifold", "from-template", "weekday"],
      {"fit_mode": "auto", "name": None, "max_dim": None}),
     (["manifold", "transfer", "c", "--from", "a", "--to", "b", "-j"],

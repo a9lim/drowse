@@ -3,8 +3,9 @@
 Frozen dataclass holding the OpenAI-shaped per-call sampling knobs.  None on
 any field means "use the session default" — the session's ``GenerationConfig``
 holds the session-level defaults (``max_new_tokens``, ``temperature``,
-``top_p``, ``top_k``, ``system_prompt``) and ``_generate_core`` composes the two
-at entry without mutating ``session.config``.
+``top_p``, ``top_k``, ``system_prompt``) and the generation engine composes the
+two per call (``GenerationEngine.gen_config``) without mutating
+``session.config``.
 
 Keeping these values separate from session configuration lets one session serve
 many concurrent requests without request-local overrides leaking across calls.
@@ -52,7 +53,7 @@ class SamplingConfig:
     return_hidden: bool = False
     # Loom-path knob for top-K alternatives capture (drowse-native; the
     # OpenAI route uses ``logprobs`` instead and the two compose under
-    # ``max`` inside ``_generate_core``).  ``0`` means logprob-only —
+    # ``max`` in the generation engine's call setup).  ``0`` means logprob-only —
     # chosen-token logprob is captured whenever the engine already runs
     # log_softmax (any ``on_token`` consumer or an explicit ``logprobs``
     # request), so K=0 is the minimal-additive-cost default for the loom

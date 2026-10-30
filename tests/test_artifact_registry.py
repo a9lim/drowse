@@ -23,14 +23,19 @@ def _registry() -> ArtifactRegistry:
 
 
 class _Recorder:
+    """Counts analytics invalidations and records manifold swaps."""
+
     def __init__(self, registry: ArtifactRegistry) -> None:
         self.changes = 0
         self.swaps: list[dict[int, Any]] = []
-        registry.on_change(self._changed)
-        registry.on_swap(lambda swaps: self.swaps.append(dict(swaps)))
+        invalidate = registry.invalidate_analytics
 
-    def _changed(self) -> None:
-        self.changes += 1
+        def _counted() -> None:
+            self.changes += 1
+            invalidate()
+
+        registry.invalidate_analytics = _counted  # type: ignore[method-assign]
+        registry.on_swap(lambda swaps: self.swaps.append(dict(swaps)))
 
 
 def test_views_are_read_only() -> None:
@@ -43,7 +48,7 @@ def test_views_are_read_only() -> None:
     assert set(registry.profiles) == {"a"}
 
 
-def test_every_mutation_fires_the_change_listeners() -> None:
+def test_every_mutation_invalidates_the_analytics_snapshots() -> None:
     registry = _registry()
     seen = _Recorder(registry)
     registry.put_profile("jlens/a", {0: torch.ones(2)})
@@ -57,9 +62,9 @@ def test_every_mutation_fires_the_change_listeners() -> None:
     assert seen.changes == 6
 
 
-def test_lazy_loads_do_not_fire_the_change_listeners(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A resolution-time fold memoizes what is on disk; it must not drop the
-    prefix cache the way a user registration does."""
+def test_lazy_loads_do_not_invalidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A resolution-time fold memoizes what is on disk; it changes no
+    registered artifact the way a user registration does."""
     registry = _registry()
     seen = _Recorder(registry)
     monkeypatch.setattr(registry, "fold_manifold", lambda name, role="vector": {0: torch.ones(2)})

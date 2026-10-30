@@ -123,17 +123,12 @@ from dataclasses import dataclass, replace
 from typing import Literal, Optional, TYPE_CHECKING, cast
 
 from drowse.errors import SteeringExprError
+from drowse.naming import RESERVED_NAMESPACES
 from drowse.steering.triggers import Trigger
 
 if TYPE_CHECKING:
     from drowse.steering.terms import AlphaEntry, Steering
 
-
-#: Instrument namespaces: atoms under them name instrument units (J-/S-lens
-#: tokens, SAE features, neurons, heads), not fitted concepts.  Their names
-#: skip slug canonicalization and take no variant, and no manifold may be
-#: authored under them.
-RESERVED_NAMESPACES = frozenset({"jlens", "slens", "sae", "neuron", "head"})
 
 # Namespaces whose atom also takes the exact-vocab-id form ``#<int>``.
 _TOKEN_ID_NAMESPACES = frozenset({"jlens", "slens"})
@@ -202,11 +197,10 @@ _TRIGGER_FORMS_HELP = (
 class ProjectedTerm:
     """Runtime projection entry in ``Steering.alphas``.
 
-    The session materializes a derived profile on scope entry (combining
-    the ``base`` and ``onto`` profiles via ``project_profile``), registers
-    it under a synthetic name ``"<base><op><onto>"``, and feeds it to the
-    usual hook path.  Stored as a value inside ``Steering.alphas``; the
-    key matches the synthetic name so duplicate references compose.
+    Keyed by ``"<base><op><onto>"`` so duplicate references compose.  The
+    steering composer projects the ``base`` profile against ``onto``
+    (``project_profile``) at lowering time and folds the result like a plain
+    vector; the derived direction is never registered as a profile.
     """
     coeff: float
     trigger: Trigger

@@ -37,7 +37,7 @@ from drowse.lens.jlens import (
     JacobianLensError,
 )
 from drowse.lens.key import FITTABLE_KINDS
-from drowse.lens.layers import LayerSelector, resolve_layer_selector
+from drowse.model.layers import LayerSelector, resolve_layer_selector
 from drowse.lens.store import (
     LensProvenance,
     lens_estimator_policy,

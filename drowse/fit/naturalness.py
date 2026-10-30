@@ -27,14 +27,10 @@ from typing import TYPE_CHECKING, Any, Callable, Sequence
 import torch
 
 from drowse.errors import DrowseError
-from drowse.fit.capture import (
-    _load_baseline_prompts,
-    _render_capture_text,
-    last_content_index,
-    special_token_ids,
-)
+from drowse.fit.capture import _load_baseline_prompts, _render_capture_text
 from drowse.geometry.domains import ManifoldDomain, domain_from_spec
 from drowse.geometry.invert import invert_parameterization
+from drowse.model.tokens import last_content_index, special_token_ids
 from drowse.geometry.subspace import (
     DEFAULT_N_COMPONENTS,
     LayerSubspace,

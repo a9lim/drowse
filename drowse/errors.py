@@ -84,6 +84,17 @@ class ProfileError(ValueError, DrowseError):
         return (400, str(self) or self.__class__.__name__)
 
 
+class MergeError(ValueError, DrowseError):
+    """Raised when an offline direction merge or bake cannot be built.
+
+    Covers the additive-subset grammar checks of ``manifold bake`` and the
+    layer-coverage check of :func:`~drowse.geometry.profile.linear_sum`.
+    """
+
+    def user_message(self) -> tuple[int, str]:
+        return (400, str(self) or self.__class__.__name__)
+
+
 class UnknownManifoldLabelError(KeyError, DrowseError):
     """Raised when a manifold position payload names an unknown node label.
 

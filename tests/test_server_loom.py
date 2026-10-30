@@ -913,7 +913,7 @@ class TestWebSocketLoom:
         clean break the ``token`` frame already made); it survives only on
         the OpenAI / Ollama ``x-drowse-probe-readings`` vendor extension."""
         from drowse.readout.types import ScalarReading
-        from drowse.generation.results import ProbeReading
+        from drowse.readout.types import ProbeReading
 
         session, client = session_and_client
         reading = ProbeReading(
@@ -1498,7 +1498,7 @@ class TestJointLogprobsLock:
         ran the model forwards without the session lock."""
         import asyncio
 
-        import drowse.generation.joint_logprobs as joint_logprobs
+        import drowse.loom.joint_logprobs as joint_logprobs
         import drowse.server.runtime as runtime
 
         session, client = session_and_client

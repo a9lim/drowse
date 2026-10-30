@@ -247,7 +247,7 @@ def ensure_vectors_installed(
     from drowse.base.paths import manifold_dir
     from drowse.steering.grammar import referenced_selectors
     from drowse.store.bundled import materialize_bundled_artifacts
-    from drowse.store.manifold_authoring import RESERVED_NAMESPACES
+    from drowse.naming import RESERVED_NAMESPACES
 
     if not expression:
         return []

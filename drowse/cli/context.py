@@ -327,9 +327,9 @@ def check_steering(expression: str | None) -> None:
 
 
 def parse_layers(raw: str | None) -> "list[int] | str | None":
-    """A ``--layers`` spec (:func:`~drowse.lens.layers.parse_layer_selector`):
+    """A ``--layers`` spec (:func:`~drowse.model.layers.parse_layer_selector`):
     explicit indices, or ``workspace`` / ``sample`` / ``all``."""
-    from drowse.lens.layers import parse_layer_selector
+    from drowse.model.layers import parse_layer_selector
 
     if raw is not None and not raw.strip():
         raise CliError("--layers must name at least one layer")
