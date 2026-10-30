@@ -8,7 +8,12 @@ import pytest
 
 from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, SamplingConfig
 from drowse.loom.errors import InvalidNodeOperationError, MutationDuringGenerationError
-from drowse.loom.ops import begin_generation_turn, plan_fork, plan_prefill
+from drowse.loom.ops import (
+    begin_generation_turn,
+    plan_fork,
+    plan_prefill,
+    resolve_token_anchor,
+)
 from drowse.loom.recipe import Recipe
 from drowse.loom.tree import LoomTree
 
@@ -109,6 +114,30 @@ def test_fork_refuses_a_node_without_raw_ids() -> None:
     user = tree.add_user_turn("transcript-loaded")
     with pytest.raises(InvalidNodeOperationError, match="no raw token record"):
         plan_fork(tree, _Tok(), user, 0, 1, default_max_tokens=8)
+
+
+def test_a_token_anchor_addresses_one_decode_step() -> None:
+    tree = LoomTree()
+    _parent, node = _generated(tree)
+    anchor = resolve_token_anchor(tree, node, 2, label="probe")
+    assert anchor.node.id == node
+    assert anchor.token_id == 12
+    assert anchor.prefix == [10, 11]
+    # The anchor snapshots the decode record: a later edit of the node
+    # cannot shift what it addresses.
+    tree.get(node).raw_token_ids = None
+    assert anchor.token_id == 12
+    with pytest.raises(InvalidNodeOperationError, match="probe: .*no raw token record"):
+        resolve_token_anchor(tree, node, 0, label="probe")
+
+
+def test_fork_refuses_a_node_that_is_not_a_turn() -> None:
+    """A fork addresses its token through the same anchor as the token
+    replays, so the system root is refused as a non-turn."""
+    tree = LoomTree()
+    assert tree.root_id is not None
+    with pytest.raises(InvalidNodeOperationError, match="fork_from_token: .*only a turn"):
+        plan_fork(tree, _Tok(), tree.root_id, 0, 1, default_max_tokens=8)
 
 
 def test_prefill_opens_the_reply_with_the_text_and_skips_thinking() -> None:
