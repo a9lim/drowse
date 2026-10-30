@@ -33,6 +33,7 @@ def _canonical_context(entry: object) -> dict[str, object]:
 def run_create(args: argparse.Namespace) -> None:
     from drowse.store.templates import create_template_folder
 
+    namespace, name = split_new(args.name)
     try:
         with open(args.contexts_file) as f:
             raw = json.load(f)
@@ -44,7 +45,6 @@ def run_create(args: argparse.Namespace) -> None:
             '({"turns": [...], "assistant": ...} or {"user": ..., "assistant": ...})'
         )
     contexts = [_canonical_context(entry) for entry in raw]
-    namespace, name = split_new(args.name)
     try:
         create_template_folder(
             namespace, name, slot=args.slot, values=list(args.values),

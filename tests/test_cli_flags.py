@@ -128,13 +128,29 @@ def test_yaml_vectors_fill_an_unset_steer_and_cli_steer_wins(
     )
     cfg = _yaml(tmp_path, 'vectors: "0.4 default/happy.sad"\n')
     args = parse_args(["serve", "m/x", "-c", cfg])
-    effective_config(args)
+    effective_config(args, yaml_vectors=True)
     assert args.steer == "0.4 default/happy.sad"
     args = parse_args(["serve", "m/x", "-c", cfg, "-S", "0.2 bob/honest"])
-    effective_config(args)
+    effective_config(args, yaml_vectors=True)
     assert args.steer == "0.2 bob/honest"
     # Installation runs over the *effective* expression, -S included.
     assert seen == ["0.4 default/happy.sad", "0.2 bob/honest"]
+
+
+def test_fan_never_inherits_yaml_vectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """YAML ``vectors:`` is serve's default steering; a global config must not
+    silently become the base steering under every row of a research sweep."""
+    monkeypatch.setattr(
+        "drowse.cli.config_file.ensure_vectors_installed", lambda *_a, **_k: [],
+    )
+    cfg = _yaml(tmp_path, 'vectors: "0.4 default/happy.sad"\n')
+    created = install_fake_session(monkeypatch, _FanSession)
+    main(["experiment", "fan", "m/x", "p", "-g", "a=0,1", "-c", cfg])
+    assert created[0].base_steering is None
+    main(["experiment", "fan", "m/x", "p", "-g", "a=0,1", "-c", cfg, "-S", "0.2 x"])
+    assert created[1].base_steering == "0.2 x"
 
 
 def test_yaml_sampling_defaults_reach_the_session_config(
@@ -648,6 +664,43 @@ def test_transcript_replay_regenerates_each_turn_under_its_imported_parent(
     assert "Δ -0.2500" in capsys.readouterr().out
 
 
+def test_transcript_replay_reports_a_failing_turn_and_moves_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from drowse.loom.transcript import Transcript, Turn
+    from drowse.loom.tree import LoomTree, Recipe
+    from drowse.steering.grammar import SteeringExprError
+
+    class _Session(FakeSession):
+        def __init__(self, model_id: str, **kwargs: Any) -> None:
+            super().__init__(model_id, **kwargs)
+            self.tree = LoomTree(model_id=model_id)
+            self.calls = 0
+
+        def probe_hashes(self) -> dict[str, str]:
+            return {}
+
+        def generate(self, _prompt: Any, **kwargs: Any) -> Any:
+            self.calls += 1
+            if kwargs["steering"] == "0.5 gone":
+                raise SteeringExprError("unknown concept 'gone'")
+            return SimpleNamespace(first=SimpleNamespace(text="fine", probe_readings={}))
+
+    turns = [
+        Turn("user", "hi"),
+        Turn("assistant", "hello", recipe=Recipe(steering="0.5 gone")),
+        Turn("user", "and?"),
+        Turn("assistant", "more"),
+    ]
+    path = tmp_path / "t.yaml"
+    Transcript(model_id="m/x", system_prompt=None, probes=[], turns=turns).save(path)
+    created = install_fake_session(monkeypatch, _Session)
+    main(["experiment", "transcript", "run", str(path)])
+    out = capsys.readouterr().out
+    assert created[0].calls == 2
+    assert "replay failed: unknown concept 'gone'" in out and "assistant: fine" in out
+
+
 def _authored_behavior_manifold() -> None:
     from drowse.store.manifolds import create_manifold_folder
 
@@ -798,6 +851,49 @@ def test_fit_delegates_overrides_to_the_fit_transaction(monkeypatch: pytest.Monk
     main(["manifold", "fit", str(folder), "-m", "fake/model", "--smoothing", "0.25"])
     assert created[0].fit_kwargs["fit_mode"] is None
     assert created[0].fit_kwargs["hyperparams"] == {"smoothing": 0.25}
+
+
+@pytest.mark.parametrize("verb", [
+    ["manifold", "fit", "{dir}", "-m", "m/x"],
+    ["experiment", "naturalness", "m/x", "p", "--manifold", "{dir}", "-S", "0.5 x"],
+])
+def test_a_folder_path_without_manifold_json_is_reported_as_such(
+    verb: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: an existing directory fell through to name resolution and
+    was reported as a missing ``~/.drowse/manifolds/<path>`` manifold."""
+    empty = tmp_path / "not-a-manifold"
+    empty.mkdir()
+    attempts = poison_session(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main([part.replace("{dir}", str(empty)) for part in verb])
+    assert exc.value.code == 2 and attempts == []
+    assert f"no manifold.json in {empty}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [
+    ["pack", "rm", "../../etc", "-y"],
+    ["pack", "show", "../x"],
+    ["pack", "clear", "/x", "-m", "m/x"],
+    ["pack", "export", "archive", "a/b/c"],
+    ["manifold", "extract", "../x", "-m", "m/x"],
+    ["manifold", "generate", "a/", "--concepts", "x", "y", "-m", "m/x"],
+    ["manifold", "fit", "/personas", "-m", "m/x"],
+    ["template", "create", "../t", "--slot", "X", "--values", "a", "b", "--contexts", "c.json"],
+])
+def test_malformed_references_are_one_line_usage_errors(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: an unsafe or empty ``ns/name`` escaped ``main`` as a raw
+    ``ValueError`` traceback from the path-traversal barrier."""
+    monkeypatch.chdir(Path(__file__).parent.parent / "drowse" / "data")
+    attempts = poison_session(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    err = capsys.readouterr().err
+    assert exc.value.code == 2 and attempts == [], err
+    assert err.count("\n") == 1
 
 
 def test_fit_overrides_against_an_authored_folder_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

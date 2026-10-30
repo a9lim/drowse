@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from drowse.cli.context import (
-    CliError, emit_json, existing_folder, note, open_session,
-    parse_layers, progress, resolve_manifold, split_new, user_errors,
+    CliError, emit_json, existing_folder, folder_or_manifold, note,
+    open_session, parse_layers, progress, resolve_manifold, split_new,
+    user_errors,
 )
 from drowse.cli.spec import (
     DESCRIPTION, FORCE, JSON, MODEL_LOAD, MODEL_OPT, MODEL_REQ, NO_DLS, VERBOSE,
@@ -240,8 +241,7 @@ def run_fit(args: argparse.Namespace) -> None:
     layers = parse_layers(args.layers)
     if layers == "sample":
         raise CliError("--layers takes explicit indices, workspace, or all")
-    target = Path(args.target)
-    folder = target if (target / "manifold.json").exists() else existing_folder(args.target)
+    folder = folder_or_manifold(args.target)
     mf = ManifoldFolder.load(folder, verify_manifest=False)
 
     hyperparams = {k: getattr(args, k) for k in _HYPERPARAMS if getattr(args, k) is not None}

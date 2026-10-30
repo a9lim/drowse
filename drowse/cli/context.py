@@ -97,6 +97,7 @@ def emit_json(payload: Any) -> None:
 
 def effective_config(
     args: argparse.Namespace, *, default_max_tokens: int = 1024,
+    yaml_vectors: bool = False,
 ) -> "ConfigFile":
     """Compose ``~/.drowse/config.yaml`` + ``-c`` files and stamp ``args``.
 
@@ -104,10 +105,15 @@ def effective_config(
     filled when the positional was omitted), ``max_tokens`` (verbs carrying
     ``--max-tokens`` default it to ``None`` so unset is distinguishable;
     ``default_max_tokens`` floors it), ``compile`` / ``cuda_graphs`` /
-    ``top_k_alts`` (YAML ``return_top_k``), ``steer`` (YAML ``vectors:`` fills
-    an unset ``-S``), plus the YAML-only sampling defaults ``temperature`` /
-    ``top_p`` / ``thinking`` / ``system_prompt`` that :func:`open_session`
-    applies to the session.  Finishes by installing any HF-namespaced
+    ``top_k_alts`` (YAML ``return_top_k``), plus the YAML-only sampling
+    defaults ``temperature`` / ``top_p`` / ``thinking`` / ``system_prompt``
+    that :func:`open_session` applies to the session.
+
+    YAML ``vectors:`` is the *server's* default steering: only
+    ``yaml_vectors=True`` (``serve``) lets it fill an unset ``-S``.  A
+    research verb (``experiment fan``) composes exactly the ``-S`` on its
+    command line, so a global ``~/.drowse/config.yaml`` serve default never
+    silently shifts a sweep.  Finishes by installing any HF-namespaced
     reference in the effective steering expression.
     """
     from drowse.cli.config_file import ConfigFile, ensure_vectors_installed
@@ -131,7 +137,7 @@ def effective_config(
         args.cuda_graphs = True
     if getattr(args, "top_k_alts", None) is None and composed.return_top_k is not None:
         args.top_k_alts = composed.return_top_k
-    if hasattr(args, "steer") and args.steer is None:
+    if yaml_vectors and args.steer is None:
         args.steer = composed.vectors
     steer = getattr(args, "steer", None)
     if steer:
@@ -226,30 +232,47 @@ def iter_manifolds(namespace: str | None = None) -> Iterator[tuple[str, "Manifol
     yield from iter_manifold_folders(namespace)
 
 
+def _split_ref(ref: str) -> tuple[str | None, str]:
+    """``[ns/]name`` → ``(ns or None, name)``.
+
+    Anything but one or two plain path components (an empty side, ``.`` /
+    ``..``, a further separator) is a one-line usage error here, never an
+    unsafe-path ``ValueError`` from the filesystem layer below.
+    """
+    ns, sep, name = ref.partition("/")
+    parts = (ns, name) if sep else (ref,)
+    if any(not p or p in {".", ".."} or "/" in p or "\\" in p for p in parts):
+        raise CliError(f"bad reference {ref!r} (want NAME or NS/NAME)")
+    return (ns, name) if sep else (None, ref)
+
+
 def resolve_manifold(ref: str) -> tuple[str, str]:
     """Address an **existing** manifold: ``(namespace, name)``.
 
     ``ns/name`` pins verbatim (existence is the backend's check); a bare name
     walks every installed namespace, so it reaches bundled ``default/``.  A
-    miss exits 1, a cross-namespace collision raises
-    :class:`~drowse.store.selectors.AmbiguousSelectorError` (exit 2).
+    malformed reference exits 2, a miss exits 1, and a cross-namespace
+    collision raises :class:`~drowse.store.selectors.AmbiguousSelectorError`
+    (exit 2).
     """
     from drowse.store.bundled import materialize_bundled_artifacts
     from drowse.store.selectors import AmbiguousSelectorError
 
+    ns, name = _split_ref(ref)
+    # Bundled folders materialize first, so even a pinned ``default/<name>``
+    # resolves before any session has run the bootstrap.
     materialize_bundled_artifacts()
-    if "/" in ref:
-        ns, name = ref.split("/", 1)
+    if ns is not None:
         return ns, name
-    matches = [ns for ns, mf in iter_manifolds() if mf.name == ref]
+    matches = [found for found, mf in iter_manifolds() if mf.name == name]
     if not matches:
-        raise CliError(f"manifold '{ref}' not found", exit_code=1)
+        raise CliError(f"manifold '{name}' not found", exit_code=1)
     if len(matches) > 1:
-        qualified = ", ".join(f"{ns}/{ref}" for ns in matches)
+        qualified = ", ".join(f"{found}/{name}" for found in matches)
         raise AmbiguousSelectorError(
-            f"ambiguous manifold '{ref}': matches {qualified}"
+            f"ambiguous manifold '{name}': matches {qualified}"
         )
-    return matches[0], ref
+    return matches[0], name
 
 
 def existing_folder(ref: str) -> Path:
@@ -263,12 +286,24 @@ def existing_folder(ref: str) -> Path:
     return folder
 
 
+def folder_or_manifold(ref: str) -> Path:
+    """A manifold folder **path** or an installed manifold reference.
+
+    An existing directory is taken as a path (and must hold a
+    ``manifold.json``); anything else resolves like :func:`existing_folder`.
+    """
+    path = Path(ref)
+    if path.is_dir() or (path / "manifold.json").exists():
+        if not (path / "manifold.json").is_file():
+            raise CliError(f"no manifold.json in {path}")
+        return path
+    return existing_folder(ref)
+
+
 def split_new(ref: str) -> tuple[str, str]:
     """Name a manifold or template **being authored**: bare → ``local/``."""
-    if "/" in ref:
-        ns, name = ref.split("/", 1)
-        return ns, name
-    return "local", ref
+    ns, name = _split_ref(ref)
+    return (ns or "local"), name
 
 
 def check_steering(expression: str | None) -> None:

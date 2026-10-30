@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from drowse.cli.context import (
-    CliError, check_steering, effective_config, emit_json, existing_folder,
+    CliError, check_steering, effective_config, emit_json, folder_or_manifold,
     note, open_session, progress,
 )
 from drowse.cli.spec import (
@@ -82,6 +82,7 @@ def run_transcript(args: argparse.Namespace) -> None:
     """Import a transcript as a fresh branch, then regenerate every
     assistant turn under its imported parent — with the full conversation
     history the recording had — and report the probe-reading drift."""
+    from drowse.errors import DrowseError
     from drowse.loom.transcript import Transcript
 
     path = Path(args.path)
@@ -98,17 +99,28 @@ def run_transcript(args: argparse.Namespace) -> None:
         leaf_id = transcript.import_into(session, mode="default", strict=args.strict)
         turns = [t for t in transcript.turns if t.role != "system"]
         branch = session.tree.path_to(leaf_id)[-len(turns):] if turns else []
+        if len(branch) != len(turns):
+            raise CliError(
+                f"{path}: imported branch has {len(branch)} node(s) for "
+                f"{len(turns)} turn(s)", exit_code=1,
+            )
         print(f"transcript: {len(turns)} turns loaded (leaf: {leaf_id[:8]})\n")
-        for idx, (turn, node) in enumerate(zip(turns, branch, strict=True)):
+        for idx, (turn, node) in enumerate(zip(turns, branch)):
             if turn.role != "assistant" or node.parent_id is None:
                 continue
             recipe = turn.recipe
             print(f"--- replay turn {idx} ---")
-            result = session.generate(
-                None, parent_node_id=node.parent_id, append_same_role=False,
-                steering=recipe.steering if recipe is not None else None,
-                sampling=recipe.sampling if recipe is not None else None,
-            ).first
+            # One turn's failure (a recorded steering that no longer
+            # resolves, say) is reported and the replay moves on.
+            try:
+                result = session.generate(
+                    None, parent_node_id=node.parent_id, append_same_role=False,
+                    steering=recipe.steering if recipe is not None else None,
+                    sampling=recipe.sampling if recipe is not None else None,
+                ).first
+            except DrowseError as e:
+                print(f"  replay failed: {e.user_message()[1]}\n")
+                continue
             print(f"assistant: {result.text[:120]}")
             if turn.readings:
                 actual = {
@@ -178,8 +190,7 @@ def run_naturalness(args: argparse.Namespace) -> None:
     from drowse.generation.sampling import SamplingConfig
     from drowse.geometry.profile import Profile
 
-    target = Path(args.manifold)
-    folder = target if (target / "manifold.json").exists() else existing_folder(args.manifold)
+    folder = folder_or_manifold(args.manifold)
     node_groups, domain, node_coords = behavior_inputs(folder)
     linear_term = _single_manifold_term(args.steer) if args.compare_linear else None
     effective_config(args, default_max_tokens=128)
@@ -254,7 +265,7 @@ GROUP = Verb(
                 arg("-g", "--grid", action="append", required=True, metavar="CONCEPT=ALPHAS",
                     help="Alpha grid term, repeatable (e.g. happy.sad=-0.4,0,0.4)"),
                 STEER.but(help="Fixed steering composed under every grid row "
-                               "(overrides YAML vectors:)"),
+                               "(YAML vectors: is serve-only and never applies)"),
                 MODEL_LOAD, PROBES,
                 arg(_MAX_TOKENS, type=positive_int, default=None,
                     help="Max tokens per grid row (default: 256)"),

@@ -73,11 +73,17 @@ def warm_up(session: Any) -> None:
 def enable_live_lens(session: Any) -> bool:
     """Stream the live J-lens readout when a compatible lens is selected.
 
-    The persisted ``lens use`` selection is the user's choice and is never
-    rewritten: an active source is used when it matches the loaded weights and
-    otherwise left alone (live readout off, with a hint).  Only when nothing is
-    selected does serve adopt the best compatible prepared source, in
-    :func:`~drowse.lens.sources.lens_source_preference_key` order.
+    The policy, in full:
+
+    - **A source is selected** (``lens use``): it is the user's choice and is
+      never rewritten.  Compatible with the loaded weights → live readout on;
+      incompatible → live readout off, with a ``lens use`` hint.
+    - **Nothing is selected**: serve adopts the best compatible prepared
+      source, in :func:`~drowse.lens.sources.lens_source_preference_key`
+      order, and that adoption **persists** — the lens runtime reads its
+      selection from ``active.json`` only, so there is no in-memory choice to
+      fall back to.  No compatible source → the trial selection is cleared
+      and the live readout stays off.
     """
     try:
         from drowse.lens.sources import (
@@ -201,7 +207,7 @@ def run(args: argparse.Namespace) -> None:
     api_key = args.api_key or os.environ.get("DROWSE_API_KEY")
     if not is_loopback_host(args.host) and not api_key:
         raise CliError("non-loopback binding requires --api-key or DROWSE_API_KEY")
-    effective_config(args)
+    effective_config(args, yaml_vectors=True)
     if not args.model:
         raise CliError(
             "model required: pass a HuggingFace repo id (e.g. `drowse serve "
