@@ -325,8 +325,7 @@ def _run_manifold_compare(args: argparse.Namespace) -> None:
     # front and share it across every ``cosine_similarity`` call below.
     # Failure is fatal — there is no Euclidean path, so a missing neutral
     # cache surfaces directly instead of degrading silently.
-    from drowse.geometry.whitener import LayerWhitener
-    from drowse.errors import WhitenerError
+    from drowse.geometry.whitener import LayerWhitener, WhitenerError
 
     whitener: "Any | None"
     try:
@@ -1008,7 +1007,7 @@ def _run_manifold_transfer(args: argparse.Namespace) -> None:
     # activations already resident for Procrustes; an exact model-free repeat
     # uses the offline cache loader. Either path reads the target neutral
     # artifact once for this operation.
-    from drowse.errors import WhitenerError
+    from drowse.geometry.whitener import WhitenerError
 
     try:
         (

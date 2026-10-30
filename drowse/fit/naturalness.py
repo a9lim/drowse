@@ -15,7 +15,8 @@ uses the manifold's own per-model layout — the authored coordinates, or the
 discover-mode layout of the fitted manifold — so it shares the activation
 manifold's chart.
 
-:func:`evaluate` is the whole experiment (``drowse experiment naturalness``).
+:func:`evaluate` is the whole experiment (``drowse experiment naturalness``);
+:func:`preflight` runs its model-free validation up front.
 """
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ from drowse.geometry.subspace import (
 
 if TYPE_CHECKING:
     from drowse.session.session import DrowseSession
+    from drowse.steering.grammar import ManifoldTerm
     from drowse.store.manifold_folder import ManifoldFolder
 
 
@@ -266,6 +268,46 @@ def resolve_folder(manifold: "str | Path | ManifoldFolder") -> "ManifoldFolder":
     return ManifoldFolder.load(path, verify_manifest=False)
 
 
+def preflight(
+    manifold: "str | Path | ManifoldFolder",
+    steering: str,
+    compare_linear: bool = False,
+) -> "ManifoldFolder":
+    """Validate a naturalness eval without a model; return the resolved folder.
+
+    Everything :func:`evaluate` can reject before it needs a session: the
+    manifold must resolve to one folder with a node corpus (not ``baked``) and
+    at least 3 nodes, and ``compare_linear`` needs ``steering`` to be a single
+    ``%`` manifold term.  Raises :class:`NaturalnessError`; call it before an
+    expensive model load to fail fast.
+    """
+    folder = resolve_folder(manifold)
+    if folder.fit_mode == "baked":
+        raise NaturalnessError(
+            f"naturalness: {folder.name!r} is a baked manifold with no node corpus"
+        )
+    if len(folder.node_labels) < 3:
+        raise NaturalnessError(
+            f"naturalness: {folder.name!r} has {len(folder.node_labels)} node(s); "
+            "a behavior manifold needs at least 3"
+        )
+    if compare_linear:
+        _single_manifold_term(steering)
+    return folder
+
+
+def _single_manifold_term(steering: str) -> "ManifoldTerm":
+    from drowse.steering.grammar import ManifoldTerm, parse_expr
+
+    terms = list(parse_expr(steering).alphas.values())
+    if len(terms) != 1 or not isinstance(terms[0], ManifoldTerm):
+        raise NaturalnessError(
+            "naturalness: compare_linear requires the steering expression "
+            "to be a single manifold term"
+        )
+    return terms[0]
+
+
 def _behavior_layout(
     session: "DrowseSession", folder: "ManifoldFolder",
 ) -> tuple[ManifoldDomain, torch.Tensor]:
@@ -275,23 +317,22 @@ def _behavior_layout(
     have it per model, so they come from the fitted manifold (a cache hit when
     the folder is already fitted for this model).
     """
-    if folder.fit_mode == "baked":
-        raise NaturalnessError(
-            f"naturalness: {folder.name!r} is a baked manifold with no node corpus"
-        )
     if folder.fit_mode == "authored":
-        domain = domain_from_spec(folder.domain)
-        coords = torch.tensor(folder.node_coords, dtype=torch.float32)
-    else:
-        fitted = session.fit(folder.folder)
-        domain = fitted.domain
-        coords = fitted.node_coords.detach().to(device="cpu", dtype=torch.float32)
-    if coords.shape[0] < 3:
-        raise NaturalnessError(
-            f"naturalness: {folder.name!r} has {coords.shape[0]} node(s); a "
-            "behavior manifold needs at least 3"
+        return (
+            domain_from_spec(folder.domain),
+            torch.tensor(folder.node_coords, dtype=torch.float32),
         )
-    return domain, coords
+    fitted = session.fit(folder.folder)
+    if list(fitted.node_labels) != list(folder.node_labels):
+        raise NaturalnessError(
+            f"naturalness: the fitted {folder.name!r} nodes "
+            f"{list(fitted.node_labels)} do not match the folder's corpus nodes "
+            f"{list(folder.node_labels)}"
+        )
+    return (
+        fitted.domain,
+        fitted.node_coords.detach().to(device="cpu", dtype=torch.float32),
+    )
 
 
 def _corpus_rows(
@@ -335,22 +376,13 @@ def evaluate(
     """
     from drowse.generation.sampling import SamplingConfig
     from drowse.geometry.profile import Profile
-    from drowse.steering.grammar import ManifoldTerm, parse_expr
 
     def _say(msg: str) -> None:
         if on_progress is not None:
             on_progress(msg)
 
-    folder = resolve_folder(manifold)
-    linear_term: ManifoldTerm | None = None
-    if compare_linear:
-        terms = list(parse_expr(steering).alphas.values())
-        if len(terms) != 1 or not isinstance(terms[0], ManifoldTerm):
-            raise NaturalnessError(
-                "naturalness: compare_linear requires the steering expression "
-                "to be a single manifold term"
-            )
-        linear_term = terms[0]
+    folder = preflight(manifold, steering, compare_linear)
+    linear_term = _single_manifold_term(steering) if compare_linear else None
     domain, node_coords = _behavior_layout(session, folder)
     model, tokenizer, device = session.model, session.tokenizer, session.device
     model_type = getattr(getattr(model, "config", None), "model_type", None)
@@ -410,6 +442,7 @@ __all__ = [
     "evaluate",
     "fit_behavior_manifold",
     "node_behavior_centroid",
+    "preflight",
     "resolve_folder",
     "response_distributions",
     "to_hellinger",

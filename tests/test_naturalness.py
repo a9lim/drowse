@@ -17,6 +17,7 @@ from drowse.fit.naturalness import (
     evaluate,
     fit_behavior_manifold,
     node_behavior_centroid,
+    preflight,
     response_distributions,
     to_hellinger,
     trajectory_naturalness,
@@ -251,18 +252,28 @@ def test_evaluate_discover_manifold_uses_the_fitted_layout(
     assert payload["results"][0]["mean_bhattacharyya"] == pytest.approx(score.mean)
 
 
-def test_evaluate_rejects_a_two_node_manifold(
+def test_evaluate_rejects_a_two_node_manifold_before_fitting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = _discover_folder(tmp_path, monkeypatch, nodes=2)
+    session = _FakeSession()
+    with pytest.raises(NaturalnessError, match="at least 3"):
+        evaluate(session, folder, "p", "0.5 mood0")  # type: ignore[arg-type]
+    assert session.fit_calls == [] and session.generated == []
+
+
+def test_evaluate_rejects_a_fit_whose_nodes_differ_from_the_corpus(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from drowse.geometry.domains import CustomDomain
     from drowse.geometry.manifold import Manifold
 
-    folder = _discover_folder(tmp_path, monkeypatch, nodes=2)
+    folder = _discover_folder(tmp_path, monkeypatch, nodes=3)
     fitted = Manifold(
-        name="moods", domain=CustomDomain(1), node_labels=["mood0", "mood1"],
-        node_coords=torch.tensor([[1.0], [-1.0]]), layers={},
+        name="moods", domain=CustomDomain(1), node_labels=["mood2", "mood1", "mood0"],
+        node_coords=torch.tensor([[1.0], [0.0], [-1.0]]), layers={},
     )
-    with pytest.raises(NaturalnessError, match="at least 3"):
+    with pytest.raises(NaturalnessError, match="do not match"):
         evaluate(_FakeSession(fitted), folder, "p", "0.5 mood0")  # type: ignore[arg-type]
 
 
@@ -271,23 +282,31 @@ def test_evaluate_rejects_a_folder_that_is_not_a_manifold(tmp_path: Path) -> Non
         evaluate(_FakeSession(), tmp_path / "missing", "p", "0.5 x")  # type: ignore[arg-type]
 
 
-def test_evaluate_compare_linear_requires_a_single_manifold_term(
+def test_evaluate_compare_linear_requires_a_single_manifold_term_before_fitting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     folder = _discover_folder(tmp_path, monkeypatch, nodes=4)
+    session = _FakeSession()
     with pytest.raises(NaturalnessError, match="single manifold term"):
         evaluate(  # type: ignore[arg-type]
-            _FakeSession(), folder, "p", "0.5 formal.casual", compare_linear=True,
+            session, folder, "p", "0.5 formal.casual", compare_linear=True,
         )
+    assert session.fit_calls == []
 
 
-def test_naturalness_preflight_does_not_hash_fitted_payloads(
+def test_preflight_accepts_discover_manifolds_by_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = _discover_folder(tmp_path, monkeypatch, nodes=3)
+    resolved = preflight("local/moods", "0.5 moods%mood1", compare_linear=True)
+    assert resolved.folder == folder and resolved.is_discover
+
+
+def test_preflight_does_not_hash_fitted_payloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import json
-    from argparse import Namespace
 
-    import drowse.cli.runners as runners
     from drowse.base import integrity
     from drowse.store.manifolds import (
         ManifoldFolder,
@@ -324,18 +343,6 @@ def test_naturalness_preflight_does_not_hash_fitted_payloads(
         hashed.append(Path(path))
         return real_hash(Path(path))
 
-    class StopAfterPreflight(Exception):
-        pass
-
-    def stop(_args: Namespace) -> None:
-        raise StopAfterPreflight
-
     monkeypatch.setattr(integrity, "hash_file", track_hash)
-    monkeypatch.setattr(
-        runners, "_load_effective_config", lambda _args, **_kw: None,
-    )
-    monkeypatch.setattr(runners, "_print_startup", stop)
-    with pytest.raises(StopAfterPreflight):
-        runners._run_experiment_naturalness(Namespace(manifold=str(folder)))
-
+    assert preflight(folder, "0.5 behavior%a").folder == folder
     assert hashed == []
