@@ -1,49 +1,7 @@
-"""The unified read-side instruments.
+"""The read plane: whitened geometry probes and the instrument contract.
 
-One contract over the three read families — geometry (Monitor subspace
-probes), the Jacobian-lens readout channel, SAE feature reads.  See
-``types.py`` for the shared vocabulary and ``protocol.py`` for the
-instrument/run contract and the division of labor.
+``types`` is the shared read vocabulary, ``protocol`` the instrument/run
+contract, ``measurements`` the versioned envelope, ``geometry`` the geometry
+instrument, and ``monitor`` / ``monitor_flat`` / ``monitor_attach`` the
+whitened-subspace scoring engine.  Import from the submodules.
 """
-
-from drowse.readout.types import (
-    AGG_TAIL_DEPTH,
-    Assignment,
-    Axis,
-    DepthBasis,
-    DepthSummary,
-    Distance,
-    Fraction,
-    GateChannel,
-    GateRef,
-    InstrumentBinding,
-    InstrumentPlan,
-    InstrumentPrep,
-    LensPrep,
-    Membership,
-    ReadRequest,
-    ScalarReading,
-    parse_gate_ref,
-    validate_gate_channels,
-)
-
-__all__ = [
-    "AGG_TAIL_DEPTH",
-    "Assignment",
-    "Axis",
-    "DepthBasis",
-    "DepthSummary",
-    "Distance",
-    "Fraction",
-    "GateChannel",
-    "GateRef",
-    "InstrumentBinding",
-    "InstrumentPlan",
-    "InstrumentPrep",
-    "LensPrep",
-    "Membership",
-    "ReadRequest",
-    "ScalarReading",
-    "parse_gate_ref",
-    "validate_gate_channels",
-]

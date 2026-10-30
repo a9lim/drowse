@@ -16,21 +16,14 @@ An **InstrumentRun** owns the instrument-side generation-scoped state: the
 immutable source/spec binding (``binding``), step stashes, and per-generation
 active flags (geometry's curved warm feet stay in the Monitor engine).
 ``bound`` distinguishes a generation-bound run from the idle passthrough run
-that backs out-of-generation reads.  Repeated ``observe`` calls for the same
-``step_id`` are memoized while the run is bound — an idle run never memoizes,
-since it persists indefinitely and a repeated step id with different hidden
-states must not read stale.  The hot paths are wired through step identity:
-the decode loop owns one ``step_id`` per forward (``len(generated_ids)``
-pre-forward) and hands the SAME value to the capture sink (``step_callback``),
-the gate callback (``score_callback``), and the token tap (the internal
-``StepTokenCallback``).  Full-roster reads — the FULL-incremental sink, the
-lens/SAE display readings — call ``prime_observation`` so one forward's gate
-and payload reads share a single scoring pass; partial reads (gating scalar
-subsets, lean ``coords_only`` rows, ``only=`` restrictions) NEVER prime.  The
-matrix-granular gate→display reuse (band logits, encoded activations) stays
-the workers' stash mechanism, step-keyed (``stash["step"] == step_id`` —
-structural staleness, idempotent reuse): a reading-level memo cannot carry
-logit-level partial-row reuse without a second host sync.
+that backs out-of-generation reads.  The hot paths are wired through step
+identity: the decode loop owns one ``step_id`` per forward
+(``len(generated_ids)`` pre-forward) and hands the SAME value to the capture
+sink (``step_callback``), the gate callback (``score_callback``), and the
+token tap (the internal ``StepTokenCallback``).  Gate→display reuse within a
+forward is the capture sink's row (geometry) or the workers' step-keyed
+stash (``stash["step"] == step_id`` — band logits, encoded activations), not
+a reading-level memo.
 
 **The protocols below are the contract the session registry
 (``session.instruments``), the steering composer's gate preflight, and the
@@ -91,14 +84,7 @@ class InstrumentRun(Protocol):
     def observe(
         self, step_id: int, hidden: "dict[int, torch.Tensor]",
     ) -> "dict[str, Any]":
-        """Measure one forward, memoized by ``step_id`` while bound."""
-        ...
-
-    def prime_observation(
-        self, step_id: int, readings: "dict[str, Any]",
-    ) -> None:
-        """Seed the step memo with COMPLETE readings a hot-path scorer
-        already computed this forward.  Partial reads never prime."""
+        """Measure one forward."""
         ...
 
     def observe_aggregate(

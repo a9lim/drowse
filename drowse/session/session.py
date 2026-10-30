@@ -6006,8 +6006,6 @@ class DrowseSession:
                 # sole consumer); append even an empty dict to keep row indices
                 # aligned with decode forwards.  The full roster is pooled once at
                 # finalize from the tail ring (``_score_aggregate_only``).
-                # NEVER primes the observe memo — these rows are a scalar
-                # subset, not full readings (the completeness trap).
                 del step_id
                 self._incremental_gate_scores.append(
                     self._monitor.score_planned_gate_scalars(latest, gate_plan)
@@ -6046,10 +6044,6 @@ class DrowseSession:
             def _score_step_lean(
                 step_id: int, latest: dict[int, torch.Tensor],
             ) -> None:
-                # NEVER primes the observe memo — ``coords_only`` readings
-                # omit nearest / assignment / per-layer traces, so exposing
-                # them as the full ``observe()`` result would be the second
-                # completeness trap beyond the gating subset.
                 del step_id
                 self._incremental_readings.append(
                     self._monitor.score_single_token(latest, coords_only=True)
@@ -6065,7 +6059,6 @@ class DrowseSession:
             self._monitor.reset_curved_feet()
             self._monitor.enable_curved_warm(True)
         elif not widen and self._monitor.probe_names and demand.need_per_token:
-            geometry_run = self._geometry_instrument.current_run
 
             def _score_step(
                 step_id: int, latest: dict[int, torch.Tensor],
@@ -6074,17 +6067,11 @@ class DrowseSession:
                 # only retained device payload.  Append even an empty dict so
                 # row indices remain aligned with decode forwards; finalization
                 # trims any terminal EOS-only overcapture to generated_ids.
-                readings = (
+                # The gate callback and the token tap read this row.
+                del step_id
+                self._incremental_readings.append(
                     self._monitor.score_single_token(latest) if latest else {}
                 )
-                self._incremental_readings.append(readings)
-                # FULL-incremental rows ARE the complete per-probe readings,
-                # so prime the geometry run's step-keyed observe memo — the
-                # gate callback and the token tap consult ``observe(step)``
-                # for this forward and hit it instead of rescoring.  The
-                # gating-subset and lean sinks never prime (partial rows).
-                if readings:
-                    geometry_run.prime_observation(step_id, readings)
 
             if (
                 lens_plan.final_aggregate or has_lens_gate
@@ -6275,7 +6262,7 @@ class DrowseSession:
         return per_token
 
     def _score_incremental(
-        self, generated_ids: list[int], *, accumulate: bool = True,
+        self, generated_ids: list[int],
     ) -> tuple[dict[str, "ProbeReading"], dict[str, list[float]]]:
         """Aggregate readings + per-token coord stream from live-scored rows."""
         names = list(self._monitor.probe_names)
@@ -6292,15 +6279,12 @@ class DrowseSession:
         agg_vals = {
             name: agg_row.get(name, empty_agg[name]) for name in names
         }
-        if accumulate and agg_vals:
-            self._monitor.accumulate_readings(agg_vals)
         return agg_vals, per_token
 
     def _score_aggregate_only(
         self,
         generated_ids: list[int],
         *,
-        accumulate: bool = True,
         pooled: dict[int, torch.Tensor] | None = None,
     ) -> dict[str, "ProbeReading"]:
         """Score *only* the end-of-gen aggregate from the bounded tail ring.
@@ -6334,16 +6318,12 @@ class DrowseSession:
             pooled,
         )
         # Fill any probe the pool missed (e.g. a layer absent from the ring).
-        agg_vals = {name: agg_vals.get(name, empty[name]) for name in names}
-        if accumulate and agg_vals:
-            self._monitor.accumulate_readings(agg_vals)
-        return agg_vals
+        return {name: agg_vals.get(name, empty[name]) for name in names}
 
     def _score_lean_incremental(
         self,
         generated_ids: list[int],
         *,
-        accumulate: bool = True,
         pooled: dict[int, torch.Tensor] | None = None,
     ) -> tuple[dict[str, "ProbeReading"], dict[str, list[float]]]:
         """Lean per-token coord stream + full aggregate from the tail ring.
@@ -6361,7 +6341,7 @@ class DrowseSession:
         rows = self._incremental_readings[:n]
         per_token = self._extract_coord_stream(rows, n, names)
         agg_vals = self._score_aggregate_only(
-            generated_ids, accumulate=accumulate, pooled=pooled,
+            generated_ids, pooled=pooled,
         )
         return agg_vals, per_token
 
@@ -6371,7 +6351,6 @@ class DrowseSession:
         hidden: dict[int, torch.Tensor],
         *,
         per_token: Literal[False] = False,
-        accumulate: bool = False,
     ) -> dict[str, "ProbeReading"]: ...
     @overload
     def score_hidden(
@@ -6379,14 +6358,12 @@ class DrowseSession:
         hidden: dict[int, torch.Tensor],
         *,
         per_token: Literal[True],
-        accumulate: bool = False,
     ) -> tuple[dict[str, "ProbeReading"], dict[str, list[float]]]: ...
     def score_hidden(
         self,
         hidden: dict[int, torch.Tensor],
         *,
         per_token: bool = False,
-        accumulate: bool = False,
     ) -> (
         dict[str, "ProbeReading"]
         | tuple[dict[str, "ProbeReading"], dict[str, list[float]]]
@@ -6409,10 +6386,6 @@ class DrowseSession:
 
         Mixed shapes (``[D]`` alongside ``[T, D]``) or uneven ``T`` across
         layers raise :class:`DrowseError`. Empty dict raises.
-
-        ``accumulate`` defaults to ``False`` — ad-hoc researcher scoring
-        does not pollute the monitor's history. Pass ``True`` to feed this call
-        into the same cross-generation stats pipeline as generation finalization.
         """
         if not hidden:
             raise DrowseError("score_hidden: no layers provided")
@@ -6463,16 +6436,14 @@ class DrowseSession:
                     "got [D] (single state per layer)",
                 )
             # Fall through to the monitor's single-state path.
-            return self._monitor.measure_from_hidden(hidden, accumulate=accumulate)
+            return self._monitor.score_single_token(hidden)
 
         # [T, D] path — delegate to monitor.score_stack. Wrap its
         # ValueError (uneven T across layers is the only path that
         # can reach here after the shape checks above) so callers
         # catching DrowseError get a uniform exception surface.
         try:
-            agg, per_tok = self._monitor.score_stack(
-                hidden, accumulate=accumulate,
-            )
+            agg, per_tok = self._monitor.score_stack(hidden)
         except ValueError as exc:
             raise DrowseError(f"score_hidden: {exc}") from exc
         return (agg, per_tok) if per_token else agg
@@ -7322,11 +7293,6 @@ class DrowseSession:
         screen.  ``clear_history`` is the destructive verb.
         """
         self.tree.rewind()
-        # Monitor history is kept aligned with the active path's
-        # finalize stream; rewinding the path means dropping the trailing
-        # readings so live trait scoring continues from a coherent state.
-        # See ``clear_history`` for the wipe-all variant.
-        self._monitor.reset_history()
 
     def clear_history(self) -> None:
         """Reset the tree to a fresh root.
@@ -7336,7 +7302,6 @@ class DrowseSession:
         non-destructive step-back.
         """
         self.tree.reset()
-        self._monitor.reset_history()
 
     def restore_tree(self, data: dict[str, Any]) -> LoomTree:
         """Atomically replace the live conversation with a validated tree.
@@ -7371,7 +7336,6 @@ class DrowseSession:
         restored.rev = max(old_tree.rev, restored.rev) + 1
         self.tree = restored
         self._joint_logprob_cache.clear()
-        self._monitor.reset_history()
 
         new_ids = set(restored.nodes)
         # LoomTree deliberately accepts the session EventBus through a
@@ -8996,8 +8960,7 @@ class DrowseSession:
                 # ``step_id`` is the decode loop's forward index (the internal
                 # StepTokenCallback contract) — the SAME value this forward's
                 # gate callback received, so the lens/SAE display steps below
-                # can reuse the gate's step-keyed stash rows and the geometry
-                # payload can hit the run's observe memo.  User callbacks keep
+                # can reuse the gate's step-keyed stash rows.  User callbacks keep
                 # the public six-argument TokenCallback shape (invoked below).
                 nonlocal mean_logprob_sum, mean_logprob_count, mean_logprob_missing
                 self._last_token_probe_payload = None

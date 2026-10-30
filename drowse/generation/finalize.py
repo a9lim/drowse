@@ -112,20 +112,14 @@ def finalize_generation(
     agg_vals: dict[str, ProbeReading] = {}
     if return_probe_readings and session._monitor.probe_names and generated_ids:
         if capture_mode is CaptureMode.INCREMENTAL:
-            agg_vals, per_token = session._score_incremental(
-                generated_ids, accumulate=not stateless,
-            )
+            agg_vals, per_token = session._score_incremental(generated_ids)
         elif capture_mode is CaptureMode.LEAN_INCREMENTAL:
             agg_vals, per_token = session._score_lean_incremental(
-                generated_ids,
-                accumulate=not stateless,
-                pooled=_aggregate_tail_slice(),
+                generated_ids, pooled=_aggregate_tail_slice(),
             )
         elif session._capture_state.aggregate_only:
             agg_vals = session._score_aggregate_only(
-                generated_ids,
-                accumulate=not stateless,
-                pooled=_aggregate_tail_slice(),
+                generated_ids, pooled=_aggregate_tail_slice(),
             )
             per_token = {}
         else:
@@ -133,7 +127,6 @@ def finalize_generation(
                 aggregate_index = session._aggregate_forward_index(generated_ids)
                 agg_vals, per_token = session._monitor.score_per_token(
                     captured_stack, generated_ids, session._tokenizer,
-                    accumulate=not stateless,
                     aggregate_index=(
                         -1 if aggregate_index is None else aggregate_index
                     ),

@@ -42,13 +42,14 @@ if TYPE_CHECKING:
 class GeometryRun:
     """Per-generation measurement executor for the geometry family.
 
-    Deliberately thin: the Monitor engine owns the whitened reads and its
-    own generation-scoped warm state (curved feet, warm-start flags reset
-    by the capture planner), and the four capture modes' per-token scoring
-    stays session/HiddenCapture wiring.  The run contributes what its
-    siblings do — the immutable per-generation :class:`InstrumentBinding`
-    spec snapshot, the ``observe`` step memo, and the uniform protocol
-    face over the Monitor's scoring entry points.
+    Deliberately thin: the Monitor engine owns the whitened reads and its own
+    generation-scoped warm state (curved feet), and the capture modes'
+    per-token scoring stays session/HiddenCapture wiring.  The run carries
+    the per-generation :class:`InstrumentBinding` and the protocol read faces.
+    Idle reads hold the geometry-state lock (the Monitor's roster walk tears
+    under a concurrent idle attach/detach); bound reads stay lock-free —
+    mid-generation mutation is excluded by ``detach``'s
+    reject-during-generation contract, not by a lock.
     """
 
     def __init__(
@@ -61,81 +62,35 @@ class GeometryRun:
         self._instrument = instrument
         self.binding = binding
         self.bound = bound
-        self._memo_step: int | None = None
-        self._memo_readings: dict[str, Any] | None = None
 
     # ------------------------------------------------------------ protocol
 
     def observe(
         self, step_id: int, hidden: dict[int, torch.Tensor],
     ) -> dict[str, Any]:
-        """Full whitened readings for the roster at this step, memoized by
-        ``step_id``.  An idle run never memoizes (it persists
-        indefinitely; a repeated ``step_id`` with different hidden states
-        must not read stale).  The idle read holds the geometry-state
-        lock — the Monitor's roster walk tears under a concurrent idle
-        attach/detach; the bound path stays lock-free (per-token hot
-        path — mid-generation mutation is excluded by ``detach``'s
-        reject-during-generation contract, not by a lock)."""
+        """Full whitened readings for the roster at this forward."""
+        del step_id
+        monitor = self._instrument._session._monitor
         if not self.bound:
             with self._instrument.state_lock:
-                return self._instrument._session._monitor.score_single_token(
-                    hidden,
-                )
-        if (
-            step_id >= 0
-            and self._memo_step == step_id
-            and self._memo_readings is not None
-        ):
-            return self._memo_readings
-        readings = self._instrument._session._monitor.score_single_token(hidden)
-        if step_id >= 0:
-            # A negative step is the "no step identity" sentinel — caching
-            # under it would serve one stale read to every later
-            # sentinel-stepped call.
-            self._memo_step = step_id
-            self._memo_readings = readings
-        return readings
-
-    def prime_observation(
-        self, step_id: int, readings: dict[str, Any],
-    ) -> None:
-        """Prime the step memo with FULL per-probe readings a hot-path
-        scorer already computed this forward (the FULL-incremental sink) —
-        a later ``observe(step_id, …)`` for the same forward returns them
-        without a second scoring pass.  Bound runs only (an idle run never
-        memoizes); a negative step (the no-identity sentinel) never primes.
-        Callers MUST pass complete-roster readings: a gating
-        scalar subset or a ``coords_only`` lean row primed here would be
-        served as the full reading (the completeness trap), so those sinks
-        never prime."""
-        if not self.bound or step_id < 0:
-            return
-        self._memo_step = step_id
-        self._memo_readings = readings
+                return monitor.score_single_token(hidden)
+        return monitor.score_single_token(hidden)
 
     def observe_aggregate(
         self, pooled: dict[int, torch.Tensor],
     ) -> dict[str, Any]:
-        """One full-roster read at the pooled last-content slice —
-        bit-identical to a live read at that token (``Monitor.score_
-        aggregate`` routes through the same full scorer as
-        ``score_single_token``; it additionally fp32-casts and row-selects
-        ``[T, D]`` stacks, so it accepts every pooled shape the finalize
-        paths produce).  The session's ``_score_aggregate_only`` reaches
-        the roster through this method.  Idle reads hold the
-        state lock; the bound finalize read runs under ``_gen_lock``,
-        which every roster mutation also takes (``_model_exclusive``)."""
+        """One full-roster read at the pooled last-content slice — the same
+        full scorer a live read uses, so it is bit-identical to a live read at
+        that token.  The bound finalize read runs under ``_gen_lock``, which
+        every roster mutation also takes (``_model_exclusive``)."""
+        monitor = self._instrument._session._monitor
         if not self.bound:
             with self._instrument.state_lock:
-                return self._instrument._session._monitor.score_aggregate(
-                    pooled,
-                )
-        return self._instrument._session._monitor.score_aggregate(pooled)
+                return monitor.score_aggregate(pooled)
+        return monitor.score_aggregate(pooled)
 
     def close(self) -> None:
-        self._memo_step = None
-        self._memo_readings = None
+        """Nothing generation-scoped to release (the Monitor owns warm feet)."""
 
 
 class GeometryInstrument:

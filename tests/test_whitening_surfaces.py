@@ -118,9 +118,10 @@ class TestMonitorWhitened:
         torch.manual_seed(3)
         for _ in range(5):
             h = torch.randn(8)
-            frac_t, cdist_q, invert_q, cdist_nodes = _layer_geometry(
-                probe, 0, h,
+            frac_t, cdist_q, invert_q = _layer_geometry(
+                probe, 0, h, w.apply_inv(0, h),
             )
+            cdist_nodes = probe.whitened[0].node_white
             frac = float(frac_t.item())
             assert 0.0 <= frac <= 1.0 + 1e-6
 
@@ -167,7 +168,7 @@ class TestMonitorWhitened:
         torch.manual_seed(11)
         for _ in range(5):
             h = torch.randn(8)
-            f = float(_layer_geometry(p, 0, h)[0].item())
+            f = float(_layer_geometry(p, 0, h, iso.apply_inv(0, h))[0].item())
             assert 0.0 <= f <= 1.0 + 1e-6
 
             # Euclidean reference: L2-orthogonal projection energy share onto

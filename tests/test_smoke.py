@@ -317,24 +317,17 @@ class TestMonitor:
         hidden = _encode_and_capture_all(
             model, tokenizer, "How are you feeling?", text, layers, device,
         )
-        monitor.measure_from_hidden(hidden)
+        readings = monitor.score_single_token(hidden)
 
-        # Should have one entry per generation
-        happy_hist = monitor.history["happy"]
-        sad_hist = monitor.history["sad"]
-        assert len(happy_hist) == 1, "Monitor should record one entry per generation"
-        assert len(sad_hist) == 1
-
-        # Structural: the coordinate readings are finite (history stores the
-        # per-probe coordinate tuple; axis 0 is the scalar).  The semantic
+        # Structural: the coordinate readings are finite (axis 0 is the
+        # scalar).  The semantic
         # claim "happy steering → higher happy than sad reading when remeasured
         # via a fresh forward pass" is noise-dominated at this model scale
         # (3B-param, 20-token gen) — test_throughput_regression covers whether
         # steering actually runs.
         import math
-        for hist in (happy_hist, sad_hist):
-            v = hist[0][0]
-            assert math.isfinite(v)
+        for name in ("happy", "sad"):
+            assert math.isfinite(readings[name].coords[0])
 
     def test_throughput_regression(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any, layer_means: Any) -> None:
         """Steered generation should be at least 85% of vanilla throughput."""

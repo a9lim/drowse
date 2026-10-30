@@ -826,12 +826,10 @@ def test_finalize_reuses_scored_probe_aggregate() -> None:
             generated_ids: list[int],
             tokenizer: Any,
             *,
-            accumulate: bool = True,
             aggregate_index: int | None = None,
         ) -> tuple[dict[str, ProbeReading], dict[str, list[float]]]:
             assert list(captured) == [0]
             assert generated_ids == [0, 1]
-            assert accumulate is False
             assert aggregate_index == 1
             return {"toy": reading}, {"toy": [0.1, 0.25]}
 
@@ -1260,9 +1258,6 @@ def test_finalize_lean_incremental_probe_path() -> None:
             assert captured is pooled_slice
             return {"toy": full_agg}
 
-        def accumulate_readings(self, _vals: Any) -> None:
-            pass
-
     monitor = Monitor()
     state = GenerationState()
     state.finish_reason = "length"
@@ -1341,9 +1336,6 @@ def test_finalize_gating_subset_probe_path() -> None:
             assert captured is pooled_slice
             return {"toy": full_agg}
 
-        def accumulate_readings(self, _vals: Any) -> None:
-            pass
-
     monitor = Monitor()
     state = GenerationState()
     state.finish_reason = "length"
@@ -1409,10 +1401,8 @@ def test_finalize_reuses_one_aggregate_pool_for_monitor_lens_and_sae() -> None:
     def score_aggregate_only(
         _generated_ids: list[int],
         *,
-        accumulate: bool = True,
         pooled: dict[int, torch.Tensor] | None = None,
     ) -> dict[str, ProbeReading]:
-        del accumulate
         seen.append(("monitor", pooled is expected_pooled))
         return {"toy": monitor_reading}
 

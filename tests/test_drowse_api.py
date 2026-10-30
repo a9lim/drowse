@@ -1171,29 +1171,6 @@ class TestScoreSingleToken:
         # Read is the full per-probe ProbeReading (coords axis-0 the scalar).
         assert isinstance(scores["test_probe"], ProbeReading)
         assert isinstance(scores["test_probe"].coords[0], float)
-        # History should NOT have been updated.
-        assert len(monitor.history["test_probe"]) == 0
-
-    def test_consistent_with_measure_from_hidden(self):
-        import torch
-        from drowse.readout.monitor import Monitor
-        from drowse.fit.capture import fold_directions_to_subspace
-
-        from tests._whitener import isotropic_whitener
-        dim = 16
-        means = {0: torch.zeros(dim), 1: torch.zeros(dim)}
-        whit = isotropic_whitener([0, 1], dim)
-        m = fold_directions_to_subspace(
-            "p1", {0: torch.randn(dim), 1: torch.randn(dim)}, means,
-            whitener=whit,
-        )
-        monitor = Monitor({"p1": m}, whitener=whit)
-
-        hidden = {0: torch.randn(dim), 1: torch.randn(dim)}
-        single = monitor.score_single_token(hidden)
-        no_acc = monitor.measure_from_hidden(hidden, accumulate=False)
-
-        assert single["p1"].coords[0] == pytest.approx(no_acc["p1"].coords[0])
 
 # ---- manifold routes ----------------------------------------------------
 
