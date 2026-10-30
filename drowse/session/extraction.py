@@ -29,6 +29,7 @@ from drowse.naming import _slug, canonical_concept_name
 
 if TYPE_CHECKING:
     from drowse.fit.pipeline import ModelHandle
+    from drowse.store.manifold_folder import DiscoverGenerationPlan
     from drowse.geometry.manifold import Manifold
 
 # A 2-node vector folder's discover hyperparameters: one axis.
@@ -50,23 +51,15 @@ class ExtractionTarget:
 
 
 def _upstream_source(namespace: str, folder: Path) -> str | None:
-    """The refresh tier of an installed folder, or ``None`` for a local one.
+    """The refresh tier of an installed folder, or ``None`` for a local one
+    (or one whose manifest can't be read); see
+    :func:`~drowse.store.manifold_lifecycle.manifold_upstream`."""
+    from drowse.store.manifold_lifecycle import manifold_upstream
 
-    Mirrors :func:`drowse.store.manifold_lifecycle.refresh_manifold`: the
-    ``default/`` namespace and ``source == "bundled"`` re-materialize from the
-    package, and an ``hf://`` source re-pulls from the hub.
-    """
-    from drowse.store.manifold_folder import read_manifest
-
-    if namespace == "default":
-        return "bundled"
     try:
-        source = read_manifest(folder).get("source")
+        return manifold_upstream(namespace, folder)
     except (OSError, ValueError):
         return None
-    if source == "bundled" or (isinstance(source, str) and source.startswith("hf://")):
-        return source
-    return None
 
 
 def _describe_upstream(upstream: str) -> str:
@@ -114,7 +107,8 @@ class Extraction:
     - ``handle`` — the :class:`~drowse.fit.pipeline.ModelHandle` the pipeline
       reads (model, tokenizer, layers, whitener, neutral means);
     - ``events`` — where ``ManifoldExtracted`` lands;
-    - ``corpus`` — generates node corpora for :meth:`extract`;
+    - ``corpus`` — generates node corpora for :meth:`extract` and
+      :meth:`generate_manifold`;
     - ``exclusive(busy_msg, *, phase_msg)`` — the exclusive-model guard every
       model-running operation holds;
     - ``assert_unsteered()`` — refuses artifact work under live steering;
@@ -439,6 +433,38 @@ class Extraction:
                             feature=f"sae-{sae}" if sae is not None else "raw",
                         )
                 raise
+
+    def generate_manifold(
+        self,
+        plan: "DiscoverGenerationPlan",
+        *,
+        custom_system: str | None = None,
+        samples_per_prompt: int = 1,
+        seed: int | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> None:
+        """Fill a discover plan's pending node corpora (:meth:`CorpusGenerator.fill`).
+
+        Runs under the exclusive-model guard and refuses inside a steering
+        scope, since the corpora are an artifact.  The folder's in-memory
+        consumers are evicted afterwards, also when the run stops part-way:
+        planning may already have rewritten the manifest, and every node
+        written changes the corpus a fit reads.
+        """
+        with self._exclusive(
+            "session.generate_manifold called while another model use is in flight",
+            phase_msg="session.generate_manifold called while a generation is in flight",
+        ):
+            self._assert_unsteered()
+            folder = Path(plan.folder)
+            try:
+                self._corpus.fill(
+                    plan, custom_system=custom_system,
+                    samples_per_prompt=samples_per_prompt, seed=seed,
+                    on_progress=on_progress,
+                )
+            finally:
+                self._evict(folder.parent.name, folder.name, feature=None)
 
     def bake(
         self, name: str, expression: str, *, force: bool, strict: bool,

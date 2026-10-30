@@ -590,6 +590,8 @@ def plan_discover_generation(
             pending=tuple(labels),
             added=(),
             resumed=False,
+            kinds=dict(kinds),
+            roles=dict(roles),
         )
 
     spec = parse_manifest(load_manifest_data(meta_path), location=str(meta_path))
@@ -623,6 +625,8 @@ def plan_discover_generation(
         ),
         added=tuple(new_labels),
         resumed=True,
+        kinds={node.label: node.kind for node in nodes},
+        roles={node.label: node.role for node in nodes},
     )
 
 

@@ -86,6 +86,7 @@ from drowse.geometry.manifold import Manifold
 if TYPE_CHECKING:
     from drowse.readout.protocol import Instrument
     from drowse.generation.scoring import ChoiceScores
+    from drowse.store.manifold_folder import DiscoverGenerationPlan
     from drowse.store.templates import TemplateFolder
 
 _log = logging.getLogger(__name__)
@@ -1129,12 +1130,33 @@ class DrowseSession:
         custom_system: str | None = None,
         samples_per_prompt: int = 1,
         max_new_tokens: int = RESPONSE_MAX_TOKENS,
+        seed: int | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> dict[str, list[str]]:
         """Each concept's in-character corpus; see :meth:`CorpusGenerator.responses`."""
         return self._corpus.responses(
             concepts, kinds, roles=roles, custom_system=custom_system,
             samples_per_prompt=samples_per_prompt, max_new_tokens=max_new_tokens,
+            seed=seed, on_progress=on_progress,
+        )
+
+    def generate_manifold(
+        self,
+        plan: "DiscoverGenerationPlan",
+        *,
+        custom_system: str | None = None,
+        samples_per_prompt: int = 1,
+        seed: int | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> None:
+        """Fill a discover plan's pending node corpora; see :meth:`Extraction.generate_manifold`.
+
+        ``plan`` comes from
+        :func:`~drowse.store.manifold_authoring.plan_discover_generation`.
+        """
+        self._extraction.generate_manifold(
+            plan, custom_system=custom_system,
+            samples_per_prompt=samples_per_prompt, seed=seed,
             on_progress=on_progress,
         )
 

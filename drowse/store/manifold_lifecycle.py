@@ -232,6 +232,25 @@ def remove_manifold_folder(namespace: str, name: str) -> dict[str, Any]:
     }
 
 
+def manifold_upstream(namespace: str, folder: Path) -> str | None:
+    """The tier ``pack refresh`` restores an installed folder from.
+
+    ``"bundled"`` for the ``default/`` namespace or a ``source == "bundled"``
+    manifest, the pinned ``hf://<repo>@<sha>`` source for a hub install, and
+    ``None`` for a folder with no upstream.  The manifest alone decides; a
+    ``default/`` folder is never read.  Raises what reading the manifest
+    raises.
+    """
+    if namespace == "default":
+        return "bundled"
+    source = read_manifest(folder).get("source")
+    if source == "bundled":
+        return "bundled"
+    if isinstance(source, str) and source.startswith("hf://"):
+        return source
+    return None
+
+
 def refresh_manifold(
     namespace: str, name: str, *, model_scope: Optional[str] = None, force: bool = True,
 ) -> str:
@@ -256,21 +275,20 @@ def refresh_manifold(
         return "scoped"
     # The manifest alone decides the tier: a damaged folder (say, a deleted
     # node file) is exactly what a refresh must still be able to repair.
-    source = read_manifest(folder).get("source")
-    source = source if isinstance(source, str) else "local"
-    if namespace == "default" or source == "bundled":
+    upstream = manifold_upstream(namespace, folder)
+    if upstream == "bundled":
         from drowse.store.bundled import refresh_bundled_manifold
 
         refresh_bundled_manifold(name)
         return "bundled"
-    if source.startswith("hf://"):
+    if upstream is not None:
         from drowse.base.hf import split_revision
         from drowse.store.hub import pull_manifold
 
         # The install pins ``hf://<repo>@<sha>``; refresh re-pulls the repo's
         # current default revision.  The install pipeline takes the manifest,
         # template, and pair locks itself in the global order.
-        coord, _pinned = split_revision(source[len("hf://"):])
+        coord, _pinned = split_revision(upstream[len("hf://"):])
         pull_manifold(coord, as_=f"{namespace}/{name}", force=force)
         return "hf"
     return "skipped"
