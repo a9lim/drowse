@@ -230,8 +230,8 @@ class _LayerWhiten:
 # Monitor.  Flat (affine) probes get an analytic coordinate readout;
 # curved probes foot-solve against the aggregate.  Both share the
 # whitened-factor build, the per-layer geometry, and the attach-time node
-# cache — the read-side peer of the steering split (one subspace_inject kernel,
-# SteeringManager.{subspaces, manifolds}).
+# cache — the read-side peer of the steering split (SteeringPlan's affine
+# groups and curved terms).
 # ----------------------------------------------------------------------------
 
 

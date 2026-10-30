@@ -261,7 +261,7 @@ class Manifold:
         - A coord payload (tuple, list, float, or 1-D tensor) — passthrough
           to a plain coord tuple with arity unchanged.  Arity validation
           against the domain's intrinsic dimension happens downstream in
-          :meth:`SteeringManager.add_manifold`.
+          :meth:`~drowse.steering.hooks.SteeringPlan.add_manifold`.
         - A node-label string (``"pirate"``) — sugar for "the coords of
           the node labeled <s>".  The label is looked up in
           :attr:`node_labels` and the matching row of

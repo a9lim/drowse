@@ -767,8 +767,8 @@ def subspace_inject(
         # so ``p_new`` is always in-frame and the displacement ``(p_new − q)@basis``
         # is a bounded steering offset added to a large-norm residual stream — it
         # cannot plausibly push ``‖h_new‖`` past ``3·‖h‖``.  This is the same
-        # reasoning (and now the same behavior) as the constant-add fast path in
-        # ``SteeringHook._pure_push_constant``, which already drops the cap; the
+        # reasoning (and now the same behavior) as the runtime affine path
+        # (``drowse.steering.hooks.AffineOp``), which never caps; the
         # mixed push+ablate (κ≠0) affine term only *shrinks* the ablated axes, so
         # it can't grow the norm past the pure-push case either.  Dropping it
         # removes the two per-fire full-width norm reductions on the affine kernel
