@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import Any
 
 import pytest
 import torch
@@ -23,15 +22,11 @@ from drowse.steering.hooks import (
     SteeringHook,
     SteeringManager,
 )
-from drowse.geometry.manifold import (
-    BoxAxis,
-    BoxDomain,
-    Manifold,
-    decompose,
-    eval_rbf,
-    fit_layer_subspace,
-    invert_parameterization,
-)
+from drowse.geometry.domains import BoxAxis, BoxDomain
+from drowse.geometry.rbf import eval_rbf
+from drowse.geometry.manifold import Manifold
+from drowse.geometry.subspace import fit_curved_subspace
+from drowse.geometry.invert import invert_parameterization
 from drowse.errors import (
     ManifoldArityError,
     OverlappingManifoldError,
@@ -40,10 +35,9 @@ from drowse.errors import (
 from drowse.steering.triggers import Trigger, TriggerContext
 
 
-def fit_layer_subspace_only(*args: Any, **kwargs: Any) -> Any:
-    """Drop the EV ratio for tests that don't care about it."""
-    sub, _ev = fit_layer_subspace(*args, **kwargs)
-    return sub
+def _perp(h: torch.Tensor, mean: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
+    centered = h - mean
+    return centered - (centered @ basis.T) @ basis
 
 
 _DIM = 8
@@ -83,7 +77,7 @@ def _manifold(layers: Sequence[int] = (0, 1)) -> Manifold:
         node_labels=[f"n{i}" for i in range(6)],
         node_coords=node_coords,
         layers={
-            L: fit_layer_subspace_only(_circle(6, _DIM, 1.0 + 0.2 * L), node_params)
+            L: fit_curved_subspace(_circle(6, _DIM, 1.0 + 0.2 * L), node_params).subspace
             for L in layers
         },
         feature_space="raw",
@@ -107,7 +101,7 @@ def _manifold_open(layers: Sequence[int] = (0, 1)) -> Manifold:
         node_labels=[f"n{i}" for i in range(6)],
         node_coords=node_coords,
         layers={
-            L: fit_layer_subspace_only(_circle(6, _DIM, 1.0 + 0.2 * L), node_params)
+            L: fit_curved_subspace(_circle(6, _DIM, 1.0 + 0.2 * L), node_params).subspace
             for L in layers
         },
         feature_space="raw",
@@ -132,7 +126,7 @@ def _manifold2d(layers: Sequence[int] = (0,)) -> Manifold:
         node_labels=[f"n{i}" for i in range(9)],
         node_coords=coords,
         layers={
-            L: fit_layer_subspace_only(20.0 + torch.randn(9, _DIM), node_params)
+            L: fit_curved_subspace(20.0 + torch.randn(9, _DIM), node_params).subspace
             for L in layers
         },
         feature_space="raw",
@@ -272,10 +266,10 @@ def test_hook_keeps_off_subspace_residual_verbatim():
     hook = SteeringHook()
     _recompose_manifold(hook, manifold, 0, along=1.0, onto=1.0)
     hidden = torch.randn(1, 4, _DIM) + sub.mean
-    _, h_perp_before = decompose(hidden, sub.mean, sub.basis)
+    h_perp_before = _perp(hidden, sub.mean, sub.basis)
     perp_before = h_perp_before.clone()
     hook.hook_fn(None, None, hidden)
-    _, h_perp_after = decompose(hidden, sub.mean, sub.basis)
+    h_perp_after = _perp(hidden, sub.mean, sub.basis)
     assert torch.allclose(h_perp_after, perp_before, atol=1e-4)
 
 
@@ -484,8 +478,8 @@ def test_manager_share_weighting_weights_by_centroid_spread():
         node_labels=[f"n{i}" for i in range(6)],
         node_coords=node_coords,
         layers={
-            0: fit_layer_subspace_only(_circle(6, _DIM, scale=1.0), node_params),
-            1: fit_layer_subspace_only(_circle(6, _DIM, scale=2.0), node_params),
+            0: fit_curved_subspace(_circle(6, _DIM, scale=1.0), node_params).subspace,
+            1: fit_curved_subspace(_circle(6, _DIM, scale=2.0), node_params).subspace,
         },
         feature_space="raw",
     ))

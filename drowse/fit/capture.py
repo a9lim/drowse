@@ -98,7 +98,7 @@ class CaptureState:
 
 # Default chunk size for the batched capture path (:func:`_encode_and_capture_all_batch`
 # and its callers :func:`compute_neutral_activations` and
-# ``geometry.manifold.compute_manifold_node_stats``).  One
+# ``fit.node_stats.compute_manifold_node_stats``).  One
 # forward over up to this many (prompt, response) pairs replaces that many sequential
 # batch-1 forwards — the dominant extraction-capture cost.  Sized conservatively so a
 # chunk's attention working set (``B · heads · T²``) stays comfortable on a single
@@ -999,17 +999,17 @@ def fold_directions_to_subspace(
     neutral origin (coord 0). ``share = ‖d_L‖_M``: the whitened direction
     magnitude itself is the budget (a single
     direction has no node cloud to take a μ-centered spread over, so this is
-    *not* :func:`~drowse.geometry.manifold.subspace_share`'s √2-scaled form; the
+    *not* :func:`~drowse.geometry.subspace.subspace_share`'s √2-scaled form; the
     apply-time normalization handles the cross-layer scale). No
     DLS — a derived direction has no polarity for the straddle test; the
     caller's layer set folds verbatim. No origin store (coord 0, §2).
     Neutral means and a covering whitener are mandatory.
     """
-    from drowse.geometry.manifold import (
-        CustomDomain, LayerSubspace, Manifold,
-    )
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.subspace import LayerSubspace
+    from drowse.geometry.manifold import Manifold
 
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
 
     present = sorted(directions)
     if not present:
@@ -1168,7 +1168,7 @@ def project_profile(
     missing or non-covering whitener raises :class:`WhitenerError`.
     Result tensors are cast back to the source dtype of ``base``.
     """
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
 
     if operator not in ("~", "|"):
         raise ValueError(f"unknown projection operator: {operator!r}")

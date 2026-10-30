@@ -17,43 +17,39 @@ from drowse.store.manifold_tensors import (
     load_manifold,
     save_manifold,
 )
-from drowse.geometry.manifold import (
+from drowse.geometry.domains import (
     BoxAxis,
     BoxDomain,
     CustomDomain,
-    Manifold,
     SphereDomain,
-    decompose,
     domain_from_spec,
+)
+from drowse.geometry.rbf import (
+    RbfFitPlan,
     eval_rbf,
     eval_rbf_jacobian,
-    fit_layer_subspace as _fit_layer_subspace_with_ev,  # returns (LayerSubspace, ev_ratio)
-    fit_rbf_interpolant,
-    fit_rbf_smoothed,
-    fit_sigma_field,
-    compute_node_reduced_covariance_from_rows,
+    eval_rbf_jet,
+    rbf_cardinal_weights,
+)
+from drowse.geometry.subspace import LayerSubspace, fit_curved_subspace
+from drowse.geometry.manifold import Manifold
+from drowse.geometry.invert import invert_parameterization
+from drowse.geometry.inject import subspace_inject
+from drowse.geometry.tube import fit_sigma_field, off_surface_vars
+from drowse.fit.node_stats import (
     compute_manifold_node_stats,
     compute_store_reduced_covariances,
-    prepare_rbf_fit_plan,
-    _gcv_select_lambda,
-    _off_surface_var,
-    _off_surface_vars,
-    _rbf_smoother_matrix,
-    rbf_cardinal_weights,
-    subspace_inject,
-    LayerSubspace,
-    invert_parameterization,
 )
 
 
 # ------------------------------------------------------------------ domains ---
 
-def fit_layer_subspace(*args: Any, **kwargs: Any) -> Any:
-    """Test alias dropping the EV ratio.  ``geometry.manifold.fit_layer_subspace``
-    returns ``(LayerSubspace, ev_ratio)``; most tests don't care about the
-    second half, so unpack here once."""
-    sub, _ev = _fit_layer_subspace_with_ev(*args, **kwargs)
-    return sub
+
+
+def _perp(h: torch.Tensor, mean: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
+    """The off-subspace residual of ``h`` against an affine frame."""
+    centered = h - mean
+    return centered - (centered @ basis.T) @ basis
 
 
 def test_box_domain_dims():
@@ -176,6 +172,23 @@ def _reference_natural_cubic(t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     )
 
 
+def _rbf(node: torch.Tensor, values: torch.Tensor, smoothing: Any = None):
+    plan = RbfFitPlan.build(node, smoothing=smoothing)
+    return plan, plan.fit(values, smoothing=smoothing)
+
+
+def _rbf_eval(plan: RbfFitPlan, fit: Any, query: torch.Tensor) -> torch.Tensor:
+    return eval_rbf(plan.node_params, fit.weights, fit.poly, plan.normalize(query))
+
+
+def _smoother(plan: RbfFitPlan, lam: float) -> torch.Tensor:
+    """Reference hat matrix ``S_λ`` by solving the saddle against ``[I; 0]``."""
+    K = plan.node_count
+    rhs = torch.cat([torch.eye(K), torch.zeros(plan.Q.shape[1], K)], dim=0)
+    sol = torch.linalg.solve(plan._saddle(lam), rhs)
+    return plan.E @ sol[:K] + plan.Q @ sol[K:]
+
+
 def test_rbf_reproduces_natural_cubic():
     """The load-bearing property: 1-D open-box r^3 RBF == natural cubic."""
     torch.manual_seed(0)
@@ -184,19 +197,17 @@ def test_rbf_reproduces_natural_cubic():
     y = torch.randn(K, 3)
     reference = _reference_natural_cubic(t, y)
 
-    w, c = fit_rbf_interpolant(t.unsqueeze(1), y)
+    plan, fit = _rbf(t.unsqueeze(1), y)
     s = torch.linspace(0.0, 1.0, 50)
-    rbf = eval_rbf(t.unsqueeze(1), w, c, s.unsqueeze(1))
-    assert torch.allclose(rbf, reference, atol=1e-3)
+    assert torch.allclose(_rbf_eval(plan, fit, s.unsqueeze(1)), reference, atol=1e-3)
 
 
 def test_rbf_interpolates_nodes():
     torch.manual_seed(1)
     node = torch.rand(9, 2)
     val = torch.randn(9, 5)
-    w, c = fit_rbf_interpolant(node, val)
-    got = eval_rbf(node, w, c, node)
-    assert torch.allclose(got, val, atol=1e-3)
+    plan, fit = _rbf(node, val)
+    assert torch.allclose(_rbf_eval(plan, fit, node), val, atol=1e-3)
 
 
 def test_rbf_cardinal_weights_node_exact_and_partition_of_unity():
@@ -236,37 +247,54 @@ def test_rbf_cardinal_weights_poisedness_rejection():
         rbf_cardinal_weights(line, torch.tensor([0.5, 0.5]))
 
 
-def test_rbf_poisedness_rejection_collinear():
-    # 6 nodes in a 2-D embedding but all on one line -> affine rank 1.
+@pytest.mark.parametrize("smoothing", [None, 0.25, "auto"])
+def test_rbf_poisedness_rejection_collinear(smoothing: Any):
+    # 6 nodes in a 2-D embedding but all on one line -> affine rank 1.  The
+    # penalty conditions only the kernel block, so every mode rejects.
     line = torch.stack(
         [torch.linspace(0, 1, 6), torch.linspace(0, 1, 6)], dim=-1,
     )
     with pytest.raises(ValueError, match="poisedness"):
-        fit_rbf_interpolant(line, torch.randn(6, 3))
+        RbfFitPlan.build(line, smoothing=smoothing)
 
 
 def test_rbf_poisedness_rejection_too_few():
     # 2 nodes cannot determine an affine term in 2 dimensions.
     with pytest.raises(ValueError, match="poisedness"):
-        fit_rbf_interpolant(torch.rand(2, 2), torch.randn(2, 3))
+        RbfFitPlan.build(torch.rand(2, 2))
 
 
 # ------------------------------------------------ penalized RBF (smoothing) ---
 
-def test_fit_rbf_smoothed_lambda_zero_equals_interpolant():
-    # smoothing=0 (and None) must reproduce the exact interpolant bit-for-bit:
-    # the discover path can always recover authored-style exactness, and the
-    # cardinal-weight / interpolation guarantees rest on this identity.
+def test_rbf_exact_spellings_agree():
+    # ``None``, ``0`` and ``0.0`` are the same exact interpolation (λ = 0, edf
+    # = K) whichever smoothing the plan cached its LU for.
     torch.manual_seed(3)
     node = torch.rand(10, 2)
     val = torch.randn(10, 4)
-    w0, c0 = fit_rbf_interpolant(node, val)
-    for smoothing in (0, 0.0, None):
-        ws, cs, info = fit_rbf_smoothed(node, val, smoothing=smoothing)
-        assert torch.equal(w0, ws)
-        assert torch.equal(c0, cs)
-        assert info["lambda"] == 0.0
-        assert info["edf"] == float(node.shape[0])
+    ref = RbfFitPlan.build(node).fit(val)
+    for plan_smoothing in (None, "auto", 0.5):
+        plan = RbfFitPlan.build(node, smoothing=plan_smoothing)
+        for smoothing in (0, 0.0, None):
+            fit = plan.fit(val, smoothing=smoothing)
+            assert torch.allclose(fit.weights, ref.weights, atol=1e-5)
+            assert torch.allclose(fit.poly, ref.poly, atol=1e-5)
+            assert fit.lam == 0.0
+            assert fit.edf == float(node.shape[0])
+            assert fit.gcv == -1.0
+
+
+def test_rbf_cached_lu_matches_fresh_solve():
+    # The plan's cached LU (its own fixed λ) and a fresh saddle solve (any
+    # other λ) are the same system.
+    torch.manual_seed(41)
+    node = torch.rand(14, 2)
+    values = torch.randn(14, 5)
+    cached = RbfFitPlan.build(node, smoothing=0.25).fit(values, smoothing=0.25)
+    fresh = RbfFitPlan.build(node, smoothing="auto").fit(values, smoothing=0.25)
+    assert torch.allclose(cached.weights, fresh.weights, atol=2e-5, rtol=2e-5)
+    assert torch.allclose(cached.poly, fresh.poly, atol=2e-5, rtol=2e-5)
+    assert cached.lam == fresh.lam and cached.edf == fresh.edf
 
 
 def test_fit_rbf_smoothed_gcv_picks_interior_lambda():
@@ -277,44 +305,20 @@ def test_fit_rbf_smoothed_gcv_picks_interior_lambda():
     x = torch.linspace(0.0, 1.0, K).unsqueeze(1)
     clean = torch.stack([torch.sin(6 * x[:, 0]), (x[:, 0] - 0.5) ** 2], dim=1)
     y = clean + 0.2 * torch.randn(K, 2)
-    _w, _c, info = fit_rbf_smoothed(x, y, smoothing="auto")
-    assert info["lambda"] > 0.0
-    assert info["edf"] < K
-    assert math.isfinite(info["gcv"]) and info["gcv"] > 0.0
-
-
-@pytest.mark.parametrize("smoothing", [None, 0.25, "auto"])
-def test_rbf_fit_plan_matches_standalone_fit(smoothing: float | str | None):
-    torch.manual_seed(41)
-    node = torch.rand(14, 2)
-    values = torch.randn(14, 5)
-    plan = prepare_rbf_fit_plan(node, smoothing=smoothing)
-
-    expected = fit_rbf_smoothed(
-        plan.node_params, values, smoothing=smoothing,
-    )
-    actual = fit_rbf_smoothed(
-        plan.node_params, values, smoothing=smoothing, plan=plan,
-    )
-
-    assert torch.allclose(actual[0], expected[0], atol=2e-5, rtol=2e-5)
-    assert torch.allclose(actual[1], expected[1], atol=2e-5, rtol=2e-5)
-    assert actual[2] == pytest.approx(expected[2], rel=2e-5, abs=2e-5)
+    _plan, fit = _rbf(x, y, "auto")
+    assert fit.lam > 0.0
+    assert fit.edf < K
+    assert math.isfinite(fit.gcv) and fit.gcv > 0.0
 
 
 def test_fit_rbf_smoothed_edf_monotone_to_polynomial():
-    # The rigorous correctness check on the penalty form: as λ grows the
-    # effective dof tr(S_λ) must fall monotonically from K (interpolation) to
-    # m+1 (the affine polynomial null space).  A wrong penalty system would
-    # not converge to the polynomial dimension.
+    # As λ grows the effective dof tr(S_λ) falls monotonically from K
+    # (interpolation) to m+1 (the affine polynomial null space).
     torch.manual_seed(5)
     K, m = 12, 1
-    x = torch.linspace(0.0, 1.0, K).unsqueeze(1)
-    dist = torch.cdist(x, x)
-    E = dist.pow(3)
-    Q = torch.cat([torch.ones(K, 1), x], dim=1)
+    plan = RbfFitPlan.build(torch.linspace(0.0, 1.0, K).unsqueeze(1))
     lams = [0.0, 1e-4, 1e-2, 1e0, 1e2, 1e5]
-    edfs = [float(_rbf_smoother_matrix(E, Q, lam).diagonal().sum()) for lam in lams]
+    edfs = [plan.edf(lam) for lam in lams]
     assert edfs[0] == pytest.approx(float(K), abs=1e-3)
     for a, b in zip(edfs, edfs[1:]):
         assert b <= a + 1e-4
@@ -322,17 +326,15 @@ def test_fit_rbf_smoothed_edf_monotone_to_polynomial():
 
 
 def test_fit_rbf_smoothed_clean_data_keeps_low_lambda():
-    # GCV on cleanly-interpolatable (affine) data should not over-smooth: the
-    # surface stays close to the data and the smallest grid λ wins out.
+    # GCV on cleanly-interpolatable (affine) data should not over-smooth.
     torch.manual_seed(6)
     K = 12
     x = torch.rand(K, 2)
     A = torch.randn(3, 2)
     b = torch.randn(3)
     y = x @ A.T + b  # exactly affine → reproduced by the polynomial term
-    w, c, _info = fit_rbf_smoothed(x, y, smoothing="auto")
-    fit = eval_rbf(x, w, c, x)
-    assert torch.allclose(fit, y, atol=1e-2)
+    plan, fit = _rbf(x, y, "auto")
+    assert torch.allclose(_rbf_eval(plan, fit, x), y, atol=1e-2)
 
 
 def test_fit_rbf_smoothed_fixed_lambda_shrinks_node_residual():
@@ -342,79 +344,78 @@ def test_fit_rbf_smoothed_fixed_lambda_shrinks_node_residual():
     K = 12
     x = torch.linspace(0.0, 1.0, K).unsqueeze(1)
     y = torch.sin(5 * x) + 0.25 * torch.randn(K, 1)
-    w0, c0 = fit_rbf_interpolant(x, y)
-    ws, cs, _info = fit_rbf_smoothed(x, y, smoothing=1.0)
-    exact_resid = float((eval_rbf(x, w0, c0, x) - y).abs().max())
-    smooth_resid = float((eval_rbf(x, ws, cs, x) - y).abs().max())
+    plan = RbfFitPlan.build(x)
+    exact = plan.fit(y)
+    smooth = plan.fit(y, smoothing=1.0)
+    exact_resid = float((_rbf_eval(plan, exact, x) - y).abs().max())
+    smooth_resid = float((_rbf_eval(plan, smooth, x) - y).abs().max())
     assert exact_resid < 1e-3 < smooth_resid
 
 
-def test_fit_rbf_smoothed_poisedness_rejection():
-    # The smoothing path validates poisedness too (the constraint Qᵀw=0 still
-    # needs Q full column rank), raising the same error as the exact fit.
-    line = torch.stack(
-        [torch.linspace(0, 1, 6), torch.linspace(0, 1, 6)], dim=-1,
-    )
-    with pytest.raises(ValueError, match="poisedness"):
-        fit_rbf_smoothed(line, torch.randn(6, 3), smoothing="auto")
+def test_demmler_reinsch_matches_smoother_reference():
+    """The Demmler-Reinsch GCV / edf must reproduce the hat-matrix oracle.
 
-
-def test_gcv_select_lambda_eigen_matches_smoother_reference():
-    """The Demmler-Reinsch eigen reformulation of ``_gcv_select_lambda`` must
-    reproduce the smoother-matrix GCV curve bit-comparably — the optimization
-    is only valid if it selects the SAME lambda the saddle-solve loop did."""
+    ``select_lambda`` must pick the same grid point a brute-force smoother
+    sweep does, ``edf`` must match ``tr S_λ`` across the grid, and the fixed-λ
+    ``gcv`` must match the oracle at the selected ``λ``.
+    """
     torch.manual_seed(7)
     for k, m, r in [(12, 2, 3), (20, 1, 1), (9, 3, 2), (15, 2, 5)]:
-        node = torch.randn(k, m, dtype=torch.float32)
+        plan = RbfFitPlan.build(torch.randn(k, m), smoothing="auto")
         values = torch.randn(k, r, dtype=torch.float32)
-        e = torch.cdist(node, node).pow(3)
-        q = torch.cat([torch.ones(k, 1), node], dim=1)
-
-        # Reference: brute-force GCV over the same grid via the full smoother
-        # matrix S_lambda (the pre-optimization formulation).
-        denom = k * k - k
-        e_scale = float(e.abs().sum() / denom)
-        grid = e_scale * torch.logspace(-6.0, 3.0, 40, dtype=torch.float32)
         eye = torch.eye(k)
-        ref_lam, ref_edf, ref_gcv = float(grid[0]), float(k), math.inf
+        ref_lam, ref_edf, ref_gcv = float(plan.grid[0]), float(k), math.inf
         best = math.inf
-        for lam_t in grid:
+        for lam_t in plan.grid:
             lam = float(lam_t)
-            im_s = eye - _rbf_smoother_matrix(e, q, lam)
+            im_s = eye - _smoother(plan, lam)
             tr = float(im_s.diagonal().sum())
             if tr <= 0.0:
                 continue
             gcv = k * float((im_s @ values).pow(2).sum()) / (tr * tr)
+            assert plan.edf(lam) == pytest.approx(k - tr, rel=1e-3, abs=1e-4)
             if gcv < best:
                 best = gcv
                 ref_lam, ref_edf, ref_gcv = lam, float(k) - tr, gcv
 
-        lam, edf, gcv = _gcv_select_lambda(e, q, values)
+        lam, edf, gcv = plan.select_lambda(values)
         # Same grid point selected (logspace steps are ~1.7x apart, so an exact
         # match means no argmin drift), and matching edf/gcv scalars.
         assert lam == pytest.approx(ref_lam, rel=1e-5)
         assert edf == pytest.approx(ref_edf, rel=1e-3)
         assert gcv == pytest.approx(ref_gcv, rel=1e-3)
+        assert plan.gcv(values, lam) == pytest.approx(ref_gcv, rel=1e-3)
 
 
 def test_eval_rbf_jacobian_matches_finite_difference():
     torch.manual_seed(2)
     node = torch.rand(10, 2)
     val = torch.randn(10, 4)
-    w, c = fit_rbf_interpolant(node, val)
+    plan, fit = _rbf(node, val)
+    w, c, np_ = fit.weights, fit.poly, plan.node_params
     x = torch.tensor([0.4, 0.6])
-    jac = eval_rbf_jacobian(node, w, c, x)  # (R, m)
+    jac = eval_rbf_jacobian(np_, w, c, x)  # (R, m)
     eps = 1e-3
     for k in range(2):
         d = torch.zeros(2)
         d[k] = eps
-        fd = (
-            eval_rbf(node, w, c, x + d) - eval_rbf(node, w, c, x - d)
-        ) / (2 * eps)
+        fd = (eval_rbf(np_, w, c, x + d) - eval_rbf(np_, w, c, x - d)) / (2 * eps)
         assert torch.allclose(jac[:, k], fd, atol=1e-2)
 
 
-# --------------------------------------------------------- fit_layer_subspace ---
+def test_eval_rbf_jet_matches_separate_evaluations():
+    torch.manual_seed(12)
+    node = torch.rand(11, 3)
+    plan, fit = _rbf(node, torch.randn(11, 6), "auto")
+    query = torch.rand(4, 5, 3)
+    value, jac = eval_rbf_jet(plan.node_params, fit.weights, fit.poly, query)
+    assert torch.equal(value, eval_rbf(plan.node_params, fit.weights, fit.poly, query))
+    assert torch.equal(
+        jac, eval_rbf_jacobian(plan.node_params, fit.weights, fit.poly, query),
+    )
+
+
+# -------------------------------------------------------- fit_curved_subspace ---
 
 def _circle(k: int, dim: int) -> tuple[torch.Tensor, BoxDomain, torch.Tensor]:
     """K activation centroids on a planar circle + a 1-D periodic domain."""
@@ -440,15 +441,15 @@ def _grid2d(steps: tuple[float, ...] = (0.0, 0.5, 1.0)) -> tuple[BoxDomain, torc
     return domain, coords
 
 
-def test_fit_layer_subspace_circle_spans_curve_plane():
+def test_fit_curved_subspace_circle_spans_curve_plane():
     centroids, _domain, node_params = _circle(8, dim=16)
-    sub = fit_layer_subspace(centroids, node_params)
+    sub = fit_curved_subspace(centroids, node_params).subspace
     assert sub.rank == 2  # a planar circle has rank 2
 
 
-def test_fit_layer_subspace_eval_at_nodes():
+def test_fit_curved_subspace_eval_at_nodes():
     centroids, domain, node_params = _circle(6, dim=12)
-    sub = fit_layer_subspace(centroids, node_params)
+    sub = fit_curved_subspace(centroids, node_params).subspace
     man = Manifold(
         name="c", domain=domain, node_labels=[f"n{i}" for i in range(6)],
         node_coords=torch.tensor([[i / 6] for i in range(6)]),
@@ -462,11 +463,11 @@ def test_fit_layer_subspace_eval_at_nodes():
     assert torch.allclose(p0, p_basis, atol=1e-3)
 
 
-def test_fit_layer_subspace_n2_box():
+def test_fit_curved_subspace_n2_box():
     domain, coords = _grid2d()
     torch.manual_seed(3)
     centroids = torch.randn(9, 24)
-    sub = fit_layer_subspace(centroids, domain.embed(coords))
+    sub = fit_curved_subspace(centroids, domain.embed(coords)).subspace
     man = Manifold(
         name="g", domain=domain,
         node_labels=[f"n{i}" for i in range(9)],
@@ -482,16 +483,14 @@ def test_fit_layer_subspace_n2_box():
     )
 
 
-def test_fit_layer_subspace_neutral_anchored():
+def test_fit_curved_subspace_neutral_anchored():
     """A neutral baseline anchors the curved frame: ``mean = P_basis(ν)`` and
     the neutral lands at reduced-coord 0 (§5).  The basis is unchanged — it
     stays μ-centered regardless of the anchor (the basis caveat)."""
     centroids, _domain, node_params = _circle(6, dim=12)
     nu = 3.0 + torch.randn(12)
-    sub_n, _ = _fit_layer_subspace_with_ev(
-        centroids, node_params, neutral_mean=nu,
-    )
-    sub_mu, _ = _fit_layer_subspace_with_ev(centroids, node_params)  # no neutral
+    sub_n = fit_curved_subspace(centroids, node_params, neutral_mean=nu).subspace
+    sub_mu = fit_curved_subspace(centroids, node_params).subspace  # no neutral
     # Basis identical (μ-centered regardless of anchor); only mean/coords move.
     assert torch.allclose(sub_n.basis, sub_mu.basis, atol=1e-5)
     # mean = projection of neutral into the span.
@@ -506,7 +505,7 @@ def test_fit_layer_subspace_neutral_anchored():
 def test_fit_affine_subspace_reuses_precomputed_whitened_gram():
     """Extraction precomputes ``X Σ⁻¹ Xᵀ`` for diagnostics / discover coords;
     the affine fit should consume that Gram instead of recomputing it."""
-    from drowse.geometry.manifold import fit_affine_subspace
+    from drowse.geometry.subspace import fit_affine_subspace
     from tests._whitener import synthetic_means, synthetic_whitener
 
     torch.manual_seed(19)
@@ -531,7 +530,7 @@ def test_fit_affine_subspace_reuses_precomputed_whitened_gram():
             return self.inner.apply_inv(*args, **kwargs)
 
     counting = CountingWhitener(base)
-    sub, mu_coords, ev = fit_affine_subspace(
+    fit = fit_affine_subspace(
         centroids,
         neutral_mean=means[0],
         n_components=3,
@@ -540,7 +539,7 @@ def test_fit_affine_subspace_reuses_precomputed_whitened_gram():
         whitened_gram=gram,
         whitened_rows=base.apply_inv(0, X),
     )
-    ref_sub, ref_mu_coords, ref_ev = fit_affine_subspace(
+    ref = fit_affine_subspace(
         centroids,
         neutral_mean=means[0],
         n_components=3,
@@ -550,32 +549,29 @@ def test_fit_affine_subspace_reuses_precomputed_whitened_gram():
 
     assert counting.subspace_gram_calls == 0
     assert counting.apply_inv_calls == 0
-    assert torch.allclose(sub.basis, ref_sub.basis, atol=1e-5)
-    assert torch.allclose(mu_coords, ref_mu_coords, atol=1e-5)
-    assert ev == pytest.approx(ref_ev, abs=1e-6)
+    assert torch.allclose(fit.subspace.basis, ref.subspace.basis, atol=1e-5)
+    assert torch.allclose(fit.mu_coords, ref.mu_coords, atol=1e-5)
+    assert fit.explained_variance == pytest.approx(ref.explained_variance, abs=1e-6)
 
 
-def test_fit_layer_subspace_rejects_too_few_nodes():
+def test_fit_curved_subspace_rejects_too_few_nodes():
     with pytest.raises(ValueError):
-        fit_layer_subspace(torch.randn(2, 8), torch.rand(2, 1))
+        fit_curved_subspace(torch.randn(2, 8), torch.rand(2, 1)).subspace
 
 
-def test_fit_layer_subspace_returns_reusable_mu_centered_coords():
+def test_fit_curved_subspace_returns_reusable_mu_centered_coords():
     generator = torch.Generator().manual_seed(91)
     centroids = 100_000.0 + torch.randn(7, 12, generator=generator)
     neutral = -70_000.0 + torch.randn(12, generator=generator)
     node_params = torch.linspace(0.0, 1.0, 7).reshape(-1, 1)
-    fit_result: dict[str, torch.Tensor] = {}
-
-    sub, _ = _fit_layer_subspace_with_ev(
-        centroids, node_params, neutral_mean=neutral, fit_result=fit_result,
-    )
+    fit = fit_curved_subspace(centroids, node_params, neutral_mean=neutral)
+    sub = fit.subspace
 
     expected = (
         (centroids.float() - centroids.float().mean(dim=0))
         @ sub.basis.float().T
     )
-    assert torch.equal(fit_result["mu_coords"], expected)
+    assert torch.equal(fit.mu_coords, expected)
     expected_anchor_coords = (
         (centroids.float() - neutral.float()) @ sub.basis.float().T
     )
@@ -590,9 +586,9 @@ def test_fit_layer_subspace_returns_reusable_mu_centered_coords():
     )
 
 
-def test_fit_layer_subspace_returns_ev_ratio():
-    """The new tuple-return shape carries an explained-variance ratio
-    alongside the LayerSubspace.  EV ∈ [0, 1]: when the chosen R
+def test_fit_curved_subspace_returns_ev_ratio():
+    """The fit carries an explained-variance ratio alongside the
+    LayerSubspace.  EV ∈ [0, 1]: when the chosen R
     captures all of the centered centroid variance EV ≈ 1.0; when R
     is capped below the centroids' effective rank, EV drops below 1.
 
@@ -604,7 +600,8 @@ def test_fit_layer_subspace_returns_ev_ratio():
     """
     # Clean case: rank-2 planar circle, default R cap → EV = 1.0.
     centroids, _domain, node_params = _circle(8, dim=16)
-    sub, ev = _fit_layer_subspace_with_ev(centroids, node_params)
+    fit = fit_curved_subspace(centroids, node_params)
+    sub, ev = fit.subspace, fit.explained_variance
     assert sub.rank == 2
     assert 0.99 <= ev <= 1.000001
 
@@ -621,36 +618,13 @@ def test_fit_layer_subspace_returns_ev_ratio():
         BoxAxis("v", periodic=False, lo=0.0, hi=1.0),
     ])
     _node_params_g = _domain_g.embed(_grid_coords)
-    _sub_capped, ev_capped = _fit_layer_subspace_with_ev(
+    ev_capped = fit_curved_subspace(
         isotropic_centroids, _node_params_g, n_components=2,
-    )
+    ).explained_variance
     assert 0.0 < ev_capped < 0.9   # 2/8 ≈ 25% on average for isotropic
     # The capped case retains less of the total centroid variance —
     # fit quality is captured by EV.
     assert ev_capped < ev
-
-
-# ------------------------------------------------------------------- tangent ---
-
-def test_tangent_matches_finite_difference():
-    domain, coords = _grid2d()
-    torch.manual_seed(4)
-    sub = fit_layer_subspace(torch.randn(9, 20), domain.embed(coords))
-    man = Manifold(
-        name="g", domain=domain,
-        node_labels=[f"n{i}" for i in range(9)],
-        node_coords=coords, layers={0: sub},
-    )
-    pos = torch.tensor([0.3, 0.7])
-    tan = man.tangent(0, pos)  # (2, D)
-    eps = 1e-3
-    for k in range(2):
-        d = torch.zeros(2)
-        d[k] = eps
-        fd = (
-            man.manifold_point(0, pos + d) - man.manifold_point(0, pos - d)
-        ) / (2 * eps)
-        assert torch.allclose(tan[k], fd, atol=5e-2)
 
 
 # ---------------------------------------------------- inverse parameterization ---
@@ -658,7 +632,7 @@ def test_tangent_matches_finite_difference():
 def test_invert_parameterization_recovers_known_position():
     domain, coords = _grid2d()
     torch.manual_seed(5)
-    sub = fit_layer_subspace(torch.randn(9, 16), domain.embed(coords))
+    sub = fit_curved_subspace(torch.randn(9, 16), domain.embed(coords)).subspace
     target_pos = torch.tensor([0.4, 0.65])
     embedded = domain.embed(target_pos)
     query = eval_rbf(
@@ -668,8 +642,6 @@ def test_invert_parameterization_recovers_known_position():
     pos, dist = invert_parameterization(sub, domain, query.unsqueeze(0), coords)
     assert torch.allclose(pos[0], target_pos, atol=5e-2)
     assert dist.item() < 1e-2
-
-
 
 
 # ----------------------------------------------------------------- save/load ---
@@ -684,8 +656,8 @@ def test_save_load_manifold_round_trip(tmp_path: Path, monkeypatch: pytest.Monke
         node_labels=[f"n{i}" for i in range(7)],
         node_coords=torch.tensor([[i / 7] for i in range(7)]),
         layers={
-            4: fit_layer_subspace(ca, node_params),
-            9: fit_layer_subspace(cb, node_params),
+            4: fit_curved_subspace(ca, node_params).subspace,
+            9: fit_curved_subspace(cb, node_params).subspace,
         },
         feature_space="raw",
         mahalanobis_share={4: 1.5, 9: 2.0},
@@ -743,7 +715,7 @@ def test_save_rejects_manifold_with_empty_share_fields(
         domain=domain,
         node_labels=[f"n{i}" for i in range(7)],
         node_coords=torch.tensor([[i / 7] for i in range(7)]),
-        layers={3: fit_layer_subspace(ca, node_params)},
+        layers={3: fit_curved_subspace(ca, node_params).subspace},
         feature_space="raw",
     )  # no mahalanobis_share
     path = tmp_path / "mood" / "model.safetensors"
@@ -754,37 +726,38 @@ def test_save_rejects_manifold_with_empty_share_fields(
 
 def test_layer_subspace_to_device_dtype():
     centroids, _domain, node_params = _circle(5, dim=10)
-    sub = fit_layer_subspace(centroids, node_params)
+    sub = fit_curved_subspace(centroids, node_params).subspace
     moved = sub.to(device=torch.device("cpu"), dtype=torch.float64)
     assert moved.basis.dtype == torch.float64
     assert moved.mean.dtype == torch.float64
     assert moved.rbf_weights.dtype == torch.float64
 
 
-# ----------------------------------------------------------------- geodesics ---
+# ------------------------------------------- translate_foot from the origin ---
+# With the foot at the origin, ``translate_foot`` traces the domain geodesic.
 
-def test_geodesic_box_open_lerp():
+def test_translate_from_origin_box_open_lerp():
     d = BoxDomain([
         BoxAxis("u", periodic=False, lo=-1.0, hi=1.0),
         BoxAxis("v", periodic=False, lo=-1.0, hi=1.0),
     ])
     a = torch.tensor([-1.0, 0.0])
     b = torch.tensor([1.0, 1.0])
-    assert torch.allclose(d.geodesic(a, b, 0.0), a)
-    assert torch.allclose(d.geodesic(a, b, 1.0), b)
-    assert torch.allclose(d.geodesic(a, b, 0.5), torch.tensor([0.0, 0.5]))
+    assert torch.allclose(d.translate_foot(a, a, b, 0.0), a)
+    assert torch.allclose(d.translate_foot(a, a, b, 1.0), b)
+    assert torch.allclose(d.translate_foot(a, a, b, 0.5), torch.tensor([0.0, 0.5]))
 
 
-def test_geodesic_box_periodic_takes_short_arc():
+def test_translate_from_origin_box_periodic_takes_short_arc():
     d = BoxDomain([BoxAxis("t", periodic=True, period=1.0)])
     a = torch.tensor([0.9])
     b = torch.tensor([0.1])  # short way is +0.2 across the seam, not -0.8
-    assert torch.allclose(d.geodesic(a, b, 0.5), torch.tensor([0.0]), atol=1e-6)
-    assert torch.allclose(d.geodesic(a, b, 0.25), torch.tensor([0.95]), atol=1e-6)
-    assert torch.allclose(d.geodesic(a, b, 1.0), torch.tensor([0.1]), atol=1e-6)
+    assert torch.allclose(d.translate_foot(a, a, b, 0.5), torch.tensor([0.0]), atol=1e-6)
+    assert torch.allclose(d.translate_foot(a, a, b, 0.25), torch.tensor([0.95]), atol=1e-6)
+    assert torch.allclose(d.translate_foot(a, a, b, 1.0), torch.tensor([0.1]), atol=1e-6)
 
 
-def test_geodesic_box_batched_frac():
+def test_translate_from_origin_box_batched_frac():
     d = BoxDomain([
         BoxAxis("u", periodic=False, lo=-1.0, hi=1.0),
         BoxAxis("v", periodic=False, lo=-1.0, hi=1.0),
@@ -792,17 +765,17 @@ def test_geodesic_box_batched_frac():
     a = torch.tensor([[-1.0, 0.0], [0.0, 0.0]])
     b = torch.tensor([[1.0, 1.0], [1.0, 0.5]])
     frac = torch.tensor([[0.0], [1.0]])
-    out = d.geodesic(a, b, frac)
+    out = d.translate_foot(a, a, b, frac)
     assert torch.allclose(out[0], a[0]) and torch.allclose(out[1], b[1])
 
 
-def test_geodesic_sphere_slerp_stays_on_sphere_and_bisects():
+def test_translate_from_origin_sphere_slerp_stays_on_sphere_and_bisects():
     sph = SphereDomain(2)
     a = torch.tensor([0.4, 0.5])
     b = torch.tensor([1.2, 2.0])
-    assert torch.allclose(sph.embed(sph.geodesic(a, b, 0.0)), sph.embed(a), atol=1e-5)
-    assert torch.allclose(sph.embed(sph.geodesic(a, b, 1.0)), sph.embed(b), atol=1e-5)
-    mid = sph.geodesic(a, b, 0.5)
+    assert torch.allclose(sph.embed(sph.translate_foot(a, a, b, 0.0)), sph.embed(a), atol=1e-5)
+    assert torch.allclose(sph.embed(sph.translate_foot(a, a, b, 1.0)), sph.embed(b), atol=1e-5)
+    mid = sph.translate_foot(a, a, b, 0.5)
     emid = sph.embed(mid)
     assert torch.allclose((emid * emid).sum(), torch.tensor(1.0), atol=1e-5)
     ea, eb = sph.embed(a), sph.embed(b)
@@ -811,7 +784,7 @@ def test_geodesic_sphere_slerp_stays_on_sphere_and_bisects():
     assert torch.allclose(half, full / 2, atol=1e-4)
 
 
-def test_geodesic_sphere_unembed_roundtrip():
+def test_translate_from_origin_sphere_unembed_roundtrip():
     sph = SphereDomain(3)
     ang = torch.tensor([[0.7, 1.3, 2.1], [1.9, 0.4, 5.0]])
     assert torch.allclose(
@@ -820,17 +793,17 @@ def test_geodesic_sphere_unembed_roundtrip():
     )
 
 
-def test_geodesic_sphere_degenerate_fallback():
+def test_translate_from_origin_sphere_degenerate_fallback():
     sph = SphereDomain(2)
     a = torch.tensor([0.5, 1.0])
-    assert torch.allclose(sph.embed(sph.geodesic(a, a, 0.5)), sph.embed(a), atol=1e-5)
+    assert torch.allclose(sph.embed(sph.translate_foot(a, a, a, 0.5)), sph.embed(a), atol=1e-5)
 
 
-def test_geodesic_custom_linear():
+def test_translate_from_origin_custom_linear():
     cd = CustomDomain(3)
     a = torch.tensor([0.0, 0.0, 0.0])
     b = torch.tensor([2.0, 4.0, 6.0])
-    assert torch.allclose(cd.geodesic(a, b, 0.5), torch.tensor([1.0, 2.0, 3.0]))
+    assert torch.allclose(cd.translate_foot(a, a, b, 0.5), torch.tensor([1.0, 2.0, 3.0]))
 
 
 # ------------------------------------------------------------- subspace_inject ---
@@ -851,7 +824,7 @@ def _grid_manifold(dim: int = 16, seed: int = 0):
     w_lin = torch.randn(2, dim)
     w_quad = torch.randn(2, dim)
     centroids = 20.0 + coords @ w_lin + (coords ** 2) @ w_quad + 0.05 * torch.randn(9, dim)
-    sub = fit_layer_subspace(centroids, domain.embed(coords))
+    sub = fit_curved_subspace(centroids, domain.embed(coords)).subspace
     return sub, domain
 
 
@@ -946,24 +919,24 @@ def test_inject_keeps_off_subspace_verbatim():
     # leaves the orthogonal complement untouched.
     sub, domain = _grid_manifold()
     h = _on_surface(sub, domain, [0.3, 0.7]) + 0.4 * torch.randn(16)
-    _, perp_in = decompose(h, sub.mean, sub.basis)
+    perp_in = _perp(h, sub.mean, sub.basis)
     out, _ = subspace_inject(
         h, sub, domain, torch.tensor([0.9, 0.2]), torch.tensor([0.3, 0.7]),
         1.0, 1.0, gn_steps=20,
     )
-    _, perp_out = decompose(out, sub.mean, sub.basis)
+    perp_out = _perp(out, sub.mean, sub.basis)
     assert torch.allclose(perp_out, perp_in, atol=1e-4)
 
 
 def test_inject_along_onto_preserve_off_subspace():
     sub, domain = _grid_manifold()
     h = _on_surface(sub, domain, [0.2, 0.8]) + 0.3 * torch.randn(16)
-    _, perp_in = decompose(h, sub.mean, sub.basis)
+    perp_in = _perp(h, sub.mean, sub.basis)
     out, _ = subspace_inject(
         h, sub, domain, torch.tensor([0.9, 0.2]), torch.tensor([0.2, 0.8]),
         0.7, 0.5, gn_steps=20,
     )
-    _, perp_out = decompose(out, sub.mean, sub.basis)
+    perp_out = _perp(out, sub.mean, sub.basis)
     assert torch.allclose(perp_out, perp_in, atol=1e-4)
 
 
@@ -1012,8 +985,7 @@ def test_node_stats_returns_normalized_accumulator_ownership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Centroid normalization does not allocate a second K x D roster."""
-    import drowse.geometry.manifold as manifold_module
-    from drowse.fit import capture
+    import drowse.fit.node_stats as node_stats_module
     captured_accumulators: list[torch.Tensor] = []
     real_zeros = torch.zeros
 
@@ -1028,8 +1000,10 @@ def test_node_stats_returns_normalized_accumulator_ownership(
             [1.0, 3.0], [3.0, 5.0], [10.0, 14.0], [14.0, 18.0],
         ])}
 
-    monkeypatch.setattr(manifold_module.torch, "zeros", tracked_zeros)
-    monkeypatch.setattr(capture, "_encode_and_capture_all_batch", fake_capture)
+    monkeypatch.setattr(node_stats_module.torch, "zeros", tracked_zeros)
+    monkeypatch.setattr(
+        node_stats_module.capture, "_encode_and_capture_all_batch", fake_capture,
+    )
     centroids, retained = compute_manifold_node_stats(
         torch.nn.Linear(1, 1), object(),
         torch.nn.ModuleList([torch.nn.Identity()]), torch.device("cpu"),
@@ -1070,10 +1044,18 @@ def test_layer_major_store_covariances_match_node_reference() -> None:
     before = {
         layer: store.flat_rows(layer).clone() for layer in store.layer_indices
     }
-    expected = [
-        compute_node_reduced_covariance_from_rows(rows, layer_subs)
-        for rows in store
-    ]
+    def _reference(node_rows: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
+        covs: dict[int, torch.Tensor] = {}
+        for layer, sub in layer_subs.items():
+            z = (node_rows[layer].float() - sub.mean) @ sub.basis.T
+            if z.shape[0] <= 1:
+                covs[layer] = torch.zeros(sub.rank, sub.rank)
+                continue
+            centered = z - z.mean(dim=0, keepdim=True)
+            covs[layer] = centered.T @ centered / float(z.shape[0] - 1)
+        return covs
+
+    expected = [_reference(rows) for rows in store]
     actual = compute_store_reduced_covariances(
         store, layer_subs, row_chunk=4,
     )
@@ -1099,9 +1081,9 @@ def _attach_constant_sigma(sub: Any, value: float) -> None:
     np_, _rw, _pc = sub.rbf_params()
     K = np_.shape[0]
     log_sigma = torch.full((K, 1), math.log(value), dtype=torch.float32)
-    w, c, _ = fit_rbf_smoothed(np_, log_sigma, smoothing=0.0)
-    sub.sigma_rbf_weights = w
-    sub.sigma_poly_coeffs = c
+    fit = RbfFitPlan.build(np_).fit(log_sigma)
+    sub.sigma_rbf_weights = fit.weights
+    sub.sigma_poly_coeffs = fit.poly
 
 
 def test_sigma_at_absent_is_zero():
@@ -1191,30 +1173,10 @@ def test_off_surface_var_isolates_normal_directions():
     tangent[0, 0] = 1.0
     tangent[1, 1] = 1.0
     cov_tan = torch.diag(torch.tensor([3.0, 3.0, 0.0, 0.0]))
-    assert _off_surface_var(cov_tan, tangent, R, n) < 1e-5
+    assert off_surface_vars(cov_tan.unsqueeze(0), tangent.unsqueeze(0), R, n).item() < 1e-5
     cov_norm = torch.diag(torch.tensor([0.0, 0.0, 2.0, 4.0]))
     # off-surface mean variance = (2 + 4) / (R − n) = 3.0
-    assert abs(_off_surface_var(cov_norm, tangent, R, n) - 3.0) < 1e-5
-
-
-def test_off_surface_vars_matches_scalar_helper():
-    R, n = 4, 2
-    tangents = torch.zeros(3, R, n)
-    tangents[:, 0, 0] = 1.0
-    tangents[:, 1, 1] = 1.0
-    covs = torch.stack([
-        torch.diag(torch.tensor([1.0, 0.0, 2.0, 4.0])),
-        torch.diag(torch.tensor([0.0, 3.0, 0.5, 1.5])),
-        torch.diag(torch.tensor([2.0, 2.0, 0.0, 8.0])),
-    ])
-
-    batched = _off_surface_vars(covs, tangents, R, n)
-    scalar = torch.tensor([
-        _off_surface_var(covs[i], tangents[i], R, n)
-        for i in range(covs.shape[0])
-    ])
-
-    assert torch.allclose(batched, scalar, atol=1e-6)
+    assert abs(off_surface_vars(cov_norm.unsqueeze(0), tangent.unsqueeze(0), R, n).item() - 3.0) < 1e-5
 
 
 def test_off_surface_variance_uses_actual_rank_at_fold() -> None:
@@ -1226,8 +1188,8 @@ def test_off_surface_variance_uses_actual_rank_at_fold() -> None:
         [0.0, 0.0],
         [0.0, 0.0],
     ])
-    assert _off_surface_var(cov, tangent, R=3, n=2) == pytest.approx(1.0)
-    assert _off_surface_vars(
+    assert off_surface_vars(cov.unsqueeze(0), tangent.unsqueeze(0), R=3, n=2).item() == pytest.approx(1.0)
+    assert off_surface_vars(
         cov.unsqueeze(0), tangent.unsqueeze(0), R=3, n=2,
     ).item() == pytest.approx(1.0)
 
@@ -1237,8 +1199,8 @@ def test_off_surface_variance_rank_deficient_when_r_le_n() -> None:
     # sigma must isolate its variance instead of averaging tangent+normal.
     cov = torch.diag(torch.tensor([3.0, 7.0]))
     tangent = torch.tensor([[1.0, 0.0], [0.0, 0.0]])
-    assert _off_surface_var(cov, tangent, R=2, n=2) == pytest.approx(7.0)
-    assert _off_surface_vars(
+    assert off_surface_vars(cov.unsqueeze(0), tangent.unsqueeze(0), R=2, n=2).item() == pytest.approx(7.0)
+    assert off_surface_vars(
         cov.unsqueeze(0), tangent.unsqueeze(0), R=2, n=2,
     ).item() == pytest.approx(7.0)
 
@@ -1279,7 +1241,7 @@ def test_off_surface_variance_fuses_rank_and_projector_svd(
         lambda *_args, **_kwargs: pytest.fail("rank repeated the SVD"),
     )
 
-    result = _off_surface_vars(covs, tangents, R, n)
+    result = off_surface_vars(covs, tangents, R, n)
 
     assert calls == 1
     # Above tolerance the tangent fills R, selecting the isotropic fallback;
@@ -1399,17 +1361,6 @@ def test_affine_eval_at_is_pure_affine():
     assert torch.allclose(sub.eval_at(coords), coords @ sub.basis + sub.mean)
 
 
-def test_affine_jacobian_is_basis_T():
-    sub, _ = _folded_vector()
-    # single point: (D, m) == basis.T, position-independent
-    jac = sub.jacobian_at(torch.tensor([0.7]))
-    assert torch.allclose(jac, sub.basis.transpose(-1, -2))
-    # batched: broadcast across the leading dim
-    jb = sub.jacobian_at(torch.tensor([[0.1], [0.9]]))
-    assert jb.shape == (2, sub.basis.shape[1], 1)
-    assert torch.allclose(jb[0], sub.basis.transpose(-1, -2))
-
-
 def test_affine_inject_identity_at_zero():
     sub, domain = _folded_vector()
     h = sub.eval_at(torch.tensor([0.6])) + 0.2 * torch.randn(16)
@@ -1459,11 +1410,11 @@ def test_affine_inject_keeps_off_subspace_verbatim():
     # the old ``toward`` op that scaled it is removed — even under a full slide.
     sub, domain = _folded_vector()
     h = sub.eval_at(torch.tensor([0.3])) + 0.4 * torch.randn(16)
-    _, perp_in = decompose(h, sub.mean, sub.basis)
+    perp_in = _perp(h, sub.mean, sub.basis)
     out, _ = subspace_inject(
         h, sub, domain, torch.tensor([1.2]), torch.tensor([0.3]), 1.0, 1.0,
     )
-    _, perp_out = decompose(out, sub.mean, sub.basis)
+    perp_out = _perp(out, sub.mean, sub.basis)
     assert torch.allclose(perp_out, perp_in, atol=1e-4)
 
 

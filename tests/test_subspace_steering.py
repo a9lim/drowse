@@ -26,8 +26,8 @@ from drowse.steering.hooks import (
     _lower_affine_subspaces,
 )
 from drowse.geometry.whitener import LayerWhitener
-from drowse.geometry.manifold import (
-    CustomDomain,
+from drowse.geometry.domains import CustomDomain
+from drowse.geometry.inject import (
     SynthesizedSubspace,
     synthesize_subspace as _synthesize_subspace,
 )

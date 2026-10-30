@@ -25,11 +25,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.geometry.manifold import (
-    CustomDomain,
-    Manifold,
-    UnknownManifoldLabelError,
-)
+from drowse.geometry.domains import CustomDomain
+from drowse.geometry.manifold import Manifold
+from drowse.errors import UnknownManifoldLabelError
 from drowse.steering.grammar import (
     ManifoldTerm,
     format_expr,

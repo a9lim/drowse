@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.geometry.manifold import BoxDomain, CustomDomain
+from drowse.geometry.domains import BoxDomain, CustomDomain
 from drowse.geometry.topology import (
     _count_persistent_loops,
     _faint_cycle_coords,

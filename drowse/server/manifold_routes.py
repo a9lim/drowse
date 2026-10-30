@@ -20,7 +20,7 @@ from typing import Any, Callable, Literal, cast
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import ConfigDict, Field
 
-from drowse.geometry.manifold import domain_from_spec
+from drowse.geometry.domains import domain_from_spec
 from drowse.session.session import DrowseSession
 from drowse.base.hf import HFError as ManifoldHFError
 from drowse.store.hub import search_manifolds

@@ -19,7 +19,7 @@ import pytest
 import torch
 
 from drowse.events import EventBus
-from drowse.geometry.whitener import WhitenerError
+from drowse.errors import WhitenerError
 from drowse.session.session import (
     DrowseSession, ProfileNotRegisteredError,
 )
@@ -38,7 +38,8 @@ def _whit(layers: Any, dim: int):
 
 
 def _m_dot(w: Any, layer: int, u: torch.Tensor, v: torch.Tensor) -> float:
-    return w.mahalanobis_dot(layer, u.float(), v.float())
+    """``uᵀ Σ⁻¹ v`` through the whitener's one inverse apply."""
+    return float(u.float() @ w.apply_inv(layer, v.float()))
 
 
 # ------------------------------------------------------- project_profile ---

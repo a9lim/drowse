@@ -1261,7 +1261,6 @@ class TestFittedGeometryRead:
 
     def test_matches_full_load(self, home_and_client: Any) -> None:
         """The header read answers exactly what a full load would."""
-        from drowse.geometry.manifold import manifold_is_affine
         from drowse.store.manifold_tensors import load_manifold
         from drowse.server.manifold_routes import _fitted_geometry
 
@@ -1273,7 +1272,7 @@ class TestFittedGeometryRead:
         assert coords == [
             [float(x) for x in row] for row in loaded.node_coords.tolist()
         ]
-        assert is_affine is manifold_is_affine(loaded)
+        assert is_affine is loaded.is_affine
 
     def test_curved_fit_reads_as_non_affine(self, tmp_path: Any) -> None:
         """A ``layer_<L>.node_params`` entry is the curved marker."""

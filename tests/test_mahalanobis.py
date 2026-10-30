@@ -307,6 +307,42 @@ class TestMahalanobisCosine:
         n = w.mahalanobis_norm(0, v)
         assert n >= 0.0
 
+    def test_batched_norms_match_single_norm_and_quadratic_form(self):
+        w = _build_whitener(layers=(0,), n=100, d=16)
+        rows = torch.randn(5, 16, generator=torch.Generator().manual_seed(12))
+        norms = w.mahalanobis_norms(0, rows)
+        assert norms.shape == (5,)
+        for row, norm in zip(rows, norms):
+            assert float(norm) == pytest.approx(w.mahalanobis_norm(0, row), rel=1e-6)
+            quad = float(row @ w.apply_inv(0, row))
+            assert float(norm) == pytest.approx(math.sqrt(quad), rel=1e-5)
+
+
+# Every metric entry point routes through ``_require``: an uncovered layer or a
+# width mismatch is a ``WhitenerError`` (HTTP 4xx), never a bare ``KeyError``.
+_D = 16
+_BAD_METRIC_CALLS = {
+    "norm-uncovered": lambda w: w.mahalanobis_norm(7, torch.ones(_D)),
+    "norms-uncovered": lambda w: w.mahalanobis_norms(7, torch.ones(3, _D)),
+    "cosine-uncovered": lambda w: w.mahalanobis_cosine(7, torch.ones(_D), torch.ones(_D)),
+    "ridge-uncovered": lambda w: w.ridge(7),
+    "woodbury-uncovered": lambda w: w.woodbury_factors(
+        7, device=torch.device("cpu"), dtype=torch.float32,
+    ),
+    "norm-width": lambda w: w.mahalanobis_norm(0, torch.ones(_D // 2)),
+    "norms-width": lambda w: w.mahalanobis_norms(0, torch.ones(3, _D // 2)),
+    "norms-rank": lambda w: w.mahalanobis_norms(0, torch.ones(_D)),
+    "cosine-width-u": lambda w: w.mahalanobis_cosine(0, torch.ones(_D // 2), torch.ones(_D)),
+    "cosine-width-v": lambda w: w.mahalanobis_cosine(0, torch.ones(_D), torch.ones(_D // 2)),
+}
+
+
+@pytest.mark.parametrize("call", _BAD_METRIC_CALLS.values(), ids=_BAD_METRIC_CALLS.keys())
+def test_metric_rejects_uncovered_layers_and_width_mismatch(call: Any) -> None:
+    w = _build_whitener(layers=(0,), n=40, d=_D)
+    with pytest.raises(WhitenerError):
+        call(w)
+
 
 # ---------------------------------------------------- LEACE projection ---
 
@@ -328,7 +364,7 @@ class TestLeaceProject:
         onto = torch.randn(d, generator=torch.Generator().manual_seed(14))
         proj = w.leace_project(0, base, onto, "|")
         # <proj, onto>_M ≈ 0 by construction.
-        m_dot = w.mahalanobis_dot(0, proj, onto)
+        m_dot = float(proj @ w.apply_inv(0, onto))
         assert abs(m_dot) < 1e-4
 
     def test_tilde_is_complement_of_pipe(self):
@@ -435,7 +471,7 @@ class TestProjectProfileLeace:
         onto = torch.randn(d, generator=torch.Generator().manual_seed(83))
         out = project_profile({0: base}, {0: onto}, "|", whitener=w)
         # Output should be Mahalanobis-orthogonal to onto.
-        m_dot = w.mahalanobis_dot(0, out[0], onto)
+        m_dot = float(out[0] @ w.apply_inv(0, onto))
         assert abs(m_dot) < 1e-4
 
     def test_uncovered_layer_raises(self):

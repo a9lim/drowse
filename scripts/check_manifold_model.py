@@ -8,10 +8,11 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from drowse.geometry.whitener import LayerWhitener
-from drowse.geometry.manifold import (
-    BoxAxis, BoxDomain, CustomDomain, Manifold, fit_affine_subspace,
-    fit_layer_subspace, subspace_inject,
-)
+from drowse.geometry.domains import BoxAxis, BoxDomain, CustomDomain
+from drowse.geometry.subspace import fit_affine_subspace
+from drowse.geometry.manifold import Manifold
+from drowse.geometry.subspace import fit_curved_subspace
+from drowse.geometry.inject import subspace_inject
 from drowse.readout.monitor import Monitor
 
 
@@ -57,16 +58,16 @@ def main():
         whitener = LayerWhitener.from_neutral_activations(
             {layer: activations}, {layer: activations.mean(0)},
         )
-        flat, _, _ = fit_affine_subspace(
+        flat = fit_affine_subspace(
             activations[:8], neutral_mean=activations.mean(0), n_components=2,
             whitener=whitener, layer=layer,
-        )
+        ).subspace
         domain = BoxDomain([BoxAxis("phase", periodic=True, period=1)])
         coords = torch.arange(8, dtype=torch.float32).reshape(-1, 1) / 8
         embedded = domain.embed(coords)
         radius = torch.linalg.vector_norm(activations - activations.mean(0), dim=1).mean() * 0.1
         points = activations.mean(0) + radius * embedded @ flat.basis[:2]
-        curved, _ = fit_layer_subspace(points, embedded)
+        curved = fit_curved_subspace(points, embedded).subspace
         curved.sigma_rbf_weights = torch.zeros(8, 1)
         curved.sigma_poly_coeffs = torch.zeros(3, 1)
         manifold = Manifold(

@@ -52,14 +52,6 @@ def test_bad_value_type_rejected():
         Profile({0: [1.0, 2.0]})  # pyright: ignore[reportArgumentType]  # list value, intentionally wrong type for the test
 
 
-def test_weight_at_missing_raises_profile_error():
-    p = Profile(_mk())
-    with pytest.raises(ProfileError, match="no tensor for layer 99"):
-        p.weight_at(99)
-    # present layer just returns the tensor
-    assert torch.equal(p.weight_at(5), p[5])
-
-
 def test_metadata_is_copy():
     meta = {"method": "profile", "drowse_version": "1.4.0"}
     p = Profile(_mk(), metadata=meta)
@@ -116,25 +108,6 @@ def test_merged_requires_two_components():
     p = Profile({0: torch.ones(4)})
     with pytest.raises(ProfileError, match="at least two"):
         Profile.merged([(p, 1.0)])
-
-
-def test_promoted_to_dtype_flip_noop_when_matching():
-    p = Profile(_mk(dtype=torch.float32))
-    same = p.promoted_to(dtype=torch.float32)
-    # same instance layers untouched
-    for idx in p.layers:
-        assert same[idx] is p[idx]
-
-    flipped = p.promoted_to(dtype=torch.float16)
-    for idx in p.layers:
-        assert flipped[idx].dtype == torch.float16
-        # source not mutated
-        assert p[idx].dtype == torch.float32
-
-
-def test_promoted_to_no_args_returns_self():
-    p = Profile(_mk())
-    assert p.promoted_to() is p
 
 
 def test_repr_contains_layer_info():
@@ -224,7 +197,7 @@ def test_cosine_similarity_empty_intersection_raises():
 
 def test_cosine_similarity_missing_whitener_raises():
     """Mahalanobis-only: a missing / non-covering whitener is a hard error."""
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
 
     tensors = _mk(layers=(0, 1), dim=8)
     a = Profile(tensors)

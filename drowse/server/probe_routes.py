@@ -19,7 +19,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
 from drowse.errors import DrowseError
-from drowse.geometry.manifold import manifold_is_affine
 from drowse.readout.monitor_attach import AttachedManifoldProbe
 from drowse.session.session import DrowseSession
 from drowse.store.bundled_probes import load_default_manifolds
@@ -56,7 +55,7 @@ def _probe_info(name: str, probe: AttachedManifoldProbe) -> GeometryProbeInfo:
     intrinsic_dim = int(manifold.domain.intrinsic_dim)
     nc = manifold.node_coords
     node_coords = nc.tolist() if nc is not None else None
-    is_affine = manifold_is_affine(manifold)
+    is_affine = manifold.is_affine
     return {
         "family": "geometry",
         "name": name,

@@ -115,7 +115,7 @@ def _steer_subspace(mgr: Any, *pairs: Any) -> None:
     Anchored at zero (enough for the smoke "steering changes the output"
     assertions; the GPU gate owns strength calibration).
     """
-    from drowse.geometry.manifold import synthesize_subspace
+    from drowse.geometry.inject import synthesize_subspace
 
     push: list[Any] = []
     neutral_means: dict[int, torch.Tensor] = {}
@@ -549,7 +549,7 @@ class TestDiscoverManifoldEndToEnd:
     _FIT_BUDGET_S = _EXTRACTION_BUDGET_S * 2
 
     def test_discover_pipeline(self, model_and_tokenizer: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from drowse.geometry.manifold import CustomDomain
+        from drowse.geometry.domains import CustomDomain
         from drowse.session.session import DrowseSession
         from drowse.store.manifold_authoring import create_discover_manifold_folder
 

@@ -24,10 +24,10 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from drowse.geometry.manifold import BoxAxis, BoxDomain, LayerSubspace, Manifold
-from drowse.geometry.manifold import (
-    fit_layer_subspace as _fit_layer_subspace_with_ev,
-)
+from drowse.geometry.domains import BoxAxis, BoxDomain
+from drowse.geometry.subspace import LayerSubspace
+from drowse.geometry.manifold import Manifold
+from drowse.geometry.subspace import fit_curved_subspace
 from drowse.readout.monitor import Monitor
 from drowse.generation.results import (
     GenerationResult,
@@ -40,11 +40,6 @@ from drowse.session.session import (
     ReadDemand,
     DrowseSession,
 )
-
-
-def fit_layer_subspace(*args: Any, **kwargs: Any) -> Any:
-    sub, _ev = _fit_layer_subspace_with_ev(*args, **kwargs)
-    return sub
 
 
 def _toy_manifold(*, dim: int = 8, n_layers: int = 2) -> Manifold:
@@ -66,9 +61,8 @@ def _toy_manifold(*, dim: int = 8, n_layers: int = 2) -> Manifold:
             torch.zeros(dim),
             scale * e1,
         ]) + 0.01 * torch.stack([-e2, torch.zeros(dim), e2])
-        sub, ev_ratio = _fit_layer_subspace_with_ev(
-            centroids, domain.embed(coords),
-        )
+        fit = fit_curved_subspace(centroids, domain.embed(coords))
+        sub, ev_ratio = fit.subspace, fit.explained_variance
         assert sub.node_params is not None
         sub.sigma_rbf_weights = torch.zeros((len(coords), 1))
         sub.sigma_poly_coeffs = torch.zeros((sub.node_params.shape[1] + 1, 1))

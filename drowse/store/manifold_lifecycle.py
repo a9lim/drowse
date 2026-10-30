@@ -26,7 +26,7 @@ from drowse.base.paths import (
     tensor_filename,
 )
 from drowse.errors import DrowseError, ManifoldExistsError, ManifoldNotFoundError
-from drowse.geometry.manifold import domain_from_spec
+from drowse.geometry.domains import domain_from_spec
 from drowse.store.manifold_folder import (
     ManifoldFolder,
     _locked_manifest,
@@ -373,7 +373,7 @@ def transfer_manifold(
     """Map a fitted manifold into another model's space and publish it.
 
     Reads the source-model fit, maps each layer's affine subspace through the
-    supplied factorized alignment (:func:`drowse.geometry.manifold.
+    supplied factorized alignment (:func:`drowse.geometry.transfer.
     transfer_manifold_subspaces` owns the math and the mandatory target-metric
     share re-bake — a missing or non-covering target ``whitener`` raises
     ``WhitenerError``), and writes the ``_from-`` variant pair plus its
@@ -382,7 +382,7 @@ def transfer_manifold(
     the alignment was prepared against.  An unproven (crash-left) target pair
     is repaired by overwriting; a proven one needs ``force``.
     """
-    from drowse.geometry.manifold import transfer_manifold_subspaces
+    from drowse.geometry.transfer import transfer_manifold_subspaces
     from drowse.store.manifold_tensors import load_manifold, save_manifold
 
     folder = Path(folder)

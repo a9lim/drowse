@@ -17,10 +17,9 @@ import torch
 
 from drowse import cli
 from drowse.cli.runners import _run_manifold_compare, _run_manifold_why
-from drowse.geometry.manifold import (
-    MANIFOLD_FIT_POLICY_VERSION, CustomDomain, Manifold,
-    fit_affine_subspace, subspace_share,
-)
+from drowse.geometry.domains import CustomDomain
+from drowse.geometry.subspace import fit_affine_subspace
+from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION, Manifold
 from drowse.store.manifold_tensors import save_manifold
 from drowse.base.paths import manifold_dir, model_dir, tensor_filename
 
@@ -118,11 +117,12 @@ def _write_fitted_manifold(
     share = {}
     for L in _LAYERS:
         cent = torch.stack([pos[L].float(), neg[L].float()])  # (2, D), node 0 = pos
-        sub, mu_coords, _ev = fit_affine_subspace(
+        _fit = fit_affine_subspace(
             cent, neutral_mean=neutral[L].float(), orient_to=0,
         )
+        sub, mu_coords = _fit.subspace, _fit.mu_coords
         layers[L] = sub
-        share[L] = subspace_share(mu_coords, sub.basis)  # Euclidean spread (no whitener)
+        share[L] = float(torch.linalg.norm(mu_coords))  # any positive spread
     mfld = Manifold(
         name=name,
         domain=CustomDomain(1),

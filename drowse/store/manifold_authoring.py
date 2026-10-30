@@ -23,7 +23,7 @@ from typing import Any, Callable, Iterator, Optional, Sequence
 from drowse.base.atomic import write_json_atomic
 from drowse.base.integrity import NAME_REGEX, canonical_json, hash_file
 from drowse.base.paths import manifold_dir, manifolds_dir, tensor_filename
-from drowse.geometry.manifold import domain_from_spec
+from drowse.geometry.domains import domain_from_spec
 from drowse.store.manifold_folder import (
     DiscoverGenerationPlan,
     ManifoldFolder,
@@ -207,7 +207,7 @@ def authoring_advisories(
     """
     import torch
 
-    from drowse.geometry.manifold import BoxDomain
+    from drowse.geometry.domains import BoxDomain
 
     domain = domain_from_spec(domain_spec)
     embedded = domain.embed(torch.tensor([list(c) for c in node_coords], dtype=torch.float32))
@@ -281,7 +281,7 @@ def create_manifold_folder(
     Raises :class:`ManifoldFormatError` on invalid input and
     :class:`FileExistsError` when the manifold exists.
     """
-    from drowse.geometry.manifold import normalize_domain_spec
+    from drowse.geometry.domains import normalize_domain_spec
 
     _validate_ns_name(namespace, name)
     try:

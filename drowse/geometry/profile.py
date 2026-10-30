@@ -368,16 +368,6 @@ class Profile:
         """
         return self._tensors
 
-    def weight_at(self, layer: int) -> torch.Tensor:
-        """Return the baked direction at ``layer``; raise ProfileError if missing."""
-        try:
-            return self._tensors[layer]
-        except KeyError as e:
-            raise ProfileError(
-                f"Profile has no tensor for layer {layer}; "
-                f"available: {self.layers}"
-            ) from e
-
     def save(
         self,
         path: str | pathlib.Path,
@@ -407,17 +397,6 @@ class Profile:
         """
         tensors, meta = load_profile(path)
         return cls(tensors, metadata=meta)
-
-    def to_gguf(self, path: str | pathlib.Path, *, model_hint: str) -> None:
-        """Write as llama.cpp control-vector GGUF.
-
-        Baked share/ref_norm magnitudes carry through unchanged — llama.cpp's
-        uniform ``--control-vector-scaled`` scalar reproduces drowse's
-        per-layer weighting without needing a per-layer metadata slot.
-        """
-        from drowse.store.gguf import write_gguf_profile
-
-        write_gguf_profile(self._tensors, path, model_hint=model_hint)
 
     @classmethod
     def merged(
@@ -451,33 +430,6 @@ class Profile:
         return type(self).merged(
             [(self, weights[0]), (other, weights[1])], strict=strict,
         )
-
-    def promoted_to(
-        self,
-        *,
-        device: torch.device | str | None = None,
-        dtype: torch.dtype | None = None,
-    ) -> "Profile":
-        """Return a new Profile with tensors cast to ``device``/``dtype``.
-
-        No-op layers (already matching) are reused by reference. The
-        current instance is never mutated.
-        """
-        if device is None and dtype is None:
-            return self
-        target_device = torch.device(device) if device is not None else None
-        out: dict[int, torch.Tensor] = {}
-        for idx, t in self._tensors.items():
-            dev_ok = target_device is None or t.device == target_device
-            dt_ok = dtype is None or t.dtype == dtype
-            if dev_ok and dt_ok:
-                out[idx] = t
-            else:
-                out[idx] = t.to(
-                    device=target_device if target_device is not None else t.device,
-                    dtype=dtype if dtype is not None else t.dtype,
-                )
-        return type(self)(out, metadata=self._metadata)
 
     def projected_away(self, other: "Profile") -> "Profile":
         """Return a new Profile with *other*'s direction projected out, per layer.
@@ -551,7 +503,7 @@ class Profile:
 
         Raises :class:`ProfileError` when no layers are shared.
         """
-        from drowse.geometry.whitener import WhitenerError
+        from drowse.errors import WhitenerError
 
         shared = sorted(set(self._tensors) & set(other._tensors))
         if not shared:

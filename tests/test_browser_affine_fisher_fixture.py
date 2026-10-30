@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from drowse.geometry.whitener import LayerWhitener
-from drowse.geometry.manifold import fit_affine_subspace, subspace_share
+from drowse.geometry.subspace import fit_affine_subspace, subspace_share
 from drowse.geometry.topology import derive_pca_coords, neutral_layout_coord
 
 
@@ -26,7 +26,7 @@ def test_browser_affine_fisher_fixture_matches_python_source_of_truth() -> None:
     centered = centroids - centroids.mean(dim=0, keepdim=True)
     gram = whitener.subspace_gram(0, centered)
     inverse_rows = whitener.apply_inv(0, centered)
-    subspace, mu_coordinates, explained = fit_affine_subspace(
+    fit = fit_affine_subspace(
         centroids,
         neutral_mean=neutral_mean,
         n_components=fixture["maxComponents"],
@@ -36,6 +36,8 @@ def test_browser_affine_fisher_fixture_matches_python_source_of_truth() -> None:
         whitened_rows=inverse_rows,
         orient_to=fixture["orientTo"],
     )
+    subspace, mu_coordinates = fit.subspace, fit.mu_coords
+    explained = fit.explained_variance
     expected = fixture["expected"]
     assert neutral_mean.tolist() == pytest.approx(expected["neutralMean"], rel=1e-5, abs=1e-6)
     assert centroids.mean(dim=0).tolist() == pytest.approx(expected["centroidMean"], rel=1e-5, abs=1e-6)

@@ -154,7 +154,7 @@ def test_score_stack_uneven_T_raises_value_error():
 def test_score_probes_without_whitener_raises():
     """A probe attach without a whitener can't build its factors — Mahalanobis
     is mandatory, so ``add_probe`` raises rather than reading Euclidean."""
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
 
     m = _probe_manifold({0: _PROBE0.clone()}, _MEANS0, _WHIT0)
     mon = Monitor()  # no whitener wired
@@ -362,7 +362,7 @@ def test_partial_coverage_raises():
     """All-or-nothing read metric: a whitener covering only some probed
     layers is a hard error (Mahalanobis is mandatory; there is no
     per-layer mix and no Euclidean fallback)."""
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
 
     torch.manual_seed(3)
     X0 = torch.randn(120, 4)

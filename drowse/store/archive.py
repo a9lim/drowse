@@ -682,7 +682,7 @@ def validate_fitted_pair(
     the filename-variant provenance.  Every install and export path runs it
     on every pair it publishes.
     """
-    from drowse.geometry.manifold import domain_from_spec
+    from drowse.geometry.domains import domain_from_spec
     from drowse.base.paths import decode_release_id, parse_tensor_filename
 
     parsed_filename = parse_tensor_filename(path.name)

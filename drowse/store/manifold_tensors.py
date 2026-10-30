@@ -21,12 +21,9 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
-from drowse.geometry.manifold import (
-    MANIFOLD_FIT_POLICY_VERSION,
-    LayerSubspace,
-    Manifold,
-    domain_from_spec,
-)
+from drowse.geometry.domains import domain_from_spec
+from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION, Manifold
+from drowse.geometry.subspace import LayerSubspace
 from drowse.store.manifold_folder import (
     ManifoldFolder,
     _locked_manifest,

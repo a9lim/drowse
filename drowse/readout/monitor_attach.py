@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from drowse.geometry.whitener import WhitenerError
+from drowse.errors import WhitenerError
 
 if TYPE_CHECKING:
     from drowse.geometry.manifold import Manifold
@@ -233,18 +233,6 @@ class _LayerWhiten:
 # cache — the read-side peer of the steering split (one subspace_inject kernel,
 # SteeringManager.{subspaces, manifolds}).
 # ----------------------------------------------------------------------------
-
-
-def _probe_is_affine_for_manifold(manifold: "Manifold") -> bool:
-    """True iff a manifold's fit is flat (affine) — batched coordinate readout.
-
-    A manifold's layers are uniformly affine (``pca`` / 2-node concept) or
-    curved (``spectral`` / ``authored``), so the first fitted layer decides.
-    An empty manifold is treated as affine (it scores to nothing anyway).
-    """
-    from drowse.geometry.manifold import manifold_is_affine
-
-    return manifold_is_affine(manifold)
 
 
 def _affine_coord_map(
@@ -479,7 +467,7 @@ def _attach_manifold_probe(
         name=name,
         manifold=manifold,
         top_n=int(top_n),
-        is_affine=_probe_is_affine_for_manifold(manifold),
+        is_affine=manifold.is_affine,
         inject_neutral=inject_neutral,
         candidate_labels=candidate_labels,
         label_to_candidate_idx=label_to_candidate_idx,
@@ -528,7 +516,7 @@ def _compute_assign_bandwidth(
     node-thickness variance:
 
     * **curved + σ-field**: each node's reduced within-node thickness
-      ``σ(z)`` (:meth:`~drowse.geometry.manifold.LayerSubspace.sigma_at`) mapped
+      ``σ(z)`` (:meth:`~drowse.geometry.subspace.LayerSubspace.sigma_at`) mapped
       into the whitened metric by the isotropic scale ``√(tr(M_R)/R)``
       (``M_R = chol cholᵀ``), so a reduced-space σ is comparable to the
       chol-whitened distances; the neutral anchor takes the per-layer median
@@ -636,7 +624,7 @@ def _layer_geometry(
     * ``cdist_query`` — ``(1, R)`` query (``Lᵀc``) so a plain cdist against
       ``cdist_nodes`` is the Mahalanobis distance.
     * ``invert_query`` — ``(R,)`` M-orthogonal projection coords
-      ``c = M_R⁻¹ g`` for :func:`~drowse.geometry.manifold.invert_parameterization`.
+      ``c = M_R⁻¹ g`` for :func:`~drowse.geometry.invert.invert_parameterization`.
     * ``cdist_nodes`` — ``(K, R)`` whitened node coords.
 
     ``Σ⁻¹h`` depends only on the layer's hidden state + the shared whitener,

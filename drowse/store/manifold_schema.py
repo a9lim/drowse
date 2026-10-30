@@ -409,7 +409,7 @@ def parse_manifest(data: Any, *, location: str = "manifold.json") -> ManifestSpe
     :meth:`drowse.store.manifold_folder.ManifoldFolder.load`, which is why a
     partially generated discover skeleton can still be parsed here.
     """
-    from drowse.geometry.manifold import domain_from_spec
+    from drowse.geometry.domains import domain_from_spec
 
     if not isinstance(data, dict):
         raise ManifoldFormatError(f"{location} must be a JSON object")
@@ -823,7 +823,7 @@ def validate_sidecar_payload(
     data: Any, *, location: str = "manifold sidecar",
 ) -> dict[str, Any]:
     """Validate every field of the exact current fitted-sidecar contract."""
-    from drowse.geometry.manifold import validate_domain_spec
+    from drowse.geometry.domains import validate_domain_spec
 
     if not isinstance(data, dict) or set(data) != SIDECAR_FIELDS:
         raise ManifoldFormatError(f"{location} does not match the current exact schema")

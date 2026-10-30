@@ -89,7 +89,8 @@ def test_native_decode_matches_direct_cached_reference(loaded: tuple[Any, Any]):
 @pytest.mark.parametrize("ablate", [False, True])
 def test_native_steering_matches_manual_intervention(loaded: tuple[Any, Any], ablate: bool):
     from drowse.steering.hooks import SteeringManager
-    from drowse.geometry.manifold import LayerSubspace, SynthesizedSubspace
+    from drowse.geometry.subspace import LayerSubspace
+    from drowse.geometry.inject import SynthesizedSubspace
 
     model, tokenizer = loaded
     parameter = next(model.parameters())

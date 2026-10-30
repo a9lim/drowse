@@ -4,7 +4,7 @@ Pure tensor math with no persistence.  :func:`fit_alignment` fits a compact
 affine map ``A_L(x) = M_L x + b_L`` per shared layer from two models' matched
 neutral activations (orthogonal Procrustes at matched hidden dim, minimum-norm
 least squares otherwise); :func:`alignment_quality` scores it as per-layer R².
-The map is applied by ``geometry.manifold.transfer_manifold_subspaces``,
+The map is applied by ``geometry.transfer.transfer_manifold_subspaces``,
 persisted by :mod:`drowse.store.alignment`, and orchestrated end to end by
 :mod:`drowse.fit.transfer`.
 """

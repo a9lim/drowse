@@ -1416,15 +1416,14 @@ def _resolve_fit_geometry(
     more nodes than the corpus carries (``k + 1`` to span a flat affine
     subspace, ``min_nodes(k) = 2k+1`` for a curved RBF surface).
     """
-    from drowse.geometry.manifold import (
-        DEFAULT_N_COMPONENTS, CustomDomain, domain_from_spec,
-    )
+    from drowse.geometry.domains import CustomDomain, domain_from_spec
+    from drowse.geometry.subspace import DEFAULT_N_COMPONENTS
     from drowse.geometry.topology import discover_coords, select_topology
     from drowse.store.manifold_schema import min_nodes, sanitize_hyperparams
 
     discover_metadata: dict[str, Any] = {}
     # ``max_subspace_dim`` caps the per-layer PCA subspace in the
-    # **curved** fit (``fit_layer_subspace``; default
+    # **curved** fit (``fit_curved_subspace``; default
     # :data:`DEFAULT_N_COMPONENTS` = 64).  Smaller values constrain the
     # dim count that ``subspace_inject`` displaces at steer time — finer-
     # grained steering control at the cost of representing less per-layer
@@ -1546,7 +1545,7 @@ def _resolve_fit_geometry(
         if "max_subspace_dim" in hyperparams:
             max_subspace_dim_override = int(hyperparams.pop("max_subspace_dim"))
         # ``smoothing`` is consumed by the penalized curved fit
-        # (``fit_layer_subspace`` → ``fit_rbf_smoothed``), not by
+        # (``fit_curved_subspace`` → ``RbfFitPlan.fit``), not by
         # ``discover_coords`` — pop it before the dispatch so it isn't an
         # unexpected kwarg.  Only the curved (``spectral``) path has an RBF
         # surface to smooth; the flat (``pca``) path's affine span has no
@@ -1658,7 +1657,7 @@ class ManifoldExtractionPipeline:
     centroid through the SAE (encode then decode) before the fit — a
     denoised, sparse-feature-supported centroid — and restricts the
     manifold to the SAE's covered layers.  Either way the fitted
-    :class:`~drowse.geometry.manifold.LayerSubspace` is model-space, so the
+    :class:`~drowse.geometry.subspace.LayerSubspace` is model-space, so the
     steering hook never touches the SAE.
     """
 
@@ -1817,23 +1816,25 @@ class ManifoldExtractionPipeline:
         the fit itself, e.g. a topology-selection fix, can't be picked up while
         the corpus is unchanged.
         """
-        from drowse.geometry.manifold import (
-            Manifold,
+        from drowse.geometry.subspace import (
+            fit_affine_subspace,
+            fit_curved_subspace,
+            subspace_share,
+        )
+        from drowse.geometry.manifold import Manifold
+        from drowse.geometry.rbf import RbfFitPlan
+        from drowse.geometry.invert import neutral_origin
+        from drowse.geometry.tube import fit_sigma_field
+        from drowse.fit.node_stats import (
             compute_manifold_node_stats,
             compute_store_reduced_covariances,
-            fit_affine_subspace,
-            fit_layer_subspace,
-            fit_sigma_field,
-            invert_parameterization,
-            prepare_rbf_fit_plan,
-            subspace_share,
         )
         from drowse.geometry.topology import neutral_layout_coord
         from drowse.fit.capture import compute_dls_axes
         from drowse.store.manifold_folder import ManifoldFolder
         from drowse.store.manifold_schema import ManifoldSidecar
         from drowse.errors import SaeCoverageError
-        from drowse.geometry.whitener import WhitenerError
+        from drowse.errors import WhitenerError
 
         def _progress(msg: str) -> None:
             if on_progress:
@@ -2721,7 +2722,7 @@ class ManifoldExtractionPipeline:
             affine_kwargs = {"n_components": int(node_coords.shape[1])}
 
             def _fit_affine_layer(idx: int) -> tuple[Any, torch.Tensor]:
-                sub, mu_coords, _ev_ratio = fit_affine_subspace(
+                fit = fit_affine_subspace(
                     stacks[idx], neutral_mean=_neutral_for(idx),
                     whitener=maha_whitener, layer=idx,
                     whitened_gram=layer_grams[idx],
@@ -2730,7 +2731,7 @@ class ManifoldExtractionPipeline:
                     basis_override=auto_fisher_bases.get(idx),
                     **affine_kwargs,
                 )
-                return sub, mu_coords
+                return fit.subspace, fit.mu_coords
 
             raw_fits = {
                 idx: _fit_affine_layer(idx) for idx in fit_layers
@@ -2761,7 +2762,7 @@ class ManifoldExtractionPipeline:
             # ``curved_smoothing`` is ``None`` for authored (exact-interpolation
             # contract) and the GCV / fixed-λ selector for ``spectral``.
             if rbf_plan is None:
-                rbf_plan = prepare_rbf_fit_plan(
+                rbf_plan = RbfFitPlan.build(
                     node_params, smoothing=curved_smoothing,
                 )
 
@@ -2770,25 +2771,20 @@ class ManifoldExtractionPipeline:
             ) -> tuple[Any, dict[str, float]]:
                 # ``neutral_mean`` neutral-anchors the frame; ``maha_whitener``
                 # (mandatory, checked above) selects the whitened/Fisher basis.
-                _rbf_info: dict[str, float] = {}
-                fit_result: dict[str, torch.Tensor] = {}
-                sub, _ev_ratio = fit_layer_subspace(
-                    stacks[idx], node_params,
+                fit = fit_curved_subspace(
+                    stacks[idx], rbf_plan,
                     whitener=maha_whitener, layer=idx,
                     neutral_mean=_neutral_for(idx),
                     whitened_gram=layer_grams[idx],
                     whitened_rows=whitened_rows[idx],
                     smoothing=curved_smoothing,
-                    rbf_info=_rbf_info,
-                    rbf_plan=rbf_plan,
                     basis_override=auto_fisher_bases.get(idx),
-                    fit_result=fit_result,
                     **fit_kwargs,
                 )
                 # μ-centered share (NOT ``eval_rbf(node_params)`` — the surface
                 # is neutral-anchored, so its node values aren't μ-centered).
-                _bake_share(idx, sub, fit_result["mu_coords"])
-                return sub, _rbf_info
+                _bake_share(idx, fit.subspace, fit.mu_coords)
+                return fit.subspace, (fit.rbf.info() if fit.rbf is not None else {})
 
             for idx in fit_layers:
                 sub, rbf_info = _fit_curved_layer(idx)
@@ -2991,16 +2987,9 @@ class ManifoldExtractionPipeline:
         origin: dict[int, torch.Tensor] = {}
         if effective_fit_mode != "pca":
             for idx, sub in layer_subs.items():
-                mu = _handle_means[idx].to(
-                    device="cpu", dtype=torch.float32,
-                ).reshape(-1)
-                # Reduced coords of the neutral mean in this layer's subspace,
-                # then nearest-point invert onto ``M``.
-                q = (mu - sub.mean) @ sub.basis.T  # (R,)
-                O_coords, _dist = invert_parameterization(
-                    sub, domain, q, node_coords,
+                origin[idx] = neutral_origin(
+                    sub, domain, _handle_means[idx], node_coords,
                 )
-                origin[idx] = O_coords.reshape(-1).to(torch.float32)
 
         manifold = Manifold(
             name=mf.name,

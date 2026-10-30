@@ -13,13 +13,10 @@ import pytest
 import torch
 
 from drowse.geometry.whitener import LayerWhitener
-from drowse.geometry.manifold import (
-    BoxAxis,
-    BoxDomain,
-    LayerSubspace,
-    Manifold,
-    fit_layer_subspace,
-)
+from drowse.geometry.domains import BoxAxis, BoxDomain
+from drowse.geometry.subspace import LayerSubspace
+from drowse.geometry.manifold import Manifold
+from drowse.geometry.subspace import fit_curved_subspace
 from drowse.readout.monitor import Monitor, _layer_geometry
 from tests._whitener import isotropic_whitener
 
@@ -72,7 +69,8 @@ def _toy_manifold(*, dim: int = 8, n_layers: int = 1, seed: int = 0) -> Manifold
         scale = 1.0 + 0.5 * layer_idx
         centroids = torch.stack([-scale * e0, torch.zeros(dim), scale * e0])
         centroids = centroids + 0.01 * torch.stack([-e1, torch.zeros(dim), e1])
-        sub, ev_ratio = fit_layer_subspace(centroids, domain.embed(coords))
+        fit = fit_curved_subspace(centroids, domain.embed(coords))
+        sub, ev_ratio = fit.subspace, fit.explained_variance
         sub.sigma_rbf_weights = torch.zeros(coords.shape[0], 1)
         sub.sigma_poly_coeffs = torch.zeros(domain.embed(coords).shape[1] + 1, 1)
         layers[layer_idx] = sub
@@ -91,7 +89,7 @@ def _toy_manifold(*, dim: int = 8, n_layers: int = 1, seed: int = 0) -> Manifold
 
 class TestMonitorWhitened:
     def test_whitened_cache_built_all_or_nothing(self) -> None:
-        from drowse.geometry.whitener import WhitenerError
+        from drowse.errors import WhitenerError
 
         m = _toy_manifold(dim=8, n_layers=2)
         w = _make_whitener(layers=(0, 1), d=8)
