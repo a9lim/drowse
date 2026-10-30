@@ -32,8 +32,7 @@ def _sae_source(model_id: str, source: str | None) -> Any:
 
 
 def run_train(args: argparse.Namespace) -> None:
-    from drowse.cli.verbs.lens import read_text_corpus
-    from drowse.lens.corpus import DEFAULT_LENS_CORPUS, stream_lens_corpus
+    from drowse.lens.corpus import DEFAULT_LENS_CORPUS, read_corpus_file, stream_lens_corpus
     from drowse.sae.backend import select_runtime_layer
 
     if args.learning_rate <= 0 or args.l1 < 0 or args.dead_threshold < 0:
@@ -41,7 +40,7 @@ def run_train(args: argparse.Namespace) -> None:
     n_docs = max(1, math.ceil(args.tokens / args.seq_len))
     if args.corpus is not None:
         path = Path(args.corpus)
-        docs, spec = read_text_corpus(path, n_docs), f"file:{path.name}"
+        docs, spec = read_corpus_file(path, n_docs), f"file:{path.name}"
     else:
         note(f"Streaming {n_docs} documents from {DEFAULT_LENS_CORPUS}...")
         docs, spec = stream_lens_corpus(n_docs)

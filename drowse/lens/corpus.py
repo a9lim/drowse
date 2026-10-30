@@ -21,6 +21,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, cast, overload
 
+from drowse.errors import DrowseError
+
 log = logging.getLogger(__name__)
 
 #: Bumped when document preprocessing changes, so a fit's recorded policy
@@ -606,13 +608,24 @@ def _start_lens_corpus_process(
     return process, receiver
 
 
+class EmptyCorpusError(ValueError, DrowseError):
+    """A local corpus file holds no non-empty documents."""
+
+    def user_message(self) -> tuple[int, str]:
+        return (400, str(self) or self.__class__.__name__)
+
+
 def read_corpus_file(path: Path, n: int) -> list[str]:
     """The first ``n`` documents of a local corpus file, one per line.
 
     A JSON-object line contributes its ``text`` field; blank lines are
     skipped; each document is sliced to :data:`LENS_DOC_CHARS`, exactly like
-    a streamed Hub document.
+    a streamed Hub document.  Raises ``FileNotFoundError`` for a missing
+    file and :class:`EmptyCorpusError` when no document survives.  The
+    ``lens fit --corpus`` and ``sae train --corpus`` reader.
     """
+    if not path.exists():
+        raise FileNotFoundError(f"corpus file not found: {path}")
     docs: list[str] = []
     with open(path, encoding="utf-8") as handle:
         for line in handle:
@@ -627,4 +640,6 @@ def read_corpus_file(path: Path, n: int) -> list[str]:
             docs.append(line[:LENS_DOC_CHARS])
             if len(docs) >= n:
                 break
+    if not docs:
+        raise EmptyCorpusError(f"corpus {path} has no non-empty documents")
     return docs

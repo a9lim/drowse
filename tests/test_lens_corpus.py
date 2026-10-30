@@ -516,3 +516,23 @@ def test_corpus_stream_terminates_a_worker_stuck_after_its_result(
     assert stream_lens_corpus(5, corpus) == (["doc"], corpus.spec)
     assert started == [(5, corpus)]
     assert process.terminated and receiver.closed
+
+
+def test_corpus_file_reads_text_lines_and_refuses_missing_or_empty_files(
+    tmp_path: Any,
+) -> None:
+    """The ``lens fit --corpus`` / ``sae train --corpus`` reader: JSON lines
+    contribute their ``text``, blanks are skipped, and a missing or empty
+    file is a typed error (exit 1 / exit 2 at the CLI)."""
+    from drowse.errors import DrowseError
+    from drowse.lens.corpus import EmptyCorpusError, read_corpus_file
+
+    path = tmp_path / "corpus.txt"
+    path.write_text('first\n\n{"text": "second"}\nthird\n')
+    assert read_corpus_file(path, 2) == ["first", "second"]
+    with pytest.raises(FileNotFoundError, match="corpus file not found"):
+        read_corpus_file(tmp_path / "missing.txt", 2)
+    path.write_text("\n  \n")
+    with pytest.raises(EmptyCorpusError, match="no non-empty documents") as err:
+        read_corpus_file(path, 2)
+    assert isinstance(err.value, DrowseError) and err.value.user_message()[0] == 400

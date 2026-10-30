@@ -33,21 +33,8 @@ _SOURCES_HELP = (
 
 
 # ---------------------------------------------------------------------------
-# Corpora (shared with ``sae train``)
+# Corpora
 # ---------------------------------------------------------------------------
-
-def read_text_corpus(path: Path, n: int) -> list[str]:
-    """Up to ``n`` documents of a local corpus file
-    (:func:`~drowse.lens.corpus.read_corpus_file`), as CLI errors."""
-    from drowse.lens.corpus import read_corpus_file
-
-    if not path.exists():
-        raise CliError(f"corpus file not found: {path}")
-    docs = read_corpus_file(path, n)
-    if not docs:
-        raise CliError(f"corpus {path} has no non-empty documents")
-    return docs
-
 
 def _pinned_hub_corpus(args: argparse.Namespace) -> "LensCorpus | None":
     """The Hub corpus ``lens fit`` streams (``--hf-corpus``, repeated = a
@@ -110,7 +97,7 @@ def lens_fit_is_noop(
 
 
 def run_fit(args: argparse.Namespace) -> None:
-    from drowse.lens.corpus import stream_lens_corpus
+    from drowse.lens.corpus import read_corpus_file, stream_lens_corpus
     from drowse.lens.store import lens_artifact_size, lens_manifest_path
 
     requested = parse_layers(args.layers)
@@ -123,7 +110,7 @@ def run_fit(args: argparse.Namespace) -> None:
     hf_corpus = _pinned_hub_corpus(args)
     if hf_corpus is None:
         path = Path(args.corpus)
-        docs = read_text_corpus(path, args.prompts)
+        docs = read_corpus_file(path, args.prompts)
         spec = f"file:{path.name}"
         if lens_fit_is_noop(args, requested, docs=docs):
             return

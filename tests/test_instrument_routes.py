@@ -135,6 +135,26 @@ def _wait_idle(client: Any, family: str, timeout: float = 2.0) -> None:
         time.sleep(0.01)
 
 
+def _pin(corpus: Any) -> Any:
+    """A stand-in Hub pin: every part fixed to one fake commit, no network."""
+    from dataclasses import replace
+
+    from drowse.lens.corpus import LensCorpusMix
+
+    def _one(part: Any) -> Any:
+        return replace(part, config=part.config or "default", revision="a" * 40)
+
+    if isinstance(corpus, LensCorpusMix):
+        return replace(corpus, parts=tuple(_one(part) for part in corpus.parts))
+    return _one(corpus)
+
+
+@pytest.fixture(autouse=True)
+def _offline_corpus_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lens fit route pins its Hub corpus first; never reach the Hub."""
+    monkeypatch.setattr("drowse.lens.corpus.pin_lens_corpus", _pin)
+
+
 @pytest.fixture
 def session_and_client():
     from drowse.server import create_app
@@ -566,14 +586,75 @@ class TestPreparations:
             if client.get(f"{_BASE}/lens/preparations").json()["state"] != "running":
                 break
             time.sleep(0.01)
-        assert streamed == [(3, LensCorpusMix((
+        # The stream reads the pinned corpus the no-op proof checked.
+        assert streamed == [(3, _pin(LensCorpusMix((
             HfLensCorpus("org/data", "cfg", "main", "body"),
             HfLensCorpus("org/zh", "cmn", files=8, seed=1),
-        ), (2, 1)))]
+        ), (2, 1))))]
         assert session.lens.fit.call_args.kwargs["corpus_spec"] == (
             "hf:org/data/cfg@sha"
         )
         assert session.lens.fit.call_args.kwargs["kind"] == "R"
+
+    def test_lens_fit_skips_a_proven_noop_without_streaming(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        """Like ``lens fit``: a durable fit of the same pinned corpus and
+        exact model source is proven before the stream, so nothing streams
+        or fits, and the proven artifact becomes the live source."""
+        from drowse.lens.corpus import DEFAULT_LENS_CORPUS
+
+        session, client = session_and_client
+        proofs: list[tuple[str, str, dict[str, Any]]] = []
+
+        def _prove(model_id: str, name: str, **kwargs: Any) -> dict[str, Any]:
+            proofs.append((model_id, name, kwargs))
+            return {"n_prompts": 3}
+
+        def _stream(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("a proven no-op must not stream")
+
+        monkeypatch.setattr("drowse.lens.lifecycle.prove_lens_fit_noop", _prove)
+        monkeypatch.setattr("drowse.lens.corpus.stream_lens_corpus", _stream)
+        resp = client.post(
+            f"{_BASE}/lens/preparations",
+            json={"operation": "fit", "prompts": 3, "layers": "workspace", "seq_len": 64},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "lens")
+        status = client.get(f"{_BASE}/lens/preparations").json()
+        assert status["state"] == "done", status
+        ((model_id, name, kwargs),) = proofs
+        assert (model_id, name) == (session.lens.model_id, "r")
+        assert kwargs["corpus_spec"] == _pin(DEFAULT_LENS_CORPUS).spec
+        assert kwargs["prompt_count"] == 3
+        assert kwargs["requested"] == "workspace" and kwargs["seq_len"] == 64
+        session.lens.fit.assert_not_called()
+        session.lens.select_source.assert_called_once_with("local:r")
+        assert session.lens.live_layers == session.lens.default_layers
+        assert status["message"] == "done"
+
+    def test_forced_lens_fit_skips_the_noop_proof(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        session, client = session_and_client
+
+        def _prove(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("a forced fit never proves a no-op")
+
+        monkeypatch.setattr("drowse.lens.lifecycle.prove_lens_fit_noop", _prove)
+        monkeypatch.setattr(
+            "drowse.lens.corpus.stream_lens_corpus",
+            lambda _n, _corpus, *, cancel_event=None: (["a long enough prompt."], "spec"),
+        )
+        resp = client.post(
+            f"{_BASE}/lens/preparations",
+            json={"operation": "fit", "prompts": 1, "force": True},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "lens")
+        assert client.get(f"{_BASE}/lens/preparations").json()["state"] == "done"
+        assert session.lens.fit.call_args.kwargs["force"] is True
 
     def test_lens_fit_rejects_a_malformed_hub_corpus(
         self, session_and_client: Any,
