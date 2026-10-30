@@ -11,7 +11,12 @@ import pytest
 import torch
 
 from drowse.steering.composer import SteeringComposer
-from drowse.steering.grammar import format_expr, parse_expr
+from drowse.steering.grammar import (
+    SteeringExprError,
+    format_expr,
+    parse_expr,
+    referenced_selectors,
+)
 from drowse.cli.runners import (
     _lens_fit_source_preflight_matches,
     _try_lens_fit_noop_preflight,
@@ -69,6 +74,51 @@ def test_jlens_steering_atom_round_trips() -> None:
 
     ablation = parse_expr("!jlens/fake")
     assert "jlens/fake" in format_expr(ablation)
+
+
+def test_reserved_namespace_atoms_preserve_case() -> None:
+    """``jlens/Paris`` must name the same token as ``@when:jlens/Paris``.
+
+    The atom used to slug-canonicalize to ``jlens/paris`` (a different
+    vocabulary entry) while the gate kept ``jlens/Paris`` verbatim.
+    """
+    steering = parse_expr("0.3 jlens/Paris@when:jlens/Paris>0.01")
+    (key,) = steering.alphas
+    assert key == "jlens/Paris"
+    assert _sole_trigger(steering).gate.probe == key
+    assert format_expr(steering) == "0.3 jlens/Paris@when:jlens/Paris>0.01"
+    assert "neuron/L8n344" in parse_expr("0.2 neuron/L8n344").alphas
+    assert "!jlens/Fake" in parse_expr("!jlens/Fake").alphas
+
+
+@pytest.mark.parametrize("namespace", ["jlens", "slens"])
+def test_token_id_atom_and_probe(namespace: str) -> None:
+    text = f"0.3 {namespace}/#1234 + 0.2 x@when:{namespace}/#7>0.01"
+    steering = parse_expr(text)
+    assert f"{namespace}/#1234" in steering.alphas
+    gated = steering.alphas["x"]
+    assert isinstance(gated, tuple) and gated[1].gate is not None
+    assert gated[1].gate.probe == f"{namespace}/#7"
+    assert format_expr(steering) == text
+    assert parse_expr(format_expr(steering)) == steering
+    assert referenced_selectors(f"!{namespace}/#12") == [(namespace, "#12", "raw")]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "0.3 #12",                # no namespace
+        "0.3 sae/#12",            # sae takes a bare feature id
+        "0.3 alice/#12",          # ordinary namespaces take names
+        "0.3 jlens/#1.5",         # ids are integers
+        "0.3 jlens/#",            # id required
+        "0.3 jlens/fake:sae",     # instrument atoms take no variant
+        "x@when:sae/#3>0",
+    ],
+)
+def test_token_id_and_reserved_atom_rejections(text: str) -> None:
+    with pytest.raises(SteeringExprError):
+        parse_expr(text)
 
 
 # ---------------------------------------------------------- lazy resolution --
@@ -263,7 +313,7 @@ def test_lens_gate_scalar_scores_only_referenced_probe(
 # -------------------------------------------------------------- ns reservation
 
 
-@pytest.mark.parametrize("namespace", ["jlens", "sae"])
+@pytest.mark.parametrize("namespace", ["jlens", "slens", "sae", "neuron", "head"])
 def test_manifold_authoring_rejects_reserved_runtime_namespace(
     namespace: str,
 ) -> None:

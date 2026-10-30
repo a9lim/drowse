@@ -40,6 +40,8 @@ from drowse.store.manifold_folder import (
 from drowse.geometry.manifold import domain_from_spec
 from drowse.base.integrity import NAME_REGEX
 from drowse.base.paths import manifold_dir, manifolds_dir
+# No manifold may be authored under an instrument namespace (it would shadow it).
+from drowse.steering.grammar import RESERVED_NAMESPACES
 # Every authoring entry point that changes the installed manifold roster drops
 # the resolver's memoized walks itself — callers carry no invalidation duty.
 from drowse.store.selectors import invalidate as invalidate_selector_index
@@ -117,11 +119,6 @@ def iter_manifold_folders(
                 continue
 
 
-#: Namespaces no manifold may be authored under. ``jlens`` and ``sae`` are
-#: lazily-resolved per-model steering tiers; a manifold folder under either
-#: name would shadow that resolution.
-RESERVED_NAMESPACES = frozenset({"jlens", "sae"})
-
 
 def _validate_ns_name(namespace: str, name: str) -> None:
     """Shared name/namespace gate for every folder-creation entry point."""
@@ -136,9 +133,9 @@ def _validate_ns_name(namespace: str, name: str) -> None:
         )
     if namespace in RESERVED_NAMESPACES:
         raise ManifoldFormatError(
-            f"manifold namespace {namespace!r} is reserved — "
-            f"'jlens/<word>' resolves through the model's Jacobian lens, "
-            f"not a manifold folder"
+            f"manifold namespace {namespace!r} is reserved for instrument "
+            f"atoms ({', '.join(sorted(RESERVED_NAMESPACES))}), not "
+            f"manifold folders"
         )
 
 

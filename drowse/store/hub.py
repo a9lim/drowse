@@ -698,7 +698,7 @@ class ManifoldInstallConflict(RuntimeError, DrowseError):
 
 
 def _install_destination(namespace: str, name: str) -> Path:
-    from drowse.store.manifold_authoring import RESERVED_NAMESPACES
+    from drowse.steering.grammar import RESERVED_NAMESPACES
     from drowse.base.paths import manifold_dir, manifolds_dir
 
     for label, component in (("namespace", namespace), ("name", name)):
