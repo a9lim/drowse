@@ -1013,6 +1013,14 @@ holds the plotly/pandas figure helpers over the public result types (optional
 directory (peer of `drowse/`); its build artifact is committed under
 `drowse/web/dist/` and must be rebuilt whenever `webui/src` changes.
 
+The browser edition at drowse.ai lives in
+[stdlogits/drowse.ai](https://github.com/stdlogits/drowse.ai). It pins this
+repository as a submodule and builds `webui/src` with a WebGPU runtime behind the
+`@runtime-*` seams in `webui/vite.config.ts` and the `RuntimeClient` contract in
+`webui/src/lib/runtime/`, so changes to either are changes to its interface. The
+goldens under `tests/fixtures/browser/` are the engine outputs its runtime
+replays; regenerate them here when the semantics they cover change.
+
 ## Testing
 
 **GPU-required** (CUDA or MPS): `test_smoke.py`, `test_session.py`,

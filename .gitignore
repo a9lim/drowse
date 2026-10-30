@@ -16,23 +16,6 @@ build/
 # Node modules from the webui/ Svelte source.
 webui/node_modules/
 webui/dist/
-webui/dist-hosted/
-webui/dist-local/
-# /neurons explorer data, built by webui/scripts/neurons/build-neuron-catalog.py from the
-# private neuron-lens catalog. Publish it only with the catalog owner's permission.
-/webui/public-hosted/neurons-data/
-.playwright-mcp/
-
-# Browser-runtime compiler scratch directories are local feasibility outputs.
-browser-runtime/.v3-compile.*/
-browser-runtime/.local-build/
-browser-runtime/vendor/*.tgz
-!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.34.tgz
-!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.36.tgz
-!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.37.tgz
-!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.38.tgz
-!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.39.tgz
-!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.40.tgz
 
 # Virtual environments
 .venv/
@@ -80,25 +63,12 @@ scripts/experiments/
 *checklist*.md
 *_FIXES*.md
 *-fixes*.md
-/browser-runtime/BASE_MODELS.md
-/webui/GEO-SCHEMA-REPORT.md
-/webui/.wrangler/
-/webui/docs/*-REVIEW.md
-/webui/docs/*-REPORT.md
-/webui/docs/*-20??-??-??.*
-/docs/cloudflare-configuration-20??-??-??.md
 /docs/*-20??-??-??.md
 /legacy/
 
-# Ongoing local evidence and provenance records; schemas are source code.
-*-evidence*.json
-!*.schema.json
-/browser-runtime/evidence/*
-!/browser-runtime/evidence/README.md
+# Local provenance records (e.g. scripts/build-sae-descriptions.mjs output).
 PROVENANCE.md
 provenance.json
-# Required authored-source manifest, not a run or audit record.
-!/browser-runtime/release-inputs/core-manifolds/welcoming.detached/provenance.json
 
 # Local research, benchmark reports, and generated verification output.
 /DOMAIN_NAME_*.md

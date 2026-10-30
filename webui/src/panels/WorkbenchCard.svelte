@@ -1,7 +1,7 @@
 <script lang="ts">
   import { sessionState } from "../lib/stores.svelte";
   import { DROWSE_UI_VERSION } from "../lib/version";
-  import ModelProviderLogo from "../hosted/ui/ModelProviderLogo.svelte";
+  import ModelProviderLogo from "../lib/ui/ModelProviderLogo.svelte";
   import BaseModelTag from "../lib/ui/BaseModelTag.svelte";
 
   const model = $derived(sessionState.info?.model_id ?? "");

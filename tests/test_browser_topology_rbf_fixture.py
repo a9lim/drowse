@@ -15,9 +15,9 @@ from drowse.core.topology import (
 
 
 FIXTURE = (
-    Path(__file__).parents[1]
-    / "browser-runtime"
+    Path(__file__).parent
     / "fixtures"
+    / "browser"
     / "topology-rbf-parity-v1.json"
 )
 

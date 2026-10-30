@@ -7,7 +7,7 @@ import torch
 from drowse.core.capture import compute_dls_axes
 
 
-FIXTURE = Path(__file__).parents[1] / "browser-runtime" / "fixtures" / "dls-axes-v1.json"
+FIXTURE = Path(__file__).parent / "fixtures" / "browser" / "dls-axes-v1.json"
 
 
 def test_browser_dls_fixture_matches_python_source_of_truth() -> None:

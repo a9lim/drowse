@@ -58,10 +58,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/a9lim/drowse"
-Repository = "https://github.com/a9lim/drowse"
-Issues = "https://github.com/a9lim/drowse/issues"
-Releases = "https://github.com/a9lim/drowse/releases"
+Homepage = "https://drowse.ai"
+Repository = "https://github.com/stdlogits/drowse"
+Issues = "https://github.com/stdlogits/drowse/issues"
+Releases = "https://github.com/stdlogits/drowse/releases"
 
 [project.optional-dependencies]
 flash = ["flash-attn>=2.5"]
@@ -112,10 +112,6 @@ ignore = ["E501", "E741", "E402", "E731"]
 # Maintenance/benchmark scripts are stand-alone and intentionally
 # print to stdout for diagnostic output and progress reporting.
 "scripts/*" = ["T20"]
-"webui/scripts/neurons/build-neuron-catalog.py" = ["T20"]
-"webui/scripts/neurons/pack-scores.py" = ["T20"]
-"browser-runtime/*.py" = ["T20"]
-"browser-runtime/forks/*.py" = ["T20"]
 # Examples are runnable demos that print results.
 "examples/*" = ["T20"]
 
@@ -140,7 +136,6 @@ include = [
     "examples",
 ]
 exclude = ["**/__pycache__", "**/node_modules"]
-extraPaths = ["browser-runtime"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = false

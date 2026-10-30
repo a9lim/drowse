@@ -28,7 +28,7 @@
   import CommandPalette from "./panels/CommandPalette.svelte";
   import WorkbenchCard from "./panels/WorkbenchCard.svelte";
   import Toaster from "./lib/Toaster.svelte";
-  import PageHeader from "./hosted/ui/PageHeader.svelte";
+  import PageHeader from "./lib/ui/PageHeader.svelte";
   import WorkbenchMenu from "./lib/ui/WorkbenchMenu.svelte";
   import TabIdentity from "./lib/ui/TabIdentity.svelte";
   import ConversationAutosave from "./lib/ui/ConversationAutosave.svelte";
@@ -52,7 +52,7 @@
   import {
     clearConversationOpen,
     peekConversationOpen,
-  } from "./hosted/runtime/entryExperience";
+  } from "./lib/entryExperience";
   import {
     paletteState,
     closePalette,

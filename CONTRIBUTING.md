@@ -7,7 +7,7 @@ setuptools; there is no lockfile-based development workflow.
 ## Dev setup
 
 ```bash
-git clone https://github.com/a9lim/drowse
+git clone https://github.com/stdlogits/drowse
 cd drowse
 pip install -e ".[dev]"
 ```
@@ -60,36 +60,15 @@ changes must include the rebuilt bundle. CI rebuilds it and fails on any diff.
 
 ## Web app (drowse.ai)
 
-The hosted browser app at drowse.ai is a separate Vite root in the same
-`webui/` package. Its entry and HTML live in `webui/hosted/`, its source in
-`webui/src/hosted/`, and its build config in `webui/vite.hosted.config.ts`. It
-builds to `webui/dist-hosted/` and never writes to `drowse/web/dist/`. Use
-Node 24 (`engines` in `webui/package.json`).
+The hosted browser app lives in
+[stdlogits/drowse.ai](https://github.com/stdlogits/drowse.ai). It builds this
+repository's dashboard source (`webui/src`) from a pinned submodule, so a change
+to shared dashboard code lands here first and reaches the site when its
+submodule is bumped. Its own checks run in that repository's CI.
 
-```bash
-cd webui
-npm ci
-npm run dev:hosted     # hosted app dev server
-npm run check          # shared Svelte/TypeScript and UI policy checks
-npm run check:hosted   # hosted runtime, release-tool, and lock checks
-npm run build:hosted   # preview build into dist-hosted/
-```
-
-`npm run test:hosted` runs the hosted runtime tests and a preview build.
-Cloudflare Pages preview projects build with `npm ci && npm run build:hosted`.
-The production project uses `npm run build:hosted:release`. That command fails
-unless the runtime lock, distribution, and model backend are verified, and only
-then removes the preview-only `noindex` policy. After deploying, check the
-host with `npm run verify:hosted:deployment -- <url> --channel
-preview|candidate|release` (preview and candidate hosts need a Cloudflare
-Access service token) and, after a release,
-`npm run verify:site-discovery -- https://drowse.ai`. See
-`webui/hosted/README.md` for details. The `/api/contact` form backend is a
-separate Worker in `webui/contact-worker/` with its own checks and activation
-checklist in its README.
-
-Report security issues in the web app privately as described in
-[SECURITY.md](SECURITY.md), not in public issues.
+The parity fixtures under `tests/fixtures/browser/` are the Python reference
+outputs the browser runtime replays. Changing engine semantics they cover means
+regenerating them here and updating the browser runtime in drowse.ai.
 
 ## Adding a new model architecture
 

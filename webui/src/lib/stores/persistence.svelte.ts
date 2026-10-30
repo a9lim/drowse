@@ -19,7 +19,7 @@
 import { loomTree } from "./loom.svelte";
 import { highlightState } from "./probes.svelte";
 import { sessionState } from "./session.svelte";
-import { migrateLegacyStorageItem, removeLegacyStorageItem } from "../../hosted/runtime/brandMigration";
+import { migrateLegacyStorageItem, removeLegacyStorageItem } from "../brandMigration";
 import { registerDrowseLocalDataClearer } from "../runtime/localData";
 import { PROBABILITY_TARGET, SURPRISE_TARGET } from "../tokens";
 

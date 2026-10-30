@@ -13,7 +13,7 @@ function visit(name) {
     scheduled.add(match[1]);
   }
 }
-for (const name of ["check", "check:hosted", "test:hosted"]) visit(name);
+visit("check");
 const tests = (await readdir(new URL(".", import.meta.url))).filter(name => name.endsWith(".test.mjs"));
 const missing = tests.filter(name => !scheduled.has(name));
 assert.deepEqual(missing, [], `Tests disconnected from the standard CI checks: ${missing.join(", ")}`);

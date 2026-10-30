@@ -7,7 +7,7 @@ import pytest
 import torch
 
 
-_FIXTURE = Path(__file__).parents[1] / "browser-runtime" / "fixtures" / "post-block-rank-one-v2.json"
+_FIXTURE = Path(__file__).parent / "fixtures" / "browser" / "post-block-rank-one-v2.json"
 
 
 @pytest.mark.parametrize("case_index", range(len(json.loads(_FIXTURE.read_text())["cases"])))

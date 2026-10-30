@@ -1,4 +1,4 @@
-import type { HostedShellController } from "../../hosted/ui/types";
+import type { HostedShellController } from "../shell";
 import { getHostedController, getRuntimeCapabilities, getRuntimeClient } from "../runtime/registry";
 import { registerDrowseLocalDataClearer } from "../runtime/localData";
 import { WebMcpAdapter, nativeModelContext } from "./adapter";

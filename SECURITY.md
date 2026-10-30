@@ -4,7 +4,7 @@
 
 If you've found a security issue in drowse, please report it privately rather than filing a public issue.
 
-- **GitHub:** use [private security advisories](https://github.com/a9lim/drowse/security/advisories/new)
+- **GitHub:** use [private security advisories](https://github.com/stdlogits/drowse/security/advisories/new)
 - **Email:** [contact@drowse.ai](mailto:contact@drowse.ai)
 
 Please include a description, reproduction steps, affected version, model ID, and

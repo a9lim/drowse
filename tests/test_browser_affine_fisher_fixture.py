@@ -9,7 +9,7 @@ from drowse.core.manifold import fit_affine_subspace, subspace_share
 from drowse.core.topology import derive_pca_coords, neutral_layout_coord
 
 
-FIXTURE = Path(__file__).parents[1] / "browser-runtime" / "fixtures" / "affine-fisher-fit-v1.json"
+FIXTURE = Path(__file__).parent / "fixtures" / "browser" / "affine-fisher-fit-v1.json"
 
 
 def test_browser_affine_fisher_fixture_matches_python_source_of_truth() -> None:

@@ -21,9 +21,9 @@ from drowse.core.session import DrowseSession
 
 
 FIXTURE = (
-    Path(__file__).parents[1]
-    / "browser-runtime"
+    Path(__file__).parent
     / "fixtures"
+    / "browser"
     / "measurement-envelope-v1.json"
 )
 

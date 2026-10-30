@@ -13,9 +13,9 @@ from tests._whitener import isotropic_whitener
 
 FIXTURE = json.loads(
     (
-        Path(__file__).parents[1]
-        / "browser-runtime"
+        Path(__file__).parent
         / "fixtures"
+        / "browser"
         / "affine-rank-one-lowering-v1.json"
     ).read_text()
 )

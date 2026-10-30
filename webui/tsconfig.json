@@ -15,7 +15,7 @@
     "paths": {
       "@runtime-jlens-missing": ["src/drawers/token/JLensMissingState.svelte"],
       "@runtime-jlens-source": ["src/panels/JLensSourceSection.svelte"],
-      "@runtime-local-drawer": ["src/drawers/LocalRuntimeDrawer.svelte"],
+      "@runtime-local-drawer": ["src/drawers/UnavailableRuntimeDrawer.svelte"],
       "@runtime-sae-source": ["src/panels/SaeSourceSection.svelte"],
       "@runtime-session-drawer": ["src/drawers/SessionAdminDrawer.svelte"]
     }

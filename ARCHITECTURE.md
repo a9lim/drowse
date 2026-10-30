@@ -548,7 +548,7 @@ The WebUI token-detail drawer is a shell over four views:
 - SAE features;
 - J-lens aggregate and layer-by-vocabulary readout.
 
-Hosted token forks seed the new node with the unchanged prefix and its captured
+Token forks seed the new node with the unchanged prefix and its captured
 token rows before replay starts. Replay rebuilds model context in the background;
 only the replacement and new tail produce visible token events. Throttled
 `generation_progress` events distinguish context preparation from new output.
@@ -690,56 +690,15 @@ and an allowlisted SPA fallback last; retired top-level product routes return
 
 ### 10.1 Hosted browser build
 
-The hosted Svelte entry is isolated from the Python dashboard: it has its own
-Vite configuration and public assets and writes only to `webui/dist-hosted`.
-`HostedController` owns compatibility, catalog, download, storage, and model
-lifecycle; the workbench talks through the same `RuntimeClient` contract used by
-the HTTP implementation. Browser orchestration is assigned to a dedicated
-worker, and the fitting boundary targets a separate Rust/WASM worker so large
-tensors do not cross the UI thread.
-
-Hosted authoring covers manifold and template math only. SAE training and
-J-lens fitting remain Python/developer-release workflows and are neither
-imported by the PWA nor exposed through its worker protocol. The browser can
-download, validate, activate, read, probe, gate, and steer with compatible
-precomputed SAE and J-lens packs entirely on the GPU.
-
-The runtime and distribution locks are `verified`, with pinned runtime artifacts
-and provisioned catalog signing keys. The deterministic fixture backend remains
-limited to tests and local UI development. Release checks reject unverified locks,
-missing trust roots, and incompatible artifact closures. These release checks do
-not certify numerical accuracy across every model, device, or prompt; model-specific
-validation evidence remains separate. No hosted path may substitute cloud inference
-or CPU-only inference when
-WebGPU, the pinned Drowse MLC backend, verified artifacts, or a compatible device
-is unavailable.
-
-The browser runtime accepts a caller-owned, read-only artifact cache.
-Drowse validates the MLC configuration, tokenizer, `tensor-cache.json`, exact
-weight-shard closure, model library, and signed sizes before creating the
-engine. WebLLM reads those verified OPFS `File` objects directly and cannot
-populate a second persistent cache or request an unknown URL. Chromium consumes
-an adapter after its first device request, so the compatibility worker destroys
-the calibration device and acquires a fresh adapter immediately before load. It
-rejects that adapter unless its hardware status, identity, features, and
-bucketed limits match the checked adapter, then lets WebLLM create the production
-device from it. Release builds still require the exact pinned fork package and
-immutable production artifacts.
-
-The browser owns a transport-neutral parser for the complete Python steering
-syntax, including projections, ablations, manifold positions, phase windows,
-probe gates, SAE selectors, and J-lens selectors. Python and TypeScript consume
-the same accept/reject fixture. Parsing does not imply execution support: each
-expression is reduced to an explicit hook-feature requirement set before GPU
-program compilation. The `standard-v3` library profile implements
-structured affine and curved programs, exact geometry reads, precomputed SAE
-steering/readout, and exact full-vocabulary J-lens steering/readout. The worker
-still validates the library feature manifest, runtime identity, model profile,
-and required instrument packs before every program is installed; unsupported
-or incompatible combinations fail before generation. Production downloads require
-the verified runtime lock, immutable model closure, signed catalog, and allowed
-distribution origins; the checked-in distribution lock provisions these origins
-and trust keys.
+drowse.ai builds this dashboard with a WebGPU runtime in place of
+`HttpRuntimeClient`; its shell, browser runtime, worker protocol, artifact
+catalog, and release locks live in
+[stdlogits/drowse.ai](https://github.com/stdlogits/drowse.ai), which pins this
+repository as a submodule. The contract it relies on is the `RuntimeClient`
+interface in `webui/src/lib/runtime/` plus the `@runtime-*` aliases in
+`webui/vite.config.ts`; shared code must not reach past either. The parity
+fixtures in `tests/fixtures/browser/` are this implementation's reference
+outputs, which the browser runtime replays.
 
 ## 11. J-lens and SAE lifecycle
 
@@ -784,7 +743,7 @@ and safetensor headers are validated before a staged install. Those checks prove
 integrity, not publisher identity; third-party archives remain unverified
 sources.
 
-The hosted client discovers only `drowse-manifold` Hugging Face repositories
+The drowse.ai client discovers only `drowse-manifold` Hugging Face repositories
 with one root `.drowse` and one root `manifold.json` summary. Search results
 are bound to the repository's immutable commit; installation re-resolves that
 commit and rejects an archive whose internal source provenance differs. This

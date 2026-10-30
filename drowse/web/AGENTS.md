@@ -29,12 +29,13 @@ numeric callers keep `RollingNumber.svelte`. Torph paints an aria-hidden
 overlay while Svelte owns the exact selectable source text. Preserve the
 offscreen, reduced-motion, selection, wrapping, identity-reset, and finished
 animation cleanup policies in `lib/textMotion.ts`. Do not replace interactive
-token spans or matrix cells with whole-string morphs. `e2e/torph-motion.spec.ts`
-checks the shared controls across desktop browsers and iPhone-sized WebKit.
+token spans or matrix cells with whole-string morphs. drowse.ai's
+`webui/e2e/torph-motion.spec.ts` checks the shared controls across desktop
+browsers and iPhone-sized WebKit.
 
 Package data includes the entire default `dist/` tree. The package-isolation
 check compares wheel and sdist contents with that tree, so a file omitted from
-both archives still fails. Hosted WebGPU assets stay in the separate hosted build.
+both archives still fails. Hosted WebGPU assets belong to the drowse.ai build, never this tree.
 
 ## Mount (`routes.py`)
 
