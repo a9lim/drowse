@@ -63,25 +63,11 @@ class _CaptureSlot:
         return self._harness.capture.per_layer_buckets()
 
 
-class _StubCapture:
-    """Forwards the instrument's capture reads to ``stub._capture``."""
-
-    def __init__(self, stub: Any) -> None:
-        self._stub = stub
-
-    def latest_per_layer(self) -> dict[int, torch.Tensor]:
-        return self._stub._capture.latest_per_layer()
-
-    def per_layer_buckets(self) -> dict[int, list[torch.Tensor]]:
-        return self._stub._capture.per_layer_buckets()
-
-
 def stub_lens_instrument(stub: Any) -> Any:
     """A ``LensInstrument`` for a narrow ``DrowseSession.__new__`` stub.
 
-    Every dependency is looked up on the stub when it is used, so a test can
-    assign ``stub._capture`` / ``stub._pooled_aggregate_slice`` after wiring.
-    The resident lens comes from the store as usual.
+    The capture forwards to ``stub._capture`` per call, so a test can assign
+    it after wiring.  The resident lens comes from the store as usual.
     """
     from drowse.lens.instrument import LensInstrument
 
@@ -129,6 +115,7 @@ class _StubRegistry:
 def stub_lens_kwargs(stub: Any) -> dict[str, Any]:
     """The ``LensInstrument`` constructor arguments for a session stub (for
     test fakes that subclass the instrument)."""
+    from tests.support.stubs import StubCapture
 
     @contextmanager
     def _exclusive(_message: str, *, phase_msg: str | None = None) -> Iterator[None]:
@@ -148,10 +135,9 @@ def stub_lens_kwargs(stub: Any) -> dict[str, Any]:
         model_id="stub/model",
         device=torch.device("cpu"),
         n_layers=len(getattr(stub, "_layers", None) or ()),
-        capture=_StubCapture(stub),
+        capture=StubCapture(stub),
         exclusive=_exclusive,
         capture_hidden=_capture_hidden,
-        pooled_slice=lambda ids: stub._pooled_aggregate_slice(ids),
         registry=_StubRegistry(stub),
         on_change=lambda _names: None,
         resolve_profile=lambda selector: stub.ensure_profile_registered(selector),
@@ -168,7 +154,6 @@ class LensHarness:
       (``profiles`` is its read-only view).
     - ``changes``: every ``on_change`` call's probe names.
     - ``capture``: what the per-step reads see (assign a :class:`FakeCapture`).
-    - ``pooled``: what the finalize pool hands back.
     - ``exclusive_messages``: every model-exclusive section entered.
     """
 
@@ -194,7 +179,6 @@ class LensHarness:
         )
         self.changes: list[list[str]] = []
         self.capture: Any = FakeCapture({})
-        self.pooled: dict[int, torch.Tensor] = {}
         self.exclusive_messages: list[str] = []
         self.lens = LensInstrument(
             model=self.model,
@@ -205,7 +189,6 @@ class LensHarness:
             capture=_CaptureSlot(self),
             exclusive=self._exclusive,
             capture_hidden=self._capture_hidden,
-            pooled_slice=lambda _ids: self.pooled,
             registry=self.registry,
             on_change=lambda names: self.changes.append(list(names)),
             resolve_profile=lambda selector: self.registry.profiles[selector],

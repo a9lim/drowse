@@ -12,11 +12,11 @@ Owns everything SAE-shaped on a session (``session.sae``):
   aggregate, the live display step, authored-prefill computation and the
   loom-anchored token replay.
 
-Dependencies are explicit constructor arguments: the runtime, the session's
+Dependencies are explicit constructor arguments: the read plane's capture
+(the per-step reads take its latest slices), the runtime, the session's
 replay primitive, and three registry callbacks for the ``sae/<id>`` steering
-directions and the probe-hash cache.  The session back-reference remains only
-for the capture plane (``_capture``, ``_pooled_aggregate_slice``) until the
-read-plane planner owns it.
+directions and the probe-hash cache.  The finalize aggregate takes the read
+plane's pooled slice.
 
 **An SAE probe emits exactly one channel**: ``<name>`` / ``<name>[0]``, the
 normalized strength.  There is no ``:fraction`` or ``:membership`` — a
@@ -55,8 +55,8 @@ from drowse.readout.types import (
 )
 
 if TYPE_CHECKING:
+    from drowse.readout.protocol import LatestSlices
     from drowse.sae.runtime import SaeRuntime
-    from drowse.session.session import DrowseSession
 
 #: Device selector tensors kept for pinned-probe gathers (one per roster).
 _SELECTOR_CACHE_MAX = 64
@@ -100,16 +100,6 @@ class SaeRun:
 
     # ------------------------------------------------------------ protocol
 
-    def observe(
-        self, step_id: int, hidden: dict[int, torch.Tensor],
-    ) -> dict[str, ScalarReading]:
-        """Readings for every attached probe from these hidden slices.
-
-        Not memoized: per-forward reuse is the step-keyed encode stash the
-        gate callback leaves for the display step (:attr:`step_stash`)."""
-        del step_id
-        return self._instrument.score_probes(hidden)
-
     def gate_scalars(
         self,
         step_id: int,
@@ -150,7 +140,7 @@ class SaeInstrument:
 
     def __init__(
         self,
-        session: "DrowseSession",
+        capture: "LatestSlices",
         runtime: "SaeRuntime",
         *,
         replay: Callable[..., tuple[Any, Any]],
@@ -158,8 +148,8 @@ class SaeInstrument:
         evict_directions: Callable[[], object],
         forget_probe_hashes: Callable[[Sequence[str]], None],
     ) -> None:
-        # Capture plane only (``_capture``, ``_pooled_aggregate_slice``).
-        self._session = session
+        # The read plane's capture: the per-step reads take its latest slices.
+        self._capture = capture
         # Device feature-id selector tensors, keyed by (device, ids).
         self._index_tensors: BoundedLRU[
             tuple[str, tuple[int, ...]], torch.Tensor
@@ -332,7 +322,7 @@ class SaeInstrument:
         if self.current_run.bound:
             raise RuntimeError(
                 "SaeInstrument.prepare() on a bound run: close the prior "
-                "generation's run (_close_instrument_runs) first"
+                "generation's run (ReadPlane.close_runs) first"
             )
         return InstrumentPrep(
             family=self.family,
@@ -439,7 +429,7 @@ class SaeInstrument:
         Validation may fetch the feature's Neuronpedia metadata (outside
         every lock): ``max_act`` is the probe's strength unit.  Cache
         invalidation (prefix cache, probe-hash cache, analytics) is the
-        session's job at its ``add_probe`` boundary.
+        probe roster's job (:class:`~drowse.readout.roster.ProbeRoster`).
         """
         raw_id = selector.split("/", 1)[1]
         validated = self.validate_feature(raw_id)
@@ -740,7 +730,7 @@ class SaeInstrument:
             }
             if not only:
                 return {}
-        latest = self._session._capture.latest_per_layer()
+        latest = self._capture.latest_per_layer()
         if layer not in latest:
             return {}
         acts = self.runtime.encode(latest[layer])
@@ -758,25 +748,17 @@ class SaeInstrument:
         })
 
     def score_aggregate(
-        self,
-        generated_ids: list[int],
-        *,
-        pooled: dict[int, torch.Tensor] | None = None,
+        self, generated_ids: list[int], pooled: dict[int, torch.Tensor],
     ) -> dict[str, ScalarReading]:
-        """End-of-gen aggregate pooled at the last content token.
-
-        Shares the session's ``_pooled_aggregate_slice`` with the monitor
-        roster and the lens family, so all three aggregates read the same
-        position under every retention mode.
-        """
+        """End-of-gen aggregate at ``pooled``, the read plane's slice at the
+        last content token (shared with the monitor roster and the lens
+        family, so all three aggregates read the same position)."""
         # Binding-authoritative guard: a probe detached mid-generation
         # stays in this generation's aggregate roster (mutations apply
         # next generation).
-        if not self._measurement_specs() or not generated_ids:
+        if not self._measurement_specs() or not generated_ids or not pooled:
             return {}
-        if pooled is None:
-            pooled = self._session._pooled_aggregate_slice(generated_ids)
-        return self.current_run.observe_aggregate(pooled) if pooled else {}
+        return self.current_run.observe_aggregate(pooled)
 
     # ----------------------------------------------------------- live readout
 
@@ -929,7 +911,7 @@ class SaeInstrument:
         if state is None or not self.active_for_generation:
             return None
         layer = int(state["layer"])
-        buckets = self._session._capture.per_layer_buckets()
+        buckets = self._capture.per_layer_buckets()
         if not buckets.get(layer):
             return None
         stash = self.step_stash

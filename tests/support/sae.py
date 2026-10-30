@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -102,7 +102,8 @@ def stub_sae_instrument(
     ``cls`` substitutes an :class:`SaeInstrument` subclass (one that fakes
     part of the surface) for the instrument itself.
 
-    ``session`` doubles as the runtime's model handle, so it needs whatever
+    The capture forwards to ``session._capture`` per call.  ``session``
+    doubles as the runtime's model handle, so it needs whatever
     model surface the test exercises (``layers`` for depth summaries,
     ``device``/``dtype`` for directions).  Registry effects land on the
     returned instrument's ``effects`` dict: ``directions`` (``sae/<id>`` ->
@@ -112,6 +113,7 @@ def stub_sae_instrument(
     """
     from drowse.sae.instrument import SaeInstrument
     from drowse.sae.runtime import SaeRuntime
+    from tests.support.stubs import StubCapture
 
     effects: dict[str, Any] = {"directions": {}, "evictions": 0, "forgotten": []}
 
@@ -135,7 +137,7 @@ def stub_sae_instrument(
         raise AssertionError("stub_sae_instrument: no replay wired")
 
     instrument = (cls or SaeInstrument)(
-        session,
+        cast(Any, StubCapture(session)),
         SaeRuntime(
             session,
             exclusive=lambda *_a, **_k: nullcontext(),

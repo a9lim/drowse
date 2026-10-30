@@ -217,7 +217,7 @@ def test_session_facades_are_the_instruments(make_tiny_session: Any) -> None:
 _INSTRUMENT_SURFACE = (
     "specs", "probe_hash", "prepare", "plan", "bind", "close_run",
 )
-_RUN_SURFACE = ("observe", "observe_aggregate", "close")
+_RUN_SURFACE = ("observe_aggregate", "close")
 
 
 def test_every_family_carries_the_uniform_instrument_surface(make_tiny_session: Any) -> None:
@@ -232,6 +232,9 @@ def test_every_family_carries_the_uniform_instrument_surface(make_tiny_session: 
         run = instrument.current_run
         for name in _RUN_SURFACE:
             assert callable(getattr(run, name)), f"{family} run.{name}"
+        # Per-forward reuse is the step-keyed stash, not a run-level read;
+        # only the geometry run scores one forward (the token tap's read).
+        assert hasattr(run, "observe") is (family == "geometry")
         assert run.bound is False
         assert run.binding.family == family
         # The bind/close asymmetry is what let a standalone capture path leak

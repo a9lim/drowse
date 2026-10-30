@@ -65,6 +65,7 @@ from drowse.lens.jlens import (
 from drowse.lens.layers import LayerSelector
 from drowse.lens.lifecycle import LensFitRequest, LensFitter, LiveConfig
 from drowse.lens.runtime import CaptureHidden, LensRuntime, select_rows
+from drowse.readout.protocol import LatestSlices
 
 _log = logging.getLogger(__name__)
 
@@ -128,15 +129,6 @@ class LensRun:
 
     # ------------------------------------------------------------ protocol
 
-    def observe(
-        self, step_id: int, hidden: dict[int, torch.Tensor],
-    ) -> dict[str, ScalarReading]:
-        """Readings for every attached probe from ``hidden``.  The per-step
-        reuse between the gate callback and the display step is the
-        step-keyed worker stash, not a memo here."""
-        del step_id
-        return self._instrument.score_probes(hidden)
-
     def gate_scalars(
         self,
         step_id: int,
@@ -187,10 +179,9 @@ class LensInstrument:
         model_id: str,
         device: torch.device,
         n_layers: int,
-        capture: Any,
+        capture: LatestSlices,
         exclusive: ExclusiveGuard,
         capture_hidden: CaptureHidden,
-        pooled_slice: Callable[[list[int]], dict[int, torch.Tensor]],
         registry: ProfileStore,
         on_change: Callable[[Iterable[str]], None],
         resolve_profile: Callable[[str], Mapping[int, torch.Tensor]],
@@ -202,11 +193,11 @@ class LensInstrument:
             model=model, tokenizer=tokenizer, model_id=model_id,
             device=device, n_layers=n_layers,
         )
-        #: The capture buffer the per-step reads consume (latest slices).
+        #: The read plane's capture buffer: the per-step reads consume its
+        #: latest slices.
         self._capture = capture
         self._exclusive = exclusive
         self._capture_hidden = capture_hidden
-        self._pooled_slice = pooled_slice
         #: The session's profile registry: ``jlens/<word>`` directions land
         #: here and are evicted on every lens change.
         self._registry = registry
@@ -321,7 +312,7 @@ class LensInstrument:
         if self.current_run.bound:
             raise RuntimeError(
                 "LensInstrument.prepare() on a bound run: close the prior "
-                "generation's run (_close_instrument_runs) before preparing "
+                "generation's run (ReadPlane.close_runs) before preparing "
                 "the next — a stale pin suppresses the lens disk refresh"
             )
         # The WHOLE snapshot is one atomic lens-state transaction:
@@ -838,8 +829,8 @@ class LensInstrument:
         the first decode step doesn't hitch on the J_l transfer.  The probe
         reads ONE channel — ``coords = (strength,)``, the mean layer
         probability ``mean_l p_l(v)``.  Cache invalidation (prefix cache,
-        probe-hash cache, analytics) is the session's job at its
-        ``add_probe`` boundary.
+        probe-hash cache, analytics) is the probe roster's job
+        (:class:`~drowse.readout.roster.ProbeRoster`).
         """
         word = selector.split("/", 1)[1]
         if not word:
@@ -1232,25 +1223,15 @@ class LensInstrument:
         })
 
     def score_aggregate(
-        self,
-        generated_ids: list[int],
-        *,
-        pooled: dict[int, torch.Tensor] | None = None,
+        self, generated_ids: list[int], pooled: dict[int, torch.Tensor],
     ) -> dict[str, ScalarReading]:
-        """End-of-gen aggregate pooled at the last content token.
-
-        Shares the session's pooled slice with the monitor roster and the
-        SAE family, so all three aggregates read the same position under
-        every retention mode.
-        """
+        """End-of-gen aggregate at ``pooled``, the read plane's slice at the
+        last content token (shared with the monitor roster and the SAE
+        family, so all three aggregates read the same position)."""
         # Binding-authoritative guard: a probe detached mid-generation
         # stays in this generation's aggregate roster (mutations apply
         # next generation).
-        if not self._measurement_specs() or not generated_ids:
-            return {}
-        if pooled is None:
-            pooled = self._pooled_slice(generated_ids)
-        if not pooled:
+        if not self._measurement_specs() or not generated_ids or not pooled:
             return {}
         return self.current_run.observe_aggregate(pooled)
 

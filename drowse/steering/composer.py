@@ -6,12 +6,12 @@ frequency: opening a scope from a parsed :class:`~drowse.steering.terms.Steering
 scope's assistant-role policy), composing the flattened stack head into a
 :class:`~drowse.steering.hooks.SteeringPlan` (cached by stack head),
 installing it on the :class:`~drowse.steering.hooks.SteeringManager`, and the
-probe-gate plumbing.
+stack queries the decode loop asks (which probe gates are active, whether
+anything steers the prompt prefill).  Scoring a gate is the read plane's job.
 
 Its dependencies are explicit: the artifact registry it resolves through, the
 neutral baseline it composes against, the steering manager it installs on, the
-exclusive model lock, the event bus, and the read-plane sources the per-token
-gate callback scores from (:class:`GateSources`).
+exclusive model lock and the event bus.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol
 
 import torch
 
@@ -46,7 +46,7 @@ from drowse.steering.triggers import Trigger
 
 if TYPE_CHECKING:
     from drowse.geometry.manifold import Manifold
-    from drowse.readout.types import GateRef, InstrumentFamily
+    from drowse.readout.types import GateRef
 
 
 # Plans retained by stack head.  A ``generate(steering=…)`` composes twice
@@ -84,24 +84,6 @@ class NeutralSource(Protocol):
     def ensure(self) -> None: ...
 
     def require_means(self) -> dict[int, torch.Tensor]: ...
-
-
-@dataclass(frozen=True)
-class GateSources:
-    """Read-plane state the per-token probe-gate callback scores from.
-
-    Getters, not values: the session replaces its capture state wholesale per
-    generation, and the callback must read the current one on every step.
-    """
-
-    monitor: Callable[[], Any]
-    capture: Callable[[], Any]
-    capture_state: Callable[[], Any]
-    incremental_readings: Callable[[], list[Any]]
-    incremental_gate_scores: Callable[[], list[dict[str, float]]]
-    instruments: Callable[[], Mapping[str, Any]]
-    lens_gate_scalars: Callable[..., dict[str, float]]
-    sae_gate_scalars: Callable[..., dict[str, float]]
 
 
 def _fires_in_prefill(trigger: Trigger) -> bool:
@@ -381,7 +363,6 @@ class SteeringComposer:
         events: EventBus,
         generation_phase: Callable[[], str | None],
         on_prefill_steering_change: Callable[[], None],
-        gates: GateSources,
     ) -> None:
         """
         ``generation_phase`` returns the phase name while a generation is
@@ -400,7 +381,6 @@ class SteeringComposer:
         self._events = events
         self._generation_phase = generation_phase
         self._on_prefill_steering_change = on_prefill_steering_change
-        self._gates = gates
         # LIFO stack of resolved per-scope entries; the flattened head (later
         # scopes overwrite earlier keys) is what gets installed.
         self._stack: list[dict[str, SteeringStackEntry]] = []
@@ -645,10 +625,10 @@ class SteeringComposer:
             for entry in self.flatten_stack().values()
         )
 
-    def _gated_refs(self) -> "list[tuple[str, GateRef]]":
-        """Every active probe-gate reference, parsed once into its
-        structured form (:func:`parse_gate_ref` — the ONE place the
-        scalar-key discrimination lives)."""
+    def gate_refs(self) -> "list[tuple[str, GateRef]]":
+        """Every active probe-gate reference as ``(scalar key, GateRef)``,
+        parsed once (:func:`parse_gate_ref` is the one key-shape parser).
+        The read plane resolves them against the attached rosters."""
         from drowse.readout.types import parse_gate_ref
 
         refs = []
@@ -658,56 +638,6 @@ class SteeringComposer:
                 continue
             refs.append((gate.probe, parse_gate_ref(gate.probe)))
         return refs
-
-    def gated_probe_names(self) -> set[str]:
-        """Registered monitor probe names referenced by active probe gates.
-
-        Only names that are actually attached probes are kept, so a stale /
-        non-probe gate key doesn't shrink an otherwise-empty subset to
-        "score nothing".  Scopes the per-token step sink to just the gated
-        probes when gating is the sole per-token consumer.
-        """
-        attached = set(self._gates.monitor().probe_names)
-        return {
-            ref.probe for _key, ref in self._gated_refs()
-            if ref.probe in attached
-        }
-
-    def gated_probe_keys(self) -> set[str]:
-        """Exact monitor scalar keys referenced by active probe gates."""
-        attached = set(self._gates.monitor().probe_names)
-        return {
-            key for key, ref in self._gated_refs()
-            if ref.probe in attached
-        }
-
-    def gated_family_probe_keys(self, family: "InstrumentFamily") -> set[str]:
-        """Exact gate scalar keys referencing one read family's probes.
-
-        A key whose base name is attached to the family is also
-        **channel-validated** (``Instrument.validate_gate``): the single-axis
-        families produce only the strength channel, so
-        ``@when:jlens/word:membership`` raises ``UnsupportedProbeChannelError``
-        at generation preflight rather than sitting silently inactive.
-        """
-        instrument = self._gates.instruments()[family]
-        attached = set(instrument.names)
-        if not attached:
-            return set()
-        out: set[str] = set()
-        for key, ref in self._gated_refs():
-            if ref.probe in attached:
-                instrument.validate_gate(ref)
-                out.add(key)
-        return out
-
-    def gated_lens_probe_keys(self) -> set[str]:
-        """Exact gate scalar keys referencing attached J-lens token probes."""
-        return self.gated_family_probe_keys("lens")
-
-    def gated_sae_probe_keys(self) -> set[str]:
-        """Exact gate scalar keys referencing attached SAE feature probes."""
-        return self.gated_family_probe_keys("sae")
 
     def steering_active_in_prefill(self) -> bool:
         """Return True iff any active steering term fires during prompt prefill.
@@ -741,119 +671,6 @@ class SteeringComposer:
         if s is None:
             return True
         return not any(_fires_in_prefill(trig) for trig in s.triggers())
-
-    def build_gating_score_callback(self):
-        """Return a closure that scores latest captures into a
-        ``dict[str, float]`` for ``generate_steered``'s ``score_callback``.
-
-        Geometry gate keys read the capture sink's row for this forward when
-        one exists, else score exactly the planned keys from the capture's
-        latest per-layer rows (:meth:`Monitor.score_planned_gate_scalars`).
-        Keys naming no attached probe score nothing.  Returns an empty dict
-        when the capture is empty (e.g. before the first forward) so probe
-        gates report inactive instead of seeing stale values.
-
-        Hot path: the returned closure runs per token under an active gate; it
-        binds the capture and monitor once and reads the per-generation
-        capture state through the :class:`GateSources` getters.
-        """
-        gates = self._gates
-        capture = gates.capture()
-        monitor = gates.monitor()
-        monitor_gate_keys = self.gated_probe_keys()
-        lens_gate_keys = self.gated_lens_probe_keys()
-        sae_gate_keys = self.gated_sae_probe_keys()
-        has_lens_gates = bool(lens_gate_keys)
-        has_sae_gates = bool(sae_gate_keys)
-        monitor_gate_plan_cache: dict[
-            tuple[frozenset[str], frozenset[str] | None],
-            Any,
-        ] = {}
-
-        def _score_monitor_gate_keys(
-            latest: dict[int, torch.Tensor],
-            gate_keys: set[str],
-            *,
-            probe_names: set[str] | None = None,
-        ) -> dict[str, float]:
-            if not gate_keys:
-                return {}
-            frozen_keys = frozenset(gate_keys)
-            frozen_probes = (
-                frozenset(probe_names) if probe_names is not None else None
-            )
-            cache_key = (frozen_keys, frozen_probes)
-            plan = monitor_gate_plan_cache.get(cache_key)
-            if plan is None:
-                plan = monitor.plan_gate_scalars(
-                    set(frozen_keys),
-                    probe_names=(
-                        set(frozen_probes) if frozen_probes is not None else None
-                    ),
-                )
-                monitor_gate_plan_cache[cache_key] = plan
-            return (
-                cast(dict[str, float], monitor.score_planned_gate_scalars(latest, plan))
-                if plan else {}
-            )
-
-        def _monitor_scalars() -> dict[str, float]:
-            incremental_readings = gates.incremental_readings()
-            incremental_gate_scores = gates.incremental_gate_scores()
-            state = gates.capture_state()
-            gating_subset = state.gating_subset
-            gate_keys = state.gating_keys or monitor_gate_keys
-            if not gate_keys:
-                # No gate names an attached geometry probe — nothing the
-                # monitor could score would ever fire, so score nothing.
-                return {}
-            # The step sink already scored this token — reuse its row.  In
-            # gating-only-subset mode the rows hold just the gated scalars; in
-            # FULL-incremental mode the whole roster's readings.
-            if gating_subset and incremental_gate_scores:
-                return incremental_gate_scores[-1]
-            if state.incremental and incremental_readings:
-                scalars = monitor.flat_scalars(incremental_readings[-1])
-                missing = gate_keys - set(scalars)
-                if missing:
-                    latest = capture.latest_per_layer()
-                    if latest:
-                        scalars.update(
-                            _score_monitor_gate_keys(
-                                latest,
-                                missing,
-                                probe_names=gating_subset if gating_subset else None,
-                            )
-                        )
-                return scalars
-            latest = capture.latest_per_layer()
-            if not latest:
-                return {}
-            return _score_monitor_gate_keys(
-                latest,
-                gate_keys,
-                probe_names=gating_subset if gating_subset else None,
-            )
-
-        def _score(step_id: int) -> dict[str, float]:
-            out = _monitor_scalars()
-            if has_lens_gates:
-                # Once per forward: band lens logits → strength scalars (also
-                # stashed step-keyed for the display step to reuse).
-                lens_scalars = gates.lens_gate_scalars(
-                    lens_gate_keys, step_id=step_id,
-                )
-                if lens_scalars:
-                    out = {**out, **lens_scalars}
-            if has_sae_gates:
-                sae_scalars = gates.sae_gate_scalars(
-                    sae_gate_keys, step_id=step_id,
-                )
-                if sae_scalars:
-                    out = {**out, **sae_scalars}
-            return out
-
-        return _score
 
     # ------------------------------------------------------------- dispatch
 

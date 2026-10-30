@@ -22,7 +22,7 @@ from drowse.sae.backend import ResolvedSae, sae_device_str, select_runtime_layer
 from drowse.steering.grammar import format_expr, parse_expr
 from tests.support.sae import MockSaeBackend, make_resident, stub_sae_instrument
 from tests.support.sessions import TinySessionFactory
-from tests.support.stubs import wire_stub_steering
+from tests.support.read_plane import fake_readout_family, gate_refs, make_read_plane
 
 
 class _Capture:
@@ -389,7 +389,7 @@ def test_sae_probe_values_reuse_feature_selector_tensor() -> None:
     inst = _instrument()
     _attach(inst, "sae/1", 1)
     _attach(inst, "sae/2", 2, label="feature two", max_act=10.0)
-    acts = inst.runtime.encode(inst._session._capture.latest_per_layer()[1])
+    acts = inst.runtime.encode(inst._capture.latest_per_layer()[1])
 
     first = inst.score_probes_from_activations(acts)
     first_ids = {key: id(value) for key, value in inst._index_tensors.items()}
@@ -430,21 +430,13 @@ def test_sae_gate_keys_none_vs_empty_contract() -> None:
     assert inst.gate_scalars(set(), step_id=0) == {}
 
 
-def test_composer_detects_attached_sae_gate() -> None:
-    stub = SimpleNamespace(
-        instruments={
-            "geometry": SimpleNamespace(names=[], validate_gate=lambda _r: None),
-            "lens": SimpleNamespace(names=[], validate_gate=lambda _r: None),
-            "sae": SimpleNamespace(
-                names=["sae/2"], validate_gate=lambda _r: None,
-            ),
-        },
-        _monitor=SimpleNamespace(probe_names=()),
+def test_read_plane_resolves_an_attached_sae_gate() -> None:
+    plane = make_read_plane(
+        sae=fake_readout_family(("sae/2",)), gate_refs=gate_refs("0.3 sae/2@when:sae/2>3"),
     )
-    composer = wire_stub_steering(stub)
-    steering = parse_expr("0.3 sae/2@when:sae/2>3")
-    composer._stack.append(dict(steering.alphas))  # type: ignore[arg-type]
-    assert composer.gated_sae_probe_keys() == {"sae/2"}
+    gates = plane.resolve_gates()
+    assert gates.sae_keys == {"sae/2"}
+    assert gates.monitor_keys == frozenset() and gates.lens_keys == frozenset()
 
 
 def test_unsupported_sae_gate_channel_raises_at_preflight() -> None:
@@ -455,24 +447,17 @@ def test_unsupported_sae_gate_channel_raises_at_preflight() -> None:
     stub = SimpleNamespace(_monitor=SimpleNamespace(probe_names=()))
     instrument = stub_sae_instrument(stub)
     _attach(instrument, "sae/2", 2)
-    stub.instruments = {
-        "geometry": SimpleNamespace(names=[], validate_gate=lambda _r: None),
-        "lens": SimpleNamespace(names=[], validate_gate=lambda _r: None),
-        "sae": instrument,
-    }
-    composer = wire_stub_steering(stub)
-    steering = parse_expr("0.3 sae/2@when:sae/2:membership>0.5")
-    composer._stack.append(dict(steering.alphas))  # type: ignore[arg-type]
+    plane = make_read_plane(
+        sae=instrument, gate_refs=gate_refs("0.3 sae/2@when:sae/2:membership>0.5"),
+    )
     with pytest.raises(UnsupportedProbeChannelError) as exc_info:
-        composer.gated_sae_probe_keys()
+        plane.resolve_gates()
     status, text = exc_info.value.user_message()
     assert status == 400
     assert "sae/2:membership" in text
     # A supported-channel gate on the same probe still composes.
-    composer._stack.clear()
-    ok = parse_expr("0.3 sae/2@when:sae/2>3")
-    composer._stack.append(dict(ok.alphas))  # type: ignore[arg-type]
-    assert composer.gated_sae_probe_keys() == {"sae/2"}
+    plane = make_read_plane(sae=instrument, gate_refs=gate_refs("0.3 sae/2@when:sae/2>3"))
+    assert plane.resolve_gates().sae_keys == {"sae/2"}
 
 
 @pytest.mark.parametrize(
@@ -720,7 +705,7 @@ def test_bound_run_freezes_sae_unit_against_metadata_backfill(
     inst = _instrument()
     # Attached before any metadata exists: the unit is raw at bind time.
     _attach(inst, "sae/1", 1)
-    acts = inst.runtime.encode(inst._session._capture.latest_per_layer()[1])
+    acts = inst.runtime.encode(inst._capture.latest_per_layer()[1])
     prep = inst.prepare(ReadRequest(final_aggregate=True))
     inst.bind(inst.plan(prep), prep)
     before = {n: v for n, _f, _r, v in inst.probe_values(acts)}
@@ -750,7 +735,7 @@ def test_sae_bind_resolves_unit_from_meta_cache() -> None:
     # Feature 2's unit (10.0) is already in the fixture's meta cache; the
     # spec itself carries no max_act (validate-time fetch never ran).
     _attach(inst, "sae/2", 2)
-    acts = inst.runtime.encode(inst._session._capture.latest_per_layer()[1])
+    acts = inst.runtime.encode(inst._capture.latest_per_layer()[1])
     prep = inst.prepare(ReadRequest(final_aggregate=True))
     inst.bind(inst.plan(prep), prep)
     assert inst.current_run.binding.specs["sae/2"]["max_act"] == 10.0
@@ -764,12 +749,10 @@ def test_sae_bind_resolves_unit_from_meta_cache() -> None:
 
 
 @pytest.mark.parametrize("bound", [False, True])
-@pytest.mark.parametrize("step_id", [-1, 7])
-def test_observe_never_memoizes(bound: bool, step_id: int) -> None:
+def test_scoring_never_memoizes(bound: bool) -> None:
     """Per-forward reuse is the step-keyed encode stash, not a reading memo:
-    repeated observations of one step rescore, bound or idle (an idle run
-    persists indefinitely, and a repeated step with different hidden states
-    must read fresh)."""
+    the run has no per-forward read of its own, and repeated scores of
+    different hidden states read fresh, bound or idle."""
     inst = _instrument()
     _attach(inst, "sae/1", 1)
     if bound:
@@ -777,8 +760,9 @@ def test_observe_never_memoizes(bound: bool, step_id: int) -> None:
         inst.bind(inst.plan(prep), prep)
     run = inst.current_run
     assert run.bound is bound
-    first = run.observe(step_id, {1: torch.tensor([0.2, 3.0, 5.0, 1.0])})
-    second = run.observe(step_id, {1: torch.tensor([0.2, 8.0, 5.0, 1.0])})
+    assert not hasattr(run, "observe")
+    first = inst.score_probes({1: torch.tensor([0.2, 3.0, 5.0, 1.0])})
+    second = inst.score_probes({1: torch.tensor([0.2, 8.0, 5.0, 1.0])})
     assert first["sae/1"].value == 3.0
     assert second["sae/1"].value == 8.0
     inst.close_run()
@@ -793,15 +777,15 @@ def test_detach_during_bound_generation_keeps_aggregate_roster() -> None:
     _attach(inst, "sae/1", 1)
     prep = inst.prepare(ReadRequest(final_aggregate=True))
     inst.bind(inst.plan(prep), prep)
-    pooled = inst._session._capture.latest_per_layer()
+    pooled = inst._capture.latest_per_layer()
 
     del inst.probes["sae/1"]  # the un-locked detach lands mid-generation
 
-    readings = inst.score_aggregate([1], pooled=pooled)
+    readings = inst.score_aggregate([1], pooled)
     assert "sae/1" in readings  # frozen roster still measures it
 
     inst.close_run()
-    readings = inst.score_aggregate([1], pooled=pooled)
+    readings = inst.score_aggregate([1], pooled)
     assert readings == {}  # the removal applies at the next boundary
 
 
@@ -811,7 +795,7 @@ def test_score_probes_entries_are_disjoint() -> None:
     forward's encode.  Both land the same reading."""
     inst = _instrument()
     _attach(inst, "sae/2", 2, max_act=10.0)
-    hidden = inst._session._capture.latest_per_layer()
+    hidden = inst._capture.latest_per_layer()
     acts = inst.runtime.encode(hidden[1])
 
     from_slices = inst.score_probes(hidden)

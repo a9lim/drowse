@@ -1,14 +1,22 @@
-"""Generation result finalization for :class:`DrowseSession`."""
+"""Generation result finalization: one finished decode → its result.
+
+:func:`finalize_generation` decodes the text, assembles the
+:class:`~drowse.generation.results.GenerationResult` and its aggregate
+measurement envelope from the generation's :class:`FinalReads`, publishes the
+result, emits ``ProbeScored`` and finalizes the loom node.  The reads arrive
+already scored (the session read plane's ``finalize``, or one batch row's
+aggregates), so this module never touches the capture.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, NamedTuple
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 import torch
 
-from drowse.fit.capture import CaptureMode
-from drowse.events import ProbeScored
+from drowse.events import EventBus, ProbeScored
 from drowse.readout.types import (
     ScalarReading,
     as_probe_reading,
@@ -19,30 +27,34 @@ from drowse.generation.results import GenerationResult, ProbeReading
 
 if TYPE_CHECKING:
     from drowse.generation.decode import GenerationState
-    from drowse.session.session import DrowseSession
 
 #: Below this many seconds a generation reports ``tok_per_sec = 0`` rather
 #: than a rate dominated by timer resolution.
 MIN_ELAPSED_FOR_RATE = 0.1
 
 
-class FamilyAggregates(NamedTuple):
-    """End-of-generation aggregate readings, one dict per read family.
+@dataclass(frozen=True)
+class FinalReads:
+    """One generation's end-of-generation reads, already scored.
 
     Each family keeps its native reading type (geometry ``ProbeReading``,
-    lens/SAE ``ScalarReading``).  A caller that pooled and scored its own
-    aggregates (the batched ``model.generate`` path reads one batch row of a
-    shared tail ring) hands them to :func:`finalize_generation` instead of
-    letting it score from the session's capture.
+    lens/SAE ``ScalarReading``).  ``per_token`` is the geometry axis-0 coord
+    stream (``None`` when nothing kept one), ``hidden_states`` the
+    ``return_hidden`` stack, and the three source fields the live sources the
+    aggregate envelope reports beside the lens/SAE readings.
     """
 
-    geometry: dict[str, ProbeReading]
-    lens: dict[str, ScalarReading]
-    sae: dict[str, ScalarReading]
+    geometry: dict[str, ProbeReading] = field(default_factory=dict)
+    lens: dict[str, ScalarReading] = field(default_factory=dict)
+    sae: dict[str, ScalarReading] = field(default_factory=dict)
+    per_token: dict[str, list[float]] | None = None
+    hidden_states: dict[int, torch.Tensor] | None = None
+    lens_source: str | None = None
+    sae_source: str | None = None
+    sae_layer: int | None = None
 
 
 def finalize_generation(
-    session: "DrowseSession",
     generated_ids: list[int],
     elapsed: float,
     vector_snapshot: dict[str, float],
@@ -52,22 +64,24 @@ def finalize_generation(
     applied_steering: str | None = None,
     *,
     state: "GenerationState",
+    reads: FinalReads,
+    tokenizer: Any,
+    events: EventBus,
     record: Callable[[GenerationResult, dict[str, list[float]] | None], None],
-    return_hidden: bool = False,
-    return_probe_readings: bool = True,
+    tree: Any = None,
+    scene_grammar: Callable[[], Any] = lambda: None,
     assistant_node_id: str | None = None,
     mean_logprob: float | None = None,
     mean_surprise: float | None = None,
-    aggregates: FamilyAggregates | None = None,
 ) -> GenerationResult:
-    """Decode, score probes, finalize the loom node, and build a result.
+    """Decode, build the result from ``reads``, and finalize the loom node.
 
     ``state`` is the decode loop's state for this generation.  ``record``
     publishes the result and its per-token scores (the engine's
     ``last_result``) once the result exists, before the loom node is
-    finalized.  ``aggregates`` supplies pre-scored per-family aggregate
-    readings; the capture-mode scoring is skipped and no per-token scores are
-    kept.
+    finalized.  ``tree`` (the loom tree) and ``scene_grammar`` (the lazily
+    validated turn grammar) are read only for a stateful generation with an
+    ``assistant_node_id``.
     """
     token_count = len(generated_ids)
     tok_per_sec = (
@@ -77,165 +91,23 @@ def finalize_generation(
     if state.finish_reason == "stop_sequence" and state.response_text is not None:
         text: str = state.response_text
     else:
-        decoded = session._tokenizer.decode(response_ids, skip_special_tokens=True)
+        decoded = tokenizer.decode(response_ids, skip_special_tokens=True)
         text = decoded if isinstance(decoded, str) else decoded[0]
 
-    capture_mode = session._capture_state.mode
-    captured_stack: dict[int, torch.Tensor] = {}
-    if (
-        generated_ids
-        and (
-            return_hidden
-            or (
-                aggregates is None
-                and return_probe_readings
-                and session._monitor.probe_names
-                and capture_mode is CaptureMode.FULL
-            )
-        )
-    ):
-        captured_stack = session._capture.stacked()
-
-    aggregate_index_computed = False
-    aggregate_index: int | None = None
-    aggregate_tail_computed = False
-    aggregate_tail: dict[int, torch.Tensor] = {}
-    aggregate_stack_computed = False
-    aggregate_stack: dict[int, torch.Tensor] = {}
-
-    def _aggregate_index() -> int | None:
-        nonlocal aggregate_index_computed, aggregate_index
-        if not aggregate_index_computed:
-            aggregate_index = session._aggregate_forward_index(generated_ids)
-            aggregate_index_computed = True
-        return aggregate_index
-
-    def _aggregate_tail_slice() -> dict[int, torch.Tensor]:
-        nonlocal aggregate_tail_computed, aggregate_tail
-        if aggregate_tail_computed:
-            return aggregate_tail
-        aggregate_tail_computed = True
-        agg_fwd = _aggregate_index()
-        aggregate_tail = (
-            session._capture.tail_slice_at(agg_fwd)
-            if agg_fwd is not None else {}
-        )
-        return aggregate_tail
-
-    def _aggregate_pooled_slice() -> dict[int, torch.Tensor]:
-        nonlocal aggregate_stack_computed, aggregate_stack
-        tail = _aggregate_tail_slice()
-        if tail:
-            return tail
-        agg_fwd = _aggregate_index()
-        if agg_fwd is None:
-            return {}
-        if not aggregate_stack_computed:
-            stack = captured_stack or session._capture.stacked()
-            aggregate_stack = {
-                layer: rows[agg_fwd]
-                for layer, rows in stack.items()
-                if rows.shape[0] > agg_fwd
-            }
-            aggregate_stack_computed = True
-        return aggregate_stack
-
-    agg_vals: dict[str, ProbeReading] = {}
-    per_token_scores: dict[str, list[float]] | None = None
-    if (
-        aggregates is None
-        and return_probe_readings
-        and session._monitor.probe_names
-        and generated_ids
-    ):
-        if capture_mode is CaptureMode.INCREMENTAL:
-            agg_vals, per_token = session._score_incremental(generated_ids)
-        elif capture_mode is CaptureMode.LEAN_INCREMENTAL:
-            agg_vals, per_token = session._score_lean_incremental(
-                generated_ids, pooled=_aggregate_tail_slice(),
-            )
-        elif session._capture_state.aggregate_only:
-            agg_vals = session._score_aggregate_only(
-                generated_ids, pooled=_aggregate_tail_slice(),
-            )
-            per_token = {}
-        else:
-            if captured_stack:
-                aggregate_index = session._aggregate_forward_index(generated_ids)
-                agg_vals, per_token = session._monitor.score_per_token(
-                    captured_stack, generated_ids, session._tokenizer,
-                    aggregate_index=(
-                        -1 if aggregate_index is None else aggregate_index
-                    ),
-                )
-            else:
-                agg_vals, per_token = {}, {}
-        per_token_scores = per_token or None
-
-    hidden_states: dict[int, torch.Tensor] | None = None
-    if return_hidden and generated_ids and captured_stack:
-        n = len(generated_ids)
-        trimmed: dict[int, torch.Tensor] = {}
-        for layer_idx, hidden in captured_stack.items():
-            if hidden.shape[0] > n:
-                hidden = hidden[:n]
-            elif hidden.shape[0] < n:
-                continue
-            trimmed[layer_idx] = hidden.detach().to("cpu")
-        hidden_states = trimmed
-
-    geometry_aggregates: dict[str, ProbeReading] = {}
-    lens_aggregates: dict[str, ScalarReading] = {}
-    sae_aggregates: dict[str, ScalarReading] = {}
-    if aggregates is not None:
-        geometry_aggregates, lens_aggregates, sae_aggregates = aggregates
-    else:
-        if return_probe_readings and session._monitor.probe_names and generated_ids:
-            geometry_aggregates = dict(agg_vals)
-        # Pinned J-lens token probes (readout channel — not monitor probes):
-        # one band readout pooled at the last content token, same aggregate
-        # semantics as the monitor roster.  Their native ``ScalarReading``s
-        # stay native all the way into the envelope; the cross-family
-        # ``probe_readings`` dict below is the one projection.
-        if (
-            return_probe_readings
-            and generated_ids
-            and session.lens.names
-        ):
-            lens_aggregates = session.lens.score_aggregate(
-                generated_ids, pooled=_aggregate_pooled_slice(),
-            )
-        if (
-            return_probe_readings
-            and generated_ids
-            and session.sae.names
-        ):
-            sae_aggregates = session.sae.score_aggregate(
-                generated_ids, pooled=_aggregate_pooled_slice(),
-            )
-
+    geometry_aggregates = reads.geometry
+    lens_aggregates = reads.lens
+    sae_aggregates = reads.sae
     manifold_aggregates: dict[str, Any] = {
         **geometry_aggregates, **lens_aggregates, **sae_aggregates,
     }
-    live_lens = session.lens.live
-    live_sae = session.sae.live
     measurement_envelope = build_measurements(
         scope="aggregate",
         geometry_readings=geometry_aggregates or None,
         lens_readings=lens_aggregates or None,
         sae_readings=sae_aggregates or None,
-        lens_source=(
-            live_lens.get("source")
-            if lens_aggregates and isinstance(live_lens, dict) else None
-        ),
-        sae_source=(
-            live_sae.get("source")
-            if sae_aggregates and isinstance(live_sae, dict) else None
-        ),
-        sae_layer=(
-            live_sae.get("layer")
-            if sae_aggregates and isinstance(live_sae, dict) else None
-        ),
+        lens_source=reads.lens_source,
+        sae_source=reads.sae_source,
+        sae_layer=reads.sae_layer,
         steering=applied_steering,
     )
     # ``Measurements`` is a TypedDict describing the wire shape, while the
@@ -254,7 +126,7 @@ def finalize_generation(
         finish_reason=state.finish_reason,
         logprobs=logprobs_list,
         applied_steering=applied_steering,
-        hidden_states=hidden_states,
+        hidden_states=reads.hidden_states,
         # The compatibility dict: one reading type across families, for the
         # vendor extension and cross-family callers.
         probe_readings={
@@ -263,10 +135,10 @@ def finalize_generation(
         },
         measurements=measurements,
     )
-    record(result, per_token_scores)
+    record(result, reads.per_token)
 
     if manifold_aggregates:
-        session.events.emit(ProbeScored(readings={
+        events.emit(ProbeScored(readings={
             name: reading_axis0(reading)
             for name, reading in manifold_aggregates.items()
         }))
@@ -282,15 +154,15 @@ def finalize_generation(
         # that fell back to template rendering, a stamped block would
         # make every later render of this path raise.
         thinking_text: str | None = None
-        grammar = session.scene_grammar
+        grammar = scene_grammar()
         if grammar is not None and grammar.think_open is not None:
-            node = session.tree.nodes.get(assistant_node_id)
+            node = tree.nodes.get(assistant_node_id)
             if node is not None and node.thinking_tokens:
                 joined = "".join(
                     str(t.get("text", "")) for t in node.thinking_tokens
                 )
                 thinking_text = joined or None
-        session.tree.finalize_assistant(
+        tree.finalize_assistant(
             assistant_node_id,
             text=text,
             aggregate_readings={

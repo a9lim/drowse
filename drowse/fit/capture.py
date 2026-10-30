@@ -1,7 +1,5 @@
 """Residual capture for fitting.
 
-- Per-generation capture vocabulary (:class:`CaptureMode`, :class:`CaptureState`)
-  the session's read planner keys on.
 - Pooled extraction capture: render ``[system, *history, assistant]`` rows,
   locate each row's last content token, and run right-padded batched forwards
   that gather ``(B, D)`` per layer inside the hook and stop at the last
@@ -16,8 +14,6 @@ from __future__ import annotations
 import json
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from enum import Enum
 from importlib import resources as _resources
 from pathlib import Path
 from typing import Any
@@ -25,85 +21,6 @@ from typing import Any
 import torch
 
 from drowse.model.chat import takes_enable_thinking
-
-
-class CaptureMode(Enum):
-    """How the per-gen hidden-state capture scores its probes.
-
-    One mode is the single source of truth for what the capture retains and
-    when it scores; :meth:`DrowseSession._begin_capture` picks it and every
-    ``_score_*`` dispatch keys off it.  Holding it as one enum rather than a
-    set of correlated booleans makes illegal combinations (incremental *and*
-    aggregate-only) unrepresentable.  The modes trade only *when/how* scoring
-    runs (per token vs once) and what memory the capture keeps (length-1
-    buffer vs tail ring vs full stack); every read is a full per-probe
-    ``ProbeReading`` (see ``readout/capture_buffer.py`` ``HiddenCapture``).
-
-    - ``INCREMENTAL`` — a full-reading live consumer wants per-token readings:
-      score each token live (full roster) into ``_incremental_readings``.
-    - ``LEAN_INCREMENTAL`` — the only per-token consumers read axis-0 coords
-      (the loom probe row): score each token ``coords_only`` and
-      re-score the full aggregate once at finalize from a bounded tail ring.
-    - ``AGGREGATE_ONLY`` — nothing consumes a per-token reading (a stateless
-      server gen, or a lens/SAE-only capture with no monitor probes): NO
-      per-token scoring, pool the last content token once at finalize from a
-      bounded tail ring.
-    - ``GATING_SUBSET`` — per-token scoring is needed *only* to feed probe
-      gates: score just the gated subset per token (into
-      ``_incremental_gate_scores``) while a tail ring lets finalize pool the
-      FULL roster once.
-    - ``FULL`` — full-retention append (``return_hidden`` widen, or any
-      non-incremental read), or the degenerate no-probe / capture-disabled
-      state: distinct clones per step so ``stacked()`` builds the full
-      ``[T, D]``.
-    """
-
-    INCREMENTAL = "incremental"
-    LEAN_INCREMENTAL = "lean_incremental"
-    AGGREGATE_ONLY = "aggregate_only"
-    GATING_SUBSET = "gating_subset"
-    FULL = "full"
-
-
-@dataclass
-class CaptureState:
-    """Per-generation capture configuration — the legal-by-construction state.
-
-    Carries the one :class:`CaptureMode` plus the orthogonal ``persistent``
-    flag (capture rides the always-on compile-clean buffers rather than
-    transient per-gen hooks) and, for gated generations, the gated probe names
-    / exact scalar keys.  Set wholesale in
-    :meth:`DrowseSession._begin_capture`; read by the ``_score_*`` dispatch,
-    the gating callback, and the streaming tap.  The convenience predicates
-    name the modes so the read sites stay legible.
-    """
-
-    mode: CaptureMode = CaptureMode.FULL
-    persistent: bool = False
-    gating_subset: "set[str] | None" = None
-    gating_keys: "set[str] | None" = None
-    final_probe_aggregate: bool = True
-
-    @property
-    def incremental(self) -> bool:
-        return self.mode is CaptureMode.INCREMENTAL
-
-    @property
-    def lean(self) -> bool:
-        return self.mode is CaptureMode.LEAN_INCREMENTAL
-
-    @property
-    def aggregate_only(self) -> bool:
-        # GATING_SUBSET also finalizes off the tail ring (its per-token rows feed
-        # only the gate), so it shares the aggregate-only full-roster pool when
-        # the caller still wants a final full probe aggregate.
-        return (
-            self.mode is CaptureMode.AGGREGATE_ONLY
-            or (
-                self.mode is CaptureMode.GATING_SUBSET
-                and self.final_probe_aggregate
-            )
-        )
 
 
 # Rows per batched capture forward.  Capture starts here and halves on OOM
@@ -363,7 +280,7 @@ def last_content_index(
     index.  This is the single definition of "last content token" shared by
     extraction (:func:`_prepare_capture_batch`), the
     aggregate vector probe (:meth:`Monitor.score_per_token`), the
-    incremental scoring path (``session._score_incremental``), and the
+    incremental scoring path (``ReadPlane.finalize``), and the
     manifold aggregate (:meth:`Monitor.score_aggregate`) — every
     reported single-state value pools from here so the discipline can't
     drift per-site.

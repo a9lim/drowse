@@ -37,7 +37,7 @@ from drowse.loom.recipe import Recipe
 from drowse.loom.tree import LoomTree
 from drowse.model.chat import ChatTraits
 from drowse.model.fingerprint import loaded_model_fingerprint
-from drowse.session.session import ReadDemand
+from drowse.readout.planner import ReadDemand
 from tests.support.lens import LENS_PROMPTS as _PROMPTS
 from tests.support.lens import TOY_MODEL_ID as _MODEL_ID
 from tests.support.lens import FakeCapture, LensHarness
@@ -228,7 +228,7 @@ def test_generation_boundary_refreshes_external_lens_once(
     disk_b = make_tiny_session(warm=False).lens.fit(corpus_b, force=True)
 
     try:
-        session_a._begin_capture(ReadDemand(final_probe_aggregate=True))
+        session_a._read_plane.begin(ReadDemand(final_probe_aggregate=True))
 
         snap = session_a.lens.generation_lens
         assert snap is not None and snap is session_a.lens.resident_lens
@@ -246,14 +246,14 @@ def test_generation_boundary_refreshes_external_lens_once(
         # generation, and the validated missing state is pinned (no
         # per-token retry loop).
         assert remove_lens(session_a.model_id, "j")
-        session_a._begin_capture(ReadDemand(final_probe_aggregate=True))
+        session_a._read_plane.begin(ReadDemand(final_probe_aggregate=True))
         assert session_a.lens.generation_lens_active is True
         assert session_a.lens.generation_lens is None
         assert session_a.lens.resident_lens is None
         assert session_a.lens.probes["jlens/example"]["layers"] == []
     finally:
-        session_a._end_capture()
-        session_a._close_instrument_runs()
+        session_a._read_plane.end()
+        session_a._read_plane.close_runs()
 
 
 def test_external_lens_replacement_plans_and_freezes_refreshed_layers(
@@ -279,15 +279,15 @@ def test_external_lens_replacement_plans_and_freezes_refreshed_layers(
     assert list(disk_b.source_layers) == [1]
 
     attached_layers: list[int] = []
-    real_attach = session_a._capture.attach
+    real_attach = session_a._read_plane.capture.attach
 
     def _record_attach(layers: Any, indices: list[int]) -> None:
         attached_layers.extend(indices)
         real_attach(layers, indices)
 
-    monkeypatch.setattr(session_a._capture, "attach", _record_attach)
+    monkeypatch.setattr(session_a._read_plane.capture, "attach", _record_attach)
     try:
-        ok = session_a._begin_capture(ReadDemand(final_probe_aggregate=True))
+        ok = session_a._read_plane.begin(ReadDemand(final_probe_aggregate=True))
 
         assert ok is True
         # The adoption rewrote the live registry BEFORE planning/freezing:
@@ -306,8 +306,8 @@ def test_external_lens_replacement_plans_and_freezes_refreshed_layers(
         readings = session_a.lens.score_probes({1: torch.randn(hidden_dim)})
         assert "jlens/example" in readings
     finally:
-        session_a._end_capture()
-        session_a._close_instrument_runs()
+        session_a._read_plane.end()
+        session_a._read_plane.close_runs()
 
 
 def test_prepare_is_the_refresh_site_and_supplies_the_pin() -> None:
@@ -536,7 +536,7 @@ def test_idle_measurement_state_is_coherent() -> None:
 def test_prepare_pin_demand_formula() -> None:
     """Pin demand = a live readout, or attached probes with a final
     aggregate or a lens gate — the one formula both generation
-    boundaries (``_begin_capture`` and the batch preamble) reduce to."""
+    boundaries (``ReadPlane.begin`` and the batch preamble) reduce to."""
     from drowse.readout.types import ReadRequest
 
     session = LensHarness()
@@ -1219,10 +1219,10 @@ def test_lens_gate_keys_none_vs_empty_contract() -> None:
     assert inst.gate_scalars(set(), step_id=0) == {}
 
 
-def test_lens_run_observe_rescores_every_call() -> None:
-    """The run's ``observe`` is a pass-through: the gate→display reuse is
-    the step-keyed worker stash, so there is no observe memo to go stale
-    (a repeated step id with different hidden states rescores)."""
+def test_lens_run_has_no_per_forward_read_to_memoize() -> None:
+    """The gate→display reuse is the step-keyed worker stash, so a bound run
+    carries no per-forward read (nor a memo or priming hook to go stale);
+    its aggregate read rescores every call."""
     from drowse.readout.types import ReadRequest
 
     s = LensHarness()
@@ -1239,10 +1239,11 @@ def test_lens_run_observe_rescores_every_call() -> None:
         return {"jlens/g": object()}
 
     inst.score_probes = _fresh_probes  # type: ignore[method-assign]
-    for step in (-1, -1, 7, 7):
-        run.observe(step, {})
-    assert len(calls) == 4
-    assert not hasattr(run, "prime_observation")
+    for _ in range(3):
+        run.observe_aggregate({})
+    assert len(calls) == 3
+    for name in ("observe", "prime_observation", "_memo_step", "_memo_readings"):
+        assert not hasattr(run, name)
     inst.close_run()
 
 

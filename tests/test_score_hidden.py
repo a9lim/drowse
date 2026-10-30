@@ -148,20 +148,20 @@ def test_score_probes_without_whitener_raises():
 
 from drowse.errors import DrowseError  # noqa: E402
 from drowse.session.session import DrowseSession  # noqa: E402
-from tests.support.stubs import attach_stub_instruments
+from tests.support.stubs import wire_stub_read_plane  # noqa: E402
 
 
 def _mock_session() -> DrowseSession:
     """Build a DrowseSession without touching a real model.
 
-    We bypass __init__ (which requires a PreTrainedModel) and wire up
-    only the fields score_hidden reads: _monitor, _device.  Every other
-    attribute remains un-set; score_hidden must not touch them.
+    We bypass __init__ (which requires a PreTrainedModel) and wire up only
+    the monitor and the read plane ``score_hidden`` delegates to; it must not
+    touch the model.
     """
     s = DrowseSession.__new__(DrowseSession)
-    attach_stub_instruments(s)
     s._monitor = _monitor_with_probe()
     s._device = torch.device("cpu")
+    wire_stub_read_plane(s)
     return s
 
 

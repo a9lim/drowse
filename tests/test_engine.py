@@ -49,7 +49,7 @@ def _bare_engine(session: Any = None, *, release: Any = None) -> GenerationEngin
         lock=threading.RLock(),
         runtime=CompiledRuntime(),
         steering=cast(Any, SimpleNamespace()),
-        capture=cast(Any, SimpleNamespace()),
+        reads=cast(Any, SimpleNamespace()),
         release=release or (lambda: None),
     )
 
@@ -235,6 +235,14 @@ def test_readout_top_k_shares_logit_alternative_width() -> None:
 # ---------------------------------------------------------------------------
 
 
+#: A read plane whose geometry reading must never be asked for.
+_NO_GEOMETRY: Any = SimpleNamespace(
+    geometry_step_readings=lambda _step: (_ for _ in ()).throw(
+        AssertionError("geometry scoring must not run for this generation"),
+    ),
+)
+
+
 def _plan(**overrides: Any) -> ConsumerPlan:
     base: dict[str, Any] = dict(
         live_scores_on=True, has_monitor_probes=False,
@@ -255,10 +263,6 @@ def _forbid(name: str) -> Any:
 def _tap_session(*, lens_live: Any = None, sae_live: Any = None,
                  lens_step: Any = None, rows: list[Any] | None = None) -> Any:
     return SimpleNamespace(
-        _capture=SimpleNamespace(per_layer_buckets=_forbid("geometry scoring")),
-        _capture_state=SimpleNamespace(incremental=False, lean=False),
-        _incremental_readings=[],
-        geometry=SimpleNamespace(current_run=SimpleNamespace(observe=_forbid("observe"))),
         lens=SimpleNamespace(
             live=lens_live, last_step_readings=None,
             live_readout_step=lens_step or _forbid("lens readout"),
@@ -285,6 +289,7 @@ def test_text_only_tap_skips_unconsumed_readouts_and_payloads(
     seen: list[tuple[Any, ...]] = []
     tap = TokenTap(
         cast(Any, _tap_session(lens_live={"layers": [0]}, sae_live={"layer": 0})),
+        reads=_NO_GEOMETRY,
         state=GenerationState(),
         consumer=lambda *args: seen.append(args),
         plan=_plan(),
@@ -328,6 +333,7 @@ def test_tap_hands_a_consumer_one_event_matching_the_loom_row() -> None:
     events: list[TokenEvent] = []
     tap = TokenTap(
         cast(Any, session),
+        reads=_NO_GEOMETRY,
         state=state,
         consumer=TokenConsumer(
             events.append, TokenConsumerOptions(lens_readout=True, probe_readings=True),
@@ -368,6 +374,7 @@ def test_tap_skips_the_compat_projection_unless_the_consumer_asks() -> None:
     events: list[TokenEvent] = []
     tap = TokenTap(
         cast(Any, session),
+        reads=_NO_GEOMETRY,
         state=GenerationState(),
         consumer=TokenConsumer(events.append, TokenConsumerOptions(lens_readout=True)),
         plan=_plan(lens=True),
@@ -381,16 +388,24 @@ def test_tap_skips_the_compat_projection_unless_the_consumer_asks() -> None:
     assert events[0].measurements is not None and events[0].raw_index is None
 
 
-def test_tap_reuses_the_capture_sinks_row_instead_of_rescoring() -> None:
+@pytest.mark.parametrize("mode", ["INCREMENTAL", "LEAN_INCREMENTAL"])
+def test_tap_reuses_the_capture_sinks_row_instead_of_rescoring(mode: str) -> None:
     from drowse.generation.results import ProbeReading
+    from drowse.readout.planner import CaptureMode, CaptureState
+    from tests.support.read_plane import make_read_plane
 
     reading = ProbeReading(fraction=0.4, nearest=[("calm", 0.2)], coords=(0.75,))
     session = _tap_session()
-    session._capture_state = SimpleNamespace(incremental=True, lean=False)
-    session._incremental_readings = [{"toy": reading}]
+    reads = make_read_plane(
+        capture=SimpleNamespace(per_layer_buckets=_forbid("geometry scoring")),
+        geometry=SimpleNamespace(current_run=SimpleNamespace(observe=_forbid("observe"))),
+    )
+    reads.state = CaptureState(mode=CaptureMode[mode])
+    reads._rows = [{"toy": reading}]
     events: list[TokenEvent] = []
     tap = TokenTap(
         cast(Any, session),
+        reads=reads,
         state=GenerationState(),
         consumer=TokenConsumer(
             events.append, TokenConsumerOptions(live_scores=True, probe_readings=True),
@@ -830,7 +845,6 @@ def test_decode_keeps_the_static_cache_on_a_static_prefix_hit(
             steering_active_in_prefill=lambda: False,
             steering_needs_probe_gating=lambda: False,
         ),
-        _capture_state=SimpleNamespace(persistent=False),
         model=object(), tokenizer=object(), device=torch.device("cpu"),
         config=GenerationConfig(max_new_tokens=2), chat_traits=None,
     )
@@ -842,10 +856,9 @@ def test_decode_keeps_the_static_cache_on_a_static_prefix_hit(
             all_fast_path=lambda: True, static_steerable=lambda: False,
             uses_compiled_offsets=False, ctx=None, hooks={},
         )),
-        capture=cast(Any, SimpleNamespace(
-            ingest_persistent=lambda _step: None,
-            fire_step_sink=lambda _step: None,
-            is_transient=lambda: False,
+        reads=cast(Any, SimpleNamespace(
+            capture=SimpleNamespace(is_transient=lambda: False),
+            step_callback=lambda: (lambda _step: None),
         )),
         release=lambda: None,
     )
@@ -906,7 +919,6 @@ def test_cache_prefix_builds_a_static_entry_with_decode_headroom(
     model = _Model()
     session = SimpleNamespace(
         _steering_composer=SimpleNamespace(active=False),
-        _end_capture=lambda: None,
         device=torch.device("cpu"),
         model=model,
         config=GenerationConfig(max_new_tokens=4),
@@ -914,7 +926,9 @@ def test_cache_prefix_builds_a_static_entry_with_decode_headroom(
     engine = GenerationEngine(
         cast(Any, session), lock=threading.RLock(),
         runtime=CompiledRuntime(static_cache_active=True),
-        steering=cast(Any, None), capture=cast(Any, None), release=lambda: None,
+        steering=cast(Any, None),
+        reads=cast(Any, SimpleNamespace(end=lambda: None)),
+        release=lambda: None,
     )
 
     assert engine.cache_prefix(

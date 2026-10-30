@@ -34,13 +34,10 @@ from drowse.generation.results import (
     ProbeReading,
     TokenEvent,
 )
-from drowse.session.session import (
-    CaptureMode,
-    CaptureState,
-    ReadDemand,
-    DrowseSession,
-)
-from tests.support.stubs import wire_stub_steering
+from drowse.generation.decode import GenerationState
+from drowse.readout.planner import CaptureMode, CaptureState, ReadDemand
+from drowse.session.session import DrowseSession
+from tests.support.stubs import wire_stub_read_plane, wire_stub_steering
 from tests.support.lens import stub_lens_instrument
 from tests.support.engine import attach_engine, seed_prefix_cache
 
@@ -85,14 +82,13 @@ def _toy_manifold(*, dim: int = 8, n_layers: int = 2) -> Manifold:
     )
 
 
-def _stub_session() -> DrowseSession:
+def _stub_session() -> Any:
     """Build a session-like object with the live methods + minimal state.
 
     Only the surface the unified-probe wiring touches needs to be real:
-    ``_monitor`` (one :class:`Monitor`), ``_capture._per_layer``,
-    ``_manifolds``, ``_profiles``, ``ensure_manifold_loaded``,
-    the engine's prefix cache, ``_probe_hash_cache``, ``_layers``.
-    Everything else stays as ``MagicMock`` defaults.
+    ``_monitor`` (one :class:`Monitor`), the capture stub, the registry, the
+    engine's prefix cache, the probe roster and the read plane.  Everything
+    else stays as ``MagicMock`` defaults.
     """
     # Manifold reads are Mahalanobis-only now: the monitor needs a covering
     # whitener before ``add_probe`` builds the per-probe whitened factors.  An
@@ -102,22 +98,19 @@ def _stub_session() -> DrowseSession:
 
     session = MagicMock(spec=DrowseSession)
     session._monitor = Monitor(whitener=_whit)
-    session._probe_hash_cache = {}
     # ``add_probe`` holds the exclusive-GPU lock (``_gen_lock``) around its
     # device-touching factor build and clears the read-side analytics cache.
     session._gen_lock = threading.RLock()
     # Capture has a single ``_per_layer`` dict we read for streaming.
     session._capture = types.SimpleNamespace(
         _per_layer={},
-        set_incremental=lambda _sink: None,
     )
-    session._capture_state = CaptureState()
     session._lens_instrument = stub_lens_instrument(session)
     # All three families route through real instruments now: geometry for
     # the add_probe flow (exclusive section + whitener touch + resolve +
-    # monitor.add_probe), lens/SAE because ``_begin_capture`` consumes
-    # their ``plan()`` demand — a MagicMock plan would poison the capture
-    # layer union.  Lens/SAE state (live config, probe registry) lives ON
+    # monitor.add_probe), lens/SAE because the read plane's ``begin``
+    # consumes their ``plan()`` demand — a MagicMock plan would poison the
+    # capture layer union.  Lens/SAE state (live config, probe registry) lives ON
     # the instruments; tests set ``session._lens_instrument.live`` etc.
     from drowse.readout.geometry import GeometryInstrument
     from tests.support.sae import stub_sae_instrument
@@ -127,16 +120,8 @@ def _stub_session() -> DrowseSession:
     session._lens_instrument.generation_lens_active = False
     session._lens_instrument.live = None
     session._lens_instrument.probes = {}
-    # ``_begin_capture`` runs the close → prepare → plan → bind ritual
-    # through this helper; the MagicMock default would hand it an empty
-    # iterable instead of the three real plans.
-    session._bind_instrument_runs = types.MethodType(
-        DrowseSession._bind_instrument_runs, session,
-    )
     session._lens_instrument.step_stash = None
     session._lens_instrument.active_for_generation = True
-    session._incremental_readings = []
-    session._incremental_gate_scores = []
     session._layers = []
     # The real engine: phase, prefix cache, compiled-routing flags.
     attach_engine(session)
@@ -150,13 +135,14 @@ def _stub_session() -> DrowseSession:
     session._resolve_probe_manifold = types.MethodType(
         DrowseSession._resolve_probe_manifold, session,
     )
-    # The registry + steering collaborators are real; the composer owns the
-    # gating-score-callback builder.
+    # The registry, steering, roster and read-plane collaborators are real;
+    # the read plane owns the gating-score callback.
     session._steering = None
     session._device = torch.device("cpu")
     session._dtype = torch.float32
     session._model_info = {"model_id": "stub/model"}
     wire_stub_steering(session)
+    wire_stub_read_plane(session)
     return session
 
 
@@ -216,72 +202,57 @@ def test_add_probe_invalidates_prefix_cache():
 # ==================================================== capture widening ===
 
 def test_begin_capture_widens_to_manifold_layers():
-    """``_begin_capture`` must widen the capture-layer set to the union
-    of every attached probe's fit layers."""
+    """The read plane's ``begin`` must widen the capture-layer set to the
+    union of every attached probe's fit layers."""
     session = _stub_session()
     m = _toy_manifold(n_layers=3)
     _serve(session, m)
     session.add_probe("toy")
 
-    # Track what layers _capture.attach was called with.
     attached_layers: list[int] = []
-    incremental_sinks: list[Any] = []
+    sinks: list[Any] = []
 
     def _attach(layers: Any, layer_indices: list[int]) -> None:
         attached_layers.extend(layer_indices)
+
     session._capture.attach = _attach
     session._capture.clear = lambda: None
-    session._capture.set_incremental = (
-        lambda step_sink: incremental_sinks.append(step_sink)
+    session._capture.set_retention = (
+        lambda *, depth, step_sink=None, tail_layers=None: sinks.append(step_sink)
     )
-    # Real layer list of length 4 (just need len() — the stub doesn't
-    # forward through to anything that touches the layers).
-    session._layers = [None] * 4  # pyright: ignore[reportAttributeAccessIssue]  # test stub: list[None] satisfies len() contract
-    session._incremental_readings = []
-    session._incremental_gate_scores = []
 
-    # Bind the real _begin_capture and run it.
-    ok = DrowseSession._begin_capture(session, widen=False)
+    ok = session._read_plane.begin(ReadDemand())
     assert ok
     # Manifold covers layers 0, 1, 2 — capture must attach to all of them.
     assert set(attached_layers) == {0, 1, 2}
-    assert session._capture_state.mode is CaptureMode.INCREMENTAL
-    assert len(incremental_sinks) == 1
+    assert session._read_plane.state.mode is CaptureMode.INCREMENTAL
+    assert len(sinks) == 1 and sinks[0] is not None
 
 
 def test_begin_capture_no_probes_returns_false():
-    """No probes attached → ``_begin_capture`` returns False."""
+    """No probes attached → ``begin`` attaches nothing."""
     session = _stub_session()
-    session._layers = [None] * 4  # pyright: ignore[reportAttributeAccessIssue]  # test stub: list[None] satisfies len() contract
     session._capture.attach = lambda *args, **kw: None
     session._capture.clear = lambda: None
-    session._incremental_readings = []
-    ok = DrowseSession._begin_capture(session, widen=False)
-    assert ok is False
+    assert session._read_plane.begin(ReadDemand()) is False
 
 
 def test_begin_capture_live_lens_uses_persistent_capture_when_available():
     """Live J-lens layers ride compile-clean persistent capture buffers."""
     session = _stub_session()
-    session._layers = [None] * 4  # pyright: ignore[reportAttributeAccessIssue]  # test stub: list[None] satisfies len() contract
-    # Live-lens state lives on the instrument; ``_begin_capture`` reads it
-    # through the lens family's declared plan.
+    # Live-lens state lives on the instrument; ``begin`` reads it through
+    # the lens family's declared plan.
     session._lens_instrument.live = {"layers": [1, 3]}
-    session._engine.compiled_clean_eligible = True
-    session._runtime.capture_buffers = {
-        idx: torch.zeros(8) for idx in range(4)
-    }
-    cast(Any, session)._steering = types.SimpleNamespace(
-        all_fast_path=lambda: True,
-        uses_compiled_offsets=False,
-    )
+    buffers = {idx: torch.zeros(8) for idx in range(4)}
 
     persistent_layers: list[int] = []
     transient_layers: list[int] = []
     tail_depths: list[int] = []
 
-    def _attach_persistent(layer_indices: list[int], buffers: dict[int, torch.Tensor]) -> None:
-        assert buffers is session._runtime.capture_buffers
+    def _attach_persistent(
+        layer_indices: list[int], given: dict[int, torch.Tensor],
+    ) -> None:
+        assert given is buffers
         persistent_layers.extend(layer_indices)
 
     def _attach(_layers: Any, layer_indices: list[int]) -> None:
@@ -290,30 +261,28 @@ def test_begin_capture_live_lens_uses_persistent_capture_when_available():
     session._capture.attach_persistent = _attach_persistent
     cast(Any, session._capture).attach = _attach
     session._capture.clear = lambda: None
-    session._capture.set_aggregate_tail = lambda depth: tail_depths.append(depth)
+    session._capture.set_retention = (
+        lambda *, depth, step_sink=None, tail_layers=None: tail_depths.append(depth)
+    )
 
-    ok = DrowseSession._begin_capture(session, widen=False)
+    ok = session._read_plane.begin(ReadDemand(), persistent_buffers=buffers)
 
     assert ok is True
     assert set(persistent_layers) == {1, 3}
     assert transient_layers == []
     assert tail_depths
-    assert session._capture_state.persistent is True
+    assert session._read_plane.state.persistent is True
 
 
 def test_begin_capture_live_lens_ignored_without_consumer():
     """A globally enabled live lens should not widen capture for a generation
     that cannot surface ``TokenEvent.lens_readout``."""
     session = _stub_session()
-    session._layers = [None] * 4  # pyright: ignore[reportAttributeAccessIssue]
     session._lens_instrument.live = {"layers": [1, 3]}
     session._capture.attach = lambda *args, **kw: None
     session._capture.clear = lambda: None
-    session._incremental_readings = []
 
-    ok = DrowseSession._begin_capture(
-        session, ReadDemand(live_lens_active=False), widen=False,
-    )
+    ok = session._read_plane.begin(ReadDemand(live_lens_active=False))
 
     assert ok is False
 
@@ -553,9 +522,7 @@ def test_manifold_promotion_walk_holds_geometry_state_lock():
     _serve(session, m_old)
     session.add_probe("toy")
     session._registry.put_manifold("toy", m_old)
-    session._registry.on_swap(
-        types.MethodType(DrowseSession._refresh_swapped_probes, session),
-    )
+    session._registry.on_swap(session._roster.swap)
     inst = session._geometry_instrument
     shim = _RecordingLock()
     inst.state_lock = shim  # type: ignore[assignment]
@@ -577,9 +544,7 @@ def test_failed_override_eviction_holds_geometry_state_lock():
     _serve(session, m_old)
     session.add_probe("toy")
     session._registry.put_manifold("toy", m_old)
-    session._registry.on_swap(
-        types.MethodType(DrowseSession._refresh_swapped_probes, session),
-    )
+    session._registry.on_swap(session._roster.swap)
     inst = session._geometry_instrument
     shim = _RecordingLock()
     inst.state_lock = shim  # type: ignore[assignment]
@@ -594,26 +559,16 @@ def test_failed_override_eviction_holds_geometry_state_lock():
 # ================================== per-forward reuse of the sink row ===
 
 def _wire_begin_capture(session: Any) -> dict[str, Any]:
-    """Minimal extra wiring so the real ``_begin_capture`` runs on the
-    fixture stub, capturing whichever step sink the mode branch installs."""
+    """Minimal capture wiring so the read plane's ``begin`` runs on the
+    fixture stub, capturing whichever step sink the plan arms."""
     holder: dict[str, Any] = {}
-    session._layers = [None] * 4
-    # The capture transaction closes ALL THREE families' runs up front —
-    # bind the real method (the MagicMock default no-ops it, leaving the
-    # lens/SAE runs bound and poisoning a second transaction).
-    session._close_instrument_runs = types.MethodType(
-        DrowseSession._close_instrument_runs, session,
-    )
     session._capture.attach = lambda *_a, **_k: None
     session._capture.clear = lambda: None
-    session._capture.set_incremental = (
-        lambda sink: holder.__setitem__("sink", sink)
+    session._capture.set_retention = (
+        lambda *, depth, step_sink=None, tail_layers=None: (
+            holder.__setitem__("sink", step_sink)
+        )
     )
-    session._capture.set_tail_with_sink = (
-        lambda _depth, sink, **_kw: holder.__setitem__("sink", sink)
-    )
-    session._incremental_readings = []
-    session._incremental_gate_scores = []
     return holder
 
 
@@ -625,9 +580,7 @@ def test_gate_callback_reuses_the_full_incremental_sink_row():
     _serve(session, m)
     session.add_probe("toy")
     holder = _wire_begin_capture(session)
-    ok = DrowseSession._begin_capture(
-        session, ReadDemand(need_per_token=True), widen=False,
-    )
+    ok = session._read_plane.begin(ReadDemand(need_per_token=True))
     assert ok is True
 
     latest = {
@@ -643,7 +596,7 @@ def test_gate_callback_reuses_the_full_incremental_sink_row():
 
     session._monitor.score_single_token = _poisoned  # type: ignore[method-assign]
     _gated(session, "0.3 a@when:toy>0 + 0.3 b@when:toy:fraction>0")
-    cb = session._steering_composer.build_gating_score_callback()
+    cb = session._read_plane.gate_score_callback()
     flat = cb(0)
     assert "toy" in flat and "toy:fraction" in flat
     session._geometry_instrument.close_run()
@@ -652,7 +605,6 @@ def test_gate_callback_reuses_the_full_incremental_sink_row():
 def test_token_tap_reuses_the_full_incremental_sink_row():
     """The token tap's FULL-incremental branch reads the sink row too — the
     event's geometry readings ARE the sink's row."""
-    from drowse.generation.decode import GenerationState
     from drowse.generation.token_callback import (
         TokenConsumer,
         TokenConsumerOptions,
@@ -664,9 +616,7 @@ def test_token_tap_reuses_the_full_incremental_sink_row():
     _serve(session, m)
     session.add_probe("toy")
     holder = _wire_begin_capture(session)
-    ok = DrowseSession._begin_capture(
-        session, ReadDemand(need_per_token=True), widen=False,
-    )
+    ok = session._read_plane.begin(ReadDemand(need_per_token=True))
     assert ok is True
 
     latest = {
@@ -687,6 +637,7 @@ def test_token_tap_reuses_the_full_incremental_sink_row():
     events: list[Any] = []
     tap = TokenTap(
         session,
+        reads=session._read_plane,
         state=GenerationState(),
         consumer=TokenConsumer(
             events.append,
@@ -704,28 +655,25 @@ def test_token_tap_reuses_the_full_incremental_sink_row():
         recipe_steering=None,
     )
     tap("x", False, 1, None, None, None, 1)
-    row = session._incremental_readings[-1]
+    row = session._read_plane._rows[-1]
     assert events[0].probe_readings == row
     assert events[0].probe_readings["toy"] is row["toy"]
     session._geometry_instrument.close_run()
 
 
 def test_pooled_geometry_aggregate_routes_through_the_run():
-    """``_score_aggregate_only`` with a caller-pooled slice (the batched
-    ``model.generate`` path's per-row read) reaches the roster through
-    ``current_run.observe_aggregate`` — the round-2 bypass site, so a run
-    spy pins the route."""
+    """The aggregate-only finalize read reaches the roster through
+    ``current_run.observe_aggregate`` with the one pooled slice — the
+    round-2 bypass site, so a run spy pins the route."""
     session = _stub_session()
     m = _toy_manifold()
     _serve(session, m)
     session.add_probe("toy")
-    session._empty_readings = types.MethodType(
-        DrowseSession._empty_readings, session,
-    )
     pooled = {
         layer_idx: sub.mean + sub.basis[0]
         for layer_idx, sub in m.layers.items()
     }
+    session._capture.tail_slice_at = lambda _idx: pooled
     run = session._geometry_instrument.current_run
     seen: list[Any] = []
     orig = run.observe_aggregate
@@ -735,9 +683,15 @@ def test_pooled_geometry_aggregate_routes_through_the_run():
         return orig(p)
 
     run.observe_aggregate = _spy  # type: ignore[method-assign]
-    out = DrowseSession._score_aggregate_only(session, [1, 2, 3], pooled=pooled)
+    plane = session._read_plane
+    plane.state = CaptureState(mode=CaptureMode.AGGREGATE_ONLY)
+    state = GenerationState()
+    state.response_aggregate_index = 2
+    reads = plane.finalize(
+        [1, 2, 3], state=state, return_hidden=False, return_probe_readings=True,
+    )
     assert seen and seen[0] is pooled
-    assert "toy" in out
+    assert "toy" in reads.geometry
 
 
 def test_geometry_run_observe_aggregate_matches_live_read():
@@ -767,8 +721,9 @@ def test_geometry_run_observe_aggregate_matches_live_read():
 
 
 def test_pooled_aggregate_slice_is_one_position_for_every_family():
-    """All three families finalize through ``_pooled_aggregate_slice``, and it
-    lands on the aggregate *forward index* in FULL retention too.
+    """All three families finalize through the read plane's one pooled
+    slice, and it lands on the aggregate *forward index* in FULL retention
+    too.
 
     FULL retention never advances the capture's forward counter (only the
     bounded-ring modes do), so a ring lookup would clamp to the last forward —
@@ -780,22 +735,23 @@ def test_pooled_aggregate_slice_is_one_position_for_every_family():
         stacked=lambda: {0: rows},
         tail_slice_at=lambda _idx: {0: rows[-1]},
     ))
-    session._aggregate_forward_index = types.MethodType(
-        lambda _self, _ids: 1, session,
-    )
+    plane = session._read_plane
+    state = GenerationState()
+    state.response_aggregate_index = 1
 
-    session._capture_state = CaptureState(mode=CaptureMode.FULL)
-    full = DrowseSession._pooled_aggregate_slice(session, [1, 2, 3, 4])
+    plane.state = CaptureState(mode=CaptureMode.FULL)
+    full = plane.pooled_slice([1, 2, 3, 4], state)
     assert torch.equal(full[0], rows[1])
 
-    session._capture_state = CaptureState(mode=CaptureMode.AGGREGATE_ONLY)
-    ring = DrowseSession._pooled_aggregate_slice(session, [1, 2, 3, 4])
+    plane.state = CaptureState(mode=CaptureMode.AGGREGATE_ONLY)
+    ring = plane.pooled_slice([1, 2, 3, 4], state)
     assert torch.equal(ring[0], rows[-1])
 
-    session._aggregate_forward_index = types.MethodType(
-        lambda _self, _ids: None, session,
-    )
-    assert DrowseSession._pooled_aggregate_slice(session, [1, 2]) == {}
+    # A stop-sequence finish with no recorded endpoint has no position.
+    state.response_aggregate_index = None
+    state.finish_reason = "stop_sequence"
+    state.response_text = "x"
+    assert plane.pooled_slice([1, 2], state) == {}
 
 
 # ===================================================== gating callback ===
@@ -827,7 +783,7 @@ def test_gating_callback_emits_probe_scalars():
         "+ 0.3 c@when:toy>0",
     )
 
-    flat = session._steering_composer.build_gating_score_callback()(0)
+    flat = session._read_plane.gate_score_callback()(0)
 
     assert set(flat) == {"toy:fraction", "toy@neutral", "toy"}
     full = session._monitor.flat_scalars(
@@ -855,7 +811,7 @@ def test_gate_on_unattached_probe_scores_nothing():
     session._monitor.score_single_token = _poisoned  # type: ignore[method-assign]
     session._monitor.score_planned_gate_scalars = _poisoned  # type: ignore[method-assign]
 
-    assert session._steering_composer.build_gating_score_callback()(0) == {}
+    assert session._read_plane.gate_score_callback()(0) == {}
 
 
 def test_gating_callback_empty_capture_returns_empty():
@@ -865,7 +821,7 @@ def test_gating_callback_empty_capture_returns_empty():
     session.add_probe("toy")
     session._capture.latest_per_layer = lambda: {}
 
-    cb = session._steering_composer.build_gating_score_callback()
+    cb = session._read_plane.gate_score_callback()
     assert cb(0) == {}
 
 

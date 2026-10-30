@@ -22,7 +22,7 @@ def attach_engine(stub: Any, *, runtime: CompiledRuntime | None = None) -> Gener
     """Attach ``stub._runtime`` and ``stub._engine`` and return the engine.
 
     The engine shares the stub's ``_gen_lock`` when it has one (a fresh
-    reentrant lock otherwise) and its ``_steering`` / ``_capture``; its
+    reentrant lock otherwise) and its ``_steering`` / ``_read_plane``; its
     teardown release is a no-op.
     """
     lock = stub.__dict__.get("_gen_lock") if hasattr(stub, "__dict__") else None
@@ -35,7 +35,7 @@ def attach_engine(stub: Any, *, runtime: CompiledRuntime | None = None) -> Gener
         lock=lock,
         runtime=stub._runtime,
         steering=stub.__dict__.get("_steering"),
-        capture=stub.__dict__.get("_capture"),
+        reads=stub.__dict__.get("_read_plane"),
         release=lambda: None,
     )
     return stub._engine
