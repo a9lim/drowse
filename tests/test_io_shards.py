@@ -115,9 +115,10 @@ def test_fit_lock_is_a_sibling_of_the_anchor(tmp_path: Path) -> None:
 
 def test_families_route_through_the_shared_primitive() -> None:
     """The three families must not carry private copies of this machinery."""
-    from drowse.store import alignment
+    from drowse.store import alignment, neutral
     from drowse.lens import store as lens
-    assert alignment.generation_path is shards.generation_path
-    assert alignment._json_pointer_matches is shards.json_pointer_matches
+    for family in (alignment, neutral):
+        assert family.generation_path is shards.generation_path
+        assert family._json_pointer_matches is shards.json_pointer_matches
     assert lens._new_layer_generation is shards.generation_path
     assert lens._json_pointer_matches is shards.json_pointer_matches

@@ -27,7 +27,7 @@ from drowse.model import loading as model_mod
 from drowse.events import EventBus
 from drowse.fit.pipeline import ManifoldExtractionPipeline
 from drowse.model.loading import loaded_model_fingerprint
-from drowse.store import alignment as alignment_mod
+from drowse.store import neutral as alignment_mod
 from drowse.store.manifold_authoring import create_discover_manifold_folder
 from drowse.store.manifold_folder import ManifoldFolder, ManifoldSidecar
 from drowse.store.manifolds import preflight_manifold_fit_noop

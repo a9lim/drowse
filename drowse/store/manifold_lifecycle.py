@@ -566,13 +566,13 @@ def _proven_neutral_loaded_fingerprint(
     ``model_source_fingerprint`` (recomputable off-model) to the
     ``model_fingerprint`` that load produced.  Matching the source half
     therefore establishes the loaded half without a second load — the same
-    bridge ``store.alignment``'s ``_proven_sidecar`` walks before it declines to
+    bridge ``fit.transfer``'s ``_proven_sidecar`` walks before it declines to
     build a source model.
     """
-    from drowse.store.alignment import validate_neutral_cache_metadata
+    from drowse.store.neutral import validate_neutral_cache_metadata
 
     try:
-        sidecar = validate_neutral_cache_metadata(model_id, verify_payload=False)
+        sidecar = validate_neutral_cache_metadata(model_id)
     except (OSError, RuntimeError, ValueError, TypeError, KeyError):
         return None
     if sidecar.get("model_source_fingerprint") != source_fingerprint:
@@ -946,7 +946,7 @@ def _transfer_manifold_locked(
     Reads the source-model fit at ``<folder>/<safe_from>.safetensors``,
     maps each layer's affine subspace (``mean`` + ``basis`` rows, both in
     model space) through the supplied compact factorized affine alignment
-    (the shape :func:`drowse.store.alignment.fit_alignment` produces), and writes a
+    (the shape :func:`drowse.geometry.procrustes.fit_alignment` produces), and writes a
     transferred per-model tensor at the ``_from-<encoded_src>`` filename
     variant (``<safe_to>_from-<encode_release_id(from_model)>.safetensors`` —
     :func:`drowse.base.paths.tensor_filename`'s transfer suffix).

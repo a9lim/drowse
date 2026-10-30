@@ -10,7 +10,7 @@ import pytest
 
 import torch
 
-from drowse.store.alignment import LayerAlignment
+from drowse.geometry.procrustes import LayerAlignment
 from drowse.store.manifolds import (
     MANIFOLD_FORMAT_VERSION,
     BakedManifoldError,
@@ -2159,7 +2159,7 @@ def test_rectangular_affine_transfer_preserves_points_frame_and_steering(
         transfer_manifold_subspaces,
     )
     from drowse.store.manifold_tensors import load_manifold, save_manifold
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     basis = torch.tensor([
         [1.0, 0.0, 0.0, 0.0],
@@ -2222,7 +2222,7 @@ def test_monopolar_affine_transfer_rebakes_positive_world_direction_share() -> N
     from drowse.geometry.manifold import (
         CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
     )
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     basis = torch.tensor([[1.0, 0.0, 0.0]])
     real_coord = torch.tensor([[2.5]])
@@ -2257,7 +2257,7 @@ def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
         fit_rbf_interpolant, transfer_manifold_subspaces,
     )
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
     coords = torch.tensor([[0.0], [0.5], [1.0]])
@@ -2298,7 +2298,7 @@ def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
 def test_rectangular_transfer_rejects_collapsed_subspace_rank() -> None:
     import torch
     from drowse.geometry.manifold import CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     source = Manifold(
         name="collapsed", domain=CustomDomain(2), node_labels=["a", "b"],
@@ -2325,7 +2325,7 @@ def test_rectangular_transfer_rejects_oblique_rank_collapse() -> None:
     from drowse.geometry.manifold import (
         CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
     )
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     source = Manifold(
         name="oblique-collapse", domain=CustomDomain(3),

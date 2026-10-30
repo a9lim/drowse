@@ -273,7 +273,7 @@ class LayerWhitener:
         already in memory (e.g. inside a live ``DrowseSession``).
         """
         from drowse.base.paths import model_dir
-        from drowse.store.alignment import load_validated_neutral_cache
+        from drowse.store.neutral import load_validated_neutral_cache
 
         md = model_dir(model_id)
         pointer_path = md / "neutral_activations.json"
@@ -288,7 +288,7 @@ class LayerWhitener:
         try:
             acts_raw, sidecar = load_validated_neutral_cache(model_id)
             if expected_identity is not None:
-                from drowse.store.alignment import neutral_cache_identity
+                from drowse.store.neutral import neutral_cache_identity
 
                 if neutral_cache_identity(sidecar) != expected_identity:
                     raise ValueError("neutral cache identity changed")

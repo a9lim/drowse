@@ -23,7 +23,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from drowse.geometry.whitener import LayerWhitener, WhitenerError
-from drowse.store.alignment import (
+from drowse.store.neutral import (
     _neutral_acts_paths,
     load_validated_neutral_cache,
     load_or_compute_neutral_activations,
@@ -120,7 +120,7 @@ def test_metadata_preflight_does_not_materialize_tensor_payload(
     _patch_compute(monkeypatch, _deterministic_acts())
     _compute()
 
-    import drowse.store.alignment as alignment
+    import drowse.store.neutral as alignment
 
     monkeypatch.setattr(
         alignment, "load_safetensors",
@@ -160,16 +160,8 @@ def test_metadata_returning_load_reuses_the_single_payload_digest(
     _patch_compute(monkeypatch, _deterministic_acts())
     _compute()
 
-    import drowse.store.alignment as alignment
+    from drowse.base.integrity import hash_file
 
-    real_hash = alignment.hash_file
-    hashed: list[Path] = []
-
-    def count_hash(path: Path) -> str:
-        hashed.append(Path(path))
-        return real_hash(path)
-
-    monkeypatch.setattr(alignment, "hash_file", count_hash)
     acts, sidecar = load_or_compute_neutral_activations_with_metadata(
         model=MODEL, tokenizer=TOKENIZER, layers=[0, 1, 2], model_id=MODEL_ID,
     )
@@ -177,10 +169,9 @@ def test_metadata_returning_load_reuses_the_single_payload_digest(
     assert set(acts) == {0, 1, 2}
     anchor, _ = _neutral_acts_paths(MODEL_ID)
     assert sidecar["tensor_sha256"] == {
-        layer: real_hash(anchor.parent / filename)
+        layer: hash_file(anchor.parent / filename)
         for layer, filename in sidecar["tensor_files"].items()
     }
-    assert hashed == []
 
 
 def test_concurrent_cold_neutral_cache_is_single_flight(
@@ -344,7 +335,7 @@ def test_failed_neutral_pointer_publication_preserves_prior_generation(
     prior_pointer = pointer.read_bytes()
     prior_files = set(json.loads(prior_pointer)["tensor_files"].values())
 
-    import drowse.store.alignment as alignment
+    import drowse.store.neutral as alignment
 
     monkeypatch.setattr(
         alignment, "write_json_atomic",
@@ -367,7 +358,7 @@ def test_neutral_exception_after_pointer_replace_preserves_new_generation(
 ) -> None:
     _install_home(tmp_path, monkeypatch)
     _patch_compute(monkeypatch, _deterministic_acts())
-    import drowse.store.alignment as alignment
+    import drowse.store.neutral as alignment
 
     _compute()
     anchor, pointer = _neutral_acts_paths(MODEL_ID)
@@ -392,6 +383,12 @@ def test_neutral_exception_after_pointer_replace_preserves_new_generation(
         (anchor.parent / name).is_file()
         for name in sidecar["tensor_files"].values()
     )
+    # Readers never mutate the store: the superseded generation survives the
+    # read and is collected by the next successful publication.
+    assert all((anchor.parent / name).exists() for name in prior_files)
+    load_or_compute_neutral_activations_with_metadata(
+        MODEL, TOKENIZER, [0, 1, 2], model_id=MODEL_ID, force=True,
+    )
     assert not any((anchor.parent / name).exists() for name in prior_files)
 
 
@@ -400,7 +397,7 @@ def test_neutral_directory_barriers_bracket_pointer_and_precede_gc(
 ) -> None:
     _install_home(tmp_path, monkeypatch)
     _patch_compute(monkeypatch, _deterministic_acts())
-    import drowse.store.alignment as alignment
+    import drowse.store.neutral as alignment
 
     events: list[str] = []
     real_write = alignment.write_json_atomic

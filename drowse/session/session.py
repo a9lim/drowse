@@ -1894,7 +1894,7 @@ class DrowseSession:
         it runs no model.
         """
         from drowse.geometry.whitener import LayerWhitener
-        from drowse.store.alignment import load_or_compute_neutral_activations
+        from drowse.store.neutral import load_or_compute_neutral_activations
 
         try:
             neutral_acts = load_or_compute_neutral_activations(
