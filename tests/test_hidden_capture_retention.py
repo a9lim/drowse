@@ -1,11 +1,9 @@
 """``HiddenCapture.set_retention`` — the one retention setter.
 
-``set_incremental`` / ``set_aggregate_tail`` / ``set_tail_with_sink`` are the
-three named points in the ``(depth, step_sink, tail_layers)`` space
-``set_retention`` parameterizes.  These tests pin that each name is exactly its
-``set_retention`` call (so the aliases can never drift from the implementation)
-and that the two axes stay orthogonal — a deep ring with a sink, and a length-1
-buffer without one, are both reachable.
+The capture plan arms points in the ``(depth, step_sink, tail_layers)`` space
+``set_retention`` parameterizes.  These tests pin that the two axes stay
+orthogonal — a deep ring with a sink, and a length-1 buffer without one, are
+both reachable.
 
 Pure CPU: a toy block stack stands in for the decoder.
 """
@@ -78,40 +76,6 @@ def _armed(arm: Callable[[HiddenCapture], None]) -> HiddenCapture:
     cap.attach(stack, list(_LAYERS))
     arm(cap)
     return cap
-
-
-# --------------------------------------------------- the aliases are the setter ---
-
-def test_set_incremental_is_set_retention_depth_one():
-    def sink(_step: int, _latest: dict[int, torch.Tensor]) -> None:
-        return None
-
-    alias = _armed(lambda cap: cap.set_incremental(sink))
-    explicit = _armed(lambda cap: cap.set_retention(depth=1, step_sink=sink))
-    assert _state(alias) == _state(explicit)
-
-
-def test_set_aggregate_tail_is_set_retention_without_a_sink():
-    alias = _armed(lambda cap: cap.set_aggregate_tail(8))
-    explicit = _armed(lambda cap: cap.set_retention(depth=8))
-    assert _state(alias) == _state(explicit)
-    assert alias._step_sink is None
-
-
-def test_set_tail_with_sink_is_set_retention_with_both():
-    def sink(_step: int, _latest: dict[int, torch.Tensor]) -> None:
-        return None
-
-    alias = _armed(
-        lambda cap: cap.set_tail_with_sink(6, sink, tail_layers={0, 2})
-    )
-    explicit = _armed(
-        lambda cap: cap.set_retention(
-            depth=6, step_sink=sink, tail_layers={0, 2},
-        )
-    )
-    assert _state(alias) == _state(explicit)
-    assert alias._tail_layers == frozenset({0, 2})
 
 
 def test_depth_floors_at_one():

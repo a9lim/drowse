@@ -1145,7 +1145,7 @@ def test_prompt_capture_retains_only_selected_prefill_positions():
     layers = nn.ModuleList([_Pass(), _Pass()])
     cap = HiddenCapture()
     cap.attach(layers, [0, 1])
-    cap.set_aggregate_tail(2)
+    cap.set_retention(depth=2)
     cap.set_prompt_positions([0, 2])
 
     for layer in range(2):
@@ -1217,7 +1217,7 @@ def test_aggregate_tail_pools_last_content_token():
     # Aggregate-tail capture (depth 3) → tail_slice_at(last_content_forward).
     cap_tail = HiddenCapture()
     cap_tail.attach(layers, [0, 1])
-    cap_tail.set_aggregate_tail(3)
+    cap_tail.set_retention(depth=3)
     for fw in forwards:
         for L in (0, 1):
             layers[L](fw[L])
@@ -1249,7 +1249,7 @@ def test_aggregate_tail_clamps_when_walkback_exceeds_depth():
     layers = nn.ModuleList([_Pass(), _Pass()])
     cap = HiddenCapture()
     cap.attach(layers, [0, 1])
-    cap.set_aggregate_tail(2)  # tiny ring
+    cap.set_retention(depth=2)  # tiny ring
     for t in range(5):
         for L in (0, 1):
             layers[L]((m.layers[L].mean + float(t) * m.layers[L].basis[0]).reshape(1, 1, D))
@@ -1273,9 +1273,9 @@ def test_tail_with_sink_can_keep_deep_tail_on_selected_layers_only():
     cap = HiddenCapture()
     rows: list[dict[int, torch.Tensor]] = []
     cap.attach(layers, [0, 1, 2])
-    cap.set_tail_with_sink(
-        3,
-        lambda _step, latest: rows.append({
+    cap.set_retention(
+        depth=3,
+        step_sink=lambda _step, latest: rows.append({
             layer: row.clone() for layer, row in latest.items()
         }),
         tail_layers={2},

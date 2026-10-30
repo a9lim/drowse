@@ -197,26 +197,6 @@ class HiddenCapture:
         self._step_sink = step_sink
         self._max_layer = max(self._per_layer) if self._per_layer else None
 
-    def set_incremental(self, step_sink: StepSink) -> None:
-        """Length-1 buffers + per-token scoring (the INCREMENTAL mode)."""
-        self.set_retention(depth=1, step_sink=step_sink)
-
-    def set_aggregate_tail(self, depth: int) -> None:
-        """Bounded tail ring, no per-token scoring (the AGGREGATE_ONLY mode)."""
-        self.set_retention(depth=depth)
-
-    def set_tail_with_sink(
-        self,
-        depth: int,
-        step_sink: StepSink,
-        *,
-        tail_layers: set[int] | frozenset[int] | None = None,
-    ) -> None:
-        """Tail ring plus a per-token sink (GATING_SUBSET / LEAN_INCREMENTAL)."""
-        self.set_retention(
-            depth=depth, step_sink=step_sink, tail_layers=tail_layers,
-        )
-
     def attach_persistent(
         self, layer_indices: list[int], buffers: dict[int, torch.Tensor],
     ) -> None:

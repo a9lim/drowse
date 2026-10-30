@@ -87,7 +87,7 @@ def test_persistent_ingest_matches_transient_tail_ring():
     stack_t, clock_t = _toy_stack()
     cap_t = HiddenCapture()
     cap_t.attach(stack_t, list(_LAYERS))
-    cap_t.set_aggregate_tail(8)
+    cap_t.set_retention(depth=8)
     _drive(stack_t, clock_t, n)
 
     # Persistent path: real installer hooks write the buffers; ingest accumulates.
@@ -97,7 +97,7 @@ def test_persistent_ingest_matches_transient_tail_ring():
     )
     cap_p = HiddenCapture()
     cap_p.attach_persistent(list(_LAYERS), buffers)
-    cap_p.set_aggregate_tail(8)
+    cap_p.set_retention(depth=8)
     try:
         _drive(stack_p, clock_p, n, after=cap_p.ingest_persistent)
     finally:
@@ -124,9 +124,9 @@ def test_persistent_ingest_matches_transient_selective_tail_with_sink():
     stack_t, clock_t = _toy_stack()
     cap_t = HiddenCapture()
     cap_t.attach(stack_t, list(_LAYERS))
-    cap_t.set_tail_with_sink(
-        3,
-        lambda _step, latest: rows_t.append({
+    cap_t.set_retention(
+        depth=3,
+        step_sink=lambda _step, latest: rows_t.append({
             k: v.clone() for k, v in latest.items()
         }),
         tail_layers={2},
@@ -139,9 +139,9 @@ def test_persistent_ingest_matches_transient_selective_tail_with_sink():
     )
     cap_p = HiddenCapture()
     cap_p.attach_persistent(list(_LAYERS), buffers)
-    cap_p.set_tail_with_sink(
-        3,
-        lambda _step, latest: rows_p.append({
+    cap_p.set_retention(
+        depth=3,
+        step_sink=lambda _step, latest: rows_p.append({
             k: v.clone() for k, v in latest.items()
         }),
         tail_layers={2},
@@ -176,7 +176,7 @@ def test_persistent_ingest_matches_transient_incremental_and_sink():
     stack_t, clock_t = _toy_stack()
     cap_t = HiddenCapture()
     cap_t.attach(stack_t, list(_LAYERS))
-    cap_t.set_incremental(lambda _step, latest: rows_t.append(
+    cap_t.set_retention(depth=1, step_sink=lambda _step, latest: rows_t.append(
         {k: v.clone() for k, v in latest.items()}
     ))
     # In-hook incremental accumulates during the forward; the step sink fires
@@ -189,7 +189,7 @@ def test_persistent_ingest_matches_transient_incremental_and_sink():
     )
     cap_p = HiddenCapture()
     cap_p.attach_persistent(list(_LAYERS), buffers)
-    cap_p.set_incremental(lambda _step, latest: rows_p.append(
+    cap_p.set_retention(depth=1, step_sink=lambda _step, latest: rows_p.append(
         {k: v.clone() for k, v in latest.items()}
     ))
     try:
