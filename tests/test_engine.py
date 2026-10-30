@@ -531,7 +531,8 @@ def test_prepare_installs_capture_hooks_only_for_a_probed_session(
 ) -> None:
     """``probes=[]`` takes the no-capture compiled mode: the offset hooks
     are installed (and handed to steering), the capture hooks are not."""
-    from drowse.generation import compile_runtime, static_cache
+    from drowse.generation import compile_runtime
+    from drowse.model import static_cache
 
     calls = {"offset": 0, "capture": 0}
     handle = SimpleNamespace(remove=lambda: None)
@@ -605,7 +606,7 @@ def test_prepare_drops_the_hooks_when_compile_falls_back(
 def test_runtime_reuses_resets_and_releases_the_generation_static_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.generation import static_cache
+    from drowse.model import static_cache
 
     class _Cache:
         def __init__(self, capacity: int) -> None:

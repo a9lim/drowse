@@ -27,7 +27,7 @@ from typing import Any
 
 import torch
 
-from drowse.generation import static_cache as _static_cache
+from drowse.model import static_cache as _static_cache
 from drowse.model import compile as compile_mod
 from drowse.model.arch import get_layers
 from drowse.readout import capture_buffer

@@ -98,7 +98,7 @@ def test_dynamic_prefix_reuse_matches_full_prefill(model_type: str) -> None:
 
 
 def test_static_prefix_reuse_survives_repeated_reuse() -> None:
-    from drowse.generation.static_cache import make_static_cache
+    from drowse.model.static_cache import make_static_cache
 
     model = _model("llama")
     prefix = torch.tensor([_PREFIX])

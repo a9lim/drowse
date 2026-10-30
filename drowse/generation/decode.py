@@ -613,7 +613,7 @@ def generate_steered(
     sized for the upcoming decode) with explicit ``cache_position``s, so the
     kernel shapes a compiled artifact saw on warmup don't change as the cache
     grows.  The caller probes StaticCache support
-    (:func:`drowse.generation.static_cache.is_static_cache_supported`).
+    (:func:`drowse.model.static_cache.is_static_cache_supported`).
 
     ``forced_prefix`` (logit fork) is a list of token ids to *force* for
     the first ``len(forced_prefix)`` decode steps instead of using the
