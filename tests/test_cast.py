@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import pytest
+
 from drowse import CastMember, LoomTree, Recipe, SamplingConfig
 from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT
 from drowse.session.session import DrowseSession
@@ -179,12 +181,11 @@ def test_cast_member_steering_yields_to_the_regen_anchor():
     assert out.thinking is False
 
 
-def test_seed_only_cast_member_keeps_its_null_sampling_shape():
+def test_seed_only_cast_member_keeps_its_null_sampling_shape(tiny_session: Any):
     """The HTTP cast surface takes a seed but never a sampling block; the
     member persists as ``sampling: null`` + ``seed`` (the drowse.ai cast
     shape) and reads back identically."""
-    stub = _Stub()
-    member = DrowseSession.set_cast_member(_as_session(stub), "deer", seed=1234)
+    member = tiny_session.set_cast_member("deer", seed=1234)
     data = member.to_dict()
     assert data["recipe"]["sampling"] is None
     assert data["recipe"]["seed"] == 1234
@@ -193,9 +194,8 @@ def test_seed_only_cast_member_keeps_its_null_sampling_shape():
     assert restored.recipe.sampling == SamplingConfig(seed=1234)
     assert restored.to_dict() == data
     # A member with a sampling block writes it in full beside the seed.
-    blocked = DrowseSession.set_cast_member(
-        _as_session(stub), "deer",
-        sampling=SamplingConfig(temperature=0.5), seed=7,
+    blocked = tiny_session.set_cast_member(
+        "deer", sampling=SamplingConfig(temperature=0.5), seed=7,
     ).to_dict()["recipe"]
     assert blocked["seed"] == 7
     assert blocked["sampling"]["seed"] == 7
@@ -231,26 +231,34 @@ def test_bare_member_contributes_nothing():
     assert _apply(stub, sampling=s) == (None, s, None)
 
 
-def test_session_set_cast_member_validates_steering():
+def test_session_set_cast_member_validates_steering(tiny_session: Any):
     import pytest
     from drowse.steering.grammar import SteeringExprError
 
-    stub = _Stub()
     with pytest.raises(SteeringExprError):
-        DrowseSession.set_cast_member(
-            _as_session(stub), "deer", steering="0.5 !!bad!!",
-        )
-    member = DrowseSession.set_cast_member(
-        _as_session(stub), "deer", steering="0.5 formal.casual",
-    )
+        tiny_session.set_cast_member("deer", steering="0.5 !!bad!!")
+    member = tiny_session.set_cast_member("deer", steering="0.5 formal.casual")
     assert member.recipe is not None
     assert member.recipe.steering == "0.5 formal.casual"
-    assert stub.tree.cast["deer"] == member
+    assert tiny_session.tree.cast["deer"] == member
     # Field-less call authors a bare named label.
-    bare = DrowseSession.set_cast_member(_as_session(stub), "narrator")
+    bare = tiny_session.set_cast_member("narrator")
     assert bare.recipe is None
-    DrowseSession.remove_cast_member(_as_session(stub), "narrator")
-    assert "narrator" not in stub.tree.cast
+    tiny_session.remove_cast_member("narrator")
+    assert "narrator" not in tiny_session.tree.cast
+
+
+@pytest.mark.parametrize(("data", "match"), [
+    ({"recipe": ["0.5 formal"], "notes": ""}, "'recipe' must be an object or null"),
+    ({"recipe": None, "notes": 5}, "'notes' must be a string"),
+])
+def test_cast_member_from_dict_rejects_malformed_fields(
+    data: dict[str, Any], match: str,
+) -> None:
+    from drowse.loom.errors import LoomTreeError
+
+    with pytest.raises(LoomTreeError, match=match):
+        CastMember.from_dict(data)
 
 
 def test_ws_explicit_clear_survives_as_empty_steering():

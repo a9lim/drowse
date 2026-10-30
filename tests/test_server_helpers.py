@@ -328,3 +328,21 @@ class TestDescribeError:
 
 if __name__ == "__main__":  # pragma: no cover - convenience
     raise SystemExit(pytest.main([__file__]))
+
+
+@pytest.mark.parametrize(("model_type", "param_count", "expected"), [
+    ("gemma2", 2_614_000_000, ["gemma2:2.6b"]),
+    ("qwen3_moe", 30_500_000_000, ["qwen3:30b"]),
+    ("llama", 1_000_000_000, ["llama:1b"]),
+    ("llama", 360_000_000, ["llama:360m"]),
+    ("llama", 500_000, []),
+    ("llama", 0, []),
+    ("", 2_000_000_000, []),
+])
+def test_inferred_ollama_aliases(
+    model_type: str, param_count: int, expected: list[str],
+) -> None:
+    from drowse.server.compat.model_names import aliases_for
+
+    info = {"model_type": model_type, "param_count": param_count}
+    assert aliases_for("some/unlisted-model", info) == expected

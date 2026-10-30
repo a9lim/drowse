@@ -40,6 +40,13 @@ def test_logits_keep_detection_is_keyed_by_forward_implementation() -> None:
     assert logits_keep_kwarg(CurrentModel()) == "logits_to_keep"
     assert logits_keep_kwarg(LegacyModel()) == "num_logits_to_keep"
 
+    class KwargsModel:
+        def forward(self, input_ids: Any, **kwargs: Any) -> Any:
+            del input_ids, kwargs
+
+    assert logits_keep_kwarg(KwargsModel()) is None
+    assert logits_keep_kwarg(SimpleNamespace()) is None
+
 
 def test_eos_ids_are_not_shared_between_models_with_the_same_tokenizer() -> None:
     tokenizer = StopTokenizer()
@@ -48,6 +55,8 @@ def test_eos_ids_are_not_shared_between_models_with_the_same_tokenizer() -> None
 
     assert chat_eos_ids(first, tokenizer) == {1, 3}
     assert chat_eos_ids(second, tokenizer) == {2, 3}
+    listed = SimpleNamespace(generation_config=SimpleNamespace(eos_token_id=[1, 2]))
+    assert chat_eos_ids(listed, tokenizer) == {1, 2, 3}
 
 
 class _SplitStopTokenizer(StopTokenizer):
