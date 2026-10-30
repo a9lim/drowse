@@ -54,7 +54,8 @@ def canonical_json(obj: Any) -> bytes:
 # without a bump, so a v5 file already fails the exact-set validator and the
 # invalidation was paid in practice before it was declared.  No cache rides this
 # version — the neutral-activation and alignment caches carry their own sidecar
-# schemas and format versions in :mod:`drowse.store.alignment` — so the only reader
+# schemas and format versions in :mod:`drowse.store.neutral` and
+# :mod:`drowse.store.alignment` — so the only reader
 # affected is a user-saved ``Profile``, which gets a clear regenerate error.
 PROFILE_FORMAT_VERSION = 6
 

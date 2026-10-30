@@ -7,8 +7,9 @@ Publication is a single atomic pointer replace; a reader only ever sees a
 complete generation set, and superseded payloads are collected *after* the new
 pointer is durable.
 
-The families are the neutral-activation cache and the Procrustes alignment
-cache (:mod:`drowse.store.alignment`) and the Drowse-fitted Jacobian lens
+The families are the neutral-activation cache (:mod:`drowse.store.neutral`),
+the Procrustes alignment cache (:mod:`drowse.store.alignment`), and the
+Drowse-fitted Jacobian lens
 (:mod:`drowse.lens.store`).  Their sidecar *schemas* and format versions stay
 private to each module — what lives here is only the path/GC/lock primitive
 they share, so crash-recovery-critical behavior cannot drift between them.
