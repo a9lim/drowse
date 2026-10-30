@@ -497,6 +497,10 @@ class SteeringComposer:
         guarding: acquires :attr:`_gen_lock` so the rebuild can't fire
         mid-step in another thread's generation, and rejects same-
         thread callback reentry during ``RUNNING`` / ``FINALIZING``.
+
+        Unlike :meth:`push`, a failed rebuild cannot keep the previous plan:
+        that plan belongs to the scope being exited.  The stack still pops and
+        all steering is uninstalled before the error propagates.
         """
         session = self._session
         if not self._stack:
@@ -518,7 +522,16 @@ class SteeringComposer:
         with session._gen_lock:
             self._stack.pop()
             # Rebuild through the session boundary after the stack mutation.
-            session._rebuild_steering_hooks()
+            # Fail closed: when the outer head no longer composes (a profile
+            # it named was unregistered inside the inner scope), the exited
+            # inner plan must not stay installed, so steering goes off and the
+            # error propagates.  The next push or pop re-installs from the
+            # stack.
+            try:
+                session._rebuild_steering_hooks()
+            except BaseException:
+                session._steering.clear_all()
+                raise
             # Symmetric with ``push``: the cached prefix is unsteered,
             # so only invalidate when what remains on the stack still steers the
             # prefill.  Popping back to a prefill-inactive (or empty) stack keeps

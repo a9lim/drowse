@@ -168,6 +168,42 @@ def test_failed_push_keeps_the_outer_scope_installed() -> None:
     assert not manager.hooks
 
 
+@pytest.mark.parametrize("compiled", [True, False])
+def test_failed_pop_rebuild_uninstalls_the_exited_scope(compiled: bool) -> None:
+    """A pop whose outer head no longer composes must not keep the inner plan.
+
+    The rebuild after ``pop`` composes the outer head; when a profile it names
+    was unregistered inside the inner scope that raises, and the exited inner
+    plan used to stay installed (offsets live, flag set) under a stack that
+    said it was gone.
+    """
+    from drowse.session.session import ProfileNotRegisteredError
+
+    session, buffers = _session(compiled=compiled)
+    manager = session._steering
+    composer = session._steering_composer
+    outer = session.steering("0.5 a")
+    outer.__enter__()
+    inner = session.steering("0.3 b")
+    inner.__enter__()
+    del session._profiles["a"]
+    with pytest.raises(ProfileNotRegisteredError):
+        inner.__exit__(None, None, None)
+    assert [list(entry) for entry in composer._stack] == [["a"]]
+    assert manager.plan is None
+    assert not manager.hooks
+    assert not manager.uses_compiled_offsets
+    assert _zero(buffers)
+    hidden = torch.zeros(1, 1, _D)
+    for layer in session._layers:
+        hidden = layer(hidden)
+    assert not bool(hidden.any())
+    # Restoring the profile lets the outer scope exit cleanly.
+    session._profiles["a"] = {1: _unit(0)}
+    outer.__exit__(None, None, None)
+    assert composer._stack == []
+
+
 def test_repeated_push_reuses_the_composed_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     session, _buffers = _session(compiled=False)
     composer = session._steering_composer
