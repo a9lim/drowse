@@ -116,18 +116,23 @@ def _capture_groups_for_models(safe_models: set[str]) -> set[tuple[str, str]]:
 
 
 def _delete_fitted_files(
-    files: list[Path], manifest_names: list[str],
+    files: list[Path], manifest_names: list[str], *, scoped_model: str | None = None,
 ) -> set[tuple[str, str]]:
     """Unlink ``files`` (pair locks held by the caller); return the GC set.
 
     ``manifest_names`` are the selected ``files`` entries — after a crash or a
-    manual deletion they are the only surviving model hint.
+    manual deletion they are the only surviving model hint.  ``scoped_model``
+    (a safe model id) is the model a scoped clear names: its captures are
+    swept even when no fitted file or manifest entry survives, which is
+    exactly what a fit killed after capture publication leaves behind.
     """
     affected_models = {
         parsed[0]
         for name in [*manifest_names, *(path.name for path in files)]
         if (parsed := fitted_name_selected(name)) is not None
     }
+    if scoped_model is not None:
+        affected_models.add(scoped_model)
     capture_groups = {
         owner for path in files
         if path.suffix == ".json" and (owner := _capture_owner(path)) is not None
@@ -171,16 +176,16 @@ def clear_manifold_tensors(
             if fitted_name_selected(entry, variant=variant, model_scope=model_scope)
         ]
         files = fitted_pair_files(folder, variant=variant, model_scope=model_scope)
+        scoped_model = safe_model_id(model_scope) if model_scope is not None else None
         with locked_manifold_pairs(files):
-            capture_groups = _delete_fitted_files(files, selected)
+            capture_groups = _delete_fitted_files(files, selected, scoped_model=scoped_model)
             manifest["files"] = {
                 entry: digest for entry, digest in manifest_files.items()
                 if entry not in selected
             }
             epochs = manifest.get("fit_epochs", {})
             epochs = dict(epochs) if isinstance(epochs, dict) else {}
-            target_safe = safe_model_id(model_scope) if model_scope is not None else "*"
-            epoch_key = f"{target_safe}:{variant}"
+            epoch_key = f"{scoped_model or '*'}:{variant}"
             epochs[epoch_key] = int(epochs.get(epoch_key, 0)) + 1
             manifest["fit_epochs"] = epochs
             write_json_atomic(folder / "manifold.json", manifest)

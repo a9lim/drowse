@@ -1680,6 +1680,34 @@ def test_clear_reaps_capture_when_both_fitted_halves_are_missing(
     assert not capture_file.exists()
 
 
+def test_scoped_clear_reaps_orphan_capture_with_no_fitted_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fit killed after capture publication leaves only the capture.
+
+    No fitted file and no manifest entry names the model, so the scoped
+    model itself must seed the sweep (``clear -m`` / ``refresh -m``).
+    """
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    domain = {"type": "box", "axes": [
+        {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
+    create_manifold_folder("local", "mood", "", domain, _author_nodes(["a", "b", "c"]))
+    from drowse.base.paths import model_dir
+
+    capture_dir = model_dir("org/model") / "manifold_capture"
+    capture_dir.mkdir(parents=True)
+    orphan = capture_dir / f"{'7' * 64}.rows"
+    orphan.write_bytes(b"orphan")
+    unrelated_dir = model_dir("org/other") / "manifold_capture"
+    unrelated_dir.mkdir(parents=True)
+    unrelated = unrelated_dir / f"{'8' * 64}.rows"
+    unrelated.write_bytes(b"other model")
+
+    assert clear_manifold_tensors("local", "mood", "org/model") == 0
+    assert not orphan.exists()
+    assert unrelated.exists()
+
+
 def test_rm_reaps_capture_when_sidecar_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
