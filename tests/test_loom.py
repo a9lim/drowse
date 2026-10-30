@@ -499,6 +499,28 @@ def test_add_user_turn_dedups_identical_text():
     assert u1_again == u1
 
 
+def test_add_user_turn_dedup_respects_label_and_thinking():
+    """Regression: same text under another cast label (or with another
+    thinking block) renders differently, so it is a different turn."""
+    t = LoomTree()
+    plain = t.add_user_turn("hello")
+    captain = t.add_user_turn("hello", parent_id=t.root_id, role_label="captain")
+    assert captain != plain
+    assert t.nodes[captain].role_label == "captain"
+    planned = t.add_user_turn(
+        "hello", parent_id=t.root_id, role_label="captain", thinking_text="plan",
+    )
+    assert planned not in (plain, captain)
+    assert t.nodes[planned].thinking_text == "plan"
+    # Identical rendering still dedups, in every combination.
+    assert t.add_user_turn("hello", parent_id=t.root_id) == plain
+    assert t.add_user_turn("hello", parent_id=t.root_id, role_label="captain") == captain
+    assert t.add_user_turn(
+        "hello", parent_id=t.root_id, role_label="captain", thinking_text="plan",
+    ) == planned
+    assert len(t.children_of[t.root_id]) == 3
+
+
 def test_add_user_turn_no_dedup_when_text_differs():
     t = LoomTree()
     u1 = t.add_user_turn("first")

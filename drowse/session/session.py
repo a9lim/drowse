@@ -10710,8 +10710,14 @@ class DrowseSession:
         # the active node when None) and dedup on identical user text.
         anchor_user_id: str | None = None
         if not stateless and isinstance(prompt, str):
+            # Stamp the label ``_generate_core`` will send so its label-aware
+            # dedup lands every sibling on this anchor.
             anchor_user_id = self.tree.add_user_turn(
                 prompt, parent_id=parent_node_id,
+                role_label=(
+                    sampling.user_role
+                    if sampling is not None and not raw else None
+                ),
             )
             # The anchor parent for ``_generate_core`` is the user
             # node's *parent* — generate's ``add_user_turn`` will dedup

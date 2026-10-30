@@ -560,15 +560,17 @@ class LoomTree:
         """Add a user turn under ``parent_id`` (default: the active node).
 
         If ``dedup_existing`` is set and ``parent_id`` already has a user-turn
-        child with the exact same text, returns that existing child's id
-        without growing the tree.  This spares users a redundant tree level
-        for the regen workflow where the user re-sends the same prompt.
+        child that renders identically — same text, same ``role_label``, same
+        ``thinking_text`` — returns that existing child's id without growing
+        the tree.  This spares users a redundant tree level for the regen
+        workflow where the user re-sends the same prompt; the same text sent
+        under another cast label or with another thinking block is a
+        different turn and gets its own node.
 
         ``role_label`` stamps the per-turn role-substitution label (the
-        roleplay scaffold) onto a freshly-created node; a dedup hit keeps
-        the existing node's label unchanged.  ``thinking_text`` is an
-        optional committed thinking block (rendered through the family
-        think delimiters by the scene stitcher).
+        roleplay scaffold).  ``thinking_text`` is an optional committed
+        thinking block (rendered through the family think delimiters by the
+        scene stitcher).
         """
         with self._lock:
             parent = parent_id if parent_id is not None else self.active_node_id
@@ -578,7 +580,12 @@ class LoomTree:
             if dedup_existing:
                 for cid in self.children_of.get(parent, []):
                     sib = self.nodes[cid]
-                    if sib.role == "user" and sib.text == text:
+                    if (
+                        sib.role == "user"
+                        and sib.text == text
+                        and sib.role_label == role_label
+                        and sib.thinking_text == thinking_text
+                    ):
                         self.active_node_id = sib.id
                         self.rev += 1
                         self._emit(LoomMutated(
