@@ -1,41 +1,21 @@
-"""Tests for the typed ``GenState`` lifecycle on ``DrowseSession``.
-
-GPU-gated for the same reason as ``test_session.py``: ``GenState``
-transitions are exercised through real generation, which needs a model
-loaded on a real device.  See Phase 6 of the audit-followups plan.
-"""
+"""The typed ``GenState`` lifecycle on a real ``DrowseSession`` (CPU)."""
 from __future__ import annotations
 
 from typing import Any
 
 import pytest
-import torch
 
-from drowse import GenState
-from drowse.session.session import ConcurrentGenerationError
-from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
+from drowse import GenState, SamplingConfig
+from drowse.session.session import ConcurrentGenerationError, ProfileNotRegisteredError
+from tests.support.sessions import TinySessionFactory
 
-_HAS_GPU = torch.cuda.is_available() or torch.backends.mps.is_available()
-pytestmark = [
-    pytest.mark.gpu,
-    pytest.mark.skipif(
-        not _HAS_GPU,
-        reason="No GPU backend available (neither CUDA nor MPS)",
-    ),
-]
-
-MODEL_ID = gpu_model_id()
+_FOUR_TOKENS = SamplingConfig(max_tokens=4, seed=0)
 
 
-@pytest.fixture(scope="module")
-def session():
-    from drowse.session.session import DrowseSession
-    s = load_or_skip_inaccessible(
-        lambda: DrowseSession.from_pretrained(MODEL_ID, device="auto", probes=["register"]),
-        MODEL_ID,
-    )
-    yield s
-    s.close()
+@pytest.fixture
+def session(make_tiny_session: TinySessionFactory) -> Any:
+    session, _script = make_tiny_session.scripted("Hi there.")
+    return session
 
 
 class TestGenStateTransitions:
@@ -44,89 +24,50 @@ class TestGenStateTransitions:
         assert session.is_generating is False
 
     def test_running_during_generate(self, session: Any) -> None:
-        """Inside an ``on_token`` callback, the session must report
-        ``RUNNING`` — that callback fires from the generation worker
-        thread between the inner-try entry and exit."""
-        session.clear_history()
+        """``on_token`` fires from inside the decode loop, so the session
+        reports ``RUNNING`` there."""
         observed: list[GenState] = []
 
         def _tap(*args: Any, **kwargs: Any) -> None:
             observed.append(session.gen_state)
 
-        from drowse.generation.sampling import SamplingConfig
-        session.generate(
-            "Say hi.",
-            sampling=SamplingConfig(max_tokens=4),
-            on_token=_tap,
-        )
-        assert observed, "on_token never fired"
-        assert all(s is GenState.RUNNING for s in observed), (
-            f"expected all RUNNING, got {observed}"
-        )
+        session.generate("Say hi.", sampling=_FOUR_TOKENS, on_token=_tap)
+        assert observed == [GenState.RUNNING] * 4
 
     def test_returns_to_idle_after_success(self, session: Any) -> None:
-        session.clear_history()
-        from drowse.generation.sampling import SamplingConfig
-        session.generate(
-            "Say hi.",
-            sampling=SamplingConfig(max_tokens=4),
-        )
+        session.generate("Say hi.", sampling=_FOUR_TOKENS)
         assert session.gen_state is GenState.IDLE
         assert session.is_generating is False
 
     def test_returns_to_idle_after_exception(self, session: Any) -> None:
-        """Worker-side failures must still drain the state machine.
-
-        We trigger this by referencing an unregistered vector — the
-        steering scope materialization raises before the inner try
-        runs, but the outer ``finally`` still has to land us at
-        ``IDLE`` for the next call to succeed.
-        """
-        session.clear_history()
-        from drowse.generation.sampling import SamplingConfig
-        with pytest.raises(Exception):
+        """A failure inside the generation transaction still drains the state
+        machine and releases the lock, so the next call succeeds."""
+        with pytest.raises(ProfileNotRegisteredError):
             session.generate(
                 "Say hi.",
                 steering="0.3 definitely_not_a_real_concept_xyz",
-                sampling=SamplingConfig(max_tokens=4),
+                sampling=_FOUR_TOKENS,
             )
         assert session.gen_state is GenState.IDLE
         assert session.is_generating is False
 
-        # And a fresh generation still works — the lock got released.
-        session.generate(
-            "Say hi.",
-            sampling=SamplingConfig(max_tokens=4),
-        )
+        session.generate("Say hi.", sampling=_FOUR_TOKENS)
         assert session.gen_state is GenState.IDLE
 
 
 class TestConcurrentGuard:
     def test_concurrent_generate_rejected(self, session: Any) -> None:
-        """Re-entering generation from inside ``on_token`` must raise
-        ``ConcurrentGenerationError`` — the typed state guard sits on
-        top of the threading lock.
-        """
-        session.clear_history()
-        from drowse.generation.sampling import SamplingConfig
-
+        """Re-entering generation from inside ``on_token`` raises
+        ``ConcurrentGenerationError``; the outer generation still finishes."""
         captured: list[BaseException] = []
 
         def _reentry(*args: Any, **kwargs: Any) -> None:
             try:
-                session.generate(
-                    "nope",
-                    sampling=SamplingConfig(max_tokens=2),
-                )
-            except ConcurrentGenerationError as e:
-                captured.append(e)
+                session.generate("nope", sampling=SamplingConfig(max_tokens=2))
+            except ConcurrentGenerationError as exc:
+                captured.append(exc)
 
-        session.generate(
-            "Say hi.",
-            sampling=SamplingConfig(max_tokens=4),
-            on_token=_reentry,
-        )
-        # The first emit should have triggered the guard at least once.
-        assert captured, "expected ConcurrentGenerationError on re-entry"
-        # And the outer call still finalized cleanly.
+        result = session.generate("Say hi.", sampling=_FOUR_TOKENS, on_token=_reentry).first
+        assert len(captured) == 4
+        assert result.text == "Hi t"
         assert session.gen_state is GenState.IDLE
