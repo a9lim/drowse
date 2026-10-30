@@ -8,12 +8,7 @@ import { refreshLoomTree } from "./loom.svelte";
 import { loadPersistedPreferences } from "./persistence.svelte";
 import { refreshProbeList } from "./probes.svelte";
 import { refreshSession, sessionState } from "./session.svelte";
-import {
-  refreshCorrelation,
-  refreshManifoldList,
-  refreshVectorList,
-  steerRack,
-} from "./steering.svelte";
+import { refreshManifoldList, refreshVectorList, steerRack } from "./steering.svelte";
 
 /** Bootstrap the dashboard — call once on App mount.  Resolves only once
  * every parallel fetch settles so the UI's first paint has a real session
@@ -36,7 +31,6 @@ export async function bootstrap(): Promise<void> {
     refreshVectorList(),
     // Unified probe roster — every probe shape.
     refreshProbeList(),
-    refreshCorrelation(),
     // Current manifold catalog.
     refreshManifoldList(),
     // Server tree wins — fetch and reconcile; failures remain visible.
