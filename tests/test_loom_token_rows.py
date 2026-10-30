@@ -59,7 +59,6 @@ def _stateful_tap_session(tree: LoomTree, node_id: str) -> Any:
         frequency_penalty=0.0,
         logprobs_list=None,
     )
-    session._whitener = None
     session._seat_stop_augmentation = lambda stop_list, **_kwargs: stop_list
     session._monitor = SimpleNamespace(
         probe_names=[],
