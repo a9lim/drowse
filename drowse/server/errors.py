@@ -23,9 +23,10 @@ same everywhere and no surface leaks a raw exception string:
   engine invariant whose text must not leak; and a failed import of drowse's
   own modules, which is a packaging bug, not a missing extra.
 
-The ``code`` of every envelope is the exception's class name, so a client
-keys on a typed failure (``PoisednessError``, ``RecipeOverrideError``)
-without a route-specific classifier.
+The ``code`` of every SSE, polled, and WebSocket error frame is the
+exception's class name, so a client keys on a typed failure
+(``PoisednessError``, ``RecipeOverrideError``) without a route-specific
+classifier.
 """
 
 from __future__ import annotations
