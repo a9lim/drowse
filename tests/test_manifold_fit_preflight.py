@@ -63,19 +63,13 @@ class _ProvableHandle:
         self.tokenizer: Any = _CaptureTokenizer()
         self.device = torch.device("cpu")
         self.dtype = torch.float32
-        self.layers: Any = [object()] * _N_LAYERS
+        self.layers: Any = torch.nn.ModuleList(
+            torch.nn.Identity() for _ in range(_N_LAYERS)
+        )
         self.layer_means = synthetic_means(range(_N_LAYERS), _DIM)
         self.whitener = synthetic_whitener(
             range(_N_LAYERS), _DIM, means=self.layer_means,
         )
-
-    def _run_generator(
-        self, system_msg: str, prompt: str, max_new_tokens: int,
-    ) -> str:
-        raise NotImplementedError("stub: not called in CPU preflight tests")
-
-    def generate_responses(self, *_args: Any, **_kwargs: Any) -> Any:
-        raise NotImplementedError("stub: not called in CPU preflight tests")
 
 
 @pytest.fixture

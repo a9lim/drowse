@@ -1,802 +1,81 @@
 """ManifoldExtractionPipeline — fit a steering manifold from an authored corpus.
 
-The single extraction pipeline (4.0): a steering vector is the 2-node ``pca``
-case of a manifold, so concept extraction (``session.extract``) and manifold
-fitting share this one pipeline.  It pools per-node centroids, fits the
-per-layer PCA (+ RBF for curved manifolds), bakes the per-layer share, and
-writes the per-model tensor.
+The one extraction pipeline: a steering vector is the 2-node ``pca`` case of a
+manifold, so concept extraction (``session.extract``) and manifold fitting
+share it.  A fit runs four stages over small values:
 
-Dependencies are passed structurally (not as a back-reference to the session)
-via the runtime-checkable :class:`ModelHandle` protocol plus an
-:class:`EventBus` for ``ManifoldExtracted`` emission.  ``DrowseSession``
-satisfies the protocol implicitly, so construction reads as
-``ManifoldExtractionPipeline(self, self.events)``.
+1. **inputs** (:class:`FitInputs`) — the authoring snapshot taken under the
+   folder lock (:mod:`drowse.store.fit_publish`), the token-exact
+   :class:`CaptureIdentity`, the loaded-model fingerprints, the resolved SAE
+   backend.  A fitted tensor whose sidecar matches all of it is served as is.
+2. **capture** — per-node centroids (and, for curved fits, response rows) from
+   the content-addressed :class:`~drowse.fit.capture_cache.CaptureCache`; only
+   missing layers run one fit-wide model pass.
+3. **geometry** — pure tensor work: the monopolar fold, or whitened node
+   geometry → resolved topology → per-layer affine/curved subspaces →
+   σ-field → origin.
+4. **publish** — compare-and-swap against the authoring revision, then
+   ``ManifoldExtracted``.
 
-The session gates re-entry against ``GenState.IDLE`` before forwarding; the
-pipeline itself does not touch generation state.
+Dependencies are passed structurally via the :class:`ModelHandle` protocol
+plus an :class:`EventBus`; ``DrowseSession`` satisfies the protocol, so
+construction reads ``ManifoldExtractionPipeline(self, self.events)``.  The
+session gates re-entry against generation before forwarding.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import math
-import os
-import pathlib
-import struct
-import tempfile
-import threading
 import time
-import uuid
 from collections.abc import Mapping, Sequence
-from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 import torch
-from safetensors.torch import load_file, save as serialize_safetensors, save_file
 
-from drowse.errors import DrowseError
 from drowse.events import EventBus, ManifoldExtracted
+from drowse.fit import capture as _capture
+from drowse.fit.capture_cache import CaptureCache
 from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION
 from drowse.geometry.topology import PcaDiagnostics, SpectralDiagnostics
 from drowse.model.loading import loaded_model_fingerprint, workspace_layer_indices
 from drowse.sae.backend import SaeBackend
-from drowse.base.paths import model_dir, tensor_filename
+from drowse.base.paths import tensor_filename
+from drowse.store.fit_publish import (
+    AuthoringSnapshot,
+    assert_authoring_revision,
+    fit_target_lock,
+    load_published_fit,
+    publish_fit_if_current,
+    take_authoring_snapshot,
+)
 
 if TYPE_CHECKING:
-    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.manifold import LayerSubspace, Manifold
+    from drowse.store.manifold_folder import ManifoldFolder, ManifoldSidecar
+    from drowse.store.manifold_tensors import ActivationRowStore
 
-
-_CAPTURE_CACHE_FORMAT_VERSION = 4
 
 # Schema revision of the manifold fit's capture identity — the payload
 # ``prepare_manifold_capture_identity`` hashes into ``capture_sha256``.  Bumping
-# it invalidates every fitted tensor *and* every cached capture group, so it is
-# the knob for "the residuals a corpus produces are no longer the same".  It
-# also rides the fitted sidecar as ``capture_version`` so a weight-free
-# preflight can prove the stored identity was built under this exact schema
-# instead of inferring it from the format version.
+# it invalidates every fitted tensor *and* every cached capture, so it is the
+# knob for "the residuals a corpus produces are no longer the same".  It also
+# rides the fitted sidecar as ``capture_version`` so a weight-free preflight can
+# prove the stored identity was built under this exact schema.
 MANIFOLD_CAPTURE_VERSION = 3
 
-_ROW_DIGEST_CACHE_MAX = 512
-_row_digest_cache: set[tuple[object, ...]] = set()
-_row_digest_cache_lock = threading.Lock()
+# Fit modes whose geometry may come out curved and so needs response rows for
+# the σ-field (``auto`` only if topology selection resolves curved).
+_ROW_CONSUMING_MODES = frozenset({"authored", "spectral", "auto"})
 
 
-def _apply_fit_overrides_locked(
-    folder: pathlib.Path,
-    *,
-    fit_mode: str | None,
-    hyperparams: Mapping[str, object] | None,
-) -> None:
-    """Apply discover-fit overrides inside the folder transaction.
-
-    Callers pass only the values supplied by this request.  The merge happens
-    against the manifest reloaded under ``_locked_manifest``, so two fit
-    requests cannot publish a stale read/modify/write snapshot before either
-    fit computes its cache identity.
-    """
-    if fit_mode is None and hyperparams is None:
-        return
-
-    from drowse.base.atomic import write_json_atomic
-    from drowse.store.manifolds import ManifoldFolder, sanitize_hyperparams
-
-    mf = ManifoldFolder.load(folder, verify_manifest=False)
-    if not mf.is_discover:
-        raise ValueError(
-            "fit_mode/hyperparams overrides are discover-mode only; "
-            f"{folder} is authored"
-        )
-    requested_mode = fit_mode or mf.fit_mode
-    if requested_mode not in {"pca", "spectral", "auto"}:
-        raise ValueError(f"invalid discover fit mode {requested_mode!r}")
-    # Hyperparameters belong to their discriminated fit mode. A mode change
-    # starts a fresh parameter set; carrying the previous mode's keys would
-    # either be ignored or violate the exact current schema.
-    requested_hyperparams = (
-        {} if fit_mode is not None and fit_mode != mf.fit_mode
-        else dict(mf.hyperparams)
-    )
-    if hyperparams is not None:
-        requested_hyperparams.update(hyperparams)
-    requested_hyperparams = sanitize_hyperparams(
-        requested_mode, requested_hyperparams,
-    )
-    if (
-        requested_mode == mf.fit_mode
-        and requested_hyperparams == mf.hyperparams
-    ):
-        return
-
-    with open(folder / "manifold.json") as handle:
-        data = json.load(handle)
-    data["fit_mode"] = requested_mode
-    data["hyperparams"] = requested_hyperparams
-    # Discover nodes are label-only.  Preserve role/kind provenance while
-    # stripping any authored geometry left by a mode transition.
-    data["nodes"] = [
-        {
-            "label": label,
-            "role": mf.node_roles[idx],
-            "kind": mf.node_kinds[idx],
-        }
-        for idx, label in enumerate(mf.node_labels)
-    ]
-    data.pop("domain", None)
-    write_json_atomic(folder / "manifold.json", data)
-
-
-def _repair_incomplete_target_locked(
-    folder: pathlib.Path, tensor_path: pathlib.Path,
-) -> None:
-    """Remove an interrupted one-sided fitted pair and its stale proofs."""
-
-    sidecar_path = tensor_path.with_suffix(".json")
-    if tensor_path.exists() == sidecar_path.exists():
-        return
-    tensor_path.unlink(missing_ok=True)
-    sidecar_path.unlink(missing_ok=True)
-    manifest_path = folder / "manifold.json"
-    with open(manifest_path) as handle:
-        payload = json.load(handle)
-    files = payload.get("files", {})
-    if isinstance(files, dict):
-        files = dict(files)
-        files.pop(tensor_path.name, None)
-        files.pop(sidecar_path.name, None)
-        payload["files"] = files
-        from drowse.base.atomic import write_json_atomic
-
-        write_json_atomic(manifest_path, payload)
-
-
-class ManifoldAuthoringChangedError(RuntimeError, DrowseError):
-    """The authoring inputs changed while a target was being fitted.
-
-    Semantically the conflict :class:`~drowse.session.session.ConcurrentExtractionError`
-    models, reached from the other direction: the fit is fine, the folder moved
-    under it.  Reports 409 so the caller retries against the current revision
-    instead of reading it as a server fault.  ``RuntimeError`` stays in the
-    MRO, so existing catch sites are unaffected.
-    """
-
-    def user_message(self) -> tuple[int, str]:
-        return (409, str(self) or self.__class__.__name__)
-
-
-def _assert_authoring_revision(
-    folder: pathlib.Path, target_path: pathlib.Path, expected_revision: str,
-) -> None:
-    from drowse.store.manifold_folder import _locked_manifest
-
-    with _locked_manifest(folder):
-        _mf, _nodes_sha, actual, _groups, _baseline = (
-            _authoring_snapshot_locked(folder, target_path)
-        )
-    if actual != expected_revision:
-        raise ManifoldAuthoringChangedError(
-            f"manifold authoring changed during fit ({expected_revision[:12]}"
-            f" -> {actual[:12]}); retry against the current revision"
-        )
-
-
-def _publish_fit_if_current(
-    folder: pathlib.Path,
-    *,
-    expected_revision: str,
-    manifold: Any,
-    tensor_path: pathlib.Path,
-    metadata: dict[str, Any],
-) -> None:
-    """CAS-publish a fitted pair while the authoring revision is unchanged."""
-
-    from drowse.store.manifold_tensors import save_manifold
-    from drowse.store.manifold_folder import _locked_manifest
-
-    with _locked_manifest(folder):
-        current, _nodes_sha, actual, _groups, _baseline = (
-            _authoring_snapshot_locked(folder, tensor_path)
-        )
-        if actual != expected_revision:
-            raise ManifoldAuthoringChangedError(
-                f"manifold authoring changed during fit ({expected_revision[:12]}"
-                f" -> {actual[:12]}); retry against the current revision"
-            )
-        save_manifold(manifold, tensor_path, metadata)
-        current.update_file_hashes(
-            tensor_path, tensor_path.with_suffix(".json"),
-        )
-
-
-def _tensor_sha256(tensor: torch.Tensor) -> str:
-    """Exact original-bit digest without materializing the whole payload."""
-    digest = hashlib.sha256()
-    flat = tensor.detach().reshape(-1)
-    digest.update(str(tensor.dtype).encode("utf-8"))
-    digest.update(repr(tuple(int(dim) for dim in tensor.shape)).encode("utf-8"))
-    for start in range(0, flat.numel(), 1_048_576):
-        chunk = flat[start:start + 1_048_576].to(device="cpu").contiguous()
-        digest.update(chunk.view(torch.uint8).numpy().tobytes())
-    return digest.hexdigest()
-
-
-_SAFETENSORS_DTYPE = {
-    torch.bool: "BOOL",
-    torch.uint8: "U8",
-    torch.int8: "I8",
-    torch.int16: "I16",
-    torch.int32: "I32",
-    torch.int64: "I64",
-    torch.float16: "F16",
-    torch.bfloat16: "BF16",
-    torch.float32: "F32",
-    torch.float64: "F64",
-}
-
-
-def _iter_tensor_byte_chunks(
-    tensor: torch.Tensor, *, chunk_bytes: int = 2_097_152,
-):
-    """Yield one contiguous tensor's original bytes with bounded host memory."""
-    if not tensor.is_contiguous():
-        raise ValueError("streamed safetensors publication requires a contiguous tensor")
-    byte_view = tensor.detach().reshape(-1).view(torch.uint8)
-    for start in range(0, byte_view.numel(), chunk_bytes):
-        chunk = byte_view[start:start + chunk_bytes].to(device="cpu").contiguous()
-        yield chunk.numpy().tobytes()
-
-
-def _save_row_safetensors_atomic(
-    key: str, tensor: torch.Tensor, path: pathlib.Path,
-) -> str:
-    """Stream one row shard once, publishing it and its tensor-domain digest.
-
-    Row shards can be multi-GiB.  Building the small safetensors header here lets
-    the same bounded traversal write the payload and update the exact digest,
-    instead of asking ``save_file`` to read it once and ``_tensor_sha256`` to
-    read it again.
-    """
-    dtype_name = _SAFETENSORS_DTYPE.get(tensor.dtype)
-    if dtype_name is None:
-        raise TypeError(f"unsupported row-cache dtype {tensor.dtype}")
-    if not tensor.is_contiguous():
-        raise ValueError("row-cache tensors must be contiguous")
-    shape = [int(dim) for dim in tensor.shape]
-    nbytes = int(tensor.numel() * tensor.element_size())
-    header = json.dumps(
-        {
-            key: {
-                "dtype": dtype_name,
-                "shape": shape,
-                "data_offsets": [0, nbytes],
-            },
-        },
-        separators=(",", ":"),
-    ).encode("utf-8")
-    header += b" " * ((8 - len(header) % 8) % 8)
-
-    digest = hashlib.sha256()
-    digest.update(str(tensor.dtype).encode("utf-8"))
-    digest.update(repr(tuple(shape)).encode("utf-8"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
-    )
-    tmp = pathlib.Path(tmp_name)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(struct.pack("<Q", len(header)))
-            handle.write(header)
-            for payload in _iter_tensor_byte_chunks(tensor):
-                handle.write(payload)
-                digest.update(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-    return digest.hexdigest()
-
-
-def _row_tensor_matches_cache_metadata(
-    path: pathlib.Path,
-    layer: int,
-    tensor: torch.Tensor,
-    *,
-    expected_shape: object,
-    expected_dtype: object,
-    expected_digest: object,
-) -> bool:
-    """Validate one row-cache tensor, memoizing an unchanged exact digest.
-
-    Row containers can be multi-GiB and geometry-only refits intentionally read
-    the same layer mappings repeatedly.  The first access still hashes every
-    byte; later accesses reuse that proof only while the container's full stat
-    identity and the expected per-layer digest remain unchanged.
-    """
-    if (
-        expected_shape != list(tensor.shape)
-        or expected_dtype != str(tensor.dtype)
-        or not isinstance(expected_digest, str)
-        or len(expected_digest) != 64
-    ):
-        return False
-    try:
-        before = path.stat()
-    except OSError:
-        return False
-    stat_key = (
-        str(path.resolve()), before.st_size, before.st_mtime_ns,
-        before.st_ctime_ns, before.st_dev, before.st_ino,
-        int(layer), expected_digest,
-    )
-    with _row_digest_cache_lock:
-        if stat_key in _row_digest_cache:
-            return True
-    if _tensor_sha256(tensor) != expected_digest:
-        return False
-    try:
-        after = path.stat()
-    except OSError:
-        return False
-    after_key = (
-        str(path.resolve()), after.st_size, after.st_mtime_ns,
-        after.st_ctime_ns, after.st_dev, after.st_ino,
-        int(layer), expected_digest,
-    )
-    if after_key != stat_key:
-        return False
-    with _row_digest_cache_lock:
-        if len(_row_digest_cache) >= _ROW_DIGEST_CACHE_MAX:
-            _row_digest_cache.clear()
-        _row_digest_cache.add(stat_key)
-    return True
-
-
-def _save_safetensors_atomic(
-    tensors: dict[str, torch.Tensor], path: pathlib.Path, *, digest: bool = False,
-) -> str | None:
-    """Publish one fsynced safetensors shard through a unique staging file.
-
-    Directory-entry durability is deliberately a transaction-level concern:
-    callers write every shard in one generation, then fsync the directory once
-    before publishing that generation's recovery journal/pointer.  The optional
-    digest path serializes in memory and hashes those exact bytes, avoiding a
-    second read of bounded centroid shards; large row shards use the sibling
-    single-pass ``_save_row_safetensors_atomic`` path.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if digest:
-        from drowse.base.atomic import write_bytes_atomic
-
-        payload = serialize_safetensors(tensors)
-        payload_sha256 = hashlib.sha256(payload).hexdigest()
-        write_bytes_atomic(path, payload)
-        return payload_sha256
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
-    )
-    os.close(fd)
-    tmp = pathlib.Path(tmp_name)
-    try:
-        save_file(tensors, str(tmp))
-        with open(tmp, "rb") as handle:
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-    return None
-
-
-def _centroid_shard_path(
-    folder: pathlib.Path, stem: str, layer: int, *, generation: str | None = None,
-) -> pathlib.Path:
-    gen = f".gen-{generation}" if generation is not None else ""
-    return folder / f"{stem}{gen}.centroids.layer_{int(layer)}.safetensors"
-
-
-def _row_shard_path(
-    folder: pathlib.Path, stem: str, layer: int, *, generation: str | None = None,
-) -> pathlib.Path:
-    gen = f".gen-{generation}" if generation is not None else ""
-    return folder / f"{stem}{gen}.rows.layer_{int(layer)}.safetensors"
-
-
-def _capture_shard_name_matches(
-    filename: object, stem: str, kind: str, layer: int,
-) -> bool:
-    """Whether a pointer names a current immutable-generation shard."""
-    if not isinstance(filename, str) or pathlib.Path(filename).name != filename:
-        return False
-    suffix = f".{kind}.layer_{int(layer)}.safetensors"
-    return filename.startswith(f"{stem}.gen-") and filename.endswith(suffix)
-
-
-def _capture_pending_path(
-    folder: pathlib.Path, stem: str, generation: str,
-) -> pathlib.Path:
-    return folder / f"{stem}.pending-{generation}.json"
-
-
-def _capture_pointer_sha256(path: pathlib.Path) -> str | None:
-    if not path.exists():
-        return None
-    from drowse.base.integrity import hash_file
-
-    return hash_file(path)
-
-
-def _capture_payload_files(payload: Mapping[str, object]) -> set[str]:
-    keep: set[str] = set()
-    for key in ("centroid_files", "row_files"):
-        mapping = payload.get(key, {})
-        if isinstance(mapping, Mapping):
-            keep.update(
-                str(filename)
-                for filename in mapping.values()
-                if isinstance(filename, str)
-            )
-    return keep
-
-
-def _gc_capture_generations(
-    capture_dir: pathlib.Path, cache_stem: str, cache_meta: pathlib.Path,
-    payload: Mapping[str, object],
-) -> None:
-    """Remove non-authoritative generations only after pointer durability."""
-    from drowse.base.atomic import fsync_directory
-
-    keep = {cache_meta.name, *_capture_payload_files(payload)}
-    for path in _capture_group_paths(capture_dir, cache_stem):
-        if path.name not in keep:
-            path.unlink(missing_ok=True)
-    fsync_directory(capture_dir)
-
-
-def _commit_capture_generation(
-    capture_dir: pathlib.Path,
-    cache_stem: str,
-    cache_meta: pathlib.Path,
-    payload: dict[str, object],
-    *,
-    generation: str,
-    parent_pointer_sha256: str | None,
-) -> None:
-    """Durably journal then atomically publish one immutable cache generation.
-
-    The journal is the recovery record for the narrow crash window between
-    completing/fsyncing expensive shards and replacing the authoritative JSON
-    pointer.  It is intentionally retained on every pre-pointer failure.
-    """
-    from drowse.base.atomic import fsync_directory, write_json_atomic
-
-    # All shard file data and directory entries must precede either JSON record.
-    fsync_directory(capture_dir)
-    pending = _capture_pending_path(capture_dir, cache_stem, generation)
-    write_json_atomic(pending, {
-        "journal_version": 1,
-        "capture_sha256": cache_stem,
-        "parent_pointer_sha256": parent_pointer_sha256,
-        "created_ns": time.time_ns(),
-        "payload": payload,
-    })
-    fsync_directory(capture_dir)
-    write_json_atomic(cache_meta, payload)
-    fsync_directory(capture_dir)
-    # Only the now-durable pointer authorizes removal of older generations and
-    # the recovery journal itself.
-    _gc_capture_generations(capture_dir, cache_stem, cache_meta, payload)
-
-
-def _capture_generation_is_complete(
-    capture_dir: pathlib.Path,
-    cache_stem: str,
-    payload: object,
-    node_sizes: list[int],
-) -> bool:
-    """Validate every shard named by a crash-left generation journal."""
-    if not isinstance(payload, dict):
-        return False
-    try:
-        if (
-            int(payload.get("format_version", 0))
-            != _CAPTURE_CACHE_FORMAT_VERSION
-            or payload.get("capture_sha256") != cache_stem
-            or [int(x) for x in payload.get("node_sizes", [])] != node_sizes
-        ):
-            return False
-        centroid_layers = {int(x) for x in payload.get("centroid_layers", [])}
-        row_layers = {int(x) for x in payload.get("row_layers", [])}
-        centroid_files = dict(payload.get("centroid_files", {}))
-        row_files = dict(payload.get("row_files", {}))
-        centroid_shapes = dict(payload.get("centroid_shapes", {}))
-        row_shapes = dict(payload.get("row_shapes", {}))
-        row_dtypes = dict(payload.get("row_dtypes", {}))
-        row_digests = dict(payload.get("row_tensor_sha256", {}))
-        files = dict(payload.get("files", {}))
-    except (TypeError, ValueError):
-        return False
-    if not row_layers <= centroid_layers:
-        return False
-    for idx in centroid_layers:
-        key = str(idx)
-        filename = centroid_files.get(key)
-        if (
-            not _capture_shard_name_matches(
-                filename, cache_stem, "centroids", idx,
-            )
-            or filename not in files
-            or key not in centroid_shapes
-        ):
-            return False
-    from drowse.base.integrity import verify_integrity
-
-    if files and not verify_integrity(capture_dir, files)[0]:
-        return False
-    if row_layers:
-        from drowse.store.manifold_tensors import ActivationRowStore
-
-        for idx in sorted(row_layers):
-            key = str(idx)
-            filename = row_files.get(key)
-            if (
-                not _capture_shard_name_matches(filename, cache_stem, "rows", idx)
-                or key not in row_shapes
-                or key not in row_dtypes
-                or key not in row_digests
-            ):
-                return False
-            store: ActivationRowStore | None = None
-            try:
-                store = ActivationRowStore.load_shards(
-                    {idx: capture_dir / str(filename)}, node_sizes,
-                )
-                if not _row_tensor_matches_cache_metadata(
-                    capture_dir / str(filename), idx, store.flat_rows(idx),
-                    expected_shape=row_shapes[key],
-                    expected_dtype=row_dtypes[key],
-                    expected_digest=row_digests[key],
-                ):
-                    return False
-            except (OSError, RuntimeError, ValueError, KeyError):
-                return False
-            finally:
-                if store is not None:
-                    store.close()
-    return True
-
-
-def _recover_capture_generation(
-    capture_dir: pathlib.Path,
-    cache_stem: str,
-    cache_meta: pathlib.Path,
-    node_sizes: list[int],
-) -> bool:
-    """Adopt the newest complete journal whose parent is the live pointer."""
-    if not capture_dir.exists():
-        return False
-    parent = _capture_pointer_sha256(cache_meta)
-    live_payload: dict[str, object] | None = None
-    if cache_meta.exists():
-        try:
-            with open(cache_meta) as handle:
-                parsed_live = json.load(handle)
-            if isinstance(parsed_live, dict):
-                live_payload = parsed_live
-        except (OSError, json.JSONDecodeError):
-            return False
-    candidates: list[tuple[int, pathlib.Path, dict[str, object]]] = []
-    already_committed: list[tuple[int, pathlib.Path, dict[str, object]]] = []
-    for journal in capture_dir.glob(f"{cache_stem}.pending-*.json"):
-        try:
-            with open(journal) as handle:
-                record = json.load(handle)
-            if (
-                not isinstance(record, dict)
-                or int(record.get("journal_version", 0)) != 1
-                or record.get("capture_sha256") != cache_stem
-                or not _capture_generation_is_complete(
-                    capture_dir, cache_stem, record.get("payload"), node_sizes,
-                )
-            ):
-                continue
-            payload = record["payload"]
-            assert isinstance(payload, dict)
-            item = (int(record.get("created_ns", 0)), journal, payload)
-            if live_payload is not None and payload == live_payload:
-                already_committed.append(item)
-            elif record.get("parent_pointer_sha256") == parent:
-                candidates.append(item)
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            continue
-    if already_committed:
-        _created, _journal, payload = max(
-            already_committed, key=lambda item: item[0],
-        )
-        # Pointer replacement succeeded; only post-commit GC was interrupted.
-        _gc_capture_generations(capture_dir, cache_stem, cache_meta, payload)
-        return True
-    if not candidates:
-        return False
-    _created, journal, payload = max(candidates, key=lambda item: item[0])
-    from drowse.base.atomic import fsync_directory, write_json_atomic
-
-    write_json_atomic(cache_meta, payload)
-    fsync_directory(capture_dir)
-    _gc_capture_generations(capture_dir, cache_stem, cache_meta, payload)
-    return True
-
-
-def _capture_group_paths(
-    folder: pathlib.Path, stem: str,
-) -> list[pathlib.Path]:
-    """Current files for one content-addressed capture group."""
-    return [path for path in folder.glob(f"{stem}.*") if path.is_file()]
-
-
-def _publish_deferred_row_shards(
-    capture_dir: pathlib.Path,
-    cache_stem: str,
-    cache_meta: pathlib.Path,
-    retained_rows: Any,
-    node_sizes: list[int],
-    row_layers: set[int],
-    row_files: dict[str, str],
-    row_shapes: dict[str, object],
-    row_dtypes: dict[str, object],
-    row_digests: dict[str, object],
-) -> None:
-    """Top up auto-curved row shards in a short stem transaction."""
-
-    from drowse.base.atomic import artifact_lock
-
-    with artifact_lock(capture_dir / cache_stem):
-        # A prior process may have completed this exact generation but died
-        # before replacing the pointer. Promote it before planning new I/O.
-        _recover_capture_generation(
-            capture_dir, cache_stem, cache_meta, node_sizes,
-        )
-        parent_pointer_sha256 = _capture_pointer_sha256(cache_meta)
-        with open(cache_meta) as handle:
-            payload = json.load(handle)
-        if (
-            int(payload.get("format_version", 0)) != _CAPTURE_CACHE_FORMAT_VERSION
-            or payload.get("capture_sha256") != cache_stem
-            or [int(x) for x in payload.get("node_sizes", [])] != node_sizes
-        ):
-            raise ValueError("capture cache changed identity during deferred row top-up")
-        current_layers = {int(i) for i in payload.get("row_layers", [])}
-        current_files = dict(payload.get("row_files", {}))
-        current_shapes = dict(payload.get("row_shapes", {}))
-        current_dtypes = dict(payload.get("row_dtypes", {}))
-        current_digests = dict(payload.get("row_tensor_sha256", {}))
-        for idx in current_layers:
-            key = str(idx)
-            if not all(
-                key in mapping for mapping in (
-                    current_files, current_shapes, current_dtypes, current_digests,
-                )
-            ):
-                raise ValueError("capture row pointer changed incompletely")
-            row_files[key] = current_files[key]
-            row_shapes[key] = current_shapes[key]
-            row_dtypes[key] = current_dtypes[key]
-            row_digests[key] = current_digests[key]
-        row_layers.update(current_layers)
-        newly_durable = sorted(set(retained_rows.layer_indices) - current_layers)
-        generation = uuid.uuid4().hex
-        for idx in newly_durable:
-            row_path = _row_shard_path(
-                capture_dir, cache_stem, idx, generation=generation,
-            )
-            rows = retained_rows.flat_rows(idx)
-            row_digest = _save_row_safetensors_atomic(
-                f"layer_{idx}", rows, row_path,
-            )
-            row_files[str(idx)] = row_path.name
-            row_shapes[str(idx)] = list(rows.shape)
-            row_dtypes[str(idx)] = str(rows.dtype)
-            row_digests[str(idx)] = row_digest
-        row_layers.update(newly_durable)
-        durable = sorted(row_layers)
-        payload["row_layers"] = durable
-        payload["row_files"] = {str(i): row_files[str(i)] for i in durable}
-        payload["row_shapes"] = {str(i): row_shapes[str(i)] for i in durable}
-        payload["row_dtypes"] = {str(i): row_dtypes[str(i)] for i in durable}
-        payload["row_tensor_sha256"] = {
-            str(i): row_digests[str(i)] for i in durable
-        }
-        _commit_capture_generation(
-            capture_dir, cache_stem, cache_meta, payload,
-            generation=generation,
-            parent_pointer_sha256=parent_pointer_sha256,
-        )
-
-
-def _prune_manifold_capture_cache(
-    folder: pathlib.Path, *, keep_stem: str,
-) -> None:
-    """Bound capture-cache disk use without invalidating an active fit.
-
-    Callers hold no capture-stem lock here.  A directory-wide prune lock
-    serializes eviction decisions, then each victim's own logical stem lock is
-    acquired and its files are re-read before deletion.  No code holds one stem
-    while acquiring another, avoiding the A->B / B->A deadlock that a naive
-    lock-aware pruner would introduce.
-    """
-    try:
-        limit_gb = float(os.environ.get("DROWSE_MANIFOLD_CAPTURE_CACHE_GB", "8"))
-    except ValueError:
-        limit_gb = 8.0
-    if limit_gb <= 0.0:
-        return
-    limit = int(limit_gb * 1024**3)
-    from drowse.base.atomic import artifact_has_live_lease, artifact_lock
-
-    folder.mkdir(parents=True, exist_ok=True)
-    with artifact_lock(folder / "capture-cache-prune"):
-        groups: dict[str, list[pathlib.Path]] = {}
-        for path in folder.iterdir():
-            if not path.is_file():
-                continue
-            stem = path.name.split(".", 1)[0]
-            if len(stem) == 64:
-                groups.setdefault(stem, []).append(path)
-        sizes: dict[str, int] = {}
-        mtimes: dict[str, int] = {}
-        for stem, paths in groups.items():
-            try:
-                stats = [path.stat() for path in paths]
-            except FileNotFoundError:
-                continue
-            sizes[stem] = sum(stat.st_size for stat in stats)
-            mtimes[stem] = min(stat.st_mtime_ns for stat in stats)
-        total = sum(sizes.values())
-        if total <= limit:
-            return
-        oldest = sorted(
-            (stem for stem in sizes if stem != keep_stem),
-            key=mtimes.__getitem__,
-        )
-        for stem in oldest:
-            with artifact_lock(folder / stem):
-                if artifact_has_live_lease(folder / stem):
-                    continue
-                # The group may have been topped up or removed while we waited.
-                # Re-stat under its transaction lock and charge exactly what is
-                # about to be evicted.
-                paths = _capture_group_paths(folder, stem)
-                for path in paths:
-                    path.unlink(missing_ok=True)
-            # Other stem transactions do not take the directory prune lock and
-            # may have grown while we waited.  Recompute the advisory total
-            # instead of subtracting a stale pre-lock size.
-            total = 0
-            for path in folder.iterdir():
-                if not path.is_file() or len(path.name.split(".", 1)[0]) != 64:
-                    continue
-                try:
-                    total += path.stat().st_size
-                except FileNotFoundError:
-                    pass
-            if total <= limit:
-                break
-
-
-# ----------------------------------------------------------------------
-# Structural protocols.  Runtime-checkable so callers (and tests) can
-# ``isinstance(session, ModelHandle)`` to sanity-check the implicit
-# implementation.  ``DrowseSession`` satisfies each by virtue of carrying
-# the listed attributes / methods.
-# ----------------------------------------------------------------------
-
-@runtime_checkable
 class ModelHandle(Protocol):
     """Read-only surface the pipeline needs from the live HF session.
 
-    Held as a *handle*, not a copy — the pipeline must see the same
-    model object the session uses; otherwise device-side state diverges.
+    Held as a *handle*, not a copy — the pipeline must see the same model
+    object the session uses; otherwise device-side state diverges.
     """
 
     @property
@@ -812,10 +91,7 @@ class ModelHandle(Protocol):
     def device(self) -> torch.device: ...
 
     @property
-    def dtype(self) -> torch.dtype: ...
-
-    @property
-    def layers(self) -> Any: ...  # ``get_layers`` returns ``nn.ModuleList`` — list-like
+    def layers(self) -> torch.nn.ModuleList: ...
 
     @property
     def whitener(self) -> Any: ...
@@ -823,29 +99,10 @@ class ModelHandle(Protocol):
     @property
     def layer_means(self) -> dict[int, torch.Tensor]: ...
 
-    def _run_generator(
-        self, system_msg: str, prompt: str, max_new_tokens: int,
-    ) -> str:
-        """Single-turn LLM call backing conversational corpus generation.
 
-        Underscore-prefixed because the override site is per-session
-        (subclass-and-override is the established test pattern).  The
-        protocol shape mirrors the existing ``DrowseSession._run_generator``
-        signature exactly so the session satisfies it implicitly.
-        """
-        ...
-
-    def generate_responses(
-        self,
-        concepts: list[str],
-        kinds: list[str | None],
-        *,
-        roles: dict[str, str | None] | None = None,
-        custom_system: str | None = None,
-        samples_per_prompt: int = ...,
-        max_new_tokens: int = ...,
-        on_progress: Callable[[str], None] | None = None,
-    ) -> dict[str, list[str]]: ...
+def _default_prompts() -> list[str]:
+    """The shared baseline prompt set (looked up per call; tests substitute it)."""
+    return list(_capture._load_baseline_prompts())
 
 
 def resolve_fit_layer_indices(
@@ -954,6 +211,23 @@ def prepare_capture_rows(
     return prepared_rows, capture_render_sha256(node_groups, prepared_rows)
 
 
+
+def resolve_elicitation_prompts(
+    mf: "ManifoldFolder",
+) -> tuple[list[str | list[dict[str, str]]], str | None]:
+    """The prompts a folder's node responses answer, plus the template digest.
+
+    A templated manifold's corpus answers its template's multi-turn contexts;
+    every other folder answers the shared baseline prompt set.
+    """
+    if mf.template_ref is None:
+        return list(_default_prompts()), None
+    from drowse.store.templates import resolve_template
+
+    tmpl = resolve_template(mf.template_ref)
+    return [context.messages() for context in tmpl.contexts], tmpl.sha256()
+
+
 @dataclass(frozen=True)
 class OfflineFitIdentity:
     """The fit-identity digests derivable with no model weights loaded.
@@ -973,7 +247,7 @@ class OfflineFitIdentity:
 
 
 def offline_fit_identity(
-    mf: Any, *, tokenizer: Any, model_type: str | None,
+    mf: "ManifoldFolder", *, tokenizer: Any, model_type: str | None,
 ) -> OfflineFitIdentity | None:
     """Recompute a folder's weight-free fit identity, or ``None`` if it cannot be.
 
@@ -988,26 +262,17 @@ def offline_fit_identity(
     node_roles = mf._roles_padded()
     if any(role is not None for role in node_roles) and model_type is None:
         return None
-    template_sha: str | None = None
     try:
         node_groups = mf.node_groups()
+        baseline_prompts, template_sha = resolve_elicitation_prompts(mf)
         if mf.template_ref is not None:
             from drowse.store.templates import resolve_template
 
-            tmpl = resolve_template(mf.template_ref)
             # The fit re-derives (and rewrites) a drifted templated corpus
             # under the manifest lock before it hashes anything, so a mismatch
             # here means the on-disk corpus is not what the fit would hash.
-            if dict(node_groups) != tmpl.node_corpora():
+            if dict(node_groups) != resolve_template(mf.template_ref).node_corpora():
                 return None
-            template_sha = tmpl.sha256()
-            baseline_prompts: list[str | list[dict[str, str]]] = [
-                context.messages() for context in tmpl.contexts
-            ]
-        else:
-            from drowse.fit.capture import _load_baseline_prompts
-
-            baseline_prompts = list(_load_baseline_prompts())
         if not baseline_prompts:
             return None
         nodes_sha = mf.nodes_sha256(resolved_template_sha256=template_sha)
@@ -1028,73 +293,72 @@ def offline_fit_identity(
     )
 
 
+@dataclass(frozen=True)
+class CaptureIdentity:
+    """Everything that determines a fit's residual activations, rendered once.
+
+    ``capture_sha256`` digests the loaded model's identity, the node partition,
+    and every rendered row's token ids and pool index — never fit geometry or
+    hyperparameters, so geometry-only refits share one cached capture.  The
+    two weight-free halves (``capture_render_sha256``,
+    ``baseline_prompts_sha256``) let a preflight prove it off-model.
+    """
+
+    node_groups: list[tuple[str, list[str]]]
+    baseline_prompts: list[str | list[dict[str, str]]]
+    prepared_rows: list[tuple[torch.Tensor, int]]
+    node_roles: list[str | None]
+    node_kinds: list[str | None]
+    model_type: str | None
+    capture_sha256: str
+    capture_render_sha256: str
+    baseline_prompts_sha256: str
+
+    @property
+    def node_sizes(self) -> list[int]:
+        return [len(rows) for _label, rows in self.node_groups]
+
+
 def prepare_manifold_capture_identity(
     handle: ModelHandle,
-    mf: Any,
+    mf: "ManifoldFolder",
     model_fingerprint: str,
     *,
-    node_groups_snapshot: list[tuple[str, list[str]]] | None = None,
-    baseline_prompts_snapshot: list[str | list[dict[str, str]]] | None = None,
-) -> tuple[
-    list[tuple[str, list[str]]],
-    list[str | list[dict[str, str]]],
-    list[tuple[torch.Tensor, int]] | None,
-    str | None,
-    list[str | None],
-    list[str | None],
-    str | None,
-    str | None,
-    str,
-]:
+    node_groups: list[tuple[str, list[str]]] | None = None,
+    baseline_prompts: list[str | list[dict[str, str]]] | None = None,
+) -> CaptureIdentity:
     """Render/tokenize all fit rows and return their exact capture identity.
 
-    The trailing two elements are the weight-free-provable halves:
-    ``capture_render_sha256`` (``None`` when the handle has no callable
-    tokenizer, exactly like ``capture_sha256``) and ``baseline_prompts_sha256``.
-    They are appended rather than inserted so index-addressed callers — the
-    steering composer reads ``[3]`` — keep their positions.
+    ``node_groups`` / ``baseline_prompts`` pin an authoring snapshot; omitted,
+    they are read from the folder (the steer-time staleness check).
     """
     model = handle.model
     base_model = getattr(model, "_orig_mod", model)
     config = getattr(base_model, "config", getattr(model, "config", None))
-    node_groups = (
-        [(label, list(rows)) for label, rows in node_groups_snapshot]
-        if node_groups_snapshot is not None else mf.node_groups()
+    groups = (
+        [(label, list(rows)) for label, rows in node_groups]
+        if node_groups is not None else mf.node_groups()
     )
     node_roles = mf._roles_padded()
-    node_kinds = mf._kinds_padded()
     model_type = getattr(getattr(model, "config", None), "model_type", None)
     if any(role is not None for role in node_roles) and model_type is None:
         raise ValueError(
             f"manifold {mf.name!r} carries per-node roles but model config "
             "has no 'model_type' — cannot resolve role headers"
         )
-    if baseline_prompts_snapshot is not None:
-        baseline_prompts = list(baseline_prompts_snapshot)
-    elif mf.template_ref is not None:
-        from drowse.store.templates import resolve_template
-
-        tmpl = resolve_template(mf.template_ref)
-        baseline_prompts: list[str | list[dict[str, str]]] = [
-            context.messages() for context in tmpl.contexts
-        ]
-    else:
-        from drowse.fit.capture import _load_baseline_prompts
-
-        baseline_prompts = list(_load_baseline_prompts())
-    tokenizer = handle.tokenizer
-    prepared_rows: list[tuple[torch.Tensor, int]] | None = None
-    capture_sha: str | None = None
-    render_sha: str | None = None
-    if callable(tokenizer):
-        prepared_rows, render_sha = prepare_capture_rows(
-            tokenizer,
-            node_groups=node_groups,
-            baseline_prompts=baseline_prompts,
-            node_roles=node_roles,
-            model_type=model_type,
-        )
-        capture_model_fingerprint = {
+    prompts = (
+        list(baseline_prompts) if baseline_prompts is not None
+        else resolve_elicitation_prompts(mf)[0]
+    )
+    prepared_rows, render_sha = prepare_capture_rows(
+        handle.tokenizer,
+        node_groups=groups,
+        baseline_prompts=prompts,
+        node_roles=node_roles,
+        model_type=model_type,
+    )
+    capture_hash = hashlib.sha256(json.dumps(
+        {
             "model_id": handle.model_id,
             "model_class": (
                 f"{type(base_model).__module__}.{type(base_model).__qualname__}"
@@ -1104,107 +368,26 @@ def prepare_manifold_capture_identity(
             "model_type": getattr(config, "model_type", None),
             "capture_version": MANIFOLD_CAPTURE_VERSION,
             "fingerprint": model_fingerprint,
-        }
-        capture_hash = hashlib.sha256(json.dumps(
-            capture_model_fingerprint, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8"))
-        capture_hash.update(json.dumps(
-            {"node_sizes": [len(rows) for _label, rows in node_groups]},
-            sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8"))
-        for ids, content_end in prepared_rows:
-            capture_hash.update(
-                repr((ids[0].tolist(), int(content_end))).encode("utf-8")
-            )
-        capture_sha = capture_hash.hexdigest()
-    return (
-        node_groups, baseline_prompts, prepared_rows, capture_sha,
-        node_roles, node_kinds, model_type,
-        render_sha, baseline_prompts_sha256(baseline_prompts),
-    )
-
-
-def _authoring_snapshot_locked(
-    folder: pathlib.Path,
-    target_path: pathlib.Path,
-) -> tuple[
-    Any,
-    str,
-    str,
-    list[tuple[str, list[str]]],
-    list[str | list[dict[str, str]]],
-]:
-    """Materialize template inputs and snapshot one exact authoring revision."""
-
-    from drowse.store.manifolds import ManifoldFolder
-
-    manifest_path = folder / "manifold.json"
-    with open(manifest_path) as handle:
-        identity_payload = json.load(handle)
-    artifact_id = identity_payload.get("artifact_id")
-    if not isinstance(artifact_id, str) or not artifact_id:
-        artifact_id = uuid.uuid4().hex
-        identity_payload["artifact_id"] = artifact_id
-        identity_payload.setdefault("fit_epochs", {})
-        from drowse.base.atomic import write_json_atomic
-
-        write_json_atomic(manifest_path, identity_payload)
-    from drowse.base.paths import parse_tensor_filename
-
-    parsed = parse_tensor_filename(target_path.name)
-    if parsed is None:
-        raise ValueError(f"invalid manifold tensor target {target_path.name!r}")
-    safe_model, raw_variant = parsed
-    variant = "raw" if raw_variant is None else raw_variant.split("-", 1)[0]
-    fit_epochs_raw = identity_payload.get("fit_epochs", {})
-    fit_epochs = fit_epochs_raw if isinstance(fit_epochs_raw, dict) else {}
-    epoch_keys = (
-        "*:all", f"*:{variant}", f"{safe_model}:all",
-        f"{safe_model}:{variant}", target_path.name,
-    )
-    target_epochs = {key: int(fit_epochs.get(key, 0)) for key in epoch_keys}
-    mf = ManifoldFolder.load(folder, verify_manifest=False)
-    template_sha: str | None = None
-    if mf.template_ref is not None:
-        from drowse.store.manifold_authoring import _write_node_corpus
-        from drowse.store.templates import resolve_template
-
-        tmpl = resolve_template(mf.template_ref)
-        template_sha = tmpl.sha256()
-        expected_corpora = tmpl.node_corpora()
-        if dict(mf.node_groups()) != expected_corpora:
-            _write_node_corpus(
-                folder,
-                [
-                    {"label": label, "statements": statements}
-                    for label, statements in expected_corpora.items()
-                ],
-            )
-            mf.node_labels = list(expected_corpora)
-            mf.node_roles = [None] * len(mf.node_labels)
-            mf.node_kinds = [None] * len(mf.node_labels)
-            mf.write_metadata()
-            mf = ManifoldFolder.load(folder, verify_manifest=False)
-        baseline: list[str | list[dict[str, str]]] = [
-            context.messages() for context in tmpl.contexts
-        ]
-    else:
-        from drowse.fit.capture import _load_baseline_prompts
-
-        baseline = list(_load_baseline_prompts())
-    groups = mf.node_groups()
-    nodes_sha = mf.nodes_sha256(resolved_template_sha256=template_sha)
-    revision_payload = json.dumps(
-        {
-            "artifact_id": artifact_id,
-            "target_epochs": target_epochs,
-            "nodes_sha256": nodes_sha,
-            "baseline_prompts": baseline,
         },
         sort_keys=True, separators=(",", ":"),
-    ).encode()
-    revision = hashlib.sha256(revision_payload).hexdigest()
-    return mf, nodes_sha, revision, groups, baseline
+    ).encode("utf-8"))
+    capture_hash.update(json.dumps(
+        {"node_sizes": [len(rows) for _label, rows in groups]},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8"))
+    for ids, content_end in prepared_rows:
+        capture_hash.update(repr((ids[0].tolist(), int(content_end))).encode("utf-8"))
+    return CaptureIdentity(
+        node_groups=groups,
+        baseline_prompts=prompts,
+        prepared_rows=prepared_rows,
+        node_roles=node_roles,
+        node_kinds=mf._kinds_padded(),
+        model_type=model_type,
+        capture_sha256=capture_hash.hexdigest(),
+        capture_render_sha256=render_sha,
+        baseline_prompts_sha256=baseline_prompts_sha256(prompts),
+    )
 
 
 def _diagnostics_to_dict(
@@ -1237,74 +420,6 @@ def _diagnostics_to_dict(
         out["min_dim"] = int(diag.min_dim)
     return out
 
-
-def _base_fit_metadata(
-    *,
-    method: str,
-    nodes_sha: str,
-    model_fingerprint: str,
-    model_source_fp: str | None,
-    capture_sha: str | None,
-    capture_render_sha: str | None,
-    baseline_prompts_sha: str | None,
-    fitted_layers: list[int],
-    subspace_metric: str,
-    sae_backend: "SaeBackend | None",
-    sae_full_coverage: bool,
-    node_roles: Sequence[str | None],
-    node_kinds: Sequence[str | None],
-    any_role: bool,
-    any_kind: bool,
-) -> dict[str, Any]:
-    """The sidecar keys every fit branch writes.
-
-    Shared by the monopolar early branch and the general fit tail so a new
-    provenance key lands on both.  Their remaining divergence is exactly two
-    entry — the monopolar fold keeps the raw δ̂ basis, so it passes
-    ``subspace_metric="euclidean"`` (a basis *label*: ``concept − ν`` cancels
-    common-mode by differencing, like DiM, so no whitened-PCA selection ran;
-    ``method="manifold_monopolar"`` carries the branch identity).  The share
-    is always Mahalanobis; the whitener gate upstream guarantees it.
-    """
-    metadata: dict[str, Any] = {
-        "method": method,
-        "nodes_sha256": nodes_sha,
-        "model_fingerprint": model_fingerprint,
-        # ``None`` when the loaded weights carry no provable source (an
-        # in-memory or opaque model).  A fit stamped that way can never be
-        # preflight-proven, which is the correct outcome: nothing off-model
-        # could establish that the same weights would come back.
-        "model_source_fingerprint": model_source_fp,
-        "capture_sha256": capture_sha,
-        "capture_version": MANIFOLD_CAPTURE_VERSION,
-        "capture_render_sha256": capture_render_sha,
-        "baseline_prompts_sha256": baseline_prompts_sha,
-        "fitted_layers": fitted_layers,
-        "fit_policy_version": MANIFOLD_FIT_POLICY_VERSION,
-        # Provenance only (nothing branches on these at load).
-        "share_metric": "mahalanobis",
-        "subspace_metric": subspace_metric,
-    }
-    if sae_backend is not None:
-        metadata["sae_release"] = sae_backend.release
-        metadata["sae_revision"] = sae_backend.revision
-        metadata["sae_fingerprint"] = sae_backend.fingerprint
-        metadata["sae_ids_by_layer"] = dict(
-            getattr(sae_backend, "sae_ids_by_layer", {})
-        )
-        metadata["sae_full_coverage"] = sae_full_coverage
-    if any_role:
-        # Per-node roles ride into the sidecar so `manifold show` and the
-        # inspector surfaces can report "this node was pooled as <role>"
-        # without re-reading manifold.json.  The order matches
-        # ``node_labels``; a missing entry means ``None`` (standard assistant
-        # baseline).
-        metadata["node_roles"] = list(node_roles)
-    if any_kind:
-        # Per-node kind rides into the sidecar for inspector/provenance,
-        # ``node_labels`` order; absent when no node carries a kind.
-        metadata["node_kinds"] = list(node_kinds)
-    return metadata
 
 
 @dataclass(frozen=True)
@@ -1648,23 +763,161 @@ def _resolve_fit_geometry(
     )
 
 
+
+@dataclass(frozen=True)
+class FitInputs:
+    """Everything a fit of one target is computed from and keyed on."""
+
+    snapshot: AuthoringSnapshot
+    identity: CaptureIdentity
+    tensor_path: Path
+    model_fingerprint: str
+    #: The exact checkpoint source the loader proved for these weights; ``None``
+    #: for an in-memory or opaque model, which can then never be preflight-proven.
+    model_source_fingerprint: str | None
+    requested_layers: list[int]
+    #: ``layer_indices`` was given explicitly (an SAE fit otherwise covers
+    #: exactly the release's layers).
+    layer_scope_explicit: bool
+    sae_backend: SaeBackend | None
+    #: The SAE revision the cache key compares (the request's, or the passed
+    #: backend's own).
+    sae_revision: str | None
+
+    @property
+    def manifold(self) -> "ManifoldFolder":
+        return self.snapshot.manifold
+
+    @property
+    def feature_space(self) -> str:
+        if self.sae_backend is None:
+            return "raw"
+        return f"sae-{self.sae_backend.release}"
+
+    def accepts(self, sidecar: "ManifoldSidecar") -> bool:
+        """Whether a published fit was computed from exactly these inputs.
+
+        ``nodes_sha256`` folds in the corpus plus the domain/coords (authored)
+        or fit_mode/hyperparams (discover); ``capture_sha256`` the rendered
+        rows and loaded weights; the SAE revision does not ride the filename,
+        so it is checked here.
+        """
+        backend = self.sae_backend
+        release = backend.release if backend is not None else None
+        if (
+            sidecar.nodes_sha256 != self.snapshot.nodes_sha256
+            or sidecar.model_fingerprint != self.model_fingerprint
+            or sidecar.capture_sha256 != self.identity.capture_sha256
+            or sidecar.fit_policy_version != MANIFOLD_FIT_POLICY_VERSION
+            or sidecar.sae_release != release
+        ):
+            return False
+        if backend is None:
+            return (
+                sidecar.sae_revision is None
+                and sidecar.evaluated_layers == self.requested_layers
+            )
+        if sidecar.sae_fingerprint != backend.fingerprint:
+            return False
+        if self.sae_revision is not None and sidecar.sae_revision != self.sae_revision:
+            return False
+        if self.layer_scope_explicit:
+            return sidecar.evaluated_layers == self.requested_layers
+        return bool(sidecar.sae_full_coverage)
+
+    def base_metadata(
+        self, *, method: str, fitted_layers: list[int], subspace_metric: str,
+    ) -> dict[str, Any]:
+        """The sidecar keys every fit writes.
+
+        ``subspace_metric`` is a basis *label*: the monopolar fold keeps the
+        raw δ̂ basis (``concept − ν`` cancels common-mode by differencing, like
+        DiM) and reports ``euclidean``; every other fit selects a whitened
+        basis.  The share is always Mahalanobis — the whitener gate guarantees
+        it.
+        """
+        ident = self.identity
+        metadata: dict[str, Any] = {
+            "method": method,
+            "nodes_sha256": self.snapshot.nodes_sha256,
+            "model_fingerprint": self.model_fingerprint,
+            "model_source_fingerprint": self.model_source_fingerprint,
+            "capture_sha256": ident.capture_sha256,
+            "capture_version": MANIFOLD_CAPTURE_VERSION,
+            "capture_render_sha256": ident.capture_render_sha256,
+            "baseline_prompts_sha256": ident.baseline_prompts_sha256,
+            "fitted_layers": fitted_layers,
+            "fit_policy_version": MANIFOLD_FIT_POLICY_VERSION,
+            # Provenance only (nothing branches on these at load).
+            "share_metric": "mahalanobis",
+            "subspace_metric": subspace_metric,
+        }
+        backend = self.sae_backend
+        if backend is not None:
+            metadata["sae_release"] = backend.release
+            metadata["sae_revision"] = backend.revision
+            metadata["sae_fingerprint"] = backend.fingerprint
+            metadata["sae_ids_by_layer"] = dict(
+                getattr(backend, "sae_ids_by_layer", {})
+            )
+            metadata["sae_full_coverage"] = not self.layer_scope_explicit
+        # Per-node roles/kinds ride the sidecar for `manifold show` and the
+        # inspectors, ``node_labels`` order; absent when no node carries one.
+        if any(role is not None for role in ident.node_roles):
+            metadata["node_roles"] = list(ident.node_roles)
+        if any(kind is not None for kind in ident.node_kinds):
+            metadata["node_kinds"] = list(ident.node_kinds)
+        return metadata
+
+
+@dataclass
+class _Captured:
+    """Resident capture for one fit: centroids plus optional response rows."""
+
+    cache: CaptureCache
+    stacks: dict[int, torch.Tensor]
+    rows: "ActivationRowStore | None"
+    #: Row layers already durable in the cache (loaded from it).
+    durable_rows: set[int] = field(default_factory=set)
+
+    def take_stacks(self) -> dict[int, torch.Tensor]:
+        """Move centroid ownership to the caller, leaving no aliases here."""
+        stacks, self.stacks = self.stacks, {}
+        return stacks
+
+    def close(self) -> None:
+        if self.rows is not None:
+            self.rows.close()
+            self.rows = None
+
+
+def _union_rows(
+    first: "ActivationRowStore | None", second: "ActivationRowStore | None",
+) -> "ActivationRowStore | None":
+    if first is None or second is None:
+        return first if second is None else second
+    from drowse.store.manifold_tensors import ActivationRowStore
+
+    return ActivationRowStore.combine_disjoint([first, second])
+
+
+def _sae_reconstruct(
+    backend: SaeBackend, layer: int, x: torch.Tensor, device: torch.device,
+) -> torch.Tensor:
+    """Round-trip ``(n, D)`` activations through one SAE layer, fp32 on CPU."""
+    with torch.no_grad():
+        features = backend.encode_layer(layer, x.to(device))
+        return backend.decode_layer(layer, features).detach().to("cpu", torch.float32)
+
+
 class ManifoldExtractionPipeline:
-    """Fit an RBF-based steering manifold from an authored corpus.
+    """Fit a steering manifold for the handle's model from a manifold folder.
 
-    THE 4.0 extraction pipeline: concept extraction and manifold fitting are
-    the same operation — a steering vector is just the 2-node ``pca`` case (N
-    labeled node groups, no contrastive pairs, no scenario generation).  It
-    reuses the :class:`ModelHandle` protocol (it needs ``model`` /
-    ``tokenizer`` / ``layers`` / ``device`` / ``model_id``) and emits
-    :class:`ManifoldExtracted`.
-
-    Feature space: ``sae=None`` fits per-layer PCA + RBF directly on
-    residual-stream centroids.  ``sae="<release>"`` reconstructs each
-    centroid through the SAE (encode then decode) before the fit — a
-    denoised, sparse-feature-supported centroid — and restricts the
-    manifold to the SAE's covered layers.  Either way the fitted
-    :class:`~drowse.geometry.manifold.LayerSubspace` is model-space, so the
-    steering hook never touches the SAE.
+    Feature space: ``sae=None`` fits on residual-stream centroids.
+    ``sae="<release>"`` (or a backend) reconstructs each centroid through the
+    SAE before the fit and restricts the manifold to the SAE's covered layers.
+    Either way the fitted :class:`~drowse.geometry.manifold.LayerSubspace` is
+    model-space, so the steering hook never touches the SAE.
     """
 
     __slots__ = ("_events", "_handle")
@@ -1673,42 +926,9 @@ class ManifoldExtractionPipeline:
         self._handle = model_handle
         self._events = events
 
-    def _publish_and_emit(
-        self,
-        folder: str | pathlib.Path,
-        *,
-        expected_revision: str,
-        manifold: "Manifold",
-        tensor_path: pathlib.Path,
-        metadata: dict[str, Any],
-        emit_event: bool,
-        progress: Callable[[str], None],
-        started: float,
-    ) -> "Manifold":
-        """The four-step fit epilogue, shared by every branch.
-
-        Compare-and-swap the fitted pair against the authoring revision, fold
-        the sidecar metadata onto the in-memory manifold, emit
-        ``ManifoldExtracted`` (unless the caller is enriching its own event),
-        and report the wall time.  Ordering is load-bearing: publication has
-        to win the CAS before anything observes the fit.
-        """
-        _publish_fit_if_current(
-            pathlib.Path(folder),
-            expected_revision=expected_revision,
-            manifold=manifold, tensor_path=tensor_path, metadata=metadata,
-        )
-        manifold.metadata.update(metadata)
-        if emit_event:
-            self._events.emit(ManifoldExtracted(
-                name=manifold.name, manifold=manifold, metadata=metadata,
-            ))
-        progress(f"Fit complete in {time.perf_counter() - started:.1f}s.")
-        return manifold
-
     def fit(
         self,
-        folder: str | pathlib.Path,
+        folder: str | Path,
         *,
         sae: str | SaeBackend | None = None,
         sae_revision: str | None = None,
@@ -1719,1358 +939,710 @@ class ManifoldExtractionPipeline:
         on_progress: Callable[[str], None] | None = None,
         emit_event: bool = True,
         dls: bool = True,
-    ):
-        """Fit against a stable authoring snapshot, publishing by revision CAS.
+    ) -> "Manifold":
+        """Fit (or load the current fit of) ``folder`` for the handle's model.
 
-        The long-running lock is target-scoped, so two model/variant targets in
-        one folder may compute concurrently and readers keep using the prior
-        published artifact.  The folder lock is held only while taking the exact
-        authoring snapshot and again during final compare-and-swap publication.
+        A published tensor whose sidecar matches every fit input short-circuits
+        the forward passes; ``force=True`` bypasses it and re-pools the selected
+        layers (the discover analogue of ``manifold extract -f``).  The lock is
+        target-scoped, so two model/variant targets in one folder compute
+        concurrently and readers keep the prior artifact; the folder lock is
+        held only for the authoring snapshot and the final compare-and-swap.
 
-        ``emit_event=False`` suppresses this method's ``ManifoldExtracted``
-        emission: :meth:`DrowseSession._fit_concept_manifold` re-emits a single
-        enriched event carrying the folded :class:`Profile`, so the vector path
-        fires exactly one event rather than two.
-
-        ``dls=False`` disables Discriminative Layer Selection on the flat
-        (``pca``) branch: every fitted axis of every fit layer is kept instead
-        of pruned to the ones whose node projections straddle the neutral
-        baseline.  This is what a session built with ``dls=False`` (the CLI's
-        ``--no-dls``) threads down.  Curved fits have no pos/neg polarity and
-        never ran DLS, so the flag is a no-op for them.
+        ``emit_event=False`` suppresses ``ManifoldExtracted`` for a caller that
+        emits its own enriched event (the session's vector path).  ``dls=False``
+        keeps every flat-fit axis instead of pruning to the ones whose node
+        projections straddle the neutral baseline; curved fits never run DLS.
         """
-        from drowse.base.atomic import artifact_lock
-        from drowse.store.manifold_folder import _locked_manifest, manifold_pair_lock
-
-        folder_path = pathlib.Path(folder)
-        sae_release = (
-            sae if isinstance(sae, str)
-            else (sae.release if sae is not None else None)
-        )
-        target_path = folder_path / tensor_filename(
-            self._handle.model_id, release=sae_release,
-        )
-        # Lock outside the removable folder.  ``rm`` + recreate must not mint a
-        # fresh lock inode while a stale fit still owns the old one.
-        fit_lock_key = hashlib.sha256(
-            f"{folder_path.resolve(strict=False)}\0{target_path.name}".encode()
-        ).hexdigest()
-        fit_lock = folder_path.parent / f".drowse-fit-{fit_lock_key}"
-        with artifact_lock(fit_lock):
-            with _locked_manifest(folder_path):
-                with manifold_pair_lock(target_path):
-                    _repair_incomplete_target_locked(folder_path, target_path)
-                _apply_fit_overrides_locked(
-                    folder_path, fit_mode=fit_mode, hyperparams=hyperparams,
-                )
-                mf, nodes_sha, revision, groups, baseline = _authoring_snapshot_locked(
-                    folder_path, target_path,
-                )
-            return self._fit_locked(
-                folder_path, sae=sae, sae_revision=sae_revision,
-                layer_indices=layer_indices, force=force,
-                on_progress=on_progress,
-                _snapshot_mf=mf,
-                _snapshot_nodes_sha=nodes_sha,
-                _authoring_revision=revision,
-                _node_groups_snapshot=groups,
-                _baseline_prompts_snapshot=baseline,
-                emit_event=emit_event,
-                dls=dls,
-            )
-
-    def _fit_locked(
-        self,
-        folder: str | pathlib.Path,
-        *,
-        sae: str | SaeBackend | None = None,
-        sae_revision: str | None = None,
-        layer_indices: "Sequence[int] | str | None" = None,
-        force: bool = False,
-        on_progress: Callable[[str], None] | None = None,
-        _capture_lock_held: bool = False,
-        _prepared_identity: tuple[Any, ...] | None = None,
-        _model_fingerprint: str | None = None,
-        _verified_cache_miss: bool = False,
-        _snapshot_mf: Any | None = None,
-        _snapshot_nodes_sha: str | None = None,
-        _authoring_revision: str | None = None,
-        _node_groups_snapshot: list[tuple[str, list[str]]] | None = None,
-        _baseline_prompts_snapshot: list[str | list[dict[str, str]]] | None = None,
-        _release_capture_lock: Callable[[], None] | None = None,
-        _resolved_whitener: Any | None = None,
-        emit_event: bool = True,
-        dls: bool = True,
-    ):
-        """Fit (or load from cache) a manifold for the session's model.
-
-        ``folder`` is a manifold pack directory — either authored (the
-        user supplied a domain spec + per-node coordinates) or
-        discover-mode (the user supplied only labeled node corpora; the
-        coords are derived per-model via
-        :func:`drowse.geometry.topology.discover_coords`).  Returns a
-        :class:`~drowse.geometry.manifold.Manifold`.
-
-        A cache hit — the per-model tensor exists and its sidecar
-        ``nodes_sha256`` still matches the folder's current state —
-        short-circuits the forward passes.  For discover-mode folders
-        the staleness key folds in ``fit_mode`` + ``hyperparams``, so
-        a refit with different hyperparameters reliably misses cache.
-        ``force=True`` bypasses the cache and re-pools/re-fits unconditionally
-        — the discover/multi-node analogue of ``manifold extract -f`` (which
-        forces a refit by re-authoring the corpus); without it a code change to
-        the fit itself, e.g. a topology-selection fix, can't be picked up while
-        the corpus is unchanged.
-        """
-        from drowse.geometry.manifold import (
-            Manifold,
-            compute_manifold_node_stats,
-            compute_store_reduced_covariances,
-            fit_affine_subspace,
-            fit_layer_subspace,
-            fit_sigma_field,
-            invert_parameterization,
-            prepare_rbf_fit_plan,
-            subspace_share,
-        )
-        from drowse.geometry.topology import neutral_layout_coord
-        from drowse.fit.capture import compute_dls_axes
-        from drowse.store.manifolds import ManifoldFolder, ManifoldSidecar
-        from drowse.errors import SaeCoverageError
-        from drowse.geometry.whitener import WhitenerError
-
-        def _progress(msg: str) -> None:
-            if on_progress:
-                on_progress(msg)
-
         if sae_revision is not None and sae is None:
             raise ValueError("sae_revision requires an SAE release")
-        fit_started = time.perf_counter()
-        mf = (
-            _snapshot_mf if _snapshot_mf is not None
-            else ManifoldFolder.load(pathlib.Path(folder), verify_manifest=False)
+        progress = on_progress or (lambda _message: None)
+        started = time.perf_counter()
+        folder = Path(folder)
+        release = sae if isinstance(sae, str) else (
+            sae.release if sae is not None else None
         )
-        nodes_sha = _snapshot_nodes_sha or mf.nodes_sha256()
-        model = self._handle.model
-        layers = self._handle.layers
-        n_layers = len(layers)
-        requested_fit_layers = resolve_fit_layer_indices(layer_indices, n_layers)
-        model_fingerprint = (
-            _model_fingerprint
-            if _model_fingerprint is not None
-            else loaded_model_fingerprint(model, self._handle.model_id)
+        target = folder / tensor_filename(self._handle.model_id, release=release)
+        with fit_target_lock(folder, target):
+            snapshot = take_authoring_snapshot(
+                folder, target, fit_mode=fit_mode, hyperparams=hyperparams,
+                default_prompts=_default_prompts,
+            )
+            return self._fit_snapshot(
+                snapshot, target, sae=sae, sae_revision=sae_revision,
+                layer_indices=layer_indices, force=force, progress=progress,
+                emit_event=emit_event, dls=dls, started=started,
+            )
+
+    def _fit_snapshot(
+        self,
+        snapshot: AuthoringSnapshot,
+        target: Path,
+        *,
+        sae: str | SaeBackend | None,
+        sae_revision: str | None,
+        layer_indices: "Sequence[int] | str | None",
+        force: bool,
+        progress: Callable[[str], None],
+        emit_event: bool,
+        dls: bool,
+        started: float,
+    ) -> "Manifold":
+        """Everything after the authoring snapshot, under the target lock."""
+        folder = target.parent
+        inputs = self._fit_inputs(
+            snapshot, target, sae=sae, sae_revision=sae_revision,
+            layer_indices=layer_indices,
         )
+        if not force:
+            cached = load_published_fit(folder, target, inputs.accepts)
+            if cached is not None:
+                assert_authoring_revision(
+                    folder, target, snapshot.revision, _default_prompts,
+                )
+                progress(f"Loaded cached manifold '{inputs.manifold.name}'.")
+                if emit_event:
+                    self._events.emit(ManifoldExtracted(
+                        name=inputs.manifold.name, manifold=cached,
+                        metadata=dict(cached.metadata),
+                    ))
+                return cached
 
-        # Resolve string requests through SAELens metadata before accepting a
-        # hit: transform identity is part of the cache key. Registry/import
-        # work is therefore allowed here, but the backend remains one-layer
-        # lazy and no SAE weights are loaded on a valid fitted-tensor hit.
-        sae_backend: SaeBackend | None
-        sae_release: str | None
-        if sae is None:
-            sae_backend = None
-            sae_release = None
-        elif isinstance(sae, str):
-            sae_backend = None
-            sae_release = sae
-        else:
-            sae_backend = sae
-            sae_release = sae.release
+        fit_layers = self._fit_layers(inputs)
+        self._require_neutral_baseline(inputs.manifold.name, fit_layers)
+        captured = self._capture(inputs, fit_layers, force=force, progress=progress)
+        try:
+            manifold, metadata = self._fit_geometry(
+                inputs, captured, fit_layers, dls=dls, progress=progress,
+            )
+        finally:
+            captured.close()
+        publish_fit_if_current(
+            folder, expected_revision=snapshot.revision, manifold=manifold,
+            tensor_path=target, metadata=metadata,
+            default_prompts=_default_prompts,
+        )
+        manifold.metadata.update(metadata)
+        if emit_event:
+            self._events.emit(ManifoldExtracted(
+                name=manifold.name, manifold=manifold, metadata=metadata,
+            ))
+        progress(f"Fit complete in {time.perf_counter() - started:.1f}s.")
+        return manifold
 
+    # -- stage 1: inputs -----------------------------------------------------
+
+    def _fit_inputs(
+        self,
+        snapshot: AuthoringSnapshot,
+        tensor_path: Path,
+        *,
+        sae: str | SaeBackend | None,
+        sae_revision: str | None,
+        layer_indices: "Sequence[int] | str | None",
+    ) -> FitInputs:
+        handle = self._handle
+        model = handle.model
+        model_fingerprint = loaded_model_fingerprint(model, handle.model_id)
+        # A string release resolves through SAELens metadata before a hit is
+        # accepted (transform identity is part of the key); the backend stays
+        # one-layer lazy, so a valid hit loads no SAE weights.
+        backend: SaeBackend | None
         if isinstance(sae, str):
             from drowse.sae.backend import load_sae_backend
 
-            sae_backend = load_sae_backend(
-                sae,
-                revision=sae_revision,
-                model_id=self._handle.model_id,
-                device=self._handle.device,
+            backend = load_sae_backend(
+                sae, revision=sae_revision, model_id=handle.model_id,
+                device=handle.device,
             )
-        sae_fingerprint = (
-            getattr(sae_backend, "fingerprint", None)
-            if sae_backend is not None else None
+            key_revision = sae_revision
+        else:
+            backend = sae
+            key_revision = sae.revision if sae is not None else None
+        identity = prepare_manifold_capture_identity(
+            handle, snapshot.manifold, model_fingerprint,
+            node_groups=snapshot.node_groups,
+            baseline_prompts=snapshot.baseline_prompts,
         )
-
-        tensor_path = pathlib.Path(folder) / tensor_filename(
-            self._handle.model_id, release=sae_release,
-        )
-
-        # Compute the token-exact capture identity before accepting the final
-        # tensor cache.  Source-text hashes alone miss baseline-prompt edits and
-        # tokenizer/chat-template changes; both alter the actual residuals even
-        # when the authored node files are byte-identical.
-        prepared_identity = (
-            _prepared_identity
-            if _prepared_identity is not None
-            else prepare_manifold_capture_identity(
-                self._handle, mf, model_fingerprint,
-                node_groups_snapshot=_node_groups_snapshot,
-                baseline_prompts_snapshot=_baseline_prompts_snapshot,
-            )
-        )
-        (
-            node_groups, baseline_prompts, prepared_rows, capture_sha,
-            node_roles, node_kinds, model_type,
-            capture_render_sha, baseline_prompts_sha,
-        ) = prepared_identity
-        # The exact source identity the loader proved for these weights (set by
-        # ``_load_with_fallbacks``).  Stamping the fit with it is what lets a
-        # later ``model_source_fingerprint(model_id)`` recompute prove, off-model,
-        # that the checkpoint behind this tensor is still the one on disk.
-        base_model = getattr(model, "_orig_mod", model)
-        model_source_fp = getattr(
-            base_model, "_drowse_source_fingerprint", None,
-        )
-        if not isinstance(model_source_fp, str) or not model_source_fp:
-            model_source_fp = None
-        tokenizer = self._handle.tokenizer
-        device = self._handle.device
-        K = len(node_groups)
-        any_role = any(r is not None for r in node_roles)
-        any_kind = any(k is not None for k in node_kinds)
-        if any_role and sae is not None:
+        if backend is not None and any(r is not None for r in identity.node_roles):
             raise ValueError(
                 "SAE-backed and role-baselined manifold fits are mutually exclusive"
             )
-
-        # Cache hit: tensor present + every fit-affecting input unchanged.
-        # ``nodes_sha256`` folds in the corpus, plus either the domain
-        # spec + node coords (authored) or the fit_mode + hyperparams
-        # (discover); ``sae_revision`` is the SAE the centroids are
-        # reconstructed through and does not ride the filename, so it is
-        # checked here or a stale tensor is served.
-        sidecar_path = tensor_path.with_suffix(".json")
-        cached_revision = (
-            sae_revision if isinstance(sae, str)
-            else sae_backend.revision if sae_backend is not None
-            else None
+        source_fp = getattr(
+            getattr(model, "_orig_mod", model), "_drowse_source_fingerprint", None,
         )
-        cached_manifold: Manifold | None = None
-        if not force and not _verified_cache_miss:
-            from drowse.store.manifold_tensors import _load_manifold_locked
-            from drowse.store.manifold_folder import manifold_pair_lock
-            from drowse.base.integrity import verify_integrity
+        return FitInputs(
+            snapshot=snapshot,
+            identity=identity,
+            tensor_path=tensor_path,
+            model_fingerprint=model_fingerprint,
+            model_source_fingerprint=(
+                source_fp if isinstance(source_fp, str) and source_fp else None
+            ),
+            requested_layers=resolve_fit_layer_indices(
+                layer_indices, len(handle.layers),
+            ),
+            layer_scope_explicit=layer_indices is not None,
+            sae_backend=backend,
+            sae_revision=key_revision,
+        )
 
-            # Clear/rm/refresh take the folder lock and then this same stable
-            # pair lock.  The fast path deliberately takes only the pair lock:
-            # it proves the *current* manifest pair, reads the sidecar, and
-            # loads the tensor in one transaction, then releases it before the
-            # authoring-CAS check takes the folder lock.  This avoids both the
-            # old proof->load deletion window and a folder/pair lock inversion.
-            with manifold_pair_lock(tensor_path):
-                try:
-                    with open(pathlib.Path(folder) / "manifold.json") as handle:
-                        current_manifest = json.load(handle)
-                    current_files = current_manifest.get("files", {})
-                    expected_target_files = {
-                        name: current_files[name]
-                        for name in (tensor_path.name, sidecar_path.name)
-                        if isinstance(current_files, dict) and name in current_files
-                    }
-                    pair_ok = (
-                        len(expected_target_files) == 2
-                        and tensor_path.exists()
-                        and sidecar_path.exists()
-                        and verify_integrity(
-                            pathlib.Path(folder), expected_target_files,
-                        )[0]
-                    )
-                    sc = ManifoldSidecar.load(sidecar_path) if pair_ok else None
-                except (OSError, json.JSONDecodeError, KeyError, ValueError):
-                    sc = None
-                if (
-                    sc is not None
-                    and sc.nodes_sha256 == nodes_sha
-                    and sc.sae_release == sae_release
-                    and (
-                        sae_release is None
-                        or (
-                            sae_fingerprint is not None
-                            and sc.sae_fingerprint == sae_fingerprint
-                        )
-                    )
-                    and (
-                        sc.sae_revision == cached_revision
-                        if cached_revision is not None or sae_release is None
-                        else True
-                    )
-                    and sc.model_fingerprint == model_fingerprint
-                    and sc.capture_sha256 == capture_sha
-                    and sc.fit_policy_version == MANIFOLD_FIT_POLICY_VERSION
-                    and (
-                        sc.evaluated_layers == requested_fit_layers
-                        if sae_release is None or layer_indices is not None
-                        else sc.sae_full_coverage
-                    )
-                ):
-                    cached_manifold = _load_manifold_locked(
-                        tensor_path, verify_manifest=False,
-                    )
-        if cached_manifold is not None:
-            _assert_authoring_revision(
-                pathlib.Path(folder), tensor_path,
-                _authoring_revision or nodes_sha,
-            )
-            # A process may have replaced the capture pointer and then died
-            # before generation GC. The fitted tensor fast path normally never
-            # enters the capture transaction, so opportunistically finish only
-            # when a recovery journal is actually present.
-            if capture_sha is not None:
-                capture_dir = (
-                    model_dir(self._handle.model_id) / "manifold_capture"
-                )
-                try:
-                    if any(capture_dir.glob(f"{capture_sha}.pending-*.json")):
-                        from drowse.base.atomic import artifact_lock
+    def _fit_layers(self, inputs: FitInputs) -> list[int]:
+        """The layers to fit — validated against SAE coverage before any capture."""
+        backend = inputs.sae_backend
+        if backend is None:
+            return inputs.requested_layers
+        from drowse.errors import SaeCoverageError
 
-                        with artifact_lock(capture_dir / capture_sha):
-                            _recover_capture_generation(
-                                capture_dir, capture_sha,
-                                capture_dir / f"{capture_sha}.json",
-                                [len(responses) for _label, responses in node_groups],
-                            )
-                except (OSError, RuntimeError, ValueError) as exc:
-                    _progress(f"Activation capture cache cleanup skipped: {exc}")
-            _progress(f"Loaded cached manifold '{mf.name}'.")
-            if emit_event:
-                self._events.emit(ManifoldExtracted(
-                    name=mf.name, manifold=cached_manifold,
-                    metadata=dict(cached_manifold.metadata),
-                ))
-            return cached_manifold
-
-        # SAE coverage — fail-fast.  Validate the fit-layer set here, before
-        # the expensive per-node centroid pooling, so an SAE release that
-        # covers none of the model's layers errors immediately instead of
-        # after K node passes.
-        if sae_backend is not None:
-            covered = set(sae_backend.layers) & set(range(n_layers))
-            if layer_indices is not None:
-                missing = sorted(set(requested_fit_layers) - covered)
-                if missing:
-                    raise SaeCoverageError(
-                        f"SAE release {sae_backend.release!r} does not cover "
-                        f"requested layers {missing}"
-                    )
-                fit_layers = requested_fit_layers
-            else:
-                fit_layers = sorted(covered)
-            if not fit_layers:
+        covered = set(backend.layers) & set(range(len(self._handle.layers)))
+        if inputs.layer_scope_explicit:
+            missing = sorted(set(inputs.requested_layers) - covered)
+            if missing:
                 raise SaeCoverageError(
-                    f"SAE release {sae_backend.release!r} covers no layers "
-                    f"of {self._handle.model_id}"
+                    f"SAE release {backend.release!r} does not cover "
+                    f"requested layers {missing}"
                 )
-            feature_space = f"sae-{sae_backend.release}"
-        else:
-            fit_layers = requested_fit_layers
-            feature_space = "raw"
+            return inputs.requested_layers
+        if not covered:
+            raise SaeCoverageError(
+                f"SAE release {backend.release!r} covers no layers "
+                f"of {self._handle.model_id}"
+            )
+        return sorted(covered)
 
-        # The Mahalanobis metric is mandatory for every activation-space fit.
-        # Resolve/gate it only after the fitted-tensor fast path and SAE coverage
-        # checks, but before entering the capture-cache transaction: otherwise a
-        # missing/partial neutral cache fails only after the dominant model pass
-        # has already pooled every manifold response.
-        maha_whitener = _resolved_whitener
-        if maha_whitener is None:
-            maha_whitener = self._handle.whitener
-        if maha_whitener is None or not maha_whitener.covers_all(fit_layers):
+    def _require_neutral_baseline(self, name: str, fit_layers: list[int]) -> None:
+        """Gate the mandatory whitener + neutral means before the model pass."""
+        from drowse.geometry.whitener import WhitenerError
+
+        whitener = self._handle.whitener
+        if whitener is None or not whitener.covers_all(fit_layers):
             raise WhitenerError(
-                f"manifold {mf.name!r}: the Mahalanobis whitener must cover "
+                f"manifold {name!r}: the Mahalanobis whitener must cover "
                 f"every fit layer (regenerate the neutral activation cache "
                 f"for {self._handle.model_id!r})"
             )
-        layer_means = self._handle.layer_means
-        missing_means = sorted(set(fit_layers) - set(layer_means))
-        if missing_means:
+        missing = sorted(set(fit_layers) - set(self._handle.layer_means))
+        if missing:
             raise WhitenerError(
-                f"manifold {mf.name!r}: neutral layer means must cover every "
-                f"fit layer (missing {missing_means})"
+                f"manifold {name!r}: neutral layer means must cover every "
+                f"fit layer (missing {missing})"
             )
 
-        # Capture payloads are shared per model and token identity, not per
-        # manifold folder. Re-enter once with an explicitly releasable stem
-        # transaction: cache read/top-up/publish is exclusive, then downstream
-        # fitting runs under a process lease that prune/GC observes. Passing an
-        # already-resolved SAE backend avoids a second registry resolution.
-        if capture_sha is not None and not _capture_lock_held:
-            from drowse.base.atomic import (
-                ReleasableArtifactLock,
-                artifact_process_lease,
-            )
+    # -- stage 2: capture ----------------------------------------------------
 
-            capture_lock_stem = (
-                model_dir(self._handle.model_id)
-                / "manifold_capture"
-                / capture_sha
+    def _capture(
+        self,
+        inputs: FitInputs,
+        fit_layers: list[int],
+        *,
+        force: bool,
+        progress: Callable[[str], None],
+    ) -> _Captured:
+        """Cached centroids (+ rows) for every fit layer, topping up misses.
+
+        Response rows are retained only when the fit may come out curved and
+        raw.  A pinned-curved fit captures and persists missing rows up front,
+        sharing the centroid pass; ``auto`` spools rows only alongside missing
+        centroids and leaves persistence and any gap to :meth:`_curved_rows`,
+        so a fit that resolves flat never writes its speculative spool.
+        ``force`` treats the selected layers as misses.
+        """
+        ident = inputs.identity
+        mode = inputs.manifold.fit_mode
+        cache = CaptureCache(
+            self._handle.model_id, ident.capture_sha256, ident.node_sizes,
+        )
+        retain_rows = inputs.sae_backend is None and mode in _ROW_CONSUMING_MODES
+        with cache.capturing():
+            stacks = {} if force else cache.load_centroids(fit_layers)
+            rows = (
+                cache.load_rows(sorted(stacks))
+                if retain_rows and not force else None
             )
-            transaction = ReleasableArtifactLock(capture_lock_stem).acquire()
-            lease_context = artifact_process_lease(capture_lock_stem)
-            lease_entered = False
-            try:
-                lease_context.__enter__()
-                lease_entered = True
-                manifold = self._fit_locked(
-                    folder,
-                    sae=(sae_backend if isinstance(sae, str) else sae),
-                    sae_revision=sae_revision,
-                    layer_indices=layer_indices,
-                    force=force,
-                    on_progress=on_progress,
-                    _capture_lock_held=True,
-                    _prepared_identity=prepared_identity,
-                    _model_fingerprint=model_fingerprint,
-                    _verified_cache_miss=True,
-                    _snapshot_mf=mf,
-                    _snapshot_nodes_sha=nodes_sha,
-                    _authoring_revision=_authoring_revision,
-                    _node_groups_snapshot=_node_groups_snapshot,
-                    _baseline_prompts_snapshot=_baseline_prompts_snapshot,
-                    _release_capture_lock=transaction.release,
-                    _resolved_whitener=maha_whitener,
-                    emit_event=emit_event,
-                    dls=dls,
+            durable_rows = set(rows.layer_indices) if rows is not None else set()
+            needed = set(fit_layers) - set(stacks)
+            if retain_rows and mode != "auto":
+                needed |= set(fit_layers) - durable_rows
+            if needed:
+                fresh, new_rows = self._run_capture(
+                    ident, sorted(needed), retain_rows=retain_rows,
+                    progress=progress,
                 )
-            finally:
-                # The inner cache stage normally releases early. Reacquire before
-                # removing the lease marker so creation/removal and prune's live-
-                # lease decision are all ordered by the same stem transaction.
-                transaction.acquire()
+                stacks.update(fresh)
+                rows = _union_rows(rows, new_rows)
                 try:
-                    if lease_entered:
-                        lease_context.__exit__(None, None, None)
-                finally:
-                    transaction.release()
-            # Eviction must run after this stem transaction is fully complete.
-            # The pruner takes victim locks one at a time; calling it while the
-            # current stem were held would permit cross-stem lock inversion.
-            try:
-                _prune_manifold_capture_cache(
-                    capture_lock_stem.parent, keep_stem=capture_sha,
-                )
-            except (OSError, RuntimeError, ValueError) as exc:
-                # Cache eviction is advisory.  The fitted tensor and its capture
-                # group are already durably published; a prune failure must not
-                # turn successful model work into a failed fit.
-                _progress(f"Activation capture cache prune skipped: {exc}")
-            return manifold
+                    cache.save_centroids(fresh)
+                    if new_rows is not None and mode != "auto":
+                        cache.save_rows(new_rows, new_rows.layer_indices)
+                        durable_rows.update(new_rows.layer_indices)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    # The capture is resident and valid; a cache write failure
+                    # costs the next fit a recapture, never this fit.
+                    progress(f"Activation capture cache write skipped: {exc}")
+            elif fit_layers:
+                progress("Reusing token-exact manifold activation capture cache...")
+        try:
+            cache.prune()
+        except OSError as exc:
+            progress(f"Activation capture cache prune skipped: {exc}")
+        return _Captured(cache, stacks, rows, durable_rows)
 
-        # 1. Per-node centroids (one forward pass per response) — shared
-        #    between authored and discover paths.  Conversational (4.0 / A2):
-        #    each node corpus is a list of in-character responses to the shared
-        #    baseline prompts, pooled as ``[user: prompt, assistant: response]``
-        #    pairs (response[i] -> prompt[i % k]).  Per-node role rides through
-        #    ``compute_manifold_node_stats`` only when set (persona-baselined fit);
-        #    a ``None`` role pools under the standard assistant (swap-back)
-        #    baseline.
-        # Curved raw fits need within-node reduced covariance
-        # after the basis exists to fit the fuzzy sigma field.  Retain the
-        # first-pass per-response rows in a temporary mmap-backed layer-major
-        # spool.  Auto participates too: a resolved-flat fit deletes the spool,
-        # while auto-curved avoids repeating every model forward.  The spool
-        # keeps source dtype, so speculative auto retention costs bounded RSS
-        # and half the disk traffic for fp16/bf16 models.
-        retain_node_rows = (
-            sae_backend is None and mf.fit_mode in {"authored", "spectral", "auto"}
+    def _run_capture(
+        self,
+        ident: CaptureIdentity,
+        layers: list[int],
+        *,
+        retain_rows: bool,
+        progress: Callable[[str], None],
+    ) -> tuple[dict[int, torch.Tensor], "ActivationRowStore | None"]:
+        """One fit-wide batched model pass over every node row."""
+        from drowse.fit.capture import _ReusablePooledCapture
+        from drowse.geometry.manifold import compute_manifold_node_stats
+
+        handle = self._handle
+        started = time.perf_counter()
+        n_rows = sum(ident.node_sizes)
+        progress(
+            f"Pooling {len(ident.node_groups)} nodes in fit-wide batches "
+            f"({n_rows} responses, layers {layers})..."
         )
-        # Capture identity is deliberately narrower than ``nodes_sha``: geometry
-        # and fit hyperparameters do not change residual activations. Hash the
-        # actual rendered token rows + pool positions, node partition, and a
-        # loaded-model fingerprint so ordinary geometry/smoothing/layer-scope
-        # refits can reuse or top up capture without trusting raw source text or
-        # tokenizer identity.
-        capture_dir = model_dir(self._handle.model_id) / "manifold_capture"
-        cache_stem = (
-            capture_sha if capture_sha is not None else None
-        )
-        cache_meta = (
-            capture_dir / f"{cache_stem}.json"
-            if cache_stem is not None else None
-        )
-        node_sizes = [len(responses) for _label, responses in node_groups]
-        stacks_cached: dict[int, torch.Tensor] = {}
-        cached_rows = None
-        centroid_layers: set[int] = set()
-        row_layers: set[int] = set()
-        loaded_row_layers: set[int] = set()
-        cached_centroid_files: dict[str, str] = {}
-        cached_row_files: dict[str, str] = {}
-        cached_file_digests: dict[str, str] = {}
-        cached_centroid_shapes: dict[str, object] = {}
-        cached_row_shapes: dict[str, object] = {}
-        cached_row_dtypes: dict[str, object] = {}
-        cached_row_digests: dict[str, object] = {}
-        if cache_meta is not None:
-            assert cache_stem is not None
-            _recover_capture_generation(
-                capture_dir, cache_stem, cache_meta, node_sizes,
+        with _ReusablePooledCapture(handle.model, handle.layers, layers) as context:
+            centroids, rows = compute_manifold_node_stats(
+                handle.model, handle.tokenizer, handle.layers, handle.device,
+                ident.node_groups, ident.baseline_prompts,
+                roles=ident.node_roles, model_type=ident.model_type,
+                layer_indices=layers, retain_rows=retain_rows,
+                prepared_rows=ident.prepared_rows,
+                capture_context=context,
             )
-        # Always read a valid v4 pointer, including on force.  Force invalidates
-        # only the selected fit layers; unselected immutable shards remain part
-        # of the durable union and must not be silently unlinked by a scoped fit.
-        if cache_meta is not None and cache_meta.exists():
-            try:
-                from drowse.store.manifold_tensors import ActivationRowStore
-                from drowse.base.integrity import verify_integrity
-
-                with open(cache_meta) as handle:
-                    meta = json.load(handle)
-                format_version = int(meta.get("format_version", 0))
-                if format_version != _CAPTURE_CACHE_FORMAT_VERSION:
-                    raise ValueError("capture cache format mismatch")
-                if (
-                    meta.get("capture_sha256") != capture_sha
-                    or [int(size) for size in meta.get("node_sizes", [])] != node_sizes
-                ):
-                    raise ValueError("capture cache metadata identity mismatch")
-                cache_files = dict(meta.get("files", {}))
-                cached_file_digests = {
-                    str(filename): str(digest)
-                    for filename, digest in cache_files.items()
-                }
-                centroid_layers = {
-                    int(idx) for idx in meta.get("centroid_layers", [])
-                }
-                row_layers = {int(idx) for idx in meta.get("row_layers", [])}
-                loaded_row_layers = set(row_layers)
-                cached_centroid_files = dict(meta.get("centroid_files", {}))
-                cached_row_files = dict(meta.get("row_files", {}))
-                cached_centroid_shapes = dict(meta.get("centroid_shapes", {}))
-                cached_row_shapes = dict(meta.get("row_shapes", {}))
-                cached_row_dtypes = dict(meta.get("row_dtypes", {}))
-                cached_row_digests = dict(meta.get("row_tensor_sha256", {}))
-                assert cache_stem is not None
-                if any(
-                    str(idx) not in cached_centroid_files
-                    or str(idx) not in cached_centroid_shapes
-                    or cached_centroid_files.get(str(idx)) not in cache_files
-                    or not _capture_shard_name_matches(
-                        cached_centroid_files.get(str(idx)),
-                        cache_stem, "centroids", idx,
-                    )
-                    for idx in centroid_layers
-                ) or any(
-                    str(idx) not in cached_row_files
-                    or str(idx) not in cached_row_shapes
-                    or str(idx) not in cached_row_dtypes
-                    or str(idx) not in cached_row_digests
-                    or not _capture_shard_name_matches(
-                        cached_row_files.get(str(idx)),
-                        cache_stem, "rows", idx,
-                    )
-                    for idx in row_layers
-                ):
-                    raise ValueError("capture cache metadata omits layer shards")
-                if not row_layers <= centroid_layers:
-                    raise ValueError("row-cache layers exceed centroid coverage")
-
-                if force:
-                    forced = set(fit_layers)
-                    centroid_layers.difference_update(forced)
-                    row_layers.difference_update(forced)
-
-                # Verify and load only the layers this fit can consume.  A bad
-                # selected shard invalidates that layer, not unrelated durable
-                # coverage, so the capture pass tops up exactly the damage.
-                for idx in sorted(centroid_layers & set(fit_layers)):
-                    filename = cached_centroid_files[str(idx)]
-                    path = capture_dir / filename
-                    expected_file_digest = cache_files.get(filename, "")
-                    ok, _bad = verify_integrity(
-                        capture_dir, {filename: expected_file_digest},
-                    )
-                    if not ok:
-                        centroid_layers.discard(idx)
-                        row_layers.discard(idx)
-                        continue
-                    try:
-                        shard = load_file(str(path), device="cpu")
-                        key = f"layer_{idx}"
-                        if set(shard) != {key}:
-                            raise ValueError("centroid shard key mismatch")
-                        value = shard[key].to(torch.float32)
-                        if (
-                            cached_centroid_shapes.get(str(idx)) != list(value.shape)
-                            or value.ndim != 2 or int(value.shape[0]) != K
-                            or not bool(torch.isfinite(value).all())
-                        ):
-                            raise ValueError("centroid shard shape/finite mismatch")
-                        stacks_cached[idx] = value
-                    except (OSError, RuntimeError, ValueError, KeyError):
-                        centroid_layers.discard(idx)
-                        row_layers.discard(idx)
-
-                if row_layers and retain_node_rows:
-                    selected_row_layers = sorted(row_layers & set(fit_layers))
-                    if selected_row_layers:
-                        valid_stores: list[ActivationRowStore] = []
-                        for idx in selected_row_layers:
-                            path = capture_dir / cached_row_files[str(idx)]
-                            row_store: ActivationRowStore | None = None
-                            try:
-                                row_store = ActivationRowStore.load_shards(
-                                    {idx: path}, node_sizes,
-                                )
-                                if not _row_tensor_matches_cache_metadata(
-                                    path, idx, row_store.flat_rows(idx),
-                                    expected_shape=cached_row_shapes.get(str(idx)),
-                                    expected_dtype=cached_row_dtypes.get(str(idx)),
-                                    expected_digest=cached_row_digests.get(str(idx)),
-                                ):
-                                    raise ValueError(
-                                        "row cache metadata shape/dtype mismatch"
-                                    )
-                                valid_stores.append(row_store)
-                                row_store = None  # ownership moved to valid_stores
-                            except (OSError, RuntimeError, ValueError, KeyError):
-                                if row_store is not None:
-                                    row_store.close()
-                                row_layers.discard(idx)
-                        if len(valid_stores) > 1:
-                            cached_rows = ActivationRowStore.combine_disjoint(
-                                valid_stores,
-                            )
-                        elif valid_stores:
-                            cached_rows = valid_stores[0]
-                loaded_row_layers = set(row_layers)
-            except (
-                OSError, RuntimeError, ValueError, KeyError,
-                json.JSONDecodeError, TypeError,
-            ):
-                stacks_cached = {}
-                centroid_layers = set()
-                row_layers = set()
-                loaded_row_layers = set()
-                cached_centroid_files = {}
-                cached_row_files = {}
-                cached_file_digests = {}
-                cached_centroid_shapes = {}
-                cached_row_shapes = {}
-                cached_row_dtypes = {}
-                cached_row_digests = {}
-                if cached_rows is not None:
-                    cached_rows.close()
-                    cached_rows = None
-
-        needed_layers = set(fit_layers) - centroid_layers
-        if retain_node_rows and mf.fit_mode != "auto":
-            needed_layers |= set(fit_layers) - row_layers
-        capture_layers = sorted(needed_layers)
-        new_rows = None
-        if capture_layers:
-            capture_started = time.perf_counter()
-            _progress(
-                f"Pooling {len(node_groups)} nodes in fit-wide batches "
-                f"({sum(node_sizes)} responses, layers {capture_layers})..."
-            )
-            from drowse.fit.capture import _ReusablePooledCapture
-
-            # Protocol-only test/dummy handles can expose opaque layer
-            # sentinels while monkeypatching the encoder seam.  Production HF
-            # blocks are Modules; only they can host the fit-scoped reusable
-            # hooks.  The null context preserves that explicit encoder seam.
-            reusable = all(
-                hasattr(layers[idx], "register_forward_hook")
-                for idx in capture_layers
-            )
-            capture_scope = (
-                _ReusablePooledCapture(model, layers, capture_layers)
-                if reusable else nullcontext(None)
-            )
-            with capture_scope as capture_context:
-                newly_captured, new_rows = compute_manifold_node_stats(
-                    model, tokenizer, layers, device, node_groups, baseline_prompts,
-                    roles=node_roles, model_type=model_type,
-                    layer_indices=capture_layers, retain_rows=retain_node_rows,
-                    prepared_rows=prepared_rows,
-                    capture_context=capture_context,
-                )
-            for idx in capture_layers:
-                stacks_cached[idx] = newly_captured[idx].to(
-                    torch.float32,
-                ).contiguous()
-            # ``to(...).contiguous()`` aliases an already-contiguous fp32
-            # capture. Drop the producer mapping now so SAE reconstruction can
-            # release each raw layer as soon as its decoded replacement exists.
-            del newly_captured
-            centroid_layers.update(capture_layers)
-            capture_elapsed = time.perf_counter() - capture_started
-            _progress(
-                f"Captured {sum(node_sizes)} rows across "
-                f"{len(capture_layers)} layers in "
-                f"{capture_elapsed:.1f}s."
-            )
-        elif fit_layers:
-            _progress("Reusing token-exact manifold activation capture cache...")
-
-        retained_rows = None
-        captured_row_layers = (
-            set(new_rows.layer_indices) if new_rows is not None else set()
-        )
-        if retain_node_rows:
-            from drowse.store.manifold_tensors import ActivationRowStore
-
-            if cached_rows is not None and new_rows is None:
-                retained_rows = cached_rows
-                cached_rows = None
-            elif new_rows is not None and cached_rows is None:
-                retained_rows = new_rows
-                new_rows = None
-            else:
-                assert cached_rows is not None and new_rows is not None
-                retained_rows = ActivationRowStore.combine_disjoint(
-                    [cached_rows, new_rows],
-                )
-                cached_rows = None
-                new_rows = None
-
-        if capture_layers and cache_stem is not None and cache_meta is not None:
-            try:
-                capture_dir.mkdir(parents=True, exist_ok=True)
-                persist_rows_now = mf.fit_mode != "auto"
-                parent_pointer_sha256 = _capture_pointer_sha256(cache_meta)
-                generation = uuid.uuid4().hex
-                files = {
-                    cached_centroid_files[str(idx)]: cached_file_digests[
-                        cached_centroid_files[str(idx)]
-                    ]
-                    for idx in centroid_layers
-                    if (
-                        str(idx) in cached_centroid_files
-                        and cached_centroid_files[str(idx)] in cached_file_digests
-                    )
-                }
-                for idx in capture_layers:
-                    centroid_path = _centroid_shard_path(
-                        capture_dir, cache_stem, idx, generation=generation,
-                    )
-                    digest = _save_safetensors_atomic(
-                        {f"layer_{idx}": stacks_cached[idx]}, centroid_path,
-                        digest=True,
-                    )
-                    assert digest is not None
-                    cached_centroid_files[str(idx)] = centroid_path.name
-                    cached_centroid_shapes[str(idx)] = list(
-                        stacks_cached[idx].shape,
-                    )
-                    files[centroid_path.name] = digest
-
-                if persist_rows_now and retained_rows is not None:
-                    for idx in sorted(captured_row_layers):
-                        row_path = _row_shard_path(
-                            capture_dir, cache_stem, idx, generation=generation,
-                        )
-                        rows = retained_rows.flat_rows(idx)
-                        row_digest = _save_row_safetensors_atomic(
-                            f"layer_{idx}", rows, row_path,
-                        )
-                        cached_row_files[str(idx)] = row_path.name
-                        cached_row_shapes[str(idx)] = list(rows.shape)
-                        cached_row_dtypes[str(idx)] = str(rows.dtype)
-                        cached_row_digests[str(idx)] = row_digest
-                    row_layers.update(captured_row_layers)
-                metadata_row_layers = (
-                    sorted(row_layers) if persist_rows_now
-                    else sorted(loaded_row_layers)
-                )
-                payload: dict[str, object] = {
-                    "format_version": _CAPTURE_CACHE_FORMAT_VERSION,
-                    "capture_sha256": capture_sha,
-                    "node_sizes": node_sizes,
-                    "centroid_layers": sorted(centroid_layers),
-                    "row_layers": metadata_row_layers,
-                    "centroid_files": {
-                        str(idx): cached_centroid_files[str(idx)]
-                        for idx in sorted(centroid_layers)
-                    },
-                    "row_files": {
-                        str(idx): cached_row_files[str(idx)]
-                        for idx in metadata_row_layers
-                    },
-                    "centroid_shapes": {
-                        str(idx): cached_centroid_shapes[str(idx)]
-                        for idx in sorted(centroid_layers)
-                    },
-                    "row_shapes": {
-                        str(idx): cached_row_shapes[str(idx)]
-                        for idx in metadata_row_layers
-                    },
-                    "row_dtypes": {
-                        str(idx): cached_row_dtypes[str(idx)]
-                        for idx in metadata_row_layers
-                    },
-                    "row_tensor_sha256": {
-                        str(idx): cached_row_digests[str(idx)]
-                        for idx in metadata_row_layers
-                    },
-                    "files": files,
-                }
-                _commit_capture_generation(
-                    capture_dir, cache_stem, cache_meta, payload,
-                    generation=generation,
-                    parent_pointer_sha256=parent_pointer_sha256,
-                )
-            except (OSError, RuntimeError, ValueError) as exc:
-                # The fit result is already in memory and remains valid. A cache
-                # write failure must not turn successful model work into a
-                # failed fit; next run simply captures again.
-                _progress(f"Activation capture cache write skipped: {exc}")
-
-        # Centroid tensors are resident and row payloads are protected by the
-        # process lease from this point onward.  Hand the short cache transaction
-        # lock back before topology/PCA/RBF/covariance work; prune/GC observes the
-        # lease until this fit returns (including exceptional returns).
-        if _release_capture_lock is not None:
-            _release_capture_lock()
-
-        # 1b. Monopolar (concept-vs-neutral).  A 1-node ``pca`` folder has no
-        #     second pole to span an affine subspace, so it can only mean one
-        #     thing: the concept against the **neutral baseline**.  Its steering
-        #     direction is the displacement of the single concept centroid from
-        #     the model's neutral activation mean ν (``layer_means``) — sourced
-        #     fresh per model, never a stored corpus — folded into a 1-node
-        #     neutral-anchored ray via :func:`fold_directions_to_subspace` (the
-        #     same primitive ``merge`` uses).  No discover-coords, no DLS, no
-        #     synthetic second node; ``concept − ν`` already cancels common-mode
-        #     like DiM, so the raw δ̂ basis is appropriate.  The engine
-        #     recognizes the shape structurally (a flat ``pca`` fit otherwise
-        #     needs ``k + 1 ≥ 2`` poised nodes).
-        if mf.fit_mode == "pca" and K == 1:
-            from drowse.fit.capture import fold_directions_to_subspace
-            per_node = [
-                {idx: stacks_cached[idx][0] for idx in fit_layers}
-            ]
-            means = layer_means
-            maha = maha_whitener
-            concept_label = node_groups[0][0]
-            directions: dict[int, torch.Tensor] = {}
-            for idx in fit_layers:
-                nu = means[idx]
-                c = per_node[0][idx].to(torch.float32).reshape(-1)
-                if sae_backend is not None:
-                    with torch.no_grad():
-                        feat = sae_backend.encode_layer(
-                            idx, c.reshape(1, -1).to(device),
-                        )
-                        c = sae_backend.decode_layer(idx, feat).detach().to(
-                            "cpu", torch.float32,
-                        ).reshape(-1)
-                directions[idx] = c - nu.to(torch.float32).reshape(-1)
-            _progress(
-                f"Folding monopolar '{concept_label}' − neutral across "
-                f"{len(directions)} layers..."
-            )
-            manifold = fold_directions_to_subspace(
-                mf.name, directions, means, whitener=maha,
-                label=concept_label, feature_space=feature_space,
-            )
-            # Carry the per-node role/kind onto the fitted ray so steer-time
-            # role substitution (``nearest_node_role``) and provenance work; the
-            # fold primitive itself is role-agnostic.
-            manifold.node_roles = list(node_roles)
-            manifold.node_kinds = list(node_kinds)
-            metadata: dict[str, Any] = _base_fit_metadata(
-                method=(
-                    "manifold_monopolar_sae" if sae_backend is not None
-                    else "manifold_monopolar"
-                ),
-                nodes_sha=nodes_sha,
-                model_fingerprint=model_fingerprint,
-                model_source_fp=model_source_fp,
-                capture_sha=capture_sha,
-                capture_render_sha=capture_render_sha,
-                baseline_prompts_sha=baseline_prompts_sha,
-                fitted_layers=list(fit_layers),
-                # The fold keeps the raw δ̂ basis, so the subspace is
-                # metric-free — see ``_base_fit_metadata`` for why that is a
-                # basis label rather than a metric fallback.
-                subspace_metric="euclidean",
-                sae_backend=sae_backend,
-                sae_full_coverage=layer_indices is None,
-                node_roles=node_roles,
-                node_kinds=node_kinds,
-                any_role=any_role,
-                any_kind=any_kind,
-            )
-            metadata.update({
-                "fit_mode": mf.fit_mode,
-                "hyperparams": dict(mf.hyperparams),
-                "diagnostics": {},
-            })
-            return self._publish_and_emit(
-                folder,
-                expected_revision=_authoring_revision or nodes_sha,
-                manifold=manifold, tensor_path=tensor_path, metadata=metadata,
-                emit_event=emit_event, progress=_progress,
-                started=fit_started,
-            )
-
-        # 2. Stack per-node centroids per layer once (SAE-reconstructed when a
-        #     backend is set), shared by the consensus-Gram coord derivation and
-        #     the per-layer subspace fit so the SAE round-trip runs a single
-        #     time.  (K, D) fp32 on CPU per layer.
-        def _stacked_centroids(idx: int) -> torch.Tensor:
-            # The capture cache already owns the contiguous (K,D) stack. Alias
-            # it instead of rebuilding the same ~K*D payload from row views.
-            # On an SAE fit, transfer ownership out of ``stacks_cached`` one
-            # layer at a time. Once the decoded replacement is returned, no raw
-            # centroid roster remains for that layer.
-            s = (
-                stacks_cached.pop(idx)
-                if sae_backend is not None else stacks_cached[idx]
-            )
-            if sae_backend is not None:
-                with torch.no_grad():
-                    feat = sae_backend.encode_layer(idx, s.to(device))
-                    recon = sae_backend.decode_layer(idx, feat)
-                s = recon.detach().to("cpu", torch.float32)
-            return s
-
-        stacks: dict[int, torch.Tensor] = {
-            idx: _stacked_centroids(idx) for idx in fit_layers
+        fresh = {
+            idx: centroids.pop(idx).to(torch.float32).contiguous()
+            for idx in layers
         }
-        # Ownership has moved to ``stacks`` for raw fits and to the decoded
-        # replacements for SAE fits.  Clear the capture mapping in both cases so
-        # it cannot keep aliases alive after the final centroid consumer.
-        stacks_cached.clear()
-
-        # 2c. Per-layer whitened between-node geometry, computed once and then
-        #     reused by discovery, topology scoring, the Fisher basis, and the
-        #     neutral-layout anchoring.
-        whitened = _whitened_node_geometry(
-            stacks, fit_layers, whitener=maha_whitener,
+        progress(
+            f"Captured {n_rows} rows across {len(layers)} layers in "
+            f"{time.perf_counter() - started:.1f}s."
         )
-        whitened_rows = whitened.rows
-        layer_grams = whitened.grams
-        centroid_means = whitened.centroid_means
-        node_spread_per_layer = whitened.node_spread
+        return fresh, rows
 
-        # 3. Resolve domain + node_params — the only step that differs
-        #    between authored and discover paths.
+    def _curved_rows(
+        self,
+        inputs: FitInputs,
+        captured: _Captured,
+        layers: list[int],
+        progress: Callable[[str], None],
+    ) -> "ActivationRowStore":
+        """Rows for every curved layer, recapturing any gap; persist new rows."""
+        with captured.cache.capturing():
+            have = set(captured.rows.layer_indices) if captured.rows else set()
+            missing = sorted(set(layers) - have)
+            if missing:
+                _centroids, extra = self._run_capture(
+                    inputs.identity, missing, retain_rows=True, progress=progress,
+                )
+                captured.rows = _union_rows(captured.rows, extra)
+            rows = captured.rows
+            if rows is None:
+                raise RuntimeError("curved raw manifold fit has no activation rows")
+            fresh = sorted(set(rows.layer_indices) - captured.durable_rows)
+            try:
+                captured.cache.save_rows(rows, fresh)
+                captured.durable_rows.update(fresh)
+            except (OSError, RuntimeError, ValueError) as exc:
+                progress(f"Activation-row cache write skipped: {exc}")
+        return rows
+
+    # -- stage 3: geometry ---------------------------------------------------
+
+    def _fit_geometry(
+        self,
+        inputs: FitInputs,
+        captured: _Captured,
+        fit_layers: list[int],
+        *,
+        dls: bool,
+        progress: Callable[[str], None],
+    ) -> tuple["Manifold", dict[str, Any]]:
+        if inputs.manifold.fit_mode == "pca" and len(inputs.identity.node_groups) == 1:
+            return self._fit_monopolar(inputs, captured, fit_layers, progress)
+        return self._fit_nodes(
+            inputs, captured, fit_layers, dls=dls, progress=progress,
+        )
+
+    def _fit_monopolar(
+        self,
+        inputs: FitInputs,
+        captured: _Captured,
+        fit_layers: list[int],
+        progress: Callable[[str], None],
+    ) -> tuple["Manifold", dict[str, Any]]:
+        """A 1-node ``pca`` folder: the concept against the neutral baseline.
+
+        With no second pole to span an affine subspace, the steering direction
+        is the concept centroid's displacement from the model's neutral mean ν,
+        folded into a 1-node neutral-anchored ray — no discover coords, no
+        DLS, no synthetic second node.  ``concept − ν`` cancels common-mode
+        like DiM, so the raw δ̂ basis is appropriate.
+        """
+        from drowse.fit.capture import fold_directions_to_subspace
+
+        mf = inputs.manifold
+        backend = inputs.sae_backend
+        means = self._handle.layer_means
+        label = inputs.identity.node_groups[0][0]
+        stacks = captured.take_stacks()
+        directions: dict[int, torch.Tensor] = {}
+        for idx in fit_layers:
+            concept = stacks.pop(idx)
+            if backend is not None:
+                concept = _sae_reconstruct(backend, idx, concept, self._handle.device)
+            directions[idx] = (
+                concept.reshape(-1) - means[idx].to(torch.float32).reshape(-1)
+            )
+        progress(
+            f"Folding monopolar '{label}' − neutral across "
+            f"{len(directions)} layers..."
+        )
+        manifold = fold_directions_to_subspace(
+            mf.name, directions, means, whitener=self._handle.whitener,
+            label=label, feature_space=inputs.feature_space,
+        )
+        # The fold primitive is role-agnostic; carry role/kind so steer-time
+        # role substitution (``nearest_node_role``) and provenance work.
+        manifold.node_roles = list(inputs.identity.node_roles)
+        manifold.node_kinds = list(inputs.identity.node_kinds)
+        metadata = inputs.base_metadata(
+            method=(
+                "manifold_monopolar_sae" if backend is not None
+                else "manifold_monopolar"
+            ),
+            fitted_layers=list(fit_layers),
+            subspace_metric="euclidean",
+        )
+        metadata.update({
+            "fit_mode": mf.fit_mode,
+            "hyperparams": dict(mf.hyperparams),
+            "diagnostics": {},
+        })
+        return manifold, metadata
+
+    def _fit_nodes(
+        self,
+        inputs: FitInputs,
+        captured: _Captured,
+        fit_layers: list[int],
+        *,
+        dls: bool,
+        progress: Callable[[str], None],
+    ) -> tuple["Manifold", dict[str, Any]]:
+        """K ≥ 2 nodes: whitened geometry → topology → per-layer subspaces."""
+        from drowse.geometry.manifold import Manifold
+
+        mf = inputs.manifold
+        handle = self._handle
+        whitener = handle.whitener
+        backend = inputs.sae_backend
+        n_nodes = len(inputs.identity.node_groups)
+
+        # Per-layer (K, D) fp32 centroid stacks, SAE-reconstructed when a
+        # backend is set — one layer at a time, so no raw roster outlives its
+        # decoded replacement.
+        stacks = captured.take_stacks()
+        if backend is not None:
+            for idx in fit_layers:
+                stacks[idx] = _sae_reconstruct(
+                    backend, idx, stacks.pop(idx), handle.device,
+                )
+        # Whitened between-node geometry, computed once and shared by
+        # discovery, topology scoring, the Fisher basis, and the neutral layout.
+        whitened = _whitened_node_geometry(stacks, fit_layers, whitener=whitener)
         geometry = _resolve_fit_geometry(
             mf,
-            K=K,
+            K=n_nodes,
             fit_layers=fit_layers,
             stacks=stacks,
-            layer_grams=layer_grams,
-            whitened_rows=whitened_rows,
-            whitener=maha_whitener,
-            sae_backend=sae_backend,
-            progress=_progress,
+            layer_grams=whitened.grams,
+            whitened_rows=whitened.rows,
+            whitener=whitener,
+            sae_backend=backend,
+            progress=progress,
         )
-        domain = geometry.domain
         node_coords = geometry.node_coords
         node_params = geometry.node_params
-        effective_fit_mode = geometry.effective_fit_mode
-        method = geometry.method
-        discover_metadata = geometry.discover_metadata
-        curved_smoothing = geometry.curved_smoothing
-        max_subspace_dim_override = geometry.max_subspace_dim_override
-        auto_rbf_plan = geometry.rbf_plan
-        auto_fisher_bases = geometry.fisher_bases
-
-        # 4. Per-layer fit over the centroid stacks built in step 2b (SAE
-        #    reconstruction, when set, already folded in there).  The whitener
-        #    (mandatory; resolved in step 2) selects the whitened/Fisher basis
-        #    and bakes the per-layer share.
-        _progress(
-            f"Fitting RBF interpolant across {len(fit_layers)} layers..."
-        )
-        layer_subs = {}
-        mahalanobis_share: dict[int, float] = {}
-        rbf_plan = auto_rbf_plan
-        # Per-layer penalized-RBF provenance (curved + ``smoothing`` only):
-        # ``{layer: {"lambda", "edf", "gcv"}}`` from the GCV select, for the
-        # sidecar + inspector.  Empty for exact / flat fits.
-        rbf_smoothing_per_layer: dict[int, dict[str, float]] = {}
-        # Neutral baseline (probe-centering means), **ungated** by the
-        # whitener: the curved fit's neutral-anchor (``mean = P_basis(ν)``,
-        # §5) consumes it.  ``None`` on a CPU-stub handle ⇒ the fit falls back
-        # to the centroid-mean anchor.  (Also drives the origin foot below.)
-        _handle_means = layer_means
-        fit_kwargs: dict[str, Any] = {}
-        if max_subspace_dim_override is not None:
-            fit_kwargs["n_components"] = max_subspace_dim_override
-
-        def _neutral_for(idx: int) -> torch.Tensor:
-            return _handle_means[idx]
-
-        def _bake_share(
-            idx: int, sub: Any, mu_coords: torch.Tensor,
-        ) -> None:
-            # Per-layer budget = the **μ-centered** (anchor-independent)
-            # whitened spread (§5 / ``subspace_share``): the share measures
-            # signal spread, not where neutral sits.  The whitener is
-            # guaranteed to cover every fit layer (checked above).
-            mahalanobis_share[idx] = subspace_share(
-                mu_coords, sub.basis, whitener=maha_whitener, layer=idx,
+        progress(f"Fitting RBF interpolant across {len(fit_layers)} layers...")
+        rbf_smoothing: dict[int, dict[str, float]] = {}
+        rbf_plan: Any = None
+        if geometry.effective_fit_mode == "pca":
+            layer_subs, shares = self._fit_affine_layers(
+                stacks, whitened, geometry, fit_layers, dls=dls,
             )
-
-        if effective_fit_mode == "pca":
-            # FLAT affine fit — the discover-``pca`` path is a flat rank-``k``
-            # subspace, not an RBF surface (ARCHITECTURE §1/§5).  Per layer:
-            # ``fit_affine_subspace`` (μ-centered PCA basis at the derived
-            # intrinsic dim ``k``, neutral-anchored frame, real per-layer node
-            # coords).  **Whitened/Fisher basis**, always — the de-rogued basis
-            # is what makes the no-lever gain coherent, and the whitener is
-            # mandatory (checked above), so there is no Euclidean fit path here.
-            # The shared ``node_coords`` stays the derived
-            # PCA layout (display/labels); the real per-layer steer coords live
-            # on each ``LayerSubspace.node_coords``.
-            # The per-layer steerable subspace is exactly the k-dim layout
-            # span — ``n_components`` is the derived intrinsic dim (the shared
-            # layout's width, set for every fit_mode, so always bound here
-            # unlike the discover-only ``k``).  There is no separate
-            # ``max_subspace_dim`` knob for a flat fit: the affine span *is*
-            # the layout, so any stray curved-fit override is ignored here.
-            affine_kwargs = {"n_components": int(node_coords.shape[1])}
-
-            def _fit_affine_layer(idx: int) -> tuple[Any, torch.Tensor]:
-                sub, mu_coords, _ev_ratio = fit_affine_subspace(
-                    stacks[idx], neutral_mean=_neutral_for(idx),
-                    whitener=maha_whitener, layer=idx,
-                    whitened_gram=layer_grams[idx],
-                    whitened_rows=whitened_rows[idx],
-                    orient_to=0,
-                    basis_override=auto_fisher_bases.get(idx),
-                    **affine_kwargs,
-                )
-                return sub, mu_coords
-
-            raw_fits = {
-                idx: _fit_affine_layer(idx) for idx in fit_layers
-            }
-            del _fit_affine_layer
-            # Per-axis DLS straddle over all fit layers at once (flat → DLS;
-            # the global all-fail fallback matches the folded-vector path).
-            # ``dls=False`` (the session's ``--no-dls``) skips the
-            # straddle-pruning entirely: passing ``None`` for the baseline is
-            # ``compute_dls_axes``'s own "disabled" contract, so every axis of
-            # every layer is kept.
-            dls_kept = compute_dls_axes(
-                {idx: stacks[idx] for idx in raw_fits},
-                {idx: raw_fits[idx][0].basis for idx in raw_fits},
-                _handle_means if dls else None,
+            node_coords = _neutral_centered_layout(
+                node_coords, whitened, handle.layer_means, fit_layers,
             )
-            for idx, (sub, mu_coords) in raw_fits.items():
-                kept = sorted(dls_kept.get(idx, set()))
-                if not kept:
-                    continue  # no axis straddles the baseline → drop the layer
-                if len(kept) < sub.rank:
-                    sub = sub.select_axes(kept)
-                    mu_coords = mu_coords[:, kept]
-                layer_subs[idx] = sub
-                _bake_share(idx, sub, mu_coords)
+            node_params = geometry.domain.embed(node_coords)
         else:
-            # CURVED (authored / spectral): RBF surface fit, neutral-anchored.
-            # ``curved_smoothing`` is ``None`` for authored (exact-interpolation
-            # contract) and the GCV / fixed-λ selector for ``spectral``.
-            if rbf_plan is None:
-                rbf_plan = prepare_rbf_fit_plan(
-                    node_params, smoothing=curved_smoothing,
-                )
-
-            def _fit_curved_layer(
-                idx: int,
-            ) -> tuple[Any, dict[str, float]]:
-                # ``neutral_mean`` neutral-anchors the frame; ``maha_whitener``
-                # (mandatory, checked above) selects the whitened/Fisher basis.
-                _rbf_info: dict[str, float] = {}
-                fit_result: dict[str, torch.Tensor] = {}
-                sub, _ev_ratio = fit_layer_subspace(
-                    stacks[idx], node_params,
-                    whitener=maha_whitener, layer=idx,
-                    neutral_mean=_neutral_for(idx),
-                    whitened_gram=layer_grams[idx],
-                    whitened_rows=whitened_rows[idx],
-                    smoothing=curved_smoothing,
-                    rbf_info=_rbf_info,
-                    rbf_plan=rbf_plan,
-                    basis_override=auto_fisher_bases.get(idx),
-                    fit_result=fit_result,
-                    **fit_kwargs,
-                )
-                # μ-centered share (NOT ``eval_rbf(node_params)`` — the surface
-                # is neutral-anchored, so its node values aren't μ-centered).
-                _bake_share(idx, sub, fit_result["mu_coords"])
-                return sub, _rbf_info
-
-            for idx in fit_layers:
-                sub, rbf_info = _fit_curved_layer(idx)
-                layer_subs[idx] = sub
-                if rbf_info:
-                    rbf_smoothing_per_layer[idx] = rbf_info
-            del _fit_curved_layer
-
-        # Auto topology selection may hand the final fit one precomputed
-        # Fisher basis per layer.  Those R×D tensors are duplicated by the
-        # fitted LayerSubspace bases after step 4; release the planning roster
-        # before covariance and publication instead of carrying a second copy.
-        auto_fisher_bases.clear()
-
-        # 4a. Neutral-center the flat (pca) display layout.  ``discover_coords``
-        #     returns node coords centered on the **node centroid** (PCA removes
-        #     the node mean), so the shared layout's origin is "the average
-        #     node", not the neutral baseline — a coord-form ``% 0,…,0`` would
-        #     mean the centroid and the rack sliders read displacements from it.
-        #     Re-anchor the layout on neutral so ``% 0,…,0`` reads as neutral and
-        #     the sliders share the geometry plot's origin (whose ``neutral_white``
-        #     is already the whitened origin).  ``neutral_layout_coord`` is the
-        #     landmark-MDS projection of the neutral baseline into the consensus-
-        #     PCA layout from neutral's whitened, node-mean-centered cross-Gram
-        #     column ``gᵢ = mean_L (ν_L − μ_L)ᵀ Σ_L⁻¹ (c_{L,i} − μ_L)`` (the same
-        #     layer-averaged metric the consensus Gram itself uses).  Subtracting
-        #     it is a **pure translation**: steering is unchanged because
-        #     ``_affine_manifold_push`` blends per-layer *neutral-anchored* coords
-        #     with cardinal weights, which are translation-invariant — the new
-        #     origin maps to neutral's in-span projection, so a coord-form ``%`` at
-        #     (0,...,0) pushes by neutral's (small) off-hull residual, not the full
-        #     slide toward the node centroid it used to.  Flat only: a curved
-        #     layout carries authored coords / a
-        #     per-layer ``origin`` foot, not a layout coordinate for neutral.
-        #     Needs the neutral baseline — a CPU-stub handle without
-        #     ``layer_means`` keeps the centroid origin (graceful, fit still valid).
-        if effective_fit_mode == "pca" and _handle_means is not None:
-            def _neutral_cross_gram() -> torch.Tensor | None:
-                # Keep the K×D intermediates in a short-lived frame so the
-                # final loop iteration cannot pin a centroid roster after this
-                # last consumer returns.
-                g_cols: list[torch.Tensor] = []
-                for idx in fit_layers:
-                    nu = _neutral_for(idx)
-                    if nu is None:
-                        return None
-                    mu_L = centroid_means[idx]
-                    nu_c = (
-                        nu.to(torch.float32).reshape(1, -1) - mu_L
-                    )  # (1, D) ν − μ
-                    g_cols.append(
-                        whitened_rows[idx] @ nu_c.reshape(-1)
-                    )  # (K,) x̃ᵀΣ⁻¹ν̃
-                return torch.stack(g_cols).mean(dim=0)
-
-            g_nu = _neutral_cross_gram()
-            del _neutral_cross_gram
-            if g_nu is not None:
-                neutral_coords = neutral_layout_coord(node_coords, g_nu)
-                node_coords = (node_coords - neutral_coords).contiguous()
-                node_params = domain.embed(node_coords)
-
-        # Centroid stacks and their whitened/Gram siblings have no consumers
-        # after the optional flat neutral-layout translation.  Release the
-        # complete K×D×L rosters before curved covariance/sigma fitting and the
-        # remaining origin/publication work.
+            layer_subs, shares, rbf_smoothing, rbf_plan = self._fit_curved_layers(
+                stacks, whitened, geometry, fit_layers,
+            )
+        # The K×D×L centroid rosters and their whitened siblings have no
+        # consumer past this point; release them before the row pass.
+        geometry.fisher_bases.clear()
         stacks.clear()
-        whitened_rows.clear()
-        layer_grams.clear()
-        centroid_means.clear()
+        whitened.rows.clear()
+        whitened.grams.clear()
+        whitened.centroid_means.clear()
 
-        if effective_fit_mode == "pca" and retained_rows is not None:
-            retained_rows.close()
-            retained_rows = None
-
-        # 4b. Fuzzy-manifold σ-field (curved + raw only).  The source-dtype
-        #     activation-row spool retained from the first capture accumulates
-        #     each node's within-node reduced ``(R, R)`` covariance after the
-        #     basis exists, then
-        #     ``fit_sigma_field`` reduces it to one off-surface ``σ`` per node and
-        #     fits a ``log σ`` RBF onto each ``LayerSubspace`` (mutated in place).
-        #     This gives the surface a *tube thickness* that soft-``onto`` steers
-        #     into and the monitor reads as a soft node-assignment bandwidth.
-        #     Skipped for SAE fits (the σ would mix raw activation spread with an
-        #     SAE-reconstructed mean surface) and flat fits (``H_n ≡ 0``, the tube
-        #     is vacuous); neither current shape carries sigma tensors.
-        sigma_field_per_layer: dict[int, dict[str, float]] = {}
-        if effective_fit_mode != "pca" and sae_backend is None and layer_subs:
-            if mf.fit_mode == "auto":
-                from drowse.store.manifold_tensors import ActivationRowStore
-
-                stores: list[ActivationRowStore] = []
-                if retained_rows is not None:
-                    stores.append(retained_rows)
-                already_loaded = {
-                    idx for store in stores for idx in store.layer_indices
-                }
-                selected_cached_layers = sorted(
-                    (row_layers & set(fit_layers)) - already_loaded
-                )
-                if selected_cached_layers and cache_stem is not None:
-                    for idx in selected_cached_layers:
-                        path = capture_dir / cached_row_files[str(idx)]
-                        auto_store: ActivationRowStore | None = None
-                        try:
-                            auto_store = ActivationRowStore.load_shards(
-                                {idx: path}, node_sizes,
-                            )
-                            if not _row_tensor_matches_cache_metadata(
-                                path, idx, auto_store.flat_rows(idx),
-                                expected_shape=cached_row_shapes.get(str(idx)),
-                                expected_dtype=cached_row_dtypes.get(str(idx)),
-                                expected_digest=cached_row_digests.get(str(idx)),
-                            ):
-                                raise ValueError("row cache metadata mismatch")
-                            stores.append(auto_store)
-                            auto_store = None  # ownership moved to stores
-                        except (OSError, RuntimeError, ValueError, KeyError):
-                            if auto_store is not None:
-                                auto_store.close()
-                            row_layers.discard(idx)
-                covered_rows = {
-                    idx for store in stores for idx in store.layer_indices
-                }
-                missing_row_layers = sorted(set(fit_layers) - covered_rows)
-                if missing_row_layers:
-                    from drowse.fit.capture import _ReusablePooledCapture
-
-                    reusable = all(
-                        hasattr(layers[idx], "register_forward_hook")
-                        for idx in missing_row_layers
-                    )
-                    capture_scope = (
-                        _ReusablePooledCapture(model, layers, missing_row_layers)
-                        if reusable else nullcontext(None)
-                    )
-                    with capture_scope as capture_context:
-                        _unused, missing_rows = compute_manifold_node_stats(
-                            model, tokenizer, layers, device,
-                            node_groups, baseline_prompts,
-                            roles=node_roles, model_type=model_type,
-                            layer_indices=missing_row_layers, retain_rows=True,
-                            prepared_rows=prepared_rows,
-                            capture_context=capture_context,
-                        )
-                    assert missing_rows is not None
-                    stores.append(missing_rows)
-                if len(stores) > 1:
-                    retained_rows = ActivationRowStore.combine_disjoint(stores)
-                elif stores:
-                    retained_rows = stores[0]
-            if retained_rows is None:
-                raise RuntimeError(
-                    "curved raw manifold fit lost its retained activation-row "
-                    "spool before the sigma-field pass"
-                )
-            # Auto kept a temporary mmap during its one model pass but did not
-            # publish/hash the multi-GiB row cache speculatively. Curvature has
-            # now won, so make that reusable payload durable before consuming
-            # the spool; flat auto fits closed it above without this I/O.
-            if (
-                mf.fit_mode == "auto"
-                and cache_stem is not None
-                and cache_meta is not None
-                and cache_meta.exists()
-            ):
-                try:
-                    _publish_deferred_row_shards(
-                        capture_dir, cache_stem, cache_meta, retained_rows,
-                        node_sizes,
-                        row_layers, cached_row_files, cached_row_shapes,
-                        cached_row_dtypes, cached_row_digests,
-                    )
-                except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
-                    _progress(f"Deferred activation-row cache write skipped: {exc}")
-            _progress(
-                f"Fitting within-node σ-field across {len(layer_subs)} layers "
-                f"({K} nodes, retained activation rows)..."
-            )
-            node_covs = compute_store_reduced_covariances(
-                retained_rows, layer_subs,
-            )
-            retained_rows.close()
-            retained_rows = None
-            sigma_field_per_layer = fit_sigma_field(
-                layer_subs, domain, node_coords, node_covs,
-                smoothing=(
-                    curved_smoothing if curved_smoothing is not None else "auto"
-                ),
-                rbf_plan=(rbf_plan if effective_fit_mode != "pca" else None),
-            )
-
-        # Origin ``O_L`` — the per-layer foot of the neutral mean on ``M``, in
-        # authoring coords ``(n,)``.  **Curved only** — a flat affine subspace's
-        # surface fills its span, so neutral's foot is reduced-coord 0 (the
-        # ``!`` ablation target) with no stored origin (§2); routing an affine
-        # subspace through ``invert_parameterization`` would also hit
-        # ``rbf_params()`` and raise.  Each layer's cold-start foot seed; layers
-        # whose mean isn't resolvable (CPU stub) are simply absent.
+        sigma_field: dict[int, dict[str, float]] = {}
         origin: dict[int, torch.Tensor] = {}
-        if effective_fit_mode != "pca":
-            for idx, sub in layer_subs.items():
-                mu = _handle_means[idx].to(
-                    device="cpu", dtype=torch.float32,
-                ).reshape(-1)
-                # Reduced coords of the neutral mean in this layer's subspace,
-                # then nearest-point invert onto ``M``.
-                q = (mu - sub.mean) @ sub.basis.T  # (R,)
-                O_coords, _dist = invert_parameterization(
-                    sub, domain, q, node_coords,
+        if geometry.effective_fit_mode != "pca":
+            if backend is None and layer_subs:
+                sigma_field = self._fit_sigma(
+                    inputs, captured, layer_subs, geometry, node_coords,
+                    rbf_plan, progress,
                 )
-                origin[idx] = O_coords.reshape(-1).to(torch.float32)
+            origin = _neutral_origin(
+                layer_subs, geometry.domain, node_coords, handle.layer_means,
+            )
 
         manifold = Manifold(
             name=mf.name,
-            domain=domain,
-            node_labels=[label for label, _ in node_groups],
+            domain=geometry.domain,
+            node_labels=[label for label, _ in inputs.identity.node_groups],
             node_coords=node_coords,
             layers=layer_subs,
-            feature_space=feature_space,
-            node_roles=list(node_roles),
-            node_kinds=list(node_kinds),
-            mahalanobis_share=mahalanobis_share,
+            feature_space=inputs.feature_space,
+            node_roles=list(inputs.identity.node_roles),
+            node_kinds=list(inputs.identity.node_kinds),
+            mahalanobis_share=shares,
             origin=origin,
         )
-
-        # 5. Persist + refresh the folder integrity manifest.
-        #
-        # ``save_manifold`` derives ``fitted_layers`` from the actual tensor
-        # roster.  ``node_spread_per_layer`` below deliberately retains the
-        # complete evaluated roster, so DLS-pruned layers stay distinguishable
-        # from layers that were never fitted.  The whitener is mandatory for an
-        # activation-space fit, so both the per-layer share weighting and the
-        # PCA subspace selection are whitened/Fisher.
-        metadata: dict[str, Any] = _base_fit_metadata(
-            method=method,
-            nodes_sha=nodes_sha,
-            model_fingerprint=model_fingerprint,
-            model_source_fp=model_source_fp,
-            capture_sha=capture_sha,
-            capture_render_sha=capture_render_sha,
-            baseline_prompts_sha=baseline_prompts_sha,
+        # ``save_manifold`` derives ``fitted_layers`` from the tensor roster;
+        # ``node_spread_per_layer`` keeps the complete evaluated roster, so
+        # DLS-pruned layers stay distinguishable from never-fitted ones.
+        metadata = inputs.base_metadata(
+            method=geometry.method,
             fitted_layers=sorted(layer_subs),
             subspace_metric="mahalanobis",
-            sae_backend=sae_backend,
-            sae_full_coverage=layer_indices is None,
-            node_roles=node_roles,
-            node_kinds=node_kinds,
-            any_role=any_role,
-            any_kind=any_kind,
         )
-        # Diagnostic layer profile (see step 2c): the whitened between-node
-        # spread per layer, ``{str(L): tr(G_L)}``.  Not consumed by any runtime
-        # path — surfaced by `manifold show` as the concept's signal-by-layer
-        # curve.
+        # Diagnostic layer profile: the whitened between-node spread
+        # ``tr(G_L)`` — surfaced by `manifold show`, consumed by nothing.
         metadata["node_spread_per_layer"] = {
-            str(idx): node_spread_per_layer[idx] for idx in fit_layers
+            str(idx): whitened.node_spread[idx] for idx in fit_layers
         }
-        if rbf_smoothing_per_layer:
-            # Penalized-RBF provenance: the GCV-chosen λ + effective dof per
-            # layer (curved discover fits only).  Diagnostic — surfaced by
-            # `manifold show`, nothing branches on it at load.
+        if rbf_smoothing:
+            # Penalized-RBF provenance (GCV λ + effective dof per layer).
             metadata["rbf_smoothing_per_layer"] = {
-                str(idx): info for idx, info in rbf_smoothing_per_layer.items()
+                str(idx): info for idx, info in rbf_smoothing.items()
             }
-        if sigma_field_per_layer:
-            # Fuzzy-manifold σ-field provenance: per-layer within-node off-surface
-            # spread summary (``sigma_mean``/``sigma_min``/``sigma_max`` + the
-            # log-σ RBF's smoothing λ).  Diagnostic — the σ-RBF tensors themselves
-            # ride the per-model safetensors; this is the inspector-facing
-            # summary. Absent on flat and SAE fits (no raw tube model).
+        if sigma_field:
+            # σ-field summary per layer; the σ-RBF tensors ride the safetensors.
             metadata["sigma_field_per_layer"] = {
-                str(idx): info for idx, info in sigma_field_per_layer.items()
+                str(idx): info for idx, info in sigma_field.items()
             }
-        metadata.update(discover_metadata)
-        return self._publish_and_emit(
-            folder,
-            expected_revision=_authoring_revision or nodes_sha,
-            manifold=manifold, tensor_path=tensor_path, metadata=metadata,
-            emit_event=emit_event, progress=_progress, started=fit_started,
+        metadata.update(geometry.discover_metadata)
+        return manifold, metadata
+
+    def _fit_affine_layers(
+        self,
+        stacks: dict[int, torch.Tensor],
+        whitened: "_WhitenedNodeGeometry",
+        geometry: "_ResolvedGeometry",
+        fit_layers: list[int],
+        *,
+        dls: bool,
+    ) -> tuple[dict[int, "LayerSubspace"], dict[int, float]]:
+        """Flat fit: a whitened/Fisher rank-``k`` affine subspace per layer.
+
+        The steerable subspace is exactly the ``k``-dim layout span, so
+        ``n_components`` is the layout width (no ``max_subspace_dim`` knob);
+        the frame is neutral-anchored with real per-layer node coords.  DLS
+        then keeps each axis whose node projections straddle neutral
+        (``dls=False`` keeps every axis); a layer with no surviving axis drops.
+        """
+        from drowse.fit.capture import compute_dls_axes
+        from drowse.geometry.manifold import fit_affine_subspace, subspace_share
+
+        whitener = self._handle.whitener
+        means = self._handle.layer_means
+        width = int(geometry.node_coords.shape[1])
+        raw_fits = {}
+        for idx in fit_layers:
+            sub, mu_coords, _ev_ratio = fit_affine_subspace(
+                stacks[idx], neutral_mean=means[idx],
+                whitener=whitener, layer=idx,
+                whitened_gram=whitened.grams[idx],
+                whitened_rows=whitened.rows[idx],
+                orient_to=0,
+                basis_override=geometry.fisher_bases.get(idx),
+                n_components=width,
+            )
+            raw_fits[idx] = (sub, mu_coords)
+        kept = compute_dls_axes(
+            {idx: stacks[idx] for idx in raw_fits},
+            {idx: sub.basis for idx, (sub, _mu) in raw_fits.items()},
+            means if dls else None,
         )
+        layer_subs: dict[int, LayerSubspace] = {}
+        shares: dict[int, float] = {}
+        for idx, (sub, mu_coords) in raw_fits.items():
+            axes = sorted(kept.get(idx, set()))
+            if not axes:
+                continue
+            if len(axes) < sub.rank:
+                sub = sub.select_axes(axes)
+                mu_coords = mu_coords[:, axes]
+            layer_subs[idx] = sub
+            # Per-layer budget = the μ-centered (anchor-independent) whitened
+            # spread: signal spread, not where neutral sits.
+            shares[idx] = subspace_share(
+                mu_coords, sub.basis, whitener=whitener, layer=idx,
+            )
+        return layer_subs, shares
+
+    def _fit_curved_layers(
+        self,
+        stacks: dict[int, torch.Tensor],
+        whitened: "_WhitenedNodeGeometry",
+        geometry: "_ResolvedGeometry",
+        fit_layers: list[int],
+    ) -> tuple[
+        dict[int, "LayerSubspace"], dict[int, float],
+        dict[int, dict[str, float]], Any,
+    ]:
+        """Curved fit: a neutral-anchored RBF surface per layer.
+
+        ``curved_smoothing`` is ``None`` for authored (exact interpolation:
+        node = steering target) and the GCV / fixed-λ selector for spectral.
+        """
+        from drowse.geometry.manifold import (
+            fit_layer_subspace,
+            prepare_rbf_fit_plan,
+            subspace_share,
+        )
+
+        whitener = self._handle.whitener
+        means = self._handle.layer_means
+        plan = geometry.rbf_plan or prepare_rbf_fit_plan(
+            geometry.node_params, smoothing=geometry.curved_smoothing,
+        )
+        extra: dict[str, Any] = {}
+        if geometry.max_subspace_dim_override is not None:
+            extra["n_components"] = geometry.max_subspace_dim_override
+        layer_subs: dict[int, LayerSubspace] = {}
+        shares: dict[int, float] = {}
+        smoothing: dict[int, dict[str, float]] = {}
+        for idx in fit_layers:
+            info: dict[str, float] = {}
+            result: dict[str, torch.Tensor] = {}
+            sub, _ev_ratio = fit_layer_subspace(
+                stacks[idx], geometry.node_params,
+                whitener=whitener, layer=idx,
+                neutral_mean=means[idx],
+                whitened_gram=whitened.grams[idx],
+                whitened_rows=whitened.rows[idx],
+                smoothing=geometry.curved_smoothing,
+                rbf_info=info,
+                rbf_plan=plan,
+                basis_override=geometry.fisher_bases.get(idx),
+                fit_result=result,
+                **extra,
+            )
+            layer_subs[idx] = sub
+            # μ-centered share (NOT ``eval_rbf(node_params)`` — the surface is
+            # neutral-anchored, so its node values aren't μ-centered).
+            shares[idx] = subspace_share(
+                result["mu_coords"], sub.basis, whitener=whitener, layer=idx,
+            )
+            if info:
+                smoothing[idx] = info
+        return layer_subs, shares, smoothing, plan
+
+    def _fit_sigma(
+        self,
+        inputs: FitInputs,
+        captured: _Captured,
+        layer_subs: dict[int, "LayerSubspace"],
+        geometry: "_ResolvedGeometry",
+        node_coords: torch.Tensor,
+        rbf_plan: Any,
+        progress: Callable[[str], None],
+    ) -> dict[int, dict[str, float]]:
+        """The fuzzy-manifold σ-field over retained rows (curved + raw only).
+
+        Each node's within-node reduced covariance yields one off-surface σ;
+        a ``log σ`` RBF onto each ``LayerSubspace`` (mutated in place) gives
+        the surface the tube thickness soft-``onto`` steers into and the
+        monitor reads as a soft-assignment bandwidth.
+        """
+        from drowse.geometry.manifold import (
+            compute_store_reduced_covariances,
+            fit_sigma_field,
+        )
+
+        rows = self._curved_rows(inputs, captured, sorted(layer_subs), progress)
+        progress(
+            f"Fitting within-node σ-field across {len(layer_subs)} layers "
+            f"({len(inputs.identity.node_groups)} nodes, retained activation rows)..."
+        )
+        covariances = compute_store_reduced_covariances(rows, layer_subs)
+        captured.close()
+        return fit_sigma_field(
+            layer_subs, geometry.domain, node_coords, covariances,
+            smoothing=(
+                geometry.curved_smoothing
+                if geometry.curved_smoothing is not None else "auto"
+            ),
+            rbf_plan=rbf_plan,
+        )
+
+
+def _neutral_centered_layout(
+    node_coords: torch.Tensor,
+    whitened: "_WhitenedNodeGeometry",
+    layer_means: Mapping[int, torch.Tensor],
+    fit_layers: Sequence[int],
+) -> torch.Tensor:
+    """Re-anchor a flat fit's display layout on neutral (a pure translation).
+
+    ``discover_coords`` centers the layout on the node centroid, so a
+    coord-form ``% 0,…,0`` would mean "the average node".  Subtracting
+    neutral's landmark-MDS projection into the consensus layout — from its
+    whitened, node-mean-centered cross-Gram column
+    ``gᵢ = mean_L (ν_L − μ_L)ᵀ Σ_L⁻¹ (c_{L,i} − μ_L)`` — makes ``% 0,…,0`` read
+    as neutral and shares the geometry plot's origin.  Steering is unchanged:
+    the affine push blends per-layer neutral-anchored coords with
+    translation-invariant cardinal weights.
+    """
+    from drowse.geometry.topology import neutral_layout_coord
+
+    cross_gram = torch.stack([
+        whitened.rows[idx] @ (
+            layer_means[idx].to(torch.float32).reshape(1, -1)
+            - whitened.centroid_means[idx]
+        ).reshape(-1)
+        for idx in fit_layers
+    ]).mean(dim=0)
+    return (node_coords - neutral_layout_coord(node_coords, cross_gram)).contiguous()
+
+
+def _neutral_origin(
+    layer_subs: Mapping[int, "LayerSubspace"],
+    domain: Any,
+    node_coords: torch.Tensor,
+    layer_means: Mapping[int, torch.Tensor],
+) -> dict[int, torch.Tensor]:
+    """Per-layer foot of the neutral mean on a curved surface, authoring coords.
+
+    The cold-start foot seed.  Flat fits store none: neutral's foot on an
+    affine subspace is reduced coord 0 (the ``!`` ablation target).
+    """
+    from drowse.geometry.manifold import invert_parameterization
+
+    origin: dict[int, torch.Tensor] = {}
+    for idx, sub in layer_subs.items():
+        nu = layer_means[idx].to(device="cpu", dtype=torch.float32).reshape(-1)
+        coords, _dist = invert_parameterization(
+            sub, domain, (nu - sub.mean) @ sub.basis.T, node_coords,
+        )
+        origin[idx] = coords.reshape(-1).to(torch.float32)
+    return origin
