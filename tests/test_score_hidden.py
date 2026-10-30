@@ -84,7 +84,7 @@ def test_score_stack_aligned_beats_anti_aligned():
         torch.tensor([-1.0, 0.0, 0.0, 0.0]) + mu,   # anti      → -1
         v_ortho + mu,                                # M-orthogonal → 0
     ])
-    agg, per_token = m.score_stack({0: stack}, accumulate=False)
+    agg, per_token = m.score_stack({0: stack})
     assert set(per_token.keys()) == {"x"}
     vals = per_token["x"]
     assert len(vals) == 3
@@ -103,37 +103,17 @@ def test_score_stack_agg_index_selects_row():
         torch.tensor([1.0, 0.0, 0.0, 0.0]) + mu,
         torch.tensor([0.0, 1.0, 0.0, 0.0]) + mu,
     ])
-    _agg, per_token = m.score_stack({0: stack}, accumulate=False)
-    agg0, _ = m.score_stack({0: stack}, agg_index=0, accumulate=False)
-    agg1, _ = m.score_stack({0: stack}, agg_index=1, accumulate=False)
+    _agg, per_token = m.score_stack({0: stack})
+    agg0, _ = m.score_stack({0: stack}, agg_index=0)
+    agg1, _ = m.score_stack({0: stack}, agg_index=1)
     # The selected aggregate row's coord matches that row's per-token value.
     assert agg0["x"].coords[0] == pytest.approx(per_token["x"][0], abs=1e-5)
     assert agg1["x"].coords[0] == pytest.approx(per_token["x"][1], abs=1e-5)
 
 
-def test_score_stack_accumulate_false_leaves_history_untouched():
-    m = _monitor_with_probe()
-    before = list(m.history["x"])
-    m.score_stack(
-        {0: torch.tensor([[1.0, 0.0, 0.0, 0.0]])}, accumulate=False,
-    )
-    assert list(m.history["x"]) == before
-
-
-def test_score_stack_accumulate_true_records_aggregate():
-    m = _monitor_with_probe()
-    m.score_stack(
-        {0: (torch.tensor([[1.0, 0.0, 0.0, 0.0]]) + _MEANS0[0])},
-        accumulate=True,
-    )
-    assert len(m.history["x"]) == 1
-    # Aligned token ⇒ coord ≈ +1 recorded (history stores the coord tuple).
-    assert list(m.history["x"])[-1][0] == pytest.approx(1.0, abs=0.1)
-
-
 def test_score_stack_empty_inputs():
     m = _monitor_with_probe()
-    agg, per_token = m.score_stack({}, accumulate=False)
+    agg, per_token = m.score_stack({})
     # Empty capture → an empty-coords reading per probe, no per-token stream.
     assert set(agg.keys()) == {"x"}
     assert agg["x"].coords == ()
@@ -148,7 +128,7 @@ def test_score_stack_uneven_T_raises_value_error():
         1: torch.zeros(2, 4),
     }
     with pytest.raises(ValueError, match="expected"):
-        m.score_stack(bad, accumulate=False)
+        m.score_stack(bad)
 
 
 def test_score_probes_without_whitener_raises():
@@ -266,21 +246,6 @@ def test_score_hidden_dim_mismatch_raises():
         s.score_hidden(bad)
 
 
-def test_score_hidden_accumulate_false_does_not_mutate_history():
-    s = _mock_session()
-    before = list(s._monitor.history["x"])
-    s.score_hidden({0: torch.tensor([1.0, 0.0, 0.0, 0.0]) + _MEANS0[0]})
-    assert list(s._monitor.history["x"]) == before
-
-
-def test_score_hidden_accumulate_true_records():
-    s = _mock_session()
-    s.score_hidden(
-        {0: torch.tensor([1.0, 0.0, 0.0, 0.0]) + _MEANS0[0]}, accumulate=True,
-    )
-    assert len(s._monitor.history["x"]) == 1
-
-
 # ============================================ Mahalanobis read metric ===
 
 
@@ -313,11 +278,11 @@ def test_anisotropic_whitened_read_downweights_high_variance_axis():
     maha = Monitor({"x": m}, whitener=whitener)
     # A hidden along the probe (low-var axis) reads strongly; one along the
     # high-var axis reads weakly under the whitened metric.
-    on_probe = maha.measure_from_hidden(
-        {0: torch.tensor([0.0, 1.0, 0.0, 0.0]) + mean}, accumulate=False,
+    on_probe = maha.score_single_token(
+        {0: torch.tensor([0.0, 1.0, 0.0, 0.0]) + mean},
     )["x"].coords[0]
-    off_probe = maha.measure_from_hidden(
-        {0: torch.tensor([10.0, 0.0, 0.0, 0.0]) + mean}, accumulate=False,
+    off_probe = maha.score_single_token(
+        {0: torch.tensor([10.0, 0.0, 0.0, 0.0]) + mean},
     )["x"].coords[0]
     assert on_probe > off_probe
 
@@ -343,18 +308,18 @@ def test_set_whitener_invalidates_cache_and_switches_metric():
     m = fold_directions_to_subspace("x", direction, {0: mean}, whitener=whit_a)
     mon = Monitor({"x": m}, whitener=whit_a)
     h = {0: torch.tensor([10.0, 0.5, 0.0, 0.0]) + mean}
-    before = mon.measure_from_hidden(h, accumulate=False)["x"].coords[0]
+    before = mon.score_single_token(h)["x"].coords[0]
     assert mon.whitener is whit_a
 
     mon.set_whitener(whit_b)
     assert mon.whitener is whit_b
-    after = mon.measure_from_hidden(h, accumulate=False)["x"].coords[0]
+    after = mon.score_single_token(h)["x"].coords[0]
     # Same instance, same probe, different metric ⇒ different reading.
     assert abs(after - before) > 1e-2
 
     # Re-setting the identical whitener is a no-op (no exception, metric
     # unchanged).
-    again = mon.measure_from_hidden(h, accumulate=False)["x"].coords[0]
+    again = mon.score_single_token(h)["x"].coords[0]
     assert again == pytest.approx(after, abs=1e-6)
 
 

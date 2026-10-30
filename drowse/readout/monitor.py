@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
@@ -24,8 +23,6 @@ from drowse.generation.results import ProbeReading
 
 if TYPE_CHECKING:
     from drowse.geometry.manifold import Manifold
-
-_MAX_HISTORY = 8
 
 #: Tokens per batched chunk of the FULL-mode coordinate stream — bounds the
 #: ``(n_layers, T, D)`` working set on long generations.
@@ -219,11 +216,6 @@ class Monitor:
         self._engines: dict[
             tuple[torch.device, frozenset[str] | None], _FlatEngine | None
         ] = {}
-
-        # Per-coordinate history. Rich result payloads use the pooled
-        # ``ProbeReading`` directly; scalar UI projections derive from this
-        # single history rather than maintaining a parallel summary model.
-        self.history: dict[str, deque[tuple[float, ...]]] = {}
 
         # Curved-probe per-token foot-follow, keyed ``(probe, layer)``.  Only
         # the sequential live-scoring path enables it (``enable_curved_warm``);
@@ -1026,55 +1018,18 @@ class Monitor:
 
     # ---------------------------------------------------- public scoring
 
-    def _score_tokens(
-        self,
-        hidden_per_layer: dict[int, torch.Tensor],
-        accumulate: bool = True,
-        *,
-        coords_only: bool = False,
-    ) -> dict[str, ProbeReading]:
-        """Score every probe → ``{name: ProbeReading}``; ``accumulate`` folds
-        the coords into history."""
-        out = self._score_full(hidden_per_layer, coords_only=coords_only)
-        if out and accumulate:
-            self._apply_accumulate(out)
-        return out
-
-    def _apply_accumulate(
-        self, readings: dict[str, ProbeReading],
-    ) -> None:
-        """Fold per-probe aggregate coordinates into monitor history."""
-        for name, reading in readings.items():
-            if name not in self.history:
-                continue
-            coords = reading.coords or (0.0,)
-            self.history[name].append(tuple(coords))
-
-    def accumulate_readings(
-        self, readings: dict[str, ProbeReading],
-    ) -> None:
-        """Fold an already-scored aggregate into history/stats."""
-        self._apply_accumulate(readings)
-
     def score_single_token(
         self, hidden_per_layer: dict[int, torch.Tensor],
         *, coords_only: bool = False,
     ) -> dict[str, "ProbeReading"]:
-        """Per-probe full reading for a single token (no accumulate).
+        """Per-probe full reading for one state (``[D]`` per layer; a stack
+        reads its last row).
 
-        The live per-token read: ``{name: ProbeReading}`` for every probe.
-        ``coords_only`` returns the lean coords + fraction reading for the
-        axis-0-only live consumers.
+        The live per-token read and the public single-state read:
+        ``{name: ProbeReading}`` for every probe.  ``coords_only`` returns the
+        lean coords + fraction reading for the axis-0-only live consumers.
         """
-        return self._score_tokens(
-            hidden_per_layer, accumulate=False, coords_only=coords_only,
-        )
-
-    def measure_from_hidden(
-        self, hidden_per_layer: dict[int, torch.Tensor], accumulate: bool = True,
-    ) -> dict[str, "ProbeReading"]:
-        """Score probes from pre-captured hidden states (no forward pass)."""
-        return self._score_tokens(hidden_per_layer, accumulate=accumulate)
+        return self._score_full(hidden_per_layer, coords_only=coords_only)
 
     @staticmethod
     def flat_scalars(
@@ -1183,7 +1138,6 @@ class Monitor:
         generated_ids: list[int],
         tokenizer: Any,
         *,
-        accumulate: bool = True,
         aggregate_index: int | None = None,
     ) -> tuple[dict[str, "ProbeReading"], dict[str, list[float]]]:
         """Score probes per generated token using pre-captured hidden states.
@@ -1213,14 +1167,13 @@ class Monitor:
             layer_idx: h[agg_idx] for layer_idx, h in captured.items()
             if h.shape[0] > agg_idx
         }
-        return self._score_tokens(agg_hidden, accumulate=accumulate), per_token
+        return self._score_full(agg_hidden), per_token
 
     def score_stack(
         self,
         captured: dict[int, torch.Tensor],
         *,
         agg_index: int | None = None,
-        accumulate: bool = False,
     ) -> tuple[dict[str, "ProbeReading"], dict[str, list[float]]]:
         """Score probes over a pre-captured ``[T, D]`` stack per layer.
 
@@ -1251,8 +1204,7 @@ class Monitor:
                 f"score_stack: agg_index={agg_index} out of range for T={n}",
             )
         agg_hidden = {layer_idx: h[agg_row] for layer_idx, h in captured.items()}
-        agg = self._score_tokens(agg_hidden, accumulate=accumulate)
-        return agg, self._per_token_coord_stream(captured, n)
+        return self._score_full(agg_hidden), self._per_token_coord_stream(captured, n)
 
     def add_probe(self, name: str, manifold: "Manifold", *, top_n: int = DEFAULT_NEAREST_TOP_N):
         """Register a :class:`Manifold` probe — flat (any rank) or curved.
@@ -1262,14 +1214,11 @@ class Monitor:
         cover the fit's layers.  The Woodbury factors come from (and, for a
         new layer, grow) the Monitor's shared :class:`_FactorStack`.
         """
-        is_new = name not in self._probes
         self._probes[name] = _attach_manifold_probe(
             name, manifold, top_n=top_n, whitener=self._whitener,
             stack_for=self._stack_for,
         )
         self._invalidate()
-        if is_new:
-            self.history[name] = deque(maxlen=_MAX_HISTORY)
 
     def remove_probe(self, name: str):
         """Detach ``name``.  The shared factor stack stays: the remaining
@@ -1280,16 +1229,10 @@ class Monitor:
         self._curved_feet = {
             key: foot for key, foot in self._curved_feet.items() if key[0] != name
         }
-        if name in self.history:
-            del self.history[name]
 
     def attached_probes(self) -> dict[str, "AttachedManifoldProbe"]:
         """Live attached-probe map (read-only view) — name → probe."""
         return dict(self._probes)
-
-    def reset_history(self):
-        for name in self._probes:
-            self.history[name].clear()
 
     def score_aggregate(
         self,

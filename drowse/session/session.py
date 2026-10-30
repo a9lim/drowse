@@ -6398,7 +6398,7 @@ class DrowseSession:
         return per_token
 
     def _score_incremental(
-        self, generated_ids: list[int], *, accumulate: bool = True,
+        self, generated_ids: list[int],
     ) -> tuple[dict[str, "ProbeReading"], dict[str, list[float]]]:
         """Aggregate readings + per-token coord stream from live-scored rows."""
         names = list(self._monitor.probe_names)
@@ -6415,15 +6415,12 @@ class DrowseSession:
         agg_vals = {
             name: agg_row.get(name, empty_agg[name]) for name in names
         }
-        if accumulate and agg_vals:
-            self._monitor.accumulate_readings(agg_vals)
         return agg_vals, per_token
 
     def _score_aggregate_only(
         self,
         generated_ids: list[int],
         *,
-        accumulate: bool = True,
         pooled: dict[int, torch.Tensor] | None = None,
     ) -> dict[str, "ProbeReading"]:
         """Score *only* the end-of-gen aggregate from the bounded tail ring.
@@ -6457,16 +6454,12 @@ class DrowseSession:
             pooled,
         )
         # Fill any probe the pool missed (e.g. a layer absent from the ring).
-        agg_vals = {name: agg_vals.get(name, empty[name]) for name in names}
-        if accumulate and agg_vals:
-            self._monitor.accumulate_readings(agg_vals)
-        return agg_vals
+        return {name: agg_vals.get(name, empty[name]) for name in names}
 
     def _score_lean_incremental(
         self,
         generated_ids: list[int],
         *,
-        accumulate: bool = True,
         pooled: dict[int, torch.Tensor] | None = None,
     ) -> tuple[dict[str, "ProbeReading"], dict[str, list[float]]]:
         """Lean per-token coord stream + full aggregate from the tail ring.
@@ -6484,7 +6477,7 @@ class DrowseSession:
         rows = self._incremental_readings[:n]
         per_token = self._extract_coord_stream(rows, n, names)
         agg_vals = self._score_aggregate_only(
-            generated_ids, accumulate=accumulate, pooled=pooled,
+            generated_ids, pooled=pooled,
         )
         return agg_vals, per_token
 
@@ -6494,7 +6487,6 @@ class DrowseSession:
         hidden: dict[int, torch.Tensor],
         *,
         per_token: Literal[False] = False,
-        accumulate: bool = False,
     ) -> dict[str, "ProbeReading"]: ...
     @overload
     def score_hidden(
@@ -6502,14 +6494,12 @@ class DrowseSession:
         hidden: dict[int, torch.Tensor],
         *,
         per_token: Literal[True],
-        accumulate: bool = False,
     ) -> tuple[dict[str, "ProbeReading"], dict[str, list[float]]]: ...
     def score_hidden(
         self,
         hidden: dict[int, torch.Tensor],
         *,
         per_token: bool = False,
-        accumulate: bool = False,
     ) -> (
         dict[str, "ProbeReading"]
         | tuple[dict[str, "ProbeReading"], dict[str, list[float]]]
@@ -6532,10 +6522,6 @@ class DrowseSession:
 
         Mixed shapes (``[D]`` alongside ``[T, D]``) or uneven ``T`` across
         layers raise :class:`DrowseError`. Empty dict raises.
-
-        ``accumulate`` defaults to ``False`` — ad-hoc researcher scoring
-        does not pollute the monitor's history. Pass ``True`` to feed this call
-        into the same cross-generation stats pipeline as generation finalization.
         """
         if not hidden:
             raise DrowseError("score_hidden: no layers provided")
@@ -6586,16 +6572,14 @@ class DrowseSession:
                     "got [D] (single state per layer)",
                 )
             # Fall through to the monitor's single-state path.
-            return self._monitor.measure_from_hidden(hidden, accumulate=accumulate)
+            return self._monitor.score_single_token(hidden)
 
         # [T, D] path — delegate to monitor.score_stack. Wrap its
         # ValueError (uneven T across layers is the only path that
         # can reach here after the shape checks above) so callers
         # catching DrowseError get a uniform exception surface.
         try:
-            agg, per_tok = self._monitor.score_stack(
-                hidden, accumulate=accumulate,
-            )
+            agg, per_tok = self._monitor.score_stack(hidden)
         except ValueError as exc:
             raise DrowseError(f"score_hidden: {exc}") from exc
         return (agg, per_tok) if per_token else agg
@@ -7445,11 +7429,6 @@ class DrowseSession:
         screen.  ``clear_history`` is the destructive verb.
         """
         self.tree.rewind()
-        # Monitor history is kept aligned with the active path's
-        # finalize stream; rewinding the path means dropping the trailing
-        # readings so live trait scoring continues from a coherent state.
-        # See ``clear_history`` for the wipe-all variant.
-        self._monitor.reset_history()
 
     def clear_history(self) -> None:
         """Reset the tree to a fresh root.
@@ -7459,7 +7438,6 @@ class DrowseSession:
         non-destructive step-back.
         """
         self.tree.reset()
-        self._monitor.reset_history()
 
     def restore_tree(self, data: dict[str, Any]) -> LoomTree:
         """Atomically replace the live conversation with a validated tree.
@@ -7494,7 +7472,6 @@ class DrowseSession:
         restored.rev = max(old_tree.rev, restored.rev) + 1
         self.tree = restored
         self._joint_logprob_cache.clear()
-        self._monitor.reset_history()
 
         new_ids = set(restored.nodes)
         # LoomTree deliberately accepts the session EventBus through a

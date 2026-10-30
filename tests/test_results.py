@@ -367,9 +367,9 @@ class TestMonitorScoring:
     Mahalanobis-only (4.0 collapse): probe scoring requires a covering
     whitener.  A single steering direction is attached as a 1-node ray via
     ``fold_directions_to_subspace`` (the session's vector-probe path); the read
-    is the in-subspace **domain coordinate** (``history`` stores the coordinate
-    tuple, axis 0 the scalar), so value assertions are structural (sign /
-    ordering / finiteness), not exact cosines.
+    is the in-subspace **domain coordinate** (axis 0 the scalar), so value
+    assertions are structural (sign / ordering / finiteness), not exact
+    cosines.
     """
 
     _DIM = 16
@@ -394,10 +394,8 @@ class TestMonitorScoring:
         # Hidden state pointing in the same direction as probe.
         h = torch.zeros(16)
         h[0] = 5.0
-        monitor.measure_from_hidden({0: h})
-        assert len(monitor.history["test_probe"]) == 1
+        v = monitor.score_single_token({0: h})["test_probe"].coords[0]
         # Aligned with the probe ⇒ positive coordinate, finite.
-        v = monitor.history["test_probe"][0][0]
         assert v == v and v > 0.0
 
     def test_measure_aligned_beats_anti_aligned(self):
@@ -406,24 +404,8 @@ class TestMonitorScoring:
         aligned[0] = 5.0
         anti = torch.zeros(16)
         anti[0] = -5.0
-        monitor.measure_from_hidden({0: aligned})
-        monitor.measure_from_hidden({0: anti})
         # Aligned reads above anti-aligned (coordinate monotone in alignment).
         assert (
-            monitor.history["test_probe"][0][0]
-            > monitor.history["test_probe"][1][0]
-        )
-
-    def test_history_accumulates_across_calls(self):
-        monitor = self._make_monitor()
-        h1 = torch.zeros(16)
-        h1[0] = 1.0
-        h2 = torch.zeros(16)
-        h2[1] = 1.0
-        monitor.measure_from_hidden({0: h1})
-        monitor.measure_from_hidden({0: h2})
-        assert len(monitor.history["test_probe"]) == 2
-        assert (
-            monitor.history["test_probe"][0][0]
-            > monitor.history["test_probe"][1][0]
+            monitor.score_single_token({0: aligned})["test_probe"].coords[0]
+            > monitor.score_single_token({0: anti})["test_probe"].coords[0]
         )
