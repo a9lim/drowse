@@ -1,4 +1,5 @@
 import type { SaeDescriptionSourceJSON } from "./types";
+import { bundledDescriptionUrl } from "./saeDescriptionBundle";
 
 export type SaeDescriptionSource = SaeDescriptionSourceJSON;
 
@@ -69,12 +70,12 @@ function publishedDictionary(binding: SaeDescriptionSource) {
 
 async function bundledDescription(binding: SaeDescriptionSource, id: number): Promise<SaeDescription | null> {
   const dictionary = publishedDictionary(binding);
-  if (!dictionary) return null;
+  const href = dictionary && bundledDescriptionUrl(dictionary.size);
+  if (!dictionary || !href) return null;
   let loading = bundledDescriptions.get(dictionary.size);
   if (!loading) {
     loading = (async () => {
-      const url = new URL(`./data/sae-descriptions/gemma-3-${dictionary.size}-it.json`, import.meta.url);
-      const response = await fetch(url.href, {
+      const response = await fetch(href, {
         signal: AbortSignal.timeout(5000), credentials: "omit", referrerPolicy: "no-referrer",
       });
       if (!response.ok) throw new Error("Bundled SAE descriptions are unavailable.");
