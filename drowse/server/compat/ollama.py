@@ -16,9 +16,10 @@ Differences from real Ollama:
 - Streaming is NDJSON (``application/x-ndjson``); ``/api/generate`` omits
   ``context`` (drowse cannot round-trip it).
 - Steering rides a non-standard ``steer`` expression string inside
-  ``options`` or at the top level; a top-level ``think`` bool overrides
-  thinking.  Probe readings ride the top-level ``x-drowse-probe-readings``
-  key.
+  ``options`` or at the top level.  A top-level ``think`` (a bool, or one of
+  Ollama's reasoning levels ``"low"``/``"medium"``/``"high"``) overrides
+  thinking; drowse has no effort knob, so any level turns thinking on.  Probe
+  readings ride the top-level ``x-drowse-probe-readings`` key.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ import logging
 import math
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
@@ -70,8 +71,12 @@ class OllamaBadRequest(ValueError, DrowseError):
 
 
 # ---------------------------------------------------------------------------
-# Request bodies — typed, but open: Ollama clients send fields drowse ignores.
+# Request bodies — typed, but open: Ollama clients send fields drowse ignores,
+# and an explicit ``null`` reads as the field's unset default.
 # ---------------------------------------------------------------------------
+
+#: Ollama's ``think`` levels (gpt-oss reasoning effort).
+ThinkLevel = Literal["low", "medium", "high"]
 
 class _OllamaBody(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -95,22 +100,28 @@ class OllamaMessage(_OllamaBody):
 
 class OllamaGenerationRequest(_OllamaBody):
     model: str | None = None
-    stream: bool = True
+    #: Ollama streams unless told otherwise; an explicit ``null`` does not stream.
+    stream: bool | None = True
     options: dict[str, Any] | None = None
     system: str | None = None
-    think: bool | None = None
+    think: bool | ThinkLevel | None = None
     steer: Any = None
     stop: Any = None
     num_predict: Any = None
 
+    @property
+    def thinking(self) -> bool | None:
+        """The engine's thinking override: a reasoning level means on."""
+        return self.think if self.think is None or isinstance(self.think, bool) else True
+
 
 class OllamaChatRequest(OllamaGenerationRequest):
-    messages: list[OllamaMessage] = Field(default_factory=list)
+    messages: list[OllamaMessage] | None = Field(default_factory=list)
 
 
 class OllamaGenerateRequest(OllamaGenerationRequest):
     prompt: Any = ""
-    raw: bool = False
+    raw: bool | None = False
 
 
 # ---------------------------------------------------------------------------
@@ -275,12 +286,12 @@ def resolve_options(
         raw=raw,
         sampling=sampling,
         steering=compose_request_steering(steer, default_steering),
-        thinking=body.think,
+        thinking=body.thinking,
     )
 
 
 def _chat_payload(body: OllamaChatRequest) -> list[dict[str, str]]:
-    messages = [{"role": m.role, "content": flatten_content(m.content)} for m in body.messages]
+    messages = [{"role": m.role, "content": flatten_content(m.content)} for m in body.messages or ()]
     if body.system:
         messages.insert(0, {"role": "system", "content": body.system})
     return messages
@@ -292,7 +303,7 @@ def _generate_payload(body: OllamaGenerateRequest) -> tuple[Any, bool]:
         # ``system`` belongs at the top of the chat template, so a prompt with
         # a system field routes through the chat path.
         return [{"role": "system", "content": body.system}, {"role": "user", "content": prompt}], False
-    return prompt, body.raw
+    return prompt, bool(body.raw)
 
 
 # ---------------------------------------------------------------------------

@@ -487,6 +487,52 @@ class TestOllamaApi:
             assert call.kwargs["steering"] is None
             assert call.kwargs["thinking"] is True
 
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/generate"])
+    @pytest.mark.parametrize(("think", "expected"), [
+        ("high", True), ("medium", True), ("low", True), (False, False), (None, None),
+    ])
+    def test_think_accepts_reasoning_levels(
+        self, session_and_client: Any, path: str, think: Any, expected: bool | None,
+    ) -> None:
+        """Regression: typing ``think`` as ``bool | None`` 400'd the reasoning
+        levels current Ollama clients send for gpt-oss; any level means on."""
+        session, client = session_and_client
+        session.generate.return_value = _single_run(
+            text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
+        )
+        body: dict[str, Any] = {"stream": False, "think": think}
+        if path == "/api/chat":
+            body["messages"] = [{"role": "user", "content": "hi"}]
+        else:
+            body["prompt"] = "hi"
+        resp = client.post(path, json=body)
+        assert resp.status_code == 200, resp.text
+        assert session.generate.call_args.kwargs["thinking"] is expected
+
+    def test_unknown_think_level_is_an_ollama_400(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        resp = client.post("/api/chat", json={
+            "stream": False, "think": "extreme", "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 400
+        assert "think" in resp.json()["error"]
+        session.generate.assert_not_called()
+
+    def test_explicit_nulls_read_as_unset(self, session_and_client: Any) -> None:
+        """Regression: ``"stream": null`` (and null ``raw``/``messages``) fell
+        back to the falsy default on the untyped path; the typed bodies 400'd."""
+        session, client = session_and_client
+        session.generate.return_value = _single_run(
+            text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
+        )
+        resp = client.post("/api/generate", json={"stream": None, "raw": None, "prompt": "hi"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["done"] is True and resp.json()["response"] == "ok"
+        assert session.generate.call_args.kwargs["raw"] is False
+        resp = client.post("/api/chat", json={"stream": None, "messages": None})
+        assert resp.status_code == 200, resp.text
+        assert session.generate.call_args.args[0] == []
+
     def test_version(self, client: Any) -> None:
         resp = client.get("/api/version")
         assert resp.status_code == 200
