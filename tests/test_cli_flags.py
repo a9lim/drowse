@@ -1,123 +1,876 @@
+"""CLI runner behavior: config precedence, sessions, serve policies, ``-j``
+purity, the error boundary, and the model-backed manifold / lens / SAE /
+experiment runners (with a model-free ``FakeSession``)."""
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
-from typing import Any, cast
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from drowse import cli
-from drowse.cli import runners as cli_runners
+from drowse.cli.context import CliError, effective_config, open_session
+from drowse.cli.main import main, parse_args
 from drowse.readout.types import LensLiveState, SaeLiveState
+from drowse.store.selectors import SelectorError
+from tests._cli_fakes import FakeSession, install_fake_session, poison_session
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["serve", "model", "--top-k-alts", "-1"],
-        ["serve", "model", "--port", "70000"],
-        ["manifold", "fit", "m", "--max-dim", "0"],
-        ["manifold", "fit", "m", "--k-nn", "-2"],
-        ["sae", "fetch", "model", "saelens:release", "--layer", "-1"],
-    ],
-)
-def test_numeric_flags_reject_out_of_range_values(argv: list[str]) -> None:
-    with pytest.raises(SystemExit):
-        cli.parse_args(argv)
+@pytest.fixture(autouse=True)
+def _isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from drowse.store import selectors
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    selectors.invalidate()
 
 
-@pytest.mark.parametrize("count", [257, 4096, 262144])
-def test_top_k_alternatives_accepts_vocabulary_sized_counts(count: int) -> None:
-    args = cli.parse_args(["serve", "model", "--top-k-alts", str(count)])
-    assert args.top_k_alts == count
+def _yaml(tmp_path: Path, body: str) -> str:
+    path = tmp_path / "setup.yaml"
+    path.write_text(body)
+    return str(path)
+
+
+def _stdout_json(capsys: pytest.CaptureFixture[str]) -> Any:
+    """``-j`` output must be exactly one JSON document — narration is stderr."""
+    return json.loads(capsys.readouterr().out)
 
 
 # ---------------------------------------------------------------------------
-# parse_args — top-level subcommand dispatch
+# Error boundary
 # ---------------------------------------------------------------------------
 
-def test_parse_zero_args_prints_help_and_exits_zero(capsys: pytest.CaptureFixture[str]):
-    with pytest.raises(SystemExit) as ex:
-        cli.parse_args([])
-    assert ex.value.code == 0
+@pytest.mark.parametrize(("exc", "code"), [
+    (CliError("bad input"), 2),
+    (CliError("missing", exit_code=1), 1),
+    (SelectorError("bad"), 2),
+    (FileNotFoundError("gone"), 1),
+])
+def test_main_maps_errors_to_one_line_and_exit_code(
+    exc: Exception, code: int, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import drowse.cli.main as cli_main
+
+    def boom(_args: argparse.Namespace) -> None:
+        raise exc
+
+    args = parse_args(["pack", "ls"])
+    args.func = boom
+    monkeypatch.setattr(cli_main, "parse_args", lambda _argv=None: args)
+    with pytest.raises(SystemExit) as exit_info:
+        main(["pack", "ls"])
+    assert exit_info.value.code == code
+    err = capsys.readouterr().err
+    assert err.startswith("drowse pack ls: ") and err.count("\n") == 1
+
+
+def test_drowse_error_status_maps_404_to_one_and_4xx_to_two() -> None:
+    from drowse.cli.context import exit_code_for
+
+    assert [exit_code_for(s) for s in (400, 404, 409, 422, 500, 502)] == [2, 1, 2, 2, 1, 1]
+
+
+# ---------------------------------------------------------------------------
+# Effective config: CLI > YAML > runner default
+# ---------------------------------------------------------------------------
+
+def test_yaml_compile_and_cuda_graphs_fold_on_and_cli_wins(tmp_path: Path) -> None:
+    on = _yaml(tmp_path, "model: m/x\ncompile: true\ncuda_graphs: true\n")
+    args = parse_args(["serve", "-c", on])
+    assert (args.compile, args.cuda_graphs) == (False, False)
+    effective_config(args)
+    assert (args.model, args.compile, args.cuda_graphs) == ("m/x", True, True)
+
+    off = _yaml(tmp_path, "compile: false\n")
+    args = parse_args(["serve", "m/x", "-c", off, "--compile"])
+    effective_config(args)
+    assert args.compile is True
+
+
+_MAX_TOKEN_VERBS = [
+    (["experiment", "fan", "m/x", "prompt", "-g", "a=0,1"], 256),
+    (["experiment", "transcript", "run", "t.yaml", "m/x"], 256),
+    (["experiment", "naturalness", "m/x", "p", "--manifold", "f", "-S", "0.5 a"], 128),
+]
+
+
+@pytest.mark.parametrize(("argv", "floor"), _MAX_TOKEN_VERBS, ids=["fan", "transcript", "naturalness"])
+@pytest.mark.parametrize(("flag", "yaml_value", "expected"), [
+    (["--max-tokens", "64"], "999", 64),   # CLI wins
+    ([], "999", 999),                      # YAML fills an unset flag
+    ([], None, None),                      # the runner's own floor
+])
+def test_max_tokens_precedence(
+    argv: list[str], floor: int, flag: list[str], yaml_value: str | None,
+    expected: int | None, tmp_path: Path,
+) -> None:
+    config = ["-c", _yaml(tmp_path, f"max_tokens: {yaml_value}\n")] if yaml_value else []
+    args = parse_args([*argv, *config, *flag])
+    effective_config(args, default_max_tokens=floor)
+    assert args.max_tokens == (floor if expected is None else expected)
+
+
+def test_serve_max_tokens_floor_is_1024() -> None:
+    args = parse_args(["serve", "m/x"])
+    effective_config(args)
+    assert args.max_tokens == 1024
+
+
+def test_yaml_vectors_fill_an_unset_steer_and_cli_steer_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "drowse.cli.config_file.ensure_vectors_installed",
+        lambda expr, **_kw: seen.append(expr) or [],
+    )
+    cfg = _yaml(tmp_path, 'vectors: "0.4 default/happy.sad"\n')
+    args = parse_args(["serve", "m/x", "-c", cfg])
+    effective_config(args, yaml_vectors=True)
+    assert args.steer == "0.4 default/happy.sad"
+    args = parse_args(["serve", "m/x", "-c", cfg, "-S", "0.2 bob/honest"])
+    effective_config(args, yaml_vectors=True)
+    assert args.steer == "0.2 bob/honest"
+    # Installation runs over the *effective* expression, -S included.
+    assert seen == ["0.4 default/happy.sad", "0.2 bob/honest"]
+
+
+def test_fan_never_inherits_yaml_vectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """YAML ``vectors:`` is serve's default steering; a global config must not
+    silently become the base steering under every row of a research sweep."""
+    monkeypatch.setattr(
+        "drowse.cli.config_file.ensure_vectors_installed", lambda *_a, **_k: [],
+    )
+    cfg = _yaml(tmp_path, 'vectors: "0.4 default/happy.sad"\n')
+    created = install_fake_session(monkeypatch, _FanSession)
+    main(["experiment", "fan", "m/x", "p", "-g", "a=0,1", "-c", cfg])
+    assert created[0].base_steering is None
+    main(["experiment", "fan", "m/x", "p", "-g", "a=0,1", "-c", cfg, "-S", "0.2 x"])
+    assert created[1].base_steering == "0.2 x"
+
+
+def test_yaml_sampling_defaults_reach_the_session_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: ``temperature`` / ``top_p`` / ``thinking`` were validated and
+    shown by ``config show`` but never applied to the session."""
+    created = install_fake_session(monkeypatch)
+    cfg = _yaml(tmp_path, "temperature: 0.3\ntop_p: 0.5\nthinking: false\nsystem_prompt: be terse\n")
+    args = parse_args(["serve", "m/x", "-c", cfg])
+    effective_config(args)
+    with open_session(args, roster=True) as session:
+        assert (session.config.temperature, session.config.top_p, session.config.thinking) == (0.3, 0.5, False)
+    assert created[0].load_kwargs["system_prompt"] == "be terse"
+    assert created[0].closed
+
+
+@pytest.mark.parametrize(("argv", "probes"), [
+    (["manifold", "fit", "x", "-m", "m/x"], []),
+    (["template", "score", "t", "-m", "m/x"], []),
+    (["lens", "top", "m/x", "p"], []),
+    (["serve", "m/x"], None),
+    (["serve", "m/x", "-p", "none"], []),
+    (["serve", "m/x", "-p", "epistemic"], ["epistemic"]),
+])
+def test_only_reading_verbs_bootstrap_the_probe_roster(
+    argv: list[str], probes: list[str] | None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = install_fake_session(monkeypatch)
+    args = parse_args(argv)
+    with open_session(args, roster=args.command == "serve"):
+        pass
+    assert created[0].load_kwargs["probes"] == probes
+
+
+@pytest.mark.parametrize(("flag", "dls"), [([], True), (["--no-dls"], False)])
+def test_no_dls_reaches_session_construction(
+    flag: list[str], dls: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = install_fake_session(monkeypatch)
+    with open_session(parse_args(["manifold", "fit", "x", "-m", "m/x", *flag])):
+        pass
+    assert created[0].load_kwargs["dls"] is dls
+    assert callable(created[0].load_kwargs["on_progress"])
+
+
+# ---------------------------------------------------------------------------
+# config
+# ---------------------------------------------------------------------------
+
+def test_config_show_composes_extras(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main(["config", "show", "--no-default", "-c", _yaml(tmp_path, "model: g/m\ntemperature: 0.7\n")])
     out = capsys.readouterr().out
-    assert "tui" not in out
-    assert "serve" in out and "pack" in out and "manifold" in out and "config" in out
+    assert out.startswith("# effective merged config for drowse")
+    assert "g/m" in out and "temperature: 0.7" in out
 
 
-def test_parse_bare_unknown_model_id_errors():
-    # No more argv[0] peek: bare `drowse some/model-id` is an invalid verb.
-    with pytest.raises(SystemExit):
-        cli.parse_args(["google/gemma-2-2b-it"])
+@pytest.mark.parametrize(("body", "code"), [
+    ("model: g/m\n", 0),
+    ('vectors: "0.3 jlens/orange + 0.2 sae/12"\n', 0),   # readout atoms name no manifold
+    ('vectors: "0.4 alice/honest"\n', 0),                # HF refs are installable
+    ('vectors: "0.4 local/nope"\n', 2),
+    ('vectors: "0.4 nowhere_to_be_found"\n', 2),
+    ("vectors:\n  local/nope: 0.5\n", 2),
+])
+def test_config_validate(body: str, code: int, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = _yaml(tmp_path, body)
+    if code == 0:
+        main(["config", "validate", path])
+        assert capsys.readouterr().out.strip().endswith(": ok")
+    else:
+        with pytest.raises(SystemExit) as exc:
+            main(["config", "validate", path])
+        assert exc.value.code == code
 
 
-def test_retired_tui_subcommand_is_rejected():
-    with pytest.raises(SystemExit):
-        cli.parse_args(["tui", "google/gemma-2-2b-it"])
+def test_config_validate_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["config", "validate", str(tmp_path / "nope.yaml")])
+    assert exc.value.code == 2
 
 
 # ---------------------------------------------------------------------------
-# manifold compute subtree (the flat-artifact / vector verbs folded in)
+# serve: steering preflight, live readout policies, startup order
 # ---------------------------------------------------------------------------
 
-def test_parse_vector_merge():
-    args = cli.parse_args([
-        "manifold","bake", "bard",
-        "0.3 default/happy + 0.4 a9lim/archaic",
-    ])
-    assert args.command == "manifold"
-    assert args.manifold_cmd == "bake"
-    assert args.name == "bard"
-    assert args.expression == "0.3 default/happy + 0.4 a9lim/archaic"
+class _SteeringSession:
+    """Records ``session.steering`` scopes; raises for configured misses."""
+
+    def __init__(self, missing: set[str] | None = None) -> None:
+        self.entered: list[Any] = []
+        self.missing = missing or set()
+
+    def steering(self, steering: Any) -> Any:
+        from contextlib import contextmanager
+
+        from drowse.session.session import ProfileNotRegisteredError
+
+        @contextmanager
+        def scope() -> Any:
+            for key in steering.alphas:
+                if key in self.missing:
+                    raise ProfileNotRegisteredError(f"profile {key!r} is not registered")
+            self.entered.append(steering)
+            yield
+
+        return scope()
+
+    def extract(self, *_a: Any, **_k: Any) -> Any:
+        raise AssertionError("serve must never author a manifold")
 
 
-def test_parse_vector_extract_one_positional():
-    args = cli.parse_args(["manifold","extract", "happy.sad"])
-    assert args.manifold_cmd == "extract"
-    assert args.concept == ["happy.sad"]
-    assert args.model is None
-    assert args.force is False
+def test_serve_preflight_composes_without_authoring() -> None:
+    from drowse.cli.verbs.serve import preflight_steering
+
+    session = _SteeringSession()
+    steering = preflight_steering(session, "0.3 jlens/orange + 0.2 sae/12", "m/x")
+    assert session.entered == [steering]
+    assert {"jlens/orange", "sae/12"} <= set(steering.alphas)
 
 
-def test_parse_vector_extract_two_positionals():
-    args = cli.parse_args(["manifold","extract", "happy", "sad"])
-    assert args.concept == ["happy", "sad"]
+def test_serve_preflight_miss_fails_with_an_extract_hint() -> None:
+    from drowse.cli.verbs.serve import preflight_steering
+
+    with pytest.raises(CliError) as exc:
+        preflight_steering(_SteeringSession(missing={"agentic"}), "0.5 agentic", "m/x")
+    assert exc.value.exit_code == 1
+    assert "drowse manifold extract" in str(exc.value) and "-m m/x" in str(exc.value)
 
 
-def test_parse_vector_extract_all_flags():
-    args = cli.parse_args(["manifold","extract", "happy.sad", "-m", "foo/bar", "-f"])
-    assert args.concept == ["happy.sad"]
-    assert args.model == "foo/bar"
-    assert args.force is True
+def _serve_harness(
+    monkeypatch: pytest.MonkeyPatch, session: Any,
+) -> dict[str, Any]:
+    import uvicorn
+
+    import drowse.cli.verbs.serve as serve
+    import drowse.server as server
+
+    captured: dict[str, Any] = {"warmed": False}
+    install_fake_session(monkeypatch, lambda _m, **_k: session)
+    monkeypatch.setattr(server, "create_app", lambda *_a, **kw: captured.update(app=kw) or "app")
+    monkeypatch.setattr(uvicorn, "run", lambda *_a, **kw: captured.update(run=kw))
+    monkeypatch.setattr(serve, "enable_live_lens", lambda _s: captured.update(lens=True))
+    monkeypatch.setattr(serve, "enable_live_sae", lambda _s: captured.update(sae=True))
+    monkeypatch.setattr(serve, "warm_up", lambda _s: captured.update(warmed=True))
+    return captured
 
 
-def test_parse_pack_export_gguf():
-    args = cli.parse_args(["pack", "export", "gguf", "happy.sad", "-m", "foo/bar"])
-    assert args.command == "pack"
-    assert args.pack_cmd == "export"
-    assert args.format == "gguf"
-    assert args.name == "happy.sad"
-    assert args.model == "foo/bar"
+class _ServeSession(FakeSession, _SteeringSession):
+    def __init__(self) -> None:
+        FakeSession.__init__(self)
+        _SteeringSession.__init__(self)
 
 
-def test_lens_layers_empty_string_errors(capsys: pytest.CaptureFixture[str]):
-    with pytest.raises(SystemExit) as ex:
-        cli_runners._parse_layer_list("")
-    assert ex.value.code == 2
-    assert "at least one source layer" in capsys.readouterr().err
+@pytest.mark.parametrize("compile_flag", [[], ["--compile"]])
+def test_serve_startup_uses_cli_steer_over_yaml_and_warms_only_compiled(
+    compile_flag: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _ServeSession()
+    captured = _serve_harness(monkeypatch, session)
+    cfg = _yaml(tmp_path, 'vectors: "0.4 jlens/cat"\n')
+    main(["serve", "m/x", "-c", cfg, "-S", "0.3 jlens/dog", "--no-web", *compile_flag])
+    steering = captured["app"]["default_steering"]
+    assert list(steering.alphas) == ["jlens/dog"] and session.entered == [steering]
+    assert captured["warmed"] is bool(compile_flag)
+    assert "sae" not in captured  # --no-web: no implicit provider download
+    assert session.closed
 
 
-def test_lens_layers_named_modes_parse() -> None:
-    assert cli_runners._parse_layer_list("workspace") == "workspace"
-    assert cli_runners._parse_layer_list("band") == "band"
-    assert cli_runners._parse_layer_list("all") == "all"
+def test_serve_rejects_a_bad_steer_before_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = poison_session(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["serve", "m/x", "-S", "0.5 +"])
+    assert exc.value.code == 2 and attempts == []
 
+
+def _lens_session(compatible: set[str]) -> Any:
+    class _Lens:
+        live = False
+
+        def set_live(self, enabled: bool, **_kw: Any) -> Any:
+            self.live = enabled
+            return LensLiveState(enabled=enabled, layers=(4, 5))
+
+    class _Session:
+        model_id = "org/model"
+
+        def __init__(self) -> None:
+            self.lens = _Lens()
+            self.selected: list[str] = []
+
+        def has_compatible_jlens(self) -> bool:
+            from drowse.lens.sources import LENS_SOURCES
+
+            active = LENS_SOURCES.active(self.model_id, "output")
+            return active is not None and LENS_SOURCES.format(active) in compatible
+
+        def select_jlens_source(self, source: str) -> None:
+            from drowse.lens.sources import use_lens_source
+
+            self.selected.append(source)
+            use_lens_source(self.model_id, source)
+
+    return _Session()
+
+
+def _prepare_local_lenses(model_id: str, *names: str) -> None:
+    from drowse.lens.sources import LENS_SOURCES
+
+    for name in names:
+        folder = LENS_SOURCES.local_dir(model_id, name)
+        folder.mkdir(parents=True)
+        (folder / "manifest.json").write_text("{}")
+
+
+def _active_lens(model_id: str) -> str | None:
+    from drowse.lens.sources import LENS_SOURCES
+
+    ref = LENS_SOURCES.active(model_id, "output")
+    return None if ref is None else LENS_SOURCES.format(ref)
+
+
+def test_serve_keeps_a_compatible_active_lens_selection() -> None:
+    """Regression: serve re-pointed ``active.json`` to its preferred source,
+    overwriting the user's ``lens use`` choice."""
+    from drowse.cli.verbs.serve import enable_live_lens
+    from drowse.lens.sources import LENS_SOURCES, use_lens_source
+
+    _prepare_local_lenses("org/model", "r", "j")
+    use_lens_source("org/model", "local:j")
+    before = LENS_SOURCES.active_path("org/model").read_bytes()
+    session = _lens_session({"local:j", "local:r"})
+    assert enable_live_lens(session)
+    assert session.selected == [] and session.lens.live
+    assert LENS_SOURCES.active_path("org/model").read_bytes() == before
+
+
+def test_serve_leaves_an_incompatible_active_lens_alone(capsys: pytest.CaptureFixture[str]) -> None:
+    from drowse.cli.verbs.serve import enable_live_lens
+    from drowse.lens.sources import LENS_SOURCES, use_lens_source
+
+    _prepare_local_lenses("org/model", "r", "j")
+    use_lens_source("org/model", "local:j")
+    before = LENS_SOURCES.active_path("org/model").read_bytes()
+    session = _lens_session({"local:r"})
+    assert not enable_live_lens(session)
+    assert session.selected == [] and not session.lens.live
+    assert LENS_SOURCES.active_path("org/model").read_bytes() == before
+    assert "lens use org/model" in capsys.readouterr().err
+
+
+def test_serve_adopts_the_best_compatible_lens_when_none_is_selected() -> None:
+    from drowse.cli.verbs.serve import enable_live_lens
+
+    _prepare_local_lenses("org/model", "r", "j")
+    session = _lens_session({"local:j"})
+    assert enable_live_lens(session)
+    assert session.selected == ["local:r", "local:j"]
+    assert _active_lens("org/model") == "local:j"
+
+
+def test_serve_clears_its_trial_selection_when_no_lens_is_compatible() -> None:
+    from drowse.cli.verbs.serve import enable_live_lens
+
+    _prepare_local_lenses("org/model", "r")
+    assert not enable_live_lens(_lens_session(set()))
+    assert _active_lens("org/model") is None
+
+
+def test_best_sae_release_prefers_official_canonical_provider() -> None:
+    from drowse.cli.verbs.serve import best_sae_release
+
+    rows = [
+        {"release": "third-party-canonical", "source": "saelens", "repo_id": "someone/sae", "neuronpedia": True},
+        {"release": "gemma-scope-res-all", "source": "saelens", "repo_id": "google/gemma-scope", "neuronpedia": True},
+        {"release": "gemma-scope-res-canonical", "source": "saelens", "repo_id": "google/gemma-scope", "neuronpedia": True},
+    ]
+    assert best_sae_release(rows) == "gemma-scope-res-canonical"
+
+
+_PINNED_PROVIDER = {
+    "source": "saelens:prov", "kind": "saelens", "active": True,
+    "layer": 9, "revision": "c" * 40,
+}
+
+
+@pytest.mark.parametrize(("cached", "expected", "load_kwargs"), [
+    ([], "gemma-scope-2-4b-it-res", {}),
+    ([{"source": "local:cached", "kind": "local", "active": False}], "local:cached",
+     {"layer": None, "revision": None}),
+    # The active provider binding wins, reloaded at its pinned commit/layer.
+    ([{"source": "local:cached", "kind": "local", "active": False}, _PINNED_PROVIDER],
+     "prov", {"layer": 9, "revision": "c" * 40}),
+])
+def test_serve_live_sae_prefers_prepared_sources(
+    cached: list[dict[str, Any]], expected: str, load_kwargs: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from drowse.cli.verbs.serve import enable_live_sae
+
+    class _Session:
+        model_id = "google/gemma-3-4b-it"
+        sae_info = None
+        loaded: str | None = None
+        sae = SimpleNamespace(set_live=lambda enabled, **_k: SaeLiveState(enabled=enabled, layer=22))
+
+        def load_sae(self, release: str, **kwargs: Any) -> dict[str, Any]:
+            self.loaded = release
+            self.load_kwargs = kwargs
+            return {"release": release}
+
+    monkeypatch.setattr("drowse.sae.sources.list_sae_sources", lambda _m: cached)
+    monkeypatch.setattr(
+        "drowse.sae.backend.list_sae_releases",
+        lambda _m: [{"release": "gemma-scope-2-4b-it-res", "source": "saelens",
+                     "repo_id": "google/gemma-scope-2-4b-it", "neuronpedia": True}],
+    )
+    session = _Session()
+    assert enable_live_sae(session)
+    assert session.loaded == expected and session.load_kwargs == load_kwargs
+
+
+# ---------------------------------------------------------------------------
+# -j purity: stdout is exactly one JSON document, narration goes to stderr
+# ---------------------------------------------------------------------------
+
+class _ReadoutSession(FakeSession):
+    jlens = SimpleNamespace(source_layers=[3, 4])
+    layers = [object()] * 8
+
+    def jlens_readout(self, _prompt: str, **_kw: Any) -> Any:
+        return {3: [[("a", 0.5)]], 4: [[("b", 0.25)]]}, [[("a", 0.4, 3.0, 0.5)]]
+
+    def jspace_decompose(self, _selector: str, **_kw: Any) -> Any:
+        return {3: (0.1, [("a", 0.2)]), 4: (0.3, [("b", 0.4)])}
+
+    def train_sae(self, name: str, _docs: list[str], **kw: Any) -> dict[str, Any]:
+        return {"source": f"local:{name}", "artifact": "x", "layer": kw["layer"],
+                "metrics": {"d_sae": 64, "tokens_trained": 10}}
+
+
+@pytest.mark.parametrize("argv", [
+    ["lens", "top", "m/x", "prompt", "-j"],
+    ["lens", "decompose", "happy.sad", "-m", "m/x", "-j"],
+])
+def test_lens_readouts_emit_pure_json(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_session(monkeypatch, _ReadoutSession)
+    main(argv)
+    assert _stdout_json(capsys)
+
+
+def test_sae_train_emits_pure_json_and_defaults_to_the_workspace_layer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_session(monkeypatch, _ReadoutSession)
+    corpus = tmp_path / "docs.txt"
+    corpus.write_text("one\n{\"text\": \"two\"}\n")
+    main(["sae", "train", "m/x", "mine", "--corpus", str(corpus), "-j"])
+    payload = _stdout_json(capsys)
+    assert payload["layer"] == 5  # nearest 65% depth of 8 layers
+
+
+def _patch_sae_backend(monkeypatch: pytest.MonkeyPatch, seen: dict[str, Any] | None = None) -> None:
+    class _Backend:
+        revision = "deadbeef"
+        fingerprint = "f" * 64
+        layers = frozenset({12, 14, 16})
+        sae_ids_by_layer = {"14": "layer_14"}
+        repo_id = "provider/saes"
+        neuronpedia_ids_by_layer = {"14": "np-14"}
+
+        def feature_count(self, _idx: int) -> int:
+            return 16384
+
+        def feature_direction(self, _idx: int, _fid: int) -> Any:
+            import torch
+            return torch.zeros(2304)
+
+    def load(release: str, **kwargs: Any) -> Any:
+        if seen is not None:
+            seen.update({"release": release, **kwargs})
+        return _Backend()
+
+    monkeypatch.setattr("drowse.model.arch.config_model_shape", lambda _m: (26, 2304))
+    monkeypatch.setattr("drowse.sae.backend.load_sae_backend", load)
+
+
+def test_sae_fetch_pins_the_binding_without_loading_the_model(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from drowse.sae.sources import load_active_sae, load_sae_metadata
+
+    seen: dict[str, Any] = {}
+    _patch_sae_backend(monkeypatch, seen)
+    poison_session(monkeypatch)
+    main(["sae", "fetch", "m/x", "saelens:rel", "--layer", "14", "--revision", "abc", "-j"])
+    assert _stdout_json(capsys)["layer"] == 14
+    assert (seen["revision"], seen["model_id"]) == ("abc", "m/x")
+    binding = load_sae_metadata("m/x", "rel")
+    assert binding is not None and binding["neuronpedia_id"] == "np-14"
+    active = load_active_sae("m/x")
+    assert active is not None and active[0] == "rel"
+
+
+def test_sae_fetch_rejects_an_uncovered_layer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    _patch_sae_backend(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["sae", "fetch", "m/x", "saelens:rel", "--layer", "3"])
+    assert exc.value.code == 2
+    assert "does not cover layer 3" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [
+    ["pack", "ls", "-j"],
+    ["template", "ls", "-j"],
+    ["template", "show", "weekday", "-j"],
+    ["template", "score", "weekday", "-m", "m/x", "-j"],
+    ["lens", "ls", "m/x", "-j"],
+    ["lens", "fetch", "m/x", "-j"],
+    ["sae", "ls", "m/x", "-j"],
+    ["pack", "show", "formal.casual", "-j"],
+])
+def test_inventory_verbs_emit_pure_json(
+    argv: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from drowse.store.templates import create_template_folder
+
+    create_template_folder(
+        "local", "weekday", slot="[DAY]", values=["Monday", "Tuesday"],
+        contexts=[{"turns": [{"role": "user", "content": "day?"}], "assistant": "It is [DAY]."}],
+    )
+    install_fake_session(monkeypatch)
+    monkeypatch.setattr(
+        "drowse.generation.scoring.score_template",
+        lambda _session, _tmpl, **_kw: [SimpleNamespace(to_dict=lambda: {"ok": True})],
+    )
+    monkeypatch.setattr(
+        "drowse.lens.sources.fetch_lens_source",
+        lambda *_a, **_k: SimpleNamespace(to_json=lambda: {"name": "neuronpedia"}),
+    )
+    main(argv)
+    assert _stdout_json(capsys) is not None
+
+
+class _FanSession(FakeSession):
+    def generate_sweep(self, _prompt: Any, sweep: dict[str, list[float]], **kwargs: Any) -> Any:
+        import itertools
+
+        from drowse.generation.results import GenerationResult, RunSet
+
+        self.base_steering = kwargs["base_steering"]
+        rows = [dict(zip(sweep, combo, strict=True)) for combo in itertools.product(*sweep.values())]
+        results = [
+            GenerationResult(text="", tokens=[], token_count=7 + i, tok_per_sec=0.0,
+                             elapsed=0.0, finish_reason="stop")
+            for i in range(len(rows))
+        ]
+        for i, (result, row) in enumerate(zip(results, rows, strict=True)):
+            kwargs["on_result"](i, result, row)
+        return RunSet(results, node_ids=[None] * len(rows), grid=rows, kind="fan")
+
+
+def test_experiment_fan_reports_each_row_on_stderr_and_json_stays_pure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    created = install_fake_session(monkeypatch, _FanSession)
+    main(["experiment", "fan", "m/x", "p", "-g", "a=0,0.5,1", "-g", "b=0,1", "-S", "0.2 x", "-j"])
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["kind"] == "fan"
+    assert "  1/6: a=+0.000, b=+0.000" in captured.err
+    assert "  6/6: a=+1.000, b=+1.000" in captured.err
+    assert created[0].base_steering == "0.2 x"
+
+
+def test_experiment_fan_rejects_a_bad_grid_before_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = poison_session(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["experiment", "fan", "m/x", "p", "-g", "a=0,warm"])
+    assert exc.value.code == 2 and attempts == []
+
+
+def test_transcript_run_prints_the_engine_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The verb is a thin print of ``Transcript.replay`` (whose regeneration
+    semantics ``tests/test_transcript.py`` owns): the transcript's model, the
+    ``--strict`` flag, and each step's recorded → replayed drift."""
+    from drowse.loom.transcript import Transcript, Turn
+
+    nodes = {
+        "rec": SimpleNamespace(role="assistant", text="hello"),
+        "rep": SimpleNamespace(role="assistant", text="again"),
+    }
+
+    class _Session(FakeSession):
+        tree = SimpleNamespace(get=nodes.__getitem__)
+
+    calls: list[dict[str, Any]] = []
+
+    def replay(_self: Transcript, session: Any, **kwargs: Any) -> Any:
+        calls.append({"session": session, **kwargs})
+        delta = SimpleNamespace(name="warm", delta=-0.25, a_value=0.5, b_value=0.25)
+        step = SimpleNamespace(recorded_id="rec", replay_id="rep",
+                               diff=SimpleNamespace(readings=[delta]))
+        return SimpleNamespace(leaf_id="leaf0000", steps=[step])
+
+    path = tmp_path / "t.yaml"
+    Transcript(model_id="m/x", system_prompt=None, probes=[],
+               turns=[Turn("user", "hi"), Turn("assistant", "hello")]).save(path)
+    monkeypatch.setattr(Transcript, "replay", replay)
+    created = install_fake_session(monkeypatch, _Session)
+    main(["experiment", "transcript", "run", str(path), "-s"])
+    assert created[0].model_id == "m/x"
+    assert calls == [{"session": created[0], "mode": "default", "strict": True}]
+    out = capsys.readouterr().out
+    assert "recorded: hello" in out and "replayed: again" in out
+    assert "Δ -0.2500  (recorded +0.5000 → got +0.2500)" in out
+
+
+def _authored_behavior_manifold() -> None:
+    from drowse.store.manifold_authoring import create_manifold_folder
+
+    domain = {"type": "box", "axes": [{"name": "t", "periodic": False, "period": 1.0, "lo": 0.0, "hi": 1.0}]}
+    nodes = [{"label": label, "coords": [i / 2], "statements": [label]} for i, label in enumerate("abc")]
+    create_manifold_folder("local", "behavior", "", domain, nodes)
+
+
+def test_experiment_naturalness_prints_the_engine_report(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The verb is a thin print of ``fit.naturalness.evaluate`` (whose
+    behavior-manifold semantics ``tests/test_naturalness.py`` owns): the
+    resolved folder, the steering, the floors, and a pure ``-j`` payload."""
+    import drowse.fit.naturalness as nat
+
+    calls: list[tuple[Any, ...]] = []
+
+    def evaluate(session: Any, folder: Any, prompt: str, steering: str,
+                 compare_linear: bool, **kwargs: Any) -> Any:
+        calls.append((folder.name, prompt, steering, compare_linear, kwargs["max_tokens"]))
+        kwargs["on_progress"]("fitting behavior manifold (3 nodes)...")
+        return nat.NaturalnessReport(prompt=prompt, scores=(
+            nat.NaturalnessScore("manifold", steering, "text", (0.1, 0.3)),
+        ))
+
+    _authored_behavior_manifold()
+    created = install_fake_session(monkeypatch, FakeSession)
+    monkeypatch.setattr(nat, "evaluate", evaluate)
+    main(["experiment", "naturalness", "m/x", "p", "--manifold", "behavior", "-S", "0.5 x", "-j"])
+    captured = capsys.readouterr()
+    row = json.loads(captured.out)["results"][0]
+    assert row["mean_bhattacharyya"] == pytest.approx(0.2)
+    assert "fitting behavior manifold" in captured.err
+    assert calls == [("behavior", "p", "0.5 x", False, 128)]
+    assert created[0].load_kwargs["probes"] == []
+
+
+@pytest.mark.parametrize(("argv", "message"), [
+    (["--manifold", "behavior", "-S", "0.5 jlens/cat", "--compare-linear"], "single manifold"),
+    (["--manifold", "nowhere", "-S", "0.5 x"], "neither a manifold folder"),
+])
+def test_experiment_naturalness_fails_before_loading(
+    argv: list[str], message: str, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _authored_behavior_manifold()
+    attempts = poison_session(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["experiment", "naturalness", "m/x", "p", *argv])
+    assert exc.value.code == 2 and attempts == []
+    assert message in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# manifold extract / fit runners
+# ---------------------------------------------------------------------------
+
+class _AuthoringSession(FakeSession):
+    def extract(self, *args: Any, **kwargs: Any) -> Any:
+        self.extract_call = (args, kwargs)
+        role = kwargs.get("role")
+        return ("happy.sad" + (f":role-{role}" if role else "")), object()
+
+    def fit(self, *_args: Any, **kwargs: Any) -> Any:
+        from drowse.geometry.domains import CustomDomain
+
+        self.fit_kwargs = kwargs
+        return SimpleNamespace(
+            name="roles", layers={0: object()}, node_labels=["a", "b"],
+            domain=CustomDomain(1), feature_space="raw", metadata={"fit_mode": "auto"},
+        )
+
+
+def test_extract_narrates_and_reports_the_canonical_tensor(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from drowse.base.paths import tensor_filename
+
+    created = install_fake_session(monkeypatch, _AuthoringSession)
+    main(["manifold", "extract", "alice/happy", "sad", "-m", "fake/model", "--role", "pirate"])
+    args, kwargs = created[0].extract_call
+    assert args == ("happy", "sad")
+    assert (kwargs["namespace"], kwargs["role"], kwargs["kind"]) == ("alice", "pirate", "abstract")
+    assert callable(kwargs["on_progress"])
+    captured = capsys.readouterr()
+    assert f"/alice/happy.sad/{tensor_filename('fake/model')}" in captured.out
+    assert "Loading model: fake/model" in captured.err
+
+
+def test_extract_corrupt_tensor_is_not_a_cache_hit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from drowse.base.paths import manifold_dir, tensor_filename
+
+    folder = manifold_dir("local", "happy.sad")
+    folder.mkdir(parents=True)
+    (folder / tensor_filename("fake/model")).write_bytes(b"")
+    created = install_fake_session(monkeypatch, _AuthoringSession)
+    main(["manifold", "extract", "happy.sad", "-m", "fake/model"])
+    assert hasattr(created[0], "extract_call")
+
+
+@pytest.mark.parametrize("argv", [
+    ["manifold", "extract", "january", "july", "-m", "m/x", "--kind", "custom"],
+    ["manifold", "generate", "months", "--concepts", "jan", "jul", "-m", "m/x", "--kind", "custom"],
+    ["manifold", "extract", "a", "b", "c", "-m", "m/x"],
+    ["manifold", "generate", "solo", "--concepts", "one", "-m", "m/x"],
+    ["manifold", "fit", "anything", "-m", "m/x", "--layers", "sample"],
+    ["manifold", "fit", "anything", "-m", "m/x", "--layers", "1,x"],
+])
+def test_authoring_rejections_happen_before_the_model_loads(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = poison_session(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == 2 and attempts == []
+
+
+def test_fit_delegates_overrides_to_the_fit_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
+
+    folder = create_discover_manifold_folder(
+        "local", "roles", "", fit_mode="auto",
+        node_corpora={"pirate": ["arrr"], "scholar": ["indeed"]},
+        node_roles={"pirate": "pirate", "scholar": "scholar"},
+    )
+    created = install_fake_session(monkeypatch, _AuthoringSession)
+    main(["manifold", "fit", str(folder), "-m", "fake/model", "--smoothing", "0.25"])
+    assert created[0].fit_kwargs["fit_mode"] is None
+    assert created[0].fit_kwargs["hyperparams"] == {"smoothing": 0.25}
+
+
+def test_a_folder_path_without_manifold_json_is_reported_as_such(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: an existing directory fell through to name resolution and
+    was reported as a missing ``~/.drowse/manifolds/<path>`` manifold."""
+    empty = tmp_path / "not-a-manifold"
+    empty.mkdir()
+    attempts = poison_session(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["manifold", "fit", str(empty), "-m", "m/x"])
+    assert exc.value.code == 2 and attempts == []
+    assert f"no manifold.json in {empty}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [
+    ["pack", "rm", "../../etc", "-y"],
+    ["pack", "show", "../x"],
+    ["pack", "clear", "/x", "-m", "m/x"],
+    ["pack", "export", "archive", "a/b/c"],
+    ["manifold", "extract", "../x", "-m", "m/x"],
+    ["manifold", "generate", "a/", "--concepts", "x", "y", "-m", "m/x"],
+    ["manifold", "fit", "/personas", "-m", "m/x"],
+    ["manifold", "why", "../x", "-m", "m/x"],
+    ["manifold", "from-template", "../t"],
+    ["template", "create", "../t", "--slot", "X", "--values", "a", "b", "--contexts", "c.json"],
+    ["template", "show", "../t"],
+    ["template", "rm", "../t", "-y"],
+    ["template", "score", "../t", "-m", "m/x"],
+    ["sae", "show", "m/x", "local:../x"],
+])
+def test_malformed_references_are_one_line_usage_errors(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: an unsafe or empty ``ns/name`` escaped ``main`` as a raw
+    ``ValueError`` traceback from the path-traversal barrier."""
+    monkeypatch.chdir(Path(__file__).parent.parent / "drowse" / "data")
+    attempts = poison_session(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    err = capsys.readouterr().err
+    assert exc.value.code == 2 and attempts == [], err
+    assert err.count("\n") == 1
+
+
+def test_fit_overrides_against_an_authored_folder_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    _authored_behavior_manifold()
+    attempts = poison_session(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["manifold", "fit", "behavior", "-m", "m/x", "--max-dim", "2"])
+    assert exc.value.code == 2 and attempts == []
+
+
+# ---------------------------------------------------------------------------
+# lens fit
+# ---------------------------------------------------------------------------
 
 def test_lens_fit_pins_a_hub_corpus_once_for_preflight_and_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.corpus as lens_io
-    from drowse.cli.runners import lens as lens_runner
+    import drowse.cli.verbs.lens as lens_verbs
+    import drowse.lens.corpus as lens_store
     from drowse.lens.corpus import HfLensCorpus, LensCorpusMix
 
     pinned = LensCorpusMix((
@@ -125,1286 +878,137 @@ def test_lens_fit_pins_a_hub_corpus_once_for_preflight_and_stream(
         HfLensCorpus("org/zh", "cmn", "b" * 40, files=64),
     ), (3, 1))
     pins: list[Any] = []
-
-    def pin(corpus: Any) -> Any:
-        pins.append(corpus)
-        return pinned
-
-    preflights: list[Any] = []
+    proofs: list[Any] = []
     streams: list[tuple[int, Any]] = []
 
-    def preflight(*_args: Any, docs: Any = None, hf_corpus: Any = None) -> bool:
-        preflights.append(hf_corpus)
-        return False
-
-    def stream(n: int, corpus: Any) -> tuple[list[str], str]:
+    def stream(n: int, corpus: Any) -> Any:
         streams.append((n, corpus))
         raise SystemExit(0)  # stop before the model load
 
-    monkeypatch.setattr(lens_io, "pin_lens_corpus", pin)
-    monkeypatch.setattr(lens_io, "stream_lens_corpus", stream)
-    monkeypatch.setattr(lens_runner, "_try_lens_fit_noop_preflight", preflight)
-    args = cli.parse_args([
-        "lens", "fit", "m", "--hf-corpus", "org/data@main,text_field=body,weight=3",
-        "--hf-corpus", "org/zh:cmn,files=64", "--prompts", "7",
-    ])
+    monkeypatch.setattr(lens_store, "pin_lens_corpus", lambda c: pins.append(c) or pinned)
+    monkeypatch.setattr(lens_store, "stream_lens_corpus", stream)
+    monkeypatch.setattr(
+        lens_verbs, "lens_fit_is_noop",
+        lambda _args, _layers, **kw: proofs.append(kw["hf_corpus"]) or False,
+    )
     with pytest.raises(SystemExit):
-        lens_runner._run_lens_fit(args)
+        main(["lens", "fit", "m", "--hf-corpus", "org/data@main,text_field=body,weight=3",
+              "--hf-corpus", "org/zh:cmn,files=64", "--prompts", "7"])
     assert pins == [LensCorpusMix((
         HfLensCorpus("org/data", None, "main", "body"),
         HfLensCorpus("org/zh", "cmn", files=64),
     ), (3, 1))]
-    assert preflights == [pinned]
-    assert streams == [(7, pinned)]
+    assert proofs == [pinned] and streams == [(7, pinned)]
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["lens", "fit", "m", "--hf-corpus", "org/data:"],
-        ["lens", "fit", "m", "--hf-corpus", "org/data,weight=2"],
-        ["lens", "fit", "m", "--hf-corpus", "org/data,files=0"],
-        ["lens", "fit", "m", "--hf-corpus", "org/data", "--hf-corpus", "org/zh,seed=1"],
-    ],
-)
-def test_lens_fit_rejects_bad_hub_corpus_options(
-    argv: list[str], capsys: pytest.CaptureFixture[str],
-) -> None:
-    from drowse.cli.runners import lens as lens_runner
-
-    with pytest.raises(SystemExit) as ex:
-        lens_runner._run_lens_fit(cli.parse_args(argv))
-    assert ex.value.code == 2
-    assert "lens fit:" in capsys.readouterr().err
-
-
-def test_lens_fit_corpus_flags_are_exclusive() -> None:
-    with pytest.raises(SystemExit):
-        cli.parse_args([
-            "lens", "fit", "m", "--corpus", "docs.txt", "--hf-corpus", "org/data",
-        ])
-
-
-# ---------------------------------------------------------------------------
-# config subtree
-# ---------------------------------------------------------------------------
-
-def test_parse_config_show():
-    args = cli.parse_args(["config", "show"])
-    assert args.command == "config"
-    assert args.config_cmd == "show"
-
-
-def test_parse_config_validate():
-    args = cli.parse_args(["config", "validate", "/tmp/setup.yaml"])
-    assert args.config_cmd == "validate"
-    assert args.file == "/tmp/setup.yaml"
-
-
-def test_config_show_runs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    cli.main(["config", "show", "--no-default"])
-    out = capsys.readouterr().out
-    assert "drowse" in out  # header
-
-
-def test_config_show_with_extra(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    p = tmp_path / "x.yaml"
-    p.write_text("model: google/gemma-2-2b-it\ntemperature: 0.7\n")
-    cli.main(["config", "show", "--no-default", "-c", str(p)])
-    out = capsys.readouterr().out
-    assert "google/gemma-2-2b-it" in out
-    assert "temperature" in out
-
-
-def test_config_validate_ok(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    p = tmp_path / "x.yaml"
-    p.write_text("model: google/gemma-2-2b-it\n")
-    cli.main(["config", "validate", str(p)])
-    out = capsys.readouterr().out
-    assert "ok" in out
-
-
-def test_config_validate_missing_file(tmp_path: Path):
-    with pytest.raises(SystemExit) as ex:
-        cli.main(["config", "validate", str(tmp_path / "nope.yaml")])
-    assert ex.value.code == 2
-
-
-def test_config_validate_local_vector_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    p = tmp_path / "x.yaml"
-    p.write_text("vectors:\n  local/nope: 0.5\n")
-    with pytest.raises(SystemExit) as ex:
-        cli.main(["config", "validate", str(p)])
-    assert ex.value.code == 2
-
-
-# ---------------------------------------------------------------------------
-# --compile / YAML compile: opt-in (defaults off — torch 2.12 inductor
-# bugs on newer architectures and limited per-token benefit on
-# interactive workloads make compile a deliberate choice, not a default)
-# ---------------------------------------------------------------------------
-
-def test_serve_compile_flag_parses():
-    args = cli.parse_args(["serve", "google/gemma-2-2b-it"])
-    assert getattr(args, "compile", False) is False
-    args = cli.parse_args(["serve", "google/gemma-2-2b-it", "--compile"])
-    assert args.compile is True
-
-
-def test_yaml_compile_true_folds_onto_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """YAML ``compile: true`` should set ``args.compile=True`` when the
-    CLI didn't already pass ``--compile``."""
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    p = tmp_path / "on.yaml"
-    p.write_text("model: google/gemma-2-2b-it\ncompile: true\n")
-    args = cli.parse_args(["serve", "-c", str(p)])
-    # Pre-effective: argparse default is False.
-    assert getattr(args, "compile", False) is False
-    cli_runners._load_effective_config(args)
-    # YAML opt-in folded on.
-    assert args.compile is True
-
-
-def test_yaml_compile_false_is_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """``compile: false`` matches the default — accepting it in YAML
-    keeps round-trip symmetry but doesn't flip ``args.compile``."""
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    p = tmp_path / "off.yaml"
-    p.write_text("model: google/gemma-2-2b-it\ncompile: false\n")
-    args = cli.parse_args(["serve", "-c", str(p)])
-    cli_runners._load_effective_config(args)
-    assert getattr(args, "compile", False) is False
-
-
-def test_cli_compile_overrides_yaml_compile_false(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """CLI flag wins over YAML — passing ``--compile`` even with
-    ``compile: false`` in YAML must keep the opt-in."""
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    p = tmp_path / "off.yaml"
-    p.write_text("model: google/gemma-2-2b-it\ncompile: false\n")
-    args = cli.parse_args(["serve", "-c", str(p), "--compile"])
-    cli_runners._load_effective_config(args)
-    assert args.compile is True
-
-
-# ---------------------------------------------------------------------------
-# --max-tokens: CLI wins, YAML fills gaps, runner default floors it
-# ---------------------------------------------------------------------------
-
-#: (argv-prefix, runner default) for every verb carrying its own --max-tokens.
-_MAX_TOKEN_VERBS = [
-    (["experiment", "fan", "m/x", "prompt", "-g", "a=0,1"], 256),
-    (["experiment", "transcript", "run", "t.yaml", "m/x"], 256),
-    (
-        [
-            "experiment", "naturalness", "m/x", "prompt",
-            "--manifold", "f", "-S", "0.5 a",
-        ],
-        128,
-    ),
-]
-
-
-@pytest.mark.parametrize(
-    "argv,runner_default", _MAX_TOKEN_VERBS,
-    ids=["fan", "transcript-run", "naturalness"],
-)
-def test_cli_max_tokens_survives_effective_config(
-    argv: list[str], runner_default: int,
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-):
-    """An explicit ``--max-tokens N`` must reach the runner unchanged.
-
-    The shared helper was written for ``serve`` (no such flag) and used to
-    stamp the YAML value or a hardcoded 1024 over whatever the flag parsed.
-    """
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    p = tmp_path / "setup.yaml"
-    p.write_text("max_tokens: 999\n")
-    args = cli.parse_args([*argv, "-c", str(p), "--max-tokens", "64"])
-    assert args.max_tokens == 64
-    cli_runners._load_effective_config(args, default_max_tokens=runner_default)
-    assert args.max_tokens == 64
-
-
-@pytest.mark.parametrize(
-    "argv,runner_default", _MAX_TOKEN_VERBS,
-    ids=["fan", "transcript-run", "naturalness"],
-)
-def test_yaml_max_tokens_fills_unset_flag(
-    argv: list[str], runner_default: int,
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-):
-    """With the flag unset, YAML fills the gap (the flag defaults to None)."""
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    p = tmp_path / "setup.yaml"
-    p.write_text("max_tokens: 999\n")
-    args = cli.parse_args([*argv, "-c", str(p)])
-    assert args.max_tokens is None
-    cli_runners._load_effective_config(args, default_max_tokens=runner_default)
-    assert args.max_tokens == 999
-
-
-@pytest.mark.parametrize(
-    "argv,runner_default", _MAX_TOKEN_VERBS,
-    ids=["fan", "transcript-run", "naturalness"],
-)
-def test_runner_default_max_tokens_floors_unset_flag_and_yaml(
-    argv: list[str], runner_default: int,
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-):
-    """Neither CLI nor YAML supplied one — the runner's own default lands."""
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    args = cli.parse_args(argv)
-    cli_runners._load_effective_config(args, default_max_tokens=runner_default)
-    assert args.max_tokens == runner_default
-
-
-def test_serve_max_tokens_defaults_to_1024(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-):
-    """``serve`` has no ``--max-tokens`` flag, so it always gets the helper's
-    own 1024 default (unchanged by the CLI-wins seeding)."""
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    args = cli.parse_args(["serve", "google/gemma-2-2b-it"])
-    assert getattr(args, "max_tokens", None) is None
-    cli_runners._load_effective_config(args)
-    assert args.max_tokens == 1024
-
-
-def test_yaml_compile_invalid_type_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Reject non-boolean ``compile:`` values rather than coercing —
-    ``compile: "true"`` (a string) would otherwise pass through as
-    truthy and silently turn compile on."""
-    from drowse.cli.config_file import ConfigFile, ConfigFileError
-    p = tmp_path / "bad.yaml"
-    p.write_text("compile: \"false\"\n")
-    with pytest.raises(ConfigFileError, match="compile must be a boolean"):
-        ConfigFile.load(p)
-
-
-# ---------------------------------------------------------------------------
-# Runners
-# ---------------------------------------------------------------------------
-
-def test_run_extract_corrupt_tensor_does_not_short_circuit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-
-    from drowse.base.paths import manifold_dir, tensor_filename
-    model_id = "fake/model"
-    # A steering vector is a 2-node pca manifold (4.0); extract lands it under
-    # ``manifolds/<ns>/<canonical>/``.  A present per-model tensor is the
-    # A bare corrupt tensor must not be treated as a validated cache hit.
-    folder = manifold_dir("local", "happy.sad")
-    folder.mkdir(parents=True, exist_ok=True)
-    tensor = folder / tensor_filename(model_id)
-    tensor.write_bytes(b"")
-
-    called = {"extract": 0}
-
-    class FakeSession:
-        def __init__(self, **kw: Any) -> None:
-            self.model_id = model_id
-            self.model_info = {"model_type": "fake", "num_layers": 1,
-                               "hidden_dim": 8, "vram_used_gb": 0.0}
-            self.probes = {}
-
-        def extract(self, *a: Any, **kw: Any) -> Any:
-            called["extract"] += 1
-            return "happy.sad", object()
-
-    monkeypatch.setattr(
-        cli_runners, "_make_session", lambda args, **_kwargs: FakeSession(),
-    )
-    monkeypatch.setattr(cli_runners, "_print_model_info", lambda s: None)
-    monkeypatch.setattr(cli_runners, "_print_startup", lambda args: None)
-
-    cli.main(["manifold", "extract", "happy.sad", "-m", model_id])
-    assert called["extract"] == 1
-    out = capsys.readouterr().out
-    assert "extracted happy.sad" in out
-
-
-def test_run_role_extract_reports_canonical_tensor_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    from drowse.base.paths import tensor_filename
-
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-
-    class FakeSession:
-        def extract(self, *_args: Any, **_kwargs: Any) -> Any:
-            return "happy.sad:role-pirate", object()
-
-    monkeypatch.setattr(
-        cli_runners, "_make_session", lambda _args, **_kwargs: FakeSession(),
-    )
-    monkeypatch.setattr(cli_runners, "_print_model_info", lambda _session: None)
-    monkeypatch.setattr(cli_runners, "_print_startup", lambda _args: None)
-
-    cli.main([
-        "manifold", "extract", "happy.sad", "-m", "fake/model",
-        "--role", "pirate",
-    ])
-    output = capsys.readouterr().out
-    assert "extracted happy.sad:role-pirate" in output
-    assert f"/local/happy.sad/{tensor_filename('fake/model')}" in output
-    assert ":role-pirate/" not in output
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["manifold", "extract", "happy", "-m", "fake/model",
-         "--sae-revision", "rev"],
-        ["manifold", "fit", "missing", "-m", "fake/model",
-         "--sae-revision", "rev"],
-    ],
-)
-def test_sae_revision_flag_is_not_advertised(argv: list[str]) -> None:
+@pytest.mark.parametrize("argv", [
+    ["lens", "fit", "m", "--hf-corpus", "org/data:"],
+    ["lens", "fit", "m", "--hf-corpus", "org/data,weight=2"],
+    ["lens", "fit", "m", "--hf-corpus", "org/data,files=0"],
+    ["lens", "fit", "m", "--hf-corpus", "org/data", "--hf-corpus", "org/zh,seed=1"],
+    ["lens", "fit", "m", "--layers", "sample"],
+    ["lens", "fit", "m", "--layers", ""],
+    ["lens", "fit", "m", "--layers", "band"],
+])
+def test_lens_fit_rejects_bad_options(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
-        cli.parse_args(argv)
+        main(argv)
     assert exc.value.code == 2
+    assert capsys.readouterr().err.startswith("drowse lens fit: ")
 
 
-def test_fit_smoothing_override_is_delegated_to_fit_transaction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(("verb", "source"), [("lens", "local:r"), ("sae", "local:mine")])
+def test_source_removal_requires_yes(
+    verb: str, source: str, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from drowse.geometry.domains import CustomDomain
-    from drowse.store.manifold_authoring import create_discover_manifold_folder
-
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    folder = create_discover_manifold_folder(
-        "local", "roles", "", fit_mode="auto",
-        node_corpora={"pirate": ["arrr"], "scholar": ["indeed"]},
-        node_roles={"pirate": "pirate", "scholar": "scholar"},
-        node_kinds={"pirate": "concrete", "scholar": "abstract"},
-    )
-    fake_manifold = SimpleNamespace(
-        name="roles", layers={0: object()}, node_labels=["pirate", "scholar"],
-        domain=CustomDomain(1), feature_space="raw",
-        metadata={"fit_mode": "auto"},
-    )
-    fit_kwargs: dict[str, Any] = {}
-
-    class _FakeSession:
-        model_info = {}
-
-        def fit(self, *_args: Any, **kwargs: Any) -> Any:
-            fit_kwargs.update(kwargs)
-            return fake_manifold
-
-    monkeypatch.setattr(
-        cli_runners, "_make_session", lambda *_args, **_kwargs: _FakeSession(),
-    )
-    monkeypatch.setattr(cli_runners, "_print_startup", lambda _args: None)
-    monkeypatch.setattr(cli_runners, "_print_model_info", lambda _session: None)
-    args = cli.parse_args([
-        "manifold", "fit", str(folder), "-m", "fake/model",
-        "--smoothing", "0.25",
-    ])
-    cli_runners._run_manifold_fit(args)
-    assert fit_kwargs["fit_mode"] is None
-    assert fit_kwargs["hyperparams"] == {"smoothing": 0.25}
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["manifold", "extract", "happy.sad", "-m", "fake/model"],
-        ["manifold", "fit", "happy.sad", "-m", "fake/model"],
-    ],
-    ids=["extract", "fit"],
-)
-@pytest.mark.parametrize("flag, expected_dls", [([], True), (["--no-dls"], False)])
-def test_no_dls_reaches_session_construction(
-    argv: list[str],
-    flag: list[str],
-    expected_dls: bool,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``--no-dls`` is accepted by both fit verbs and inverts into ``dls=``.
-
-    The two verbs where DLS actually applies did not expose the flag at all,
-    so this pins the subparser plus ``_make_session``'s
-    ``dls = not args.no_dls`` inversion.  The session-side hop
-    (``self._dls`` -> ``pipe.fit(dls=...)``) is pinned in
-    ``test_manifold_extraction``.
-    """
-    from drowse.session.session import DrowseSession
-    from drowse.store.manifold_authoring import create_discover_manifold_folder
-
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    create_discover_manifold_folder(
-        "local", "happy.sad", "", fit_mode="pca",
-        node_corpora={"happy": ["yes"], "sad": ["no"]},
-    )
-    captured: dict[str, Any] = {}
-
-    class _FakeSession:
-        model_info: dict[str, Any] = {}
-
-        def extract(self, *_args: Any, **_kwargs: Any) -> Any:
-            return "happy.sad", object()
-
-        def fit(self, *_args: Any, **_kwargs: Any) -> Any:
-            from drowse.geometry.domains import CustomDomain
-            return SimpleNamespace(
-                name="happy.sad", layers={0: object()},
-                node_labels=["happy", "sad"], domain=CustomDomain(1),
-                feature_space="raw", metadata={"fit_mode": "pca"},
-            )
-
-    def _fake_from_pretrained(_model_id: str, **kwargs: Any) -> Any:
-        captured.update(kwargs)
-        return _FakeSession()
-
-    monkeypatch.setattr(
-        DrowseSession, "from_pretrained", staticmethod(_fake_from_pretrained),
-    )
-    monkeypatch.setattr(cli_runners, "_print_startup", lambda _args: None)
-    monkeypatch.setattr(cli_runners, "_print_model_info", lambda _session: None)
-
-    cli.main([*argv, *flag])
-    assert captured["dls"] is expected_dls
-
-
-def test_serve_stale_lens_gate_uses_weight_compatibility() -> None:
-    class _Lens:
-        enabled = False
-
-        def set_live(self, enabled: bool, **_kwargs: Any) -> Any:
-            self.enabled = enabled
-            return LensLiveState(enabled=enabled, layers=())
-
-    class _Session:
-        lens = _Lens()
-
-        def has_compatible_jlens(self) -> bool:
-            return False
-
-    session = _Session()
-    assert not cli_runners._enable_serve_live_lens_if_compatible(session)
-    assert not _Session.lens.enabled
-
-
-def test_serve_selects_cached_lens_when_active_pointer_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Lens:
-        live_enabled = False
-
-        def set_live(self, enabled: bool, **_kwargs: Any) -> Any:
-            self.live_enabled = enabled
-            return LensLiveState(enabled=enabled, layers=(4, 5))
-
-    class _Session:
-        model_id = "org/model"
-        selected: str | None = None
-
-        def __init__(self) -> None:
-            self.lens = _Lens()
-
-        def has_compatible_jlens(self) -> bool:
-            return self.selected == "local:default"
-
-        def select_jlens_source(self, source: str) -> None:
-            self.selected = source
-
-    monkeypatch.setattr(
-        "drowse.lens.sources.list_lens_sources",
-        lambda _model: [{
-            "source": "local:default", "kind": "local", "active": False,
-        }],
-    )
-    session = _Session()
-    assert cli_runners._enable_serve_live_lens_if_compatible(session)
-    assert session.selected == "local:default"
-    assert session.lens.live_enabled
-
-
-def test_serve_prefers_workspace_r_over_active_lower_priority_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Lens:
-        def set_live(self, enabled: bool, **_kwargs: Any) -> Any:
-            return LensLiveState(enabled=enabled, layers=(4, 5))
-
-    class _Session:
-        model_id = "org/model"
-        selected = "local:default"
-        lens = _Lens()
-
-        def has_compatible_jlens(self) -> bool:
-            return self.selected in {"local:default", "workspace-r"}
-
-        def select_jlens_source(self, source: str) -> None:
-            self.selected = source
-
-    monkeypatch.setattr(
-        "drowse.lens.sources.list_lens_sources",
-        lambda _model: [
-            {"source": "local:default", "kind": "local", "active": True},
-            {"source": "workspace-j", "kind": "huggingface", "active": False},
-            {"source": "workspace-r", "kind": "huggingface", "active": False},
-        ],
-    )
-    session = _Session()
-    assert cli_runners._enable_serve_live_lens_if_compatible(session)
-    assert session.selected == "workspace-r"
-
-
-def test_best_serve_sae_release_prefers_official_canonical_provider() -> None:
-    rows = [
-        {
-            "release": "third-party-canonical", "source": "saelens",
-            "repo_id": "someone/sae", "neuronpedia": True,
-        },
-        {
-            "release": "gemma-scope-res-all", "source": "saelens",
-            "repo_id": "google/gemma-scope", "neuronpedia": True,
-        },
-        {
-            "release": "gemma-scope-res-canonical", "source": "saelens",
-            "repo_id": "google/gemma-scope", "neuronpedia": True,
-        },
-    ]
-    assert cli_runners._best_serve_sae_release(rows) == (
-        "gemma-scope-res-canonical"
-    )
-
-
-def test_serve_attaches_best_sae_and_enables_live(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Sae:
-        live_enabled = False
-
-        def set_live(self, enabled: bool, **_kwargs: Any) -> Any:
-            self.live_enabled = enabled
-            return SaeLiveState(enabled=enabled, layer=22)
-
-    class _Session:
-        model_id = "google/gemma-3-4b-it"
-        sae_info = None
-        loaded: str | None = None
-
-        def __init__(self) -> None:
-            self.sae = _Sae()
-
-        def load_sae(self, release: str, **kwargs: Any) -> dict[str, Any]:
-            self.loaded = release
-            self.load_kwargs = kwargs
-            return {"release": release, "layer": 22, "width": 16_384}
-
-    monkeypatch.setattr(
-        "drowse.sae.sources.list_sae_sources",
-        lambda _model: [],
-    )
-    monkeypatch.setattr(
-        "drowse.sae.backend.list_sae_releases",
-        lambda _model: [{
-            "release": "gemma-scope-2-4b-it-res",
-            "source": "saelens",
-            "repo_id": "google/gemma-scope-2-4b-it",
-            "neuronpedia": True,
-        }],
-    )
-    session = _Session()
-    assert cli_runners._enable_serve_live_sae_if_available(session)
-    assert session.loaded == "gemma-scope-2-4b-it-res"
-    assert session.sae.live_enabled
-
-
-def test_serve_prefers_cached_sae_over_registry_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Sae:
-        def set_live(self, enabled: bool, **_kwargs: Any) -> Any:
-            return SaeLiveState(enabled=enabled, layer=22)
-
-    class _Session:
-        model_id = "google/gemma-3-4b-it"
-        sae_info = None
-        loaded: str | None = None
-
-        def __init__(self) -> None:
-            self.sae = _Sae()
-
-        def load_sae(self, release: str, **kwargs: Any) -> dict[str, Any]:
-            self.loaded = release
-            self.load_kwargs = kwargs
-            return {"release": release, "layer": 22, "width": 16_384}
-
-    monkeypatch.setattr(
-        "drowse.sae.sources.list_sae_sources",
-        lambda _model: [
-            {"source": "local:cached", "kind": "local", "active": False},
-            {
-                "source": "saelens:prov", "kind": "saelens", "active": True,
-                "layer": 9, "revision": "c" * 40,
-            },
-        ],
-    )
-    monkeypatch.setattr(
-        "drowse.sae.backend.list_sae_releases",
-        lambda _model: (_ for _ in ()).throw(
-            AssertionError("registry should not be consulted")
-        ),
-    )
-    session = _Session()
-    assert cli_runners._enable_serve_live_sae_if_available(session)
-    # The active provider binding wins, reloaded at its pinned commit/layer.
-    assert session.loaded == "prov"
-    assert session.load_kwargs == {"layer": 9, "revision": "c" * 40}
-
-
-def test_config_vectors_register_on_a_model_backed_surface(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    # 4.0: a concept is a 2-node ``pca`` manifold — author ``default/happy.sad``
-    # so the config reference resolves (and ``ensure_vectors_installed`` sees it
-    # as already installed).
-    from drowse.store.manifold_authoring import create_discover_manifold_folder
-    create_discover_manifold_folder(
-        "default", "happy.sad", "x", fit_mode="pca",
-        node_corpora={"happy": ["a statement."], "sad": ["b statement."]},
-        hyperparams={"max_dim": 1},
-    )
-    from drowse.store import selectors as _sel
-    _sel.invalidate()
-
-    p = tmp_path / "setup.yaml"
-    p.write_text('model: fake-model\nvectors: "0.4 default/happy.sad"\n')
-
-    registered = {}
-    extract_calls = []
-
-    class FakeSession:
-        def __init__(self, **kw: Any) -> None:
-            self.kw = kw
-            self.model_info = {"model_type": "fake", "num_layers": 1,
-                               "hidden_dim": 8, "vram_used_gb": 0.0}
-            self.probes = {}
-
-        def extract(self, name: str, **kw: Any) -> Any:
-            extract_calls.append((name, kw))
-            return name, "PROFILE"
-
-        def steer(self, name: str, profile: Any, alpha: Any = None) -> None:
-            registered[name] = (profile, alpha)
-
-    args = cli.parse_args(["serve", "-c", str(p)])
-    cli_runners._load_effective_config(args)
-    cli_runners._setup_steering_vectors(
-        cast(Any, FakeSession()), args.config_vectors,
-    )
-    assert "happy.sad" in registered
-    assert extract_calls[-1] == ("happy.sad", {"namespace": "default"})
-
-
-def test_parse_vector_compare_two_args():
-    args = cli.parse_args(["manifold","compare", "angry.calm", "happy.sad", "-m", "foo/bar"])
-    assert args.command == "manifold"
-    assert args.manifold_cmd == "compare"
-    assert args.concepts == ["angry.calm", "happy.sad"]
-    assert args.model == "foo/bar"
-
-
-def test_parse_vector_compare_one_arg():
-    args = cli.parse_args(["manifold","compare", "angry.calm", "-m", "foo/bar"])
-    assert args.concepts == ["angry.calm"]
-
-
-def test_parse_vector_compare_three_plus_args():
-    args = cli.parse_args(["manifold","compare", "angry.calm", "happy.sad", "formal.casual", "-m", "foo/bar"])
-    assert args.concepts == ["angry.calm", "happy.sad", "formal.casual"]
-
-
-def test_parse_vector_compare_selector_arg():
-    args = cli.parse_args(["manifold","compare", "tag:affect", "-m", "foo/bar"])
-    assert args.concepts == ["tag:affect"]
-
-
-def test_parse_vector_compare_verbose_and_json():
-    args = cli.parse_args(["manifold","compare", "a", "b", "-m", "x", "-v", "-j"])
-    assert args.verbose is True
-    assert args.json_output is True
-
-
-def test_parse_vector_compare_missing_model_errors():
-    with pytest.raises(SystemExit):
-        cli.parse_args(["manifold","compare", "angry.calm"])
-
-
-def test_manifold_pack_appear_in_help_subspace_vector_gone(capsys: pytest.CaptureFixture[str]):
-    with pytest.raises(SystemExit):
-        cli.parse_args([])
-    out = capsys.readouterr().out
-    assert "manifold" in out
-    assert "pack" in out
-    # The verb harmonization retired the `subspace` verb and the `vector`
-    # alias — neither parses as a top-level command anymore.
-    for gone in (["subspace", "extract", "x"], ["vector", "extract", "x"]):
-        with pytest.raises(SystemExit):
-            cli.parse_args(gone)
+    with pytest.raises(SystemExit) as exc:
+        main([verb, "rm", "m/x", source])
+    assert exc.value.code == 2
+    assert "-y/--yes" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
-# _run_compare — verbose modes (1-arg ranked, N×N matrix)
+# manifold compare / why output (folded vectors stubbed)
 # ---------------------------------------------------------------------------
 
-def _patch_fold_helpers(
-    monkeypatch: pytest.MonkeyPatch,
-    profiles_by_display: dict[str, Any],
-) -> None:
-    """Stub the two manifold-fold helpers ``_run_compare`` / ``_run_why`` call.
-
-    4.0: ``manifold compare`` / ``why`` fold a fitted 2-node ``pca`` manifold
-    to a ``Profile`` via ``runners._fold_manifold_to_profile_with_identity``
-    (1-arg lookup) and ``runners._fold_all_fitted_manifolds`` (rank-all pool).
-    Rather than author + fit a real manifold per concept, we stub both helpers
-    to serve the mock profiles keyed by display name (``"<ns>/<name>"`` or the
-    bare name, with an optional ``:variant`` suffix).
-
-    ``profiles_by_display`` maps the *display* name the runner asks for
-    (e.g. ``"angry.calm"``, ``"angry.calm:sae-my-release"``,
-    ``"default/happy.sad"``) to a mock profile.  All concepts are authored
-    under ``default/``, so the returned identity is ``("default", bare)``.
-    """
-    import drowse.cli.runners as runners
-
-    def _fold(name: str, model_id: str, variant: str | None):
-        bare = name.split("/", 1)[1] if "/" in name else name
-        key = bare if variant is None else f"{bare}:{variant}"
-        prof = profiles_by_display.get(key)
-        if prof is None:
-            return None
-        return prof, "default", bare
-
-    def _fold_all(
-        model_id: str,
-        *,
-        exclude_identity: tuple[str, str] | None = None,
-    ):
-        out: dict[str, Any] = {}
-        for key, prof in profiles_by_display.items():
-            if ":" in key:
-                continue  # only raw concepts join the rank-all pool
-            if exclude_identity is not None and exclude_identity == ("default", key):
-                continue
-            out[f"default/{key}"] = prof
-        return out
-
-    monkeypatch.setattr(
-        runners, "_fold_manifold_to_profile_with_identity", _fold,
-    )
-    monkeypatch.setattr(runners, "_fold_all_fitted_manifolds", _fold_all)
-
-
-def _setup_compare_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Set DROWSE_HOME and return the manifolds_dir path.
-
-    ``manifold compare`` is Mahalanobis-only now: ``_run_compare`` loads the
-    per-model whitener via ``LayerWhitener.from_cache`` up front and fails if
-    it's missing.  These tests mock ``Profile.cosine_similarity`` (which
-    ignores the whitener), so we patch ``from_cache`` to return a sentinel
-    rather than seed a real neutral cache.
-    """
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store import selectors
-    selectors.invalidate()
-    from drowse.geometry import whitener as _maha
-    monkeypatch.setattr(
-        _maha.LayerWhitener, "from_cache",
-        classmethod(lambda cls, model_id, **kw: object()),
-    )
-    return tmp_path / "manifolds"
-
-
-def _mock_profile(agg_fn: Any, pl_fn: Any) -> Any:
-    """Return a simple duck-typed mock (not a Profile subclass) with cosine_similarity."""
+def _mock_profile(agg: Any, per_layer: Any) -> Any:
     class MockProfile:
         def cosine_similarity(self, other: Any, *, per_layer: bool = False, whitener: Any = None) -> Any:
-            # ``whitener`` is accepted (forwarded by ``_run_compare`` after
-            # the v2.1 ``--metric mahalanobis`` wiring) but ignored here —
-            # the mocks return a fixed scalar that doesn't depend on the
-            # metric.  Tests that need to exercise the Mahalanobis path
-            # use ``test_mahalanobis.py`` against real Profile + tensors.
-            return pl_fn(other) if per_layer else agg_fn(other)
+            return per_layer_fn(other) if per_layer else agg(other)
+
+        def items(self) -> Any:
+            import torch
+            return {layer: torch.full((1,), v) for layer, v in per_layer_fn(self).items()}.items()
+
+    per_layer_fn = per_layer
     return MockProfile()
 
 
-def test_run_compare_one_arg_verbose_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """1-arg + -v text mode: prints per-layer breakdown for top 3."""
-    _setup_compare_env(monkeypatch, tmp_path)
-    model_id = "fake/model"
+def _stub_folds(monkeypatch: pytest.MonkeyPatch, profiles: dict[str, Any]) -> None:
+    """Serve ``profiles`` (keyed ``name`` or ``name:variant``, all under
+    ``default/``) through the compare/why fold helpers."""
+    import drowse.cli.verbs.manifold as verbs
+    from drowse.geometry import whitener
 
-    happy_profile = _mock_profile(lambda o: None, lambda o: None)
-    warm_profile = _mock_profile(lambda o: None, lambda o: None)
+    def fold(ref: str, model_id: str) -> Any:
+        typed_ns, _, rest = ref.rpartition("/")
+        name, _, variant = rest.partition(":")
+        profile = profiles.get(rest)
+        if profile is None:
+            raise CliError(f"no fitted manifold for '{ref}'", exit_code=1)
+        display = f"default/{rest}" if typed_ns else rest
+        return verbs._Folded(display, "default", name, variant or "raw", profile)
 
-    def target_agg(other: Any) -> float:
-        if other is happy_profile:
-            return 0.3421
-        if other is warm_profile:
-            return 0.1893
-        return 0.0
-
-    def target_pl(other: Any) -> dict[int, float]:
-        if other is happy_profile:
-            return {14: 0.5122, 15: 0.4891}
-        if other is warm_profile:
-            return {14: 0.1010, 15: 0.0987}
-        return {}
-
-    target_profile = _mock_profile(target_agg, target_pl)
-
-    _patch_fold_helpers(monkeypatch, {
-        "angry.calm": target_profile,
-        "happy.sad": happy_profile,
-        "warm.clinical": warm_profile,
+    monkeypatch.setattr(verbs, "_fold", fold)
+    monkeypatch.setattr(verbs, "_fold_all", lambda _m: {
+        ("default", key): p for key, p in profiles.items() if ":" not in key
     })
-
-    # Compare is Mahalanobis-only; the whitener load is patched in
-    # ``_setup_compare_env`` and ``Profile.cosine_similarity`` is mocked.
-    cli.main(["manifold","compare", "angry.calm", "-m", model_id, "-v"])
-    out = capsys.readouterr().out
-    assert "angry.calm vs all installed" in out
-    assert "happy.sad" in out
-    assert "per-layer (top 3)" in out
-    assert "0.5122" in out
+    monkeypatch.setattr(whitener.LayerWhitener, "from_cache", classmethod(lambda cls, _m, **_k: object()))
 
 
-def test_run_compare_one_arg_verbose_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """1-arg + -v -j JSON mode: output includes per_layer_top3 key."""
-    import json as _json
-    _setup_compare_env(monkeypatch, tmp_path)
-    model_id = "fake/model"
-
-    happy_profile = _mock_profile(lambda o: None, lambda o: None)
-    target_profile = _mock_profile(
-        lambda o: 0.3421,
-        lambda o: {14: 0.5122, 15: 0.4891},
+def test_compare_rank_all_verbose(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    happy = _mock_profile(lambda o: None, lambda o: {})
+    warm = _mock_profile(lambda o: None, lambda o: {})
+    target = _mock_profile(
+        lambda o: 0.3421 if o is happy else 0.1893,
+        lambda o: {14: 0.5122, 15: 0.4891} if o is happy else {14: 0.1},
     )
-
-    _patch_fold_helpers(monkeypatch, {
-        "angry.calm": target_profile,
-        "happy.sad": happy_profile,
-    })
-
-    cli.main(["manifold","compare", "angry.calm", "-m", model_id, "-v", "-j"])
+    _stub_folds(monkeypatch, {"angry.calm": target, "happy.sad": happy, "warm.clinical": warm})
+    main(["manifold", "compare", "angry.calm", "-m", "m/x", "-v"])
     out = capsys.readouterr().out
-    data = _json.loads(out)
+    assert "angry.calm vs all installed" in out and "per-layer (top 3)" in out and "0.5122" in out
+    main(["manifold", "compare", "angry.calm", "-m", "m/x", "-v", "-j"])
+    data = _stdout_json(capsys)
     assert data["target"] == "angry.calm"
-    assert "per_layer_top3" in data
-    assert "happy.sad" in data["per_layer_top3"]
-    pl = data["per_layer_top3"]["happy.sad"]
-    assert "14" in pl
-    assert abs(pl["14"] - 0.5122) < 1e-5
+    assert [row["name"] for row in data["similarities"]] == ["happy.sad", "warm.clinical"]
+    assert data["per_layer_top3"]["happy.sad"]["14"] == pytest.approx(0.5122)
 
 
-def test_run_compare_matrix_verbose_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """3-arg N×N + -v -j JSON mode: output includes per_layer dict keyed by 'a|b'."""
-    import json as _json
-    _setup_compare_env(monkeypatch, tmp_path)
-    model_id = "fake/model"
+def test_compare_matrix(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    names = ["angry.calm", "happy.sad:sae-rel", "warm.clinical"]
+    _stub_folds(monkeypatch, {n: _mock_profile(lambda o: 0.25, lambda o: {14: 0.3456}) for n in names})
+    main(["manifold", "compare", *names, "-m", "m/x", "-v", "-j"])
+    data = _stdout_json(capsys)
+    assert data["concepts"] == names
+    assert set(data["per_layer"]) == {
+        "angry.calm|happy.sad:sae-rel", "angry.calm|warm.clinical", "happy.sad:sae-rel|warm.clinical",
+    }
+    main(["manifold", "compare", *names, "-m", "m/x", "-v"])
+    assert "per-layer" not in capsys.readouterr().out
 
-    concepts = ["angry.calm", "happy.sad", "warm.clinical"]
-    per_layer_vals = {14: 0.3456, 15: 0.2345}
-    _patch_fold_helpers(monkeypatch, {
-        c: _mock_profile(lambda o: 0.25, lambda o: per_layer_vals)
-        for c in concepts
-    })
 
-    cli.main(["manifold","compare"] + concepts + ["-m", model_id, "-v", "-j"])
+def test_why_histogram_and_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    from drowse.cli.verbs.manifold import HIST_BUCKETS
+
+    mags = {i: float(i + 1) * 0.01 for i in range(62)}
+    _stub_folds(monkeypatch, {"angry.calm:sae-rel": _mock_profile(lambda o: 0, lambda o: mags)})
+    main(["manifold", "why", "angry.calm:sae-rel", "-m", "m/x"])
     out = capsys.readouterr().out
-    data = _json.loads(out)
-    assert "per_layer" in data
-    assert "angry.calm|happy.sad" in data["per_layer"]
-    assert "angry.calm|warm.clinical" in data["per_layer"]
-    assert "happy.sad|warm.clinical" in data["per_layer"]
-    assert "angry.calm|angry.calm" not in data["per_layer"]
-    pl = data["per_layer"]["angry.calm|happy.sad"]
-    assert "14" in pl
-    assert abs(pl["14"] - 0.3456) < 1e-5
-
-
-def test_run_compare_matrix_verbose_text_unchanged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """3-arg N×N + -v text mode: no per-layer section (text matrix is dense enough)."""
-    _setup_compare_env(monkeypatch, tmp_path)
-    model_id = "fake/model"
-
-    concepts = ["angry.calm", "happy.sad", "warm.clinical"]
-    _patch_fold_helpers(monkeypatch, {
-        c: _mock_profile(lambda o: 0.25, lambda o: {14: 0.1})
-        for c in concepts
-    })
-
-    cli.main(["manifold","compare"] + concepts + ["-m", model_id, "-v"])
-    out = capsys.readouterr().out
-    assert "per-layer" not in out
-    assert "per_layer" not in out
-    assert "angry.calm" in out
-
-
-# ---------------------------------------------------------------------------
-# _run_why — layer introspection
-# ---------------------------------------------------------------------------
-
-def _setup_why_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Set DROWSE_HOME and return the manifolds_dir path."""
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store import selectors
-    selectors.invalidate()
-    return tmp_path / "manifolds"
-
-
-def _mock_why_profile(layer_mags: dict[int, float]) -> Any:
-    """Return a duck-typed mock profile for _run_why.
-
-    Carries the two surfaces ``_run_why`` reads: ``items()`` (per-layer
-    magnitudes) and ``__len__`` (total layers).
-    """
-    import torch
-
-    class MockProfile:
-        def items(self):
-            return {layer: torch.full((1,), mag) for layer, mag in layer_mags.items()}.items()
-
-        def __len__(self):
-            return len(layer_mags)
-
-    return MockProfile()
-
-
-def test_parse_vector_why_basic():
-    args = cli.parse_args(["manifold","why", "angry.calm", "-m", "foo/bar"])
-    assert args.command == "manifold"
-    assert args.manifold_cmd == "why"
-    assert args.concept == "angry.calm"
-    assert args.model == "foo/bar"
-    assert args.json_output is False
-
-
-def test_parse_vector_why_json():
-    args = cli.parse_args(["manifold","why", "angry.calm", "-m", "foo/bar", "-j"])
-    assert args.json_output is True
-
-
-def test_parse_vector_why_removed_flags_rejected():
-    # ``--all`` and ``-n`` were removed with the histogram overhaul.
-    for argv in (
-        ["manifold","why", "angry.calm", "-m", "foo/bar", "--all"],
-        ["manifold","why", "angry.calm", "-m", "foo/bar", "-n", "10"],
-    ):
-        with pytest.raises(SystemExit):
-            cli.parse_args(argv)
-
-
-def test_parse_vector_why_missing_model_errors():
-    with pytest.raises(SystemExit):
-        cli.parse_args(["manifold","why", "angry.calm"])
-
-
-def test_run_why_text_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """Text output renders a per-bucket histogram covering every layer."""
-    _setup_why_env(monkeypatch, tmp_path)
-    model_id = "fake/model"
-
-    layer_mags = {14: 0.847, 15: 0.812, 13: 0.793, 12: 0.641, 11: 0.589, 10: 0.400}
-    profile = _mock_why_profile(layer_mags)
-    _patch_fold_helpers(monkeypatch, {"angry.calm": profile})
-
-    cli.main(["manifold","why", "angry.calm", "-m", model_id])
-    out = capsys.readouterr().out
-    assert "angry.calm" in out
-    assert "6 layers" in out
-    assert "LAYERS" in out
-    # With 6 layers ≤ 24 buckets, each layer is its own bucket — every layer
-    # label must appear.
-    for layer in layer_mags:
-        assert f"L{layer}" in out
-    # Bar glyph present.
-    assert "█" in out
-
-
-def test_run_why_text_buckets_large_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """With >24 layers, buckets collapse into layer ranges."""
-    _setup_why_env(monkeypatch, tmp_path)
-    model_id = "fake/model"
-
-    layer_mags = {i: float(i + 1) * 0.01 for i in range(62)}
-    profile = _mock_why_profile(layer_mags)
-    _patch_fold_helpers(monkeypatch, {"angry.calm": profile})
-
-    cli.main(["manifold","why", "angry.calm", "-m", model_id])
-    out = capsys.readouterr().out
-    assert "62 layers" in out
-    # Range label form used when buckets span more than one layer.
-    assert "-" in out
-    # Exactly HIST_BUCKETS histogram rows — count bar glyphs on left edge.
-    from drowse.cli.histogram import HIST_BUCKETS
-    bar_lines = [ln for ln in out.splitlines() if "█" in ln or "░" in ln]
-    assert len(bar_lines) == HIST_BUCKETS
-
-
-def test_run_why_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """JSON output is full-fidelity, in layer order."""
-    import json as _json
-    _setup_why_env(monkeypatch, tmp_path)
-    model_id = "fake/model"
-
-    layer_mags = {14: 0.847, 15: 0.812, 13: 0.793}
-    profile = _mock_why_profile(layer_mags)
-    _patch_fold_helpers(monkeypatch, {"angry.calm": profile})
-
-    cli.main(["manifold","why", "angry.calm", "-m", model_id, "-j"])
-    out = capsys.readouterr().out
-    data = _json.loads(out)
-    assert data["concept"] == "angry.calm"
-    assert data["model"] == model_id
-    assert data["total_layers"] == 3
-    assert [e["layer"] for e in data["layers"]] == [13, 14, 15]
-    assert abs(data["layers"][1]["magnitude"] - 0.847) < 1e-4
-
-
-def test_run_why_concept_not_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """Missing concept exits with code 1."""
-    _setup_why_env(monkeypatch, tmp_path)
-    _patch_fold_helpers(monkeypatch, {})  # nothing folds → miss
+    assert "angry.calm:sae-rel (62 layers" in out
+    assert len([ln for ln in out.splitlines() if "█" in ln or "░" in ln]) == HIST_BUCKETS
+    main(["manifold", "why", "angry.calm:sae-rel", "-m", "m/x", "-j"])
+    data = _stdout_json(capsys)
+    assert data["total_layers"] == 62 and data["layers"][0] == {"layer": 0, "magnitude": 0.01}
     with pytest.raises(SystemExit) as exc:
-        cli.main(["manifold","why", "nonexistent_concept_xyz", "-m", "foo/bar"])
+        main(["manifold", "why", "nope", "-m", "m/x"])
     assert exc.value.code == 1
-
-
-# ---------------------------------------------------------------------------
-# SAE variant resolution in manifold compare / manifold why
-# ---------------------------------------------------------------------------
-
-
-def test_split_variant_suffix_parses_sae_variants():
-    from drowse.cli.runners import _split_variant_suffix
-    assert _split_variant_suffix("honest") == ("honest", None)
-    assert _split_variant_suffix("honest:raw") == ("honest", "raw")
-    assert _split_variant_suffix("honest:sae") == ("honest", "sae")
-    assert _split_variant_suffix("honest:sae-my-release") == (
-        "honest", "sae-my-release",
-    )
-    assert _split_variant_suffix("honest:role-pirate") == (
-        "honest", "role-pirate",
-    )
-    assert _split_variant_suffix("honest:from-google__gemma-4-31b-it") == (
-        "honest", "from-google__gemma-4-31b-it",
-    )
-    assert _split_variant_suffix("deer.wolf:sae") == ("deer.wolf", "sae")
-    # Prefix selectors pass through untouched — their value carries the colon
-    # but _split_variant_suffix only peels a trailing variant token.
-    assert _split_variant_suffix("tag:emotion") == ("tag:emotion", None)
-    assert _split_variant_suffix("model:google/gemma-3-4b-it") == (
-        "model:google/gemma-3-4b-it", None,
-    )
-
-def test_run_why_accepts_sae_suffix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """``manifold why foo:sae-<rel>`` folds the SAE-variant manifold tensor."""
-    _setup_why_env(monkeypatch, tmp_path)
-    model_id = "fake/model"
-
-    raw_profile = _mock_why_profile({0: 0.1, 1: 0.1})
-    sae_profile = _mock_why_profile({14: 0.9, 15: 0.8})
-    _patch_fold_helpers(monkeypatch, {
-        "angry.calm": raw_profile,
-        "angry.calm:sae-my-release": sae_profile,
-    })
-
-    cli.main(["manifold","why", "angry.calm:sae-my-release", "-m", model_id])
-    out = capsys.readouterr().out
-    # Suffix propagates into the display name.
-    assert "angry.calm:sae-my-release" in out
-    # The SAE profile magnitudes appear, not the raw ones.
-    assert "L14" in out
-    assert "0.900" in out
-    assert "L0" not in out
-
-
-def test_run_compare_accepts_sae_suffix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """Each concept in ``manifold compare`` parses its own :variant suffix."""
-    _setup_compare_env(monkeypatch, tmp_path)
-    model_id = "fake/model"
-
-    a_raw_profile = _mock_profile(lambda o: 0.1, lambda o: {0: 0.1})
-    a_sae_profile = _mock_profile(lambda o: 0.9, lambda o: {14: 0.9})
-    b_profile = _mock_profile(lambda o: 0.5, lambda o: {0: 0.5})
-    _patch_fold_helpers(monkeypatch, {
-        "angry.calm": a_raw_profile,
-        "angry.calm:sae-my-release": a_sae_profile,
-        "happy.sad": b_profile,
-    })
-
-    cli.main([
-        "manifold","compare",
-        "angry.calm:sae-my-release", "happy.sad",
-        "-m", model_id,
-    ])
-    out = capsys.readouterr().out
-    # Variant suffix carries into display keys.
-    assert "angry.calm:sae-my-release" in out
-    assert "happy.sad" in out
-
-
-def test_config_bare_pole_resolves_canonical(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """4.0: a config-YAML bare pole resolves through the MANIFOLD tier.
-
-    Pre-4.0 a ``deer.wolf`` ``vectors/`` pack made bare ``wolf`` resolve to
-    the signed vector ``deer.wolf @ -0.5``.  Now a bipolar concept is a 2-node
-    ``pca`` manifold (nodes ``deer``/``wolf``), so ``0.5 wolf`` resolves to a
-    label-form ``ManifoldTerm`` at the ``wolf`` node (``default/deer.wolf%wolf``).
-    """
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifold_authoring import create_discover_manifold_folder
-    create_discover_manifold_folder(
-        "default", "deer.wolf", "x", fit_mode="pca",
-        node_corpora={"deer": ["a statement."], "wolf": ["b statement."]},
-        hyperparams={"max_dim": 1},
-    )
-    from drowse.store.selectors import invalidate
-    invalidate()
-
-    from drowse.steering.grammar import ManifoldTerm, parse_expr
-    steering = parse_expr("0.5 wolf")
-    assert "default/deer.wolf%wolf" in steering.alphas
-    term = steering.alphas["default/deer.wolf%wolf"]
-    assert isinstance(term, ManifoldTerm)
-    assert term.manifold == "default/deer.wolf"
-    assert term.position == "wolf"
-    assert term.along == 0.5
-
-
-# ---------------------------------------------------------------------------
-# vector extract --sae
-# ---------------------------------------------------------------------------
-
-def test_vector_extract_parses_sae_flag():
-    """--sae RELEASE is captured on the Namespace as `sae`."""
-    args = cli.parse_args([
-        "manifold","extract", "honest.deceptive",
-        "-m", "google/gemma-2-2b-it",
-        "--sae", "gemma-scope-2b-pt-res-canonical",
-    ])
-    assert args.sae == "gemma-scope-2b-pt-res-canonical"
-    assert not hasattr(args, "sae_revision")
-
-
-def test_vector_extract_sae_revision_is_rejected():
-    with pytest.raises(SystemExit):
-        cli.parse_args([
-            "manifold", "extract", "honest.deceptive",
-            "-m", "google/gemma-2-2b-it", "--sae", "release-x",
-            "--sae-revision", "v1.0",
-        ])
-
-
-def test_vector_extract_no_sae_defaults_to_none():
-    args = cli.parse_args([
-        "manifold","extract", "honest.deceptive", "-m", "model",
-    ])
-    assert args.sae is None
-    assert not hasattr(args, "sae_revision")
-
-
-def test_vector_extract_sae_requires_value():
-    """--sae must be followed by a release name; it's not a boolean switch."""
-    with pytest.raises(SystemExit):
-        cli.parse_args([
-            "manifold","extract", "honest.deceptive", "-m", "m", "--sae",
-        ])
-
-
-# ---------------------------------------------------------------------------
-# experiment fan — sweep progress
-# ---------------------------------------------------------------------------
-
-class _FanSession:
-    """Minimal ``generate_sweep`` stand-in that drives ``on_result``."""
-
-    def __init__(self) -> None:
-        self.model_info = {"model_type": "fake", "num_layers": 1,
-                           "hidden_dim": 8, "vram_used_gb": 0.0}
-        self.probes = {}
-        self.on_result_arg: Any = "unset"
-
-    def generate_sweep(
-        self, _prompt: Any, sweep: dict[str, list[float]], **kwargs: Any,
-    ) -> Any:
-        from drowse.generation.results import GenerationResult, RunSet
-
-        self.on_result_arg = kwargs.get("on_result")
-        rows = [
-            {name: alpha for name, alpha in zip(sweep, combo, strict=True)}
-            for combo in _product(*sweep.values())
-        ]
-        results = [
-            GenerationResult(
-                text="", tokens=[], token_count=7 + i, tok_per_sec=0.0,
-                elapsed=0.0, finish_reason="stop",
-            )
-            for i in range(len(rows))
-        ]
-        if self.on_result_arg is not None:
-            for i, (result, row) in enumerate(zip(results, rows, strict=True)):
-                self.on_result_arg(i, result, row)
-        return RunSet(results, node_ids=[None] * len(rows), grid=rows, kind="fan")
-
-
-def _product(*lists: list[float]):
-    import itertools
-    return itertools.product(*lists)
-
-
-def _patch_fan_session(monkeypatch: pytest.MonkeyPatch) -> _FanSession:
-    session = _FanSession()
-    monkeypatch.setattr(
-        cli_runners, "_make_session", lambda _args, **_kw: session,
-    )
-    monkeypatch.setattr(cli_runners, "_print_model_info", lambda _s: None)
-    monkeypatch.setattr(cli_runners, "_print_startup", lambda _a: None)
-    monkeypatch.setattr(
-        cli_runners, "_load_effective_config", lambda _a, **_kw: None,
-    )
-    return session
-
-
-def test_experiment_fan_reports_progress_per_row(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-):
-    """A 6-row grid is 6 sequential generations; the runner must report each
-    completion rather than sit silent until the whole sweep finishes."""
-    session = _patch_fan_session(monkeypatch)
-    cli.main([
-        "experiment", "fan", "m/x", "prompt",
-        "-g", "a=0,0.5,1", "-g", "b=0,1",
-    ])
-    assert session.on_result_arg is not None
-    out = capsys.readouterr().out
-    assert "  1/6: a=+0.000, b=+0.000" in out
-    assert "  6/6: a=+1.000, b=+1.000" in out
-
-
-def test_experiment_fan_json_suppresses_progress(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-):
-    """``-j`` must leave stdout a single parseable document."""
-    import json as _json
-
-    session = _patch_fan_session(monkeypatch)
-    cli.main(["experiment", "fan", "m/x", "prompt", "-g", "a=0,1", "-j"])
-    assert session.on_result_arg is None
-    out = capsys.readouterr().out
-    assert _json.loads(out)["kind"] == "fan"

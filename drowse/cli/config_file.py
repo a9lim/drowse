@@ -1,28 +1,22 @@
-"""User-authored setup YAML parser for drowse -C <path>.
+"""Setup YAML (``~/.drowse/config.yaml`` and ``-c`` files).
 
-The ``vectors:`` key is a steering expression string (the same grammar
-every surface speaks); the loader validates it and stores the raw text.
-Parsing into a :class:`~drowse.steering.terms.Steering` happens at
-consumption time via :func:`drowse.steering.grammar.parse_expr`.
+The key set is the :class:`ConfigFile` dataclass fields; each key has one
+validator in :data:`_VALIDATORS`.  ``vectors:`` is a steering expression
+string (the grammar every surface speaks), validated at load time so a typo
+fails at config load rather than at generation; it is the default steering
+for the verbs that take ``-S`` (CLI ``-S`` wins).
 """
 from __future__ import annotations
 
-import math
 import logging
-from dataclasses import dataclass, replace
+import math
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from drowse.errors import DrowseError
 
 log = logging.getLogger(__name__)
-
-_KNOWN_KEYS = {
-    "model", "vectors", "thinking",
-    "temperature", "top_p", "max_tokens", "system_prompt",
-    "compile", "cuda_graphs",
-    "return_top_k",
-}
 
 
 class ConfigFileError(ValueError, DrowseError):
@@ -39,23 +33,19 @@ class ConfigFile:
     top_p: Optional[float] = None
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
-    compile: Optional[bool] = None           # CUDA torch.compile auto-enable; None = default (on)
-    cuda_graphs: Optional[bool] = None       # CUDA StaticCache + graph capture; None = default (on)
-    # Session-level default for SamplingConfig.return_top_k — the number
-    # of top-K alternatives the engine decodes (with text) per generated
-    # token.  ``None`` means "use session default" (which is 0 — chosen
-    # logprob only).  Per-call SamplingConfig.return_top_k > 0 overrides;
-    # K=0 inherits this session-level value.  Phase 1 logit pass.
+    #: torch.compile opt-in (CUDA/MPS); unset = off.
+    compile: Optional[bool] = None
+    #: StaticCache + CUDA-graph capture opt-in; unset = off.
+    cuda_graphs: Optional[bool] = None
+    #: Session default for ``SamplingConfig.return_top_k`` (unset = 0).
     return_top_k: Optional[int] = None
 
     @classmethod
     def load_default(cls) -> Optional["ConfigFile"]:
-        """Load ``~/.drowse/config.yaml`` if it exists, else return ``None``."""
+        """Load ``~/.drowse/config.yaml`` if it exists, else ``None``."""
         from drowse.base.paths import drowse_home
         p = drowse_home() / "config.yaml"
-        if not p.exists():
-            return None
-        return cls.load(p)
+        return cls.load(p) if p.exists() else None
 
     @classmethod
     def effective(
@@ -64,38 +54,27 @@ class ConfigFile:
         *,
         include_default: bool = True,
     ) -> "ConfigFile":
-        """Compose the default config + extras into a single ConfigFile.
-
-        Order: ``~/.drowse/config.yaml`` (if present) → extras (in order).
-        Later entries override earlier ones.
-        """
+        """``~/.drowse/config.yaml`` (if present) then ``extra_paths`` in order,
+        later entries overriding earlier ones."""
         chain: list[ConfigFile] = []
         if include_default:
             default = cls.load_default()
             if default is not None:
                 chain.append(default)
         chain.extend(cls.load(Path(p)) for p in extra_paths or [])
-        return compose(chain) if chain else cls()
+        return compose(chain)
 
     def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {}
-        for f in (
-            "model", "thinking", "temperature", "top_p", "max_tokens",
-            "system_prompt", "compile", "cuda_graphs", "return_top_k",
-        ):
-            v = getattr(self, f)
-            if v is not None:
-                out[f] = v
-        if self.vectors:
-            out["vectors"] = self.vectors
-        return out
+        return {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if getattr(self, f.name) is not None
+        }
 
     def to_yaml(self, *, header: Optional[str] = None) -> str:
         import yaml
         body = yaml.safe_dump(self.to_dict(), sort_keys=False, default_flow_style=False)
-        if header:
-            return f"{header}\n{body}"
-        return body
+        return f"{header}\n{body}" if header else body
 
     @classmethod
     def load(cls, path: Path) -> "ConfigFile":
@@ -108,233 +87,200 @@ class ConfigFile:
         if not isinstance(data, dict):
             raise ConfigFileError(f"{path}: top-level must be a mapping")
 
-        unknown = set(data.keys()) - _KNOWN_KEYS
+        unknown = set(data) - set(_VALIDATORS)
         if unknown:
             names = ", ".join(repr(k) for k in sorted(unknown, key=str))
             raise ConfigFileError(f"{path}: unknown config key(s): {names}")
-
-        model_v = data.get("model")
-        if model_v is not None and (
-            not isinstance(model_v, str) or not model_v.strip()
-        ):
-            raise ConfigFileError(f"{path}: model must be a non-empty string")
-
-        thinking_v = data.get("thinking")
-        if thinking_v is not None and not isinstance(thinking_v, bool):
-            raise ConfigFileError(f"{path}: thinking must be a boolean")
-
-        system_prompt_v = data.get("system_prompt")
-        if system_prompt_v is not None and not isinstance(system_prompt_v, str):
-            raise ConfigFileError(f"{path}: system_prompt must be a string")
-
-        def finite_number(key: str) -> float | None:
-            value = data.get(key)
+        values: dict[str, Any] = {}
+        for key, value in data.items():
             if value is None:
-                return None
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ConfigFileError(f"{path}: {key} must be a finite number")
-            number = float(value)
-            if not math.isfinite(number):
-                raise ConfigFileError(f"{path}: {key} must be a finite number")
-            return number
+                continue
+            try:
+                values[key] = _VALIDATORS[key](value)
+            except ConfigFileError as e:
+                raise ConfigFileError(f"{path}: {key} {e}") from e
+        return cls(**values)
 
-        temperature_v = finite_number("temperature")
-        if temperature_v is not None and temperature_v < 0:
-            raise ConfigFileError(f"{path}: temperature must be >= 0")
-        top_p_v = finite_number("top_p")
-        if top_p_v is not None and not 0 < top_p_v <= 1:
-            raise ConfigFileError(f"{path}: top_p must be in (0, 1]")
 
-        max_tokens_v = data.get("max_tokens")
-        if max_tokens_v is not None and (
-            isinstance(max_tokens_v, bool)
-            or not isinstance(max_tokens_v, int)
-            or max_tokens_v <= 0
-        ):
-            raise ConfigFileError(f"{path}: max_tokens must be a positive integer")
+# ---------------------------------------------------------------------------
+# Per-key validators
+# ---------------------------------------------------------------------------
 
-        vectors_raw = data.get("vectors")
-        vectors: Optional[str] = None
-        if vectors_raw is not None:
-            if not isinstance(vectors_raw, str):
-                raise ConfigFileError(
-                    f"{path}: vectors: must be a steering expression string "
-                    f"(got {type(vectors_raw).__name__}). Example: "
-                    f"`vectors: \"0.5 honest + 0.3 warm\"`."
-                )
-            text = vectors_raw.strip()
-            if text:
-                # Validate via the shared parser; raise a wrapped error on
-                # failure so the YAML path surfaces the column/detail.
-                from drowse.steering.grammar import (
-                    SteeringExprError, parse_expr,
-                )
-                try:
-                    parse_expr(text)
-                except SteeringExprError as e:
-                    raise ConfigFileError(
-                        f"{path}: vectors: {e}"
-                    ) from e
-                vectors = text
-
-        compile_v = data.get("compile")
-        if compile_v is not None and not isinstance(compile_v, bool):
-            # ``compile: false`` is the documented opt-out; reject ints,
-            # strings, etc. so a malformed YAML doesn't silently disable
-            # compile via ``bool("false") == True``.
-            raise ConfigFileError(
-                f"{path}: compile must be a boolean (got "
-                f"{type(compile_v).__name__} {compile_v!r}). Use "
-                f"``compile: true`` or ``compile: false``."
-            )
-
-        cuda_graphs_v = data.get("cuda_graphs")
-        if cuda_graphs_v is not None and not isinstance(cuda_graphs_v, bool):
-            raise ConfigFileError(
-                f"{path}: cuda_graphs must be a boolean (got "
-                f"{type(cuda_graphs_v).__name__} {cuda_graphs_v!r}). "
-                f"Use ``cuda_graphs: true`` or ``cuda_graphs: false``."
-            )
-
-        return_top_k_v = data.get("return_top_k")
-        if return_top_k_v is not None:
-            # Reject bool sneaking through as int (``return_top_k: false``
-            # would silently set 0 without this guard; the user almost
-            # certainly meant a number).
-            if isinstance(return_top_k_v, bool) or not isinstance(return_top_k_v, int):
-                raise ConfigFileError(
-                    f"{path}: return_top_k must be a nonnegative integer "
-                    f"(got {type(return_top_k_v).__name__} {return_top_k_v!r})"
-                )
-            if return_top_k_v < 0:
-                raise ConfigFileError(
-                    f"{path}: return_top_k must be nonnegative "
-                    f"(got {return_top_k_v!r})"
-                )
-
-        return cls(
-            model=model_v,
-            vectors=vectors,
-            thinking=thinking_v,
-            temperature=temperature_v,
-            top_p=top_p_v,
-            max_tokens=max_tokens_v,
-            system_prompt=system_prompt_v,
-            compile=compile_v,
-            cuda_graphs=cuda_graphs_v,
-            return_top_k=return_top_k_v,
+def _boolean(value: Any) -> bool:
+    # ``bool("false") is True`` — refuse every non-bool so a quoted YAML
+    # value never silently flips an opt-in.
+    if not isinstance(value, bool):
+        raise ConfigFileError(
+            f"must be a boolean (got {type(value).__name__} {value!r})"
         )
+    return value
+
+
+def _number(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigFileError("must be a finite number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ConfigFileError("must be a finite number")
+    return number
+
+
+def _temperature(value: Any) -> float:
+    number = _number(value)
+    if number < 0:
+        raise ConfigFileError("must be >= 0")
+    return number
+
+
+def _top_p(value: Any) -> float:
+    number = _number(value)
+    if not 0 < number <= 1:
+        raise ConfigFileError("must be in (0, 1]")
+    return number
+
+
+def _integer(minimum: int) -> Callable[[Any], int]:
+    def check(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            kind = "positive" if minimum > 0 else "nonnegative"
+            raise ConfigFileError(f"must be a {kind} integer (got {value!r})")
+        return value
+
+    return check
+
+
+def _text(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ConfigFileError("must be a string")
+    return value
+
+
+def _model(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigFileError("must be a non-empty string")
+    return value
+
+
+def _vectors(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        raise ConfigFileError(
+            f"must be a steering expression string (got "
+            f"{type(value).__name__}). Example: "
+            f'`vectors: "0.5 honest + 0.3 warm"`.'
+        )
+    text = value.strip()
+    if not text:
+        return None
+    from drowse.steering.grammar import SteeringExprError, parse_expr
+    try:
+        parse_expr(text)
+    except SteeringExprError as e:
+        raise ConfigFileError(f"is not a valid steering expression: {e}") from e
+    return text
+
+
+_VALIDATORS: dict[str, Callable[[Any], Any]] = {
+    "model": _model,
+    "vectors": _vectors,
+    "thinking": _boolean,
+    "temperature": _temperature,
+    "top_p": _top_p,
+    "max_tokens": _integer(1),
+    "system_prompt": _text,
+    "compile": _boolean,
+    "cuda_graphs": _boolean,
+    "return_top_k": _integer(0),
+}
+assert set(_VALIDATORS) == {f.name for f in fields(ConfigFile)}
 
 
 def compose(configs: list[ConfigFile]) -> ConfigFile:
-    """Combine multiple config files; later entries override earlier ones.
+    """Combine config files field by field; later entries override earlier.
 
-    The ``vectors`` string overrides wholesale — later configs replace the
-    earlier expression rather than concatenating. Callers that want to
-    extend should spell out the full expression in their override file.
+    ``vectors`` overrides wholesale — a later file replaces the expression
+    rather than concatenating.
     """
     out = ConfigFile()
     for c in configs:
-        for f in (
-            "model", "thinking", "temperature",
-            "top_p", "max_tokens", "system_prompt", "vectors",
-            "compile", "cuda_graphs",
-            "return_top_k",
-        ):
-            v = getattr(c, f)
-            if v is not None:
-                setattr(out, f, v)
+        out = apply_flag_overrides(out, **c.to_dict())
     return out
 
 
 def apply_flag_overrides(cfg_in: ConfigFile, **flags: Any) -> ConfigFile:
-    """Return a new ConfigFile with non-None flag values overriding cfg_in."""
-    supplied = {k: v for k, v in flags.items() if v is not None}
-    return replace(cfg_in, **supplied)
+    """A new ConfigFile with every non-None ``flags`` value overriding ``cfg_in``."""
+    return replace(cfg_in, **{k: v for k, v in flags.items() if v is not None})
 
 
-def _bare_concept_resolves(concept: str) -> bool:
-    """True when a bare (un-namespaced) concept reference resolves to a manifold.
+# ---------------------------------------------------------------------------
+# Steering references
+# ---------------------------------------------------------------------------
 
-    Mirrors the steering read path (:mod:`drowse.steering.grammar`): a bare
-    pole or node label resolves via :func:`resolve_manifold_label`, and a
-    composite name (``happy.sad``) resolves to its 2-node ``pca`` manifold via
-    :func:`resolve_manifold_name`.  An ambiguity counts as resolved (the
-    reference matches more than one installed artifact, not zero).
-    """
+def _bare_reference_resolves(concept: str) -> bool:
+    """Whether a bare atom resolves through the steering read path's manifold
+    tiers (a node label / pole, or a 2-node ``pca`` manifold name).  An
+    ambiguity counts as resolved: it matches, just more than once."""
     from drowse.store.selectors import (
-        AmbiguousSelectorError,
-        resolve_manifold_label,
-        resolve_manifold_name,
+        AmbiguousSelectorError, resolve_manifold_label, resolve_manifold_name,
     )
 
     try:
-        manifold_hit = resolve_manifold_label(concept)
-        if manifold_hit is not None:
-            return True
-        return resolve_manifold_name(concept) is not None
+        return (
+            resolve_manifold_label(concept) is not None
+            or resolve_manifold_name(concept) is not None
+        )
     except AmbiguousSelectorError:
         return True
 
 
-def ensure_vectors_installed(config: ConfigFile, *, strict: bool) -> list[str]:
-    """Install any vectors referenced in ``config.vectors`` that are not
-    present locally.
+def ensure_vectors_installed(
+    expression: str | None, *, strict: bool, dry_run: bool = False,
+) -> list[str]:
+    """Install every HF-namespaced manifold ``expression`` references.
 
-    Walks the raw expression string via :func:`referenced_selectors` so
-    namespace-qualified references (``bob/honest``) retain their install
-    coordinates even though the parsed ``Steering`` flattens them. Returns
-    a list of coords that could not be installed; in strict mode, raises
-    on any failure instead.
+    Walks the raw expression (:func:`referenced_selectors`) so ``bob/honest``
+    keeps its install coordinate.  Readout atoms (the reserved ``jlens/`` /
+    ``sae/`` … namespaces) name no manifold and are skipped.  Returns the
+    references that could not be resolved or installed; ``strict`` raises on
+    the first instead.  ``dry_run`` checks resolvability without installing
+    (an uninstalled HF reference counts as installable).
     """
+    from drowse.base.paths import manifold_dir
     from drowse.steering.grammar import referenced_selectors
     from drowse.store.bundled import materialize_bundled_artifacts
-    from drowse.base.paths import manifold_dir
+    from drowse.store.manifold_authoring import RESERVED_NAMESPACES
 
-    if config.vectors is None:
+    if not expression:
         return []
-
-    # Every concept is a manifold (4.0): bundled ones live under
-    # ``manifolds/default/<name>/``.  Materialize them up front so a bare or
-    # ``default/`` reference resolves against the just-dropped folders; the io
-    # materializer drops the stale resolver index itself.
     materialize_bundled_artifacts()
 
     missing: list[str] = []
-    for ns, concept, _variant in referenced_selectors(config.vectors):
+
+    def miss(ref: str, why: str, cause: Exception | None = None) -> None:
+        msg = f"vector {ref!r}: {why}"
+        if strict:
+            raise ConfigFileError(msg) from cause
+        log.warning(msg)
+        missing.append(ref)
+
+    for ns, concept, _variant in referenced_selectors(expression):
+        if ns in RESERVED_NAMESPACES:
+            continue
         if ns is None:
-            if _bare_concept_resolves(concept):
-                continue
-            msg = f"vector {concept!r}: must be '<ns>/<name>' (no installed match)"
-            if strict:
-                raise ConfigFileError(msg)
-            log.warning(msg)
-            missing.append(concept)
+            if not _bare_reference_resolves(concept):
+                miss(concept, "no installed manifold matches; qualify it as "
+                              "'<ns>/<name>' or extract it first")
             continue
         coord = f"{ns}/{concept}"
         if (manifold_dir(ns, concept) / "manifold.json").exists():
             continue
         if ns == "local":
-            msg = f"vector {coord!r}: local namespace, cannot auto-install"
-            if strict:
-                raise ConfigFileError(msg)
-            log.warning(msg)
-            missing.append(coord)
-            continue
-        if ns == "default":
-            msg = f"vector {coord!r}: bundled manifold missing from package data"
-            if strict:
-                raise ConfigFileError(msg)
-            log.warning(msg)
-            missing.append(coord)
-            continue
-        try:
-            from drowse.store.install import install_manifold
-            install_manifold(coord, force=False)
-        except Exception as e:
-            msg = f"vector {coord!r}: install failed ({e})"
-            if strict:
-                raise ConfigFileError(msg) from e
-            log.warning(msg)
-            missing.append(coord)
+            miss(coord, "local namespace, cannot auto-install")
+        elif ns == "default":
+            miss(coord, "bundled manifold missing from package data")
+        elif not dry_run:
+            try:
+                from drowse.store.install import install_manifold
+                install_manifold(coord, force=False)
+            except Exception as e:
+                miss(coord, f"install failed ({e})", e)
     return missing

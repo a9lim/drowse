@@ -197,11 +197,6 @@ def test_promoted_names_not_imported_by_old_underscore_form() -> None:
     Each of these was renamed to a public name and the old ``_``-prefixed form
     is now only a back-compat alias kept for monkeypatching in tests.  A fresh
     cross-module import of the old name is a boundary violation.
-
-    NOTE — blanket "no module-level underscore imports anywhere" would also flag
-    this pre-existing legitimate pattern (not enforced here, recorded for a
-    future decision):
-      cli/main.py:               _build_root_parser, _COMMAND_RUNNERS (internal CLI)
     """
     offenders = _find_promoted_old_name_imports()
     assert not offenders, (

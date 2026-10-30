@@ -305,6 +305,8 @@ def test_preflight_accepts_discover_manifolds_by_selector(
 def test_preflight_does_not_hash_fitted_payloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The behavior manifold reads only authoring geometry and corpus, so
+    resolving the folder (before any model load) hashes no fitted payload."""
     import json
 
     from drowse.base import integrity

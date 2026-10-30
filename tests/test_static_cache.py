@@ -363,22 +363,22 @@ def test_session_reuses_and_resets_generation_static_cache(
 
 
 def test_cuda_graphs_flag_parses():
-    from drowse import cli
-    args = cli.parse_args(["serve", "google/gemma-2-2b-it"])
+    from drowse.cli.main import parse_args
+    args = parse_args(["serve", "google/gemma-2-2b-it"])
     assert getattr(args, "cuda_graphs", False) is False
-    args = cli.parse_args(["serve", "google/gemma-2-2b-it", "--cuda-graphs"])
+    args = parse_args(["serve", "google/gemma-2-2b-it", "--cuda-graphs"])
     assert args.cuda_graphs is True
 
 
 def test_yaml_cuda_graphs_true_folds_onto_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    from drowse import cli
-    from drowse.cli import runners as cli_runners
+    from drowse.cli.main import parse_args
+    from drowse.cli.context import effective_config
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "on.yaml"
     p.write_text("model: google/gemma-2-2b-it\ncuda_graphs: true\n")
-    args = cli.parse_args(["serve", "-c", str(p)])
+    args = parse_args(["serve", "-c", str(p)])
     assert getattr(args, "cuda_graphs", False) is False
-    cli_runners._load_effective_config(args)
+    effective_config(args)
     assert args.cuda_graphs is True
 
 
@@ -394,14 +394,14 @@ def test_yaml_cuda_graphs_invalid_type_errors(tmp_path: Path):
 
 def test_yaml_compile_and_cuda_graphs_compose(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Both opt-ins in one YAML — the runner sees both args set."""
-    from drowse import cli
-    from drowse.cli import runners as cli_runners
+    from drowse.cli.main import parse_args
+    from drowse.cli.context import effective_config
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     p = tmp_path / "on.yaml"
     p.write_text(
         "model: google/gemma-2-2b-it\ncompile: true\ncuda_graphs: true\n"
     )
-    args = cli.parse_args(["serve", "-c", str(p)])
-    cli_runners._load_effective_config(args)
+    args = parse_args(["serve", "-c", str(p)])
+    effective_config(args)
     assert args.compile is True
     assert args.cuda_graphs is True

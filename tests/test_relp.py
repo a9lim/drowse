@@ -23,7 +23,7 @@ import pytest
 import torch
 from torch import nn
 
-from drowse.cli.runners import _try_lens_fit_noop_preflight
+from drowse.cli.verbs.lens import lens_fit_is_noop
 from drowse.errors import RelpUnsupportedError
 from drowse.lens.jlens import JacobianLens
 from drowse.lens.relp import (
@@ -495,11 +495,11 @@ def test_cli_preflight_reports_finished_relp_fit(
     )
     args = argparse.Namespace(
         force=False, model=_DENSE_MODEL_ID, quantize=None, device="cpu",
-        seq_len=None, corpus=None, prompts=len(_PROMPTS), relp=True,
+        seq_len=None, corpus=None, prompts=len(_PROMPTS), kind="r",
     )
-    assert _try_lens_fit_noop_preflight(args, None, hf_corpus=corpus)
-    args.relp = False  # the standard fit has its own, absent, artifact
-    assert not _try_lens_fit_noop_preflight(args, None, hf_corpus=corpus)
+    assert lens_fit_is_noop(args, None, hf_corpus=corpus)
+    args.kind = "j"  # the standard fit has its own, absent, artifact
+    assert not lens_fit_is_noop(args, None, hf_corpus=corpus)
 
 
 def test_lens_writers_bind_the_r_name_to_the_r_kind() -> None:

@@ -15,8 +15,9 @@ from typing import Any, Generator, cast
 import pytest
 import torch
 
-from drowse import cli
-from drowse.cli.runners import _run_manifold_compare, _run_manifold_why
+from drowse.cli.context import CliError
+from drowse.cli.main import main
+from drowse.cli.verbs.manifold import _fold, _fold_all
 from drowse.geometry.domains import CustomDomain
 from drowse.geometry.subspace import fit_affine_subspace
 from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION, Manifold
@@ -169,56 +170,70 @@ def _write_fitted_manifold(
 
 class TestFoldHelper:
     def test_fold_returns_profile_for_fitted_manifold(self) -> None:
-        from drowse.cli.runners import _fold_manifold_to_profile_with_identity
-
         _write_fitted_manifold("default", "happy.sad")
-        folded = _fold_manifold_to_profile_with_identity("happy.sad", _MODEL, None)
-        assert folded is not None
-        prof, ns, bare = folded
-        assert sorted(prof.layers) == [2, 5]
-        assert (ns, bare) == ("default", "happy.sad")
+        folded = _fold("happy.sad", _MODEL)
+        assert sorted(folded.profile.layers) == [2, 5]
+        assert (folded.display, folded.namespace, folded.name) == ("happy.sad", "default", "happy.sad")
 
-    def test_fold_returns_none_when_unfitted(self) -> None:
-        from drowse.cli.runners import _fold_manifold_to_profile_with_identity
-        # No tensor on disk for this model → miss (caller nudges to fit).
-        assert (
-            _fold_manifold_to_profile_with_identity("happy.sad", _MODEL, None)
-            is None
-        )
+    def test_fold_unfitted_is_a_miss_with_a_fit_hint(self) -> None:
+        with pytest.raises(CliError) as exc:
+            _fold("happy.sad", _MODEL)
+        assert exc.value.exit_code == 1 and "drowse manifold fit" in str(exc.value)
 
     def test_fold_bare_name_collision_raises(self) -> None:
-        from drowse.cli.runners import _fold_manifold_to_profile_with_identity
         from drowse.store.selectors import AmbiguousSelectorError
 
         _write_fitted_manifold("default", "happy.sad")
         _write_fitted_manifold("alice", "happy.sad")
         with pytest.raises(AmbiguousSelectorError):
-            _fold_manifold_to_profile_with_identity("happy.sad", _MODEL, None)
-        # Namespace-qualified resolves cleanly.
-        folded = _fold_manifold_to_profile_with_identity(
-            "alice/happy.sad", _MODEL, None,
-        )
-        assert folded is not None
-        assert folded[1:] == ("alice", "happy.sad")
+            _fold("happy.sad", _MODEL)
+        folded = _fold("alice/happy.sad", _MODEL)
+        assert (folded.display, folded.namespace) == ("alice/happy.sad", "alice")
 
-    def test_fold_all_fitted_excludes_target(self) -> None:
-        from drowse.cli.runners import _fold_all_fitted_manifolds
+    def test_fold_reads_transfer_and_role_variants(self) -> None:
+        """Regression: compare/why folded only raw and ``sae-*`` tensors, so a
+        transferred (``:from-<src>``) or role (``:role-<r>``) vector reported
+        "no fitted manifold" although its tensor existed."""
+        import shutil
 
-        _write_fitted_manifold("default", "happy.sad", seed=1)
-        _write_fitted_manifold("default", "warm.clinical", seed=2)
-        pool = _fold_all_fitted_manifolds(
-            _MODEL, exclude_identity=("default", "happy.sad"),
-        )
-        assert "default/warm.clinical" in pool
-        assert "default/happy.sad" not in pool
+        from drowse.base.paths import encode_release_id
+        from drowse.store.manifold_tensors import load_manifold, save_manifold
 
-    def test_fold_all_fitted_preserves_namespace_collisions(self) -> None:
-        from drowse.cli.runners import _fold_all_fitted_manifolds
+        from drowse.store.manifold_folder import ManifoldFolder
 
+        folder = _write_fitted_manifold("default", "happy.sad").parent
+        raw = folder / tensor_filename(_MODEL)
+        moved = folder / tensor_filename(_MODEL, transferred_from="src/model")
+        manifold = load_manifold(raw)
+
+        def publish(path: Path, metadata: dict[str, Any]) -> None:
+            save_manifold(manifold, path, metadata)
+            ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
+                path, path.with_suffix(".json"),
+            )
+
+        publish(moved, {
+            **manifold.metadata, "method": "manifold_procrustes_transfer",
+            "source_model_id": "src/model", "source_model_fingerprint": "src-fp",
+        })
+        folded = _fold(f"happy.sad:from-{encode_release_id('src/model')}", _MODEL)
+        assert folded.variant.startswith("from-") and sorted(folded.profile.layers) == [2, 5]
+        with pytest.raises(CliError, match="no fitted manifold"):
+            _fold(f"happy.sad:from-{encode_release_id('other/model')}", _MODEL)
+
+        with pytest.raises(CliError, match="role"):
+            _fold("happy.sad:role-pirate", _MODEL)
+        publish(raw, {**manifold.metadata, "node_roles": ["pirate", "pirate"]})
+        assert _fold("happy.sad:role-pirate", _MODEL).display == "happy.sad:role-pirate"
+        shutil.rmtree(folder)
+
+    def test_fold_all_keys_by_namespace(self) -> None:
         _write_fitted_manifold("default", "happy.sad", seed=1)
         _write_fitted_manifold("alice", "happy.sad", seed=2)
-        pool = _fold_all_fitted_manifolds(_MODEL)
-        assert set(pool) == {"alice/happy.sad", "default/happy.sad"}
+        _write_fitted_manifold("default", "warm.clinical", seed=3)
+        assert set(_fold_all(_MODEL)) == {
+            ("alice", "happy.sad"), ("default", "happy.sad"), ("default", "warm.clinical"),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -226,48 +241,31 @@ class TestFoldHelper:
 # ---------------------------------------------------------------------------
 
 class TestWhyFold:
-    def test_why_on_fitted_manifold(
-        self, capsys: pytest.CaptureFixture[str],
-    ) -> None:
+    def test_why_on_fitted_manifold(self, capsys: pytest.CaptureFixture[str]) -> None:
         _write_fitted_manifold("default", "happy.sad")
-        args = cli.parse_args(["manifold", "why", "happy.sad", "-m", _MODEL])
-        _run_manifold_why(args)
-        out = capsys.readouterr().out
-        assert "happy.sad" in out
+        main(["manifold", "why", "happy.sad", "-m", _MODEL])
+        assert "happy.sad" in capsys.readouterr().out
 
-    def test_why_unfitted_manifold_nudges_to_fit(
-        self, capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        # Manifold folder exists but no fitted tensor for the model.
+    def test_why_unfitted_manifold_nudges_to_fit(self, capsys: pytest.CaptureFixture[str]) -> None:
         manifold_dir("default", "happy.sad").mkdir(parents=True, exist_ok=True)
-        args = cli.parse_args(["manifold", "why", "happy.sad", "-m", _MODEL])
-        with pytest.raises(SystemExit):
-            _run_manifold_why(args)
-        err = capsys.readouterr().err
-        assert "fit" in err
+        with pytest.raises(SystemExit) as exc:
+            main(["manifold", "why", "happy.sad", "-m", _MODEL])
+        assert exc.value.code == 1
+        assert "manifold fit" in capsys.readouterr().err
 
-    def test_why_json_on_fitted_manifold(
-        self, capsys: pytest.CaptureFixture[str],
+    @pytest.mark.parametrize(("ref", "display"), [
+        ("happy.sad", "happy.sad"), ("default/happy.sad", "default/happy.sad"),
+    ])
+    def test_why_json_display(
+        self, ref: str, display: str, capsys: pytest.CaptureFixture[str],
     ) -> None:
         import json
+
         _write_fitted_manifold("default", "happy.sad")
-        args = cli.parse_args(["manifold", "why", "happy.sad", "-m", _MODEL, "-j"])
-        _run_manifold_why(args)
+        main(["manifold", "why", ref, "-m", _MODEL, "-j"])
         payload = json.loads(capsys.readouterr().out)
-        assert payload["concept"] == "happy.sad"
+        assert payload["concept"] == display
         assert {row["layer"] for row in payload["layers"]} == {2, 5}
-
-    def test_why_json_keeps_explicit_namespace(
-        self, capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        import json
-        _write_fitted_manifold("alice", "happy.sad")
-        args = cli.parse_args([
-            "manifold", "why", "alice/happy.sad", "-m", _MODEL, "-j",
-        ])
-        _run_manifold_why(args)
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["concept"] == "alice/happy.sad"
 
 
 # ---------------------------------------------------------------------------
@@ -276,61 +274,36 @@ class TestWhyFold:
 # ---------------------------------------------------------------------------
 
 class TestCompareFold:
-    def test_compare_two_fitted_manifolds(
-        self, capsys: pytest.CaptureFixture[str],
-    ) -> None:
+    def test_compare_two_fitted_manifolds(self, capsys: pytest.CaptureFixture[str]) -> None:
         _write_fitted_manifold("default", "happy.sad", seed=1)
         _write_fitted_manifold("default", "warm.clinical", seed=2)
-        args = cli.parse_args([
-            "manifold", "compare", "happy.sad", "warm.clinical", "-m", _MODEL,
-        ])
-        _run_manifold_compare(args)
+        main(["manifold", "compare", "happy.sad", "warm.clinical", "-m", _MODEL])
         out = capsys.readouterr().out
-        assert "happy.sad" in out
-        assert "warm.clinical" in out
+        assert "happy.sad" in out and "warm.clinical" in out
 
-    def test_compare_one_arg_ranks_fitted_manifolds(
-        self, capsys: pytest.CaptureFixture[str],
-    ) -> None:
+    def test_compare_one_arg_ranks_fitted_manifolds(self, capsys: pytest.CaptureFixture[str]) -> None:
         _write_fitted_manifold("default", "happy.sad", seed=1)
         _write_fitted_manifold("default", "warm.clinical", seed=2)
         _write_fitted_manifold("default", "angry.calm", seed=3)
-        args = cli.parse_args([
-            "manifold", "compare", "happy.sad", "-m", _MODEL,
-        ])
-        _run_manifold_compare(args)
+        main(["manifold", "compare", "happy.sad", "-m", _MODEL])
         out = capsys.readouterr().out
-        # 1-arg mode ranks the others (folded manifolds) against the target.
-        assert "warm.clinical" in out
-        assert "angry.calm" in out
+        assert "warm.clinical" in out and "angry.calm" in out
+        assert "happy.sad  " not in out  # the target never ranks against itself
 
-    def test_compare_explicit_namespace_collision_keeps_both(
-        self, capsys: pytest.CaptureFixture[str],
-    ) -> None:
+    def test_compare_explicit_namespace_collision_keeps_both(self, capsys: pytest.CaptureFixture[str]) -> None:
         _write_fitted_manifold("default", "happy.sad", seed=1)
         _write_fitted_manifold("alice", "happy.sad", seed=2)
-        args = cli.parse_args([
-            "manifold", "compare", "default/happy.sad", "alice/happy.sad",
-            "-m", _MODEL,
-        ])
-        _run_manifold_compare(args)
+        main(["manifold", "compare", "default/happy.sad", "alice/happy.sad", "-m", _MODEL])
         out = capsys.readouterr().out
-        assert "default/happy.sad" in out
-        assert "alice/happy.sad" in out
+        assert "default/happy.sad" in out and "alice/happy.sad" in out
 
-    def test_compare_one_arg_rank_all_keeps_namespace_collision(
-        self, capsys: pytest.CaptureFixture[str],
-    ) -> None:
+    def test_compare_one_arg_rank_all_keeps_namespace_collision(self, capsys: pytest.CaptureFixture[str]) -> None:
         _write_fitted_manifold("default", "happy.sad", seed=1)
         _write_fitted_manifold("alice", "warm.clinical", seed=2)
         _write_fitted_manifold("default", "warm.clinical", seed=3)
-        args = cli.parse_args([
-            "manifold", "compare", "happy.sad", "-m", _MODEL,
-        ])
-        _run_manifold_compare(args)
+        main(["manifold", "compare", "happy.sad", "-m", _MODEL])
         out = capsys.readouterr().out
-        assert "alice/warm.clinical" in out
-        assert "default/warm.clinical" in out
+        assert "alice/warm.clinical" in out and "default/warm.clinical" in out
 
 
 def _make_full_manifold(ns: str, name: str, *, seed: int = 0) -> Path:
