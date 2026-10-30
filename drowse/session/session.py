@@ -6,7 +6,7 @@ import logging
 import queue
 import threading
 import time
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from enum import IntEnum
 from types import TracebackType
@@ -632,7 +632,7 @@ def _affine_manifold_push(
     The affine fit's domain is the identity carrier (authoring == embedded), so
     the weights are built directly in authoring-coordinate space.  Arity
     (coord form) is validated against the domain's intrinsic dim, matching the
-    curved :meth:`SteeringManager.add_manifold` path; a non-poised layout (no
+    curved :meth:`SteeringPlan.add_manifold` path; a non-poised layout (no
     interpolant) raises ``SteeringExprError`` advising the user to steer by
     node label instead.
     """
@@ -1160,12 +1160,6 @@ class DrowseSession:
                 warn_once(self._model, sc_reason)
         # The LIFO steering stack and push/pop-frequency steering methods live
         # on the eagerly initialized ``SteeringComposer`` collaborator.
-
-        # Set by ``SteeringComposer.install_composed_steering`` when the current
-        # steering lowers to the persistent compile-clean offset buffers
-        # (static-affine push, compiled CUDA/MPS session) instead of transient hooks —
-        # routes the decode loop to the compiled module + StaticCache.
-        self._steering_uses_compiled_offsets: bool = False
 
         # Persistent compile-clean *capture* buffers + hook handles, adopted from
         # ``from_pretrained`` when compile stuck.  The always-on hooks
@@ -5434,33 +5428,21 @@ class DrowseSession:
                 "session.steering() requires a non-None expression string "
                 "or Steering instance"
             )
-        # Materialize any ProjectedTerm entries into derived profiles
-        # registered in ``self._profiles`` under the synthetic key.
-        # Must run before the classification below, which flattens
-        # ``ProjectedTerm`` into ``(coeff, trigger)`` and loses the
-        # ``base`` / ``onto`` / ``operator`` fields.
-        composer = self._steering_composer
-        snapshots = composer.materialize_projections(steering_obj)
-        # One walk of ``alphas`` yields all three consumer shapes.  Only the
-        # additive third takes pole-alias resolution; the ablation and
-        # manifold terms keep their whole term objects, and all three key
-        # spaces are disjoint (``<name>`` / ``!<target>`` /
-        # ``<manifold>%<position>``), so they merge without collision.
-        classified = steering_obj.classified()
-        resolved: dict[str, SteeringStackEntry] = dict(
-            composer.resolve_pole_aliases(classified.additive)
-        )
+        # One resolution pass: concretize variants, load every artifact, and
+        # materialize projections (raises here on an unknown name).
+        resolved, snapshots = self._steering_composer.resolve(steering_obj)
 
-        # Role-augmented extraction (role-extraction Phase 7):
-        # collect the set of ``role-<id>`` variants across every resolved
-        # term so the generation surface can substitute the assistant-
-        # role label.  Unanimity is the only coherent regime — mixing
-        # multiple roles in one scope has no defined semantics.  A plain
-        # term mixed with a role-tagged term is allowed but warns: the
-        # plain term's baseline was ``assistant``, not ``<role>``.
+        # Role-augmented extraction: collect the ``role-<id>`` variants across
+        # the additive terms so the generation surface can substitute the
+        # assistant-role label.  Unanimity is the only coherent regime — mixing
+        # roles in one scope has no defined semantics.  A plain term mixed with
+        # a role-tagged term is allowed but warns: its baseline was
+        # ``assistant``, not ``<role>``.
         role_variants: set[str] = set()
         any_plain_term = False
-        for key in resolved:
+        for key, entry in resolved.items():
+            if not isinstance(entry, tuple):
+                continue
             if ":" not in key:
                 any_plain_term = True
                 continue
@@ -5492,27 +5474,10 @@ class DrowseSession:
                 stacklevel=2,
             )
 
-        # Fold in ablation entries alongside the additive/projection ones.
-        # Attempt autoload for each target so a client can reference an
-        # installed pack without an explicit ``extract()``; genuine misses
-        # surface through ``_rebuild_steering_hooks`` uniformly with the
-        # additive path.
-        for key, ablation in classified.ablations.items():
-            target = ablation.target
-            if target not in self._profiles:
-                # Resolve via the unified fitted-manifold path. A miss or
-                # non-raw variant error surfaces at hook-install with the
-                # shared ProfileNotRegisteredError shape.
-                with suppress(Exception):
-                    self.ensure_profile_registered(target, role="ablation")
-            resolved[key] = ablation
-        # Fold in manifold terms.  The artifact is loaded into
-        # ``self._manifolds`` here so a miss surfaces eagerly
-        # (``ManifoldNotRegisteredError``) rather than at hook install.
-        manifold_terms: list[ManifoldTerm] = list(classified.manifolds.values())
-        for key, term in classified.manifolds.items():
-            self.ensure_manifold_loaded(term.manifold)
-            resolved[key] = term
+        manifold_terms = [
+            entry for entry in resolved.values()
+            if isinstance(entry, ManifoldTerm)
+        ]
 
         # Role-paired manifold steering (Phase A.4): each manifold term
         # implies a role via its nearest-node lookup.  Aggregate across
@@ -5854,15 +5819,9 @@ class DrowseSession:
                         self._compiled_clean_eligible = False
                         self._incremental_readings = []
                         self._incremental_gate_scores = []
-                        # Zero the persistent compile-clean steering offsets so
-                        # a static-affine push can't leak into a later
-                        # generation that takes the eager / unsteered path
-                        # without re-running ``install_composed_steering``
-                        # (unsteered gens have no steering scope to reset
-                        # them).
-                        self._steering_uses_compiled_offsets = False
-                        if self._steering.has_compiled_offsets():
-                            self._steering.zero_compiled_offsets()
+                        # Steering state is not touched here: the installed
+                        # plan (offset buffers included) is a function of the
+                        # steering stack, restored by the scope pop above.
             finally:
                 # Unconditional: an earlier teardown exception must not leave
                 # the session phase-wedged or the gen lock held.
@@ -6091,7 +6050,7 @@ class DrowseSession:
             and self._compiled_clean_eligible
             and self._capture_buffers
             and (
-                self._steering_uses_compiled_offsets
+                self._steering.uses_compiled_offsets
                 or self._steering.all_fast_path()
             )
         )
@@ -8877,7 +8836,7 @@ class DrowseSession:
         # hook topology matches that: no *transient* per-token capture hooks
         # (``self._capture.is_transient()`` false — true for the persistent-capture
         # and no-probe paths) AND either unsteered or a static-affine steering that
-        # lowered to the persistent offset buffers (``_steering_uses_compiled_offsets``
+        # lowered to the persistent offset buffers (``SteeringManager.uses_compiled_offsets``
         # — the push rides the offset, no transient hook).  A probed gen on the
         # persistent-capture path satisfies both, so it keeps the
         # compiled graph.  Everything else (transient ctx-consulting steering
@@ -8889,7 +8848,7 @@ class DrowseSession:
         # every per-generation hook topology.
         gen_model = self._model
         steering_uses_compiled_offsets = bool(
-            self._steering_uses_compiled_offsets
+            self._steering.uses_compiled_offsets
         )
         if self._compiled and self._device.type in {"cuda", "mps"}:
             compiled_clean = not self._capture.is_transient() and (
@@ -9387,16 +9346,12 @@ class DrowseSession:
                 or _persists_probe_row
             )
 
-            # Compiled-clean eligibility for this gen, decided BEFORE the steering
-            # context enters (``steering_cm.__enter__`` runs
-            # ``SteeringComposer.install_composed_steering``, which consults this
-            # to decide whether a probed gen may still lower steering to the
-            # persistent offset buffers). Eligible when the compiled
-            # CUDA/MPS graph + static cache are live, the persistent capture
-            # buffers were adopted, and the caller didn't ask for the full per-step
-            # hidden stack (``return_hidden`` keeps the transient full-retention
-            # capture).  Capture then rides the persistent buffers; steering rides the
-            # offsets — both compile-clean.
+            # Compiled-clean eligibility for this gen: the compiled CUDA/MPS
+            # graph + static cache are live, the persistent capture buffers were
+            # adopted, and the caller didn't ask for the full per-step hidden
+            # stack (``return_hidden`` keeps the transient full-retention
+            # capture).  Capture then rides the persistent buffers; a static
+            # steering plan rides the offsets — both compile-clean.
             self._compiled_clean_eligible = bool(
                 self._compiled
                 and self._device.type in {"cuda", "mps"}

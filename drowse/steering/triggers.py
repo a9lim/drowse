@@ -7,13 +7,13 @@ when a probe reading crosses a threshold, etc.  Attach one to a steering
 entry (``Steering.alphas["name"] = (alpha, trigger)``) or at the
 per-``Steering`` default (``Steering(..., trigger=Trigger.AFTER_THINKING)``).
 
-Triggers compose at the hook layer: entries sharing a trigger pre-compose
-into one tensor, distinct triggers get distinct tensors, and the hook sums
-only those groups whose trigger is active at the current generation step.
+Triggers compose in the steering plan: entries sharing a trigger merge into
+one affine subspace, distinct triggers get distinct groups, and each layer's
+hook applies only the groups whose trigger is active at the current step.
 The default ``Trigger.BOTH`` (steer every prompt + response + thinking
 token) short-circuits the per-step ``.active()`` check.
 
-**Probe gates (v2.1)**.  ``Trigger.gate`` carries an optional
+**Probe gates**.  ``Trigger.gate`` carries an optional
 :class:`ProbeGate` that consults the live monitor reading for a named
 probe at the current generation step — e.g. "fire calm-steering only
 when the angry probe reads above 0.4".  Probe scores are populated
@@ -49,14 +49,13 @@ class ProbeGate:
     during prompt prefill (no monitor reading yet) or before the first
     decode step — the gate reports inactive; never raises.
 
-    ``probe`` is the canonical concept name as it appears in the
-    session's monitor (e.g. ``"angry.calm"``, ``"deer.wolf"``).  No
-    namespace prefix in v2.1 — drowse's monitor stores probes by
-    canonical name and the grammar matches that.
+    ``probe`` is the verbatim scalar key an instrument emits for the gated
+    probe — a geometry probe and channel (``"angry.calm"``,
+    ``"emotions:fraction"``, ``"default/emotions@happy"``) or an instrument
+    atom (``"jlens/Paris"``, ``"jlens/#1234"``, ``"sae/12"``).
 
     Frozen so two ``Trigger`` instances with identical gates compare
-    equal under dataclass equality, which is what the hook's
-    per-trigger grouping in :meth:`SteeringHook.recompose` relies on.
+    equal, which the composer's per-trigger grouping relies on.
     """
 
     probe: str
@@ -122,7 +121,7 @@ class Trigger:
         trigger is not ``Trigger.BOTH``. Hot-path discipline: pure Python
         attribute reads and int comparisons, no allocation.
 
-        Probe gate (v2.1): when ``self.gate`` is set, the trigger fires
+        Probe gate: when ``self.gate`` is set, the trigger fires
         only if the named probe's last-step reading satisfies the
         threshold.  During prefill the gate reports inactive (no probe
         reading yet); on later steps a missing score (probe not

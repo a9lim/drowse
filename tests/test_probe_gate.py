@@ -328,14 +328,14 @@ class TestSessionProbeGateDetection:
 # -------------------------------------------------- Steering integration ---
 
 class TestSteeringIntegration:
-    def test_normalized_entries_propagates_gate(self):
+    def test_entries_propagate_gate(self):
         # ``myprobe.other`` is a synthetic, non-bundled name so the steering
         # term stays a plain vector (a bundled name like ``angry.calm`` now
         # routes to a 2-node pca ManifoldTerm).  The gate probe stays
         # ``angry.calm`` — gate probes are stored verbatim, never resolved,
         # so the gate-parsing intent is unaffected.
         s = parse_expr("0.5 myprobe.other@when:angry.calm>0.3")
-        out = s.normalized_entries()
+        out = s.entries()
         assert "myprobe.other" in out
         _alpha, trig = out["myprobe.other"]
         assert trig.gate is not None

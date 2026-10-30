@@ -40,6 +40,8 @@ class _Stub(DrowseSession):
     def __init__(self, profiles: dict) -> None:  # pyright: ignore[reportMissingTypeArgument]  # bare dict; stub doesn't constrain key/value types
         import threading
         self._profiles = dict(profiles)
+        self._manifolds = {}
+        self._model_info = {"model_id": "stub/model"}
         # Reentrant gen lock — _push_steering / _pop_steering acquire it
         # so out-of-band steering scope mutations don't race a mid-step
         # rebuild during generation (v2.2 fix).  Stub mode never runs

@@ -122,7 +122,7 @@ def test_final_residual_identity_lens_matches_model_logits(model: Any):
 
 @pytest.mark.parametrize("ablate", [False, True])
 def test_steering_manager_matches_independent_block_intervention(model: Any, ablate: bool):
-    from drowse.steering.hooks import SteeringManager
+    from drowse.steering.hooks import SteeringManager, SteeringPlan
     from drowse.geometry.manifold import LayerSubspace, SynthesizedSubspace
 
     ids = torch.tensor([[1, 7, 11, 13, 19]])
@@ -134,9 +134,10 @@ def test_steering_manager_matches_independent_block_intervention(model: Any, abl
     kappa = torch.tensor([0., .7 if ablate else 0.])
     sub = LayerSubspace.affine(mean, basis)
     synth = SynthesizedSubspace({1: sub}, {1: target}, {1: 1.}, {1: kappa})
+    plan = SteeringPlan()
+    plan.add_subspace("test", synth)
     manager = SteeringManager()
-    manager.add_subspace("test", synth)
-    manager.apply_to_model(layers, torch.device("cpu"), torch.float32)
+    manager.install(plan, layers, torch.device("cpu"), torch.float32)
     try:
         with torch.inference_mode():
             actual = model(ids, use_cache=False).logits

@@ -126,7 +126,6 @@ class _StubSession:
         self._capture: Any = None
         self._capture_buffers: dict[int, torch.Tensor] = {}
         self._compiled_clean_eligible = False
-        self._steering_uses_compiled_offsets = False
         self._steering: Any = None
         self._probe_hash_cache: dict[str, str] = {}
         self._jlens_readout_module_cache: Any = None
@@ -581,7 +580,6 @@ def test_generation_boundary_refreshes_external_lens_once() -> None:
     session_a._capture = _Capture()
     session_a._capture_buffers = {}
     session_a._compiled_clean_eligible = False
-    session_a._steering_uses_compiled_offsets = False
     session_a._steering = SimpleNamespace(all_fast_path=lambda: True)
     session_a._monitor = SimpleNamespace(
         probe_names=[],
@@ -651,7 +649,6 @@ def test_external_lens_replacement_plans_and_freezes_refreshed_layers() -> None:
     session_a._capture = _Capture()
     session_a._capture_buffers = {}
     session_a._compiled_clean_eligible = False
-    session_a._steering_uses_compiled_offsets = False
     session_a._steering = SimpleNamespace(all_fast_path=lambda: True)
     session_a._monitor = SimpleNamespace(
         probe_names=[],

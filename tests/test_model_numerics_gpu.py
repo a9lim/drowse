@@ -88,7 +88,7 @@ def test_native_decode_matches_direct_cached_reference(loaded: tuple[Any, Any]):
 
 @pytest.mark.parametrize("ablate", [False, True])
 def test_native_steering_matches_manual_intervention(loaded: tuple[Any, Any], ablate: bool):
-    from drowse.steering.hooks import SteeringManager
+    from drowse.steering.hooks import SteeringManager, SteeringPlan
     from drowse.geometry.manifold import LayerSubspace, SynthesizedSubspace
 
     model, tokenizer = loaded
@@ -103,9 +103,10 @@ def test_native_steering_matches_manual_intervention(loaded: tuple[Any, Any], ab
     target = torch.tensor([.25, 0. if ablate else -.125])
     kappa = torch.tensor([0., .5 if ablate else 0.])
     synth = SynthesizedSubspace({layer: LayerSubspace.affine(mean, basis)}, {layer: target}, {layer: 1.}, {layer: kappa})
+    plan = SteeringPlan()
+    plan.add_subspace("check", synth)
     manager = SteeringManager()
-    manager.add_subspace("check", synth)
-    manager.apply_to_model(layers, parameter.device, parameter.dtype)
+    manager.install(plan, layers, parameter.device, parameter.dtype)
     try:
         with torch.inference_mode():
             actual = model(ids, use_cache=False).logits

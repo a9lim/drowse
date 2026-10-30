@@ -219,10 +219,9 @@ class ProjectedTerm:
 class AblationTerm:
     """Mean-replacement ablation entry in ``Steering.alphas``.
 
-    The composer lowers an ``AblationTerm`` to an ablate fragment in
-    ``compose_steering_entries``, which ``synthesize_subspace`` folds into the
-    merged affine subspace (per-axis ``κ = 1`` on the ablation axes), attached
-    via ``SteeringManager.add_subspace``. Stored as a value inside
+    ``SteeringComposer.compose`` lowers it to an ablate fragment that
+    ``synthesize_subspace`` folds into the merged affine subspace (per-axis
+    ``κ`` on the ablation axes). Stored as a value inside
     ``Steering.alphas``; the key is ``"!<target>"`` so ablation entries never
     collide with plain-term entries on the same concept.
     """

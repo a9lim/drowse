@@ -48,7 +48,7 @@ from drowse.model.loading import (
     get_layers,
 )
 from drowse.readout.capture_buffer import HiddenCapture
-from drowse.steering.hooks import SteeringManager
+from drowse.steering.hooks import SteeringManager, SteeringPlan
 from drowse.geometry.manifold import synthesize_subspace
 from tests._whitener import isotropic_whitener
 from drowse.steering.triggers import Trigger
@@ -248,16 +248,17 @@ def test_steering_vector_changes_logits(model_type: str):
     direction = direction / direction.norm()
 
     # 4.0: a vector lowers to a rank-1 push fragment synthesized into one
-    # merged affine subspace, then ``add_subspace`` → ``subspace_inject``.
+    # merged affine subspace installed as one affine op.
     L = len(layers) // 2
     synth = synthesize_subspace(
         push=[({L: direction.reshape(1, -1)}, {L: torch.tensor([1.0])}, 1.0)],
         ablate=[], neutral_means={L: torch.zeros(cfg.hidden_size)},
         whitener=isotropic_whitener([L], cfg.hidden_size),
     )
+    plan = SteeringPlan()
+    plan.add_subspace("probe", synth, trigger=Trigger.BOTH)
     mgr = SteeringManager()
-    mgr.add_subspace("probe", synth, trigger=Trigger.BOTH)
-    mgr.apply_to_model(layers, device=torch.device("cpu"), dtype=torch.float32)
+    mgr.install(plan, layers, torch.device("cpu"), torch.float32)
     try:
         with torch.no_grad():
             steered = model(input_ids=ids).logits

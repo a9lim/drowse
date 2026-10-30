@@ -287,12 +287,12 @@ def test_begin_capture_live_lens_uses_persistent_capture_when_available():
     # through the lens family's declared plan.
     session._lens_instrument.live = {"layers": [1, 3]}
     session._compiled_clean_eligible = True
-    session._steering_uses_compiled_offsets = False
     session._capture_buffers = {
         idx: torch.zeros(8) for idx in range(4)
     }
     cast(Any, session)._steering = types.SimpleNamespace(
         all_fast_path=lambda: True,
+        uses_compiled_offsets=False,
     )
 
     persistent_layers: list[int] = []

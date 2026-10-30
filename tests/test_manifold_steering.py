@@ -1,9 +1,9 @@
 """Hook + manager level tests for manifold steering — CPU only.
 
-These cover the *integration* layer — ``SteeringManager.apply_to_model``'s
-gain assembly (mean-1 share-weight + onto clamp; no lever / along clamp —
-Step 8), ``add_manifold``'s plumbing, the hook's foot-following state, and the
-slow-path forcing.  The kernel math itself (geodesic slide, onto collapse,
+These cover the *integration* layer — ``SteeringPlan.lower``'s gain assembly
+(mean-1 share-weight + onto clamp; no lever / along clamp), ``add_manifold``'s
+plumbing and validation, the hook's foot-following state, and the slow-path
+forcing.  The kernel math itself (geodesic slide, onto collapse,
 norm cap) lives in ``test_manifold_math.py``.
 """
 from __future__ import annotations
@@ -20,8 +20,10 @@ from drowse.steering.hooks import (
     _MANIFOLD_ALONG_GAIN,
     _MANIFOLD_ONTO_GAIN,
     _manifold_layer_shares,
+    CurvedGroup,
     SteeringHook,
     SteeringManager,
+    SteeringPlan,
 )
 from drowse.geometry.manifold import (
     BoxAxis,
@@ -179,7 +181,7 @@ def _recompose_manifold(
 ) -> None:
     """Stamp one manifold group onto ``hook`` directly.
 
-    Mirrors what ``apply_to_model`` hands ``recompose``: the per-layer
+    Mirrors what ``SteeringPlan.lower`` hands ``recompose``: the per-layer
     subspace + domain + authoring target/origin coords + the (already
     effective) per-layer coefficients.
     """
@@ -192,22 +194,20 @@ def _recompose_manifold(
     origin_coord = (
         torch.zeros(n) if O_L is None else O_L.reshape(-1).to(torch.float32)
     )
-    hook.recompose(
-        [(
-            sub, domain, target_coord, origin_coord,
-            along, onto, 0.0, Trigger.BOTH,
-        )],
-        ctx,
-        device=torch.device("cpu"),
+    groups = (
+        [CurvedGroup(
+            Trigger.BOTH, sub, domain, target_coord, origin_coord, along, onto,
+        )]
+        if along or onto else []
     )
+    hook.recompose(groups, ctx)
 
 
 def _coeffs(hook: SteeringHook, gi: int = 0) -> tuple[float, float]:
     """The per-layer (along, onto) on group ``gi``."""
-    _trig, _sub, _domain, _target, _origin, along, onto, _kappa = (
-        hook.manifold_groups[gi]
-    )
-    return along, onto
+    group = hook.groups[gi]
+    assert isinstance(group, CurvedGroup)
+    return group.along, group.onto
 
 
 # ------------------------------------------------------------- hook level ---
@@ -216,8 +216,8 @@ def test_hook_all_zero_is_noop():
     manifold = _manifold()
     hook = SteeringHook()
     _recompose_manifold(hook, manifold, 0, along=0.0, onto=0.0)
-    # A fully-zero term drops at recompose — no group, nothing fires.
-    assert hook.manifold_groups == []
+    # A fully-zero term lowers to no group — nothing fires.
+    assert hook.groups == ()
     hidden = torch.randn(1, 4, _DIM)
     before = hidden.clone()
     hook.hook_fn(None, None, hidden)
@@ -283,8 +283,8 @@ def test_hook_forces_slow_path():
     manifold = _manifold()
     hook = SteeringHook()
     _recompose_manifold(hook, manifold, 0, along=0.5)
-    # 4.0 has no fast path — a manifold group is the only (slow) shape.
-    assert len(hook.manifold_groups) == 1
+    assert len(hook.groups) == 1
+    assert not hook.is_static
 
 
 def test_hook_foot_following_warm_carry():
@@ -294,19 +294,19 @@ def test_hook_foot_following_warm_carry():
     hook = SteeringHook()
     _recompose_manifold(hook, manifold, 0, along=0.6)
     # Cold after recompose.
-    assert hook._manifold_feet == [None]
+    assert hook._feet == [None]
     # Prefill fire: (B=1, T=4) -> stash (1, 1, n).
     hidden = torch.randn(1, 4, _DIM)
     hook.hook_fn(None, None, hidden)
-    foot = hook._manifold_feet[0]
+    foot = hook._feet[0]
     assert foot is not None
     n = manifold.domain.intrinsic_dim
     assert foot.shape == (1, 1, n)
     # A decode fire reuses the warm foot (shape matches) and updates it.
     decode = torch.randn(1, 1, _DIM)
     hook.hook_fn(None, None, decode)
-    assert hook._manifold_feet[0] is not None
-    assert hook._manifold_feet[0].shape == (1, 1, n)
+    assert hook._feet[0] is not None
+    assert hook._feet[0].shape == (1, 1, n)
 
 
 def test_hook_trigger_gating_skips_inactive():
@@ -321,18 +321,15 @@ def test_hook_trigger_gating_skips_inactive():
     origin = torch.zeros(1)
     # GENERATED_ONLY trigger, but the context is in prefill (prompt) -> inactive.
     hook.recompose(
-        [(
-            sub, domain, target, origin, 0.6, 0.0, 0.0, Trigger.GENERATED_ONLY,
-        )],
+        [CurvedGroup(Trigger.GENERATED_ONLY, sub, domain, target, origin, 0.6, 0.0)],
         ctx,
-        device=torch.device("cpu"),
     )
     ctx.is_prefill = True  # prompt phase -> GENERATED_ONLY inactive
     hidden = torch.randn(1, 3, _DIM)
     before = hidden.clone()
     hook.hook_fn(None, None, hidden)
     assert torch.allclose(hidden, before, atol=1e-5)
-    assert hook._manifold_feet[0] is None  # never advanced
+    assert hook._feet[0] is None  # never advanced
 
 
 # ---------------------------------------------------------- manager level ---
@@ -340,9 +337,10 @@ def test_hook_trigger_gating_skips_inactive():
 def test_manager_attaches_manifold_hooks():
     manifold = _manifold(layers=(0, 1))
     mgr = SteeringManager()
-    mgr.add_manifold("mood", manifold, position=(0.5,), along=0.5, onto=0.5)
+    plan = SteeringPlan()
+    plan.add_manifold("mood", manifold, position=(0.5,), along=0.5, onto=0.5)
     layers = _model_layers(4)
-    mgr.apply_to_model(layers, torch.device("cpu"), torch.float32)
+    mgr.install(plan, layers, torch.device("cpu"), torch.float32)
     assert sorted(mgr.hooks) == [0, 1]
     assert mgr.all_fast_path() is False
 
@@ -350,11 +348,12 @@ def test_manager_attaches_manifold_hooks():
 def test_manager_steer_n2_manifold():
     manifold = _manifold2d(layers=(0,))
     mgr = SteeringManager()
+    plan = SteeringPlan()
     # along=0.3 keeps the single-layer budget (0.3·gain=0.6) under the
     # water-fill cap, so no saturation warning pollutes the run.
-    mgr.add_manifold("disk", manifold, position=(0.3, 0.8), along=0.3, onto=0.0)
+    plan.add_manifold("disk", manifold, position=(0.3, 0.8), along=0.3, onto=0.0)
     layers = _model_layers(2)
-    mgr.apply_to_model(layers, torch.device("cpu"), torch.float32)
+    mgr.install(plan, layers, torch.device("cpu"), torch.float32)
     hidden = torch.randn(1, 3, _DIM) + 20.0
     before = hidden.clone()
     layers[0](hidden)
@@ -364,13 +363,30 @@ def test_manager_steer_n2_manifold():
 def test_manager_position_length_mismatch_raises():
     manifold = _manifold2d(layers=(0,))
     mgr = SteeringManager()
+    plan = SteeringPlan()
     # A 2-D manifold steered with a single coordinate.  The expression itself
     # was well-formed, so this is a composition failure (422), not a parse
     # error (400).
     with pytest.raises(ManifoldArityError) as exc:
-        mgr.add_manifold("disk", manifold, position=(0.5,), along=0.5, onto=0.5)
+        plan.add_manifold("disk", manifold, position=(0.5,), along=0.5, onto=0.5)
     assert isinstance(exc.value, SteeringCompositionError)
     assert exc.value.user_message()[0] == 422
+
+
+@pytest.mark.parametrize("along, onto", [(-0.5, 0.0), (0.5, -0.3)])
+def test_negative_curved_coefficient_raises(along: float, onto: float) -> None:
+    """A curved fit's along/onto are [0, 1] fractions; negating one must raise.
+
+    It used to clamp to 0 and silently no-op, while the same expression on an
+    affine fit pushes away — and ``fit_mode=auto`` picks per model.
+    """
+    plan = SteeringPlan()
+    with pytest.raises(SteeringCompositionError, match="fractions in"):
+        plan.add_manifold(
+            "mood", _manifold(layers=(0,)), position=(0.5,),
+            along=along, onto=onto,
+        )
+    assert not plan
 
 
 def test_manager_user_coeffs_clamped_to_unit():
@@ -382,9 +398,10 @@ def test_manager_user_coeffs_clamped_to_unit():
     unclamped path applies; the periodic path is tested separately."""
     manifold = _manifold_open(layers=(0,))
     mgr = SteeringManager()
-    mgr.add_manifold("mood", manifold, position=(0.5,), along=5.0, onto=5.0)
+    plan = SteeringPlan()
+    plan.add_manifold("mood", manifold, position=(0.5,), along=5.0, onto=5.0)
     layers = _model_layers(1)
-    mgr.apply_to_model(layers, torch.device("cpu"), torch.float32)
+    mgr.install(plan, layers, torch.device("cpu"), torch.float32)
     along, onto = _coeffs(mgr.hooks[0])
     assert along == pytest.approx(_MANIFOLD_ALONG_GAIN, abs=1e-6)  # along: translate gain
     assert onto == pytest.approx(min(1.0, _MANIFOLD_ONTO_GAIN), abs=1e-6)  # onto: collapse gain
@@ -399,11 +416,12 @@ def test_manager_along_share_weighting_mean_one():
     for n_layers in (1, 2, 4):
         manifold = _manifold(layers=tuple(range(n_layers)))
         mgr = SteeringManager()
-        mgr.add_manifold(
+        plan = SteeringPlan()
+        plan.add_manifold(
             "mood", manifold, position=(0.5,),
             along=user_along, onto=0.0,
         )
-        mgr.apply_to_model(
+        mgr.install(plan, 
             _model_layers(n_layers), torch.device("cpu"), torch.float32,
         )
         total = sum(_coeffs(hook)[0] for hook in mgr.hooks.values())
@@ -424,8 +442,9 @@ def test_manager_along_unclamped_overshoots():
     n_layers = 3
     manifold = _manifold_open(layers=tuple(range(n_layers)))
     mgr = SteeringManager()
-    mgr.add_manifold("mood", manifold, position=(0.5,), along=1.0, onto=0.0)
-    mgr.apply_to_model(_model_layers(n_layers), torch.device("cpu"), torch.float32)
+    plan = SteeringPlan()
+    plan.add_manifold("mood", manifold, position=(0.5,), along=1.0, onto=0.0)
+    mgr.install(plan, _model_layers(n_layers), torch.device("cpu"), torch.float32)
     budgets = [_coeffs(hook)[0] for hook in mgr.hooks.values()]
     assert budgets, "expected manifold groups to be attached"
     # mean-1 ⇒ Σ = along·base·n_layers; the spread pushes the top layer past base.
@@ -443,8 +462,9 @@ def test_manager_onto_clamped_per_layer():
     n_layers = 3
     manifold = _manifold(layers=tuple(range(n_layers)))
     mgr = SteeringManager()
-    mgr.add_manifold("mood", manifold, position=(0.5,), along=0.0, onto=1.0)
-    mgr.apply_to_model(_model_layers(n_layers), torch.device("cpu"), torch.float32)
+    plan = SteeringPlan()
+    plan.add_manifold("mood", manifold, position=(0.5,), along=0.0, onto=1.0)
+    mgr.install(plan, _model_layers(n_layers), torch.device("cpu"), torch.float32)
     ontos = [_coeffs(h)[1] for h in mgr.hooks.values()]
     assert all(0.0 <= o <= 1.0 + 1e-6 for o in ontos)            # clamp holds
     shares = _manifold_layer_shares(manifold)
@@ -460,8 +480,9 @@ def test_manager_two_coeffs_independent():
     coefficient leaves the other at zero per layer."""
     manifold = _manifold(layers=(0,))
     mgr = SteeringManager()
-    mgr.add_manifold("mood", manifold, position=(0.5,), along=0.1, onto=0.0)
-    mgr.apply_to_model(_model_layers(1), torch.device("cpu"), torch.float32)
+    plan = SteeringPlan()
+    plan.add_manifold("mood", manifold, position=(0.5,), along=0.1, onto=0.0)
+    mgr.install(plan, _model_layers(1), torch.device("cpu"), torch.float32)
     along, onto = _coeffs(mgr.hooks[0])
     assert along > 0.0
     assert onto == 0.0
@@ -491,8 +512,9 @@ def test_manager_share_weighting_weights_by_centroid_spread():
     ))
     user_along = 0.15
     mgr = SteeringManager()
-    mgr.add_manifold("mood", manifold, position=(0.5,), along=user_along, onto=0.0)
-    mgr.apply_to_model(_model_layers(2), torch.device("cpu"), torch.float32)
+    plan = SteeringPlan()
+    plan.add_manifold("mood", manifold, position=(0.5,), along=user_along, onto=0.0)
+    mgr.install(plan, _model_layers(2), torch.device("cpu"), torch.float32)
     along_0 = _coeffs(mgr.hooks[0])[0]
     along_1 = _coeffs(mgr.hooks[1])[0]
     assert along_1 > along_0
@@ -518,10 +540,11 @@ def test_manager_periodic_clamps_and_drops_share_weighting():
     for along, expected in [(1.0, min(1.0, 1.0 * _MANIFOLD_ALONG_GAIN)),
                              (0.1, min(1.0, 0.1 * _MANIFOLD_ALONG_GAIN))]:
         mgr = SteeringManager()
-        mgr.add_manifold(
+        plan = SteeringPlan()
+        plan.add_manifold(
             "mood", manifold, position=(0.5,), along=along, onto=0.0,
         )
-        mgr.apply_to_model(
+        mgr.install(plan, 
             _model_layers(n_layers), torch.device("cpu"), torch.float32,
         )
         budgets = [_coeffs(hook)[0] for hook in mgr.hooks.values()]
@@ -577,11 +600,12 @@ def test_manager_rejects_overlapping_manifolds():
     m1 = _manifold(layers=(0, 1))
     m2 = _manifold(layers=(1, 2))
     mgr = SteeringManager()
-    mgr.add_manifold("a", m1, position=(0.3,), along=0.5, onto=0.0)
-    mgr.add_manifold("b", m2, position=(0.7,), along=0.5, onto=0.0)
+    plan = SteeringPlan()
+    plan.add_manifold("a", m1, position=(0.3,), along=0.5, onto=0.0)
+    plan.add_manifold("b", m2, position=(0.7,), along=0.5, onto=0.0)
     layers = _model_layers(4)
     with pytest.raises(OverlappingManifoldError) as exc:
-        mgr.apply_to_model(layers, torch.device("cpu"), torch.float32)
+        mgr.install(plan, layers, torch.device("cpu"), torch.float32)
     assert isinstance(exc.value, SteeringCompositionError)
     assert exc.value.user_message()[0] == 422
 
@@ -589,10 +613,11 @@ def test_manager_rejects_overlapping_manifolds():
 def test_manager_clear_all_drops_manifolds():
     manifold = _manifold(layers=(0,))
     mgr = SteeringManager()
-    mgr.add_manifold("mood", manifold, position=(0.5,), along=0.5, onto=0.0)
-    mgr.apply_to_model(_model_layers(2), torch.device("cpu"), torch.float32)
+    plan = SteeringPlan()
+    plan.add_manifold("mood", manifold, position=(0.5,), along=0.5, onto=0.0)
+    mgr.install(plan, _model_layers(2), torch.device("cpu"), torch.float32)
     mgr.clear_all()
-    assert mgr.manifolds == {}
+    assert mgr.plan is None
     assert mgr.hooks == {}
 
 
@@ -600,27 +625,28 @@ def test_manager_reset_manifold_feet_cold_starts():
     """``reset_manifold_feet`` re-seeds every hook's foot to cold (None)."""
     manifold = _manifold(layers=(0, 1))
     mgr = SteeringManager()
-    mgr.add_manifold("mood", manifold, position=(0.5,), along=0.6, onto=0.0)
+    plan = SteeringPlan()
+    plan.add_manifold("mood", manifold, position=(0.5,), along=0.6, onto=0.0)
     layers = _model_layers(2)
-    mgr.apply_to_model(layers, torch.device("cpu"), torch.float32)
+    mgr.install(plan, layers, torch.device("cpu"), torch.float32)
     # Fire once to warm the feet.
     for idx, hook in mgr.hooks.items():
         hook.hook_fn(None, None, torch.randn(1, 3, _DIM))
-        assert hook._manifold_feet[0] is not None
+        assert hook._feet[0] is not None
     mgr.reset_manifold_feet()
     for hook in mgr.hooks.values():
-        assert hook._manifold_feet == [None]
+        assert hook._feet == [None]
 
 
 def test_any_steering_forces_slow_path():
-    # 4.0: there is no composed-tensor fast path — any attached hook forces the
-    # slow (ctx-consulting) ``subspace_inject`` path, so ``all_fast_path`` is
-    # True only for the unsteered manager (no hooks).
+    # Any attached transient hook leaves the graph-capture path, so
+    # ``all_fast_path`` is True only for the unsteered manager (no hooks).
     mgr = SteeringManager()
+    plan = SteeringPlan()
     assert mgr.all_fast_path() is True
-    mgr.add_manifold("mood", _manifold(layers=(0, 1)), position=(0.5,),
+    plan.add_manifold("mood", _manifold(layers=(0, 1)), position=(0.5,),
                      along=0.5, onto=0.0)
-    mgr.apply_to_model(_model_layers(3), torch.device("cpu"), torch.float32)
+    mgr.install(plan, _model_layers(3), torch.device("cpu"), torch.float32)
     assert mgr.all_fast_path() is False
 
 
@@ -629,10 +655,9 @@ def test_curved_manifold_not_static_steerable():
     # state), so it can't ride the static-affine StaticCache / graph-capture
     # path — ``static_steerable`` must be False even though it's steered.
     mgr = SteeringManager()
-    mgr.add_manifold("mood", _manifold(layers=(0, 1)), position=(0.5,),
+    plan = SteeringPlan()
+    plan.add_manifold("mood", _manifold(layers=(0, 1)), position=(0.5,),
                      along=0.5, onto=0.0)
-    mgr.apply_to_model(_model_layers(3), torch.device("cpu"), torch.float32)
+    mgr.install(plan, _model_layers(3), torch.device("cpu"), torch.float32)
     assert mgr.static_steerable() is False
-    assert all(
-        h._single_affine_fast is None for h in mgr.hooks.values()
-    )
+    assert not any(h.is_static for h in mgr.hooks.values())

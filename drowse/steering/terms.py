@@ -1,26 +1,12 @@
-"""Per-call steering configuration for DrowseSession.generate.
+"""Per-call steering configuration: the :class:`Steering` IR.
 
-A frozen dataclass wrapping ``alphas: {name: alpha_or_entry}`` plus an
-optional ``thinking`` override and an optional default ``trigger``.
-Callers hand :func:`Steering.from_value` either an expression string
-(routed through the shared grammar in
-:mod:`drowse.steering.grammar`) or a pre-built :class:`Steering`.
-Dict inputs are no longer accepted — the expression string is the only
-input shape for ad-hoc use; programmatic callers construct the dataclass
-directly.
-
-An individual entry can carry its own :class:`~drowse.steering.triggers.Trigger`
-by using a ``(alpha, trigger)`` tuple as the dict value; entries given as
-bare floats inherit ``Steering.trigger`` (which itself defaults to
-``Trigger.BOTH``, the "steer every token" behavior).  Projection terms
-land as :class:`~drowse.steering.grammar.ProjectedTerm` values and are
-materialized into derived profiles by
-:class:`~drowse.session.session._SteeringContext` on scope entry.
-
-Pole aliasing is NOT resolved here — that happens inside
-``DrowseSession.steering()`` (the canonical resolver site, per the plan).
-Callers that pre-resolve a pole via ``store.selectors.canonicalize_atom`` can
-pass the canonical name directly.
+A frozen ``alphas: {key: entry}`` mapping plus an optional ``thinking``
+override and a default ``trigger`` for bare-float entries.  Callers hand
+:meth:`Steering.from_value` an expression string (parsed by
+:mod:`drowse.steering.grammar`) or a pre-built :class:`Steering`; dicts are
+not accepted.  Keys are registry keys — the grammar's canonical form — and
+resolution to loaded artifacts happens once, in
+:meth:`~drowse.steering.composer.SteeringComposer.resolve`.
 """
 
 from __future__ import annotations
@@ -38,14 +24,10 @@ if TYPE_CHECKING:
     )
 
 #: Accepted shapes for a single entry in ``Steering.alphas`` — a bare
-#: alpha (inherits ``Steering.trigger``), a ``(alpha, Trigger)`` tuple for
-#: a per-entry trigger override, a
-#: :class:`~drowse.steering.grammar.ProjectedTerm` for runtime
-#: projection (materialized into a derived profile by the session), an
-#: :class:`~drowse.steering.grammar.AblationTerm` for mean-replacement
-#: ablation, or a :class:`~drowse.steering.grammar.ManifoldTerm` for
-#: spline-based manifold steering (resolved into a loaded manifold
-#: artifact by the session).
+#: alpha (inherits ``Steering.trigger``), a ``(alpha, Trigger)`` tuple, a
+#: :class:`~drowse.steering.grammar.ProjectedTerm` (``~``/``|`` projection),
+#: an :class:`~drowse.steering.grammar.AblationTerm` (``!``), or a
+#: :class:`~drowse.steering.grammar.ManifoldTerm` (``%``).
 AlphaEntry = Union[
     float,
     "tuple[float, Trigger]",
@@ -54,12 +36,9 @@ AlphaEntry = Union[
     "ManifoldTerm",
 ]
 
-#: One entry of a pushed steering scope, after ``Steering.classified()`` has
-#: flattened the additive kinds.  Three shapes survive: the ``(alpha,
-#: Trigger)`` pair every scalar term lowers to, and the two term objects whose
-#: extra fields don't fit that pair.  :func:`entry_trigger` / :func:`entry_coeff`
-#: are the readers — every consumer that only needs one of those two fields
-#: should go through them rather than re-deriving the three-way split.
+#: One entry of a pushed steering scope after resolution: scalar terms
+#: (vectors, projections) as ``(alpha, Trigger)``, ablation and manifold terms
+#: whole.  :func:`entry_trigger` / :func:`entry_coeff` read either shape.
 SteeringStackEntry = Union[
     "tuple[float, Trigger]",
     "AblationTerm",
@@ -67,48 +46,44 @@ SteeringStackEntry = Union[
 ]
 
 
+def term_entry(
+    val: AlphaEntry, default_trigger: Trigger = Trigger.BOTH,
+) -> tuple[float, Trigger]:
+    """``(coeff, trigger)`` of any ``Steering.alphas`` value or stack entry.
+
+    A bare float takes ``default_trigger``; a manifold term reports its
+    ``along`` coefficient.
+    """
+    if isinstance(val, tuple):
+        return float(val[0]), val[1]
+    if isinstance(val, (int, float)):
+        return float(val), default_trigger
+    return float(val.coeff), val.trigger
+
+
 def entry_trigger(entry: SteeringStackEntry) -> Trigger:
     """The trigger a stack entry fires under, whatever shape it is."""
-    from drowse.steering.grammar import AblationTerm, ManifoldTerm
-
-    if isinstance(entry, (AblationTerm, ManifoldTerm)):
-        return entry.trigger
-    return entry[1]
+    return term_entry(entry)[1]
 
 
 def entry_coeff(entry: SteeringStackEntry) -> float:
-    """The scalar strength a stack entry carries, whatever shape it is.
-
-    For a manifold term this is ``coeff`` — the ``along`` half of the
-    ``along[,onto]`` pair — which is what the flat ``{name: alpha}`` views
-    report.
-    """
-    from drowse.steering.grammar import AblationTerm, ManifoldTerm
-
-    if isinstance(entry, (AblationTerm, ManifoldTerm)):
-        return float(entry.coeff)
-    return float(entry[0])
+    """The scalar strength a stack entry carries (a manifold term's ``along``)."""
+    return term_entry(entry)[0]
 
 
 @dataclass(frozen=True)
 class Steering:
     """Per-call steering configuration.
 
-    alphas: vector name -> alpha, ``(alpha, Trigger)``, or
-        :class:`~drowse.steering.grammar.ProjectedTerm`.  Pole aliases
-        (bare poles of installed bipolar vectors) are resolved when the
-        steering is entered via ``DrowseSession.steering()``.
-    thinking: per-call thinking override; ``None`` means fall through to the
+    alphas: registry key → :data:`AlphaEntry`.
+    thinking: per-call thinking override; ``None`` falls through to the
         caller's ``thinking=`` kwarg / the session default.
-    trigger: default trigger for entries that are bare floats. Defaults to
-        ``Trigger.BOTH`` — steer every token.  Entries given as
-        ``(alpha, Trigger)`` tuples ignore this default; projection
-        entries carry their own trigger inside the ``ProjectedTerm``.
+    trigger: default trigger for bare-float entries (``Trigger.BOTH``).
 
     ``~`` / ``|`` projection terms always materialize through the
     closed-form LEACE projector against the session's
     :class:`~drowse.geometry.whitener.LayerWhitener` — there is no
-    Euclidean path and no per-call metric override.
+    per-call metric override.
     """
 
     alphas: Mapping[str, AlphaEntry]
@@ -121,10 +96,8 @@ class Steering:
     ) -> "Steering | None":
         """Coerce a string / Steering / None into a Steering or None.
 
-        Strings parse through the shared expression grammar in
-        :mod:`drowse.steering.grammar`.  ``None`` passes through (the
-        caller interprets as "no steering").  Pre-built :class:`Steering`
-        instances pass through unchanged.  Any other input type raises
+        Strings parse through :mod:`drowse.steering.grammar`; ``None`` and
+        :class:`Steering` instances pass through; anything else raises
         ``TypeError``.
         """
         if value is None:
@@ -139,91 +112,17 @@ class Steering:
             f"got {type(value).__name__}"
         )
 
-    def classified(self) -> "SteeringEntries":
-        """Split ``alphas`` into its three consumer shapes in one walk.
-
-        The five entry kinds lower to three: plain floats and
-        ``(alpha, Trigger)`` tuples and
-        :class:`~drowse.steering.grammar.ProjectedTerm` values all become
-        ``{key: (alpha, trigger)}`` additive entries (a projection's
-        ``operator``/``base``/``onto`` fields are consumed earlier, when the
-        session materializes the derived profile under the synthetic key);
-        :class:`~drowse.steering.grammar.AblationTerm` and
-        :class:`~drowse.steering.grammar.ManifoldTerm` values are kept whole,
-        because their extra fields (the ablation target, the manifold's
-        ``along``/``onto`` split and position) have no place in the additive
-        shape.  Keys stay verbatim and live in disjoint namespaces
-        (``<name>`` / ``<base><op><onto>`` / ``!<target>`` /
-        ``<manifold>%<position>``), so a caller can merge the three back into
-        one dict without collision.
-        """
-        from drowse.steering.grammar import (
-            AblationTerm,
-            ManifoldTerm,
-            ProjectedTerm,
-        )
-
-        additive: dict[str, tuple[float, Trigger]] = {}
-        ablations: dict[str, "AblationTerm"] = {}
-        manifolds: dict[str, "ManifoldTerm"] = {}
-        default = self.trigger
-        for name, val in self.alphas.items():
-            if isinstance(val, AblationTerm):
-                ablations[name] = val
-            elif isinstance(val, ManifoldTerm):
-                manifolds[name] = val
-            elif isinstance(val, ProjectedTerm):
-                additive[name] = (float(val.coeff), val.trigger)
-            elif isinstance(val, tuple):
-                alpha, trig = val
-                additive[name] = (float(alpha), trig)
-            else:
-                additive[name] = (float(val), default)
-        return SteeringEntries(
-            additive=additive, ablations=ablations, manifolds=manifolds,
-        )
+    def entries(self) -> dict[str, tuple[float, Trigger]]:
+        """``{key: (coeff, trigger)}`` for every term, whatever its kind."""
+        return {
+            name: term_entry(val, self.trigger)
+            for name, val in self.alphas.items()
+        }
 
     def triggers(self) -> set[Trigger]:
-        """Every trigger this steering's terms actually fire under.
-
-        Bare floats contribute :attr:`trigger`; every other entry kind
-        contributes its own.  Triggers are frozen and hashable, so the set
-        answers "does anything here run outside ``Trigger.BOTH``?" in one
-        comparison.
-        """
-        entries = self.classified()
-        return (
-            {trig for _alpha, trig in entries.additive.values()}
-            | {term.trigger for term in entries.ablations.values()}
-            | {term.trigger for term in entries.manifolds.values()}
-        )
-
-    def normalized_entries(self) -> "dict[str, tuple[float, Trigger]]":
-        """Return just the **additive** view: ``{name: (alpha, trigger)}``.
-
-        The additive third of :meth:`classified` — plain, tuple and projection
-        entries with an explicit trigger each (bare floats take
-        ``self.trigger``).  Ablation and manifold entries are absent; reach for
-        :meth:`classified` when you need them, rather than re-walking
-        ``alphas`` alongside this view.
-        """
-        return self.classified().additive
+        """Every trigger this steering's terms fire under."""
+        return {trig for _coeff, trig in self.entries().values()}
 
     def __str__(self) -> str:
         from drowse.steering.grammar import format_expr
         return format_expr(self)
-
-
-@dataclass(frozen=True)
-class SteeringEntries:
-    """The three consumer shapes :meth:`Steering.classified` splits into.
-
-    ``additive`` is the ``{key: (alpha, trigger)}`` view every scalar term
-    lowers to; ``ablations`` and ``manifolds`` keep their term objects whole
-    because their extra fields don't survive that flattening.  Keys are the
-    verbatim ``Steering.alphas`` keys and the three groups are key-disjoint.
-    """
-
-    additive: dict[str, tuple[float, Trigger]]
-    ablations: "dict[str, AblationTerm]"
-    manifolds: "dict[str, ManifoldTerm]"

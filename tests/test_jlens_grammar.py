@@ -121,6 +121,16 @@ def test_token_id_and_reserved_atom_rejections(text: str) -> None:
         parse_expr(text)
 
 
+def test_reserved_but_unsteerable_namespaces_refuse_to_resolve() -> None:
+    from drowse.session.session import ProfileNotRegisteredError
+
+    session = _StubSession()
+    composer = SteeringComposer(session)  # type: ignore[arg-type]
+    for key in ("slens/owl", "neuron/L8n344", "head/L20h17"):
+        with pytest.raises(ProfileNotRegisteredError, match="reserved"):
+            composer.ensure_profile_registered(key)
+
+
 # ---------------------------------------------------------- lazy resolution --
 
 

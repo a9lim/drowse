@@ -106,16 +106,18 @@ def happy_profile(model_and_tokenizer: Any, layers: Any) -> Any:
     return _extract_profile(model, tokenizer, "happy", layers)
 
 
-def _steer_subspace(mgr: Any, *pairs: Any) -> None:
-    """4.0: route baked ``(profile, alpha)`` pairs through the unified backend.
+def _steer_plan(*pairs: Any) -> Any:
+    """Route baked ``(profile, alpha)`` pairs through the unified backend.
 
     Every vector lowers to a rank-1 push fragment (unit dir + baked-magnitude
     coord), all composed into one merged affine subspace via
-    ``synthesize_subspace`` + ``add_subspace`` — the dispatch the session does.
+    ``synthesize_subspace`` on one ``SteeringPlan`` — the dispatch the session
+    does.
     Anchored at zero (enough for the smoke "steering changes the output"
     assertions; the GPU gate owns strength calibration).
     """
     from drowse.geometry.manifold import synthesize_subspace
+    from drowse.steering.hooks import SteeringPlan
 
     push: list[Any] = []
     neutral_means: dict[int, torch.Tensor] = {}
@@ -140,7 +142,9 @@ def _steer_subspace(mgr: Any, *pairs: Any) -> None:
         push, [], neutral_means=neutral_means,
         whitener=isotropic_whitener(neutral_means, dim),
     )
-    mgr.add_subspace("steer", synth)
+    plan = SteeringPlan()
+    plan.add_subspace("steer", synth)
+    return plan
 
 
 class TestVectorExtraction:
@@ -190,8 +194,7 @@ class TestSteering:
 
         # Steered
         mgr = SteeringManager()
-        _steer_subspace(mgr, (happy_profile, 5.0))
-        mgr.apply_to_model(layers, device, dtype)
+        mgr.install(_steer_plan((happy_profile, 5.0)), layers, device, dtype)
 
         state1 = GenerationState()
         ids1 = generate_steered(model, tokenizer, input_ids.clone(), config, state1)
@@ -228,8 +231,7 @@ class TestSteering:
         # preceding steering test.  This assertion is about hook installation
         # and cleanup, not about calibrating the weakest alpha that changes one
         # particular greedy continuation.
-        _steer_subspace(mgr, (happy_profile, 5.0))
-        mgr.apply_to_model(layers, device, dtype)
+        mgr.install(_steer_plan((happy_profile, 5.0)), layers, device, dtype)
         state_s = GenerationState()
         steered = generate_steered(model, tokenizer, input_ids.clone(), config, state_s)
 
@@ -297,8 +299,7 @@ class TestMonitor:
         # Steer toward happy
         mgr = SteeringManager()
         # α=0.6 sits mid coherent band (0.4–0.8); α=1 is at the cliff per CLAUDE.md.
-        _steer_subspace(mgr, (happy_profile, 0.6))
-        mgr.apply_to_model(layers, device, dtype)
+        mgr.install(_steer_plan((happy_profile, 0.6)), layers, device, dtype)
 
         input_ids = tokenizer.apply_chat_template(
             [{"role": "user", "content": "How are you feeling?"}],
@@ -364,15 +365,15 @@ class TestMonitor:
 
         # Three vectors lower to one merged affine subspace.
         mgr = SteeringManager()
-        _steer_subspace(
-            mgr, (happy_profile, 0.8), (curious_profile, 0.5), (concise_profile, 0.3),
+        plan = _steer_plan(
+            (happy_profile, 0.8), (curious_profile, 0.5), (concise_profile, 0.3),
         )
 
         def timed(steered: bool) -> float:
             if steered:
-                mgr.apply_to_model(layers, device, dtype)
+                mgr.install(plan, layers, device, dtype)
             else:
-                mgr.detach_transient_hooks()
+                mgr.clear_all()
             state = GenerationState()
             synchronize()
             started = time.perf_counter()

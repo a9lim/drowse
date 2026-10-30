@@ -203,9 +203,9 @@ class SteeringCompositionError(ValueError, DrowseError):
     The expression was syntactically valid and every atom resolved; what
     failed is composing the resolved terms against the loaded artifacts —
     a coordinate count that doesn't match the manifold's domain, or two
-    curved manifolds whose spans collide at a shared layer.  Raised by
-    ``SteeringManager.add_manifold`` / ``apply_to_model`` and the session's
-    affine push, never by the parser.
+    curved manifolds whose spans collide at a shared layer, or a negative
+    coefficient on a curved term.  Raised by ``SteeringPlan.add_manifold`` /
+    ``SteeringPlan.lower`` and the affine push, never by the parser.
 
     Status is ``422``: syntactically valid, semantically unsatisfiable.
     That is the distinction from :class:`SteeringExprError`'s ``400`` — a
@@ -222,7 +222,7 @@ class ManifoldArityError(SteeringCompositionError):
     coordinates for the manifold's domain.
 
     The grammar collects the position payload but cannot validate arity —
-    it does not know the domain.  ``SteeringManager.add_manifold`` checks
+    it does not know the domain.  ``SteeringPlan.add_manifold`` checks
     the coordinate count against the loaded domain's intrinsic dimension
     and raises this when they disagree.
     """
