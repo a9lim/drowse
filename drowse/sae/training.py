@@ -171,7 +171,10 @@ def train_residual_sae(
     b_dec = torch.nn.Parameter(initial.mean(dim=0).to(device))
     optimizer = torch.optim.Adam((w_enc, w_dec, b_enc, b_dec), lr=learning_rate)
 
-    feature_fires = torch.zeros(width, dtype=torch.int64)
+    # Fire counts accumulate on the training device: copying the full
+    # ``[tokens, width]`` feature matrix to the host every step dominated an
+    # accelerator step at realistic widths.
+    feature_fires = torch.zeros(width, dtype=torch.int64, device=device)
     token_count = 0
     step = 0
     epoch = 0
@@ -205,13 +208,17 @@ def train_residual_sae(
         optimizer.step()
         with torch.no_grad():
             w_dec.div_(w_dec.norm(dim=1, keepdim=True).clamp_min(1e-8))
-            feature_fires.add_((features.detach().cpu() > dead_feature_threshold).sum(dim=0))
+            feature_fires.add_((features.detach() > dead_feature_threshold).sum(dim=0))
+            # One host transfer for the step's three scalars.
+            step_loss, step_mse, step_l1 = (
+                torch.stack((loss, mse, sparsity)).cpu().tolist()
+            )
         count = int(activations.shape[0])
         token_count += count
         step += 1
-        losses.append(float(loss.detach().cpu()))
-        mse_values.append(float(mse.detach().cpu()))
-        l1_values.append(float(sparsity.detach().cpu()))
+        losses.append(step_loss)
+        mse_values.append(step_mse)
+        l1_values.append(step_l1)
         if on_progress is not None and (step == 1 or token_count >= tokens or step % 25 == 0):
             on_progress(
                 f"trained {token_count:,}/{tokens:,} tokens; mse={mse_values[-1]:.5g}, mean|f|={l1_values[-1]:.5g}"
