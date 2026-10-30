@@ -26,13 +26,12 @@ import torch
 from transformers import StoppingCriteria, StoppingCriteriaList
 
 from drowse.events import EventBus, GenerationFinished, GenerationStarted
-from drowse.fit.capture import last_content_index
 from drowse.generation.decode import (
     GenerationState,
     hf_generation_config,
     hf_unneutralizable_processors,
 )
-from drowse.generation.finalize import MIN_ELAPSED_FOR_RATE, FamilyAggregates
+from drowse.generation.finalize import MIN_ELAPSED_FOR_RATE, FinalReads
 from drowse.generation.prefix_cache import PREFIX_CACHE_MIN_TOKENS
 from drowse.generation.results import GenerationResult, RunSet
 from drowse.generation.sampling import (
@@ -41,20 +40,16 @@ from drowse.generation.sampling import (
     SamplingConfig,
 )
 from drowse.loom.recipe import Recipe, derive_seed_schedule
-from drowse.readout.types import AGG_TAIL_DEPTH, ReadRequest
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
 
 if TYPE_CHECKING:
     from drowse.generation.token_callback import TokenSink
     from drowse.generation.types import CallSpec
-    from drowse.lens.instrument import LensInstrument
     from drowse.loom.tree import LoomTree
     from drowse.model.chat import ChatTraits
-    from drowse.readout.capture_buffer import HiddenCapture
-    from drowse.readout.geometry import GeometryInstrument
-    from drowse.readout.types import InstrumentPlan
     from drowse.sae.instrument import SaeInstrument
+    from drowse.session.read_plane import ReadPlane
     from drowse.steering.hooks import SteeringManager
 
 OnRow = Callable[[int, GenerationResult, dict[str, Any]], None]
@@ -249,9 +244,10 @@ class FastBatchPath:
 
     Shares the engine's generation transaction, call resolution (cast roster
     included) and finalize, the session's steering scope, and the read
-    plane's instrument binding.  Only the body differs from the decode loop: one
-    left-padded ``generate`` for every row, a batched tail ring for probe
-    aggregates, and no loom attachment.  :meth:`run` returns ``None`` when the
+    plane (instrument binding, the batched tail ring, per-row reads).  Only
+    the body differs from the decode loop: one left-padded ``generate`` for
+    every row, a batched tail ring for probe aggregates, and no loom
+    attachment.  :meth:`run` returns ``None`` when the
     call needs the row-shaped decode loop.
     """
 
@@ -266,9 +262,7 @@ class FastBatchPath:
         gen_state: GenerationState,
         steering: "SteeringManager",
         events: EventBus,
-        capture: "HiddenCapture",
-        geometry: "GeometryInstrument",
-        lens: "LensInstrument",
+        reads: "ReadPlane",
         sae: "SaeInstrument",
         sae_layer: Callable[[], int | None],
         resolve_call: Callable[..., "CallSpec"],
@@ -278,11 +272,6 @@ class FastBatchPath:
         snapshot_alphas: Callable[[], dict[str, float]],
         phase_running: Callable[[], None],
         phase_finalizing: Callable[[], None],
-        bind_runs: Callable[
-            [ReadRequest, ReadRequest, ReadRequest],
-            "tuple[InstrumentPlan, InstrumentPlan, InstrumentPlan]",
-        ],
-        score_geometry: Callable[..., dict[str, Any]],
         finalize: Callable[..., GenerationResult],
     ) -> None:
         self._model = model
@@ -293,9 +282,7 @@ class FastBatchPath:
         self._gen_state = gen_state
         self._steering = steering
         self._events = events
-        self._capture = capture
-        self._geometry = geometry
-        self._lens = lens
+        self._reads = reads
         self._sae = sae
         self._sae_layer = sae_layer
         self._resolve_call = resolve_call
@@ -305,8 +292,6 @@ class FastBatchPath:
         self._snapshot_alphas = snapshot_alphas
         self._phase_running = phase_running
         self._phase_finalizing = phase_finalizing
-        self._bind_runs = bind_runs
-        self._score_geometry = score_geometry
         self._finalize = finalize
 
     def run(
@@ -382,54 +367,6 @@ class FastBatchPath:
         input_ids, attention, lengths = left_pad(rows, pad_id)
         return input_ids.to(self._device), attention.to(self._device), lengths
 
-    def _attach_aggregate_ring(self, want_readings: bool) -> bool:
-        """Bind the instrument runs and arm the batched tail ring.
-
-        Returns whether any family will read a per-row aggregate.
-        """
-        captures = want_readings and bool(
-            self._geometry.names or self._lens.names or self._sae.names
-        )
-        # One request serves all three families: the lens prepare takes the
-        # disk refresh + pin and snapshots specs against that identity, so one
-        # pinned lens serves every row aggregate.
-        request = ReadRequest(final_aggregate=want_readings)
-        plans = self._bind_runs(request, request, request)
-        if captures:
-            layer_set: set[int] = set()
-            for plan in plans:
-                layer_set |= plan.latest_layers
-                layer_set |= plan.tail_layers
-            self._capture.clear()
-            if layer_set:
-                self._capture.attach_batch_tail(
-                    self._layers, sorted(layer_set), depth=AGG_TAIL_DEPTH,
-                )
-        return captures
-
-    def _row_aggregates(
-        self, row: int, generated_ids: list[int], *, geometry: bool,
-    ) -> FamilyAggregates:
-        """Score one row's aggregates from its slice of the batched tail ring.
-
-        The lens/SAE runs measure against their bind-time binding, so an
-        ``on_result`` callback detaching a probe cannot change later rows.
-        """
-        pooled = (
-            self._capture.batch_tail_slice_at(
-                row, last_content_index(generated_ids, self._tokenizer),
-            )
-            if generated_ids else {}
-        )
-        return FamilyAggregates(
-            geometry=(
-                self._score_geometry(generated_ids, pooled=pooled)
-                if geometry else {}
-            ),
-            lens=self._lens.score_aggregate(generated_ids, pooled=pooled),
-            sae=self._sae.score_aggregate(generated_ids, pooled=pooled),
-        )
-
     def _execute(
         self,
         prompts: list[Any],
@@ -451,8 +388,7 @@ class FastBatchPath:
             input_ids, attention_mask, prompt_lengths = self._render_batch(
                 prompts, spec=spec, raw=raw, pad_id=pad_id,
             )
-            score_geometry = want_readings and bool(self._geometry.names)
-            captures = self._attach_aggregate_ring(want_readings)
+            captures = self._reads.begin_batch(want_readings)
             self._gen_state.reset()
             self._steering.ctx.reset()
             self._steering.reset_manifold_feet()
@@ -487,7 +423,7 @@ class FastBatchPath:
                 )
             elapsed = time.monotonic() - start
             if captures:
-                self._capture.detach()
+                self._reads.end()
             sequences = getattr(generated, "sequences", generated)
             if not isinstance(sequences, torch.Tensor) or sequences.ndim != 2:
                 raise RuntimeError(
@@ -498,7 +434,7 @@ class FastBatchPath:
             prompt_width = int(input_ids.shape[1])
             self._phase_finalizing()
             applied_steering = str(steering_obj) if steering_obj is not None else None
-            no_aggregates = FamilyAggregates({}, {}, {})
+            no_reads = FinalReads()
             results: list[GenerationResult] = []
             for idx, prompt_tokens in enumerate(prompt_lengths):
                 generated_ids, finish_reason = trim_generated(
@@ -521,12 +457,9 @@ class FastBatchPath:
                     prompt_tokens=prompt_tokens,
                     stateless=True,
                     applied_steering=applied_steering,
-                    return_probe_readings=want_readings,
-                    aggregates=(
-                        self._row_aggregates(
-                            idx, generated_ids, geometry=score_geometry,
-                        )
-                        if captures else no_aggregates
+                    reads=(
+                        self._reads.batch_row_reads(idx, generated_ids)
+                        if captures else no_reads
                     ),
                 )
                 results.append(result)

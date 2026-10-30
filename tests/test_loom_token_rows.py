@@ -39,16 +39,13 @@ def test_token_rows_carry_raw_index_when_created() -> None:
     node_id = tree.begin_assistant(user, recipe=Recipe())
     session = SimpleNamespace(
         tree=tree,
-        _capture=None,
-        _capture_state=None,
-        _incremental_readings=[],
-        geometry=SimpleNamespace(current_run=None),
         lens=SimpleNamespace(live=None, last_step_readings=None),
         sae=SimpleNamespace(live=None, last_step_readings=None),
     )
     state = GenerationState()
     tap = TokenTap(
         cast(Any, session),
+        reads=cast(Any, SimpleNamespace(geometry_step_readings=None)),
         state=state,
         consumer=lambda *_args: None,
         plan=ConsumerPlan(

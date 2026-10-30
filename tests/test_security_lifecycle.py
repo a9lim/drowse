@@ -21,7 +21,7 @@ from drowse.server import create_app
 from drowse.server.errors import install_error_handlers
 from drowse.server.operations import register_operation_routes, run_operation
 from drowse.server.runtime import finish_worker
-from tests.test_generation import _CurrentSessionStub, _StopTokenizer, _scripted_model
+from tests.test_generation import _StopTokenizer, _scripted_model
 from tests.test_server_loom import _StubSession
 from tests.support.engine import attach_engine
 
@@ -104,7 +104,7 @@ def test_stream_close_before_first_read_waits_for_worker_and_survives_reset() ->
     closed = threading.Event()
     generated: list[int] = []
     errors: list[BaseException] = []
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
+    session: Any = DrowseSession.__new__(DrowseSession)
     engine = attach_engine(session)
 
     def worker(*_args: Any, **kwargs: Any) -> GenerationResult:
@@ -416,7 +416,7 @@ def test_repeated_cancellation_keeps_worker_lock() -> None:
 
 
 def test_closed_stream_does_not_cancel_a_later_generation() -> None:
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
+    session: Any = DrowseSession.__new__(DrowseSession)
     engine = attach_engine(session)
     engine.generate_one = lambda *args, **kwargs: GenerationResult(  # type: ignore[method-assign]
         text="", tokens=[], token_count=0, tok_per_sec=0, elapsed=0,
@@ -582,7 +582,7 @@ def test_socket_lifecycles_release_subscriptions() -> None:
 
 @pytest.mark.parametrize("read_first", [True, False])
 def test_stream_reports_worker_error_once_and_close_is_idempotent(read_first: bool) -> None:
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
+    session: Any = DrowseSession.__new__(DrowseSession)
     engine = attach_engine(session)
 
     def fail(*args: Any, **kwargs: Any) -> None:

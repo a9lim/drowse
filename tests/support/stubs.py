@@ -5,7 +5,8 @@ Real sessions build an :class:`~drowse.session.registry.ArtifactRegistry`, a
 :class:`~drowse.steering.composer.SteeringComposer` in ``__init__``.  Suites
 that still assemble ``DrowseSession.__new__`` skeletons (or duck-typed stubs)
 call :func:`wire_stub_steering` to get the same three objects, built from the
-stub's own attributes.  Prefer ``tiny_session`` for new tests.
+stub's own attributes, and :func:`wire_stub_read_plane` for the read plane and
+the probe roster.  Prefer ``tiny_session`` for new tests.
 """
 
 from __future__ import annotations
@@ -13,17 +14,33 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 
 import torch
 
 from drowse.events import EventBus
 from drowse.session.neutral import NeutralBaseline
 from drowse.session.registry import ArtifactRegistry, ModelBinding
-from drowse.steering.composer import GateSources, SteeringComposer
+from drowse.steering.composer import SteeringComposer
 from drowse.steering.hooks import SteeringManager
 
-__all__ = ["attach_stub_instruments", "wire_stub_steering"]
+__all__ = [
+    "StubCapture",
+    "attach_stub_instruments",
+    "wire_stub_read_plane",
+    "wire_stub_steering",
+]
+
+
+class StubCapture:
+    """Forwards every capture call to ``stub._capture``, looked up per call,
+    so a test can swap the stub's capture after wiring."""
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stub._capture, name)
 
 
 def attach_stub_instruments(stub: Any) -> Any:
@@ -80,8 +97,8 @@ def wire_stub_steering(
     Missing session state the collaborators need (``_gen_lock``, ``events``,
     ``_steering``, ``_device``, ``_dtype``) is created on the stub first.
     ``profiles`` / ``manifolds`` seed the registry; ``layer_means`` /
-    ``whitener`` seed a resident neutral baseline.  Gate sources, atom
-    resolvers and the phase guard read the stub's attributes at call time.
+    ``whitener`` seed a resident neutral baseline.  Atom resolvers and the
+    phase guard read the stub's attributes at call time.
     """
     d = stub.__dict__
     if "_gen_lock" not in d:
@@ -132,22 +149,49 @@ def wire_stub_steering(
         lock=stub._gen_lock, events=stub.events,
         generation_phase=_phase,
         on_prefill_steering_change=lambda: _drop_prefix_cache(stub),
-        gates=GateSources(
-            monitor=lambda: stub._monitor,
-            capture=lambda: stub._capture,
-            capture_state=lambda: stub._capture_state,
-            incremental_readings=lambda: stub._incremental_readings,
-            incremental_gate_scores=lambda: stub._incremental_gate_scores,
-            instruments=lambda: stub.instruments,
-            lens_gate_scalars=lambda keys, *, step_id: stub.lens.current_run.gate_scalars(
-                step_id, None, keys,
-            ),
-            sae_gate_scalars=lambda keys, *, step_id: stub.sae.current_run.gate_scalars(
-                step_id, None, keys,
-            ),
-        ),
     )
     stub._registry = registry
     stub._neutral = neutral
     stub._steering_composer = composer
     return composer
+
+
+def wire_stub_read_plane(stub: Any) -> Any:
+    """Install ``_read_plane`` and ``_roster`` on ``stub`` (as ``__init__``
+    does) and return the read plane.
+
+    Built from the stub's ``_monitor``, instruments (constructed first when
+    absent), ``_layers``, ``_tokenizer`` and composer (wired first when
+    absent); the capture forwards to ``stub._capture`` per call.
+    """
+    from drowse.readout.roster import ProbeRoster
+    from drowse.session.read_plane import ReadPlane
+
+    d = stub.__dict__
+    attach_stub_instruments(stub)
+    if "_steering_composer" not in d:
+        wire_stub_steering(stub)
+
+    def _roster_changed() -> None:
+        _drop_prefix_cache(stub)
+        registry = getattr(stub, "__dict__", {}).get("_registry")
+        if registry is not None:
+            registry.invalidate_analytics()
+
+    stub._roster = ProbeRoster(
+        geometry=stub._geometry_instrument,
+        lens=stub._lens_instrument,
+        sae=stub._sae_instrument,
+        on_change=_roster_changed,
+    )
+    stub._read_plane = ReadPlane(
+        capture=cast(Any, StubCapture(stub)),
+        monitor=stub._monitor,
+        geometry=stub._geometry_instrument,
+        lens=stub._lens_instrument,
+        sae=stub._sae_instrument,
+        layers=d.get("_layers", []),
+        tokenizer=d.get("_tokenizer"),
+        gate_refs=stub._steering_composer.gate_refs,
+    )
+    return stub._read_plane

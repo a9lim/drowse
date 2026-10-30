@@ -1,13 +1,11 @@
 """The geometry instrument: a thin adapter over the unified ``Monitor``.
 
-The geometry family's engine — whitened subspace reads, the four
-conditional capture modes' scoring entry points, flat-batched and curved
-foot-solve paths — stays in ``readout/monitor.py``/``readout/monitor_attach.py``
-untouched: the capture modes are session/HiddenCapture state and the
-Monitor is an established engine, so folding it into the instrument
-abstraction would combine two independent risks (the orchestration
-extraction and an engine rewrite) for no architectural reward.  This
-adapter gives the family the same face as the lens/SAE instruments — the
+The geometry family's engine — whitened subspace reads, flat-batched and
+curved foot-solve paths — stays in ``readout/monitor.py`` /
+``readout/monitor_attach.py``; the capture modes and their per-token step
+sinks are the session read plane's (:mod:`drowse.readout.planner` decides,
+``ReadPlane`` applies).  This adapter gives the family the same face as the
+lens/SAE instruments — the
 :class:`~drowse.readout.protocol.Instrument` contract: run
 lifecycle, attach/detach/specs, gate-channel validation, probe-hash
 identity, the live toggle, the active source, and the token-readout replay
@@ -19,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from collections.abc import Mapping
 from typing import Any, TYPE_CHECKING
 
 import torch
@@ -44,8 +43,9 @@ class GeometryRun:
 
     Deliberately thin: the Monitor engine owns the whitened reads and its own
     generation-scoped warm state (curved feet), and the capture modes'
-    per-token scoring stays session/HiddenCapture wiring.  The run carries
-    the per-generation :class:`InstrumentBinding` and the protocol read faces.
+    per-token scoring is the read plane's.  The run carries the
+    per-generation :class:`InstrumentBinding`, the token tap's per-forward
+    read (:meth:`observe`) and the finalize read.
     Idle reads hold the geometry-state lock (the Monitor's roster walk tears
     under a concurrent idle attach/detach); bound reads stay lock-free —
     mid-generation mutation is excluded by ``detach``'s
@@ -140,7 +140,7 @@ class GeometryInstrument:
         if self.current_run.bound:
             raise RuntimeError(
                 "GeometryInstrument.prepare() on a bound run: close the "
-                "prior generation's run (_close_instrument_runs) first"
+                "prior generation's run (ReadPlane.close_runs) first"
             )
         return InstrumentPrep(
             family=self.family,
@@ -210,7 +210,7 @@ class GeometryInstrument:
         device-resident whitened factors — GPU work that must not run
         concurrently with another model op; held under the exclusive
         ``_model_exclusive`` section like the other families' attaches.
-        Cache invalidation stays at the session's ``add_probe`` boundary.
+        Cache invalidation is the probe roster's job.
         """
         session = self._session
         name = as_name if as_name is not None else selector
@@ -250,6 +250,30 @@ class GeometryInstrument:
         ):
             with self.state_lock:
                 self._session._monitor.remove_probe(name)
+
+    def refresh_swapped(self, swaps: Mapping[int, Any]) -> list[str]:
+        """Move attached probes off replaced manifold objects.
+
+        ``swaps`` maps a replaced object's ``id`` to its replacement (the
+        artifact registry's ``on_swap`` payload): each probe reading one is
+        re-attached on the replacement (same name and nearest-node roster
+        size), or detached when it maps to ``None`` (the artifact was
+        evicted).  One state-lock hold, so the un-locked roster readers see
+        each remove+add pair atomically.  Returns the touched probe names.
+        """
+        monitor = self._session._monitor
+        touched: list[str] = []
+        with self.state_lock:
+            for name, attached in list(monitor.attached_probes().items()):
+                if id(attached.manifold) not in swaps:
+                    continue
+                replacement = swaps[id(attached.manifold)]
+                top_n = attached.top_n
+                monitor.remove_probe(name)
+                if replacement is not None:
+                    monitor.add_probe(name, replacement, top_n=top_n)
+                touched.append(name)
+        return touched
 
     def try_detach(self, name: str) -> bool:
         """Detach ``name`` if this family owns it; ``False`` when it doesn't.

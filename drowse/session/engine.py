@@ -10,8 +10,8 @@ result.  One generation runs in stages:
    a regen's recipe override and the same-role continuation rule fold into
    one frozen :class:`~drowse.generation.types.CallSpec`.
 2. ``_plan_consumers`` / ``_plan_reads`` — which per-token consumers this
-   generation feeds, folded into the session read plane's ``ReadDemand`` (and
-   the authored-prefill capture policy).
+   generation feeds, folded into the read plane's ``ReadDemand`` (and the
+   authored-prefill capture policy).
 3. :class:`TokenTap` — the decode loop's per-token callback: logprob rollup,
    the token's measurement payload, the loom token row, and one
    :class:`~drowse.generation.results.TokenEvent` (or the public six-argument
@@ -23,10 +23,9 @@ result.  One generation runs in stages:
 Everything runs inside :meth:`GenerationEngine.transaction`, the single-flight
 guard with an exception-hard teardown.
 
-The engine calls the session's read plane (``_resolve_read_demand``,
-``_begin_capture``, ``_end_capture`` and the capture state they set) and its
-prompt-render and loom-node helpers through the ``session`` it was built
-with; those move to their own collaborators separately.
+Capture, per-token reads and the finalize reads go through the
+:class:`~drowse.session.read_plane.ReadPlane` the engine is built with; the
+prompt-render and loom-node helpers still go through the ``session``.
 """
 
 from __future__ import annotations
@@ -52,7 +51,7 @@ from drowse.generation.decode import (
     build_chat_input,
     generate_steered,
 )
-from drowse.generation.finalize import finalize_generation
+from drowse.generation.finalize import FinalReads, finalize_generation
 from drowse.generation.prefix_cache import PrefixCache
 from drowse.generation.results import GenerationResult, TokenAlt, TokenEvent
 from drowse.generation.sampling import (
@@ -83,10 +82,11 @@ from drowse.loom.recipe import (
 from drowse.steering.terms import Steering
 
 if TYPE_CHECKING:
-    from drowse.generation.results import ProbeReading
     from drowse.readout.capture_buffer import HiddenCapture
+    from drowse.readout.planner import ReadDemand
     from drowse.session.authored_capture import AuthoredPromptCapture
-    from drowse.session.session import DrowseSession, ReadDemand
+    from drowse.session.read_plane import ReadPlane
+    from drowse.session.session import DrowseSession
     from drowse.steering.hooks import SteeringManager
 
 _log = logging.getLogger(__name__)
@@ -141,6 +141,7 @@ class TokenTap:
         self,
         session: "DrowseSession",
         *,
+        reads: "ReadPlane",
         state: GenerationState,
         consumer: "TokenSink | None",
         plan: ConsumerPlan,
@@ -173,6 +174,7 @@ class TokenTap:
         # Geometry: one monitor reading per token, from the capture sink's
         # row when it already scored this forward, else from the latest
         # captured slices through the bound geometry run.
+        self._geometry_readings = reads.geometry_step_readings
         self._needs_scores = bool(
             plan.live_scores_on
             and plan.has_monitor_probes
@@ -185,10 +187,6 @@ class TokenTap:
         self._per_layer = bool(
             assistant_node_id is not None and plan.persists_layer_scores
         )
-        self._capture = session._capture
-        self._capture_state = session._capture_state
-        self._incremental_rows = session._incremental_readings
-        self._geometry_run = session.geometry.current_run
 
         lens, sae = session.lens, session.sae
         self._lens = lens
@@ -211,23 +209,6 @@ class TokenTap:
             return None, None
         mean = self._lp_sum / self._lp_count
         return mean, -mean
-
-    def _geometry_readings(self, step_id: int) -> "dict[str, ProbeReading] | None":
-        state = self._capture_state
-        rows = self._incremental_rows
-        if (state.incremental or state.lean) and rows:
-            # The capture sink already scored this forward (rows align 1:1
-            # with forwards): full rows are complete readings, lean rows
-            # deliberately coords-only.  Read the row, never rescore.
-            return rows[-1] or None
-        latest = {
-            layer: bucket[-1]
-            for layer, bucket in self._capture.per_layer_buckets().items()
-            if bucket
-        }
-        if not latest:
-            return None
-        return self._geometry_run.observe(step_id, latest) or None
 
     def __call__(
         self,
@@ -447,9 +428,9 @@ class GenerationEngine:
 
     ``lock`` is the session's exclusive-GPU re-entrant lock (shared with
     every other model op).  ``runtime`` is the model's compile / StaticCache
-    routing.  ``steering`` and ``capture`` are the session's installed
-    steering manager and hidden-state capture, which the decode routing
-    consults.
+    routing.  ``steering`` is the session's installed steering manager, which
+    the decode routing consults; ``reads`` is the read plane (capture, the
+    per-token reads, the finalize reads).
     """
 
     def __init__(
@@ -459,14 +440,14 @@ class GenerationEngine:
         lock: "threading.RLock",
         runtime: CompiledRuntime,
         steering: "SteeringManager",
-        capture: "HiddenCapture",
+        reads: "ReadPlane",
         release: Callable[[], None],
         default_return_top_k: int = 0,
     ) -> None:
         self._session = session
         self._lock = lock
         self._steering = steering
-        self._capture = capture
+        self._reads = reads
         self._release = release
         self.runtime = runtime
         #: Session default for ``SamplingConfig.return_top_k`` (a per-call
@@ -479,8 +460,8 @@ class GenerationEngine:
         self.prefix_cache = PrefixCache()
         self.last_result: GenerationResult | None = None
         self.last_per_token_scores: dict[str, list[float]] | None = None
-        #: This generation's capture may ride the persistent compile-clean
-        #: buffers (read by the session's capture planner).
+        #: This generation runs the compiled clean route, so its capture may
+        #: ride the persistent compile-clean buffers.
         self.compiled_clean_eligible = False
 
     # ---------------------------------------------------------- lifecycle
@@ -890,10 +871,15 @@ class GenerationEngine:
             try:
                 # Capture attach and the trigger reset live inside the inner
                 # try so a BaseException between them still detaches.
-                session._begin_capture(demand, widen=spec.want_hidden)
+                self._reads.begin(
+                    demand,
+                    widen=spec.want_hidden,
+                    persistent_buffers=self._persistent_capture_buffers(),
+                )
                 if plan.need_tap:
                     tap = TokenTap(
                         session,
+                        reads=self._reads,
                         state=self.state,
                         consumer=on_token,
                         plan=plan,
@@ -924,7 +910,7 @@ class GenerationEngine:
                     authored_capture=authored,
                 )
             finally:
-                session._end_capture()
+                self._reads.end()
                 if txn.steering_cm is not None:
                     # The generation's own scope teardown passes the
                     # mid-generation guard; a teardown failure surfaces here.
@@ -980,7 +966,7 @@ class GenerationEngine:
             sae_active=plan.sae,
             persist_per_layer_scores=plan.persists_layer_scores,
         )
-        demand = session._resolve_read_demand(
+        demand = self._reads.resolve_demand(
             want_hidden=spec.want_hidden,
             live_scores_on=plan.live_scores_on,
             has_monitor_probes=plan.has_monitor_probes,
@@ -1026,7 +1012,8 @@ class GenerationEngine:
         session = self._session
         runtime = self.runtime
         steering = self._steering
-        capture = self._capture
+        reads = self._reads
+        capture = reads.capture
         composer = session._steering_composer
         gen_config = spec.gen_config
         static_eligible = bool(
@@ -1053,11 +1040,7 @@ class GenerationEngine:
         cache_position_offset = hit.prefix_len if hit is not None else 0
         decode_ids = hit.suffix_ids if hit is not None else input_ids
 
-        step_callback = (
-            capture.ingest_persistent
-            if session._capture_state.persistent
-            else capture.fire_step_sink
-        )
+        step_callback = reads.step_callback()
         if authored_capture is not None:
             capture.set_prompt_positions(authored_capture.match(
                 input_ids, cache_position_offset=cache_position_offset,
@@ -1069,7 +1052,7 @@ class GenerationEngine:
 
         start = time.monotonic()
         gating_callback = (
-            composer.build_gating_score_callback()
+            reads.gate_score_callback()
             if composer.steering_needs_probe_gating()
             else None
         )
@@ -1150,13 +1133,52 @@ class GenerationEngine:
         generated_ids: list[int],
         elapsed: float,
         vector_snapshot: dict[str, float],
+        *,
+        reads: FinalReads | None = None,
+        return_hidden: bool = False,
+        return_probe_readings: bool = True,
         **kwargs: Any,
     ) -> GenerationResult:
-        """Build the result (:func:`finalize_generation`) and record it."""
+        """Build the result (:func:`finalize_generation`) and record it.
+
+        ``reads`` are pre-scored final reads (a batch row's); by default the
+        read plane scores this generation's capture.
+        """
+        session = self._session
+        if reads is None:
+            reads = self._reads.finalize(
+                generated_ids,
+                state=self.state,
+                return_hidden=return_hidden,
+                return_probe_readings=return_probe_readings,
+            )
         return finalize_generation(
-            self._session, generated_ids, elapsed, vector_snapshot,
-            state=self.state, record=self.record, **kwargs,
+            generated_ids, elapsed, vector_snapshot,
+            state=self.state,
+            reads=reads,
+            tokenizer=session.tokenizer,
+            events=session.events,
+            record=self.record,
+            tree=session.tree,
+            scene_grammar=lambda: session.scene_grammar,
+            **kwargs,
         )
+
+    def _persistent_capture_buffers(self) -> "dict[int, torch.Tensor] | None":
+        """The compile-clean capture buffers when this generation may ride
+        them: the compiled clean route, buffers installed, and steering
+        lowered to the persistent offsets (or absent)."""
+        buffers = self.runtime.capture_buffers
+        if (
+            self.compiled_clean_eligible
+            and buffers
+            and (
+                self._steering.uses_compiled_offsets
+                or self._steering.all_fast_path()
+            )
+        ):
+            return buffers
+        return None
 
     def record(
         self,
@@ -1233,7 +1255,7 @@ class GenerationEngine:
             ).to(session.device)
         # Suspend capture so the prefix tokens don't fill the buckets the next
         # generation's scoring reads.
-        session._end_capture()
+        self._reads.end()
         static_len: int | None = None
         if prefer_static and self.runtime.static_cache_active:
             headroom = int(

@@ -2081,23 +2081,23 @@ def _fold_test_direction(name: str, direction: torch.Tensor):
 def _registry_stub(
     *, manifolds: Any, profiles: Any, monitor: Any, probe_hashes: dict[str, str],
 ) -> Any:
-    """A session skeleton with the real registry, its swap listener and a
-    fake monitor roster."""
-    import types
-
+    """A session skeleton with the real registry, the probe roster as its
+    swap listener (cached geometry digests seeded) and a fake monitor."""
     from drowse.session.session import DrowseSession
-    from tests.support.stubs import attach_stub_instruments
+    from tests.support.stubs import wire_stub_read_plane
 
     session: Any = object.__new__(DrowseSession)
-    attach_stub_instruments(session)
     session._monitor = monitor
-    session._probe_hash_cache = dict(probe_hashes)
     wire_stub_steering(session, profiles=profiles, manifolds=manifolds)
-    session._registry.on_swap(
-        types.MethodType(DrowseSession._refresh_swapped_probes, session),
-    )
+    wire_stub_read_plane(session)
+    session._roster._hashes["geometry"].update(probe_hashes)
+    session._registry.on_swap(session._roster.swap)
     seed_prefix_cache(attach_engine(session))
     return session
+
+
+def _cached_digests(session: Any) -> dict[str, str]:
+    return dict(session._roster._hashes["geometry"])
 
 
 def _analytics_probe(session: Any, name: str) -> Any:
@@ -2173,7 +2173,7 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
     assert not session._engine.prefix_cache
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
-    assert "mood-probe" not in session._probe_hash_cache
+    assert "mood-probe" not in _cached_digests(session)
 
 
 def test_failed_fit_override_evicts_stale_manifold_consumers(
@@ -2231,7 +2231,7 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
     assert dict(session._registry.manifolds) == {"other/mood": other}
     assert set(session._registry.profiles) == {"other/mood"}
     assert set(session._monitor.probes) == {"other-mood-probe"}
-    assert session._probe_hash_cache == {"other-mood-probe": "other"}
+    assert _cached_digests(session) == {"other-mood-probe": "other"}
     assert not session._engine.prefix_cache
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"

@@ -16,17 +16,16 @@ from drowse.generation.decode import (
 )
 from drowse.generation.finalize import MIN_ELAPSED_FOR_RATE
 from drowse.model.chat import chat_eos_ids, logits_keep_kwarg
-from drowse.generation.results import GenerationResult, ProbeReading
+from drowse.generation.results import ProbeReading
 from drowse.generation.types import GenState
-from drowse.session.session import (
-    CaptureMode,
-    CaptureState,
-    ReadDemand,
-    DrowseSession,
-)
+from drowse.readout.planner import CaptureMode, CaptureState
 from tests.conftest import FakeLogitsModel
-from tests.support.sae import make_resident
-from tests.support.stubs import attach_stub_instruments, wire_stub_steering
+from tests.support.read_plane import (
+    fake_readout_family,
+    finalize,
+    gate_refs,
+    make_read_plane,
+)
 
 
 class _StopTokenizer:
@@ -75,117 +74,6 @@ def test_eos_ids_are_not_shared_between_models_with_the_same_tokenizer() -> None
 
     assert chat_eos_ids(first, tokenizer) == {1, 3}
     assert chat_eos_ids(second, tokenizer) == {2, 3}
-
-
-def _stub_instruments(
-    *,
-    geometry: Any = None,
-    lens_names: "tuple[str, ...]" = (),
-    sae_names: "tuple[str, ...]" = (),
-) -> dict[str, Any]:
-    """A minimal ``session.instruments`` registry for composer stubs.
-
-    The composer's gate preflight walks the registry (``names`` +
-    ``validate_gate``), so a narrow stub supplies those two members per
-    family rather than the historical private probe dicts.
-    """
-    def _fam(names: "tuple[str, ...]", extra: Any = None) -> Any:
-        base = {"names": list(names), "validate_gate": lambda _ref: None}
-        if extra is not None:
-            base.update(vars(extra))
-        return SimpleNamespace(**base)
-
-    return {
-        "geometry": _fam((), geometry),
-        "lens": _fam(lens_names),
-        "sae": _fam(sae_names),
-    }
-
-
-def _stub_renderer() -> Any:
-    """A renderer with no scene grammar whose seat stops pass through."""
-    return SimpleNamespace(
-        scene_grammar=None,
-        seat_stop_strings=lambda stop_list, **_kwargs: stop_list,
-    )
-
-
-def _complete_finalizer_session(session: Any) -> None:
-    """Install the current finalizer collaborator roster on a narrow stub."""
-    session._renderer = _stub_renderer()
-
-
-class _CurrentSessionStub(DrowseSession):
-    """Narrow current-shape session whose lens is supplied in memory."""
-
-    def __new__(cls) -> "_CurrentSessionStub":
-        instance = super().__new__(cls)
-        attach_stub_instruments(instance)
-        instance._lens_instrument.probes = {}
-        instance._sae_instrument.probes = {}
-        instance._lens_instrument.live = None
-        instance._sae_instrument.live = None
-        instance._lens_instrument.active_for_generation = True
-        instance._sae_instrument.active_for_generation = True
-        instance._lens_instrument.generation_lens = None
-        instance._lens_instrument.generation_lens_active = False
-        return instance
-
-
-def _complete_capture_session(session: Any) -> None:
-    """Install the current capture collaborator roster on a narrow stub.
-
-    The stub lens is real-shaped (``source_layers`` = the fixture's
-    declared live + probe layer union): a pin-demanded lens without its
-    fitted layer set is a hard ``prepare()`` failure now, and production
-    keeps every probe's registry list identical to ``source_layers``
-    anyway (attach records the full fitted set; adoption rewrites every
-    probe), so an ``object()`` lens only modeled an impossible state.
-    """
-    live_layers = (
-        (session._lens_instrument.live or {}).get("layers") or []
-        if session._lens_instrument.live is not None else []
-    )
-    probe_layers = {
-        int(layer)
-        for spec in session._lens_instrument.probes.values()
-        for layer in spec.get("layers", [])
-    }
-    lens = (
-        SimpleNamespace(
-            source_layers=sorted(
-                {int(layer) for layer in live_layers} | probe_layers
-            ),
-        )
-        if session._lens_instrument.live is not None or session._lens_instrument.probes
-        else None
-    )
-    # The stub supplies its in-memory lens in place of the store refresh.
-    session._lens_instrument.resident = lambda: lens
-
-
-def _finalize(
-    session: Any, generated_ids: list[int], elapsed: float,
-    vector_snapshot: dict[str, float], **kwargs: Any,
-) -> GenerationResult:
-    """Run :func:`finalize_generation` on a stub carrying ``_gen_state``.
-
-    The recorded result and per-token scores land back on the stub's
-    ``_last_result`` / ``_last_per_token_scores`` for the assertions.
-    """
-    from drowse.generation.finalize import finalize_generation
-
-    state = session._gen_state
-    session._engine = SimpleNamespace(state=state)
-
-    def _record(result: GenerationResult, per_token: Any) -> None:
-        session._last_result = result
-        session._last_per_token_scores = per_token
-
-    return finalize_generation(
-        session, generated_ids, elapsed, vector_snapshot,
-        state=state, record=_record, **kwargs,
-    )
 
 
 def _scripted_logits(
@@ -272,23 +160,10 @@ def test_stop_sequence_trimmed_text_is_final_result_text():
     assert state.response_text == "Hello"
     assert state.response_aggregate_index == 0
 
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = state
-    session._tokenizer = tokenizer
-    session._monitor = SimpleNamespace(probe_names=[])
-    session._capture = SimpleNamespace(stacked=lambda: {})
-    session._capture_state = CaptureState(mode=CaptureMode.FULL)
-    session._last_per_token_scores = None
-    session._last_result = None
-
-    _complete_finalizer_session(session)
-    result = _finalize(
-        session,
-        generated_ids,
-        elapsed=1.0,
-        vector_snapshot={},
-        stateless=True,
+    plane = make_read_plane(
+        capture=SimpleNamespace(stacked=lambda: {}), tokenizer=tokenizer,
     )
+    result, _ = finalize(plane, generated_ids, state=state, tokenizer=tokenizer)
     assert result.text == "Hello"
 
 
@@ -299,17 +174,13 @@ def test_finalize_owns_the_rate_floor(elapsed: float, expected: float) -> None:
     # Regression: ``finalize_generation`` defaulted to a 1e-9 floor and only
     # honored ``MIN_ELAPSED_FOR_RATE`` because the session passed it in; a
     # direct call reported a noise rate for a near-instant generation.
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = GenerationState()
-    session._tokenizer = _StopTokenizer()
-    session._monitor = SimpleNamespace(probe_names=[])
-    session._capture = SimpleNamespace(stacked=lambda: {})
-    session._capture_state = CaptureState(mode=CaptureMode.FULL)
-    session._last_per_token_scores = None
-    session._last_result = None
-    _complete_finalizer_session(session)
-
-    result = _finalize(session, [0, 2], elapsed, {}, stateless=True)
+    tokenizer = _StopTokenizer()
+    plane = make_read_plane(
+        capture=SimpleNamespace(stacked=lambda: {}), tokenizer=tokenizer,
+    )
+    result, _ = finalize(
+        plane, [0, 2], state=GenerationState(), tokenizer=tokenizer, elapsed=elapsed,
+    )
 
     assert result.tok_per_sec == expected
 
@@ -540,30 +411,13 @@ def test_stop_sequence_probe_aggregate_uses_visible_endpoint():
         def stacked(self) -> dict[int, torch.Tensor]:
             raise AssertionError("incremental stop aggregate should not stack")
 
-    class Monitor:
-        probe_names = ("toy",)
-
-        probe_names = ["toy"]
-
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = state
-    session._tokenizer = tokenizer
-    session._monitor = Monitor()
-    session._capture = Capture()
-    session._capture_state = CaptureState(mode=CaptureMode.INCREMENTAL)
-    session._incremental_readings = [{"toy": visible}, {"toy": hidden_stop}]
-    session._last_per_token_scores = None
-    session._last_result = None
-    session.events = SimpleNamespace(emit=lambda _event: None)
-
-    _complete_finalizer_session(session)
-    result = _finalize(
-        session,
-        generated_ids,
-        elapsed=1.0,
-        vector_snapshot={},
-        stateless=True,
+    plane = make_read_plane(
+        capture=Capture(), monitor=SimpleNamespace(probe_names=["toy"]),
+        tokenizer=tokenizer,
     )
+    plane.state = CaptureState(mode=CaptureMode.INCREMENTAL)
+    plane._rows = [{"toy": visible}, {"toy": hidden_stop}]
+    result, _ = finalize(plane, generated_ids, state=state, tokenizer=tokenizer)
 
     assert result.text == "Hello"
     assert result.probe_readings == {"toy": visible}
@@ -644,29 +498,14 @@ def test_finalize_reuses_scored_probe_aggregate() -> None:
     capture = Capture()
     state = GenerationState()
     state.finish_reason = "length"
+    tokenizer = _StopTokenizer()
+    plane = make_read_plane(capture=capture, monitor=Monitor(), tokenizer=tokenizer)
 
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = state
-    session._tokenizer = _StopTokenizer()
-    session._monitor = Monitor()
-    session._capture = capture
-    session._capture_state = CaptureState(mode=CaptureMode.FULL)
-    session._last_per_token_scores = None
-    session._last_result = None
-    session.events = SimpleNamespace(emit=lambda _event: None)
-
-    _complete_finalizer_session(session)
-    result = _finalize(
-        session,
-        [0, 1],
-        elapsed=1.0,
-        vector_snapshot={},
-        stateless=True,
-    )
+    result, per_token = finalize(plane, [0, 1], state=state, tokenizer=tokenizer)
 
     assert capture.calls == 1
     assert result.probe_readings == {"toy": reading}
-    assert session._last_per_token_scores == {"toy": [0.1, 0.25]}
+    assert per_token == {"toy": [0.1, 0.25]}
 
 
 def test_finalize_incremental_probe_path_does_not_stack_capture() -> None:
@@ -694,32 +533,15 @@ def test_finalize_incremental_probe_path_does_not_stack_capture() -> None:
 
     state = GenerationState()
     state.finish_reason = "length"
+    tokenizer = _StopTokenizer()
+    plane = make_read_plane(capture=Capture(), monitor=Monitor(), tokenizer=tokenizer)
+    plane.state = CaptureState(mode=CaptureMode.INCREMENTAL)
+    plane._rows = [{"toy": reading0}, {"toy": reading1}]
 
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = state
-    session._tokenizer = _StopTokenizer()
-    session._monitor = Monitor()
-    session._capture = Capture()
-    session._capture_state = CaptureState(mode=CaptureMode.INCREMENTAL)
-    session._incremental_readings = [
-        {"toy": reading0},
-        {"toy": reading1},
-    ]
-    session._last_per_token_scores = None
-    session._last_result = None
-    session.events = SimpleNamespace(emit=lambda _event: None)
-
-    _complete_finalizer_session(session)
-    result = _finalize(
-        session,
-        [0, 1],
-        elapsed=1.0,
-        vector_snapshot={},
-        stateless=True,
-    )
+    result, per_token = finalize(plane, [0, 1], state=state, tokenizer=tokenizer)
 
     assert result.probe_readings == {"toy": reading1}
-    assert session._last_per_token_scores == {"toy": [0.1, 0.25]}
+    assert per_token == {"toy": [0.1, 0.25]}
 
 
 def test_finalize_lean_incremental_probe_path() -> None:
@@ -728,12 +550,12 @@ def test_finalize_lean_incremental_probe_path() -> None:
 
     Key invariants:
     1. The capture's ``stacked()`` is never called (lean uses the tail ring).
-    2. The per-token coord stream is populated from ``_incremental_readings``
-       (the lean per-token rows stored by the step sink).
+    2. The per-token coord stream is populated from the lean per-token rows
+       the step sink stored.
     3. The aggregate in the result IS the full ``ProbeReading`` (with ``nearest``
-       populated), NOT a lean coords-only row — ``_score_lean_incremental``
-       re-scores via ``_score_aggregate_only`` → ``monitor.score_aggregate``.
-    4. ``_last_per_token_scores`` holds the coord stream (not the lean reading).
+       populated), NOT a lean coords-only row — finalize re-scores the pooled
+       slice through the geometry run → ``monitor.score_aggregate``.
+    4. The recorded per-token scores hold the coord stream (not the lean reading).
     """
 
     # Lean per-token rows: only coords populated (nearest empty — the lean path).
@@ -786,35 +608,18 @@ def test_finalize_lean_incremental_probe_path() -> None:
     monitor = Monitor()
     state = GenerationState()
     state.finish_reason = "length"
+    tokenizer = _StopTokenizer()
+    plane = make_read_plane(capture=Capture(), monitor=monitor, tokenizer=tokenizer)
+    plane.state = CaptureState(mode=CaptureMode.LEAN_INCREMENTAL)
+    plane._rows = [{"toy": lean0}, {"toy": lean1}]
 
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = state
-    session._tokenizer = _StopTokenizer()
-    session._monitor = monitor
-    session._capture = Capture()
-    session._capture_state = CaptureState(mode=CaptureMode.LEAN_INCREMENTAL)
-    session._incremental_readings = [
-        {"toy": lean0},
-        {"toy": lean1},
-    ]
-    session._last_per_token_scores = None
-    session._last_result = None
-    session.events = SimpleNamespace(emit=lambda _event: None)
-
-    _complete_finalizer_session(session)
-    result = _finalize(
-        session,
-        [0, 1],
-        elapsed=1.0,
-        vector_snapshot={},
-        stateless=True,
-    )
+    result, per_token = finalize(plane, [0, 1], state=state, tokenizer=tokenizer)
 
     # Invariant 3: aggregate carries the full reading (nearest populated).
     assert result.probe_readings == {"toy": full_agg}
     assert result.probe_readings["toy"].nearest == [("node", 0.2)]
     # Invariant 2+4: per-token coord stream extracted from lean rows.
-    assert session._last_per_token_scores == {"toy": [0.1, 0.3]}
+    assert per_token == {"toy": [0.1, 0.3]}
     # Invariant 3: monitor.score_aggregate was called exactly once.
     assert monitor._agg_calls == 1
 
@@ -828,7 +633,7 @@ def test_finalize_gating_subset_probe_path() -> None:
     2. ``per_token`` in the result is empty (GATING_SUBSET shares the
        ``aggregate_only`` finalize path — no full per-token stream).
     3. The aggregate reading IS the full ``ProbeReading`` from ``score_aggregate``.
-    4. ``_last_per_token_scores`` is None (no full per-token coord stream).
+    4. The recorded per-token scores are None (no full per-token stream).
     """
 
     full_agg = ProbeReading(
@@ -864,37 +669,20 @@ def test_finalize_gating_subset_probe_path() -> None:
     monitor = Monitor()
     state = GenerationState()
     state.finish_reason = "length"
-
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = state
-    session._tokenizer = _StopTokenizer()
-    session._monitor = monitor
-    session._capture = Capture()
+    tokenizer = _StopTokenizer()
+    plane = make_read_plane(capture=Capture(), monitor=monitor, tokenizer=tokenizer)
     # GATING_SUBSET: CaptureState.aggregate_only returns True for this mode.
-    session._capture_state = CaptureState(
-        mode=CaptureMode.GATING_SUBSET,
-        gating_subset={"toy"},
-        gating_keys={"toy"},
+    plane.state = CaptureState(
+        mode=CaptureMode.GATING_SUBSET, gating_subset={"toy"}, gating_keys={"toy"},
     )
-    session._incremental_readings = []  # gate scores not used by finalize
-    session._last_per_token_scores = None
-    session._last_result = None
-    session.events = SimpleNamespace(emit=lambda _event: None)
 
-    _complete_finalizer_session(session)
-    result = _finalize(
-        session,
-        [0, 1],
-        elapsed=1.0,
-        vector_snapshot={},
-        stateless=True,
-    )
+    result, per_token = finalize(plane, [0, 1], state=state, tokenizer=tokenizer)
 
     # Invariant 3: full aggregate reading from tail ring.
     assert result.probe_readings == {"toy": full_agg}
     assert result.probe_readings["toy"].nearest == [("confident", 0.1)]
     # Invariant 2+4: no per-token coord stream.
-    assert session._last_per_token_scores is None
+    assert per_token is None
     # Invariant 3: score_aggregate called exactly once.
     assert monitor._agg_calls == 1
 
@@ -913,67 +701,45 @@ def test_finalize_reuses_one_aggregate_pool_for_monitor_lens_and_sae() -> None:
         def stacked(self) -> dict[int, torch.Tensor]:
             raise AssertionError("shared aggregate pool should avoid stacked fallback")
 
-    class Monitor:
-        probe_names = ["toy"]
-
     capture = Capture()
     monitor_reading = ProbeReading(0.0, [], coords=(0.1,))
     lens_reading = ProbeReading(0.0, [], coords=(0.2,))
     sae_reading = ProbeReading(0.0, [], coords=(0.3,))
-    expected_pooled = pooled
     seen: list[tuple[str, bool]] = []
 
-    def score_aggregate_only(
-        _generated_ids: list[int],
-        *,
-        pooled: dict[int, torch.Tensor] | None = None,
-    ) -> dict[str, ProbeReading]:
-        seen.append(("monitor", pooled is expected_pooled))
-        return {"toy": monitor_reading}
+    def _scorer(family: str, reading: Any, name: str) -> Any:
+        def _score(*args: Any) -> dict[str, Any]:
+            seen.append((family, args[-1] is pooled))
+            return {name: reading}
+        return _score
 
-    def score_lens(
-        _generated_ids: list[int],
-        *,
-        pooled: dict[int, torch.Tensor] | None = None,
-    ) -> dict[str, ProbeReading]:
-        seen.append(("lens", pooled is expected_pooled))
-        return {"jlens/g": lens_reading}
+    class Monitor:
+        probe_names = ["toy"]
 
-    def score_sae(
-        _generated_ids: list[int],
-        *,
-        pooled: dict[int, torch.Tensor] | None = None,
-    ) -> dict[str, ProbeReading]:
-        seen.append(("sae", pooled is expected_pooled))
-        return {"sae/0": sae_reading}
+        def enable_curved_warm(self, _flag: bool) -> None:
+            pass
+
+        score_aggregate = staticmethod(_scorer("monitor", monitor_reading, "toy"))
 
     state = GenerationState()
     state.finish_reason = "length"
-
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = state
-    session._tokenizer = _StopTokenizer()
-    session._monitor = Monitor()
-    session._capture = capture
-    session._capture_state = CaptureState(mode=CaptureMode.AGGREGATE_ONLY)
-    session._lens_instrument.probes = {"jlens/g": {}}
-    session._sae_instrument.probes = {"sae/0": {}}
-    session._aggregate_forward_index = lambda _ids: 1
-    session._score_aggregate_only = score_aggregate_only
-    session._lens_instrument.score_aggregate = score_lens
-    session._sae_instrument.score_aggregate = score_sae
-    session._last_result = None
-    session._last_per_token_scores = None
-    session.events = SimpleNamespace(emit=lambda _event: None)
-
-    _complete_finalizer_session(session)
-    result = _finalize(
-        session,
-        [0, 1],
-        elapsed=1.0,
-        vector_snapshot={},
-        stateless=True,
+    # The aggregate position: a forward the ring still holds.
+    state.response_aggregate_index = 1
+    tokenizer = _StopTokenizer()
+    plane = make_read_plane(
+        capture=capture,
+        monitor=Monitor(),
+        lens=fake_readout_family(
+            ("jlens/g",), score_aggregate=_scorer("lens", lens_reading, "jlens/g"),
+        ),
+        sae=fake_readout_family(
+            ("sae/0",), score_aggregate=_scorer("sae", sae_reading, "sae/0"),
+        ),
+        tokenizer=tokenizer,
     )
+    plane.state = CaptureState(mode=CaptureMode.AGGREGATE_ONLY)
+
+    result, _ = finalize(plane, [0, 1], state=state, tokenizer=tokenizer)
 
     assert capture.tail_calls == [1]
     assert seen == [("monitor", True), ("lens", True), ("sae", True)]
@@ -1033,24 +799,14 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
             raise AssertionError("missing gate keys should use cached plans")
 
     monitor = Monitor()
-    session: Any = SimpleNamespace(
-        _capture=Capture(),
-        _monitor=monitor,
-        _capture_state=CaptureState(
-            mode=CaptureMode.INCREMENTAL,
-            gating_keys={"toy@nearest", "toy@hidden"},
-        ),
-        _incremental_readings=[{"toy": object()}],
-        _incremental_gate_scores=[],
-        # A memo-less run: the incremental branch's ``observe`` read falls
-        # back to the sink's appended row, which is what this test pins.
-        _geometry_instrument=SimpleNamespace(
-            current_run=SimpleNamespace(observe=lambda _step, _hidden: {}),
-        ),
-        instruments=_stub_instruments(),
+    plane = make_read_plane(capture=Capture(), monitor=monitor)
+    plane.state = CaptureState(
+        mode=CaptureMode.INCREMENTAL, gating_keys={"toy@nearest", "toy@hidden"},
     )
+    # The incremental branch reads the sink's appended row for this forward.
+    plane._rows = [{"toy": object()}]
 
-    callback = wire_stub_steering(session).build_gating_score_callback()
+    callback = plane.gate_score_callback()
     scores = callback(0)
     scores_again = callback(1)
 
@@ -1077,8 +833,6 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
     family: str,
     expected: dict[str, float],
 ) -> None:
-    from drowse.steering.grammar import parse_expr
-
     class Capture:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
             raise AssertionError("monitor path should not inspect captures")
@@ -1095,37 +849,25 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
         def score_single_token(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise AssertionError("readout-only gates should skip monitor probes")
 
-    session: Any = SimpleNamespace(
-        _capture=Capture(),
-        _monitor=Monitor(),
-        _capture_state=CaptureState(),
-        _incremental_readings=[],
-        _incremental_gate_scores=[],
-        _geometry_instrument=SimpleNamespace(
-            current_run=SimpleNamespace(observe=lambda _step, _hidden: {}),
-        ),
-        instruments=_stub_instruments(
-            **{f"{family}_names": (next(iter(expected)),)},
-        ),
-    )
     # The lens and SAE gate scalars ride each family's current run.
-    lens_scores = expected if family == "lens" else {}
-    sae_scores = expected if family == "sae" else {}
-    session.lens = SimpleNamespace(current_run=SimpleNamespace(
-        gate_scalars=lambda _step, _hidden, _keys: dict(lens_scores),
-    ))
-    session.sae = SimpleNamespace(current_run=SimpleNamespace(
-        gate_scalars=lambda _step, _hidden, _keys: dict(sae_scores),
-    ))
-    composer = wire_stub_steering(session)
-    composer._stack.append(cast(Any, dict(parse_expr(expr).alphas)))
+    name = next(iter(expected))
+    families = {
+        fam: fake_readout_family(
+            (name,) if fam == family else (),
+            gate_scalars=lambda _step, _hidden, _keys, fam=fam: (
+                dict(expected) if fam == family else {}
+            ),
+        )
+        for fam in ("lens", "sae")
+    }
+    plane = make_read_plane(
+        capture=Capture(), monitor=Monitor(), gate_refs=gate_refs(expr), **families,
+    )
 
-    assert composer.build_gating_score_callback()(0) == expected
+    assert plane.gate_score_callback()(0) == expected
 
 
 def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
-    from drowse.steering.grammar import parse_expr
-
     class Capture:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
             return {0: torch.ones(4)}
@@ -1158,30 +900,17 @@ def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
             raise AssertionError("exact monitor gate keys should avoid full scoring")
 
     monitor = Monitor()
-    session: Any = SimpleNamespace(
-        _capture=Capture(),
-        _monitor=monitor,
-        _capture_state=CaptureState(),
-        _incremental_readings=[],
-        _incremental_gate_scores=[],
-        instruments=_stub_instruments(lens_names=("jlens/g",)),
-        lens=SimpleNamespace(current_run=SimpleNamespace(
+    plane = make_read_plane(
+        capture=Capture(),
+        monitor=monitor,
+        lens=fake_readout_family(
+            ("jlens/g",),
             gate_scalars=lambda _step, _hidden, _keys: {"jlens/g": 0.7},
-        )),
-        sae=SimpleNamespace(current_run=SimpleNamespace(
-            gate_scalars=lambda _step, _hidden, _keys: {},
-        )),
-        _geometry_instrument=SimpleNamespace(
-            current_run=SimpleNamespace(observe=lambda _step, _hidden: {}),
         ),
+        gate_refs=gate_refs("0.3 toy@when:toy>0.1 + 0.2 jlens/g@when:jlens/g>0.4"),
     )
-    composer = wire_stub_steering(session)
-    steering = parse_expr(
-        "0.3 toy@when:toy>0.1 + 0.2 jlens/g@when:jlens/g>0.4",
-    )
-    composer._stack.append(cast(Any, dict(steering.alphas)))
 
-    scores = composer.build_gating_score_callback()(0)
+    scores = plane.gate_score_callback()(0)
 
     assert scores == {"toy": 0.2, "jlens/g": 0.7}
     assert monitor.requested == {"toy"}
@@ -1199,28 +928,13 @@ def test_stateless_zero_token_probe_result_does_not_use_history() -> None:
 
     state = GenerationState()
     state.finish_reason = "length"
+    tokenizer = _StopTokenizer()
+    plane = make_read_plane(capture=Capture(), monitor=Monitor(), tokenizer=tokenizer)
 
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = state
-    session._tokenizer = _StopTokenizer()
-    session._monitor = Monitor()
-    session._capture = Capture()
-    session._capture_state = CaptureState(mode=CaptureMode.FULL)
-    session._last_per_token_scores = {"toy": [99.0]}
-    session._last_result = None
-    session.events = SimpleNamespace(emit=lambda _event: None)
-
-    _complete_finalizer_session(session)
-    result = _finalize(
-        session,
-        [],
-        elapsed=1.0,
-        vector_snapshot={},
-        stateless=True,
-    )
+    result, per_token = finalize(plane, [], state=state, tokenizer=tokenizer)
 
     assert result.probe_readings == {}
-    assert session._last_per_token_scores is None
+    assert per_token is None
 
 
 def test_return_probe_readings_false_skips_probe_finalization() -> None:
@@ -1231,802 +945,27 @@ def test_return_probe_readings_false_skips_probe_finalization() -> None:
     class Monitor:
         probe_names = ["toy"]
 
+    def _disabled(family: str) -> Any:
+        def _raise(*_args: Any) -> Any:
+            raise AssertionError(f"{family} finalization disabled")
+        return _raise
+
     state = GenerationState()
     state.finish_reason = "length"
-
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._gen_state = state
-    session._tokenizer = _StopTokenizer()
-    session._monitor = Monitor()
-    session._lens_instrument.probes = {"jlens/x": {}}
-    session._sae_instrument.probes = {"sae/0": {}}
-    session._capture = Capture()
-    session._capture_state = CaptureState(mode=CaptureMode.FULL)
-    session._last_per_token_scores = None
-    session._last_result = None
-    session.events = SimpleNamespace(emit=lambda _event: None)
-    session._lens_instrument.score_aggregate = lambda *_args, **_kwargs: (
-        (_ for _ in ()).throw(AssertionError("lens finalization disabled"))
-    )
-    session._sae_instrument.score_aggregate = lambda _ids: (
-        (_ for _ in ()).throw(AssertionError("sae finalization disabled"))
+    tokenizer = _StopTokenizer()
+    plane = make_read_plane(
+        capture=Capture(),
+        monitor=Monitor(),
+        lens=fake_readout_family(("jlens/x",), score_aggregate=_disabled("lens")),
+        sae=fake_readout_family(("sae/0",), score_aggregate=_disabled("sae")),
+        tokenizer=tokenizer,
     )
 
-    _complete_finalizer_session(session)
-    result = _finalize(
-        session,
-        [0],
-        elapsed=1.0,
-        vector_snapshot={},
-        stateless=True,
-        return_probe_readings=False,
+    result, _ = finalize(
+        plane, [0], state=state, tokenizer=tokenizer, return_probe_readings=False,
     )
 
     assert result.probe_readings == {}
-
-
-def test_lens_only_without_final_probe_aggregate_keeps_latest_tail() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-            self.aggregate_depth: int | None = None
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, layer_idxs: list[int]) -> None:
-            self.attached = list(layer_idxs)
-
-        def set_aggregate_tail(self, depth: int) -> None:
-            self.aggregate_depth = depth
-
-    class Monitor:
-        probe_names: list[str] = []
-
-        def probe_layers(self, _names: set[str] | None = None) -> set[int]:
-            return set()
-
-        def enable_curved_warm(self, _enabled: bool) -> None:
-            pass
-
-    capture = Capture()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = Monitor()
-    session._capture = capture
-    session._runtime = SimpleNamespace(capture_buffers={})
-    session._engine = SimpleNamespace(compiled_clean_eligible=False)
-    session._lens_instrument.live = {"layers": [2, 4]}
-    session._lens_instrument.probes = {}
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {}
-    session._steering = SimpleNamespace(all_fast_path=lambda: True)
-
-    _complete_capture_session(session)
-    DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=False,
-            per_token_full_consumer=False,
-            final_probe_aggregate=False,
-        ),
-    )
-
-    assert capture.attached == [2, 4]
-    assert capture.aggregate_depth == 1
-
-
-def test_dormant_lens_probe_without_final_aggregate_does_not_attach_capture() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, layer_idxs: list[int]) -> None:
-            self.attached = list(layer_idxs)
-
-    class Monitor:
-        probe_names: list[str] = []
-
-        def probe_layers(self, _names: set[str] | None = None) -> set[int]:
-            return set()
-
-    capture = Capture()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = Monitor()
-    session._capture = capture
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {"jlens/g": {"layers": [3]}}
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {}
-
-    _complete_capture_session(session)
-    attached = DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=False,
-            per_token_full_consumer=False,
-            final_probe_aggregate=False,
-        ),
-    )
-
-    assert attached is False
-    assert capture.attached is None
-    assert session._capture_state.final_probe_aggregate is False
-
-
-def test_lens_gate_without_final_aggregate_attaches_gated_probe_layers() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-            self.aggregate_depth: int | None = None
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, layer_idxs: list[int]) -> None:
-            self.attached = list(layer_idxs)
-
-        def set_aggregate_tail(self, depth: int) -> None:
-            self.aggregate_depth = depth
-
-    class Monitor:
-        probe_names: list[str] = []
-
-        def probe_layers(self, _names: set[str] | None = None) -> set[int]:
-            return set()
-
-        def enable_curved_warm(self, _enabled: bool) -> None:
-            pass
-
-    capture = Capture()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = Monitor()
-    session._capture = capture
-    session._runtime = SimpleNamespace(capture_buffers={})
-    session._engine = SimpleNamespace(compiled_clean_eligible=False)
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {
-        "jlens/g": {"layers": [3]},
-        "jlens/h": {"layers": [6]},
-    }
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {}
-    session._steering = SimpleNamespace(all_fast_path=lambda: True)
-
-    _complete_capture_session(session)
-    attached = DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=False,
-            per_token_full_consumer=False,
-            final_probe_aggregate=False,
-            lens_gating_probe_keys={"jlens/g"},
-        ),
-    )
-
-    assert attached is True
-    # The gated probes' band.  Production bands are uniform (every probe's
-    # registry list equals the resident lens's source_layers — attach
-    # records the full fitted set, adoption rewrites every probe), so the
-    # prepared snapshot stamps the fixture's [3, 6] union onto both probes;
-    # the FIX-#4 observable is gate-keeps-the-band-alive vs the dormant
-    # roster attaching nothing (the sibling test above).
-    assert capture.attached == [3, 6]
-    assert capture.aggregate_depth == 1
-
-
-def test_sae_only_without_final_probe_aggregate_keeps_latest_tail() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-            self.aggregate_depth: int | None = None
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, layer_idxs: list[int]) -> None:
-            self.attached = list(layer_idxs)
-
-        def set_aggregate_tail(self, depth: int) -> None:
-            self.aggregate_depth = depth
-
-    class Monitor:
-        probe_names: list[str] = []
-
-        def probe_layers(self, _names: set[str] | None = None) -> set[int]:
-            return set()
-
-        def enable_curved_warm(self, _enabled: bool) -> None:
-            pass
-
-    capture = Capture()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = Monitor()
-    session._capture = capture
-    session._runtime = SimpleNamespace(capture_buffers={})
-    session._engine = SimpleNamespace(compiled_clean_eligible=False)
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {}
-    session._sae_instrument.live = {"layer": 5}
-    session._sae_instrument.probes = {}
-    session._steering = SimpleNamespace(all_fast_path=lambda: True)
-
-    _complete_capture_session(session)
-    DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=False,
-            per_token_full_consumer=False,
-            final_probe_aggregate=False,
-        ),
-    )
-
-    assert capture.attached == [5]
-    assert capture.aggregate_depth == 1
-
-
-def test_dormant_sae_probe_without_final_aggregate_does_not_attach_capture() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, layer_idxs: list[int]) -> None:
-            self.attached = list(layer_idxs)
-
-    class Monitor:
-        probe_names: list[str] = []
-
-        def probe_layers(self, _names: set[str] | None = None) -> set[int]:
-            return set()
-
-    capture = Capture()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = Monitor()
-    session._capture = capture
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {}
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {"sae/0": {"feature_id": 0}}
-    make_resident(session._sae_instrument.runtime, layer=5)
-
-    _complete_capture_session(session)
-    attached = DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=False,
-            per_token_full_consumer=False,
-            final_probe_aggregate=False,
-        ),
-    )
-
-    assert attached is False
-    assert capture.attached is None
-    assert session._capture_state.final_probe_aggregate is False
-
-
-def test_sae_gate_without_final_aggregate_attaches_sae_layer() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-            self.aggregate_depth: int | None = None
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, layer_idxs: list[int]) -> None:
-            self.attached = list(layer_idxs)
-
-        def set_aggregate_tail(self, depth: int) -> None:
-            self.aggregate_depth = depth
-
-    class Monitor:
-        probe_names: list[str] = []
-
-        def probe_layers(self, _names: set[str] | None = None) -> set[int]:
-            return set()
-
-        def enable_curved_warm(self, _enabled: bool) -> None:
-            pass
-
-    capture = Capture()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = Monitor()
-    session._capture = capture
-    session._runtime = SimpleNamespace(capture_buffers={})
-    session._engine = SimpleNamespace(compiled_clean_eligible=False)
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {}
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {"sae/0": {"feature_id": 0}}
-    make_resident(session._sae_instrument.runtime, layer=5)
-    session._steering = SimpleNamespace(all_fast_path=lambda: True)
-
-    _complete_capture_session(session)
-    attached = DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=False,
-            per_token_full_consumer=False,
-            final_probe_aggregate=False,
-            sae_gating_probe_keys={"sae/0"},
-        ),
-    )
-
-    assert attached is True
-    assert capture.attached == [5]
-    assert capture.aggregate_depth == 1
-    # The armed retention is a tail ring, so the recorded mode must say so
-    # rather than sitting at the FULL default.
-    assert session._capture_state.mode is CaptureMode.AGGREGATE_ONLY
-
-
-def test_monitor_probe_without_final_aggregate_and_no_per_token_skips_capture() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-
-        def attach(self, *_args: Any, **_kwargs: Any) -> None:
-            raise AssertionError("dormant monitor probes should not attach capture")
-
-    class Monitor:
-        probe_names = ["monitor"]
-
-        def probe_layers(self, _names: set[str] | None = None) -> set[int]:
-            raise AssertionError("dormant monitor probes should not widen capture")
-
-    capture = Capture()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = Monitor()
-    session._capture = capture
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {}
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {}
-
-    _complete_capture_session(session)
-    attached = DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=False,
-            per_token_full_consumer=False,
-            final_probe_aggregate=False,
-        ),
-    )
-
-    assert attached is False
-    assert capture.attached is None
-    assert session._capture_state.final_probe_aggregate is False
-
-
-class _RecordingInstrument:
-    """Records the ``ReadRequest`` each family is prepared with."""
-
-    def __init__(self, family: str) -> None:
-        self.family = family
-        self.requests: list[Any] = []
-
-    def prepare(self, request: Any) -> Any:
-        from drowse.readout.types import InstrumentPrep
-
-        self.requests.append(request)
-        return InstrumentPrep(family=self.family, request=request)
-
-    def plan(self, prep: Any) -> Any:
-        from drowse.readout.types import InstrumentPlan
-
-        return InstrumentPlan(family=self.family, prep_token=prep.token)
-
-    def bind(self, _plan: Any, _prep: Any) -> None:
-        return None
-
-
-def test_begin_capture_takes_per_token_full_consumer_from_the_demand() -> None:
-    """``_begin_capture`` must not re-derive the demand's predicates.
-
-    A gate-only generation has ``need_per_token`` true with no full-roster
-    per-token consumer; re-deriving it here from ``gating_only_probes is
-    None`` gets the opposite answer whenever the resolver's richer rule and
-    that shorthand disagree.
-    """
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 4
-    session._monitor = SimpleNamespace(probe_names=[])
-    session._capture = SimpleNamespace(clear=lambda: None)
-    session._close_instrument_runs = lambda: None
-    geometry = _RecordingInstrument("geometry")
-    lens = _RecordingInstrument("lens")
-    sae = _RecordingInstrument("sae")
-    # The three instrument properties read a lazily-created __dict__ slot.
-    session.__dict__["_geometry_instrument"] = geometry
-    session.__dict__["_lens_instrument"] = lens
-    session.__dict__["_sae_instrument"] = sae
-
-    attached = DrowseSession._begin_capture(
-        session,
-        ReadDemand(need_per_token=True, per_token_full_consumer=False),
-    )
-
-    assert attached is False
-    for instrument in (geometry, lens, sae):
-        assert [r.per_token_consumers for r in instrument.requests] == [False]
-
-
-def _resolve_demand(*, gated: bool = False, **kwargs: Any) -> ReadDemand:
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._steering_composer = SimpleNamespace(
-        steering_needs_probe_gating=lambda: gated,
-        gated_probe_keys=lambda: {"gate@x"},
-        gated_lens_probe_keys=lambda: set(),
-        gated_sae_probe_keys=lambda: set(),
-        gated_probe_names=lambda: {"gate"},
-    )
-    defaults: dict[str, Any] = dict(
-        want_hidden=False,
-        live_scores_on=True,
-        has_monitor_probes=True,
-        loom_attached=False,
-        wants_live_token_scores=False,
-        persists_layer_scores=False,
-        persists_probe_row=False,
-        persists_subspace_coords=False,
-        live_lens_active=False,
-        live_sae_active=False,
-        final_probe_aggregate=True,
-        capture_prompt=False,
-    )
-    defaults.update(kwargs)
-    return DrowseSession._resolve_read_demand(session, **defaults)
-
-
-def test_resolve_read_demand_routes_a_gate_only_generation_to_the_subset() -> None:
-    demand = _resolve_demand(gated=True)
-
-    assert demand.need_per_token is True
-    assert demand.per_token_full_consumer is False
-    assert demand.gating_only_probes == {"gate"}
-    assert demand.gating_probe_keys == {"gate@x"}
-    # Gating forces per-token scoring but the lean path is for coord-only
-    # consumers, so a gated generation never goes lean.
-    assert demand.lean_per_token is False
-
-
-def test_resolve_read_demand_marks_a_loom_attached_generation_full_and_lean() -> None:
-    demand = _resolve_demand(loom_attached=True)
-
-    assert demand.need_per_token is True
-    assert demand.per_token_full_consumer is True
-    assert demand.gating_only_probes is None
-    assert demand.lean_per_token is True
-
-
-def test_resolve_read_demand_drops_per_token_when_nothing_consumes_it() -> None:
-    demand = _resolve_demand()
-
-    assert demand.need_per_token is False
-    assert demand.per_token_full_consumer is False
-    assert demand.lean_per_token is False
-
-
-def test_resolve_read_demand_leaves_lean_off_for_a_full_reading_consumer() -> None:
-    demand = _resolve_demand(loom_attached=True, wants_live_token_scores=True)
-
-    assert demand.per_token_full_consumer is True
-    assert demand.lean_per_token is False
-
-
-def test_resolve_read_demand_leaves_lean_off_when_hidden_states_are_wanted() -> None:
-    demand = _resolve_demand(loom_attached=True, want_hidden=True)
-
-    assert demand.need_per_token is True
-    assert demand.lean_per_token is False
-
-
-def test_monitor_probe_final_aggregate_still_attaches_capture() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-            self.aggregate_depth: int | None = None
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, layer_idxs: list[int]) -> None:
-            self.attached = list(layer_idxs)
-
-        def set_aggregate_tail(self, depth: int) -> None:
-            self.aggregate_depth = depth
-
-    class Monitor:
-        probe_names = ["monitor"]
-
-        def __init__(self) -> None:
-            self.layer_query: set[str] | None = None
-            self.warm_enabled: bool | None = None
-
-        def probe_layers(self, names: set[str] | None = None) -> set[int]:
-            self.layer_query = names
-            return {2, 4}
-
-        def enable_curved_warm(self, enabled: bool) -> None:
-            self.warm_enabled = enabled
-
-    capture = Capture()
-    monitor = Monitor()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = monitor
-    session._capture = capture
-    session._runtime = SimpleNamespace(capture_buffers={})
-    session._engine = SimpleNamespace(compiled_clean_eligible=False)
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {}
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {}
-    session._steering = SimpleNamespace(all_fast_path=lambda: True)
-
-    _complete_capture_session(session)
-    attached = DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=False,
-            per_token_full_consumer=False,
-            final_probe_aggregate=True,
-        ),
-    )
-
-    assert attached is True
-    assert monitor.layer_query is None
-    assert capture.attached == [2, 4]
-    assert capture.aggregate_depth is not None and capture.aggregate_depth > 1
-    assert session._capture_state.mode is CaptureMode.AGGREGATE_ONLY
-    assert monitor.warm_enabled is False
-
-
-def test_gate_only_without_final_probe_aggregate_narrows_capture_layers() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-            self.incremental = False
-            self.tail_with_sink = False
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, layer_idxs: list[int]) -> None:
-            self.attached = list(layer_idxs)
-
-        def set_incremental(self, _sink: Any) -> None:
-            self.incremental = True
-
-        def set_tail_with_sink(self, *_args: Any, **_kwargs: Any) -> None:
-            self.tail_with_sink = True
-
-    class Monitor:
-        probe_names = ["gate", "other"]
-
-        def __init__(self) -> None:
-            self.layer_query: set[str] | None = None
-
-        def probe_layers(self, names: set[str] | None = None) -> set[int]:
-            self.layer_query = names
-            return {2} if names == {"gate"} else {2, 5}
-
-        def reset_curved_feet(self) -> None:
-            pass
-
-        def enable_curved_warm(self, _enabled: bool) -> None:
-            pass
-
-        def plan_gate_scalars(
-            self,
-            gate_keys: set[str],
-            *,
-            probe_names: set[str] | None = None,
-        ) -> tuple[str, ...]:
-            assert gate_keys == {"gate@x"}
-            assert probe_names == {"gate"}
-            return ("plan",)
-
-        def score_planned_gate_scalars(
-            self,
-            _latest: dict[int, torch.Tensor],
-            _plan: tuple[str, ...],
-        ) -> dict[str, float]:
-            return {}
-
-    capture = Capture()
-    monitor = Monitor()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = monitor
-    session._capture = capture
-    session._runtime = SimpleNamespace(capture_buffers={})
-    session._engine = SimpleNamespace(compiled_clean_eligible=False)
-    session._lens_instrument.live = None
-
-    _complete_capture_session(session)
-    DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=True,
-            per_token_full_consumer=False,
-            gating_only_probes={"gate"},
-            gating_probe_keys={"gate@x"},
-            final_probe_aggregate=False,
-        ),
-    )
-
-    assert monitor.layer_query == {"gate"}
-    assert capture.attached == [2]
-    assert capture.incremental is True
-    assert capture.tail_with_sink is False
-    assert session._capture_state.mode is CaptureMode.GATING_SUBSET
-    assert session._capture_state.final_probe_aggregate is False
-
-
-def test_gate_only_capture_reuses_preplanned_gate_scalars() -> None:
-    plan = object()
-
-    class Capture:
-        def __init__(self) -> None:
-            self.sink: Any | None = None
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, _layer_idxs: list[int]) -> None:
-            pass
-
-        def set_incremental(self, sink: Any) -> None:
-            self.sink = sink
-
-    class Monitor:
-        probe_names = ["gate"]
-
-        def __init__(self) -> None:
-            self.plan_calls: list[tuple[set[str], set[str] | None]] = []
-            self.score_plans: list[tuple[Any, ...]] = []
-
-        def probe_layers(self, names: set[str] | None = None) -> set[int]:
-            assert names == {"gate"}
-            return {2}
-
-        def reset_curved_feet(self) -> None:
-            pass
-
-        def enable_curved_warm(self, _enabled: bool) -> None:
-            pass
-
-        def plan_gate_scalars(
-            self,
-            gate_keys: set[str],
-            *,
-            probe_names: set[str] | None = None,
-        ) -> tuple[Any, ...]:
-            self.plan_calls.append((
-                set(gate_keys),
-                set(probe_names) if probe_names is not None else None,
-            ))
-            return (plan,)
-
-        def score_planned_gate_scalars(
-            self,
-            _latest: dict[int, torch.Tensor],
-            gate_plan: tuple[Any, ...],
-        ) -> dict[str, float]:
-            self.score_plans.append(gate_plan)
-            return {"gate": 0.25}
-
-        def score_gate_scalars(self, *_args: Any, **_kwargs: Any) -> dict[str, float]:
-            raise AssertionError("GATING_SUBSET should reuse the planned scalars")
-
-    capture = Capture()
-    monitor = Monitor()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = monitor
-    session._capture = capture
-    session._runtime = SimpleNamespace(capture_buffers={})
-    session._engine = SimpleNamespace(compiled_clean_eligible=False)
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {}
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {}
-    session._steering = SimpleNamespace(all_fast_path=lambda: True)
-
-    _complete_capture_session(session)
-    DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=True,
-            per_token_full_consumer=False,
-            gating_only_probes={"gate"},
-            gating_probe_keys={"gate"},
-            final_probe_aggregate=False,
-        ),
-    )
-
-    assert monitor.plan_calls == [({"gate"}, {"gate"})]
-    assert capture.sink is not None
-    capture.sink(0, {2: torch.ones(4)})
-    assert monitor.score_plans == [(plan,)]
-    assert session._incremental_gate_scores == [{"gate": 0.25}]
-
-
-def test_full_incremental_capture_deep_tail_only_for_readout_aggregate_layers() -> None:
-    class Capture:
-        def __init__(self) -> None:
-            self.attached: list[int] | None = None
-            self.tail_depth: int | None = None
-            self.tail_layers: set[int] | None = None
-
-        def clear(self) -> None:
-            pass
-
-        def attach(self, _layers: Any, layer_idxs: list[int]) -> None:
-            self.attached = list(layer_idxs)
-
-        def set_tail_with_sink(
-            self,
-            depth: int,
-            _sink: Any,
-            *,
-            tail_layers: set[int] | None = None,
-        ) -> None:
-            self.tail_depth = depth
-            self.tail_layers = set(tail_layers or set())
-
-    class Monitor:
-        probe_names = ["monitor"]
-
-        def probe_layers(self, names: set[str] | None = None) -> set[int]:
-            assert names is None
-            return {0, 1}
-
-        def reset_curved_feet(self) -> None:
-            pass
-
-        def enable_curved_warm(self, _enabled: bool) -> None:
-            pass
-
-    capture = Capture()
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._layers = [object()] * 8
-    session._monitor = Monitor()
-    session._capture = capture
-    session._runtime = SimpleNamespace(capture_buffers={})
-    session._engine = SimpleNamespace(compiled_clean_eligible=False)
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {"jlens/g": {"layers": {3}}}
-    session._lens_instrument.probe_layers = lambda _names=None: {3}
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {"sae/5": {"feature_id": 5}}
-    make_resident(session._sae_instrument.runtime, layer=5)
-    session._steering = SimpleNamespace(all_fast_path=lambda: True)
-
-    _complete_capture_session(session)
-    attached = DrowseSession._begin_capture(
-        session,
-        ReadDemand(need_per_token=True, final_probe_aggregate=True),
-    )
-
-    assert attached is True
-    assert capture.attached == [0, 1, 3, 5]
-    assert capture.tail_depth is not None and capture.tail_depth > 1
-    assert capture.tail_layers == {3, 5}
-    assert session._capture_state.mode is CaptureMode.INCREMENTAL
 
 
 def test_penalty_state_applies_sparse_counts_on_device():

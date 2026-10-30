@@ -404,19 +404,20 @@ class _MockSteering:
 class _MockSession:
     """Just enough surface for ``compute_joint_logprobs`` to run.
 
-    Carries REAL instruments and the real ``_close_instrument_runs`` so the
-    replay's run lifecycle is exercised: ``_begin_capture`` here binds all
-    three families exactly like the real planner does, which lets the
-    lifecycle regression assert the replay's ``finally`` closes them (the
-    former no-op stubs made the bind leak invisible to this suite)."""
+    Carries REAL instruments and a real read plane over them, so the
+    replay's run lifecycle is exercised: ``begin`` here binds all three
+    families exactly like the real planner does (without attaching capture),
+    which lets the lifecycle regression assert the replay's ``finally``
+    closes them (the former no-op stubs made the bind leak invisible to this
+    suite)."""
 
     def __init__(self):
-        from types import MethodType, SimpleNamespace
+        from types import SimpleNamespace
 
         from drowse.readout.geometry import GeometryInstrument
+        from tests.support.read_plane import make_read_plane
         from tests.support.sae import stub_sae_instrument
         from drowse.readout.types import ReadRequest
-        from drowse.session.session import DrowseSession
 
         self.tokenizer = _MockTokenizer()
         # Build a vocabulary that covers the strings we'll feed.  The
@@ -443,27 +444,22 @@ class _MockSession:
         self._lens_instrument = stub_lens_instrument(self)
         self._sae_instrument = stub_sae_instrument(self)
 
-        def _bind_all(*_args: Any, **_kwargs: Any) -> bool:
-            request = ReadRequest(final_aggregate=False)
-            for inst in (
-                self._geometry_instrument,
-                self._lens_instrument,
-                self._sae_instrument,
-            ):
-                prep = inst.prepare(request)
-                inst.bind(inst.plan(prep), prep)
-            return False
-
-        self._begin_capture = _bind_all
-        self._end_capture = lambda: None
-        self._close_instrument_runs = MethodType(
-            DrowseSession._close_instrument_runs, self,
+        request = ReadRequest(final_aggregate=False)
+        plane = make_read_plane(
+            capture=SimpleNamespace(detach=lambda: None),
+            monitor=self._monitor,
+            geometry=self._geometry_instrument,
+            lens=self._lens_instrument,
+            sae=self._sae_instrument,
         )
+        plane.resolve_demand = lambda **_kwargs: None
+        plane.begin = lambda *_args, **_kwargs: (
+            plane.bind_runs(request, request, request) and False
+        )
+        self._read_plane = plane
         self._steering_composer = SimpleNamespace(
             steering_needs_probe_gating=lambda: False,
-            build_gating_score_callback=lambda: None,
         )
-        self._resolve_read_demand = lambda **_kwargs: None
         self.renderer = SimpleNamespace(
             prepare_input=self._prepare_input, model_type=None,
         )
@@ -479,11 +475,13 @@ class _MockSession:
 
     def force_stepwise_gated(self, gate: Any = None) -> None:
         """Route replay through the per-step gated path."""
+        from types import SimpleNamespace
+
         self._steering.static = False
         self._steering_composer = SimpleNamespace(
             steering_needs_probe_gating=lambda: True,
-            build_gating_score_callback=lambda: gate or (lambda _step: {}),
         )
+        self._read_plane.gate_score_callback = lambda: gate or (lambda _step: {})
 
     def assert_runs_closed(self) -> None:
         for instrument in (
@@ -611,7 +609,7 @@ def test_joint_logprobs_closes_runs_when_detach_raises():
     def _detach_boom() -> None:
         raise RuntimeError("detach failed")
 
-    session._end_capture = _detach_boom
+    session._read_plane.capture.detach = _detach_boom
     with pytest.raises(RuntimeError, match="detach failed"):
         compute_joint_logprobs(session, "a1", "a2")
     session.assert_runs_closed()

@@ -40,13 +40,14 @@ behavior.
 Division of labor the contract deliberately does NOT own:
 
 * **Capture planning** — instruments declare demand
-  (:class:`~drowse.readout.types.InstrumentPlan`); the session
-  planner unions demands and picks physical retention.  The
-  ``INCREMENTAL -> set_tail_with_sink`` upgrade is cross-instrument
-  resource sharing and stays session-side.
+  (:class:`~drowse.readout.types.InstrumentPlan`); the planner
+  (:mod:`drowse.readout.planner`) unions demands and picks physical
+  retention, and the session's read plane applies it.  Instruments read
+  the capture only through :class:`LatestSlices`, and their finalize
+  aggregates take the read plane's one pooled slice.
 * **Authored-prefill orchestration** — token matching, the ``j-1``
   producer-position semantics, ordering, and loom persistence stay in the
-  session; instruments only ``observe`` the hidden rows handed to them.
+  session; instruments only score the hidden rows handed to them.
 * **The wire framing** — ``token_readout`` returns the finished versioned
   measurement envelope (``readout/measurements.py``), but the HTTP status
   mapping, locking, and request validation stay in the server.
@@ -72,6 +73,18 @@ if TYPE_CHECKING:
     )
 
 
+class LatestSlices(Protocol):
+    """The read plane's capture as an instrument's per-step reads see it."""
+
+    def latest_per_layer(self) -> "dict[int, torch.Tensor]":
+        """The most recent ``[D]`` slice per captured layer."""
+        ...
+
+    def per_layer_buckets(self) -> "dict[int, list[torch.Tensor]]":
+        """The raw per-layer buffers (``bucket[-1]`` is the latest)."""
+        ...
+
+
 @runtime_checkable
 class InstrumentRun(Protocol):
     """One family's per-generation measurement executor."""
@@ -80,12 +93,6 @@ class InstrumentRun(Protocol):
     binding: "InstrumentBinding"
     #: False for the idle passthrough run that backs out-of-generation reads.
     bound: bool
-
-    def observe(
-        self, step_id: int, hidden: "dict[int, torch.Tensor]",
-    ) -> "dict[str, Any]":
-        """Measure one forward."""
-        ...
 
     def observe_aggregate(
         self, pooled: "dict[int, torch.Tensor]",
@@ -194,4 +201,4 @@ class Instrument(Protocol):
         ...
 
 
-__all__ = ["Instrument", "InstrumentRun"]
+__all__ = ["Instrument", "InstrumentRun", "LatestSlices"]

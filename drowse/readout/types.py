@@ -23,10 +23,10 @@ lens readout channel, and SAE feature reads — speak the types defined here.
   mathematically unrelated things across families (share-weighted
   coordinate mass / readout probability mass / a single-layer constant);
   a bare float invites cross-family comparison that is meaningless.
-* **InstrumentPlan declares capture demand, not mechanics** — the
-  session-side capture planner unions plans and picks physical retention
-  (incremental vs tail ring vs full stack); the
-  ``INCREMENTAL -> set_tail_with_sink`` upgrade is cross-instrument
+* **InstrumentPlan declares capture demand, not mechanics** — the capture
+  planner (:mod:`drowse.readout.planner`) unions plans and picks physical
+  retention (incremental vs tail ring vs full stack); a readout aggregate
+  upgrading the incremental buffer to a tail ring is cross-instrument
   resource sharing and stays out of the families.
 * **InstrumentBinding is an immutable per-generation snapshot** of
   source identity + attached specs, so mid-generation mutations (e.g.
@@ -454,7 +454,7 @@ class InstrumentPrep:
     ``Instrument.prepare`` (after the prior run is closed), consumed by
     the same family's ``plan`` and ``bind``.
 
-    Family-opaque to the session planner: it threads the prep from
+    Family-opaque to the read plane: it threads the prep from
     prepare through plan into bind without reading it, so
     source-boundary work (a disk refresh, a pin decision, a spec
     snapshot) is protocol shape rather than session special-casing.
@@ -526,12 +526,11 @@ class LensPrep(InstrumentPrep):
 class InstrumentPlan:
     """A family's declared capture demand for one generation.
 
-    Demand, not mechanics: the session-side planner unions plans across
-    instruments and chooses the physical retention mode
-    (``set_incremental`` / ``set_tail_with_sink`` / ``set_aggregate_tail``
-    / full stack).  Cross-instrument interactions (a lens aggregate
-    upgrading geometry's incremental capture to a tail ring) are the
-    planner's business, never a family's.
+    Demand, not mechanics: :func:`drowse.readout.planner.plan_capture`
+    unions plans across instruments and chooses the physical retention (a
+    length-1 buffer, a tail ring, or the full stack).  Cross-instrument
+    interactions (a lens aggregate upgrading geometry's incremental capture
+    to a tail ring) are the planner's business, never a family's.
 
     Every field here is read by that planner.  Demand a family can state but
     nobody consumes is not demand — it is a field that drifts out of sync

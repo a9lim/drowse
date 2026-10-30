@@ -181,7 +181,7 @@ def test_token_id_atom_steers_and_probes_the_vocab_id(make_tiny_session: Any) ->
     assert spec["token_id"] == gid
     assert spec["word"] == f"#{gid}"
     with session.steering(f"0.3 jlens/g@when:jlens/#{gid}>0.01"):
-        assert session._steering_composer.gated_lens_probe_keys() == {f"jlens/#{gid}"}
+        assert session._read_plane.resolve_gates().lens_keys == {f"jlens/#{gid}"}
 
 
 def test_token_id_atom_rejects_ids_outside_the_vocab(make_tiny_session: Any) -> None:
@@ -318,14 +318,16 @@ def test_gated_lens_probe_keys_and_gate_scalars() -> None:
     assert session.lens.step_stash["layers"] == tuple(layers)
 
 
-def test_composer_detects_gates_on_pinned_lens_probes(make_tiny_session: Any) -> None:
+def test_read_plane_detects_gates_on_pinned_lens_probes(make_tiny_session: Any) -> None:
     """A gate on a pinned lens probe is recognized from the steering stack
     without any monitor probe attached."""
     session = make_tiny_session(warm=False)  # a cold scope (C2 regression)
     session.lens.fit(_TINY_PROMPTS)
     session.add_probe("jlens/g")
     with session.steering("0.3 jlens/g@when:jlens/g>0.4"):
-        assert session._steering_composer.gated_lens_probe_keys() == {"jlens/g"}
+        gates = session._read_plane.resolve_gates()
+    assert gates.lens_keys == {"jlens/g"}
+    assert gates.monitor_keys == frozenset()
 
 
 def test_lens_gate_scalar_scores_only_referenced_probe(

@@ -593,7 +593,8 @@ def _replay_branch_logprobs(
                 adjust=adjust, config=config,
             )
         elif session._steering_composer.steering_needs_probe_gating():
-            gate_only = session._resolve_read_demand(
+            reads = session._read_plane
+            gate_only = reads.resolve_demand(
                 want_hidden=False, live_scores_on=False,
                 has_monitor_probes=False, loom_attached=False,
                 wants_live_token_scores=False, persists_layer_scores=False,
@@ -602,16 +603,14 @@ def _replay_branch_logprobs(
                 final_probe_aggregate=False, capture_prompt=False,
             )
             try:
-                # Inside the try: ``_begin_capture`` binds every family's
+                # Inside the try: ``begin`` binds every family's
                 # per-generation run, so a partial-bind failure must still
                 # reach the teardown below.
-                session._begin_capture(gate_only)
+                reads.begin(gate_only)
                 pools = _stepwise_pools(
                     session, model, full, branch,
                     adjust=adjust, config=config,
-                    gating_callback=(
-                        session._steering_composer.build_gating_score_callback()
-                    ),
+                    gating_callback=reads.gate_score_callback(),
                 )
             finally:
                 # A bound run must not leak past the request (a stale lens
@@ -619,9 +618,9 @@ def _replay_branch_logprobs(
                 # SAE binding keeps serving frozen units to idle reads) —
                 # even when the hook detach itself raises.
                 try:
-                    session._end_capture()
+                    reads.end()
                 finally:
-                    session._close_instrument_runs()
+                    reads.close_runs()
         else:
             pools = _stepwise_pools(
                 session, model, full, branch,
