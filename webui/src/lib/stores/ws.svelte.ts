@@ -73,6 +73,7 @@ import { buildSamplingPayload, samplingState } from "./sampling.svelte";
 import { refreshSession } from "./session.svelte";
 import {
   currentSteeringExpression,
+  markCorrelationStale,
   refreshManifoldList,
   refreshVectorList,
 } from "./steering.svelte";
@@ -730,6 +731,8 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
 
       // Snapshot probe baselines on the steered done event only.
       snapshotProbeBaseline();
+      // The open correlation drawer refetches; a closed one does not.
+      markCorrelationStale();
       // SAE discovery backfill — fetch Neuronpedia metadata (label +
       // maxActApprox) for features the live top-k surfaced this
       // generation.  Between generations only, never per token.

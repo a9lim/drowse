@@ -16,6 +16,7 @@
 
   import {
     closeDrawer,
+    correlationCache,
     probeRack,
     refreshCorrelation,
     steerRack,
@@ -25,8 +26,9 @@
   import { omittedAnalyticsProbes } from "../lib/profileAnalytics";
   import { userFacingError } from "../lib/runtime/userFacingError";
 
-  // Lazy-fetch on mount when no snapshot exists; reopens reuse the
-  // cached matrix so the drawer lands instantly.
+  // Fetch while open whenever the cached matrix is missing or stale
+  // (``correlationCache``); a fresh cache makes a reopen land instantly, and
+  // a stale one stays on screen while it refetches.
   let loading = $state(false);
   let error = $state<string | null>(null);
 
@@ -44,9 +46,7 @@
   }
 
   $effect(() => {
-    // Trigger initial load only if the snapshot is empty.  Subsequent
-    // reopens read straight off ``steerRack.correlation``.
-    if (!steerRack.correlation) void reload();
+    if (!steerRack.correlation || correlationCache.fetched !== correlationCache.revision) void reload();
   });
 
   const data = $derived(steerRack.correlation);

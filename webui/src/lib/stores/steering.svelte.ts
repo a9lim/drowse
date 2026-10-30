@@ -49,7 +49,12 @@ export interface SteerRack {
   /** Per-profile metadata fetched from GET /profiles/{name}.
    * Populated lazily; absent until the user opens a strip's expander. */
   profiles: Map<string, VectorInfo>;
-  /** Cosine matrix from GET /correlation; refreshed after each generation. */
+  /** Cosine matrix from GET /correlation.  Fetched only by the open
+   *  correlation drawer and the explicit health refresh, never per
+   *  generation.  ``invalidateCorrelation`` clears it when the probe or
+   *  vector roster changes; ``markCorrelationStale`` (after a generation)
+   *  keeps it but has the drawer refetch while it is open
+   *  (``correlationCache``). */
   correlation: CorrelationData | null;
   /** Server-side catalog of available manifolds. */
   catalog: ManifoldInfo[];
@@ -79,18 +84,36 @@ export const steerRack: SteerRack = $state({
  * change. */
 export const vectorsState: { names: string[] } = $state({ names: [] });
 
-let correlationEpoch = 0;
+/** Freshness of ``steerRack.correlation``.  ``revision`` bumps whenever the
+ * server's matrix may have changed; ``fetched`` is the revision the cached
+ * matrix was fetched at.  The correlation drawer refetches while it is open
+ * and the two differ, so nothing fetches while it is closed. */
+export const correlationCache: { revision: number; fetched: number } = $state({
+  revision: 0,
+  fetched: -1,
+});
 
 /** Drop the cached matrix and prevent an older in-flight request from
  * repopulating it after the direction/probe roster changes. */
 export function invalidateCorrelation(): void {
-  correlationEpoch += 1;
+  correlationCache.revision += 1;
   steerRack.correlation = null;
+}
+
+/** Keep the cached matrix on screen but refetch it the next time it is
+ * shown.  A generation can register the steering vectors it used (they join
+ * the server's pool) and frees the GPU for the snapshots a busy server left
+ * as null cells. */
+export function markCorrelationStale(): void {
+  correlationCache.revision += 1;
 }
 
 export async function refreshVectorList(): Promise<void> {
   const r = await apiProfiles.list();
-  vectorsState.names = r.profiles.map((v) => v.name);
+  const names = r.profiles.map((v) => v.name);
+  // Registered vectors are part of the correlation pool.
+  if (names.join("\n") !== vectorsState.names.join("\n")) invalidateCorrelation();
+  vectorsState.names = names;
   // Cache profile metadata — cheap, server already serialized.
   steerRack.profiles.clear();
   for (const v of r.profiles) {
@@ -102,12 +125,15 @@ export async function refreshCorrelation(
   names?: string[] | null,
   strict = false,
 ): Promise<void> {
-  const requestedAt = correlationEpoch;
+  const requestedAt = correlationCache.revision;
   try {
     const data = await apiProfiles.correlation(names);
-    if (requestedAt === correlationEpoch) steerRack.correlation = data;
+    if (requestedAt === correlationCache.revision) {
+      steerRack.correlation = data;
+      correlationCache.fetched = requestedAt;
+    }
   } catch (error) {
-    if (requestedAt === correlationEpoch) steerRack.correlation = null;
+    if (requestedAt === correlationCache.revision) steerRack.correlation = null;
     if (strict) throw error;
   }
 }

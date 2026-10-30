@@ -7,7 +7,16 @@ const server = await createServer({
 });
 try {
   const { installRuntimeClient } = await server.ssrLoadModule("/src/lib/runtime/registry.ts");
-  installRuntimeClient({ mode: "http" });
+  // The profiles service the correlation-freshness block below drives.
+  let roster = ["a"];
+  let pendingCorrelation = null;
+  installRuntimeClient({
+    mode: "http",
+    profiles: {
+      list: async () => ({ profiles: roster.map(name => ({ name, layers: [0], metadata: {} })) }),
+      correlation: () => new Promise(resolve => { pendingCorrelation = resolve; }),
+    },
+  });
   const steering = await server.ssrLoadModule("/src/lib/stores/steering.svelte.ts");
   const { genStatus } = await server.ssrLoadModule("/src/lib/stores/chat.svelte.ts");
   const { pendingActions, drainNextPendingAction } = await server.ssrLoadModule("/src/lib/stores/pending.svelte.ts");
@@ -55,5 +64,34 @@ try {
   assert.deepEqual([steerRack.entries.get("sae/17").enabled, steerRack.entries.get("sae/17").alpha], [false, 0.6]);
   removeSteerEntry("sae/17");
   assert.equal(steerRack.entries.has("sae/17"), false);
-  console.log("Steering rack: one patch path for every term, label binding, mode guards, and queued edits passed");
+
+  // Correlation freshness: nothing fetches per generation, but a generation
+  // (which can register vectors and fill null cells) or a vector-roster change
+  // leaves the cached matrix stale, so the open drawer refetches.
+  const { correlationCache, markCorrelationStale, refreshCorrelation, refreshVectorList } = steering;
+  const matrix = names => ({ names, matrix: {}, layers_shared: {} });
+  const fresh = () => correlationCache.fetched === correlationCache.revision;
+  await refreshVectorList();
+  let request = refreshCorrelation(null);
+  pendingCorrelation(matrix(["a"]));
+  await request;
+  assert.deepEqual(steerRack.correlation.names, ["a"]);
+  assert.ok(fresh());
+
+  markCorrelationStale();
+  assert.deepEqual(steerRack.correlation.names, ["a"], "a stale matrix stays on screen");
+  assert.ok(!fresh(), "but the open drawer refetches it");
+  request = refreshCorrelation(null);
+  markCorrelationStale();
+  pendingCorrelation(matrix(["stale"]));
+  await request;
+  assert.deepEqual(steerRack.correlation.names, ["a"], "a response older than the last stale mark is dropped");
+  assert.ok(!fresh());
+
+  await refreshVectorList();
+  assert.ok(steerRack.correlation, "an unchanged vector roster keeps the matrix");
+  roster = ["a", "b"];
+  await refreshVectorList();
+  assert.equal(steerRack.correlation, null, "a registered vector joins the pool");
+  console.log("Steering rack: one patch path for every term, label binding, mode guards, queued edits, and correlation freshness passed");
 } finally { await server.close(); }
