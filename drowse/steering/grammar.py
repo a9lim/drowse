@@ -197,11 +197,10 @@ _TRIGGER_FORMS_HELP = (
 class ProjectedTerm:
     """Runtime projection entry in ``Steering.alphas``.
 
-    The session materializes a derived profile on scope entry (combining
-    the ``base`` and ``onto`` profiles via ``project_profile``), registers
-    it under a synthetic name ``"<base><op><onto>"``, and feeds it to the
-    usual hook path.  Stored as a value inside ``Steering.alphas``; the
-    key matches the synthetic name so duplicate references compose.
+    Keyed by ``"<base><op><onto>"`` so duplicate references compose.  The
+    steering composer projects the ``base`` profile against ``onto``
+    (``project_profile``) at lowering time and folds the result like a plain
+    vector; the derived direction is never registered as a profile.
     """
     coeff: float
     trigger: Trigger

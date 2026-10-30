@@ -252,8 +252,7 @@ class GenerationState:
         # content token from ``generated_ids`` on that path.
         self.response_aggregate_index: int | None = None
         # Explicit stop requests ever made (``request_stop``).  ``reset`` never
-        # clears it and the end-of-generation ``stop_requested.set()`` never
-        # bumps it, so a multi-row runner can tell a user stop apart from one
+        # clears it, so a multi-row runner tells a user stop apart from one
         # row finishing by comparing it across rows.
         self.stop_count: int = 0
 
