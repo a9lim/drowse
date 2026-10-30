@@ -85,8 +85,19 @@ try {
   assert.equal(chatLog.turns.at(-1).tokens.length, 1);
   chatLog.turns.find = () => { throw new Error("quadratic turn search"); };
   syncChatLogFromTree();
-  applyTreeDelta({ rev: 11, updated: [{ ...loomTree.nodes.get("b"), text: "Final reply", finish_reason: "stop" }] });
+  applyTreeDelta({ rev: 11, updated: [{ ...loomTree.nodes.get("b"), text: "Final reply", finish_reason: "stop",
+    tokens: [{ text: "Final", raw_index: 0, token_id: 7 }, { text: " reply", raw_index: 1, token_id: 8 }] }] });
   assert.equal(chatLog.turns.at(-1).text, "Final reply");
+  assert.deepEqual(chatLog.turns.at(-1).tokens.map(token => token.text), ["Final", " reply"]);
+  // Mutations elsewhere in the tree keep a finished turn's token arrays, so
+  // the transcript's per-array token views stay cached.
+  const finishedTokens = chatLog.turns.at(-1).tokens;
+  applyTreeDelta({ rev: 11.1, updated: [{ ...loomTree.nodes.get("c"), notes: "elsewhere" }] });
+  applyTreeDelta({ rev: 11.2, updated: [{ ...loomTree.nodes.get("a"), starred: true }] });
+  assert.equal(chatLog.turns.at(-1).tokens, finishedTokens, "unchanged nodes are not re-hydrated");
+  applyTreeDelta({ rev: 11.3, updated: [{ ...loomTree.nodes.get("b"), starred: true }] });
+  assert.notEqual(chatLog.turns.at(-1).tokens, finishedTokens, "a replaced node record re-hydrates its turn");
+  assert.equal(chatLog.turns.at(-1).tokens.length, 2);
   genStatus.active = false;
   edgeLabelCache.set("a|b", "cached");
   edgeLabelCache.set("root|c", "unchanged");
