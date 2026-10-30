@@ -9062,7 +9062,6 @@ class DrowseSession:
                 )
                 payload = (
                     build_token_probe_payload(
-                        monitor=self._monitor,
                         capture=self._capture,
                         capture_state=self._capture_state,
                         incremental_readings=self._incremental_readings,

@@ -872,7 +872,6 @@ def test_token_payload_consumes_the_full_incremental_memo():
 
     session._monitor.score_single_token = _poisoned  # type: ignore[method-assign]
     payload = build_token_probe_payload(
-        monitor=session._monitor,
         capture=session._capture,
         capture_state=session._capture_state,
         incremental_readings=session._incremental_readings,
