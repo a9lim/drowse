@@ -566,7 +566,7 @@ def generate_steered(
     *on_token(text, is_thinking, token_id, logprob, top_alts, perplexity,
     step_id)* is called for each emitted token — the **internal** 7-argument
     step-aware tap contract (the session's public ``TokenCallback`` stays
-    6-argument; ``DrowseSession._token_tap`` absorbs ``step_id``).
+    6-argument; the engine's ``TokenTap`` absorbs ``step_id``).
     ``perplexity`` is ``exp`` of the
     Shannon entropy of the configured sampler distribution after
     temperature, top-k, and top-p renormalization (≈1 when the sampler is

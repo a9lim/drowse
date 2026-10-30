@@ -1,8 +1,7 @@
 """Generation lifecycle types: the phase enum, the resolved call, the stream.
 
-These are the value types the session's generation engine
-(:class:`drowse.session.engine.GenerationEngine`) passes between its stages and
-hands back to callers.  None of them reference a session.
+These are the value types the session's generation engine passes between its
+stages and hands back to callers.  None of them reference a session.
 """
 
 from __future__ import annotations

@@ -71,7 +71,7 @@ _log = logging.getLogger(__name__)
 
 class ProfileStore(Protocol):
     """The profile-registry surface the lens writes ``jlens/`` directions
-    through (the session's :class:`~drowse.session.registry.ArtifactRegistry`).
+    through (the session's artifact registry).
     """
 
     @property

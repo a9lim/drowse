@@ -315,11 +315,11 @@ TOKEN_SIDECAR_FORMAT_VERSION = 2
 class LoomTree:
     """Mutation-safe tree of conversation nodes.
 
-    Owned by :class:`drowse.session.session.DrowseSession`; callers go through
-    session methods so locking + event emission happen in one place.  The
-    tree's own methods are thread-safe under an internal ``RLock`` so the
-    session can call them from arbitrary threads (generation workers and server
-    handlers).
+    Owned by ``DrowseSession`` (``session.tree``).  The tree's own methods
+    are thread-safe under an internal ``RLock``, so the session and its
+    frontends call them from arbitrary threads (generation workers and server
+    handlers); the generation path holds its streaming target through
+    :meth:`reserve`.
 
     Operations that mutate bump :attr:`rev` and emit a :class:`LoomMutated`
     event through the session's :class:`EventBus`.  Surfaces track the

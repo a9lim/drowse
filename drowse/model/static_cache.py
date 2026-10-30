@@ -17,7 +17,7 @@ This module owns *detection*, *construction*, and *fallback*:
 - :func:`is_cuda_graphs_supported` — the CUDA-only gate on top of it, which
   decides ``reduce-overhead`` vs the ``default`` (fusion-only) compile mode.
 - :func:`make_static_cache` — the single factory used by
-  :mod:`drowse.generation.compile_runtime`, :mod:`drowse.session.engine`, and
+  :mod:`drowse.generation.compile_runtime`, the session's generation engine, and
   the load-time compile probe (:mod:`drowse.model.compile`).  It early-initializes the layer buffers so
   Transformers can mark stable K/V addresses outside Dynamo, and flags the
   sliding layers that cannot slide for this generation so
