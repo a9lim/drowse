@@ -44,7 +44,7 @@ from pydantic import Field, ValidationError
 
 from drowse.errors import DrowseError
 from drowse.lens.jlens import LensNotFittedError, resolve_word_token
-from drowse.loom.tree import InvalidNodeOperationError, UnknownNodeError
+from drowse.loom.errors import InvalidNodeOperationError, UnknownNodeError
 from drowse.readout.measurements import MeasurementsEnvelope
 from drowse.server.streaming import run_in_thread
 from drowse.server.app import acquire_session_lock

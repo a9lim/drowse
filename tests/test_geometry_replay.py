@@ -15,11 +15,8 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.loom.tree import (
-    InvalidNodeOperationError,
-    Recipe,
-    UnknownNodeError,
-)
+from drowse.loom.errors import InvalidNodeOperationError, UnknownNodeError
+from drowse.loom.recipe import Recipe
 from drowse.generation.results import ProbeReading
 from drowse.session.session import DrowseSession
 from tests.test_jlens_session import (

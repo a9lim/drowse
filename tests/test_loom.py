@@ -24,11 +24,8 @@ from drowse import (
     UnknownNodeError,
     derive_seed_schedule,
 )
-from drowse.loom.tree import (
-    TOKEN_SIDECAR_FORMAT_VERSION,
-    TREE_FORMAT_VERSION,
-    LoomTreeError,
-)
+from drowse.loom.errors import LoomTreeError
+from drowse.loom.tree import TOKEN_SIDECAR_FORMAT_VERSION, TREE_FORMAT_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -897,7 +894,6 @@ def test_recipe_round_trip():
             return_top_k=12,
         ),
         thinking=False,
-        seed=42,
         probes=["angry.calm", "honest.deceptive"],
         probe_hashes={"angry.calm": "abc123", "honest.deceptive": "def456"},
     )
@@ -905,7 +901,6 @@ def test_recipe_round_trip():
     r2 = Recipe.from_dict(rd)
     assert r2.steering == r.steering
     assert r2.thinking == r.thinking
-    assert r2.seed == r.seed
     assert r2.probes == r.probes
     assert r2.probe_hashes == r.probe_hashes
     assert r2.sampling is not None
@@ -960,7 +955,6 @@ def test_recipe_survives_node_and_cast_round_trips():
         steering="0.5 calm",
         sampling=SamplingConfig(temperature=0.4),
         thinking=True,
-        seed=7,
         probes=["calm"],
         probe_hashes={"calm": "abc"},
     )
@@ -968,7 +962,7 @@ def test_recipe_survives_node_and_cast_round_trips():
     u = t.add_user_turn("hi")
     a = t.begin_assistant(u, recipe=recipe)
     t.finalize_assistant(a, text="yo")
-    from drowse.loom.tree import CastMember
+    from drowse.loom.recipe import CastMember
     t.set_cast_member("deer", CastMember(recipe=Recipe(steering="0.2 skittish")))
 
     t2 = LoomTree.from_dict(t.to_dict())

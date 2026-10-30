@@ -235,7 +235,8 @@ class _OffsetEchoTokenizer:
 
 
 def test_authored_prompt_targets_map_to_producer_rows_after_prefix_cache() -> None:
-    from drowse.loom.tree import LoomTree, Recipe
+    from drowse.loom.recipe import Recipe
+    from drowse.loom.tree import LoomTree
 
     tree = LoomTree()
     user_id = tree.add_user_turn(" ab ")
@@ -289,7 +290,8 @@ def test_authored_prompt_match_excludes_generation_role_and_preserves_trim() -> 
 
 
 def test_persist_authored_prompt_capture_writes_all_measurement_channels() -> None:
-    from drowse.loom.tree import LoomTree, Recipe
+    from drowse.loom.recipe import Recipe
+    from drowse.loom.tree import LoomTree
     from drowse.session.session import _AuthoredPromptMatch, _AuthoredPromptTarget
 
     tree = LoomTree()

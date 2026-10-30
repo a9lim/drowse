@@ -25,7 +25,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from drowse.events import EventBus
-from drowse.loom.tree import LoomTree, Recipe
+from drowse.loom.recipe import Recipe
+from drowse.loom.tree import LoomTree
 from drowse.generation.results import GenerationResult, RunSet
 
 # ---------------------------------------------------------------------------
@@ -134,7 +135,7 @@ class _StubSession:
 
     # ----- loom conflict check (mirrors DrowseSession._loom_conflict_check)
     def _loom_conflict_check(self, node_id: str, op: str) -> None:
-        from drowse.loom.tree import MutationDuringGenerationError
+        from drowse.loom.errors import MutationDuringGenerationError
         reservation = self._active_gen_reservation
         if reservation is None:
             return
@@ -172,7 +173,7 @@ class _StubSession:
         """
         if n < 1:
             raise ValueError(f"n must be >= 1, got {n}")
-        from drowse.loom.tree import derive_seed_schedule
+        from drowse.loom.recipe import derive_seed_schedule
         base_seed = sampling.seed if sampling is not None else None
         schedule = derive_seed_schedule(base_seed, n) if n > 1 else [base_seed]
 
@@ -273,7 +274,7 @@ class _StubSession:
         with ``text`` (the seeded prefix) followed by a synthetic
         continuation token.
         """
-        from drowse.loom.tree import InvalidNodeOperationError
+        from drowse.loom.errors import InvalidNodeOperationError
         node = self.tree.get(node_id)
         if node.role != "user":
             raise InvalidNodeOperationError(
@@ -319,7 +320,7 @@ class _StubSession:
         base-model commit), otherwise wraps ``LoomTree.add_user_turn``
         so dedup + active-node advancement match the real session.
         """
-        from drowse.loom.tree import InvalidNodeOperationError
+        from drowse.loom.errors import InvalidNodeOperationError
         if text == "":
             raise InvalidNodeOperationError(
                 "append_user_turn: text must be non-empty"
@@ -364,7 +365,7 @@ class _StubSession:
         with ``text`` as the whole turn and a synthetic ``raw_token_ids``
         derived from the (mocked) tokenizer.
         """
-        from drowse.loom.tree import InvalidNodeOperationError
+        from drowse.loom.errors import InvalidNodeOperationError
         if text == "":
             raise InvalidNodeOperationError(
                 "append_assistant_turn: text must be non-empty"

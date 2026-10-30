@@ -115,7 +115,7 @@ def test_sampling_merges_fieldwise():
 def test_seed_applies_only_when_unpinned():
     stub = _Stub()
     stub.tree.set_cast_member(
-        "deer", CastMember(recipe=Recipe(seed=1234)),
+        "deer", CastMember(recipe=Recipe(sampling=SamplingConfig(seed=1234))),
     )
     _, merged, _ = _apply(stub, sampling=SamplingConfig(assistant_role="deer"))
     assert merged is not None and merged.seed == 1234

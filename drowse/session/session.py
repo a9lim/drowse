@@ -54,18 +54,22 @@ from drowse.model.scene import (
     extract_turn_grammar,
     validate_turn_grammar,
 )
-from drowse.loom.tree import (
+from drowse.events import LoomMutated
+from drowse.loom.errors import (
+    InvalidNodeOperationError,
+    LoomTreeError,
+    MutationDuringGenerationError,
+)
+from drowse.loom.recipe import (
     INHERIT_SYSTEM_PROMPT,
     InheritSystemPrompt,
     CastMember,
-    InvalidNodeOperationError,
-    LoomMutated,
-    LoomTree,
-    LoomTreeError,
-    MutationDuringGenerationError,
+    ComposedCall,
     Recipe,
+    compose_call,
     derive_seed_schedule,
 )
+from drowse.loom.tree import LoomTree
 from drowse.model.loading import (
     get_layers,
     get_model_info,
@@ -6777,7 +6781,7 @@ class DrowseSession:
     def _probe_hash(self, name: str) -> str | None:
         """Return sha256 hex of the baked tensor bytes for ``name``.
 
-        Stamps :class:`drowse.loom.tree.Recipe.probe_hashes` so transcript
+        Stamps :class:`drowse.loom.recipe.Recipe.probe_hashes` so transcript
         replay can detect probe drift between save and load. Cached on the
         session — adding
         or removing a probe invalidates the relevant cache entry.
@@ -6853,109 +6857,6 @@ class DrowseSession:
                 a.aggregate_readings or {},
                 b.aggregate_readings or {},
             ),
-        )
-
-    # -- Recipe-override regen --
-
-    def _resolve_anchor_recipe(
-        self,
-        parent_node_id: str | None,
-        *,
-        base_recipe: "Recipe | None" = None,
-    ) -> "Recipe":
-        """Resolve the recipe a regen-modifier override composes onto.
-
-        Precedence: an explicit ``base_recipe`` wins; else the parent's
-        recipe when the parent is an assistant carrying one; else the
-        nearest assistant *ancestor* with a recipe (so a user-anchored
-        regen still finds one to overlay); else an empty :class:`Recipe`.
-        ``parent_node_id`` may be ``None`` (no parent context) — only the
-        empty-Recipe fallback applies then.
-        """
-        from drowse.loom.tree import Recipe
-
-        if base_recipe is not None:
-            return base_recipe
-        anchor: "Recipe | None" = None
-        if parent_node_id is not None:
-            parent = self.tree.nodes.get(parent_node_id)
-            if parent is not None:
-                # A recipe marks a *generated* node whatever its seat (the
-                # cast model: provenance, not role).
-                if parent.recipe is not None:
-                    anchor = parent.recipe
-                else:
-                    for nid in self.tree.ancestors_of(parent_node_id):
-                        anc = self.tree.nodes.get(nid)
-                        if anc is not None and anc.recipe is not None:
-                            anchor = anc.recipe
-                            break
-        return anchor if anchor is not None else Recipe()
-
-    def regen_with_modifier(
-        self,
-        parent_node_id: str,
-        mode: "str | Recipe",
-        *,
-        base_recipe: "Recipe | None" = None,
-        n: int = 1,
-    ) -> RunSet:
-        """Regenerate as a sibling of ``parent_node_id`` under a modifier.
-
-        ``mode`` is either a built-in mode string (``"unsteered"``,
-        ``"inverted"``, ``"reseed"``, ``"cool"``, ``"hot"``), a
-        comma-separated partial-recipe string, or a partial :class:`Recipe`.
-        :meth:`Recipe.compose_modifier` parses strings and passes Recipe
-        instances through unchanged. The override
-        composes onto the parent node's recipe (or ``base_recipe`` if
-        given): None fields fall through to the parent's setting.
-
-        Convenience entry point: auto-regen and the manual
-        ``/regen N <mode>`` flow both call this.  Returns a
-        :class:`RunSet` even when ``n == 1``.
-        """
-        parent = self.tree.get(parent_node_id)
-        # Resolve the assistant recipe we're overlaying — if the caller
-        # passed a user node, walk to the nearest assistant ancestor's
-        # recipe (regen replaces that assistant); see
-        # ``_resolve_anchor_recipe``.
-        anchor = self._resolve_anchor_recipe(
-            parent_node_id, base_recipe=base_recipe,
-        )
-
-        # compose_modifier handles built-ins, custom strings, and Recipe
-        # instances — the dispatch lives on the dataclass.
-        override = anchor.compose_modifier(mode)
-
-        overlaid = anchor.overlay(override)
-
-        # Resolve where the regen anchors (continue-mode: no text resend,
-        # the history walk carries every turn).  A generated node regens
-        # as a sibling under its parent in the same seat.  A committed turn
-        # receives a fresh reply in the opposite seat.  Recipe presence is
-        # the capability boundary; seat never stands in for provenance.
-        if parent.recipe is not None:
-            anchor_parent = parent.parent_id
-            seat = parent.role
-        else:
-            anchor_parent = parent_node_id
-            seat = "user" if parent.role == "assistant" else "assistant"
-        if anchor_parent is None:
-            raise InvalidNodeOperationError(
-                f"regen_with_modifier: cannot anchor sibling under "
-                f"{parent_node_id!r} — the node has no parent"
-            )
-
-        sampling = overlaid.sampling
-        return self.generate(
-            None,
-            steering=overlaid.steering,
-            sampling=sampling,
-            thinking=overlaid.thinking,
-            parent_node_id=anchor_parent,
-            n=n,
-            gen_seat=seat,
-            system_prompt=overlaid.system_prompt,
         )
 
     def fork_from_token(
@@ -7353,16 +7254,17 @@ class DrowseSession:
         if steering:
             from drowse.steering.grammar import parse_expr
             parse_expr(steering)  # raises SteeringExprError on bad syntax
+        if seed is not None:
+            from dataclasses import replace as _replace
+            sampling = _replace(sampling or SamplingConfig(), seed=seed)
         recipe: Recipe | None = None
         if (
             steering is not None
             or sampling is not None
             or thinking is not None
-            or seed is not None
         ):
             recipe = Recipe(
-                steering=steering, sampling=sampling,
-                thinking=thinking, seed=seed,
+                steering=steering, sampling=sampling, thinking=thinking,
             )
         member = CastMember(recipe=recipe, notes=notes)
         self.tree.set_cast_member(label, member)
@@ -8503,21 +8405,11 @@ class DrowseSession:
         member = self.tree.cast.get(cast_label) if cast_label else None
         if member is None or member.recipe is None:
             return steering, sampling, thinking
-        base = member.recipe
-        if steering is None and base.steering is not None:
-            steering = base.steering
-        if thinking is None and base.thinking is not None:
-            thinking = base.thinking
-        if base.sampling is not None:
-            sampling = base.sampling.merged_with(sampling)
-        if base.seed is not None and (
-            sampling is None or sampling.seed is None
-        ):
-            from dataclasses import replace as _replace
-            sampling = _replace(
-                sampling or SamplingConfig(), seed=base.seed,
-            )
-        return steering, sampling, thinking
+        composed = compose_call(
+            steering=steering, sampling=sampling, thinking=thinking,
+            cast=member.recipe,
+        )
+        return composed.steering, composed.sampling, composed.thinking
 
     def _resolve_recipe_override(
         self,
@@ -8527,45 +8419,25 @@ class DrowseSession:
         steering: "str | Steering | None",
         sampling: SamplingConfig | None,
         thinking: bool | None,
-    ) -> tuple["str | Steering | None", SamplingConfig | None, bool | None]:
-        """Apply a recipe override to the per-call kwargs.
+        system_prompt: str | None | InheritSystemPrompt,
+    ) -> ComposedCall:
+        """Compose a regen override onto the per-call kwargs.
 
-        ``recipe_override`` is a :class:`Recipe` partial (None fields fall
-        through), a built-in mode string, or a comma-separated partial-recipe
-        string forwarded to :meth:`Recipe.compose_modifier`. The override composes onto the
-        parent node's recipe (or an empty Recipe when no parent has
-        one) and the resulting fields *replace* the explicit kwargs
-        when set — explicit kwargs only win where the override is None.
-        Returns ``(steering, sampling, thinking)`` tuple ready to feed
-        the gen path.
+        ``recipe_override`` is a :class:`Recipe` partial, a built-in mode
+        string, or a comma-separated partial-recipe string
+        (:meth:`Recipe.compose_modifier`).  It modifies the recipe of the
+        node the regen reproduces (:meth:`LoomTree.anchor_recipe`) and the
+        result layers over the call's kwargs by :func:`compose_call`'s one
+        rule.
         """
         if recipe_override is None:
-            return steering, sampling, thinking
-
-        # Resolve the anchor recipe — the parent assistant's recipe when
-        # present, else the nearest assistant ancestor's, else an empty
-        # Recipe (see ``_resolve_anchor_recipe``).
-        anchor = self._resolve_anchor_recipe(parent_node_id)
-
-        # compose_modifier handles both str modes and Recipe (custom)
-        # — Recipe instances pass through unchanged on that path.
-        override = anchor.compose_modifier(recipe_override)
-        overlaid = anchor.overlay(override)
-
-        # Override fields *win* over the caller's explicit kwargs when
-        # set.  The auto-regen UI expects "configure once via the
-        # override, ignore the caller's per-turn defaults" semantics.
-        new_steering = overlaid.steering if overlaid.steering is not None else steering
-        new_sampling = overlaid.sampling if overlaid.sampling is not None else sampling
-        new_thinking = overlaid.thinking if overlaid.thinking is not None else thinking
-        # Seed lives on the SamplingConfig — fold into new_sampling
-        # when the override specifies one and the caller's sampling
-        # doesn't already pin a seed.
-        if overlaid.seed is not None:
-            from dataclasses import replace as _replace
-            base = new_sampling if isinstance(new_sampling, SamplingConfig) else SamplingConfig()
-            new_sampling = _replace(base, seed=overlaid.seed)
-        return new_steering, new_sampling, new_thinking
+            return ComposedCall(steering, sampling, thinking, system_prompt)
+        anchor = self.tree.anchor_recipe(parent_node_id)
+        modifier = (anchor or Recipe()).compose_modifier(recipe_override)
+        return compose_call(
+            steering=steering, sampling=sampling, thinking=thinking,
+            system_prompt=system_prompt, anchor=anchor, modifier=modifier,
+        )
 
     def _effective_return_top_k(self, sampling: SamplingConfig | None) -> int:
         """Resolve the generation's logit-alternative width.
@@ -8701,16 +8573,13 @@ class DrowseSession:
             user_node_id = parent_node_id or self.tree.active_node_id
 
         self._active_gen_reservation = user_node_id
-        seed_val = sampling.seed if sampling is not None else None
         recipe = Recipe(
             steering=str(steering_obj) if steering_obj is not None else None,
             sampling=sampling,
             thinking=use_thinking_req,
-            seed=seed_val,
             system_prompt=None if raw else self.config.system_prompt if isinstance(system_prompt, InheritSystemPrompt) else system_prompt,
             probes=list(self._monitor.probe_names),
-        )
-        recipe = recipe._fill_probe_hashes(self)
+        ).with_probe_hashes(self._probe_hash)
         # The generated node's label follows its seat (user-seat gens are
         # labeled by the ``user_role`` box, assistant-seat by ``assistant_role``).
         gen_label = user_role if gen_seat == "user" else assistant_role
@@ -9005,22 +8874,16 @@ class DrowseSession:
                 steering, sampling, thinking, raw=raw, gen_seat=gen_seat,
             )
 
-            # Apply recipe override (auto-regen / manual mode).
-            # before constructing the Steering object so the overlay wins
-            # over the per-call kwargs.
+            # Apply recipe override (auto-regen / manual mode) before
+            # constructing the Steering object.
             if recipe_override is not None:
-                steering, sampling, thinking = self._resolve_recipe_override(
+                steering, sampling, thinking, system_prompt = self._resolve_recipe_override(
                     recipe_override,
                     parent_node_id=parent_node_id,
                     steering=steering,
                     sampling=sampling,
                     thinking=thinking,
-                )
-
-                anchor = self._resolve_anchor_recipe(parent_node_id)
-                captured = anchor.overlay(anchor.compose_modifier(recipe_override))
-                system_prompt = captured.resolved_system_prompt(
-                    self.config.system_prompt if isinstance(system_prompt, InheritSystemPrompt) else system_prompt,
+                    system_prompt=system_prompt,
                 )
 
             # Ordinary one-shot continuation is message-oriented: if the
@@ -9802,7 +9665,7 @@ class DrowseSession:
             n: fan-out count.  ``n=1`` (default) returns a one-result
                 :class:`RunSet`; ``n>1`` runs the same prompt
                 ``n`` times under deterministically-derived per-sibling
-                seeds (see :func:`~drowse.loom.tree.derive_seed_schedule`)
+                seeds (see :func:`~drowse.loom.recipe.derive_seed_schedule`)
                 and returns a multi-result ``RunSet`` in sibling order.
             gen_seat: which seat the generated turn occupies (the cast
                 model).  ``"assistant"`` (default) is the classic flow;

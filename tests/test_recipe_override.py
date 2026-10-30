@@ -1,4 +1,4 @@
-"""Tests for the recipe-override regen mechanism (v2.3 phase 5)."""
+"""Recipe composition: regen overrides, the seed's single home, modifiers."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -7,7 +7,14 @@ from typing import Any, cast
 import pytest
 
 from drowse import Recipe, SamplingConfig
-from drowse.loom.tree import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt, LoomTree
+from drowse.loom.errors import LoomTreeError
+from drowse.loom.recipe import (
+    INHERIT_SYSTEM_PROMPT,
+    InheritSystemPrompt,
+    compose_call,
+    derive_seed_schedule,
+)
+from drowse.loom.tree import LoomTree
 from drowse.session.session import DrowseSession
 from drowse.steering.grammar import ManifoldTerm, parse_expr
 
@@ -19,8 +26,13 @@ def test_recipe_prompt_capture_distinguishes_legacy_null_empty_and_text():
     for prompt in (None, "", "Speak like a pirate"):
         captured = Recipe.from_dict(Recipe(system_prompt=prompt).to_dict())
         assert captured.resolved_system_prompt("different current instruction") == prompt
-        assert captured.overlay(Recipe(seed=7)).system_prompt == prompt
-    assert Recipe(system_prompt="pirate").overlay(Recipe(system_prompt=None)).system_prompt is None
+        # A modifier that sets no prompt keeps the anchor's captured one.
+        composed = compose_call(anchor=captured, modifier=Recipe(sampling=SamplingConfig(seed=7)))
+        assert composed.system_prompt == prompt
+    composed = compose_call(
+        anchor=Recipe(system_prompt="pirate"), modifier=Recipe(system_prompt=None),
+    )
+    assert composed.system_prompt is None
 
 
 @pytest.mark.parametrize("prompt", [INHERIT_SYSTEM_PROMPT, None, "", "Speak like a pirate"])
@@ -47,47 +59,225 @@ def test_finalized_generation_recipe_keeps_prompt_through_probe_hashing(
     expected = None if raw else "Current default instruction" if isinstance(prompt, InheritSystemPrompt) else prompt
     assert saved_recipe["system_prompt"] == expected
     assert saved_recipe["probe_hashes"] == {"calm": "calm-sha256"}
+    # The seed has one in-memory home and keeps its on-disk shape.
+    assert saved_recipe["seed"] == 7
+    assert saved_recipe["sampling"] is None
     restored = LoomTree.from_dict(tree.to_dict()).get(node_id)
     assert restored.recipe is not None
     assert restored.recipe.resolved_system_prompt("Changed after generation") == expected
+    assert restored.recipe.sampling == SamplingConfig(seed=7)
 
 
 # ---------------------------------------------------------------------------
-# Recipe.overlay
+# The seed lives in sampling.seed only
 # ---------------------------------------------------------------------------
 
 
-def test_overlay_none_fields_fall_through():
-    base = Recipe(steering="0.3 honest.deceptive", seed=42, thinking=False)
-    override = Recipe(seed=99)
-    out = base.overlay(override)
-    assert out.steering == "0.3 honest.deceptive"
-    assert out.seed == 99
-    assert out.thinking is False
+def test_recipe_has_no_separate_seed_field():
+    with pytest.raises(TypeError):
+        Recipe(seed=7)  # type: ignore[call-arg]
+    assert not hasattr(Recipe(), "seed")
 
 
-def test_overlay_none_override_returns_self():
-    base = Recipe(steering="0.3 honest", seed=42)
-    assert base.overlay(None) is base
+def test_seed_only_sampling_serializes_as_null_sampling_plus_seed():
+    data = Recipe(steering="0.25 calm", sampling=SamplingConfig(seed=7)).to_dict()
+    assert data["sampling"] is None
+    assert data["seed"] == 7
+    assert Recipe.from_dict(data).sampling == SamplingConfig(seed=7)
 
 
-def test_overlay_preserves_probes_and_hashes():
-    base = Recipe(
-        steering="0.3 honest", probes=["angry.calm"],
-        probe_hashes={"angry.calm": "abc"},
+def test_full_sampling_round_trips_with_its_seed():
+    recipe = Recipe(sampling=SamplingConfig(temperature=0.5, seed=3, stop=("\n",)))
+    data = recipe.to_dict()
+    assert data["seed"] == 3
+    assert data["sampling"]["seed"] == 3
+    assert data["sampling"]["stop"] == ["\n"]
+    assert Recipe.from_dict(data) == recipe
+
+
+def test_all_default_sampling_stays_an_explicit_block():
+    data = Recipe(sampling=SamplingConfig()).to_dict()
+    assert data["seed"] is None
+    assert isinstance(data["sampling"], dict)
+    assert Recipe.from_dict(data).sampling == SamplingConfig()
+
+
+def test_top_level_seed_folds_into_sampling():
+    data = Recipe(sampling=SamplingConfig(temperature=0.5)).to_dict()
+    data["seed"] = 9
+    assert Recipe.from_dict(data).sampling == SamplingConfig(temperature=0.5, seed=9)
+    data["sampling"]["seed"] = 4  # disagreement: the top-level seed wins
+    sampling = Recipe.from_dict(data).sampling
+    assert sampling is not None and sampling.seed == 9
+
+
+@pytest.mark.parametrize("field, value", [
+    ("seed", "7"), ("seed", True), ("steering", 3), ("thinking", "yes"),
+    ("probes", "calm"), ("probe_hashes", {"calm": 1}), ("sampling", []),
+])
+def test_recipe_reader_rejects_malformed_fields(field: str, value: Any):
+    data = Recipe().to_dict()
+    data[field] = value
+    with pytest.raises(LoomTreeError):
+        Recipe.from_dict(data)
+
+
+# ---------------------------------------------------------------------------
+# compose_call — the one composition rule
+# ---------------------------------------------------------------------------
+
+_ANCHOR = Recipe(
+    steering="0.3 honest.deceptive",
+    sampling=SamplingConfig(
+        temperature=0.7, max_tokens=64, stop=("\n",), top_p=0.5, seed=11,
+    ),
+    thinking=False,
+)
+_CALLER = SamplingConfig(return_top_k=5, assistant_role="pirate", max_tokens=200)
+
+
+def _override(mode: str | Recipe, sampling: SamplingConfig | None = _CALLER, **kwargs: Any):
+    return compose_call(
+        sampling=sampling, anchor=_ANCHOR,
+        modifier=_ANCHOR.compose_modifier(mode), **kwargs,
     )
-    override = Recipe(steering="0.5 warm")
-    out = base.overlay(override)
-    # probes / probe_hashes are not overrideable.
-    assert out.probes == ["angry.calm"]
-    assert out.probe_hashes == {"angry.calm": "abc"}
 
 
-def test_overlay_steering_replaces_when_set():
-    base = Recipe(steering="0.3 honest.deceptive")
-    override = Recipe(steering="")  # explicit empty = unsteered
-    out = base.overlay(override)
-    assert out.steering == ""
+@pytest.mark.parametrize("mode", ["cool", "hot", "reseed", "temperature=1.5", "unsteered"])
+def test_override_keeps_anchor_sampling_and_caller_fields(mode: str):
+    """Regression: an override used to replace the caller's whole sampling."""
+    out = _override(mode)
+    assert out.sampling is not None
+    # The anchor's knobs survive a modifier that doesn't touch them …
+    assert out.sampling.top_p == 0.5
+    assert out.sampling.stop == ("\n",)
+    assert out.sampling.max_tokens == 64
+    # … and the caller's per-call fields survive the anchor.
+    assert out.sampling.return_top_k == 5
+    assert out.sampling.assistant_role == "pirate"
+
+
+def test_override_modifier_fields_win():
+    assert _override("cool").sampling.temperature == pytest.approx(0.3)
+    assert _override("hot").sampling.temperature == pytest.approx(1.2)
+    assert _override("reseed").sampling.temperature == pytest.approx(0.7)
+    custom = _override("temperature=1.5", sampling=SamplingConfig(temperature=0.7))
+    assert custom.sampling.temperature == pytest.approx(1.5)
+
+
+def test_override_anchor_steering_and_thinking_beat_the_caller():
+    out = _override("cool", steering="", thinking=True)
+    assert out.steering == "0.3 honest.deceptive"
+    assert out.thinking is False
+    assert _override("unsteered", steering="0.5 warm").steering == ""
+
+
+@pytest.mark.parametrize("mode", ["unsteered", "cool", "inverted", "hot"])
+def test_fanned_override_keeps_per_sibling_seeds(mode: str):
+    """Regression: every n>1 override sibling collapsed onto the anchor seed."""
+    schedule = derive_seed_schedule(None, 3)
+    seeds = [
+        _override(mode, sampling=SamplingConfig(seed=seed)).sampling.seed
+        for seed in schedule
+    ]
+    assert seeds == schedule
+    assert len(set(seeds)) == 3
+
+
+def test_unseeded_one_shot_regen_reproduces_the_anchor_seed():
+    assert _override("cool").sampling.seed == 11
+    assert _override("unsteered", sampling=None).sampling.seed == 11
+
+
+def test_modifier_seed_beats_the_caller_seed():
+    pinned = _override("seed=42", sampling=SamplingConfig(seed=7))
+    assert pinned.sampling.seed == 42
+    reseeded = _override("reseed", sampling=SamplingConfig(seed=7))
+    assert reseeded.sampling.seed not in (7, 11)
+
+
+def test_observation_fields_come_from_the_call_only():
+    anchor = Recipe(sampling=SamplingConfig(
+        return_top_k=8, persist_per_layer_scores=True, logprobs=3,
+        return_probe_readings=False,
+    ))
+    out = compose_call(
+        sampling=SamplingConfig(temperature=0.2),
+        anchor=anchor, modifier=anchor.compose_modifier("cool"),
+    )
+    assert out.sampling == SamplingConfig(temperature=0.3)
+
+
+def test_compose_without_tiers_is_the_identity():
+    sampling = SamplingConfig(temperature=0.4, seed=3)
+    assert compose_call(
+        steering="0.5 warm", sampling=sampling, thinking=True,
+    ) == ("0.5 warm", sampling, True, INHERIT_SYSTEM_PROMPT)
+
+
+# ---------------------------------------------------------------------------
+# Session hook: _resolve_recipe_override is a call into compose_call
+# ---------------------------------------------------------------------------
+
+
+def _anchored_tree() -> tuple[LoomTree, str, str]:
+    tree = LoomTree()
+    uid = tree.add_user_turn("hi")
+    aid = tree.begin_assistant(uid, recipe=Recipe(
+        steering="0.3 honest", sampling=SamplingConfig(seed=42),
+        system_prompt="Anchor prompt",
+    ))
+    tree.finalize_assistant(aid, text="hello")
+    return tree, uid, aid
+
+
+def _resolve(tree: LoomTree, mode: Any, **kwargs: Any):
+    stub = cast(DrowseSession, SimpleNamespace(tree=tree))
+    call: dict[str, Any] = {
+        "steering": None, "sampling": None, "thinking": None,
+        "system_prompt": INHERIT_SYSTEM_PROMPT,
+    }
+    call.update(kwargs)
+    return DrowseSession._resolve_recipe_override(stub, mode, **call)
+
+
+def test_resolve_override_composes_onto_the_anchor_once():
+    tree, _uid, aid = _anchored_tree()
+    out = _resolve(tree, Recipe(sampling=SamplingConfig(temperature=0.4)), parent_node_id=aid)
+    assert out.steering == "0.3 honest"
+    assert out.sampling == SamplingConfig(temperature=0.4, seed=42)
+    # The captured system prompt comes back with the rest — no second pass.
+    assert out.system_prompt == "Anchor prompt"
+
+
+def test_resolve_override_from_a_user_anchor_walks_to_the_generated_ancestor():
+    tree, uid, aid = _anchored_tree()
+    child = tree.add_user_turn("again", parent_id=aid)
+    assert _resolve(tree, "unsteered", parent_node_id=child).steering == ""
+    assert _resolve(tree, "unsteered", parent_node_id=uid).sampling is None
+
+
+def test_resolve_override_passthrough_when_none():
+    tree, _uid, _aid = _anchored_tree()
+    out = _resolve(tree, None, parent_node_id=None, steering="0.5 warm")
+    assert out == ("0.5 warm", None, None, INHERIT_SYSTEM_PROMPT)
+
+
+def test_resolve_override_without_anchor_layers_the_partial_on_the_call():
+    tree = LoomTree()
+    partial = Recipe(sampling=SamplingConfig(temperature=0.9, seed=7))
+    out = _resolve(tree, partial, parent_node_id=None, steering="0.3 honest")
+    assert out.steering == "0.3 honest"
+    assert out.sampling == SamplingConfig(temperature=0.9, seed=7)
+
+
+def test_anchor_recipe_resolution():
+    tree, uid, aid = _anchored_tree()
+    assert tree.anchor_recipe(aid) is tree.get(aid).recipe
+    assert tree.anchor_recipe(tree.add_user_turn("more", parent_id=aid)) is tree.get(aid).recipe
+    assert tree.anchor_recipe(uid) is None
+    assert tree.anchor_recipe(None) is None
+    assert tree.anchor_recipe("missing") is None
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +331,7 @@ def test_invert_manifold_term():
 
 
 def test_compose_unsteered():
-    r = Recipe(steering="0.3 honest", seed=42)
+    r = Recipe(steering="0.3 honest", sampling=SamplingConfig(seed=42))
     mod = r.compose_modifier("unsteered")
     assert mod.steering == ""
 
@@ -154,24 +344,21 @@ def test_compose_inverted_flips_signs():
 
 
 def test_compose_reseed_gives_fresh_seed():
-    r = Recipe(seed=42)
+    r = Recipe(sampling=SamplingConfig(seed=42))
     mod = r.compose_modifier("reseed")
-    assert mod.seed is not None
-    assert mod.seed != 42  # nonzero entropy chance of collision, but vanishingly small
+    assert mod.sampling is not None and mod.sampling.seed is not None
+    assert mod.sampling.seed != 42  # vanishingly small collision chance
+    assert mod.sampling == SamplingConfig(seed=mod.sampling.seed)
 
 
 def test_compose_cool():
-    r = Recipe()
-    mod = r.compose_modifier("cool")
-    assert mod.sampling is not None  # compose_modifier("cool") always sets sampling
-    assert mod.sampling.temperature == pytest.approx(0.3)
+    mod = Recipe().compose_modifier("cool")
+    assert mod.sampling == SamplingConfig(temperature=0.3)
 
 
 def test_compose_hot():
-    r = Recipe()
-    mod = r.compose_modifier("hot")
-    assert mod.sampling is not None  # compose_modifier("hot") always sets sampling
-    assert mod.sampling.temperature == pytest.approx(1.2)
+    mod = Recipe().compose_modifier("hot")
+    assert mod.sampling == SamplingConfig(temperature=1.2)
 
 
 def test_compose_unknown_raises():
@@ -181,10 +368,8 @@ def test_compose_unknown_raises():
 
 def test_compose_custom_string_recipe():
     mod = Recipe().compose_modifier("seed=42, temperature=3, thinking=false")
-    assert mod.seed == 42
     assert mod.thinking is False
-    assert mod.sampling is not None
-    assert mod.sampling.temperature == pytest.approx(3)
+    assert mod.sampling == SamplingConfig(temperature=3, seed=42)
 
 
 def test_compose_custom_string_preserves_steering_commas():
@@ -212,141 +397,14 @@ def test_compose_custom_string_rejects_invalid_fields(modifier: str):
 
 
 def test_compose_custom_recipe_passthrough():
-    """``compose_modifier`` with a Recipe arg returns it unchanged.
-
-    Programmatic callers may hand a Recipe in directly; ``compose_modifier``
-    should not reinterpret it.
-    """
+    """``compose_modifier`` with a Recipe arg returns it unchanged."""
     partial = Recipe(steering="0.5 calm", sampling=SamplingConfig(temperature=0.4))
-    out = Recipe(steering="0.3 honest", seed=42).compose_modifier(partial)
+    out = Recipe(steering="0.3 honest").compose_modifier(partial)
     assert out is partial  # passes through, no copy
 
 
-def test_compose_custom_via_overlay():
-    """Custom mode = pass a Recipe partial directly, no compose_modifier."""
-    base = Recipe(steering="0.3 honest", seed=42)
-    partial = Recipe(sampling=SamplingConfig(temperature=0.5), seed=99)
-    out = base.overlay(partial)
-    assert out.steering == "0.3 honest"
-    assert out.sampling is not None  # overlay with explicit sampling always sets it
-    assert out.sampling.temperature == pytest.approx(0.5)
-    assert out.seed == 99
-
-
-def test_compose_modifier_routes_through_overlay_in_regen_with_modifier():
-    """End-to-end: regen_with_modifier accepts a Recipe partial as ``mode``.
-
-    Verifies the full custom-mode wiring: a caller parses ``custom: <expr>`` into
-    a Recipe and passes it to ``session.regen_with_modifier(... mode=<Recipe>)``,
-    which routes through ``compose_modifier(Recipe) -> Recipe`` and overlays
-    onto the parent recipe.  No model load — uses _resolve_recipe_override
-    which is the pure-Python overlay path.
-    """
-    from drowse.session.session import DrowseSession
-    from drowse import LoomTree
-
-    class _StubSession:
-        def __init__(self):
-            self.tree = LoomTree()
-            uid = self.tree.add_user_turn("hi")
-            recipe = Recipe(steering="0.3 honest", seed=42)
-            aid = self.tree.begin_assistant(uid, recipe=recipe)
-            self.tree.finalize_assistant(aid, text="hello")
-            self.aid = aid
-
-    stub = _StubSession()
-    stub_any: Any = stub
-    stub_any._resolve_anchor_recipe = DrowseSession._resolve_anchor_recipe.__get__(
-        stub, _StubSession
-    )
-    resolve = DrowseSession._resolve_recipe_override.__get__(stub, _StubSession)
-    custom = Recipe(sampling=SamplingConfig(temperature=0.4))
-    new_steering, new_sampling, new_thinking = resolve(
-        custom,
-        parent_node_id=stub.aid,
-        steering=None,
-        sampling=None,
-        thinking=None,
-    )
-    assert new_steering == "0.3 honest"
-    assert new_sampling is not None
-    assert new_sampling.temperature == pytest.approx(0.4)
-
-
-# ---------------------------------------------------------------------------
-# session._resolve_recipe_override engine integration (without model load)
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_override_with_string_mode():
-    """The session helper applies overlay onto the parent recipe + returns the kwargs."""
-    from drowse.session.session import DrowseSession
-    from drowse import LoomTree
-
-    class _StubSession:
-        def __init__(self):
-            self.tree = LoomTree()
-            uid = self.tree.add_user_turn("hi")
-            recipe = Recipe(steering="0.3 honest", seed=42)
-            aid = self.tree.begin_assistant(uid, recipe=recipe)
-            self.tree.finalize_assistant(aid, text="hello")
-            self.aid = aid
-
-    stub = _StubSession()
-    stub_any: Any = stub
-    stub_any._resolve_anchor_recipe = DrowseSession._resolve_anchor_recipe.__get__(
-        stub, _StubSession
-    )
-    resolve = DrowseSession._resolve_recipe_override.__get__(stub, _StubSession)
-    new_steering, new_sampling, new_thinking = resolve(
-        "unsteered",
-        parent_node_id=stub.aid,
-        steering=None,
-        sampling=None,
-        thinking=None,
-    )
-    # Unsteered modifier wipes steering.
-    assert new_steering == ""
-
-
-def test_resolve_override_passthrough_when_none():
-    from drowse.session.session import DrowseSession
-    from drowse import LoomTree
-
-    class _StubSession:
-        def __init__(self):
-            self.tree = LoomTree()
-
-    stub = _StubSession()
-    resolve = DrowseSession._resolve_recipe_override.__get__(stub, _StubSession)
-    out = resolve(
-        None, parent_node_id=None,
-        steering="0.5 warm", sampling=None, thinking=None,
-    )
-    assert out == ("0.5 warm", None, None)
-
-
-def test_resolve_override_with_custom_recipe():
-    from drowse.session.session import DrowseSession
-    from drowse import LoomTree
-
-    class _StubSession:
-        def __init__(self):
-            self.tree = LoomTree()
-
-    stub = _StubSession()
-    stub_any: Any = stub
-    stub_any._resolve_anchor_recipe = DrowseSession._resolve_anchor_recipe.__get__(
-        stub, _StubSession
-    )
-    resolve = DrowseSession._resolve_recipe_override.__get__(stub, _StubSession)
-    partial = Recipe(sampling=SamplingConfig(temperature=0.9), seed=7)
-    new_steering, new_sampling, new_thinking = resolve(
-        partial, parent_node_id=None,
-        steering="0.3 honest", sampling=None, thinking=None,
-    )
-    # Steering inherits the caller's explicit kwarg; sampling carries
-    # the override's seed and temperature.
-    assert new_steering == "0.3 honest"
-    assert new_sampling.temperature == pytest.approx(0.9)
-    assert new_sampling.seed == 7
+def test_with_probe_hashes_drops_unhashable_probes():
+    recipe = Recipe(probes=["calm", "missing"])
+    stamped = recipe.with_probe_hashes(lambda name: "h" if name == "calm" else None)
+    assert stamped.probe_hashes == {"calm": "h"}
+    assert recipe.probe_hashes == {}

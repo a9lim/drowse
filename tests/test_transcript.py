@@ -79,8 +79,7 @@ def test_schema_round_trip():
                 text="Sunshine.",
                 recipe=Recipe(
                     steering="0.3 honest.deceptive",
-                    sampling=SamplingConfig(temperature=0.7, max_tokens=256),
-                    seed=42,
+                    sampling=SamplingConfig(temperature=0.7, max_tokens=256, seed=42),
                 ),
                 readings={"angry.calm": -0.12, "honest.deceptive": 0.41},
             ),
