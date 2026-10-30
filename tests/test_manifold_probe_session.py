@@ -40,6 +40,7 @@ from drowse.session.session import (
     ReadDemand,
     DrowseSession,
 )
+from tests.support.engine import attach_engine, seed_prefix_cache
 
 
 def _toy_manifold(*, dim: int = 8, n_layers: int = 2) -> Manifold:
@@ -88,7 +89,7 @@ def _stub_session() -> DrowseSession:
     Only the surface the unified-probe wiring touches needs to be real:
     ``_monitor`` (one :class:`Monitor`), ``_capture._per_layer``,
     ``_manifolds``, ``_profiles``, ``ensure_manifold_loaded``,
-    ``_invalidate_prefix_cache``, ``_probe_hash_cache``, ``_layers``.
+    the engine's prefix cache, ``_probe_hash_cache``, ``_layers``.
     Everything else stays as ``MagicMock`` defaults.
     """
     # Manifold reads are Mahalanobis-only now: the monitor needs a covering
@@ -145,14 +146,9 @@ def _stub_session() -> DrowseSession:
     session._lens_instrument.active_for_generation = True
     session._incremental_readings = []
     session._incremental_gate_scores = []
-    session._compiled_clean_eligible = False
     session._layers = []
-    # Minimal prefix-cache invalidator + tree spy.
-    session._prefix_cache = None
-
-    def _invalidate():
-        session._prefix_cache = None
-    session._invalidate_prefix_cache = _invalidate
+    # The real engine: phase, prefix cache, compiled-routing flags.
+    attach_engine(session)
 
     # Bind the real unified-probe methods we want to exercise.  ``add_probe``
     # rides ``_resolve_probe_manifold`` (which consults ``_profiles`` then
@@ -219,9 +215,9 @@ def test_add_probe_invalidates_prefix_cache():
     session.ensure_manifold_loaded = lambda key: session._manifolds.update(
         {key: m},
     )
-    session._prefix_cache = ("dummy",)  # pyright: ignore[reportAttributeAccessIssue]  # test stub: wrong-shaped sentinel to verify invalidation
+    seed_prefix_cache(session._engine)
     session.add_probe("toy")
-    assert session._prefix_cache is None
+    assert not session._engine.prefix_cache
 
 
 # ==================================================== capture widening ===
@@ -280,8 +276,8 @@ def test_begin_capture_live_lens_uses_persistent_capture_when_available():
     # Live-lens state lives on the instrument; ``_begin_capture`` reads it
     # through the lens family's declared plan.
     session._lens_instrument.live = {"layers": [1, 3]}
-    session._compiled_clean_eligible = True
-    session._capture_buffers = {
+    session._engine.compiled_clean_eligible = True
+    session._runtime.capture_buffers = {
         idx: torch.zeros(8) for idx in range(4)
     }
     cast(Any, session)._steering = types.SimpleNamespace(
@@ -294,7 +290,7 @@ def test_begin_capture_live_lens_uses_persistent_capture_when_available():
     tail_depths: list[int] = []
 
     def _attach_persistent(layer_indices: list[int], buffers: dict[int, torch.Tensor]) -> None:
-        assert buffers is session._capture_buffers
+        assert buffers is session._runtime.capture_buffers
         persistent_layers.extend(layer_indices)
 
     def _attach(_layers: Any, layer_indices: list[int]) -> None:
@@ -677,10 +673,15 @@ def test_gate_callback_reuses_the_full_incremental_sink_row():
     session._geometry_instrument.close_run()
 
 
-def test_token_payload_reuses_the_full_incremental_sink_row():
-    """``build_token_probe_payload``'s FULL-incremental branch reads the sink
-    row too — the payload's geometry readings ARE the sink's row."""
-    from drowse.generation.token_payloads import build_token_probe_payload
+def test_token_tap_reuses_the_full_incremental_sink_row():
+    """The token tap's FULL-incremental branch reads the sink row too — the
+    event's geometry readings ARE the sink's row."""
+    from drowse.generation.decode import GenerationState
+    from drowse.generation.token_callback import (
+        TokenConsumer,
+        TokenConsumerOptions,
+    )
+    from drowse.session.engine import ConsumerPlan, TokenTap
 
     session = _stub_session()
     m = _toy_manifold()
@@ -706,17 +707,32 @@ def test_token_payload_reuses_the_full_incremental_sink_row():
         )
 
     session._monitor.score_single_token = _poisoned  # type: ignore[method-assign]
-    payload = build_token_probe_payload(
-        capture=session._capture,
-        capture_state=session._capture_state,
-        incremental_readings=session._incremental_readings,
-        geometry_run=session._geometry_instrument.current_run,
-        step_id=1,
-        needs_scores=True,
-        persists_layer_scores=False,
+    session.geometry = session._geometry_instrument
+    session.lens = session._lens_instrument
+    session.sae = session._sae_instrument
+    events: list[Any] = []
+    tap = TokenTap(
+        session,
+        state=GenerationState(),
+        consumer=TokenConsumer(
+            events.append,
+            TokenConsumerOptions(live_scores=True, probe_readings=True),
+        ),
+        plan=ConsumerPlan(
+            live_scores_on=True, has_monitor_probes=True,
+            wants_live_token_scores=True, persists_layer_scores=False,
+            persists_subspace_coords=False, persists_probe_row=False,
+            lens=False, sae=False, perplexity_requested=False, need_tap=True,
+        ),
         assistant_node_id=None,
+        collect_logprobs=False,
+        readout_top_k=8,
+        recipe_steering=None,
     )
-    assert payload.geometry_readings is session._incremental_readings[-1]
+    tap("x", False, 1, None, None, None, 1)
+    row = session._incremental_readings[-1]
+    assert events[0].probe_readings == row
+    assert events[0].probe_readings["toy"] is row["toy"]
     session._geometry_instrument.close_run()
 
 

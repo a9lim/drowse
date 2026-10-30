@@ -726,3 +726,163 @@ def test_resolve_call_continues_a_matching_leaf_in_place(
     assert spec.forced_prefix == session.tokenizer.encode(leaf.text, add_special_tokens=False)
     assert spec.gen_config.max_new_tokens == len(spec.forced_prefix) + 3
     assert spec.use_thinking_req is False
+
+
+def _spec(**overrides: Any) -> Any:
+    from drowse.generation.types import CallSpec
+
+    fields: dict[str, Any] = dict(
+        input="x", steering_obj=None, sampling=None, system_prompt=None,
+        stateless=True, raw=False, gen_seat="assistant", parent_node_id=None,
+        history_anchor=None, use_thinking_req=False,
+        gen_config=GenerationConfig(max_new_tokens=2), lp_count=None, seed=None,
+        stop_list=None, logit_bias=None, presence_penalty=0.0,
+        frequency_penalty=0.0, collect_logprobs=False, readout_top_k=8,
+        user_role=None, assistant_role=None, return_probe_readings=True,
+        want_hidden=False, persist_per_layer_scores=False,
+        persist_subspace_coords=False, forced_prefix=None,
+    )
+    fields.update(overrides)
+    return CallSpec(**fields)
+
+
+def _static_prefix(cache: PrefixCache, past_key_values: Any, *, max_cache_len: int) -> None:
+    """Install a StaticCache-backed ``[1, 2]`` prefix entry."""
+    cache.build(
+        lambda **kw: SimpleNamespace(past_key_values=kw["past_key_values"]),
+        torch.tensor([[1, 2]]),
+        static_max_cache_len=max_cache_len,
+        make_static=lambda _length: past_key_values,
+    )
+    assert cache.entry is not None and cache.entry.static
+
+
+def test_static_prefix_hit_requires_static_eligibility_and_headroom() -> None:
+    cache = PrefixCache()
+    static = object()
+    _static_prefix(cache, static, max_cache_len=5)
+    ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+
+    assert cache.hit(ids, static_eligible=False, required_max_new_tokens=1) is None
+    assert cache.hit(ids, static_eligible=True, required_max_new_tokens=3) is None
+    hit = cache.hit(ids, static_eligible=True, required_max_new_tokens=2)
+    assert hit is not None
+    assert hit.suffix_ids.tolist() == [[3]]
+    assert (hit.past_key_values, hit.prefix_len, hit.static) == (static, 2, True)
+
+
+def test_decode_keeps_the_static_cache_on_a_static_prefix_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import drowse.session.engine as engine_mod
+
+    class _Cache:
+        # One static layer whose write counter the generation advanced past
+        # the 2-token prefix.
+        layers = [SimpleNamespace(cumulative_length=torch.tensor(4))]
+
+    session = SimpleNamespace(
+        _steering_composer=SimpleNamespace(
+            steering_active_in_prefill=lambda: False,
+            steering_needs_probe_gating=lambda: False,
+        ),
+        _capture_state=SimpleNamespace(persistent=False),
+        model=object(), tokenizer=object(), device=torch.device("cpu"),
+        config=GenerationConfig(max_new_tokens=2), chat_traits=None,
+    )
+    engine = GenerationEngine(
+        cast(Any, session),
+        lock=threading.RLock(),
+        runtime=CompiledRuntime(static_cache_active=True),
+        steering=cast(Any, SimpleNamespace(
+            all_fast_path=lambda: True, static_steerable=lambda: False,
+            uses_compiled_offsets=False, ctx=None, hooks={},
+        )),
+        capture=cast(Any, SimpleNamespace(
+            ingest_persistent=lambda _step: None,
+            fire_step_sink=lambda _step: None,
+            is_transient=lambda: False,
+        )),
+        release=lambda: None,
+    )
+    cache = _Cache()
+    _static_prefix(engine.prefix_cache, cache, max_cache_len=8)
+    seen: dict[str, Any] = {}
+
+    def _fake_generate(_model: Any, _tok: Any, input_ids: torch.Tensor,
+                       _config: Any, _state: Any, **kwargs: Any) -> list[int]:
+        seen["input_ids"] = input_ids.clone()
+        seen.update(kwargs)
+        return [42]
+
+    monkeypatch.setattr(engine_mod, "generate_steered", _fake_generate)
+    out, _elapsed = engine.decode(
+        _spec(), torch.tensor([[1, 2, 3]]), tap=None,
+        use_thinking=False, want_perplexity=False,
+    )
+
+    assert out == [42]
+    assert seen["input_ids"].tolist() == [[3]]
+    assert seen["past_key_values"] is cache
+    assert seen["cache_position_offset"] == 2
+    assert seen["use_static_cache"] is True
+    # The static rollback rewinds the write counter to the prefix and the
+    # entry stays installed for the next reuse.
+    assert int(cache.layers[0].cumulative_length) == 2
+    assert engine.prefix_cache
+
+
+def test_cache_prefix_builds_a_static_entry_with_decode_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import drowse.session.engine as engine_mod
+
+    class _Model:
+        config = object()
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.param = torch.zeros(1, dtype=torch.float16)
+
+        def parameters(self) -> Any:
+            return iter([self.param])
+
+        def __call__(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            return SimpleNamespace(past_key_values=kwargs.get("past_key_values"))
+
+    static_cache = object()
+    made: dict[str, Any] = {}
+
+    def _make(model: Any, *, max_cache_len: int, device: Any, dtype: Any) -> object:
+        made.update(model=model, max_cache_len=max_cache_len, device=device, dtype=dtype)
+        return static_cache
+
+    monkeypatch.setattr(engine_mod, "make_static_cache", _make)
+    model = _Model()
+    session = SimpleNamespace(
+        _steering_composer=SimpleNamespace(_stack=[]),
+        _end_capture=lambda: None,
+        device=torch.device("cpu"),
+        model=model,
+        config=GenerationConfig(max_new_tokens=4),
+    )
+    engine = GenerationEngine(
+        cast(Any, session), lock=threading.RLock(),
+        runtime=CompiledRuntime(static_cache_active=True),
+        steering=cast(Any, None), capture=cast(Any, None), release=lambda: None,
+    )
+
+    assert engine.cache_prefix(
+        torch.tensor([[4, 5, 6]]), max_new_tokens=7, prefer_static=True,
+    ) == 3
+    entry = engine.prefix_cache.entry
+    assert entry is not None and entry.static is True
+    assert entry.max_cache_len == 10 and entry.past_key_values is static_cache
+    assert made == {
+        "model": model, "max_cache_len": 10,
+        "device": torch.device("cpu"), "dtype": torch.float16,
+    }
+    call = model.calls[0]
+    assert call["past_key_values"] is static_cache
+    assert call["cache_position"].tolist() == [0, 1, 2]

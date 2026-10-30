@@ -61,5 +61,10 @@ class TokenConsumer:
     options: TokenConsumerOptions = TokenConsumerOptions()
 
 
+#: What a generation's ``on_token`` accepts: the public six-argument
+#: callback or an internal :class:`TokenConsumer`.
+TokenSink = TokenCallback | TokenConsumer
+
+
 def consumer_options(callback: object | None) -> TokenConsumerOptions:
     return callback.options if isinstance(callback, TokenConsumer) else TokenConsumerOptions()

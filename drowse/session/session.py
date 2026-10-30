@@ -42,9 +42,7 @@ from drowse.model.chat import ChatTraits
 from drowse.readout.capture_buffer import HiddenCapture
 from drowse.steering.hooks import SteeringManager
 from drowse.naming import BIPOLAR_SEP, _slug, canonical_concept_name
-from drowse.generation.token_callback import (
-    TokenCallback,
-)
+from drowse.generation.token_callback import TokenSink
 from drowse.model.scene import (
     SceneGrammarError,
     TurnGrammar,
@@ -168,7 +166,7 @@ class _SerialGenerationJob:
     sampling: SamplingConfig | None = None
     raw: bool = False
     thinking: bool | None = None
-    on_token: TokenCallback | None = None
+    on_token: TokenSink | None = None
     parent_node_id: str | None = None
     recipe_override: Recipe | str | None = None
     system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT
@@ -6204,7 +6202,7 @@ class DrowseSession:
         *,
         replacement_text: str | None = None,
         seed: int | None = None,
-        on_token: TokenCallback | None = None,
+        on_token: TokenSink | None = None,
     ) -> GenerationResult:
         """Regenerate ``node_id`` as a sibling with a replacement at one token.
 
@@ -6309,7 +6307,7 @@ class DrowseSession:
         *,
         steering: "str | Steering | None" = None,
         sampling: SamplingConfig | None = None,
-        on_token: TokenCallback | None = None,
+        on_token: TokenSink | None = None,
     ) -> GenerationResult:
         """Answer-prefill — seed the assistant reply under a user node.
 
@@ -7504,7 +7502,7 @@ class DrowseSession:
         stateless: bool = False,
         raw: bool = False,
         thinking: bool | None = None,
-        on_token: TokenCallback | None = None,
+        on_token: TokenSink | None = None,
         parent_node_id: str | None = None,
         n: int = 1,
         recipe_override: "Recipe | str | None" = None,
@@ -7592,7 +7590,7 @@ class DrowseSession:
         stateless: bool,
         raw: bool,
         thinking: bool | None,
-        on_token: TokenCallback | None,
+        on_token: TokenSink | None,
         parent_node_id: str | None,
         n: int,
         recipe_override: "Recipe | str | None",
@@ -7635,7 +7633,7 @@ class DrowseSession:
         stateless: bool = False,
         raw: bool = False,
         thinking: bool | None = None,
-        on_token: TokenCallback | None = None,
+        on_token: TokenSink | None = None,
         parent_node_id: str | None = None,
         n: int = 1,
         recipe_override: "Recipe | str | None" = None,

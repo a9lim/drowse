@@ -14,6 +14,7 @@ from drowse.session.session import DrowseSession
 from drowse.steering.composer import SteeringComposer
 from drowse.steering.grammar import parse_expr
 from drowse.steering.grammar import format_expr
+from tests.support.engine import attach_engine
 
 
 class _Capture:
@@ -57,7 +58,7 @@ def _session() -> DrowseSession:
     session._readout_long_tensor_cache = {}
     session._capture = _Capture(torch.tensor([0.2, 3.0, 5.0, 1.0]))
     session._sae_instrument.active_for_generation = True
-    session._invalidate_prefix_cache = lambda: None  # type: ignore[method-assign]
+    attach_engine(session)
     session._invalidate_analytics_cache = lambda: None  # type: ignore[method-assign]
     return cast(DrowseSession, session)
 

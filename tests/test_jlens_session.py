@@ -46,6 +46,7 @@ from drowse.lens.store import (
     save_lens_checkpoint,
 )
 from tests._jlens_toys import CharTokenizer, frozen_toy
+from tests.support.engine import attach_engine
 
 _MODEL_ID = "toy/jlens-model"
 
@@ -102,7 +103,6 @@ class _StubSession:
     _jlens_workspace_band = DrowseSession._jlens_workspace_band
     _add_lens_probe = DrowseSession._add_lens_probe
     _score_lens_gate_scalars = DrowseSession._score_lens_gate_scalars
-    _effective_return_top_k = DrowseSession._effective_return_top_k
     _select_tensor_rows = staticmethod(DrowseSession._select_tensor_rows)
     _close_instrument_runs = DrowseSession._close_instrument_runs
     _bind_instrument_runs = DrowseSession._bind_instrument_runs
@@ -130,9 +130,8 @@ class _StubSession:
         self._jlens: Any = None
         self._jlens_identity: Any = None
         self._capture: Any = None
-        self._capture_buffers: dict[int, torch.Tensor] = {}
-        self._compiled_clean_eligible = False
         self._steering: Any = None
+        attach_engine(self)
         self._probe_hash_cache: dict[str, str] = {}
         self._jlens_readout_module_cache: Any = None
         self._jlens_device_cache: dict[Any, Any] = {}
@@ -148,9 +147,6 @@ class _StubSession:
     def _model_exclusive(self, msg: str, *, phase_msg: str | None = None):
         del msg, phase_msg
         yield
-
-    def _invalidate_prefix_cache(self) -> None:
-        pass
 
     def _invalidate_analytics_cache(self) -> None:
         pass
@@ -584,8 +580,6 @@ def test_generation_boundary_refreshes_external_lens_once() -> None:
             pass
 
     session_a._capture = _Capture()
-    session_a._capture_buffers = {}
-    session_a._compiled_clean_eligible = False
     session_a._steering = SimpleNamespace(all_fast_path=lambda: True)
     session_a._monitor = SimpleNamespace(
         probe_names=[],
@@ -653,8 +647,6 @@ def test_external_lens_replacement_plans_and_freezes_refreshed_layers() -> None:
             pass
 
     session_a._capture = _Capture()
-    session_a._capture_buffers = {}
-    session_a._compiled_clean_eligible = False
     session_a._steering = SimpleNamespace(all_fast_path=lambda: True)
     session_a._monitor = SimpleNamespace(
         probe_names=[],

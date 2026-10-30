@@ -27,6 +27,7 @@ from drowse.steering.grammar import parse_expr
 from drowse.steering.triggers import Trigger
 from drowse.fit.capture import project_profile
 from tests._whitener import synthetic_whitener
+from tests.support.engine import attach_engine
 
 
 def _whit(layers: Any, dim: int):
@@ -190,10 +191,9 @@ class _Stub(DrowseSession):
         self._manifolds = {}
         self._model_info = {"model_id": "stub/model"}
         # v2.2: _push_steering / _pop_steering acquire _gen_lock and
-        # consult _gen_phase + _internal_steering_pop.
+        # consult the engine phase + _internal_steering_pop.
         self._gen_lock = threading.RLock()
-        from drowse.session.session import GenState
-        self._gen_phase = GenState.IDLE
+        attach_engine(self)
         self._internal_steering_pop = False
         self._layer_means = {}
         self.events = EventBus()

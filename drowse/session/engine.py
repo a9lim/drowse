@@ -34,9 +34,10 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -59,6 +60,7 @@ from drowse.generation.token_callback import (
     TokenCallback,
     TokenConsumer,
     TokenConsumerOptions,
+    TokenSink,
     consumer_options,
 )
 from drowse.generation.token_payloads import TokenProbePayload
@@ -136,7 +138,7 @@ class TokenTap:
         session: "DrowseSession",
         *,
         state: GenerationState,
-        consumer: "TokenCallback | TokenConsumer | None",
+        consumer: "TokenSink | None",
         plan: ConsumerPlan,
         assistant_node_id: str | None,
         collect_logprobs: bool,
@@ -151,9 +153,9 @@ class TokenTap:
         self._lp_missing = False
         self._index = 0
         self._state = state
-        self._node_id = assistant_node_id
         self._append_token = (
-            session.tree.append_token if assistant_node_id is not None else None
+            partial(session.tree.append_token, assistant_node_id)
+            if assistant_node_id is not None else None
         )
         if isinstance(consumer, TokenConsumer):
             self._on_event: Callable[[TokenEvent], None] | None = consumer.on_event
@@ -236,8 +238,7 @@ class TokenTap:
         # ``step_id`` is the decode loop's forward index — the same value
         # this forward's gate callback received, so the lens/SAE display
         # steps can reuse the gate's step-keyed stash rows.
-        response_token = tid is not None and tid >= 0 and not is_thinking
-        if response_token:
+        if tid is not None and tid >= 0 and not is_thinking:
             if self.logprobs is not None:
                 self.logprobs.append((tid, lp, top_alts or []))
             if lp is None:
@@ -336,7 +337,7 @@ class TokenTap:
                 row["per_layer_scores"] = payload.per_layer_scores
             if measurements:
                 row["measurements"] = measurements
-            self._append_token(self._node_id, row, thinking=bool(is_thinking))
+            self._append_token(row, thinking=bool(is_thinking))
 
         if self._on_event is not None:
             self._on_event(TokenEvent(
@@ -399,7 +400,7 @@ class _WorkerStream:
         self._thread.start()
         self._iterator = self._iterate()
 
-    def _iterate(self) -> Iterator[TokenEvent]:
+    def _iterate(self) -> Generator[TokenEvent, None, None]:
         try:
             while True:
                 item = self._events.get()
@@ -766,7 +767,7 @@ class GenerationEngine:
     def _plan_consumers(
         self,
         spec: CallSpec,
-        on_token: "TokenCallback | TokenConsumer | None",
+        on_token: "TokenSink | None",
     ) -> ConsumerPlan:
         session = self._session
         options = consumer_options(on_token)
@@ -820,7 +821,7 @@ class GenerationEngine:
         self,
         input: Any,
         *,
-        on_token: "TokenCallback | TokenConsumer | None" = None,
+        on_token: "TokenSink | None" = None,
         **call: Any,
     ) -> GenerationResult:
         """Run one generation; ``call`` takes :meth:`resolve_call`'s kwargs.
@@ -833,13 +834,16 @@ class GenerationEngine:
         with self.transaction() as txn:
             spec = self.resolve_call(input, **call)
             steering_obj = spec.steering_obj
-            steered = steering_obj is not None and bool(steering_obj.alphas)
+            steered_obj = (
+                steering_obj
+                if steering_obj is not None and steering_obj.alphas else None
+            )
             # Steering synthesis is Mahalanobis-normalized and needs the
             # whitener.  On a cold ``probes=[]`` session it may not exist yet:
             # build it here, while this generation owns the lock but before
             # the scope is entered (the public lazy property rejects a
             # non-idle phase).
-            if steered and session._whitener is None:
+            if steered_obj is not None and session._whitener is None:
                 session._install_whitener_if_missing()
             plan = self._plan_consumers(spec, on_token)
             # The probe-inspector post-pass is per generation; the release
@@ -848,8 +852,8 @@ class GenerationEngine:
             self.compiled_clean_eligible = self.runtime.compiled_clean_capture(
                 session.device, want_hidden=spec.want_hidden,
             )
-            if steered:
-                txn.steering_cm = session.steering(steering_obj)
+            if steered_obj is not None:
+                txn.steering_cm = session.steering(steered_obj)
 
             assistant_node_id = session._start_loom_assistant(
                 spec.input,
@@ -1070,7 +1074,7 @@ class GenerationEngine:
         # the persistent offsets.  Everything else runs the eager original
         # (same persistent hooks, so offsets and capture still apply) on a
         # DynamicCache, which also avoids a Dynamo retrace per hook topology.
-        gen_model = session.model
+        gen_model: Any = session.model
         uses_offsets = bool(steering.uses_compiled_offsets)
         if runtime.compiled_on(session.device):
             compiled_clean = not capture.is_transient() and (

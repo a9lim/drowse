@@ -1395,12 +1395,8 @@ class TestWSTokenEventLens:
         assert "raw_index" not in event
 
     def test_absent_when_no_measurements(self) -> None:
-        event = self._event({"measurements": None})
-        assert "measurements" not in event
-
-    def test_absent_when_no_payload(self) -> None:
-        event = self._event(None)
-        assert "measurements" not in event
+        assert "measurements" not in self._event(None)
+        assert "measurements" not in self._event({})
 
 
 class TestLensProbeRoutes:

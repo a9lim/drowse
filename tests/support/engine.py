@@ -15,7 +15,7 @@ from typing import Any
 from drowse.generation.compile_runtime import CompiledRuntime
 from drowse.session.engine import GenerationEngine
 
-__all__ = ["attach_engine"]
+__all__ = ["attach_engine", "seed_prefix_cache"]
 
 
 def attach_engine(stub: Any, *, runtime: CompiledRuntime | None = None) -> GenerationEngine:
@@ -39,3 +39,16 @@ def attach_engine(stub: Any, *, runtime: CompiledRuntime | None = None) -> Gener
         release=lambda: None,
     )
     return stub._engine
+
+
+def seed_prefix_cache(engine: GenerationEngine) -> None:
+    """Fill the engine's prefix-cache slot (for invalidation tests)."""
+    from types import SimpleNamespace
+
+    import torch
+
+    engine.prefix_cache.build(
+        lambda **_kwargs: SimpleNamespace(past_key_values=object()),
+        torch.tensor([[1, 2]]),
+    )
+    assert engine.prefix_cache

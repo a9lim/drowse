@@ -26,6 +26,7 @@ from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.base.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
+from tests.support.engine import attach_engine, seed_prefix_cache
 
 _LABELS = ["calm", "uneasy", "afraid", "frantic", "numb"]
 _DIM = 8
@@ -2117,7 +2118,7 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
         "mood-probe": "old", "other-mood-probe": "other",
     }
     session._analytics_cpu_cache = {"local/mood": object()}
-    session._prefix_cache = object()
+    seed_prefix_cache(attach_engine(session))
     session._dls = True
 
     session._adopt_fitted_manifold(tmp_path / "local" / "mood", new)
@@ -2132,7 +2133,7 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
     assert torch.allclose(
         session._profiles["local/mood"][0], folded_directions(new)[0],
     )
-    assert session._prefix_cache is None
+    assert not session._engine.prefix_cache
     assert session._analytics_cpu_cache == {}
     assert "mood-probe" not in session._probe_hash_cache
 
@@ -2171,7 +2172,7 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
         "mood-probe": "old", "other-mood-probe": "other",
     }
     session._analytics_cpu_cache = {"local/mood": object()}
-    session._prefix_cache = object()
+    seed_prefix_cache(attach_engine(session))
     session._dls = True
 
     @contextmanager
@@ -2205,7 +2206,7 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
     assert set(session._profiles) == {"other/mood"}
     assert set(session._monitor.probes) == {"other-mood-probe"}
     assert session._probe_hash_cache == {"other-mood-probe": "other"}
-    assert session._prefix_cache is None
+    assert not session._engine.prefix_cache
     assert session._analytics_cpu_cache == {}
 
 
@@ -2226,7 +2227,7 @@ def test_override_validation_failure_preserves_unchanged_consumers(
     session._monitor = _Monitor()
     session._probe_hash_cache = {}
     session._analytics_cpu_cache = {}
-    session._prefix_cache = object()
+    seed_prefix_cache(attach_engine(session))
     session._dls = True
     folder = tmp_path / "local" / "mood"
     folder.mkdir(parents=True)

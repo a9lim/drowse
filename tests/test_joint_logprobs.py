@@ -11,6 +11,8 @@ forward-pass + cache + reorient path without HF weights.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from typing import Any
 
 import pytest
@@ -437,7 +439,7 @@ class _MockSession:
                 "probe_names": [],
             },
         )()
-        self._compose_gen_config = lambda _sampling: self.config
+        self._engine = SimpleNamespace(gen_config=lambda _sampling: self.config)
         self._geometry_instrument = GeometryInstrument(self)  # type: ignore[arg-type]
         self._lens_instrument = LensInstrument(self)  # type: ignore[arg-type]
         self._sae_instrument = SaeInstrument(self)  # type: ignore[arg-type]
