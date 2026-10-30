@@ -177,10 +177,6 @@ def test_server_routes_user_message_status_codes():
         s.profiles = {}
         s.probes = {}
         s.history = []
-        gs = MagicMock()
-        gs.finish_reason = "stop"
-        s._gen_state = gs
-        s._last_result = None
         s._tokenizer = MagicMock()
         s._tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
         return s
