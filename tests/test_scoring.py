@@ -32,9 +32,8 @@ import torch
 
 from drowse.generation.scoring import (
     ChoiceScore,
+    ChoiceScorer,
     ChoiceScores,
-    score_choices,
-    score_template,
 )
 
 from tests.conftest import CharTokenizer, FakeLogitsModel
@@ -109,14 +108,15 @@ def _const_logits_fn(value_for_id: dict[int, float]) -> Any:
     return fn
 
 
-def _make_session(logits_fn: Any, *, steering_cm: Any = None) -> Any:
-    """A duck-typed session exposing exactly what ``score_choices`` touches.
+def _make_scorer(
+    logits_fn: Any, *, steering_cm: Any = None, model: Any = None,
+) -> Any:
+    """A :class:`ChoiceScorer` over a fake model, recording its steering scopes.
 
-    The scorer reads ``session.model`` / ``session.tokenizer`` and, when
-    ``steering`` is passed, calls ``session.steering(expr)`` for a context
-    manager.  Everything else is irrelevant.
+    ``open_scope`` records each expression in ``scorer.steer_calls`` and
+    returns ``steering_cm`` (or a null context); the exclusive section is free.
     """
-    model = FakeLogitsModel(logits_fn)
+    model = FakeLogitsModel(logits_fn) if model is None else model
     tok = _ScriptedTokenizer(mod=_VOCAB - 2)
 
     calls: list[Any] = []
@@ -128,11 +128,12 @@ def _make_session(logits_fn: Any, *, steering_cm: Any = None) -> Any:
         import contextlib
         return contextlib.nullcontext()
 
-    return SimpleNamespace(
+    scorer: Any = ChoiceScorer(
         model=model, tokenizer=tok,
-        steering=steering, _steer_calls=calls,
-        _model_exclusive=_free_model_exclusive,
+        open_scope=steering, exclusive=_free_model_exclusive,
     )
+    scorer.steer_calls = calls
+    return scorer
 
 
 def _free_model_exclusive(*_args: Any, **_kwargs: Any) -> Any:
@@ -162,8 +163,8 @@ def test_single_token_sum_equals_logprob():
     value_for_id = {x: 5.0}
     norm = _logsumexp_base(value_for_id)
 
-    session = _make_session(_const_logits_fn(value_for_id))
-    scores = score_choices(session, [{"role": "user", "content": "pick"}], ["x"])
+    scorer = _make_scorer(_const_logits_fn(value_for_id))
+    scores = scorer.score_choices([{"role": "user", "content": "pick"}], ["x"])
 
     assert isinstance(scores, ChoiceScores)
     (c,) = scores.choices
@@ -182,7 +183,7 @@ def test_completion_logprobs_preserve_common_logit_shift(offset: float):
     def logits_fn(input_ids: torch.Tensor) -> torch.Tensor:
         return shifted.expand(*input_ids.shape, _VOCAB)
 
-    scores = score_choices(_make_session(logits_fn),
+    scores = _make_scorer(logits_fn).score_choices(
                           [{"role": "user", "content": "q"}], ["a", "bcd"])
     reference = base.double().log_softmax(-1)
     for choice in scores.choices:
@@ -202,9 +203,9 @@ def test_multi_token_sum_and_mean_views_diverge():
     norm = _logsumexp_base(value_for_id)
     per_tok = 3.0 - norm                  # identical per-token logprob
 
-    session = _make_session(_const_logits_fn(value_for_id))
-    scores = score_choices(
-        session, [{"role": "user", "content": "q"}], ["a", "bcd"],
+    scorer = _make_scorer(_const_logits_fn(value_for_id))
+    scores = scorer.score_choices(
+        [{"role": "user", "content": "q"}], ["a", "bcd"],
     )
     by_text = {c.text: c for c in scores.choices}
 
@@ -229,8 +230,8 @@ def test_restricted_softmax_matches_manual_softmax():
     # Distinct logits so the distribution is non-degenerate.
     value_for_id = {ids["p"]: 6.0, ids["q"]: 2.0, ids["r"]: 0.0}
 
-    session = _make_session(_const_logits_fn(value_for_id))
-    scores = score_choices(session, [{"role": "user", "content": "z"}], ["p", "q", "r"])
+    scorer = _make_scorer(_const_logits_fn(value_for_id))
+    scores = scorer.score_choices([{"role": "user", "content": "z"}], ["p", "q", "r"])
 
     sums = [c.sum_logprob for c in scores.choices]
     expect = torch.softmax(torch.tensor(sums), dim=0).tolist()
@@ -245,11 +246,11 @@ def test_restricted_softmax_matches_manual_softmax():
 def test_restricted_probabilities_ignore_global_low_precision_default(dtype: torch.dtype):
     tokenizer = _ScriptedTokenizer(mod=_VOCAB - 2)
     values = {tokenizer.encode("a")[0]: 1.5, tokenizer.encode("b")[0]: 1.0}
-    session = _make_session(_const_logits_fn(values))
+    scorer = _make_scorer(_const_logits_fn(values))
     previous = torch.get_default_dtype()
     try:
         torch.set_default_dtype(dtype)
-        scores = score_choices(session, [{"role": "user", "content": "q"}], ["a", "b"])
+        scores = scorer.score_choices([{"role": "user", "content": "q"}], ["a", "b"])
     finally:
         torch.set_default_dtype(previous)
     expected = torch.tensor([1.5, 1.0], dtype=torch.float64).softmax(-1).tolist()
@@ -272,8 +273,8 @@ def test_empty_choice_is_degenerate_and_excluded():
     real = tok.encode("w")[0]
     value_for_id = {real: 4.0}
 
-    session = _make_session(_const_logits_fn(value_for_id))
-    scores = score_choices(session, [{"role": "user", "content": "q"}], ["", "w"])
+    scorer = _make_scorer(_const_logits_fn(value_for_id))
+    scores = scorer.score_choices([{"role": "user", "content": "q"}], ["", "w"])
     by_text = {c.text: c for c in scores.choices}
 
     assert by_text[""].n_tokens == 0
@@ -286,8 +287,8 @@ def test_empty_choice_is_degenerate_and_excluded():
 
 def test_all_degenerate_guard_returns_zeros():
     """Softmax over an all-degenerate set is the zero vector, not NaN."""
-    session = _make_session(_const_logits_fn({}))
-    scores = score_choices(session, [{"role": "user", "content": "q"}], ["", ""])
+    scorer = _make_scorer(_const_logits_fn({}))
+    scores = scorer.score_choices([{"role": "user", "content": "q"}], ["", ""])
     for c in scores.choices:
         assert c.n_tokens == 0
         assert c.prob_sum == 0.0
@@ -307,9 +308,8 @@ def test_shared_prefix_merge_recovers_completion_span():
     b_id = tok.encode("b")[0]
     value_for_id = {a_id: 1.0, b_id: 1.0}
 
-    session = _make_session(_const_logits_fn(value_for_id))
-    scores = score_choices(
-        session,
+    scorer = _make_scorer(_const_logits_fn(value_for_id))
+    scores = scorer.score_choices(
         [{"role": "user", "content": "q"}],
         ["a", "b"],
         assistant_prefix="prefix ",
@@ -322,16 +322,16 @@ def test_shared_prefix_merge_recovers_completion_span():
 
 
 def test_empty_choice_set_raises():
-    session = _make_session(_const_logits_fn({}))
+    scorer = _make_scorer(_const_logits_fn({}))
     with pytest.raises(ValueError, match="empty choice set"):
-        score_choices(session, [{"role": "user", "content": "q"}], [])
+        scorer.score_choices([{"role": "user", "content": "q"}], [])
 
 
 def test_labels_length_mismatch_raises():
-    session = _make_session(_const_logits_fn({}))
+    scorer = _make_scorer(_const_logits_fn({}))
     with pytest.raises(ValueError, match="length mismatch"):
-        score_choices(
-            session, [{"role": "user", "content": "q"}], ["a", "b"],
+        scorer.score_choices(
+            [{"role": "user", "content": "q"}], ["a", "b"],
             labels=["only-one"],
         )
 
@@ -339,13 +339,13 @@ def test_labels_length_mismatch_raises():
 def test_labels_default_to_choices_and_override():
     tok = _ScriptedTokenizer(mod=_VOCAB - 2)
     value_for_id = {tok.encode("a")[0]: 1.0, tok.encode("b")[0]: 1.0}
-    session = _make_session(_const_logits_fn(value_for_id))
+    scorer = _make_scorer(_const_logits_fn(value_for_id))
 
-    default = score_choices(session, [{"role": "user", "content": "q"}], ["a", "b"])
+    default = scorer.score_choices([{"role": "user", "content": "q"}], ["a", "b"])
     assert [c.label for c in default.choices] == ["a", "b"]
 
-    relabelled = score_choices(
-        session, [{"role": "user", "content": "q"}], ["a", "b"],
+    relabelled = scorer.score_choices(
+        [{"role": "user", "content": "q"}], ["a", "b"],
         labels=["first", "second"],
     )
     assert [c.label for c in relabelled.choices] == ["first", "second"]
@@ -359,7 +359,7 @@ def test_labels_default_to_choices_and_override():
 
 
 def test_steering_wraps_forward_and_labels_result():
-    """``steering=`` enters ``session.steering`` and stamps the expression."""
+    """``steering=`` opens a steering scope and stamps the expression."""
     import contextlib
 
     entered: list[bool] = []
@@ -371,13 +371,13 @@ def test_steering_wraps_forward_and_labels_result():
 
     tok = _ScriptedTokenizer(mod=_VOCAB - 2)
     value_for_id = {tok.encode("a")[0]: 1.0}
-    session = _make_session(_const_logits_fn(value_for_id), steering_cm=cm())
+    scorer = _make_scorer(_const_logits_fn(value_for_id), steering_cm=cm())
 
-    scores = score_choices(
-        session, [{"role": "user", "content": "q"}], ["a"],
+    scores = scorer.score_choices(
+        [{"role": "user", "content": "q"}], ["a"],
         steering="0.5 calm",
     )
-    assert session._steer_calls == ["0.5 calm"]
+    assert scorer.steer_calls == ["0.5 calm"]
     assert entered == [True]
     assert scores.steering == "0.5 calm"
     assert scores.to_dict()["steering"] == "0.5 calm"
@@ -386,10 +386,10 @@ def test_steering_wraps_forward_and_labels_result():
 def test_no_steering_leaves_label_none():
     tok = _ScriptedTokenizer(mod=_VOCAB - 2)
     value_for_id = {tok.encode("a")[0]: 1.0}
-    session = _make_session(_const_logits_fn(value_for_id))
-    scores = score_choices(session, [{"role": "user", "content": "q"}], ["a"])
+    scorer = _make_scorer(_const_logits_fn(value_for_id))
+    scores = scorer.score_choices([{"role": "user", "content": "q"}], ["a"])
     assert scores.steering is None
-    assert session._steer_calls == []
+    assert scorer.steer_calls == []
 
 
 def test_steering_actually_shifts_distribution():
@@ -422,14 +422,14 @@ def test_steering_actually_shifts_distribution():
     def steering(expr: Any) -> Any:
         return cm()
 
-    session: Any = SimpleNamespace(
-        model=base, tokenizer=tok, steering=steering,
-        _model_exclusive=_free_model_exclusive,
+    scorer = ChoiceScorer(
+        model=base, tokenizer=tok, open_scope=steering,
+        exclusive=_free_model_exclusive,
     )
 
-    before = score_choices(session, [{"role": "user", "content": "q"}], ["a", "b"])
-    after = score_choices(
-        session, [{"role": "user", "content": "q"}], ["a", "b"], steering="x",
+    before = scorer.score_choices([{"role": "user", "content": "q"}], ["a", "b"])
+    after = scorer.score_choices(
+        [{"role": "user", "content": "q"}], ["a", "b"], steering="x",
     )
     before_by = {c.text: c.prob_sum for c in before.choices}
     after_by = {c.text: c.prob_sum for c in after.choices}
@@ -445,8 +445,9 @@ def test_steering_actually_shifts_distribution():
 # --------------------------------------------------------------------------- #
 
 
-def _locking_session(logits_fn: Any, events: list[str]) -> Any:
-    """A stub carrying the real ``DrowseSession._model_exclusive`` guard."""
+def _locking_scorer(logits_fn: Any, events: list[str]) -> Any:
+    """A scorer behind the real ``DrowseSession._model_exclusive`` guard;
+    the guard's lock is ``scorer.lock``."""
     import contextlib
     import threading
 
@@ -466,43 +467,43 @@ def _locking_session(logits_fn: Any, events: list[str]) -> Any:
         yield
         events.append(f"steer-exit locked={lock.locked()}")
 
-    session = SimpleNamespace(
+    host = SimpleNamespace(
+        _gen_lock=lock, _engine=SimpleNamespace(is_generating=False),
+    )
+    scorer: Any = ChoiceScorer(
         model=FakeLogitsModel(recording_logits),
         tokenizer=_ScriptedTokenizer(mod=_VOCAB - 2),
-        steering=steering,
-        _gen_lock=lock,
-        _engine=SimpleNamespace(is_generating=False),
+        open_scope=steering,
+        exclusive=lambda *a, **k: DrowseSession._model_exclusive(host, *a, **k),  # type: ignore[arg-type]
     )
-    session._model_exclusive = (
-        lambda *a, **k: DrowseSession._model_exclusive(session, *a, **k)
-    )
-    return session
+    scorer.lock = lock
+    return scorer
 
 
 def test_scoring_forwards_hold_the_model_and_steer_outside_it():
     events: list[str] = []
-    session = _locking_session(_const_logits_fn({}), events)
+    scorer = _locking_scorer(_const_logits_fn({}), events)
 
-    score_template(session, _toy_template(), steering="0.3 calm")
+    scorer.score_template(_toy_template(), steering="0.3 calm")
 
     assert events[0] == "steer-enter locked=False"
     assert events[-1] == "steer-exit locked=False"
     forwards = events[1:-1]
     assert forwards and all(e == "forward locked=True" for e in forwards)
-    assert not session._gen_lock.locked()
+    assert not scorer.lock.locked()
 
 
 def test_scoring_refuses_while_another_model_use_holds_the_lock():
     from drowse.errors import ConcurrentExtractionError
 
     events: list[str] = []
-    session = _locking_session(_const_logits_fn({}), events)
-    assert session._gen_lock.acquire(blocking=False)
+    scorer = _locking_scorer(_const_logits_fn({}), events)
+    assert scorer.lock.acquire(blocking=False)
     try:
         with pytest.raises(ConcurrentExtractionError):
-            score_choices(session, [{"role": "user", "content": "q"}], ["a"])
+            scorer.score_choices([{"role": "user", "content": "q"}], ["a"])
     finally:
-        session._gen_lock.release()
+        scorer.lock.release()
     assert not any(e.startswith("forward") for e in events)
 
 
@@ -539,12 +540,10 @@ def test_scoring_keeps_only_the_completion_logits():
 
     messages = [{"role": "user", "content": "a fairly long prompt context"}]
     choices = ["yes", "no", "maybe so"]
-    full = score_choices(_make_session(bigram), messages, choices)
+    full = _make_scorer(bigram).score_choices(messages, choices)
 
     tail_model = _TailModel(bigram)
-    session = _make_session(bigram)
-    session.model = tail_model
-    tail = score_choices(session, messages, choices)
+    tail = _make_scorer(bigram, model=tail_model).score_choices(messages, choices)
 
     render_len = len(tok.encode("User: a fairly long prompt context\nAssistant:"))
     (kept,) = tail_model.kept
@@ -592,9 +591,9 @@ def test_score_template_fans_out_per_context():
     ids: set[int] = set()
     for v in ("Monday", "Friday"):
         ids.update(tok.encode(v))
-    session = _make_session(_const_logits_fn({i: 1.0 for i in ids}))
+    scorer = _make_scorer(_const_logits_fn({i: 1.0 for i in ids}))
 
-    out = score_template(session, tmpl, steering="0.3 calm")
+    out = scorer.score_template(tmpl, steering="0.3 calm")
     assert isinstance(out, list)
     assert len(out) == 2                            # one per context
     for cs in out:

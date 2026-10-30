@@ -40,6 +40,7 @@ from drowse.errors import (
 from drowse.generation.token_callback import TokenSink
 from drowse.model.scene import TurnGrammar
 from drowse.generation.render import PromptRenderer
+from drowse.generation.scoring import ChoiceScorer
 from drowse.session.authored_capture import AuthoredPromptCapture, plan_authored_capture
 from drowse.events import LoomMutated
 from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt
@@ -379,6 +380,12 @@ class DrowseSession:
             lock=self._gen_lock, events=self.events,
             generation_phase=self._mid_generation_phase,
             on_prefill_steering_change=lambda: self._engine.prefix_cache.clear(),
+        )
+        # Restricted-choice completion scoring (the logit read of a template).
+        self._scorer = ChoiceScorer(
+            model=self._model, tokenizer=self._tokenizer,
+            open_scope=self._steering_composer.open_scope,
+            exclusive=self._model_exclusive,
         )
         # One unified Monitor for every probe shape (flat axes, flat discover
         # fits, curved manifolds), then the three read instruments over it.
@@ -1052,12 +1059,10 @@ class DrowseSession:
         returns the set with per-candidate ``sum``/``mean`` logprobs and their
         softmax probabilities. ``steering=`` runs the scoring forward under a
         steering expression — the distributional before/after read. See
-        :func:`drowse.generation.scoring.score_choices`.
+        :meth:`drowse.generation.scoring.ChoiceScorer.score_choices`.
         """
-        from drowse.generation.scoring import score_choices as _score_choices
-
-        return _score_choices(
-            self, messages, choices,
+        return self._scorer.score_choices(
+            messages, choices,
             assistant_prefix=assistant_prefix, labels=labels,
             steering=steering, system_prompt=system_prompt,
         )
@@ -1075,15 +1080,14 @@ class DrowseSession:
         selector string (``<name>`` / ``<ns>/<name>``). Returns one
         :class:`~drowse.generation.scoring.ChoiceScores` per context.
         """
-        from drowse.generation.scoring import score_template as _score_template
         from drowse.store.templates import TemplateFolder, resolve_template
 
         tmpl = (
             template if isinstance(template, TemplateFolder)
             else resolve_template(template)
         )
-        return _score_template(
-            self, tmpl, steering=steering, system_prompt=system_prompt,
+        return self._scorer.score_template(
+            tmpl, steering=steering, system_prompt=system_prompt,
         )
 
     @overload

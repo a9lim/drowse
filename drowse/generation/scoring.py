@@ -22,26 +22,28 @@ An optional ``steering=`` runs the scoring forward under a steering expression, 
 the project's core question — *did steering shift the distribution, not just the
 argmax?* — answers directly: ``P("one second")`` before vs after a steer.
 
-Every forward runs inside ``session._model_exclusive`` (a concurrent generation
-or fit in another thread would otherwise race the steering hooks and the MPS
-command buffer); the steering scope opens *outside* that guard, because the
-composer's push/pop take the same non-reentrant lock.
+:class:`ChoiceScorer` runs every forward inside the exclusive-GPU section (a
+concurrent generation or fit in another thread would otherwise race the steering
+hooks and the MPS command buffer); the steering scope opens *outside* that
+section, because the composer's push/pop take the same lock blocking.
 """
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
 
+from drowse.base.exclusive import ExclusiveGuard
 from drowse.errors import GenerationRequestError
 from drowse.generation.decode import build_chat_input
 from drowse.model.chat import logits_keep_kwarg
 
-if TYPE_CHECKING:  # avoid an import cycle at module load
-    from drowse.session.session import DrowseSession
+if TYPE_CHECKING:
+    from drowse.steering.terms import Steering
     from drowse.store.templates import TemplateFolder
 
 # Choices are scored in chunks of this many rows per forward.  The forward keeps
@@ -128,95 +130,113 @@ def _pad_id(tokenizer: Any) -> int:
     return int(pad) if pad is not None else 0
 
 
-@contextlib.contextmanager
-def _scoring_scope(
-    session: "DrowseSession", steering: "str | Any | None",
-) -> Iterator[None]:
-    """Steering scope (outside) + exclusive model guard (inside)."""
-    steering_cm: Any = (
-        session.steering(steering) if steering is not None
-        else contextlib.nullcontext()
-    )
-    with steering_cm, session._model_exclusive(
-        "completion scoring called while another model use is in flight",
-        phase_msg="completion scoring called while a generation is in flight",
-    ):
-        yield
+class ChoiceScorer:
+    """Restricted-choice completion scoring over one loaded model.
 
-
-def score_choices(
-    session: "DrowseSession",
-    messages: list[dict[str, str]],
-    choices: list[str],
-    *,
-    assistant_prefix: str = "",
-    labels: list[str] | None = None,
-    steering: "str | Any | None" = None,
-    system_prompt: str | None = None,
-) -> ChoiceScores:
-    """Score each candidate completion and return the restricted-choice set.
-
-    ``messages`` is the conversation history (ending on a user turn);
-    ``assistant_prefix`` is any assistant text *before* the slot (the model
-    conditions on it); ``choices`` are the candidate slot-fills. Each candidate's
-    completion span is recovered with :func:`shared_prefix_len`, which absorbs
-    the boundary-token merge (``"Monday"`` vs ``"Tuesday"`` may retokenize the
-    last prefix token). One batched teacher-forced forward per chunk, no sampling.
+    Dependencies: the ``model`` and ``tokenizer``, ``open_scope`` (opens a
+    steering scope for an expression) and ``exclusive`` (the exclusive-GPU
+    section every scoring forward holds).
     """
-    if not choices:
-        raise GenerationRequestError("score_choices: empty choice set")
-    labels = labels if labels is not None else list(choices)
-    if len(labels) != len(choices):
-        raise GenerationRequestError("score_choices: labels and choices length mismatch")
-    with _scoring_scope(session, steering):
-        return _score_choice_set(
-            session, messages, choices, labels,
-            assistant_prefix=assistant_prefix, system_prompt=system_prompt,
-            steering=steering,
+
+    def __init__(
+        self,
+        *,
+        model: Any,
+        tokenizer: Any,
+        open_scope: Callable[["str | Steering"], AbstractContextManager[Any]],
+        exclusive: ExclusiveGuard,
+    ) -> None:
+        self._model = model
+        self._tokenizer = tokenizer
+        self._open_scope = open_scope
+        self._exclusive = exclusive
+
+    @contextlib.contextmanager
+    def _scope(self, steering: "str | Steering | None") -> Iterator[None]:
+        """Steering scope (outside) + exclusive model section (inside)."""
+        steering_cm: Any = (
+            self._open_scope(steering) if steering is not None
+            else contextlib.nullcontext()
         )
+        with steering_cm, self._exclusive(
+            "completion scoring called while another model use is in flight",
+            phase_msg="completion scoring called while a generation is in flight",
+        ):
+            yield
 
+    def score_choices(
+        self,
+        messages: list[dict[str, str]],
+        choices: list[str],
+        *,
+        assistant_prefix: str = "",
+        labels: list[str] | None = None,
+        steering: "str | Steering | None" = None,
+        system_prompt: str | None = None,
+    ) -> ChoiceScores:
+        """Score each candidate completion and return the restricted-choice set.
 
-def score_template(
-    session: "DrowseSession",
-    template: "TemplateFolder",
-    *,
-    steering: "str | Any | None" = None,
-    system_prompt: str | None = None,
-) -> list[ChoiceScores]:
-    """Score a template's value set against each of its contexts.
-
-    Returns one :class:`ChoiceScores` per context (the per-context shape the
-    template artifact is designed around). One steering scope and one exclusive
-    model section cover every context.
-    """
-    specs = template.score_inputs()
-    for spec in specs:
-        if not spec["choices"]:
+        ``messages`` is the conversation history (ending on a user turn);
+        ``assistant_prefix`` is any assistant text *before* the slot (the model
+        conditions on it); ``choices`` are the candidate slot-fills. Each
+        candidate's completion span is recovered with :func:`shared_prefix_len`,
+        which absorbs the boundary-token merge (``"Monday"`` vs ``"Tuesday"``
+        may retokenize the last prefix token). One batched teacher-forced
+        forward per chunk, no sampling.
+        """
+        if not choices:
             raise GenerationRequestError("score_choices: empty choice set")
-    with _scoring_scope(session, steering):
-        return [
-            _score_choice_set(
-                session, spec["messages"], spec["choices"], spec["labels"],
-                assistant_prefix=spec["assistant_prefix"],
-                system_prompt=system_prompt, steering=steering,
+        labels = labels if labels is not None else list(choices)
+        if len(labels) != len(choices):
+            raise GenerationRequestError("score_choices: labels and choices length mismatch")
+        with self._scope(steering):
+            return _score_choice_set(
+                self._model, self._tokenizer, messages, choices, labels,
+                assistant_prefix=assistant_prefix, system_prompt=system_prompt,
+                steering=steering,
             )
-            for spec in specs
-        ]
+
+    def score_template(
+        self,
+        template: "TemplateFolder",
+        *,
+        steering: "str | Steering | None" = None,
+        system_prompt: str | None = None,
+    ) -> list[ChoiceScores]:
+        """Score a template's value set against each of its contexts.
+
+        Returns one :class:`ChoiceScores` per context (the per-context shape the
+        template artifact is designed around). One steering scope and one
+        exclusive section cover every context.
+        """
+        specs = template.score_inputs()
+        for spec in specs:
+            if not spec["choices"]:
+                raise GenerationRequestError("score_choices: empty choice set")
+        with self._scope(steering):
+            return [
+                _score_choice_set(
+                    self._model, self._tokenizer,
+                    spec["messages"], spec["choices"], spec["labels"],
+                    assistant_prefix=spec["assistant_prefix"],
+                    system_prompt=system_prompt, steering=steering,
+                )
+                for spec in specs
+            ]
 
 
 def _score_choice_set(
-    session: "DrowseSession",
+    model: Any,
+    tokenizer: Any,
     messages: list[dict[str, str]],
     choices: list[str],
     labels: list[str],
     *,
     assistant_prefix: str,
     system_prompt: str | None,
-    steering: "str | Any | None",
+    steering: "str | Steering | None",
 ) -> ChoiceScores:
     """The forward + gather for one context; the caller holds the model."""
-    model = session.model
-    tokenizer = session.tokenizer
     device = next(model.parameters()).device
 
     render = build_chat_input(
