@@ -33,7 +33,7 @@ from drowse.base.integrity import hash_file
 from drowse.base.source_registry import LOCAL, SourceFamily, SourceRef
 from drowse.lens.jlens import JacobianLens
 from drowse.lens.key import LENS_SIDES, LOCAL_LENS_NAME, LensKey, local_lens_kind
-from drowse.errors import SourceSpecError
+from drowse.errors import RequestError, SourceSpecError
 
 LENS_SOURCE_FORMAT_VERSION = 2
 LENS_BINDING_FORMAT_VERSION = 2
@@ -379,13 +379,13 @@ def _resolve_model_for_fetch(model_id: str) -> tuple[str, int, int]:
 
     model_revision = resolve_model_revision(model_id)
     if model_revision is None:
-        raise HFError(
+        raise RequestError(
             f"could not resolve immutable Hugging Face model revision for {model_id}"
         )
     try:
         d_model, n_layers = _config_dimensions(model_id, model_revision)
     except ValueError as exc:
-        raise HFError(f"could not resolve model dimensions for {model_id}") from exc
+        raise RequestError(f"could not resolve model dimensions for {model_id}") from exc
     return model_revision, d_model, n_layers
 
 
