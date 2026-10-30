@@ -535,6 +535,39 @@ def test_sae_fetch_rejects_an_uncovered_layer(
     assert "does not cover layer 3" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("argv", [
+    ["pack", "ls", "-j"],
+    ["template", "ls", "-j"],
+    ["template", "show", "weekday", "-j"],
+    ["template", "score", "weekday", "-m", "m/x", "-j"],
+    ["lens", "ls", "m/x", "-j"],
+    ["lens", "fetch", "m/x", "-j"],
+    ["sae", "ls", "m/x", "-j"],
+    ["pack", "show", "formal.casual", "-j"],
+])
+def test_inventory_verbs_emit_pure_json(
+    argv: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from drowse.store.templates import create_template_folder
+
+    create_template_folder(
+        "local", "weekday", slot="[DAY]", values=["Monday", "Tuesday"],
+        contexts=[{"turns": [{"role": "user", "content": "day?"}], "assistant": "It is [DAY]."}],
+    )
+    install_fake_session(monkeypatch)
+    monkeypatch.setattr(
+        "drowse.generation.scoring.score_template",
+        lambda _session, _tmpl, **_kw: [SimpleNamespace(to_dict=lambda: {"ok": True})],
+    )
+    monkeypatch.setattr(
+        "drowse.lens.sources.fetch_lens_source",
+        lambda *_a, **_k: SimpleNamespace(to_json=lambda: {"name": "neuronpedia"}),
+    )
+    main(argv)
+    assert _stdout_json(capsys) is not None
+
+
 class _FanSession(FakeSession):
     def generate_sweep(self, _prompt: Any, sweep: dict[str, list[float]], **kwargs: Any) -> Any:
         import itertools
