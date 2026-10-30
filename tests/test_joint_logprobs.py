@@ -38,8 +38,6 @@ from drowse.server.tree_routes import (
 )
 from drowse.steering.triggers import TriggerContext
 from tests.support.decode import FakeLogitsModel
-from tests.support.lens import stub_lens_instrument
-from tests.support.replay import unwired_replay
 
 
 # ---------------------------------------------------------------------------
@@ -415,9 +413,7 @@ class _MockSession:
     def __init__(self):
         from types import SimpleNamespace
 
-        from drowse.readout.geometry import GeometryInstrument
         from tests.support.read_plane import ReadRig
-        from tests.support.sae import stub_sae_instrument
         from drowse.readout.types import ReadRequest
 
         self.tokenizer = _MockTokenizer()
@@ -441,20 +437,15 @@ class _MockSession:
             },
         )()
         self._engine = SimpleNamespace(gen_config=lambda _sampling: self.config)
-        self._geometry_instrument = GeometryInstrument(  # type: ignore[arg-type]
-            self, replay=unwired_replay,
+        rig = ReadRig(
+            capture=SimpleNamespace(detach=lambda: None), monitor=self._monitor,
         )
-        self._lens_instrument = stub_lens_instrument(self)
-        self._sae_instrument = stub_sae_instrument(self)
+        self._geometry_instrument = rig.geometry
+        self._lens_instrument = rig.lens
+        self._sae_instrument = rig.sae
 
         request = ReadRequest(final_aggregate=False)
-        plane = ReadRig(
-            capture=SimpleNamespace(detach=lambda: None),
-            monitor=self._monitor,
-            geometry=self._geometry_instrument,
-            lens=self._lens_instrument,
-            sae=self._sae_instrument,
-        ).plane
+        plane = rig.plane
         plane.resolve_demand = lambda **_kwargs: None
         plane.begin = lambda *_args, **_kwargs: (
             plane.bind_runs(request, request, request) and False

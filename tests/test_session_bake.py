@@ -1,11 +1,12 @@
-"""``DrowseSession.bake``: the model-scoped merge, its fingerprint guard, and registration."""
+"""``Extraction.bake`` (behind ``DrowseSession.bake``): the model-scoped merge,
+its fingerprint guard, and registration."""
 
 # pyright: reportUnusedVariable=false
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
-from types import MethodType
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -13,7 +14,6 @@ import pytest
 import torch
 
 from drowse.model.fingerprint import loaded_model_fingerprint
-from drowse.session.session import DrowseSession
 from tests._fakes import make_mock_session
 from tests.support.extraction import make_extraction
 
@@ -35,15 +35,18 @@ def _mock_session(monkeypatch: pytest.MonkeyPatch):
     session._layers = []
     session.events = MagicMock()
     session.events.subscribe = lambda cb: (lambda: None)
-    # Bind the real method and wire a real Extraction over the mock, so the
-    # contract (including the loaded-weight fingerprint forwarded into the
-    # merge) is under test rather than a mock's return value.
+    # A real Extraction over the mock model handle, so the contract
+    # (including the loaded-weight fingerprint forwarded into the merge) is
+    # under test rather than a mock's return value; ``session.bake`` is the
+    # extraction's bake, which ``DrowseSession.bake`` delegates to.
     session.model = session._model
-    session._extraction = make_extraction(
-        monkeypatch, handle=session,
-        register_profile=session._registry.put_profile,
-    ).extraction
-    session.bake = MethodType(DrowseSession.bake, session)
+    session.bake = partial(
+        make_extraction(
+            monkeypatch, handle=session,
+            register_profile=session._registry.put_profile,
+        ).extraction.bake,
+        force=False, strict=False,
+    )
     return session
 
 
@@ -270,3 +273,10 @@ class TestForcedBakeReplacesInMemoryConsumers:
         ]
         assert "local/noble" not in registry.manifolds
         assert torch.allclose(registry.profiles["noble"][5].float(), expected[5].float(), atol=1e-5)
+
+
+def test_session_bake_delegates_to_the_extraction(tiny_session: Any) -> None:
+    from drowse.errors import DrowseError
+
+    with pytest.raises(DrowseError):
+        tiny_session.bake("noble", "0.3 local/missing")

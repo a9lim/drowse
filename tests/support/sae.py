@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import torch
 

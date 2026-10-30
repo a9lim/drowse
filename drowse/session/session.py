@@ -536,11 +536,7 @@ class DrowseSession:
     @property
     def chat_traits(self) -> ChatTraits:
         """The tokenizer's chat facts (stop ids, thinking delimiters, renders)."""
-        try:
-            return self._chat
-        except AttributeError:  # a session assembled without ``__init__``
-            self._chat = ChatTraits(self._tokenizer, self._model)
-            return self._chat
+        return self._chat
 
     @property
     def device(self) -> torch.device:
