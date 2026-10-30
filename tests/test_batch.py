@@ -55,22 +55,30 @@ class _Engine:
     def __call__(self, input: Any, **kwargs: Any) -> GenerationResult:
         self.state.reset()  # the engine's preamble
         index = len(self.calls)
-        self.calls.append({"input": input, **kwargs})
+        self.calls.append({
+            "input": input, "active_at_start": self.tree.active_node_id, **kwargs,
+        })
         if self.on_row is not None:
             self.on_row(index)
         steering = kwargs.get("steering")
         sampling = kwargs.get("sampling")
         if not kwargs.get("stateless"):
-            user_id = self.tree.add_user_turn(
-                input,
-                parent_id=kwargs.get("parent_node_id"),
-                role_label=(
-                    sampling.user_role
-                    if sampling is not None and not kwargs.get("raw") else None
-                ),
-            )
+            parent_id = kwargs.get("parent_node_id")
+            if isinstance(input, str):
+                anchor_id = self.tree.add_user_turn(
+                    input,
+                    parent_id=parent_id,
+                    role_label=(
+                        sampling.user_role
+                        if sampling is not None and not kwargs.get("raw") else None
+                    ),
+                )
+            else:
+                # ``None`` (continue the leaf) or a messages list anchors
+                # directly on the parent, as ``_start_loom_assistant`` does.
+                anchor_id = parent_id or self.tree.active_node_id
             node_id = self.tree.begin_assistant(
-                user_id, recipe=Recipe(steering=str(steering) if steering else None),
+                anchor_id, recipe=Recipe(steering=str(steering) if steering else None),
             )
             self.tree.finalize_assistant(
                 node_id, text=f"out_{index}", applied_steering=str(steering),
@@ -196,6 +204,36 @@ class TestRunnerFan:
         assert call["gen_seat"] == "user"
         assert call["system_prompt"] == "sys"
 
+    def test_stateful_fan_places_rows_without_anchoring_them(self) -> None:
+        # Regression: the fan pinned the start node as ``parent_node_id``,
+        # which is also the anchor a ``recipe_override`` composes onto, so
+        # n>1 inherited the start node's recipe where n=1 composes onto none.
+        # Rows now keep the caller's parent and are placed by re-selecting
+        # the start node before each one.
+        runner, engine = _runner()
+        tree = engine.tree
+        earlier = tree.add_user_turn("earlier")
+        start = tree.begin_assistant(earlier, recipe=Recipe(steering="0.4 warm"))
+        tree.finalize_assistant(start, text="reply")
+
+        runset = runner.fan("next", n=3, recipe_override="cool")
+
+        assert [c["parent_node_id"] for c in engine.calls] == [None] * 3
+        assert [c["active_at_start"] for c in engine.calls] == [start] * 3
+        (user_id,) = tree.children_of[start]
+        assert tree.children_of[user_id] == list(runset.node_ids)
+
+    def test_explicit_parent_fan_does_not_reselect(self) -> None:
+        runner, engine = _runner()
+        tree = engine.tree
+        parent = tree.add_user_turn("q")
+        reply = tree.begin_assistant(parent, recipe=Recipe())
+        tree.finalize_assistant(reply, text="a")
+        runner.fan("next", n=2, parent_node_id=reply)
+        assert [c["parent_node_id"] for c in engine.calls] == [reply] * 2
+        # The second row starts from the first row's leaf: nothing navigated.
+        assert engine.calls[1]["active_at_start"] != reply
+
     def test_rejects_non_positive_n(self) -> None:
         runner, _engine = _runner()
         with pytest.raises(ValueError, match="n must be >= 1"):
@@ -309,6 +347,17 @@ class TestRunnerSweep:
         (anchor_id,) = engine.tree.children_of[engine.tree.root_id]
         assert engine.tree.nodes[anchor_id].role_label == "captain"
         assert engine.tree.children_of[anchor_id] == list(runset.node_ids)
+
+    @pytest.mark.parametrize("prompt", [None, [{"role": "user", "content": "hi"}]])
+    def test_stateful_non_string_sweep_lands_siblings(self, prompt: Any) -> None:
+        # Regression: only a string prompt got a shared anchor; ``None`` or a
+        # messages list anchored each row on the previous row's reply.
+        runner, engine = _runner()
+        tree = engine.tree
+        start = tree.add_user_turn("start")
+        runset = runner.sweep(prompt, {"x": [0.0, 0.2, 0.4]}, stateless=False)
+        assert [c["parent_node_id"] for c in engine.calls] == [start] * 3
+        assert tree.children_of[start] == list(runset.node_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +543,62 @@ def _numbers_blanked(value: Any) -> Any:
     return value
 
 
+_LENS_CORPUS = [
+    "The quick brown fox jumps over the lazy dog.",
+    "A small corpus for the tiny lens fit.",
+    "Every row of the batch reads its own tail.",
+]
+
+
+def _lens_session(factory: TinySessionFactory) -> Any:
+    """A scripted tiny session with a fitted J-lens and a ``jlens/e`` probe."""
+    session, _script = factory.scripted(_reply)
+    session.fit_jlens(_LENS_CORPUS)
+    assert session.add_probe("jlens/e") == "jlens/e"
+    return session
+
+
+def _sae_session(factory: TinySessionFactory, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A scripted tiny session with a resident mock SAE at layer 1 and ``sae/3``."""
+    from drowse.sae import backend as sae_backend
+    from drowse.sae import sources as sae_sources
+    from drowse.sae.backend import MockSaeBackend
+
+    session, _script = factory.scripted(_reply)
+    width = int(session.model.config.hidden_size)
+    backend = MockSaeBackend(layers=frozenset({1}), d_model=width)
+    monkeypatch.setattr(sae_backend, "load_sae_backend", lambda *_a, **_k: backend)
+    monkeypatch.setattr(sae_sources, "load_sae_feature_meta", lambda *_a, **_k: {})
+    monkeypatch.setattr(sae_sources, "save_sae_metadata", lambda *_a, **_k: None)
+    session.load_sae("mock-release", layer=1)
+    assert session.add_probe("sae/3") == "sae/3"
+    return session
+
+
+def _assert_rows_match_serial(
+    session: Any, batch: RunSet, prompts: list[str], probe: str,
+) -> None:
+    """Each batched row's reading and envelope equal a one-row generation's."""
+    serial = [
+        session.generate(prompt, stateless=True, thinking=False).first
+        for prompt in prompts
+    ]
+    for fast, one in zip(batch, serial, strict=True):
+        assert fast.tokens == one.tokens
+        assert set(fast.probe_readings) == set(one.probe_readings) == {probe}
+        got, want = fast.probe_readings[probe], one.probe_readings[probe]
+        assert got.coords == pytest.approx(want.coords, rel=1e-4, abs=1e-6)
+        assert set(got.coords_per_layer) == set(want.coords_per_layer)
+        for layer, coords in want.coords_per_layer.items():
+            assert got.coords_per_layer[layer] == pytest.approx(
+                coords, rel=1e-4, abs=1e-6,
+            )
+        assert fast.measurements is not None
+        assert json.dumps(_numbers_blanked(fast.measurements), sort_keys=True) == (
+            json.dumps(_numbers_blanked(one.measurements), sort_keys=True)
+        )
+
+
 class TestFastBatchOnTinySession:
     def test_compatible_batch_uses_one_model_generate(
         self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
@@ -598,6 +703,83 @@ class TestFastBatchOnTinySession:
         assert len(calls) == 1
         assert [r.probe_readings for r in runset] == [{}, {}]
 
+    def test_lens_probe_row_aggregates_match_a_serial_generation(
+        self,
+        isolated_home: Any,
+        make_tiny_session: TinySessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The lens run scores each row from its slice of the batched tail
+        # ring; with the live readout on, the envelope also names the lens
+        # source, exactly as a serial generation's does.
+        session = _lens_session(make_tiny_session)
+        session.lens.set_live(True)
+        calls = _spy_model_generate(monkeypatch, session)
+        prompts = ["alpha", "beta?", "gamma!!"]
+
+        batch = session.generate_batch(prompts, thinking=False)
+
+        assert len(calls) == 1
+        _assert_rows_match_serial(session, batch, prompts, "jlens/e")
+        for row in batch:
+            lens = cast(dict[str, Any], row.measurements)["instruments"]["lens"]
+            assert lens["binding"] == {"source": "local:j", "steering": None}
+            assert lens["readings"]["jlens/e"]["unit"] == "mean_token_probability"
+
+    def test_sae_probe_row_aggregates_match_a_serial_generation(
+        self,
+        isolated_home: Any,
+        make_tiny_session: TinySessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session = _sae_session(make_tiny_session, monkeypatch)
+        session.sae.set_live(True)
+        calls = _spy_model_generate(monkeypatch, session)
+        prompts = ["alpha", "beta?", "gamma!!"]
+
+        batch = session.generate_batch(prompts, thinking=False)
+
+        assert len(calls) == 1
+        _assert_rows_match_serial(session, batch, prompts, "sae/3")
+        for row in batch:
+            sae = cast(dict[str, Any], row.measurements)["instruments"]["sae"]
+            assert sae["binding"] == {
+                "source": "saelens:mock-release", "steering": None, "layer": 1,
+            }
+            assert list(sae["readings"]["sae/3"]["per_layer"]) == ["1"]
+
+    @pytest.mark.parametrize("family", ["lens", "sae"])
+    def test_readout_probes_skip_aggregates_without_probe_readings(
+        self,
+        family: str,
+        isolated_home: Any,
+        make_tiny_session: TinySessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        if family == "lens":
+            session = _lens_session(make_tiny_session)
+            instrument = session.lens
+        else:
+            session = _sae_session(make_tiny_session, monkeypatch)
+            instrument = session.sae
+
+        def _no_scoring(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("return_probe_readings=False must not score")
+
+        monkeypatch.setattr(instrument, "score_aggregate", _no_scoring)
+        calls = _spy_model_generate(monkeypatch, session)
+
+        runset = session.generate_batch(
+            ["alpha", "beta"],
+            sampling=SamplingConfig(return_probe_readings=False),
+            thinking=False,
+        )
+
+        assert len(calls) == 1
+        assert [r.text for r in runset] == ["re alpha", "re beta"]
+        assert [r.probe_readings for r in runset] == [{}, {}]
+        assert [r.measurements for r in runset] == [None, None]
+
     def test_blank_steering_means_unsteered(
         self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -698,6 +880,34 @@ class TestFanOnTinySession:
         seeds = [session.tree.nodes[n].recipe.sampling.seed for n in runset.node_ids]
         assert seeds == derive_seed_schedule(1, 3)
 
+    def test_fan_recipe_override_composes_like_a_one_shot(
+        self, make_tiny_session: TinySessionFactory,
+    ) -> None:
+        # Regression: a parentless stateful fan passed the start node as the
+        # regen anchor, so ``recipe_override`` with n>1 inherited the start
+        # node's steering while the same call at n=1 composed onto no anchor.
+        session, _script = make_tiny_session.scripted(_reply)
+        register_vectors(session, "anchorvec")
+        session.generate("alpha", steering="0.4 anchorvec", thinking=False)
+        start = session.tree.active_node_id
+
+        fan = session.generate(
+            "beta", n=2, recipe_override="cool", thinking=False,
+            sampling=SamplingConfig(seed=3),
+        )
+        session.tree.navigate(start)
+        one = session.generate("beta", recipe_override="cool", thinking=False).first
+
+        assert one.applied_steering is None
+        assert [r.applied_steering for r in fan] == [None, None]
+        temperatures = [
+            session.tree.nodes[str(node)].recipe.sampling.temperature
+            for node in fan.node_ids
+        ]
+        assert temperatures == [0.3, 0.3]
+        (user_id,) = session.tree.children_of[start]
+        assert session.tree.children_of[user_id][:2] == list(fan.node_ids)
+
     def test_greedy_stateless_fan_runs_every_row_serially(
         self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -726,6 +936,26 @@ class TestFanOnTinySession:
         runset = session.generate("alpha", n=3, stateless=True, on_token=_on_token)
         assert len(runset) == 1
         assert runset[0].text == "r"
+
+
+class TestSweepOnTinySession:
+    def test_stateful_sweep_continuing_the_leaf_lands_siblings(
+        self, make_tiny_session: TinySessionFactory,
+    ) -> None:
+        # Regression: a stateful ``input=None`` sweep anchored each row on
+        # the previous row's reply instead of the leaf it started from.
+        session, _script = make_tiny_session.scripted(_reply)
+        register_vectors(session, "mood")
+        session.generate("alpha", thinking=False)
+        leaf = session.tree.active_node_id
+
+        runset = session.generate_sweep(
+            None, {"mood": [0.0, 0.2, 0.4]}, stateless=False, thinking=False,
+        )
+
+        assert len(runset) == 3
+        assert session.tree.children_of[leaf] == list(runset.node_ids)
+        assert runset.grid == [{"mood": alpha} for alpha in (0.0, 0.2, 0.4)]
 
 
 # ---------------------------------------------------------------------------

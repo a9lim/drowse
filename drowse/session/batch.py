@@ -69,7 +69,12 @@ OnRow = Callable[[int, GenerationResult, dict[str, Any]], None]
 
 @dataclass(frozen=True, slots=True)
 class GenerationJob:
-    """One row of a multi-row run: the kwargs for one engine generation."""
+    """One row of a multi-row run: the kwargs for one engine generation.
+
+    ``start_node_id`` is loom placement only: the runner re-selects it as the
+    active node before the row runs, leaving ``parent_node_id`` (which is
+    also a regen's recipe anchor) as the caller gave it.
+    """
 
     input: Any
     steering: Any = None
@@ -82,6 +87,7 @@ class GenerationJob:
     system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT
     grid: dict[str, Any] | None = None
     gen_seat: str = "assistant"
+    start_node_id: str | None = None
 
 
 class BatchStopCriteria(StoppingCriteria):
@@ -637,14 +643,21 @@ class BatchRunner:
     ) -> RunSet:
         """``n`` sibling generations under derived per-sibling seeds.
 
-        A stateful fan pins its anchor to the node active when it starts, so
-        each row lands beside the first (the engine's user-turn dedup reuses
-        the first row's user turn) instead of under the previous row.
+        Every row runs as a one-shot ``generate`` would from the state the
+        fan started in.  A stateful fan with no explicit parent re-selects
+        the node active at the start before each row, so each row lands
+        beside the first (the engine's user-turn dedup reuses the first
+        row's user turn) instead of under the previous row.  It does not
+        pass that node as ``parent_node_id``: the parent is also the anchor
+        a ``recipe_override`` composes onto, and a parentless one-shot call
+        composes onto none.
         """
         if n < 1:
             raise ValueError(f"n must be >= 1, got {n}")
-        if not stateless and parent_node_id is None:
-            parent_node_id = self._tree().active_node_id
+        start_node_id = (
+            self._tree().active_node_id
+            if not stateless and parent_node_id is None else None
+        )
         base = sampling if sampling is not None else SamplingConfig()
         schedule = derive_seed_schedule(base.seed, n)
         jobs = [
@@ -659,6 +672,7 @@ class BatchRunner:
                 recipe_override=recipe_override,
                 gen_seat=gen_seat,
                 system_prompt=system_prompt,
+                start_node_id=start_node_id,
             )
             for seed in schedule
         ]
@@ -757,21 +771,28 @@ class BatchRunner:
         # swept terms compose by string concatenation.
         base_str = None if base_steering is None else str(base_steering)
 
-        # Stateful sweeps land every row as a sibling under one shared user
-        # turn: spawn it with the label the rows will send so the engine's
-        # label-aware dedup reuses it, and anchor the rows at its parent.
+        # Stateful sweeps land every row as a sibling under one shared
+        # anchor.  A string prompt spawns the shared user turn with the label
+        # the rows will send, so the engine's label-aware dedup reuses it, and
+        # the rows anchor at its parent.  Any other input (``None`` continues
+        # the leaf, a messages list anchors directly on the parent) pins the
+        # node active now, else each row would land under the previous one.
+        # A sweep has no regen modifier, so the parent is placement only.
         gen_parent_id = parent_node_id
-        if not stateless and isinstance(prompt, str):
+        if not stateless:
             tree = self._tree()
-            anchor_id = tree.add_user_turn(
-                prompt,
-                parent_id=parent_node_id,
-                role_label=(
-                    sampling.user_role
-                    if sampling is not None and not raw else None
-                ),
-            )
-            gen_parent_id = tree.nodes[anchor_id].parent_id
+            if isinstance(prompt, str):
+                anchor_id = tree.add_user_turn(
+                    prompt,
+                    parent_id=parent_node_id,
+                    role_label=(
+                        sampling.user_role
+                        if sampling is not None and not raw else None
+                    ),
+                )
+                gen_parent_id = tree.nodes[anchor_id].parent_id
+            elif gen_parent_id is None:
+                gen_parent_id = tree.active_node_id
 
         jobs: list[GenerationJob] = []
         for idx, combo in enumerate(itertools.product(*alpha_lists)):
@@ -813,12 +834,17 @@ class BatchRunner:
         kind: str,
         on_result: OnRow | None = None,
     ) -> RunSet:
-        """Run ``jobs`` one at a time; a user stop ends the series."""
+        """Run ``jobs`` one at a time; a user stop ends the series.
+
+        A job's ``start_node_id`` is re-selected as the active node first.
+        """
         stops = self._gen_state.stop_count
         results: list[GenerationResult] = []
         node_ids: list[str | None] = []
         grid_rows: list[dict[str, Any]] = []
         for idx, job in enumerate(jobs):
+            if job.start_node_id is not None:
+                self._tree().navigate(job.start_node_id)
             result = self._generate_one(
                 job.input,
                 steering=job.steering,
