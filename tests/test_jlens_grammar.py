@@ -162,7 +162,7 @@ def test_token_id_atom_steers_and_probes_the_vocab_id(make_tiny_session: Any) ->
     from drowse.lens.jlens import resolve_word_token
     from drowse.model.readout import get_unembedding
 
-    session = make_tiny_session()  # warm: a cold scope trips C2 (scope lane)
+    session = make_tiny_session(warm=False)  # a cold scope (C2 regression)
     lens = session.lens.fit(_TINY_PROMPTS)
     gid = resolve_word_token(session.tokenizer, "g")
     (key,) = parse_expr(f"0.3 jlens/#{gid}").alphas
@@ -321,7 +321,7 @@ def test_gated_lens_probe_keys_and_gate_scalars() -> None:
 def test_composer_detects_gates_on_pinned_lens_probes(make_tiny_session: Any) -> None:
     """A gate on a pinned lens probe is recognized from the steering stack
     without any monitor probe attached."""
-    session = make_tiny_session()  # warm: a cold scope trips C2 (scope lane)
+    session = make_tiny_session(warm=False)  # a cold scope (C2 regression)
     session.lens.fit(_TINY_PROMPTS)
     session.add_probe("jlens/g")
     with session.steering("0.3 jlens/g@when:jlens/g>0.4"):
