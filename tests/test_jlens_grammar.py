@@ -145,6 +145,58 @@ def test_profile_registration_resolves_jlens_atom() -> None:
     assert all(isinstance(v, torch.Tensor) for v in dirs.values())
 
 
+def test_token_id_atom_steers_and_probes_the_vocab_id() -> None:
+    """``jlens/#<id>`` addresses vocab id ``<id>`` directly, never tokenizing.
+
+    The name used to reach ``resolve_word_token`` as the literal text
+    ``"#6"``: a misleading multi-token error, or on a tokenizer with a single
+    ``#6`` piece, the wrong token.  In the toy vocab ``g`` is id 6, so the
+    word and the id atoms must agree.
+    """
+    from drowse.session.session import DrowseSession
+
+    session = _StubSession()
+    lens = session.fit_jlens(_PROMPTS)
+    composer = SteeringComposer(session)  # type: ignore[arg-type]
+    (key,) = parse_expr("0.3 jlens/#6").alphas
+    by_id = composer.ensure_profile_registered(key)
+    expected = lens.token_direction(6, session._model.lm_head.weight)
+    assert set(by_id) == set(expected)
+    for layer, vec in by_id.items():
+        assert torch.allclose(vec, expected[layer])
+    by_word = composer.ensure_profile_registered("jlens/g")
+    for layer, vec in by_id.items():
+        assert torch.allclose(vec, by_word[layer])
+
+    name = DrowseSession.add_probe(session, "jlens/#6")  # type: ignore[arg-type]
+    assert name == "jlens/#6"
+    spec = session._lens_instrument.probes[name]
+    assert spec["token_id"] == 6
+    assert spec["word"] == "#6"
+    steering = parse_expr("0.3 jlens/g@when:jlens/#6>0.01")
+    composer._stack.append(dict(steering.alphas))  # type: ignore[arg-type]
+    session._monitor = type("_M", (), {"probe_names": ()})()
+    assert composer.gated_lens_probe_keys() == {"jlens/#6"}
+
+
+def test_token_id_atom_rejects_ids_outside_the_vocab() -> None:
+    from drowse.lens.jlens import InvalidTokenIdError, resolve_token_atom
+    from drowse.session.session import DrowseSession
+    from tests._jlens_toys import TOY_VOCAB
+
+    session = _StubSession()
+    session.fit_jlens(_PROMPTS)
+    composer = SteeringComposer(session)  # type: ignore[arg-type]
+    with pytest.raises(InvalidTokenIdError, match="outside this vocabulary"):
+        composer.ensure_profile_registered(f"jlens/#{TOY_VOCAB}")
+    with pytest.raises(InvalidTokenIdError):
+        DrowseSession.add_probe(session, f"jlens/#{TOY_VOCAB}")  # type: ignore[arg-type]
+    assert not session._lens_instrument.probes
+    for bad in ("#", "#-1", "#1.5", "#x"):
+        with pytest.raises(InvalidTokenIdError):
+            resolve_token_atom(session._tokenizer, bad, vocab_size=TOY_VOCAB)
+
+
 def test_profile_registration_jlens_requires_fitted_lens() -> None:
     from drowse.lens.jlens import LensNotFittedError
 

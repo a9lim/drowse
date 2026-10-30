@@ -54,10 +54,11 @@ from drowse.lens.jlens import (
     aggregate_readout_tensors_from_probabilities,
     pack_readout_rows_to_host,
     readout_probabilities,
-    resolve_word_token,
+    resolve_token_atom,
     token_readout_stats,
     token_readout_stats_from_probabilities,
 )
+from drowse.model.loading import get_unembedding
 
 if TYPE_CHECKING:
     from drowse.session.session import DrowseSession
@@ -469,10 +470,10 @@ class LensInstrument:
     # -------------------------------------------------------------- registry
 
     def attach(self, selector: str, *, as_name: str | None = None) -> str:
-        """Attach a ``jlens/<word>`` token probe.
+        """Attach a ``jlens/<word>`` (or ``jlens/#<id>``) token probe.
 
-        Validates the lens artifact + single-token word (the same
-        ``resolve_word_token`` contract steering atoms use), records the
+        Validates the lens artifact + token (the same ``resolve_token_atom``
+        contract steering atoms use), records the
         full fitted layer set, and pre-warms the device transport stack so
         the first decode step doesn't hitch on the J_l transfer.  The probe
         reads ONE channel — ``coords = (strength,)``, the mean layer
@@ -494,7 +495,10 @@ class LensInstrument:
             # land in one lens-state transaction.
             with self.state_lock:
                 lens = session._require_jlens()
-                token_id = resolve_word_token(session._tokenizer, word)
+                token_id = resolve_token_atom(
+                    session._tokenizer, word,
+                    vocab_size=int(get_unembedding(session._model).shape[0]),
+                )
                 readout_layers = [int(l) for l in lens.source_layers]
                 session._jlens_transport_stack(
                     lens, sorted(readout_layers), session._device,

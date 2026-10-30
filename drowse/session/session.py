@@ -3470,7 +3470,7 @@ class DrowseSession:
         }
 
     def register_jlens_direction(self, word: str) -> str:
-        """Register the J-lens direction for a single-token word as a profile.
+        """Register the J-lens direction for a single-token word (or ``#<id>``) as a profile.
 
         The direction (``W_U[v] @ J_l`` per layer) lands in the ordinary
         profile registry under ``jlens/<word>``, so it steers and ablates
@@ -3484,17 +3484,20 @@ class DrowseSession:
         callers that want a narrower intervention can fit or load a lens with
         an explicit source-layer subset.
         """
-        from drowse.lens.jlens import resolve_word_token
+        from drowse.lens.jlens import resolve_token_atom
         from drowse.model.loading import get_output_projection, get_unembedding
 
         name = f"jlens/{word}"
         if name in self._profiles:
             return name
         lens = self._require_jlens()
-        token_id = resolve_word_token(self._tokenizer, word)
+        unembedding = get_unembedding(self._model)
+        token_id = resolve_token_atom(
+            self._tokenizer, word, vocab_size=int(unembedding.shape[0]),
+        )
         fitted_layers = set(int(layer) for layer in lens.source_layers)
         directions = lens.token_direction(
-            token_id, get_unembedding(self._model), layers=sorted(fitted_layers),
+            token_id, unembedding, layers=sorted(fitted_layers),
             output_projection=get_output_projection(self._model),
         )
         # ``token_direction`` returns CPU tensors; land the profile on the
