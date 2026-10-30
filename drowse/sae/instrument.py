@@ -160,7 +160,7 @@ class SaeInstrument:
         # read inside the exclusive section.
         self._replay = replay
         # Registry effects of a residency change: ``sae/<id>`` directions are
-        # session profiles, and probe digests are cached session-side.
+        # registry profiles, and probe digests live in the probe roster.
         self._put_direction = put_direction
         self._evict_directions = evict_directions
         self._forget_probe_hashes = forget_probe_hashes

@@ -464,7 +464,7 @@ class LensInstrument:
         construction (an unpinned bound run falls back to the refresh,
         which locks internally; nothing measures on such a run anyway).
         Idle: ONE state-lock hold refreshes the resident lens and copies
-        the registry, so an idle-passthrough read (``observe`` on the
+        the registry, so an idle-passthrough read (an aggregate on the
         idle run, offline scoring) cannot pair lens A with a
         concurrently adopted replacement's rewritten layers.  Resolving
         the two separately — the registry un-locked, the resident lens
