@@ -596,3 +596,14 @@ def test_select_torus_t2_coarseness_floor() -> None:
     """
     choice = _choose(_torus_t2(7))
     assert choice.winner_name == "torus-T2"
+
+
+def test_periodic_fit_must_improve_on_mean_only_predictions(monkeypatch: pytest.MonkeyPatch):
+    from drowse.geometry import topology
+
+    monkeypatch.setattr(topology, "_rbf_gcv_score", lambda *args, **kwargs: 1e20)
+    choice = _choose(_circle(40))
+    candidate = next(c for c in choice.candidates if c.name == "torus-T1")
+    assert not candidate.viable
+    assert "mean-only" in candidate.reason
+    assert choice.winner_name == "flat-pca"

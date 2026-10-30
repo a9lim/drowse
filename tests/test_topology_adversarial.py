@@ -125,15 +125,3 @@ def test_budget_exhaustion_and_invalid_thresholds_are_explicit():
             _count_persistent_loops(distances, persistence_frac=fraction)
     with pytest.raises(ValueError, match="128"):
         _count_persistent_loops(torch.zeros(129, 129))
-
-
-def test_periodic_fit_must_improve_on_mean_only_predictions(monkeypatch: pytest.MonkeyPatch):
-    from drowse.geometry import topology
-    from tests.test_manifold_topology import _choose, _circle
-
-    monkeypatch.setattr(topology, "_rbf_gcv_score", lambda *args, **kwargs: 1e20)
-    choice = _choose(_circle(40))
-    candidate = next(c for c in choice.candidates if c.name == "torus-T1")
-    assert not candidate.viable
-    assert "mean-only" in candidate.reason
-    assert choice.winner_name == "flat-pca"

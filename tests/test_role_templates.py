@@ -15,10 +15,8 @@ behaviour.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
-import jinja2
 import pytest
 
 from drowse.errors import DrowseError
@@ -33,175 +31,18 @@ from drowse.model.role_templates import (
     apply_with_per_turn_roles,
     resolve_seat_headers,
 )
-
-
-# ---------------------------------------------------------------------------
-# Per-family representative chat templates
-# ---------------------------------------------------------------------------
-
-
-# Mirrors the Qwen2/Qwen3 chat-template shape: ``<|im_start|>{role}\n{content}<|im_end|>``.
-QWEN_TEMPLATE = (
-    "{% for m in messages %}"
-    "<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+from tests.support.chat_templates import (
+    FakeTokenizer,
+    GEMMA4_TEMPLATE,
+    GEMMA_TEMPLATE,
+    GLM_TEMPLATE,
+    GPT_OSS_TEMPLATE,
+    LLAMA_TEMPLATE,
+    MISTRAL_TEMPLATE,
+    QWEN_TEMPLATE,
+    SMOLLM2_TEMPLATE,
+    TALKIE_TEMPLATE,
 )
-
-
-# Exact chat-template bytes from the pinned
-# HuggingFaceTB/SmolLM2-360M-Instruct@a10cc151 tokenizer config.  SmolLM2 is
-# model_type ``llama`` but deliberately uses ChatML turn headers.
-SMOLLM2_TEMPLATE = (
-    "{% for message in messages %}"
-    "{% if loop.first and messages[0]['role'] != 'system' %}"
-    "{{ '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, "
-    "trained by Hugging Face<|im_end|>\n' }}"
-    "{% endif %}"
-    "{{'<|im_start|>' + message['role'] + '\n' + message['content'] + "
-    "'<|im_end|>' + '\n'}}"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
-)
-
-
-# Gemma 2/3: ``<start_of_turn>{role}\n{content}<end_of_turn>`` — and the
-# assistant role is labeled ``model``, not ``assistant``.
-GEMMA_TEMPLATE = (
-    "{% for m in messages %}"
-    "{% set role = 'model' if m['role'] == 'assistant' else m['role'] %}"
-    "<start_of_turn>{{ role }}\n{{ m['content'] }}<end_of_turn>\n"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}<start_of_turn>model\n{% endif %}"
-)
-
-
-# Gemma 4: same ``model`` label, new turn delimiters
-# (``<|turn>...<turn|>`` instead of ``<start_of_turn>...<end_of_turn>``).
-GEMMA4_TEMPLATE = (
-    "{% for m in messages %}"
-    "{% set role = 'model' if m['role'] == 'assistant' else m['role'] %}"
-    "<|turn>{{ role }}\n{{ m['content'] }}<turn|>\n"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}<|turn>model\n{% endif %}"
-)
-
-
-# Llama-3: ``<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>``.
-LLAMA_TEMPLATE = (
-    "{% for m in messages %}"
-    "<|start_header_id|>{{ m['role'] }}<|end_header_id|>\n\n"
-    "{{ m['content'] }}<|eot_id|>"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}<|start_header_id|>assistant<|end_header_id|>\n\n{% endif %}"
-)
-
-
-# GLM-4 chat-template-ish: ``<|{role}|>\n{content}``.
-GLM_TEMPLATE = (
-    "{% for m in messages %}"
-    "<|{{ m['role'] }}|>\n{{ m['content'] }}"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}<|assistant|>\n{% endif %}"
-)
-
-
-# Talkie-1930: ``<|role|>content<|end|>`` — same <|role|> shape as GLM but no
-# post-marker newline.  Faithful to the real chat template captured from
-# a9lim/talkie-1930-13b-it-hf-cached (model_type "talkie").
-TALKIE_TEMPLATE = (
-    "{% for m in messages %}"
-    "<|{{ m['role'] }}|>{{ m['content'] }}<|end|>"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}<|assistant|>{% endif %}"
-)
-
-
-# GPT-OSS: ``<|start|>{role}<|channel|>{content}<|end|>``.
-GPT_OSS_TEMPLATE = (
-    "{% for m in messages %}"
-    "<|start|>{{ m['role'] }}<|channel|>{{ m['content'] }}<|end|>"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}<|start|>assistant<|channel|>{% endif %}"
-)
-
-
-# Mistral-3-ish: positional [INST] / [/INST], no role label in the rendered
-# string.  Included to test that the registry's None entry raises rather
-# than silently no-ops.
-MISTRAL_TEMPLATE = (
-    "{% for m in messages %}"
-    "{% if m['role'] == 'user' %}[INST] {{ m['content'] }} [/INST]"
-    "{% else %}{{ m['content'] }}{% endif %}"
-    "{% endfor %}"
-)
-
-
-# ---------------------------------------------------------------------------
-# FakeTokenizer — minimal apply_chat_template + __call__ surface
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _FakeBatch:
-    input_ids: Any  # list[int] or Tensor depending on return_tensors
-
-    def __getitem__(self, key: str) -> Any:
-        if key == "input_ids":
-            return self.input_ids
-        raise KeyError(key)
-
-
-class FakeTokenizer:
-    """Minimal stand-in for an HF tokenizer.
-
-    Implements just enough of the surface that
-    :func:`apply_with_role` needs: ``apply_chat_template`` (Jinja-rendered)
-    and ``__call__`` (whitespace tokenization, deterministic id assignment).
-    """
-
-    def __init__(self, template: str):
-        self.chat_template = template
-        self._template = jinja2.Environment().from_string(template)
-
-    def apply_chat_template(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        add_generation_prompt: bool = True,
-        tokenize: bool = True,
-        return_tensors: str | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        rendered = self._template.render(
-            messages=messages,
-            add_generation_prompt=add_generation_prompt,
-            **kwargs,
-        )
-        if not tokenize:
-            return rendered
-        return self._tokenize(rendered, return_tensors=return_tensors)
-
-    def __call__(
-        self,
-        text: str,
-        *,
-        return_tensors: str | None = None,
-        add_special_tokens: bool = True,
-    ) -> _FakeBatch:
-        return _FakeBatch(input_ids=self._tokenize(text, return_tensors=return_tensors))
-
-    @staticmethod
-    def _tokenize(text: str, *, return_tensors: str | None = None) -> Any:
-        # Stable deterministic mapping: token id is the hash of each
-        # whitespace-split chunk mod a small constant.  Real values
-        # don't matter for these tests.
-        ids = [hash(chunk) % 50_000 for chunk in text.split()]
-        if return_tensors == "pt":
-            import torch
-
-            return torch.tensor([ids])
-        return ids
 
 
 def _qwen_tok() -> FakeTokenizer:

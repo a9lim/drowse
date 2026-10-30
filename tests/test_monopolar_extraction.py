@@ -18,7 +18,6 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.fit import capture as V
 from drowse.events import EventBus
 from drowse.fit.pipeline import ManifoldExtractionPipeline
 from tests.support.sae import MockSaeBackend
@@ -26,14 +25,11 @@ from drowse.geometry.fold import folded_directions
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_authoring import create_discover_manifold_folder
 from drowse.base.paths import manifold_dir
-from tests._whitener import synthetic_whitener
-from tests.test_manifold_extraction import _CaptureTokenizer
+from tests.support.capture import DIM, N_LAYERS, StubHandle, batched, install_capture
 
-_DIM = 8
-_N_LAYERS = 4
 # Per-layer neutral mean ν.  The concept centroid is ν + a push along dim 0, so
 # the folded direction (concept − ν) is a clean unit vector along dim 0.
-_NU = {L: torch.full((_DIM,), float(L + 1)) for L in range(_N_LAYERS)}
+_NU = {L: torch.full((DIM,), float(L + 1)) for L in range(N_LAYERS)}
 
 
 def _concept_encoder(
@@ -49,50 +45,11 @@ def _concept_encoder(
     return out
 
 
-def _concept_encoder_batch(
-    model: Any, tokenizer: Any, prompts: Any, responses: Any, layers: Any,
-    device: Any, **kwargs: Any,
-) -> dict[int, torch.Tensor]:
-    """Batched seam matching ``vectors._encode_and_capture_all_batch`` — stacks
-    the deterministic per-row concept centroid over the chunk, ``{L: (B, D)}``."""
-    rows = [
-        _concept_encoder(model, tokenizer, p, r, layers, device, **kwargs)
-        for p, r in zip(prompts, responses)
-    ]
-    return {
-        L: torch.stack([row[L] for row in rows]) for L in range(len(layers))
-    }
-
-
-class _Handle:
-    """Minimal ModelHandle stub carrying ``layer_means`` (= ν, the neutral pole)."""
-
-    def __init__(self) -> None:
-        self.model_id = "stub-model"
-        self.model: torch.nn.Module = torch.nn.Linear(1, 1)
-        self.tokenizer: Any = _CaptureTokenizer()
-        self.device = torch.device("cpu")
-        self.dtype = torch.float32
-        self.layers: Any = torch.nn.ModuleList(
-            torch.nn.Identity() for _ in range(_N_LAYERS)
-        )
-        self.layer_means: dict[int, torch.Tensor] = {
-            L: _NU[L].clone() for L in range(_N_LAYERS)
-        }
-        # The monopolar share is whitened (mandatory post-4.0); synthesize a
-        # covering whitener over the same neutral means.
-        self.whitener = synthetic_whitener(
-            range(_N_LAYERS), _DIM, means=self.layer_means,
-        )
-
-
 @pytest.fixture(autouse=True)
 def _stub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     torch.manual_seed(0)
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    monkeypatch.setattr(V, "_encode_and_capture_all_batch", _concept_encoder_batch)
-    # Single baseline prompt → any corpus length is a multiple of k=1.
-    monkeypatch.setattr(V, "_load_baseline_prompts", lambda: ["baseline prompt"])
+    install_capture(monkeypatch, batched(_concept_encoder))
 
 
 def _author() -> Path:
@@ -114,7 +71,7 @@ def test_monopolar_folder_is_genuinely_one_node() -> None:
 
 def test_monopolar_fits_one_node_ray() -> None:
     folder = _author()
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(layer_means=_NU), EventBus())
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)  # the fold path runs no DLS
         manifold = pipe.fit(folder)
@@ -132,34 +89,34 @@ def test_monopolar_fits_one_node_ray() -> None:
     assert manifold.metadata.get("diagnostics") == {}
     # Every layer is an affine rank-1 ray, so it folds to a steering vector.
     dirs = folded_directions(manifold)
-    assert sorted(dirs) == list(range(_N_LAYERS))
+    assert sorted(dirs) == list(range(N_LAYERS))
     for vec in dirs.values():
         assert torch.isfinite(vec).all()
         # δ̂ = unit(concept − ν) points +along dim 0 (the only displaced axis).
         assert float(vec[0]) > 0.0
-        assert torch.allclose(vec[1:], torch.zeros(_DIM - 1), atol=1e-5)
+        assert torch.allclose(vec[1:], torch.zeros(DIM - 1), atol=1e-5)
 
 
 def test_monopolar_sae_fit_keeps_single_node_branch() -> None:
     folder = _author()
     sae = MockSaeBackend(
-        layers=frozenset(range(_N_LAYERS)), d_model=_DIM,
+        layers=frozenset(range(N_LAYERS)), d_model=DIM,
         release="mono-rel",
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(
+    manifold = ManifoldExtractionPipeline(StubHandle(layer_means=_NU), EventBus()).fit(
         folder, sae=sae,
     )
 
     assert manifold.node_labels == ["agentic"]
     assert manifold.metadata.get("method") == "manifold_monopolar_sae"
-    assert sorted(manifold.layers) == list(range(_N_LAYERS))
+    assert sorted(manifold.layers) == list(range(N_LAYERS))
 
 
 def test_monopolar_requires_layer_means() -> None:
     # ν is the implicit negative pole — without it there is nothing to fold
     # against, so the fit fails fast with an actionable message.
     folder = _author()
-    handle = _Handle()
+    handle = StubHandle(layer_means=_NU)
     handle.layer_means = {}
     pipe = ManifoldExtractionPipeline(handle, EventBus())
     with pytest.raises(ValueError, match="neutral layer means"):
@@ -168,7 +125,7 @@ def test_monopolar_requires_layer_means() -> None:
 
 def test_monopolar_cache_hit_reloads_ray() -> None:
     folder = _author()
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(layer_means=_NU), EventBus())
     first = pipe.fit(folder)
     # Second fit cache-hits on the unchanged 1-node corpus and reloads the ray.
     second = pipe.fit(folder)
