@@ -55,6 +55,19 @@ def num_layers(layers: Any) -> int:
     return len(layers)
 
 
+def _encode_and_capture_all(
+    model: Any, tokenizer: Any, prompt: str, response: str, layers: Any,
+    device: Any,
+) -> dict[int, torch.Tensor]:
+    """Last-content-token hidden state per layer for one turn pair, fp32."""
+    from drowse.fit.capture import _encode_and_capture_all_batch
+
+    batch = _encode_and_capture_all_batch(
+        model, tokenizer, [prompt], [response], layers, device,
+    )
+    return {idx: rows[0] for idx, rows in batch.items()}
+
+
 def _extract_profile(model: Any, tokenizer: Any, concept: str, layers: Any) -> Any:
     """A per-layer direction profile for a single concept vs the empty pole.
 
@@ -65,11 +78,7 @@ def _extract_profile(model: Any, tokenizer: Any, concept: str, layers: Any) -> A
     (``folded_directions``).  Same centroid-difference direction the old
     DiM extractor produced, through the surviving fold primitive.
     """
-    from drowse.fit.capture import (
-        _encode_and_capture_all,
-        fold_directions_to_subspace,
-        folded_directions,
-    )
+    from drowse.fit.capture import fold_directions_to_subspace, folded_directions
 
     device = next(model.parameters()).device
     prompt = "Describe your current state."
@@ -311,8 +320,6 @@ class TestMonitor:
 
         # Measure on generated text via the surviving hidden-state scoring API.
         text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-        from drowse.fit.capture import _encode_and_capture_all
-
         hidden = _encode_and_capture_all(
             model, tokenizer, "How are you feeling?", text, layers, device,
         )

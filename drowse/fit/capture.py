@@ -1,4 +1,17 @@
-"""Extraction, saving, and loading of activation steering/probe vectors."""
+"""Residual capture for fitting, plus the direction-view boundary.
+
+- Per-generation capture vocabulary (:class:`CaptureMode`, :class:`CaptureState`)
+  the session's read planner keys on.
+- Pooled extraction capture: render ``[system, *history, assistant]`` rows,
+  locate each row's last content token, and run right-padded batched forwards
+  that gather ``(B, D)`` per layer inside the hook and stop at the last
+  requested block (:class:`_ReusablePooledCapture`,
+  :func:`_encode_and_capture_all_batch`, :func:`compute_neutral_activations`).
+- The shared elicitation corpora (baseline prompts, neutral statements).
+- Discriminative Layer Selection (:func:`compute_dls_axes`).
+- The direction view of fitted rays: :func:`fold_directions_to_subspace`,
+  :func:`folded_directions`, and the LEACE :func:`project_profile`.
+"""
 
 from __future__ import annotations
 
@@ -96,18 +109,9 @@ class CaptureState:
         )
 
 
-# Default chunk size for the batched capture path (:func:`_encode_and_capture_all_batch`
-# and its callers :func:`compute_neutral_activations` and
-# ``geometry.manifold.compute_manifold_node_stats``).  One
-# forward over up to this many (prompt, response) pairs replaces that many sequential
-# batch-1 forwards — the dominant extraction-capture cost.  Sized conservatively so a
-# chunk's attention working set (``B · heads · T²``) stays comfortable on a single
-# 24 GB GPU at the A2 response cap; raise it on a roomier device for fewer forwards.
-_CAPTURE_BATCH = 16
-# Roomy accelerators should not be permanently capped at the conservative
-# starting width.  Fit-wide capture grows toward this ceiling after clean
-# batches and backs off on OOM; length bucketing keeps the larger batches from
-# turning one long response into quadratic padding work for every neighbour.
+# Rows per batched capture forward.  Capture starts here and halves on OOM
+# (never grows back); length bucketing keeps a wide batch from turning one long
+# response into quadratic padding work for every neighbour.
 _CAPTURE_BATCH_MAX = 64
 
 
@@ -360,7 +364,7 @@ def last_content_index(
     its state is the one that predicts the marker, matching browser capture.
     The result floors at 0 so an all-structural sequence still yields a valid
     index.  This is the single definition of "last content token" shared by
-    extraction (:func:`_encode_and_capture_all`), the
+    extraction (:func:`_prepare_capture_batch`), the
     aggregate vector probe (:meth:`Monitor.score_per_token`), the
     incremental scoring path (``session._score_incremental``), and the
     manifold aggregate (:meth:`Monitor.score_aggregate`) — every
@@ -395,7 +399,7 @@ def last_content_index(
 
 # Shared one-paragraph length directive — a system prompt applied to BOTH
 # generation (``session.generate_responses`` / ``generate_neutral_responses``)
-# AND capture (every ``_encode_and_capture_all`` site), for node and neutral
+# AND capture (:func:`_render_capture_text`), for node and neutral
 # corpora alike.  Identical and symmetric across all four sites, so it is
 # common-mode: it cancels in ``node − neutral`` (and ``concept − ν``) instead of
 # leaking a "be brief" offset into the extracted directions, and it matches the
@@ -408,55 +412,6 @@ def last_content_index(
 _LENGTH_DIRECTIVE = "Answer in one short paragraph."
 
 
-def _encode_and_capture_all(
-    model: torch.nn.Module,
-    tokenizer: Any,
-    prompt: str,
-    response: str,
-    layers: torch.nn.ModuleList,
-    device: torch.device,
-    *,
-    role: str | None = None,
-    model_type: str | None = None,
-    system_msg: str = _LENGTH_DIRECTIVE,
-    layer_indices: Sequence[int] | None = None,
-):
-    """Capture the last-content-token hidden state per layer for a turn pair, fp32.
-
-    Conversational (4.0 / A2) capture: the corpus item is an assistant
-    *response* to a fixed baseline *prompt*, so extraction pools the model in
-    its real generation regime — ``[system: directive, user: prompt, assistant:
-    response]`` with the standard assistant label.  ``system_msg`` defaults to
-    the shared :data:`_LENGTH_DIRECTIVE` so capture matches the framing the
-    corpus was generated under (and cancels as common-mode against the neutral
-    baseline); pass ``""`` to drop the system turn.  ``role`` overrides the
-    assistant label only when an explicit per-node role is set (the
-    persona-baselined fit); ``role=None`` is the swap-back default.
-
-    Pools from the response's last non-special token — chat templates append
-    trailing markers (Llama's <|eot_id|>, Gemma's <end_of_turn>, Qwen's
-    <|im_end|>) whose hidden states are disconnected from content; the last
-    content token is the attention-weighted summary the model uses for
-    next-token prediction.
-
-    Returns:
-        dict mapping layer_idx -> pooled vector (dim,) in fp32.
-    """
-    ids, content_end = _render_and_tokenize_for_capture(
-        tokenizer, prompt, response,
-        role=role, model_type=model_type, system_msg=system_msg,
-    )
-    ids = ids.to(device)
-    hidden_per_layer = _capture_all_hidden_states(
-        model, layers, ids, pool_index=content_end,
-        layer_indices=layer_indices,
-    )
-    return {
-        idx: h if h.ndim == 1 else h[0, min(content_end, h.shape[1] - 1)].float()
-        for idx, h in hidden_per_layer.items()
-    }
-
-
 def _encode_and_capture_all_batch(
     model: torch.nn.Module,
     tokenizer: Any,
@@ -465,10 +420,8 @@ def _encode_and_capture_all_batch(
     layers: torch.nn.ModuleList,
     device: torch.device,
     *,
-    role: str | None = None,
     roles: Sequence[str | None] | None = None,
     model_type: str | None = None,
-    system_msg: str = _LENGTH_DIRECTIVE,
     layer_indices: Sequence[int] | None = None,
     rendered: "Sequence[tuple[torch.Tensor, int]] | None" = None,
     promote_pooled: bool = True,
@@ -476,9 +429,8 @@ def _encode_and_capture_all_batch(
 ) -> dict[int, torch.Tensor]:
     """Batched conversational capture — one forward over a chunk of pairs.
 
-    The batched sibling of :func:`_encode_and_capture_all`: each
-    ``[system, user: prompt, assistant: response]`` turn is rendered + tokenized
-    through the same :func:`_render_and_tokenize_for_capture` front half, then
+    Each ``[system, user: prompt, assistant: response]`` turn is rendered +
+    tokenized by :func:`_prepare_capture_batch` (or arrives pre-rendered), then
     the rows are **right-padded** to a common length and run through ONE forward
     pass.  Right-padding is the correct choice for capture (not generation):
     causal attention at a row's last-content position only sees positions to its
@@ -495,16 +447,13 @@ def _encode_and_capture_all_batch(
 
     Returns ``{layer_idx: (B, D)}`` in fp32 (on the model device).
 
-    Argument agreement (``responses`` / ``role`` / ``roles`` against
-    ``prompts``) is checked by :func:`_prepare_capture_batch`, which is the
-    only consumer of those arguments; the pre-rendered branch instead checks
-    the one alignment it does consume.
+    Argument agreement (``responses`` / ``roles`` against ``prompts``) is
+    checked by :func:`_prepare_capture_batch`; the pre-rendered branch checks
+    the one alignment it consumes.
     """
     if rendered is None:
         rendered_rows = _prepare_capture_batch(
-            tokenizer, prompts, responses,
-            role=role, roles=roles, model_type=model_type,
-            system_msg=system_msg,
+            tokenizer, prompts, responses, roles=roles, model_type=model_type,
         )
     else:
         if len(rendered) != len(prompts):
@@ -555,12 +504,16 @@ def _prepare_capture_batch(
     prompts: "Sequence[str | list[dict[str, str]]]",
     responses: Sequence[str],
     *,
-    role: str | None = None,
     roles: Sequence[str | None] | None = None,
     model_type: str | None = None,
-    system_msg: str = _LENGTH_DIRECTIVE,
 ) -> list[tuple[torch.Tensor, int]]:
-    """Render/tokenize capture rows once for reuse across packing and retries."""
+    """Render/tokenize capture rows once for reuse across packing and retries.
+
+    Returns ``(ids [1, T] on CPU, content_end)`` per row, where
+    ``content_end`` is the response's last non-special token — chat templates
+    append trailing markers (Llama's ``<|eot_id|>``, Gemma's ``<end_of_turn>``,
+    Qwen's ``<|im_end|>``) whose hidden states are disconnected from content.
+    """
     if len(prompts) != len(responses):
         raise ValueError(
             "capture preparation needs len(prompts) == len(responses) "
@@ -571,55 +524,31 @@ def _prepare_capture_batch(
             "capture preparation needs len(roles) == len(prompts) "
             f"({len(roles)} != {len(prompts)})"
         )
-    if roles is not None and role is not None:
-        raise ValueError("capture preparation accepts role= or roles=, not both")
-    row_roles = roles if roles is not None else [role] * len(prompts)
+    row_roles = roles if roles is not None else [None] * len(prompts)
     skip = special_token_ids(tokenizer)
     texts = [
         _render_capture_text(
-            tokenizer, prompt, response, role=row_role,
-            model_type=model_type, system_msg=system_msg,
+            tokenizer, prompt, response, role=row_role, model_type=model_type,
         )
         for prompt, response, row_role in zip(
             prompts, responses, row_roles, strict=True,
         )
     ]
-    # Fast tokenizers amortize normalization/pretokenization over the full
-    # corpus. Keep a strict fallback for minimal/test tokenizers and custom
-    # implementations that accept only scalar strings.
-    try:
-        encoded = tokenizer(texts, add_special_tokens=False)["input_ids"]
-        if isinstance(encoded, torch.Tensor):
-            encoded = encoded.tolist()
-        if len(encoded) != len(texts) or any(
-            not isinstance(row, (list, tuple)) for row in encoded
-        ):
-            raise TypeError("batch tokenizer returned an unexpected shape")
-        rows: list[tuple[torch.Tensor, int]] = []
-        for token_row in encoded:
-            values = [int(token) for token in token_row]
-            if not values:
-                bos_id = tokenizer.bos_token_id
-                if bos_id is None:
-                    bos_id = tokenizer.eos_token_id or 0
-                values = [int(bos_id)]
-            ids = torch.tensor([values], dtype=torch.long)
-            rows.append((
-                ids, last_content_index(values, tokenizer, skip=skip),
-            ))
-        return rows
-    except (TypeError, ValueError, RuntimeError, KeyError):
-        pass
-    return [
-        _render_and_tokenize_for_capture(
-            tokenizer, prompt, response,
-            role=row_role, model_type=model_type, system_msg=system_msg,
-            special_ids=skip,
-        )
-        for prompt, response, row_role in zip(
-            prompts, responses, row_roles, strict=True,
-        )
-    ]
+    # One batched call amortizes normalization/pretokenization over the corpus.
+    encoded = tokenizer(texts, add_special_tokens=False)["input_ids"]
+    rows: list[tuple[torch.Tensor, int]] = []
+    for token_row in encoded:
+        values = [int(token) for token in token_row]
+        if not values:
+            bos_id = tokenizer.bos_token_id
+            if bos_id is None:
+                bos_id = tokenizer.eos_token_id or 0
+            values = [int(bos_id)]
+        rows.append((
+            torch.tensor([values], dtype=torch.long),
+            last_content_index(values, tokenizer, skip=skip),
+        ))
+    return rows
 
 
 def _render_capture_text(
@@ -629,9 +558,14 @@ def _render_capture_text(
     *,
     role: str | None = None,
     model_type: str | None = None,
-    system_msg: str = _LENGTH_DIRECTIVE,
 ) -> str:
-    """Render one conversational capture row without tokenizing it."""
+    """Render one ``[system, *history, assistant]`` capture row, untokenized.
+
+    The system turn is the shared :data:`_LENGTH_DIRECTIVE` (the framing the
+    corpus was generated under, common-mode against neutral).  ``prompt`` is a
+    single user turn or a multi-turn history (templated capture); ``role``
+    substitutes the assistant label for a persona-baselined fit.
+    """
     history: list[dict[str, str]] = (
         [{"role": "user", "content": prompt}] if isinstance(prompt, str)
         else [dict(t) for t in prompt]
@@ -640,10 +574,7 @@ def _render_capture_text(
         kwargs: dict[str, Any] = {}
         if "enable_thinking" in (getattr(tokenizer, "chat_template", "") or ""):
             kwargs["enable_thinking"] = False
-        messages = []
-        if system_msg:
-            messages.append({"role": "system", "content": system_msg})
-        messages.extend(history)
+        messages = [{"role": "system", "content": _LENGTH_DIRECTIVE}, *history]
         messages.append({"role": "assistant", "content": response})
         if role is None:
             return tokenizer.apply_chat_template(
@@ -651,7 +582,7 @@ def _render_capture_text(
             )
         if model_type is None:
             raise ValueError(
-                "_render_and_tokenize_for_capture: role= requires model_type= "
+                "capture rendering: role= requires model_type= "
                 "so the family's role-header registry entry can be looked up"
             )
         from drowse.model.role_templates import apply_with_role
@@ -661,58 +592,7 @@ def _render_capture_text(
             add_generation_prompt=False, tokenize=False, **kwargs,
         )
     hist_text = "\n".join(turn["content"] for turn in history)
-    return (
-        f"{system_msg}\n{hist_text}\n{response}"
-        if system_msg else f"{hist_text}\n{response}"
-    )
-
-
-def _render_and_tokenize_for_capture(
-    tokenizer: Any,
-    prompt: "str | list[dict[str, str]]",
-    response: str,
-    *,
-    role: str | None = None,
-    model_type: str | None = None,
-    system_msg: str = _LENGTH_DIRECTIVE,
-    special_ids: set[int] | None = None,
-) -> tuple[torch.Tensor, int]:
-    """Render a ``[system, *history, assistant]`` turn + tokenize, locating the last content token.
-
-    The shared front half of :func:`_encode_and_capture_all`.  Conversational
-    (4.0 / A2) capture: ``response`` is an assistant turn answering ``prompt``,
-    rendered under ``system_msg`` (the shared :data:`_LENGTH_DIRECTIVE` by
-    default, matching generation; ``""`` drops the system turn) with the standard
-    assistant label.  ``prompt`` is either a single user-turn ``str`` (the A2
-    default) or a multi-turn history ``list[{role, content}]`` (templated
-    capture — the slotted assistant turn rides a real conversation prefix);
-    either way the assistant ``response`` is appended as the final turn.
-    ``role`` (when set) substitutes a custom assistant-role label via
-    :func:`drowse.model.role_templates.apply_with_role` for the persona-baselined
-    fit; ``role=None`` is the swap-back default.  Returns ``(ids [1, T] on
-    CPU, content_end)`` where ``content_end`` is the response's last
-    non-special token — the canonical pooling position.
-    """
-    text = _render_capture_text(
-        tokenizer, prompt, response, role=role,
-        model_type=model_type, system_msg=system_msg,
-    )
-    enc = tokenizer(text, return_tensors="pt", add_special_tokens=False)
-    ids = enc["input_ids"]
-    if ids.numel() == 0:
-        bos_id = tokenizer.bos_token_id
-        if bos_id is None:
-            bos_id = tokenizer.eos_token_id or 0
-        ids = torch.tensor([[bos_id]])
-    # Last non-special token — chat templates append trailing markers (Llama's
-    # <|eot_id|>, Gemma's <end_of_turn>, Qwen's <|im_end|>) whose hidden states
-    # are disconnected from content.  ``last_content_index`` is the canonical
-    # walkback (skips ``all_special_ids`` + ``added_tokens_encoder``), shared by
-    # every single-state readout so the pooling position is defined once.
-    content_end = last_content_index(
-        ids[0].tolist(), tokenizer, skip=special_ids,
-    )
-    return ids, content_end
+    return f"{_LENGTH_DIRECTIVE}\n{hist_text}\n{response}"
 
 
 def _load_json_with_override(user_path: Path, resource_name: str) -> list[str]:
@@ -786,7 +666,7 @@ def compute_neutral_activations(
 
     Last non-special-token pooling, fp32.  The ``(prompt, response)`` pairs are
     captured in **batched chunks** (:func:`_encode_and_capture_all_batch`, one
-    forward per ``_CAPTURE_BATCH`` pairs) rather than one forward per pair, and
+    forward per up to ``_CAPTURE_BATCH_MAX`` pairs) rather than one per pair, and
     the MPS allocator flush is amortized to once per chunk.  Returns one stacked
     tensor per layer (rows = pairs, original order preserved).  This is the
     single per-model neutral artifact: the Mahalanobis whitener's covariance is
@@ -1032,7 +912,7 @@ def fold_directions_to_subspace(
     # CUDA); a CPU-default ``node_coords`` would then mismatch the on-device
     # ``basis`` inside ``synthesize_subspace`` (``c_i @ B_i``).  ``ν`` is moved to
     # the same device too so the neutral-anchor projection stays co-located.
-    dev = directions[present[0]].device if present else torch.device("cpu")
+    dev = directions[present[0]].device
 
     layers: dict[int, "LayerSubspace"] = {}
     mahalanobis_share: dict[int, float] = {}
@@ -1094,26 +974,17 @@ def is_foldable_vector_manifold(manifold: "Manifold") -> bool:
 
 
 def folded_directions(manifold: "Manifold") -> dict[int, torch.Tensor]:
-    """Baked-direction view of a folded (affine ``R = 1``) vector manifold.
+    """Direction view of a folded (affine ``R = 1``) vector manifold.
 
-    Returns ``{L: δ̂_L · share_L}`` — the steering-vector-equivalent baked
-    directions: the per-layer unit direction scaled by its Mahalanobis
-    share, i.e. the per-layer share-weighted direction (``‖baked_L‖ ∝
-    ‖δ_L‖_M``), matching the (now-removed) DiM bake per layer.  The
-    global per-concept scale differs (the folded share is the un-normalized
-    ``‖δ_L‖_M``, not the ``ref_norm``-weighted normalized share today's bake
-    folds in), so this view is *exact* for scale-invariant ops — per-layer and
-    aggregate cosine, ``manifold compare``/``manifold why`` — and merely
-    proportional for cross-concept magnitude (``merge`` / GGUF export, which
-    migrate to read the folded artifact natively).
-
-    Lets the unified folded Manifold back the direction-view API
-    (``Profile``-returning ``extract()``, ``manifold compare``/``manifold why``) without a
-    second *stored* representation — the concept's only on-disk artifact stays
-    the folded Manifold; this is a downstream in-memory view.
+    Returns ``{L: δ̂_L · share_L}`` — each layer's unit direction scaled by its
+    Mahalanobis share — the in-memory steering-vector shape behind
+    ``extract()``'s :class:`Profile`, ``manifold compare``/``why``, ``merge``,
+    and GGUF export.  The manifold stays the only stored artifact.  Exact for
+    scale-invariant reads (per-layer and aggregate cosine); proportional for
+    cross-concept magnitude.
 
     Raises :class:`ValueError` on a curved or multi-dim manifold — the
-    single-direction view is only meaningful for a folded ``R = 1`` vector.
+    single-direction view is only meaningful for an ``R = 1`` ray.
     """
     out: dict[int, torch.Tensor] = {}
     manifold.validate_runtime_geometry()

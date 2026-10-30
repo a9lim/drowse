@@ -40,12 +40,14 @@ class _CaptureTokenizer:
     added_tokens_encoder: dict[str, int] = {}
 
     def __call__(
-        self, text: str, *, return_tensors: str = "pt",
-        add_special_tokens: bool = False,
-    ) -> dict[str, torch.Tensor]:
-        del return_tensors, add_special_tokens
-        ids = [1 + (ord(char) % 97) for char in text] or [1]
-        return {"input_ids": torch.tensor([ids], dtype=torch.long)}
+        self, texts: list[str], *, add_special_tokens: bool = False,
+    ) -> dict[str, list[list[int]]]:
+        del add_special_tokens
+        return {
+            "input_ids": [
+                [1 + (ord(char) % 97) for char in text] or [1] for text in texts
+            ],
+        }
 
 
 def _stub_encoder(

@@ -1368,7 +1368,6 @@ class ManifoldExtractionPipeline:
             progress=progress,
         )
         node_coords = geometry.node_coords
-        node_params = geometry.node_params
         progress(f"Fitting RBF interpolant across {len(fit_layers)} layers...")
         rbf_smoothing: dict[int, dict[str, float]] = {}
         rbf_plan: Any = None
@@ -1379,7 +1378,6 @@ class ManifoldExtractionPipeline:
             node_coords = _neutral_centered_layout(
                 node_coords, whitened, handle.layer_means, fit_layers,
             )
-            node_params = geometry.domain.embed(node_coords)
         else:
             layer_subs, shares, rbf_smoothing, rbf_plan = self._fit_curved_layers(
                 stacks, whitened, geometry, fit_layers,

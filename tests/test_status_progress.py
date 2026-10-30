@@ -64,11 +64,10 @@ def test_neutral_loader_threads_on_progress_into_capture(
         eos_token_id = 2
 
         def __call__(
-            self, text: str, *, return_tensors: str,
-            add_special_tokens: bool = False,
-        ) -> dict[str, torch.Tensor]:
-            del return_tensors, add_special_tokens
-            return {"input_ids": torch.tensor([[3 + ord(c) % 31 for c in text]])}
+            self, texts: list[str], *, add_special_tokens: bool = False,
+        ) -> dict[str, list[list[int]]]:
+            del add_special_tokens
+            return {"input_ids": [[3 + ord(c) % 31 for c in text] for text in texts]}
 
     sink = _Sink()
     load_or_compute_neutral_activations(
