@@ -69,7 +69,7 @@ def _decode_tensor_component(value: str) -> str:
 
 # The trailing ``:<variant>`` scheme understood across selectors / runners.
 # One source of truth for the variant suffix grammar (this module owns the
-# tensor-filename variant scheme); ``store.selectors`` and ``cli.runners`` import it.
+# tensor-filename variant scheme); ``store.selectors`` and ``cli.verbs.manifold`` import it.
 VARIANT_SUFFIX_RE = re.compile(
     r"^(raw|sae(?:-[a-z0-9._-]+)?|role(?:-[a-z0-9._-]+)?|from(?:-[a-z0-9._-]+)?)$"
 )
