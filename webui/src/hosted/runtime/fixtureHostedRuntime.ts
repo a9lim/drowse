@@ -170,6 +170,7 @@ const capabilities: RuntimeCapabilities = {
 };
 
 class FixtureHostedController implements HostedController {
+  constructor(private readonly withInstruments = false) {}
   private listeners = new Set<(snapshot: RuntimeSnapshot) => void>();
   private installed = new Set<string>();
   private installedPacks = new Set<string>();
@@ -193,7 +194,14 @@ class FixtureHostedController implements HostedController {
   }
 
   async catalog(): Promise<VerifiedCatalog> {
-    return catalog;
+    if (!this.withInstruments) return catalog;
+    const result = structuredClone(catalog);
+    result.document.models[0].variants[0].packs.push({
+      ...fixtureModel.variants[0].packs[0], id: "fixture-jlens", kind: "jlens",
+      displayName: "Fixture J-lens", bytes: 1000, required: false,
+    });
+    result.exactBytes = new TextEncoder().encode(JSON.stringify(result.document));
+    return result;
   }
 
   recommend(
@@ -257,6 +265,11 @@ class FixtureHostedController implements HostedController {
     modelVariantId: string,
     packId: string,
   ): Promise<PackDownloadWorkerResult> {
+    if (this.withInstruments && modelVariantId === VARIANT_ID && packId === "fixture-jlens") {
+      this.installedPacks.add(packId);
+      this.patch({ installedPackIds: [...this.installedPacks] });
+      return { modelVariantId, packId, installed: true, cancelled: false };
+    }
     throw new Error(
       `The development fixture has no optional pack ${packId} for ${modelVariantId}`,
     );
@@ -348,7 +361,7 @@ class FixtureHostedController implements HostedController {
 }
 
 export function createFixtureHostedRuntime(withInstruments = false, baseModel = false): HostedRuntimeBundle {
-  const controller = new FixtureHostedController();
+  const controller = new FixtureHostedController(withInstruments);
   const runtime = new DeterministicFakeRuntime({
     ...(baseModel ? { rootId: crypto.randomUUID(), tokenDelayMs: 150 } : {}),
     modelId: baseModel ? "fixture/pythia-70m-base" : VARIANT_ID,

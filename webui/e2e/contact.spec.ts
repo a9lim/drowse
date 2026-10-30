@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
@@ -43,9 +44,11 @@ test("feedback opens below Help, traps focus, validates, and preserves a closed 
   const dialog = page.getByRole("dialog", { name: "Submit Feedback", exact: true });
   expect(await page.locator(".sidebar-links button").last().evaluate(button => button.previousElementSibling?.textContent)).toContain("Help and shortcuts");
   await expect(dialog.getByRole("link", { name: /Contact us/ })).toHaveAttribute("href", "/contact");
-  await expect(page.getByRole("button", { name: "Close feedback" })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Side panel", exact: true })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  expect(await dialog.evaluate(node => node.contains(document.activeElement))).toBe(true);
+  await expect(dialog.getByRole("link", { name: "contact@drowse.ai", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Side panel", exact: true })).toBeFocused();
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Title", exact: true })).toBeFocused();
   await expect(page.getByText("Add a short title.")).toBeVisible();
@@ -266,7 +269,7 @@ test("contact categories, success, and mobile layout are accessible", async ({ p
     await route.fulfill({ status: 200, contentType: "application/json", headers: { "Access-Control-Allow-Origin": dev }, body: JSON.stringify({ status: "sent", reference: body.requestId }) });
   });
   for (const theme of ["dark", "light"]) {
-    await page.getByRole("button", { name: theme === "dark" ? "Dark" : "Light", exact: true }).click();
+    await setAppearance(page, theme);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     for (const width of [320, 390, 768, 1440]) {
       await page.setViewportSize({ width, height: 900 });

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
+import ts from "typescript";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const server = await createServer({
@@ -1147,6 +1149,69 @@ try {
     (error) => error.name === "AbortError",
   );
   assert.equal(calls.at(-1)[0], "unload");
+
+  const { BrowserManifoldFitting } = await server.ssrLoadModule(
+    "/src/hosted/runtime/browserManifoldFitting.ts",
+  );
+  const factorySource = ts.createSourceFile("browserModelBackend.ts", await readFile(
+    new URL("../src/hosted/runtime/browserModelBackend.ts", import.meta.url), "utf8",
+  ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const factoryNode = factorySource.statements.find((node) =>
+    ts.isFunctionDeclaration(node) && node.name?.text === "createDrowseBrowserModelBackend");
+  assert.ok(factoryNode);
+  const factoryCode = ts.transpileModule(factoryNode.getText(factorySource).replace(/^export\s+/, ""), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  let workerStarts = 0;
+  let workerTerminations = 0;
+  const originalWorker = globalThis.Worker;
+  const originalFittingRequest = BrowserManifoldFitting.prototype.request;
+  const fittingInstances = new Set();
+  globalThis.Worker = class {
+    constructor() { workerStarts += 1; }
+    postMessage(request) {
+      queueMicrotask(() => this.onmessage?.({ data: {
+        protocolVersion: 1, requestId: request.requestId, kind: "result",
+        result: { operation: "center", rows: 1, columns: 1,
+          mean: new Float64Array([7]), centered: new Float64Array([0]) },
+      } }));
+    }
+    terminate() { workerTerminations += 1; }
+  };
+  BrowserManifoldFitting.prototype.request = function () {
+    fittingInstances.add(this);
+    return this.fittingWorker.run({ operation: "center", source: {
+      kind: "inline", rows: 1, columns: 1, values: new Float64Array([7]),
+    } });
+  };
+  try {
+    const createFactory = new Function(
+      "browserArtifactProducer", "DrowseWebLlmRuntime", "BrowserManifoldFitting",
+      "compilerBackedFittingDependencies", "DrowseWebLlmBackend",
+      `${factoryCode}\nreturn createDrowseBrowserModelBackend;`,
+    )(
+      () => ({ drowseVersion: "5.3.0-test", producerVersion: "test" }),
+      class {}, BrowserManifoldFitting, () => ({}),
+      class { constructor(_module, options) { this.options = options; } },
+    );
+    const composed = createFactory({}, {});
+    await composed.options.authoringRequest({});
+    await composed.options.authoringRequest({});
+    assert.equal(workerStarts, 1, "same-session authoring reuses its idle fitting worker");
+    composed.options.onUnload();
+    assert.equal(workerTerminations, 1, "unloading terminates fitting workers");
+    composed.options.onUnload();
+    await composed.options.authoringRequest({});
+    assert.equal(workerStarts, 2, "authoring after reload gets a usable fitting worker");
+    assert.equal(fittingInstances.size, 2, "a disposed fitter cannot be reused");
+    composed.options.onUnload();
+    assert.equal(workerTerminations, 2);
+  } finally {
+    for (const fitter of fittingInstances) fitter.dispose();
+    BrowserManifoldFitting.prototype.request = originalFittingRequest;
+    if (originalWorker === undefined) delete globalThis.Worker;
+    else globalThis.Worker = originalWorker;
+  }
 
   console.log("Drowse WebLLM backend composition checks passed");
 } finally {

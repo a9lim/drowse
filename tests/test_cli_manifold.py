@@ -119,7 +119,7 @@ def _cross_process_alignment_worker(
     )
 
     try:
-        start.wait(timeout=15)
+        start.wait(timeout=120)
         runners._load_or_fit_transfer_alignment(
             "shared/source", target, force=False, label="test",
             requested_layers=[0],
@@ -1416,7 +1416,7 @@ def test_cross_process_distinct_alignments_single_flight_shared_model_load(
 
     ctx = multiprocessing.get_context("spawn")
     load_count = ctx.Value("i", 0)
-    start = ctx.Barrier(2)
+    start = ctx.Barrier(3)
     errors = ctx.Queue()
 
     processes = [
@@ -1432,6 +1432,7 @@ def test_cross_process_distinct_alignments_single_flight_shared_model_load(
     try:
         for process in processes:
             process.start()
+        start.wait(timeout=120)
         for process in processes:
             process.join(timeout=20)
         timed_out = [process.name for process in processes if process.is_alive()]

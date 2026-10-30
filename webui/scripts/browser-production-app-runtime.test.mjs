@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { EventEmitter } from "node:events";
 import {
   classifyInstalledAppState,
+  clickOpen,
   createProductionAppCatalog,
   createProductionAppFailureReport,
-  isExpectedOfflineCatalogFailure,
+  isExpectedCatalogRefreshFailure,
   digestCanonical,
   isOfflineServiceWorkerMaintenanceRequest,
   isPublishedSaeDescriptionUrl,
@@ -17,8 +19,29 @@ import {
   parseSingleByteRange,
   requiredFeaturesForQuantization,
   stripHostedDevelopmentFixture,
+  trackIntentionalReload,
   validatorRuntimeLockArguments,
 } from "./browser-production-app-runtime-contract.mjs";
+
+test("model opening respects automatic loading and uses explicit controls only when needed", async () => {
+  for (const state of ["loading", "ready", "direct", "warning"]) {
+    const clicks = [];
+    const locator = (name, visible) => ({
+      waitFor: async () => { if (!visible) throw Error(`${name} is not visible`); },
+      click: async () => { clicks.push(name); },
+    });
+    const page = {
+      locator: selector => selector === ".shell" ? locator("ready", state === "ready")
+        : selector === ".runtime-gate.loading-pulse" ? locator("loading", state === "loading")
+        : { innerText: async () => state },
+      getByRole: (_, { name }) => name === "Open workbench" ? locator("open", state === "direct")
+        : name === "Review warning" ? locator("warning", state === "warning")
+        : locator("override", state === "warning"),
+    };
+    await clickOpen(page);
+    assert.deepEqual(clicks, state === "direct" ? ["open"] : state === "warning" ? ["warning", "override"] : []);
+  }
+});
 
 test("provider metadata access is limited to the selected model's exact public SAE dictionary", () => {
   const url = "https://www.neuronpedia.org/api/feature/gemma-3-1b-it/13-gemmascope-2-res-16k/396";
@@ -27,6 +50,11 @@ test("provider metadata access is limited to the selected model's exact public S
     assert.equal(isPublishedSaeDescriptionUrl(invalid, "gemma3-1b-instruct"), false);
   }
   assert.equal(isPublishedSaeDescriptionUrl(url, "gemma3-270m-instruct"), false);
+  const gemma4Url = "https://www.neuronpedia.org/api/feature/gemma-3-4b-it/17-gemmascope-2-res-16k/153";
+  assert.equal(isPublishedSaeDescriptionUrl(gemma4Url, "gemma3-4b-instruct"), true);
+  assert.equal(isPublishedSaeDescriptionUrl(gemma4Url, "gemma3-1b-instruct"), false);
+  assert.equal(isPublishedSaeDescriptionUrl(gemma4Url + "?prompt=hello", "gemma3-4b-instruct"), false);
+  assert.equal(isPublishedSaeDescriptionUrl(gemma4Url.replace("/153", "/16384"), "gemma3-4b-instruct"), false);
 });
 
 test("authoritative installed app state accepts verified onboarding or the exact loaded model", () => {
@@ -50,8 +78,9 @@ test("authoritative installed app state accepts verified onboarding or the exact
 test("production requirements select features from compute dtype", () => {
   assert.deepEqual(requiredFeaturesForQuantization("q4f16_1"), ["shader-f16"]);
   assert.deepEqual(requiredFeaturesForQuantization("q4f32_1"), []);
+  assert.deepEqual(requiredFeaturesForQuantization("q0f32"), []);
   assert.throws(
-    () => requiredFeaturesForQuantization("q0f32"),
+    () => requiredFeaturesForQuantization("q8f16"),
     /unsupported browser quantization/,
   );
 });
@@ -95,10 +124,42 @@ test("offline audit permits only failed refreshes of the exact signed catalog pa
     errorText: "net::ERR_INTERNET_DISCONNECTED",
     phase: "offline",
   };
-  assert.equal(isExpectedOfflineCatalogFailure(request, urls), true);
-  assert.equal(isExpectedOfflineCatalogFailure({ ...request, phase: "load" }, urls), false);
-  assert.equal(isExpectedOfflineCatalogFailure({ ...request, url: "https://example.com/prompt" }, urls), false);
-  assert.equal(isExpectedOfflineCatalogFailure({ ...request, errorText: "net::ERR_FAILED" }, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure(request, urls), true);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...request, phase: "load" }, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...request, url: "https://example.com/prompt" }, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...request, errorText: "net::ERR_FAILED" }, urls), false);
+  const aborted = { ...request, phase: "explicit-unload-reload", errorText: "net::ERR_ABORTED" };
+  assert.equal(isExpectedCatalogRefreshFailure(aborted, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...aborted, intentionalReload: true }, urls), true);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...aborted, intentionalReload: true, url: `${urls.catalogUrl}/weights` }, urls), false);
+  assert.equal(isExpectedCatalogRefreshFailure({ ...aborted, intentionalReload: true, errorText: "net::ERR_FAILED" }, urls), false);
+});
+
+test("deliberate reload tags old-document requests without excusing later active-document aborts", () => {
+  const page = new EventEmitter();
+  const frame = {};
+  page.mainFrame = () => frame;
+  const tracker = trackIntentionalReload(page);
+  const finished = {}, before = {}, during = {}, after = {};
+  page.emit("request", finished);
+  page.emit("requestfinished", finished);
+  page.emit("request", before);
+  const finish = tracker.begin();
+  page.emit("request", during);
+  page.emit("framenavigated", {});
+  page.emit("framenavigated", frame);
+  page.emit("request", after);
+  page.emit("requestfailed", before);
+  assert.equal(tracker.includes(finished), false);
+  assert.equal(tracker.includes(before), true);
+  assert.equal(tracker.includes(during), true);
+  assert.equal(tracker.includes(after), false);
+  finish();
+  const fallback = tracker.begin();
+  fallback();
+  const stillActive = {};
+  page.emit("request", stillActive);
+  assert.equal(tracker.includes(stillActive), false);
 });
 
 test("production-app arguments require only the four artifact directories", () => {
@@ -278,6 +339,37 @@ test("production-app catalog closes the runtime lock and pack bindings", () => {
   assert.equal(qwen4.document.models[0].variants[0].tier, "quality");
   assert.equal(qwen4.document.models[0].variants[0].id, "qwen3-4b-q4f16_1");
   assert.deepEqual(qwen4.document.models[0].variants[0].requirements.features, ["shader-f16"]);
+  const gemma4 = createProductionAppCatalog({
+    runtimeLock: { runtimeAbi: "drowse-web-runtime-v1", hookAbi: "post-block-residual-v4" },
+    lock: { ...lock, id: "gemma3-4b-instruct", quantization: "q4f32_1", thinkingProfile: null },
+    revision, modelFiles,
+    coreFiles: files("core_pack", "7".repeat(64)),
+    jlensFiles: files("instrument", "8".repeat(64)),
+    saeFiles: files("instrument", "9".repeat(64)),
+    contextTokens: 2048,
+    issuedAt: "2026-08-29T00:00:00.000Z",
+    expiresAt: "2026-08-30T00:00:00.000Z",
+  }).document.models[0];
+  assert.equal(gemma4.displayName, "Gemma 3 4B");
+  assert.equal(gemma4.variants[0].tier, "quality");
+  assert.equal(gemma4.variants[0].packs.length, 3);
+  assert.deepEqual(gemma4.variants[0].requirements.features, []);
+  const unquantizedGemma = createProductionAppCatalog({
+    runtimeLock: { runtimeAbi: "drowse-web-runtime-v1", hookAbi: "post-block-residual-v4" },
+    lock: { ...lock, id: "gemma3-270m-instruct", quantization: "q0f32", thinkingProfile: null },
+    revision,
+    modelFiles: modelFiles.map((file) => file.role === "weight" ? { ...file, bytes: 671_088_640 } : file),
+    coreFiles: files("core_pack", "7".repeat(64)),
+    jlensFiles: files("instrument", "8".repeat(64)),
+    saeFiles: files("instrument", "9".repeat(64)),
+    contextTokens: 2048,
+    issuedAt: "2026-08-29T00:00:00.000Z",
+    expiresAt: "2026-08-30T00:00:00.000Z",
+  }).document.models[0].variants[0];
+  assert.equal(unquantizedGemma.id, "gemma3-270m-instruct-q0f32");
+  assert.deepEqual(unquantizedGemma.requirements.features, []);
+  assert.equal(unquantizedGemma.requirements.limits.maxBufferSize, 1_073_741_824);
+  assert.equal(unquantizedGemma.requirements.limits.maxStorageBufferBindingSize, 1_073_741_824);
 });
 
 test("temporary production entry strips only the guarded development fixture", () => {

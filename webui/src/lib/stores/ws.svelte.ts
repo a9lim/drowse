@@ -59,6 +59,7 @@ import {
   enqueuePending,
   isPendingBusy,
   nextPendingId,
+  reservePendingGeneration,
 } from "./pending.svelte";
 import {
   MAX_SPARKLINE,
@@ -105,6 +106,7 @@ const wsConn: RuntimeConnection = {
 };
 
 let firstDecodeTokenAt: number | null = null;
+let activeRequestId: string | null = null;
 
 export function onWsMessage(cb: WsListener): () => void {
   wsConn.listeners.add(cb);
@@ -462,6 +464,7 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
       return;
     }
     case "started": {
+      activeRequestId = msg.request_id ?? null;
       genStatus.active = true;
       genStatus.replay = null;
       genStatus.tokensSoFar = 0;
@@ -672,7 +675,8 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
     }
     case "done": {
       adoptStreamingNode(msg.node_id);
-      genStatus.active = false;
+      const lastSibling = msg.sibling_index + 1 >= msg.sibling_count || msg.result.finish_reason === "cancelled";
+      genStatus.active = !lastSibling;
       genStatus.finishedAt = performance.now();
       genStatus.finishReason = msg.result?.finish_reason ?? "stop";
       // Probe rack — end-of-gen aggregate (the settled ``ProbeReading`` per
@@ -686,6 +690,12 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
       const turn = _currentWriteTurn();
       if (turn) {
         turn.finishReason = msg.result?.finish_reason ?? "stop";
+        if (msg.result?.applied_steering !== undefined) {
+          turn.appliedSteering = msg.result.applied_steering;
+        }
+        if (msg.result?.measurements?.scores) {
+          turn.aggregateReadings = msg.result.measurements.scores;
+        }
         turn.tokensSoFar = msg.result?.tokens ?? genStatus.tokensSoFar;
         // Logit-pass: per-turn mean chosen-token logprob (response span
         // only).  Null when capture wasn't live; the inline surprise
@@ -727,7 +737,7 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
         abState.pendingRoleLabel = null;
         // Drain pending actions queued during the shadow gen — same
         // gen-active gate the steered branch uses.
-        void drainNextPendingAction();
+        if (!msg.request_id && lastSibling) void drainNextPendingAction();
         return;
       }
 
@@ -738,6 +748,7 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
       // maxActApprox) for features the live top-k surfaced this
       // generation.  Between generations only, never per token.
       void backfillSaeMeta();
+      if (msg.request_id || !lastSibling) return;
 
       // Automatic comparisons are stateless for every mode. Start only after
       // the transport has fully released this request; sending from inside
@@ -752,6 +763,7 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
       return;
     }
     case "error": {
+      if (msg.request_id && activeRequestId !== null && msg.request_id !== activeRequestId) return;
       genStatus.active = false;
       genStatus.finishedAt = performance.now();
       adoptStreamingNode(msg.node_id);
@@ -800,7 +812,14 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
       // Drain the next pending action even on error so the UI doesn't
       // get stuck in "changes pending" forever.  The failed send
       // already surfaced as the system message above.
-      void drainNextPendingAction();
+      if (!msg.request_id) void drainNextPendingAction();
+      return;
+    }
+    case "request_complete": {
+      if (activeRequestId === msg.request_id) {
+        genStatus.active = false;
+        activeRequestId = null;
+      }
       return;
     }
   }
@@ -926,6 +945,7 @@ async function sendSubmitNow(
   generatedRole: ChatRole | null,
   opts: Omit<SendSubmitOpts, "replaceSlot"> = {},
 ): Promise<void> {
+  return dispatchUiGeneration(async () => {
   if (!loomTree.loaded) {
     await refreshLoomTree();
     if (!loomTree.loaded) {
@@ -946,7 +966,7 @@ async function sendSubmitNow(
     text,
     authored_role: authoredRole,
     generated_role: generatedRole,
-    steering: steering || null,
+    steering,
     sampling,
     thinking: samplingState.thinking ?? false,
     raw: opts.raw ?? false,
@@ -960,6 +980,7 @@ async function sendSubmitNow(
       : {}),
   };
   channel.send(payload);
+  });
 }
 
 /** Send a bare-continuation generate request over the WS — the
@@ -975,6 +996,7 @@ async function sendSubmitNow(
 export async function sendGenerate(
   opts: SendGenerateOpts = {},
 ): Promise<void> {
+  return queueUiGeneration("generate", async () => {
   // The first server snapshot may legitimately be revision 0.  Require the
   // explicit readiness bit instead of guessing from the revision, and retain
   // this defensive fetch even though App gates user interaction during boot:
@@ -988,8 +1010,6 @@ export async function sendGenerate(
   const channel = await ensureRuntimeChannel();
   const steering =
     opts.steering === undefined ? currentSteeringExpression() : opts.steering;
-  const steeringPayload =
-    opts.steering === undefined ? (steering || null) : steering;
   // Build the sampling payload — seed + the advanced extras (penalties,
   // stop, logit-bias, return_top_k).  temperature / top-p / top-k /
   // max-tokens are PATCHed to the session as the user edits them, so the
@@ -1004,7 +1024,7 @@ export async function sendGenerate(
     // A continue: no committed turn, the model speaks next from the
     // anchor node.
     input: null,
-    steering: steeringPayload,
+    steering,
     sampling,
     // Coerce the current family-level automatic setting to explicit ``false`` so the
     // unchecked checkbox really means "no thinking" — the server's
@@ -1027,6 +1047,7 @@ export async function sendGenerate(
       : {}),
   };
   channel.send(payload);
+  });
 }
 
 /** Logit fork — regenerate an existing assistant node as a sibling with
@@ -1043,6 +1064,7 @@ export async function sendFork(
   altTokenId: number,
   resample = false,
 ): Promise<void> {
+  return queueUiGeneration("token fork", async () => {
   const channel = await ensureRuntimeChannel();
   const payload: WSClientMessage = {
     type: "generate",
@@ -1052,6 +1074,7 @@ export async function sendFork(
     ...(resample ? { fork_seed: crypto.getRandomValues(new Uint32Array(1))[0]! & 0x7fffffff } : {}),
   };
   channel.send(payload);
+  });
 }
 
 /** Replace the selected raw token with arbitrary authored text, then sample
@@ -1061,6 +1084,7 @@ export async function sendTextFork(
   rawIndex: number,
   replacementText: string,
 ): Promise<void> {
+  return queueUiGeneration("text fork", async () => {
   const channel = await ensureRuntimeChannel();
   const payload: WSClientMessage = {
     type: "generate",
@@ -1069,6 +1093,28 @@ export async function sendTextFork(
     fork_replacement_text: replacementText,
   };
   channel.send(payload);
+  });
+}
+
+function queueUiGeneration(label: string, send: () => Promise<void>): Promise<void> {
+  if (isPendingBusy()) {
+    enqueuePending({ label, text: null, apply: () => dispatchUiGeneration(send),
+      awaitsGen: true, rebuild: null });
+    return Promise.resolve();
+  }
+  return dispatchUiGeneration(send);
+}
+
+async function dispatchUiGeneration(send: () => Promise<void>): Promise<void> {
+  const release = reservePendingGeneration();
+  const unsubscribe = onWsMessage((message) => {
+    if ((message.type === "started" || message.type === "error") && !message.request_id) {
+      release();
+      unsubscribe();
+    }
+  });
+  try { await send(); }
+  catch (error) { unsubscribe(); release(); throw error; }
 }
 
 export function sendStop(): void {

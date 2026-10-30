@@ -38,8 +38,6 @@
   );
 
   const controller = getHostedController();
-  const contributeUrl = typeof __DROWSE_SOURCE_URL__ === "string"
-    ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
   const capabilities = getRuntimeCapabilities();
   let snapshot = $state<RuntimeSnapshot>(controller?.snapshot ?? initialRuntimeSnapshot());
   let storage = $state(capabilities?.storage ?? null);
@@ -604,7 +602,7 @@
       <nav aria-label="Project links">
         <span>GNU AGPL v3 or later</span>
         <span aria-hidden="true">-</span>
-        <a href={contributeUrl} target="_blank" rel="noreferrer">Contribute</a>
+        <a href="https://drowse.ai/contribute" target="_blank" rel="noreferrer">Contribute</a>
         <span aria-hidden="true">-</span>
         <a href="/credits" target="_blank" rel="noreferrer">Credits</a>
       </nav>
@@ -636,7 +634,7 @@
   button.quiet { background: transparent; color: var(--fg-muted); }
   button.danger { color: var(--accent-red); background: var(--danger-bg); }
   button.danger:hover:not(:disabled) { color: var(--accent-red); background: var(--danger-hover); }
-  button:disabled { opacity: 0.48; }
+  button:disabled { opacity: var(--disabled-opacity); }
   code { color: var(--accent-amber); font-family: var(--font-mono); overflow-wrap: anywhere; }
   .facts { display: grid; gap: var(--space-2); margin: var(--space-5) 0 0; }
   .facts.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }

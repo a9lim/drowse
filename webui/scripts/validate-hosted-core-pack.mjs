@@ -6,6 +6,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "vite";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
+import { collectPackArtifacts } from "./assemble-hosted-pack.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 if (!options) {
@@ -63,7 +64,7 @@ try {
     vite.ssrLoadModule("/src/hosted/runtime/browserCorePack.ts"),
   ]);
   const identitySha256 = runtimeIdentitySha256(runtimeIdentity);
-  let tensorSha256 = null;
+  const tensorSha256ByContext = {};
   const coreArtifacts = [];
   for (const contextTokens of lock.contextProfiles) {
     const contextDirectory = resolve(directory, String(contextTokens));
@@ -72,8 +73,7 @@ try {
       readFile(resolve(contextDirectory, "neutral-whitener.json")),
     ]);
     const currentTensorSha256 = sha256(tensorBytes);
-    tensorSha256 ??= currentTensorSha256;
-    assert.equal(currentTensorSha256, tensorSha256, "context whiteners must share exact tensors");
+    tensorSha256ByContext[contextTokens] = currentTensorSha256;
     const sidecar = JSON.parse(sidecarBytes);
     assert.deepEqual(Object.keys(sidecar).sort(), [
       "context_binding_sha256",
@@ -125,15 +125,27 @@ try {
     );
   }
   const manifoldDirectory = resolve(directory, "manifolds");
-  const archives = (await readdir(manifoldDirectory)).filter((name) => name.endsWith(".drowse"));
-  assert.equal(archives.length, 1, "core pack must contain exactly one Drowse manifold archive");
-  const archiveBytes = await readFile(resolve(manifoldDirectory, archives[0]));
-  const verified = await validateDrowseArchive(new Blob([archiveBytes]));
-  assert.equal(verified.fittedArtifacts.length, 1);
-  assert.equal(verified.fittedArtifacts[0].modelId, lock.sourceRepository);
-  assert.equal(verified.fittedArtifacts[0].modelFingerprint, identitySha256);
-  assert.equal(verified.fittedArtifacts[0].variant, "raw");
-  coreArtifacts.push(artifact(`manifolds/${archives[0]}`, archiveBytes));
+  const archives = (await readdir(manifoldDirectory, { recursive: true }))
+    .filter((name) => name.endsWith(".drowse"));
+  assert.ok(archives.length > 0, "core pack must contain a Drowse manifold archive");
+  const manifoldSha256ByPath = {};
+  const manifoldIdentities = new Set();
+  for (const path of archives) {
+    const archiveBytes = await readFile(resolve(manifoldDirectory, path));
+    const verified = await validateDrowseArchive(new Blob([archiveBytes]));
+    assert.equal(verified.fittedArtifacts.length, 1);
+    assert.equal(verified.fittedArtifacts[0].modelId, lock.sourceRepository);
+    assert.equal(verified.fittedArtifacts[0].modelFingerprint, identitySha256);
+    assert.equal(verified.fittedArtifacts[0].variant, "raw");
+    manifoldIdentities.add(verified.primaryIdentity.join("/"));
+    manifoldSha256ByPath[path] = sha256(archiveBytes);
+    coreArtifacts.push(artifact(`manifolds/${path}`, archiveBytes));
+  }
+  assert.equal(manifoldIdentities.size, 1, "core pack must contain exactly one manifold identity");
+  const actualArtifacts = await collectPackArtifacts(directory);
+  assert.deepEqual(actualArtifacts.files.map((file) => file.path).sort(),
+    coreArtifacts.map((entry) => entry.manifest.path).sort(),
+    "core pack contains files outside the validated artifact closure");
   const contextProfiles = lock.contextProfiles.map((contextTokens) => ({
     contextTokens,
     bindingSha256: contextBindingSha256(identitySha256, contextTokens),
@@ -164,9 +176,9 @@ try {
     modelId,
     runtimeLockSource,
     identitySha256,
-    tensorSha256,
-    manifoldSha256: sha256(archiveBytes),
-    manifold: verified.primaryIdentity.join("/"),
+    tensorSha256ByContext,
+    manifoldSha256ByPath,
+    manifold: [...manifoldIdentities][0],
     contexts: lock.contextProfiles,
     layers: lock.layerMap.length,
   }, null, 2)}\n`);

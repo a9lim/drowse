@@ -211,7 +211,7 @@
     padding-inline: var(--space-sm) calc(var(--control-compact) + var(--space-xs));
     border: 0; border-radius: inherit; outline: 0; background: transparent; color: var(--fg); font: inherit;
     font-family: var(--font-mono); font-size: var(--text-sm); }
-  input:disabled, input:disabled + .caret { opacity: .5; cursor: not-allowed; }
+  input:disabled, input:disabled + .caret { opacity: var(--disabled-opacity); cursor: not-allowed; }
   .caret { position: absolute; inset-inline-end: 0; display: grid; place-items: center; width: var(--control-compact);
     height: 100%; padding: 0; border: 0; border-radius: inherit; background: transparent; background-image: none !important; color: var(--fg-muted);
     cursor: pointer; transition: color var(--dur-fast) var(--ease-out),

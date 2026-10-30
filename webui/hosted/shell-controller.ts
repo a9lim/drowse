@@ -11,6 +11,7 @@ import {
 import type {
   CatalogInstrumentPack,
   DownloadProgress,
+  HostedController,
   ModelRecommendation,
   ModelVariant,
   RuntimeCapabilities,
@@ -20,6 +21,8 @@ import {
   conservativeDownlinkBytesPerSecond,
   roundedEtaRange,
 } from "../src/lib/runtime/eta";
+import { measuredDecodeTokensPerSecond } from "../src/lib/runtime/recommendation";
+import { formatBytes } from "../src/lib/format/bytes";
 import { optionalPackHardwareBlock } from "../src/hosted/runtime/optionalPackCompatibility";
 import { hostedNetworkIsOffline } from "../src/hosted/runtime/networkState";
 import { userFacingError } from "../src/lib/runtime/userFacingError";
@@ -51,7 +54,7 @@ const models: HostedModelOption[] = [
     sourceUrl: "https://huggingface.co/unsloth/gemma-3-1b-it",
     license: "Gemma",
     size: "about 0.9 GB with its tools",
-    context: "Short conversations",
+    context: "Best for short chats",
     contextTokens: 2048,
     fit: "uncertain",
     installed: false,
@@ -71,7 +74,7 @@ const models: HostedModelOption[] = [
     sourceUrl: "https://huggingface.co/unsloth/gemma-3-4b-it",
     license: "Gemma",
     size: "about 2.9 GB with its tools",
-    context: "Short conversations",
+    context: "Best for short chats",
     contextTokens: 2048,
     fit: "uncertain",
     installed: false,
@@ -91,7 +94,7 @@ const models: HostedModelOption[] = [
     sourceUrl: "https://huggingface.co/Qwen/Qwen3-1.7B",
     license: "Apache-2.0",
     size: "about 1.01 GB",
-    context: "Short conversations",
+    context: "Best for short chats",
     contextTokens: 2048,
     fit: "uncertain",
     installed: false,
@@ -111,7 +114,7 @@ const models: HostedModelOption[] = [
     sourceUrl: "https://huggingface.co/Qwen/Qwen3-4B",
     license: "Apache-2.0",
     size: "about 2.3 GB",
-    context: "Short conversations",
+    context: "Best for short chats",
     contextTokens: 2048,
     fit: "uncertain",
     installed: false,
@@ -209,6 +212,57 @@ export function createShellController(
   });
   const runtime = runtimeBundle.controller;
   runtimeSnapshot = runtime.snapshot;
+  // Optional runtime support for reporting and removing kept partial downloads.
+  const partialDownloads = runtime as HostedController & Partial<PartialDownloadRuntime>;
+  const partialDownloadsSupported =
+    typeof partialDownloads.partialDownloadBytes === "function" &&
+    typeof partialDownloads.discardPartialDownload === "function";
+
+  const storageSnapshot = (
+    storage: RuntimeCapabilities["storage"],
+    persisted = storage.persisted ?? undefined,
+  ): NonNullable<HostedShellSnapshot["storage"]> => ({
+    availableBytes: storage.availableBytes ?? undefined,
+    quotaBytes: storage.quotaBytes ?? undefined,
+    usageBytes: storage.usageBytes ?? undefined,
+    persisted,
+  });
+
+  const refreshStorageEstimate = async () => {
+    try {
+      const storage = await runtime.refreshStorage();
+      publish({
+        ...snapshot,
+        storage: storageSnapshot(
+          storage,
+          snapshot.storage?.persisted === true ? true : storage.persisted ?? undefined,
+        ),
+      });
+    } catch { /* A storage estimate is optional after a completed change. */ }
+  };
+
+  const refreshPartialDownloads = async () => {
+    if (!partialDownloadsSupported) return;
+    const candidates = snapshot.models.filter((model) =>
+      !model.installed && model.catalogAvailable !== false && catalogVariants.has(model.id)
+    );
+    const sizes = new Map<string, number>();
+    await Promise.all(candidates.map(async (model) => {
+      try {
+        const bytes = await partialDownloads.partialDownloadBytes!(model.id);
+        if (Number.isFinite(bytes) && bytes > 0) sizes.set(model.id, bytes);
+      } catch { /* Kept-file sizes are a hint; the downloader resumes either way. */ }
+    }));
+    if (sizes.size === 0) return;
+    publish({
+      ...snapshot,
+      models: snapshot.models.map((model) =>
+        sizes.has(model.id) && !model.installed
+          ? { ...model, partialBytes: Math.min(sizes.get(model.id)!, model.remainingDownloadBytes) }
+          : model
+      ),
+    });
+  };
 
   const unsubscribeRuntime = runtime.subscribe((state) => {
     runtimeSnapshot = state;
@@ -284,6 +338,7 @@ export function createShellController(
         let catalogDetail =
           "Downloads stay locked until the browser runtime and model profiles pass release checks.";
         let firefoxRuntimeIncompatible = false;
+        let catalogError: string | undefined;
         if (capabilities.supported) {
           try {
             const offline = hostedNetworkIsOffline();
@@ -314,6 +369,7 @@ export function createShellController(
                     recommendation,
                     runtimeSnapshot.installedPackIds,
                     capabilities,
+                    runtimeSnapshot.loadRecords ?? [],
                   )
                 ),
             );
@@ -363,10 +419,19 @@ export function createShellController(
                   : "This catalog cannot authorize a new download.",
             };
           } catch (error) {
-            catalogDetail = errorMessage(error);
+            catalogError = errorMessage(error);
+            catalogDetail = `${catalogError} Check your connection, then check again.`;
+            // Placeholder entries keep their names visible but never look downloadable.
+            recommendedModels = models.map((model): HostedModelOption => ({
+              ...model,
+              catalogAvailable: false,
+              fit: "blocked",
+              setupIssue: "The verified model list could not load, so this model can't be downloaded right now.",
+              reason: "The verified model list could not load, so this model can't be downloaded right now.",
+            }));
             download = {
               ...lockedDownload,
-              reason: errorMessage(error),
+              reason: catalogError,
             };
           }
         }
@@ -383,6 +448,8 @@ export function createShellController(
           headline: capabilities.supported
               ? productReady
               ? "This device is ready"
+              : catalogError !== undefined
+                ? "The model list could not load"
               : !usableModelAvailable
                 ? firefoxRuntimeIncompatible
                   ? "Firefox is incompatible with the current model runtime"
@@ -394,19 +461,19 @@ export function createShellController(
             : failureDetail(capabilities),
           checks: checksFromCapabilities(capabilities),
           models: recommendedModels,
+          catalogError,
           download,
           runtime: runtimeAvailability,
-          storage: {
-            availableBytes: capabilities.storage.availableBytes ?? undefined,
-            persisted: capabilities.storage.persisted ?? undefined,
-          },
+          storage: storageSnapshot(capabilities.storage),
         });
+        await refreshPartialDownloads();
       } catch (error) {
         publish({
           ...snapshot,
           phase: "failed",
           headline: "The device check could not finish",
           detail: errorMessage(error),
+          catalogError: undefined,
           checks: baseChecks(),
           download: lockedDownload,
           runtime: lockedRuntime,
@@ -467,6 +534,9 @@ export function createShellController(
         }
         nextPacks = model.firstRunPacks.map((candidate) => ({
           ...candidate,
+          requiredForSetup: pack.kind === "sae" && candidate.kind === "sae"
+            ? candidate.id === pack.id
+            : candidate.requiredForSetup,
           selected: candidate.id === pack.id
             ? true
             : pack.kind !== "jlens" && candidate.kind === pack.kind && !candidate.installed
@@ -479,12 +549,15 @@ export function createShellController(
         );
       }
       const nextModel = finalizeModelSetup({ ...model, firstRunPacks: nextPacks });
+      // Another model's paused or failed download keeps its state and kept files.
+      const ownsDownloadState = snapshot.download.modelVariantId === undefined ||
+        snapshot.download.modelVariantId === modelVariantId;
       publish({
         ...snapshot,
         models: snapshot.models.map((candidate) =>
           candidate.id === modelVariantId ? nextModel : candidate
         ),
-        download: snapshot.download.available
+        download: snapshot.download.available && ownsDownloadState
           ? {
               ...snapshot.download,
               phase: "idle",
@@ -558,10 +631,7 @@ export function createShellController(
           phase: "downloading",
           persistenceDenied: !persisted,
         },
-        storage: {
-          availableBytes: storage.availableBytes ?? undefined,
-          persisted,
-        },
+        storage: storageSnapshot(storage, persisted),
       });
       try {
         let completedBytes = 0;
@@ -666,6 +736,7 @@ export function createShellController(
               ? finalizeModelSetup({
                   ...candidate,
                   installed: true,
+                  partialBytes: undefined,
                   firstRunPacks: candidate.firstRunPacks.map((pack) => ({
                     ...pack,
                     installed: completedPackIds.has(pack.id),
@@ -683,6 +754,7 @@ export function createShellController(
             progress: completedProgress,
           },
         });
+        void refreshStorageEstimate();
       } catch (error) {
         publish({
           ...snapshot,
@@ -800,14 +872,33 @@ export function createShellController(
           resetSessionAvailable: false,
         },
       });
-      try {
-        const storage = await runtime.refreshStorage();
-        publish({ ...snapshot, storage: {
-          availableBytes: storage.availableBytes ?? undefined,
-          persisted: storage.persisted ?? undefined,
-        } });
-      } catch { /* A storage estimate is optional after a successful deletion. */ }
+      await refreshStorageEstimate();
     },
+    ...(partialDownloadsSupported
+      ? {
+          async discardPartialDownload(modelVariantId: string) {
+            if (["requesting_persistence", "downloading", "cancelling"].includes(snapshot.download.phase)) {
+              throw new Error("Pause the current download before discarding kept files.");
+            }
+            await partialDownloads.discardPartialDownload!(modelVariantId);
+            publish({
+              ...snapshot,
+              models: snapshot.models.map((model) =>
+                model.id === modelVariantId ? { ...model, partialBytes: undefined } : model
+              ),
+              download: snapshot.download.modelVariantId === modelVariantId
+                ? {
+                    available: snapshot.download.available,
+                    phase: snapshot.download.available ? "idle" : "locked",
+                    reason: snapshot.download.available ? "Ready to download." : snapshot.download.reason,
+                    persistenceDenied: snapshot.download.persistenceDenied,
+                  }
+                : snapshot.download,
+            });
+            await refreshStorageEstimate();
+          },
+        }
+      : {}),
     async unload() {
       await runtime.unload();
       publish({
@@ -890,6 +981,11 @@ export function createShellController(
   };
 }
 
+interface PartialDownloadRuntime {
+  partialDownloadBytes(modelVariantId: string): Promise<number>;
+  discardPartialDownload(modelVariantId: string): Promise<void>;
+}
+
 function createPendingTakeover(): PendingBusyTakeover {
   let resolveDecision!: (value: boolean) => void;
   let resolveCompletion!: () => void;
@@ -932,8 +1028,17 @@ function modelFromRecommendation(
   recommendation: ModelRecommendation,
   installedPackIds: readonly string[],
   capabilities: RuntimeCapabilities,
+  loadRecords: RuntimeSnapshot["loadRecords"] = [],
 ): HostedModelOption {
   const { model, variant, context } = recommendation;
+  const measuredSpeed = context === null
+    ? null
+    : measuredDecodeTokensPerSecond(
+        loadRecords,
+        variant,
+        capabilities.deviceSignature,
+        context.contextTokens,
+      );
   const modelDownloadBytes = variant.downloadBytes + variant.requiredCorePackBytes;
   const compatiblePacks = context === null
     ? []
@@ -960,9 +1065,6 @@ function modelFromRecommendation(
         capabilities.signals.appleMobile === true
           ? "Live word readouts start off to reduce Safari GPU pressure; turn them on in Model settings when needed."
           : "Live word readouts start off while this browser is in preview; turn them on in Model settings when needed.",
-        ...(compatiblePacks.some((pack) => pack.kind === "sae")
-          ? ["SAE features remain available as a separate download after the model is set up."]
-          : []),
       ]
     : [];
   const toolNotice = runtimeNotices.length > 0
@@ -970,7 +1072,10 @@ function modelFromRecommendation(
     : undefined;
   const selectedPackManifests: CatalogInstrumentPack[] = [];
   const orderedPacks = [...compatiblePacks].sort((left, right) =>
-    (left.kind === "jlens" ? 0 : 1) - (right.kind === "jlens" ? 0 : 1)
+    (left.kind === "jlens" ? 0 : 1) - (right.kind === "jlens" ? 0 : 1) ||
+    (left.kind === "sae" && right.kind === "sae"
+      ? Number(installedPackIds.includes(right.id)) - Number(installedPackIds.includes(left.id))
+      : 0)
   );
   const firstRunPacks = orderedPacks.flatMap((pack) => {
     if (
@@ -978,18 +1083,19 @@ function modelFromRecommendation(
         pack,
         variant,
         capabilities,
-        [],
+        pack.kind === "sae" && !baseModel && compatibleJlens && jlensHardwareBlock === null
+          ? [compatibleJlens] : [],
       ) !== null
     ) return [];
     const installed = installedPackIds.includes(pack.id);
     const sameKindSelected = selectedPackManifests.some((candidate) =>
       candidate.kind === pack.kind
     );
-    const requiredForSetup = !baseModel && pack.id === compatibleJlens?.id;
+    const requiredForSetup = (!baseModel && pack.id === compatibleJlens?.id) ||
+      (pack.kind === "sae" && !sameKindSelected);
     const selected = installed || (
       (requiredForSetup ||
-        (!baseModel && !recommendation.installed &&
-          !(conservativeRuntime && pack.kind === "sae"))) &&
+        (!baseModel && !recommendation.installed)) &&
       !sameKindSelected &&
       optionalPackHardwareBlock(
         pack,
@@ -1033,13 +1139,13 @@ function modelFromRecommendation(
     name: model.id === "gpt2-base" ? "GPT-2 Base (124M)" : model.displayName,
     sourceUrl: model.sourceUrl,
     license: model.license,
-    size: formatModelBytes(modelDownloadBytes),
+    size: formatBytes(modelDownloadBytes),
     context: context
       ? baseModel
         ? `Text completion · ${context.contextTokens.toLocaleString()} tokens`
         : context.contextTokens <= 2048
-        ? "Short conversations"
-        : "Longer conversations"
+        ? "Best for short chats"
+        : "Best for longer chats"
       : "Conversation length unavailable",
     fit: setupIssue !== undefined
       ? "blocked"
@@ -1062,9 +1168,7 @@ function modelFromRecommendation(
           )
         : recommendation.reason
     ),
-    language: model.languages.includes("multilingual")
-      ? "Multilingual"
-      : model.languages.join(", ").toUpperCase(),
+    language: languageLabel(model.languages),
     estimatedDownloadSeconds: undefined,
     expectedSpeed: context?.expectedDecodeTokensPerSecond
       ? `${formatRate(context.expectedDecodeTokensPerSecond[0])}–${formatRate(context.expectedDecodeTokensPerSecond[1])} tok/s`
@@ -1077,7 +1181,29 @@ function modelFromRecommendation(
     setupIssue,
     setupComplete: recommendation.installed,
     requiresOomRetry,
+    measuredTokensPerSecond: measuredSpeed !== null && measuredSpeed > 0 ? measuredSpeed : undefined,
   });
+}
+
+const languageNames = (() => {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "language" });
+  } catch {
+    return null;
+  }
+})();
+
+function languageLabel(languages: readonly string[]): string {
+  if (languages.some((language) => language.toLowerCase() === "multilingual")) {
+    return "Multilingual";
+  }
+  return languages.map((code) => {
+    try {
+      return languageNames?.of(code) ?? code.toUpperCase();
+    } catch {
+      return code.toUpperCase();
+    }
+  }).join(", ");
 }
 
 function groupModelsByFamily(models: HostedModelOption[]): HostedModelOption[] {
@@ -1115,6 +1241,7 @@ function refreshModelInstallState(
   return finalizeModelSetup({
     ...model,
     installed,
+    partialBytes: installed ? undefined : model.partialBytes,
     firstRunPacks: model.firstRunPacks.map((pack) => {
       const packInstalled = state.installedPackIds.includes(pack.id);
       return {
@@ -1139,7 +1266,7 @@ function finalizeModelSetup(model: HostedModelOption): HostedModelOption {
     );
   return {
     ...model,
-    size: formatModelBytes(firstRunBytes),
+    size: formatBytes(firstRunBytes),
     firstRunBytes,
     remainingDownloadBytes,
     estimatedDownloadSeconds: remainingDownloadBytes > 0
@@ -1169,12 +1296,6 @@ function runtimeStateFromCapabilities(
           )
         : "The local model engine is unavailable in this build.",
   };
-}
-
-function formatModelBytes(bytes: number): string {
-  return bytes >= 1_000_000_000
-    ? `${(bytes / 1_000_000_000).toFixed(1)} GB`
-    : `${Math.ceil(bytes / 1_000_000)} MB`;
 }
 
 function initialDownloadEta(bytes: number): [number, number] | undefined {
@@ -1234,6 +1355,7 @@ function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckI
     : capabilities.storage.availableBytes === null ? "warn" : "pass";
   const runtimePrerequisites = capabilities.dedicatedWorker && capabilities.webAssembly;
   const runtimeReady = capabilities.operations.generation.available;
+  const runtimeDeviceBlocked = capabilities.issues.some((issue) => issue.severity === "hard");
   return [
     {
       id: "secure",
@@ -1290,11 +1412,13 @@ function checksFromCapabilities(capabilities: RuntimeCapabilities): HostedCheckI
     {
       id: "runtime",
       label: "Local model engine",
-      state: runtimePrerequisites ? runtimeReady ? "pass" : "warn" : "fail",
+      state: !runtimePrerequisites || runtimeDeviceBlocked ? "fail" : runtimeReady ? "pass" : "warn",
       detail: runtimePrerequisites
-        ? runtimeReady
-          ? "The tested local engine is ready to load a model."
-          : "This development build can show the interface, but its local model engine has not passed release checks yet."
+        ? runtimeDeviceBlocked
+          ? "The local model engine cannot run until the failed device checks are resolved."
+          : runtimeReady
+            ? "The tested local engine is ready to load a model."
+            : "The local model engine is unavailable in this build."
         : "This browser is missing features needed to run the model away from the main interface.",
     },
   ];

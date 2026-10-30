@@ -168,6 +168,23 @@ def test_single_token_sum_equals_logprob():
     assert c.mean_logprob == pytest.approx(c.sum_logprob, abs=1e-6)
 
 
+@pytest.mark.parametrize("offset", [0.0, 10000.0, -10000.0])
+def test_completion_logprobs_preserve_common_logit_shift(offset: float):
+    tok = _ScriptedTokenizer(mod=_VOCAB - 2)
+    base = torch.arange(_VOCAB, dtype=torch.float32) % 7
+    shifted = base + offset
+
+    def logits_fn(input_ids: torch.Tensor) -> torch.Tensor:
+        return shifted.expand(*input_ids.shape, _VOCAB)
+
+    scores = score_choices(_make_session(logits_fn),
+                          [{"role": "user", "content": "q"}], ["a", "bcd"])
+    reference = base.double().log_softmax(-1)
+    for choice in scores.choices:
+        expected = reference[tok.encode(choice.text)].sum().item()
+        assert choice.sum_logprob == pytest.approx(expected, abs=2e-6)
+
+
 def test_multi_token_sum_and_mean_views_diverge():
     """sum is the joint logprob; mean is length-normalized — both reported."""
     tok = _ScriptedTokenizer(mod=_VOCAB - 2)
@@ -217,6 +234,22 @@ def test_restricted_softmax_matches_manual_softmax():
     assert sum(got) == pytest.approx(1.0, abs=1e-5)
     # Ranking follows the highest-logit token.
     assert scores.ranked(by="sum")[0].text == "p"
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_restricted_probabilities_ignore_global_low_precision_default(dtype: torch.dtype):
+    tokenizer = _ScriptedTokenizer(mod=_VOCAB - 2)
+    values = {tokenizer.encode("a")[0]: 1.5, tokenizer.encode("b")[0]: 1.0}
+    session = _make_session(_const_logits_fn(values))
+    previous = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(dtype)
+        scores = score_choices(session, [{"role": "user", "content": "q"}], ["a", "b"])
+    finally:
+        torch.set_default_dtype(previous)
+    expected = torch.tensor([1.5, 1.0], dtype=torch.float64).softmax(-1).tolist()
+    assert [choice.prob_sum for choice in scores.choices] == pytest.approx(expected, abs=1e-7)
+    assert [choice.prob_mean for choice in scores.choices] == pytest.approx(expected, abs=1e-7)
 
 
 # --------------------------------------------------------------------------- #

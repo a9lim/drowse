@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { releaseRobots } from "./agent-discovery.mjs";
 
 const usage = `Usage:
   CF_ACCESS_CLIENT_ID=... CF_ACCESS_CLIENT_SECRET=... \\
@@ -17,7 +18,7 @@ carry release metadata but remain noindex. Release verification forbids Access
 credentials and proves anonymous public access without noindex.`;
 
 const permissionsPolicy =
-  "accelerometer=(), browsing-topics=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()";
+  "accelerometer=(), bluetooth=(), browsing-topics=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), serial=(), usb=(), xr-spatial-tracking=()";
 const protectedPaths = ["/", "/app", "/manifest.webmanifest", "/sw.js"];
 const requiredManifestIcons = [
   {
@@ -187,7 +188,14 @@ export function assertSecurityHeaders(response, distributionLock) {
     "Deployed CSP directive set differs from the hosted policy",
   );
   for (const [name, tokens] of expected) {
-    assert.deepEqual(actual.get(name), tokens, `CSP ${name} must be ${tokens.join(" ")}`);
+    let found = actual.get(name);
+    // The build allows its own inline theme script by hash; any other script-src token must match exactly.
+    if (name === "script-src") {
+      const hashes = found.filter((token) => token.startsWith("'sha256-"));
+      for (const hash of hashes) assert.match(hash, /^'sha256-[a-z0-9+/]{43}='$/, `CSP script-src has a malformed hash ${hash}`);
+      found = found.filter((token) => !token.startsWith("'sha256-"));
+    }
+    assert.deepEqual(found, tokens, `CSP ${name} must be ${tokens.join(" ")}`);
   }
 }
 
@@ -284,6 +292,11 @@ export function assertRobotsHeader(response, channel) {
 export function assertRobotsFile(body, channel) {
   const normalized = body.replace(/\r\n/g, "\n").trim();
   if (channel === "preview") assert.equal(normalized, "User-agent: *\nDisallow: /", "preview robots.txt must block indexing");
+  else if (channel === "release") {
+    const origin = /^Sitemap: (https:\/\/[^\s/]+)\/sitemap\.xml$/m.exec(normalized)?.[1];
+    assert.ok(origin, "release robots.txt must declare its public sitemap");
+    assert.equal(normalized, releaseRobots(origin).trim(), "release robots.txt must match the declared content policy and agent catalog");
+  }
   else assert.match(normalized, /^User-agent: \*\nAllow: \/(?:\n\nSitemap: https:\/\/[^\s]+\/sitemap\.xml)?$/, `robots.txt does not match the ${channel} channel`);
 }
 
@@ -502,12 +515,19 @@ async function main() {
   }
   assertChannelHtml(rootHtml, options.channel, options.revision);
   assertChannelHtml(appHtml, options.channel, options.revision);
-  for (const path of ["/credits", "/credits/", "/contact", "/contact/"]) {
+  for (const path of ["/app/", "/credits", "/contact"]) {
     const response = await fetchRoute(origin, path, headers);
     assertMime(response, "text/html");
     assertSecurityHeaders(response, distributionLock);
     assertRobotsHeader(response, options.channel);
     assertChannelHtml(await response.text(), options.channel, options.revision);
+  }
+  // Pages are canonical without a trailing slash, and unknown app paths are real 404s, not the shell.
+  for (const [path, status, location] of [["/credits/", 301, "/credits"], ["/contact/", 301, "/contact"], ["/app/routing-probe", 404, null]]) {
+    const response = await fetch(new URL(path, origin), { cache: "no-store", credentials: "omit", headers, redirect: "manual", signal: AbortSignal.timeout(20_000) });
+    assert.equal(response.status, status, `${path} returned HTTP ${response.status}, expected ${status}`);
+    if (location) assert.equal(new URL(response.headers.get("location") ?? "", origin).pathname, location, `${path} must redirect to ${location}`);
+    else assertSecurityHeaders(response, distributionLock);
   }
   assertRobotsFile(robots, options.channel);
   await assertPwaAssets(origin, headers, rootHtml);

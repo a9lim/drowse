@@ -30,6 +30,12 @@ const PRODUCTION_APP_MODEL_METADATA = Object.freeze({
     languages: Object.freeze(["en"]),
     license: "Gemma",
   }),
+  "gemma3-4b-instruct": Object.freeze({
+    displayName: "Gemma 3 4B",
+    tier: "quality",
+    languages: Object.freeze(["en"]),
+    license: "Gemma",
+  }),
   "qwen3-1.7b": Object.freeze({
     displayName: "Qwen3 1.7B",
     tier: "balanced",
@@ -67,7 +73,7 @@ export function classifyInstalledAppState({
 
 export function requiredFeaturesForQuantization(quantization) {
   if (quantization === "q4f16_1") return ["shader-f16"];
-  if (quantization === "q4f32_1") return [];
+  if (quantization === "q4f32_1" || quantization === "q0f32") return [];
   throw new Error(`unsupported browser quantization ${quantization}`);
 }
 
@@ -83,19 +89,41 @@ export function isOfflineServiceWorkerMaintenanceRequest(request) {
   return request === "GET /sw.js" || /^GET \/workbox-[A-Za-z0-9_-]+\.js$/u.test(request);
 }
 
-export function isExpectedOfflineCatalogFailure(
+export function isExpectedCatalogRefreshFailure(
   request,
   { catalogUrl, signatureUrl },
 ) {
-  return request?.phase === "offline" &&
-    (request.url === catalogUrl || request.url === signatureUrl) &&
-    /^net::ERR_(?:INTERNET_DISCONNECTED|ABORTED)$/u.test(request.errorText ?? "");
+  if (request?.url !== catalogUrl && request?.url !== signatureUrl) return false;
+  if (request.intentionalReload === true && request.errorText === "net::ERR_ABORTED") return true;
+  return request.phase === "offline" && /^net::ERR_(?:INTERNET_DISCONNECTED|ABORTED)$/u.test(request.errorText ?? "");
+}
+
+export function trackIntentionalReload(page) {
+  const inFlight = new Set();
+  const closingRequests = new WeakSet();
+  let closing = false;
+  page.on("request", request => {
+    inFlight.add(request);
+    if (closing) closingRequests.add(request);
+  });
+  page.on("requestfinished", request => inFlight.delete(request));
+  page.on("requestfailed", request => inFlight.delete(request));
+  page.on("framenavigated", frame => { if (frame === page.mainFrame()) closing = false; });
+  return {
+    begin() {
+      closing = true;
+      for (const request of inFlight) closingRequests.add(request);
+      return () => { closing = false; };
+    },
+    includes: request => closingRequests.has(request),
+  };
 }
 
 export function isPublishedSaeDescriptionUrl(url, modelId) {
   const dictionary = {
     "gemma3-270m-instruct": "gemma-3-270m-it/12-gemmascope-2-res-16k",
     "gemma3-1b-instruct": "gemma-3-1b-it/13-gemmascope-2-res-16k",
+    "gemma3-4b-instruct": "gemma-3-4b-it/17-gemmascope-2-res-16k",
   }[modelId];
   if (!dictionary || typeof url !== "string") return false;
   const prefix = `https://www.neuronpedia.org/api/feature/${dictionary}/`;
@@ -285,6 +313,9 @@ export function createProductionAppCatalog({
     files: saeFiles,
   });
   const variantId = `${lock.id}-${lock.quantization}`;
+  const weightBufferBytes = 2 ** Math.ceil(Math.log2(Math.max(
+    134_217_728, ...modelFiles.filter((file) => file.role === "weight").map((file) => file.bytes),
+  )));
   const document = {
     schemaVersion: 1,
     sequence: 1,
@@ -309,8 +340,8 @@ export function createProductionAppCatalog({
         requirements: {
           features: requiredFeaturesForQuantization(lock.quantization),
           limits: {
-            maxBufferSize: 134_217_728,
-            maxStorageBufferBindingSize: 134_217_728,
+            maxBufferSize: weightBufferBytes,
+            maxStorageBufferBindingSize: weightBufferBytes,
             maxStorageBuffersPerShaderStage: 10,
             maxComputeWorkgroupStorageSize: 32_768,
             ...(lock.structuredHookProfile === "standard-v3"
@@ -477,5 +508,38 @@ function positiveInteger(value, label) {
 function nonnegativeInteger(value, label) {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${label} must be a non-negative integer`);
+  }
+}
+
+export async function clickOpen(page) {
+  const choice = await waitForVisibleChoice(page, [
+    ["ready", page.locator(".shell")],
+    ["loading", page.locator(".runtime-gate.loading-pulse")],
+    ["direct", page.getByRole("button", { name: "Open workbench", exact: true })],
+    ["warning", page.getByRole("button", { name: "Review warning", exact: true })],
+  ], "model open control");
+  if (choice.name === "ready" || choice.name === "loading") return;
+  await choice.locator.click();
+  if (choice.name === "warning") {
+    const override = await waitForVisibleChoice(page, [
+      ["override", page.getByRole("button", {
+        name: /^(Load anyway|Retry this model)$/u,
+      })],
+    ], "unsafe model-load confirmation");
+    await override.locator.click();
+  }
+}
+
+export async function waitForVisibleChoice(page, choices, label, timeoutMs = 30_000) {
+  try {
+    return await Promise.any(choices.map(async ([name, locator]) => {
+      await locator.waitFor({ state: "visible", timeout: timeoutMs });
+      return { name, locator };
+    }));
+  } catch (error) {
+    const body = (await page.locator("body").innerText().catch(() => ""))
+      .replaceAll(/\s+/gu, " ")
+      .slice(0, 2_000);
+    throw new Error(`${label} did not appear; page text: ${body}`, { cause: error });
   }
 }

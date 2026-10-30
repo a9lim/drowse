@@ -26,7 +26,7 @@
 <style>
   .reading {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content;
     align-items: center;
     gap: var(--space-2) var(--space-3);
     padding-block: var(--space-2);
@@ -34,21 +34,27 @@
     min-height: var(--control-target);
   }
   .label,
-  .middle,
-  .value {
+  .middle {
     min-width: 0;
     overflow-wrap: anywhere;
   }
   .middle { text-align: end; }
-  .value { text-align: end; }
+  .value {
+    text-align: end;
+    overflow-wrap: normal;
+    white-space: nowrap;
+  }
   .bar {
     min-width: 0;
     grid-column: 1 / -1;
     grid-row: 2;
     padding-block: var(--space-1);
   }
-  .label :global(*), .middle :global(*), .value :global(*) {
+  .label :global(*), .middle :global(*) {
     white-space: normal;
+  }
+  .value :global(*) {
+    white-space: nowrap;
   }
   .bar :global(.bar) {
     width: 100%;

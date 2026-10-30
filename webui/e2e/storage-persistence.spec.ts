@@ -91,6 +91,7 @@ async function mountNotice(page: Page, surface: "models" | "chats", scenario: Sc
     persistenceUrl: moduleUrl("src/lib/runtime/storagePersistence.ts"),
     libraryUrl: moduleUrl("src/lib/stores/savedConversations.svelte.ts"),
   });
+  if (surface === "models") await page.locator(".model-grid > button").first().click();
 }
 
 for (const surface of ["models", "chats"] as const) {

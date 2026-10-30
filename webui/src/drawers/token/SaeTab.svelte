@@ -322,7 +322,7 @@
   .description-context .metadata-privacy { color: var(--fg-subtle); font-size: var(--text-2xs); }
   .description-context .metadata-error { color: var(--accent-red); }
   .description-action, .no-matches button { min-height: var(--control-target); padding-inline: var(--space-4); border: 0; border-radius: var(--radius-sm); background: var(--glass); color: var(--pillar-sae); cursor: pointer; }
-  .description-action:disabled { opacity: 0.6; cursor: wait; }
+  .description-action:disabled { opacity: var(--disabled-opacity); cursor: wait; }
   .feature-tools { display: flex; gap: var(--space-4); flex-wrap: wrap; margin-block: var(--space-5); }
   .feature-tools label { display: grid; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-xs); }
   .feature-tools label:first-child { flex: 1 1 200px; }

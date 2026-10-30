@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { selectWorkspaceView } from "./workbench-navigation";
 import { clickWorkspaceAction } from "./workbench-navigation";
 import { openWorkspaceMenu } from "./workbench-navigation";
@@ -7,6 +8,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { text as readStreamText } from "node:stream/consumers";
 import { test as pwaTest } from "./pwa-update-fixture";
 import { resolve } from "node:path";
+import { siteTitle } from "../scripts/site-metadata.mjs";
 
 const devUrl = "http://127.0.0.1:4176";
 const fixtureResponse = "This is a deterministic local Drowse runtime fixture.";
@@ -203,6 +205,7 @@ async function openTranscriptDrawer(page: Page): Promise<Locator> {
 
 async function openFixtureWorkbench(page: Page, extraQuery = ""): Promise<void> {
   await page.goto(`${devUrl}/app?fixture=1${extraQuery}`);
+  await chooseFixtureModel(page);
   await expect(
     page.getByRole("heading", { name: "Choose your first model" }),
   ).toBeVisible();
@@ -219,7 +222,7 @@ async function openFixtureWorkbench(page: Page, extraQuery = ""): Promise<void> 
   await expect(toolPicker.locator(".required-tool", { hasText: "Word insights" }).last()).toBeVisible();
   await expect(toolPicker.getByRole("checkbox", { name: /Word insights/ })).toHaveCount(0);
   await expect(toolPicker.getByRole("checkbox", { name: /R-lens readouts/ })).not.toBeChecked();
-  await expect(toolPicker.getByRole("checkbox", { name: /Feature explorer/ })).toBeChecked();
+  await expect(toolPicker.locator(".required-tool", { hasText: "Feature insights" })).toContainText("SAE");
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await expect(page).toHaveTitle("Drowse");
@@ -745,7 +748,7 @@ test("landing page routes into the hosted app", async ({ page }) => {
 
   await page.goto("/");
 
-  await expect(page).toHaveTitle("Drowse");
+  await expect(page).toHaveTitle(siteTitle);
   await expect(
     page.getByRole("heading", { name: /See inside your model/ }),
   ).toBeVisible();
@@ -773,6 +776,7 @@ test("model storage notice retries protection without repeating instructions or 
   });
   await openFixtureWorkbench(page);
   await page.goto(`${devUrl}/app?fixture=1&choose=1`);
+  await chooseFixtureModel(page);
   const notice = page.getByRole("status", { name: "Storage protection", exact: true });
   await expect(notice).toHaveCount(1);
   await notice.getByRole("button", { name: "Protect storage", exact: true }).click();
@@ -787,7 +791,7 @@ test("model storage notice retries protection without repeating instructions or 
   await page.screenshot({ path: testInfo.outputPath("storage-protection-notice.png") });
   await notice.getByRole("button", { name: "Protect storage", exact: true }).click();
   await expect(notice).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Open Drowse", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Open workbench", exact: true })).toBeEnabled();
 });
 
 test("chat storage protection stays compact above saved chats on desktop and phones", async ({ page }, testInfo) => {
@@ -915,6 +919,7 @@ test("persistent missing workbench assets stop after one automatic reload and al
 
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
 
   await expect(page.getByText(
@@ -964,6 +969,7 @@ test("landing and onboarding fit a mobile viewport", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Choose your first model" }),
   ).toBeVisible();
+  await chooseFixtureModel(page);
   await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
@@ -1191,24 +1197,24 @@ test("bottom conversation action clears the active path without deleting its bra
   await expect(page.locator(".tree-node-wrap").filter({ hasText: "Keep this branch available" })).toBeVisible();
 });
 
-test("first run includes J-lens while additional model tools remain manageable", async ({ page }) => {
+test("first run includes J-lens and SAE while additional model tools remain manageable", async ({ page }) => {
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+  await chooseFixtureModel(page);
   const toolPicker = page.locator(".tool-picker");
-  const featureChoice = toolPicker.getByRole("checkbox", { name: /Feature explorer/ });
+  const includedSae = toolPicker.locator(".required-tool", { hasText: "Feature insights" });
   const includedJlens = toolPicker.locator(".required-tool", { hasText: "Word insights" });
   await expect(includedJlens).toContainText("J-lens");
   await expect(includedJlens.locator('input[type="checkbox"]')).toHaveCount(0);
-  await expect(featureChoice).toBeChecked();
+  await expect(includedSae).toContainText("SAE");
+  await expect(includedSae.locator('input[type="checkbox"]')).toHaveCount(0);
   await expect(toolPicker.locator(".tool-total")).toContainText("209 B");
 
-  await featureChoice.uncheck();
-  await expect(featureChoice).not.toBeChecked();
-  await expect(toolPicker.locator(".tool-total")).toContainText("155 B");
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([
     "fixture-jlens",
+    "fixture-sae",
     "qwen3-1.7b-fixture",
   ]);
 
@@ -1221,9 +1227,7 @@ test("first run includes J-lens while additional model tools remain manageable",
   await expect(jlensOption.getByRole("button")).toHaveCount(0);
 
   const saeOption = optionalSection.locator('li[data-pack-id="fixture-sae"]');
-  const downloadSae = saeOption.getByRole("button", { name: "Download" });
-  await expect(downloadSae).toBeEnabled();
-  await downloadSae.click();
+  await expect(saeOption.getByRole("button", { name: "Download" })).toHaveCount(0);
   await expect(saeOption.getByText("Ready", { exact: true })).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([
     "fixture-jlens",
@@ -1246,20 +1250,16 @@ test("first run includes J-lens while additional model tools remain manageable",
   const installedSae = downloadedPackRow(drawer, "fixture-sae");
   await attemptPackDeletion(installedSae);
   await page.waitForURL(`${devUrl}/app?fixture=1&reopen=1`);
-  await expect(page.locator(".shell")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([
     "fixture-jlens",
     "fixture-rlens",
     "qwen3-1.7b-fixture",
   ]);
 
-  const reopenedDrawer = await openModelAndStorage(page);
-  const reopenedTools = reopenedDrawer.locator("section.panel", {
-    hasText: "Included files and additions",
-  });
-  const reinstallSae = reopenedTools.locator('li[data-pack-id="fixture-sae"]');
-  await reinstallSae.getByRole("button", { name: "Download" }).click();
-  await expect(reinstallSae.getByText("Ready", { exact: true })).toBeVisible();
+  await chooseFixtureModel(page);
+  await page.getByRole("button", { name: "Add tools and open", exact: true }).click();
+  await expect(page.locator(".shell")).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([
     "fixture-jlens",
     "fixture-rlens",
@@ -1393,6 +1393,7 @@ test("models without an SAE say that no SAE is available", async ({ page }) => {
   await page.goto(`${devUrl}/app?fixture=1&fixtureSae=0`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /Feature explorer/ })).toHaveCount(0);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
 
@@ -1434,6 +1435,7 @@ test("changing models closes the runtime and opens installed model choices", asy
 test("installed standard and R-lens packs swap live without fitting", async ({ page }) => {
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+  await chooseFixtureModel(page);
   const toolPicker = page.locator(".tool-picker");
   const rLensChoice = toolPicker.getByRole("checkbox", { name: /R-lens readouts/ });
   await expect(rLensChoice).not.toBeChecked();
@@ -1633,7 +1635,13 @@ test("geometry measurements populate and completed timing stays frozen", async (
 
 test("comparison controls appear only when usable and auto-compare completes", async ({ page }) => {
   const pageErrors: string[] = [];
+  const lifecycleWarnings: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "warning" && message.text().includes("[svelte]")) {
+      lifecycleWarnings.push(message.text());
+    }
+  });
   await page.goto(devUrl);
   await page.evaluate(() => {
     localStorage.setItem("drowse.chat.v4.fixture/drowse-tiny", JSON.stringify({
@@ -1706,6 +1714,7 @@ test("comparison controls appear only when usable and auto-compare completes", a
     };
   }, toastModuleUrl)).toEqual({ active: false, processing: false, pendingTurn: null });
   expect(pageErrors).toEqual([]);
+  expect(lifecycleWarnings).toEqual([]);
 });
 
 test("fixture survives repeated generation, stop, and reload cycles", async ({ page }) => {
@@ -2178,7 +2187,10 @@ test("loom projections stay synchronized across path, options, and starred point
   await expect(saved.locator("[data-saved-node]")).toHaveCount(1);
   await expect(saved).toContainText(fixtureResponse);
   await saved.getByRole("button", { name: "Remove" }).click();
-  await expect(page.getByText("Nothing saved yet", { exact: true })).toBeVisible();
+  await expect(saved).toHaveCount(0);
+  const emptySaved = page.locator(".saved-projection .projection-empty");
+  await expect(emptySaved).toBeVisible();
+  await expect(emptySaved).toContainText("Nothing saved yet");
 
   await page.getByRole("button", { name: /^Map/ }).click();
   await expect(page.locator(".loom-canvas")).toHaveAttribute("data-loom-nodes", "4");
@@ -2375,7 +2387,7 @@ test("custom roles can be entered directly, configured, and used for generation"
   await drawer.getByRole("button", { name: /^assistant\b/i }).click();
   await drawer.getByRole("button", { name: /^critic\b/i }).click();
   await expect(note).toHaveValue("Reviews the response carefully");
-  await expect(drawer.getByRole("status")).toHaveText("Saved");
+  await expect(drawer.getByRole("status").filter({ hasText: /^Saved$/ })).toHaveText("Saved");
   await page.getByRole("button", { name: "Close drawer" }).click();
   await expect(generatedRole).toHaveValue("critic");
 
@@ -2599,6 +2611,7 @@ test("a busy owner explicitly approves takeover before generation is stopped", a
   await openFixtureWorkbench(page, "&fixtureSlow=1");
   const requester = await context.newPage();
   await requester.goto(`${devUrl}/app?fixture=1&choose=1`);
+  await chooseFixtureModel(requester);
   await expect(
     requester.getByRole("heading", { name: "Models" }),
   ).toBeVisible();

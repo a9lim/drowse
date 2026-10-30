@@ -210,10 +210,9 @@ export class BrowserCapabilityChecker {
 
     if (gpu) {
       try {
-        this.adapter = await withTimeout(
-          gpu.requestAdapter({ powerPreference: "high-performance" }),
+        this.adapter = await requestHardwareAdapter(
+          gpu,
           this.adapterTimeoutMs,
-          "WEBGPU_ADAPTER_TIMEOUT",
           "Timed out while requesting a WebGPU adapter",
         );
       } catch (error) {
@@ -401,10 +400,9 @@ export class BrowserCapabilityChecker {
     }
     let adapter: GpuAdapterLike | null;
     try {
-      adapter = await withTimeout(
-        gpu.requestAdapter({ powerPreference: "high-performance" }),
+      adapter = await requestHardwareAdapter(
+        gpu,
         this.adapterTimeoutMs,
-        "WEBGPU_ADAPTER_TIMEOUT",
         "Timed out while requesting a fresh WebGPU adapter for model loading",
       );
     } catch (error) {
@@ -442,6 +440,30 @@ export class BrowserCapabilityChecker {
     this.checkedAdapterFingerprint = null;
     this.lastCheckSupported = false;
   }
+}
+
+async function requestHardwareAdapter(
+  gpu: GpuLike,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<GpuAdapterLike | null> {
+  const deadline = performance.now() + timeoutMs;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) return null;
+    const adapter = await withTimeout(
+      gpu.requestAdapter({ powerPreference: "high-performance" }),
+      remaining,
+      "WEBGPU_ADAPTER_TIMEOUT",
+      timeoutMessage,
+    );
+    if (adapter || attempt === 2) return adapter;
+    // A restarting GPU process can briefly report no adapter. Keep the same
+    // preference and overall deadline; never retry errors or switch GPUs.
+    if (deadline - performance.now() <= 250) return null;
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+  }
+  return null;
 }
 
 function browserManifoldFitMaxIntrinsicDim(): number | null {

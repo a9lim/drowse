@@ -20,24 +20,24 @@
 </script>
 
 <TabIdentity state="error" title="Page not found · Drowse" />
-<svelte:head><meta name="robots" content="noindex, follow" /></svelte:head>
 
 <a class="skip-link" href="#not-found-main">Skip to content</a>
 <div class="not-found-shell" class:plain={plainBackground}>
-  <div class="scene" aria-hidden="true">
-    {#if !plainBackground}<HeroShader contained closeup />{/if}
-    <div class="scene-shade"></div>
+  <div class="scene">
+    {#if !plainBackground}<HeroShader contained closeup motionControl />{/if}
+    <div class="scene-shade" aria-hidden="true"></div>
   </div>
   <div class="page-layer">
     <PageHeader />
-    <main id="not-found-main">
+    <main id="not-found-main" tabindex="-1">
       <section class="message-stage" aria-label="Page not found">
         <div class="message" data-message-id={message.id}>
           <RecordedTokenText tokens={message.tokens} />
         </div>
+        <p class="token-caption">Drowse shows what the model predicted for each word. Select a word to see the alternatives.</p>
         <div class="recovery-actions">
           <a class="primary-action" href="/">Back to home</a>
-          <a class="secondary-action" href="/app">Open Drowse <span aria-hidden="true">↗</span></a>
+          <a class="secondary-action" href="/app">Open Drowse</a>
         </div>
       </section>
 
@@ -54,6 +54,8 @@
   main { flex: 1; display: flex; flex-direction: column; width: min(100%, var(--page-max)); padding-inline: max(var(--surface-padding), env(safe-area-inset-left)) max(var(--surface-padding), env(safe-area-inset-right)); margin-inline: auto; }
   .message-stage { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: start; padding-block: clamp(80px, 12vh, 160px) clamp(56px, 9vh, 112px); }
   .message { max-width: min(100%, 24ch); min-height: 3.75em; color: var(--fg-strong); font-family: var(--font-structure); font-size: var(--text-not-found-title); font-weight: var(--weight-structure); letter-spacing: -0.035em; line-height: 1.3; }
+  .token-caption { max-width: 48ch; margin: var(--space-sm) 0 0; color: var(--fg-muted); font-family: var(--font-reading); font-size: var(--text-sm); line-height: 1.6; text-wrap: pretty; }
+  main:focus { outline: none; }
   .recovery-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-lg); margin-top: var(--space-lg); }
   .primary-action, .secondary-action { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: var(--space-sm) var(--space-lg); border-radius: var(--radius); font-family: var(--font-structure); font-size: var(--text); font-weight: var(--weight-structure); text-decoration: none; }
   .primary-action { background: var(--accent); color: var(--text-on-accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent), 0 8px 24px color-mix(in srgb, var(--hero-bg) 22%, transparent); }

@@ -47,7 +47,7 @@ assert.match(models, /\.model-grid > button\s*\{[^}]*min-height: 100px;/);
 assert.match(chatHome, /<PageHeader current="chats" compact/);
 assert.match(chatHome, /--workspace-surface-padding: 16px;/);
 assert.match(chatHome, /--text-onboarding-heading: var\(--text-page-title\);/);
-assert.match(chatHome, /"Download a model" : "New Instance"/);
+assert.match(chatHome, /"New chat" : "Download a model"/);
 assert.match(density, /\.workspace-library\s*\{[^}]*--surface-padding: var\(--workspace-surface-padding\);/);
 assert.match(density, /\.workspace-material \[data-chat-accent\]\s*\{[^}]*--surface-card: var\(--workspace-panel-bg\);/,
   "per-chat accent scopes retain the shared clear material");

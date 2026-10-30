@@ -55,6 +55,8 @@ from drowse.core.scene import (
     validate_turn_grammar,
 )
 from drowse.core.loom import (
+    INHERIT_SYSTEM_PROMPT,
+    InheritSystemPrompt,
     CastMember,
     InvalidNodeOperationError,
     LoomMutated,
@@ -303,6 +305,7 @@ class _SerialGenerationJob:
     on_token: TokenCallback | None = None
     parent_node_id: str | None = None
     recipe_override: Recipe | str | None = None
+    system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT
     grid: dict[str, Any] | None = None
     gen_seat: str = "assistant"
 
@@ -353,6 +356,7 @@ def _run_serial_generation_jobs(
             on_token=job.on_token,
             parent_node_id=job.parent_node_id,
             recipe_override=job.recipe_override,
+            system_prompt=job.system_prompt,
             gen_seat=job.gen_seat,
         )
         row = dict(job.grid or {})
@@ -2992,13 +2996,13 @@ class DrowseSession:
         return stack
 
     def _jlens_readout_modules(self) -> tuple[torch.Tensor, torch.nn.Module]:
-        """Final unembedding + norm modules for J-lens readout logits."""
+        """Unembedding and the model-specific final readout path."""
         cached = self._jlens_readout_module_cache
         if cached is not None:
             return cached
-        from drowse.core.model import get_final_norm, get_unembedding
+        from drowse.core.model import LogitReadout, get_unembedding
 
-        modules = (get_unembedding(self._model), get_final_norm(self._model))
+        modules = (get_unembedding(self._model), LogitReadout(self._model))
         self._jlens_readout_module_cache = modules
         return modules
 
@@ -3104,7 +3108,7 @@ class DrowseSession:
         ``(layer, hidden_row)`` pairs — the shared front half of the
         per-layer top-k and the layer-aggregated readout (one bmm + one
         unembed matvec serves both)."""
-        unembed, final_norm = self._jlens_readout_modules()
+        unembed, readout = self._jlens_readout_modules()
         device = unembed.device
         unique_layers = sorted({layer for layer, _ in rows})
         J_unique = self._jlens_transport_stack(lens, unique_layers, device)
@@ -3117,8 +3121,7 @@ class DrowseSession:
             hidden.detach().to(torch.float32) for _, hidden in rows
         ]).to(device)
         transported = torch.bmm(J_rows, H.unsqueeze(-1)).squeeze(-1)
-        normed = final_norm(transported)
-        return normed.to(unembed.dtype) @ unembed.T
+        return readout(transported)
 
     def _jlens_aggregate_rows(
         self,
@@ -3422,6 +3425,7 @@ class DrowseSession:
                     None,
                     thinking=use_thinking,
                     parent_node_id=node.parent_id,
+                    system_prompt=recipe.system_prompt if recipe is not None else INHERIT_SYSTEM_PROMPT,
                     user_role=(
                         node.role_label if node.role == "user" else None
                     ),
@@ -3487,7 +3491,7 @@ class DrowseSession:
         an explicit source-layer subset.
         """
         from drowse.core.jlens import resolve_word_token
-        from drowse.core.model import get_unembedding
+        from drowse.core.model import get_output_projection, get_unembedding
 
         name = f"jlens/{word}"
         if name in self._profiles:
@@ -3497,6 +3501,7 @@ class DrowseSession:
         fitted_layers = set(int(layer) for layer in lens.source_layers)
         directions = lens.token_direction(
             token_id, get_unembedding(self._model), layers=sorted(fitted_layers),
+            output_projection=get_output_projection(self._model),
         )
         # ``token_direction`` returns CPU tensors; land the profile on the
         # session device so the probe fold (which follows the directions'
@@ -4219,6 +4224,7 @@ class DrowseSession:
                     None,
                     thinking=use_thinking,
                     parent_node_id=node.parent_id,
+                    system_prompt=recipe.system_prompt if recipe is not None else INHERIT_SYSTEM_PROMPT,
                     user_role=(
                         node.role_label if node.role == "user" else None
                     ),
@@ -4352,6 +4358,7 @@ class DrowseSession:
                     None,
                     thinking=use_thinking,
                     parent_node_id=node.parent_id,
+                    system_prompt=recipe.system_prompt if recipe is not None else INHERIT_SYSTEM_PROMPT,
                     user_role=(
                         node.role_label if node.role == "user" else None
                     ),
@@ -4420,11 +4427,12 @@ class DrowseSession:
         the workspace).
         """
         from drowse.core.jlens import sparse_nonneg_decompose
-        from drowse.core.model import get_unembedding
+        from drowse.core.model import get_output_projection, get_unembedding
 
         lens = self._require_jlens()
         directions = self.ensure_profile_registered(selector)
         unembed = get_unembedding(self._model)
+        projection = get_output_projection(self._model)
         req = [
             l for l in self._resolve_jlens_layers(lens, layers)
             if l in directions and l in lens.jacobians
@@ -4436,9 +4444,13 @@ class DrowseSession:
             )
         out: dict[int, tuple[float, list[tuple[str, float]]]] = {}
         for layer in req:
+            jacobian = lens.jacobians[layer]
+            if projection is not None:
+                jacobian = projection.detach().to(device=jacobian.device, dtype=torch.float32) @ jacobian
             dec = sparse_nonneg_decompose(
-                directions[layer], lens.jacobians[layer], unembed,
-                layer=layer, k=k, atom_norms=lens.atom_norms(layer, unembed),
+                directions[layer], jacobian, unembed,
+                layer=layer, k=k,
+                atom_norms=lens.atom_norms(layer, unembed) if projection is None else None,
             )
             out[layer] = (
                 dec.share,
@@ -6944,6 +6956,7 @@ class DrowseSession:
             parent_node_id=anchor_parent,
             n=n,
             gen_seat=seat,
+            system_prompt=overlaid.system_prompt,
         )
 
     def fork_from_token(
@@ -7049,6 +7062,7 @@ class DrowseSession:
             parent_node_id=node.parent_id,
             forced_prefix=forced_prefix,
             gen_seat=node.role,
+            system_prompt=getattr(recipe, "system_prompt", INHERIT_SYSTEM_PROMPT),
         )
 
     def prefill_assistant(
@@ -7840,6 +7854,7 @@ class DrowseSession:
         to_device: bool = True,
         gen_seat: str = "assistant",
         add_generation_prompt: bool = True,
+        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
     ) -> torch.Tensor:
         if raw and (isinstance(input, str) or input is None):
             # Flat (base-model / completion) path: no chat template, no
@@ -7919,7 +7934,7 @@ class DrowseSession:
         if any_label:
             model_type_for_role = self._resolved_model_type()
         ids = build_chat_input(
-            self._tokenizer, messages, self.config.system_prompt,
+            self._tokenizer, messages, self.config.system_prompt if isinstance(system_prompt, InheritSystemPrompt) else system_prompt,
             thinking=thinking,
             add_generation_prompt=add_generation_prompt,
             gen_role=gen_role,
@@ -7933,7 +7948,7 @@ class DrowseSession:
         self, generated_ids: list[int], elapsed: float,
         vector_snapshot: dict[str, float], prompt_tokens: int = 0,
         stateless: bool = False,
-        logprobs_list: list[tuple[int, float, list[Any]]] | None = None,
+        logprobs_list: list[tuple[int, float | None, list[Any]]] | None = None,
         applied_steering: str | None = None,
         *,
         return_hidden: bool = False,
@@ -7989,7 +8004,8 @@ class DrowseSession:
                              parent_node_id: str | None = None,
                              user_role: str | None = None,
                              assistant_role: str | None = None,
-                             gen_seat: str = "assistant"):
+                             gen_seat: str = "assistant",
+                             system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT):
         """Shared input prep + gen-state reset.
 
         Steering is NOT installed here — the caller is expected to hold a
@@ -8007,6 +8023,7 @@ class DrowseSession:
             parent_node_id=parent_node_id,
             user_role=user_role, assistant_role=assistant_role,
             gen_seat=gen_seat,
+            system_prompt=system_prompt,
         )
         self._gen_state.reset()
         return input_ids, use_thinking, int(input_ids.shape[1])
@@ -8638,6 +8655,7 @@ class DrowseSession:
         use_thinking_req: bool,
         gen_seat: str = "assistant",
         continuation_node_id: str | None = None,
+        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
     ) -> str | None:
         """Create the loom nodes for a stateful generation.
 
@@ -8690,6 +8708,7 @@ class DrowseSession:
             sampling=sampling,
             thinking=use_thinking_req,
             seed=seed_val,
+            system_prompt=None if raw else self.config.system_prompt if isinstance(system_prompt, InheritSystemPrompt) else system_prompt,
             probes=list(self._monitor.probe_names),
         )
         recipe = recipe._fill_probe_hashes(self)
@@ -8966,6 +8985,7 @@ class DrowseSession:
         forced_prefix: list[int] | None = None,
         gen_seat: str = "assistant",
         append_same_role: bool = False,
+        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
     ) -> GenerationResult:
         """Shared generation implementation.
 
@@ -8994,6 +9014,12 @@ class DrowseSession:
                     steering=steering,
                     sampling=sampling,
                     thinking=thinking,
+                )
+
+                anchor = self._resolve_anchor_recipe(parent_node_id)
+                captured = anchor.overlay(anchor.compose_modifier(recipe_override))
+                system_prompt = captured.resolved_system_prompt(
+                    self.config.system_prompt if isinstance(system_prompt, InheritSystemPrompt) else system_prompt,
                 )
 
             # Ordinary one-shot continuation is message-oriented: if the
@@ -9092,6 +9118,7 @@ class DrowseSession:
             # — i.e. the loom path or an explicit logprobs request).
             mean_logprob_sum: float = 0.0
             mean_logprob_count: int = 0
+            mean_logprob_missing = False
             # CAA live toggle: when off, every per-token monitor consumer is
             # masked at the source — generations run aggregate-only capture
             # (probes still report the end-of-gen aggregate) and only probe
@@ -9140,11 +9167,13 @@ class DrowseSession:
                 # can reuse the gate's step-keyed stash rows and the geometry
                 # payload can hit the run's observe memo.  User callbacks keep
                 # the public six-argument TokenCallback shape (invoked below).
-                nonlocal mean_logprob_sum, mean_logprob_count
+                nonlocal mean_logprob_sum, mean_logprob_count, mean_logprob_missing
                 self._last_token_probe_payload = None
                 self._last_token_payload = None
                 if logprobs_list is not None and tid is not None and tid >= 0 and not is_thinking:
-                    logprobs_list.append((tid, lp if lp is not None else 0.0, top_alts or []))
+                    logprobs_list.append((tid, lp, top_alts or []))
+                if lp is None and tid is not None and tid >= 0 and not is_thinking:
+                    mean_logprob_missing = True
                 if lp is not None and tid is not None and tid >= 0 and not is_thinking:
                     mean_logprob_sum += lp
                     mean_logprob_count += 1
@@ -9408,6 +9437,7 @@ class DrowseSession:
                 steering_obj=steering_obj,
                 use_thinking_req=use_thinking_req,
                 gen_seat=gen_seat,
+                system_prompt=system_prompt,
                 continuation_node_id=continuation_node_id,
             )
 
@@ -9421,6 +9451,7 @@ class DrowseSession:
                     sampling.assistant_role if sampling is not None else None
                 ),
                 gen_seat=gen_seat,
+                system_prompt=system_prompt,
             )
             # Refresh snapshot now that steering is pushed (first-scope case).
             vector_snapshot: dict[str, float] = self._snapshot_steering_alphas()
@@ -9452,6 +9483,7 @@ class DrowseSession:
                     ),
                     to_device=False,
                     gen_seat=gen_seat,
+                    system_prompt=system_prompt,
                     add_generation_prompt=False,
                 )
                 authored_search_end = int(content_only_ids.shape[1])
@@ -9573,7 +9605,7 @@ class DrowseSession:
             # current empty/no-capture shape.
             _mean_logprob_out: float | None = None
             _mean_surprise_out: float | None = None
-            if mean_logprob_count > 0:
+            if mean_logprob_count > 0 and not mean_logprob_missing:
                 _mean_logprob_out = mean_logprob_sum / mean_logprob_count
                 _mean_surprise_out = -_mean_logprob_out
             result = self._finalize_generation(
@@ -9605,6 +9637,7 @@ class DrowseSession:
         recipe_override: "Recipe | str | None" = None,
         gen_seat: str = "assistant",
         append_same_role: bool = True,
+        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
     ) -> RunSet:
         """Run one or more sibling generations and return a ``RunSet``."""
         if n < 1:
@@ -9621,6 +9654,7 @@ class DrowseSession:
                 parent_node_id=parent_node_id,
                 recipe_override=recipe_override,
                 gen_seat=gen_seat,
+                system_prompt=system_prompt,
                 append_same_role=append_same_role,
             )
             node_id = self.tree.active_node_id if not stateless else None
@@ -9628,7 +9662,7 @@ class DrowseSession:
 
         # The batched fast fan renders through its own prefix path — route
         # non-assistant seats through the serial runner instead.
-        fast_fan = None if gen_seat != "assistant" else self._generate_fan_fast(
+        fast_fan = None if gen_seat != "assistant" or not isinstance(system_prompt, InheritSystemPrompt) else self._generate_fan_fast(
             input,
             steering=steering,
             sampling=sampling,
@@ -9664,6 +9698,7 @@ class DrowseSession:
                 parent_node_id=parent_node_id,
                 recipe_override=recipe_override,
                 gen_seat=gen_seat,
+                system_prompt=system_prompt,
             ))
         return _run_serial_generation_jobs(
             self,
@@ -9733,6 +9768,7 @@ class DrowseSession:
         recipe_override: "Recipe | str | None" = None,
         gen_seat: str = "assistant",
         append_same_role: bool = True,
+        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
     ) -> RunSet:
         """Blocking generation.
 
@@ -9746,6 +9782,9 @@ class DrowseSession:
                 through to the session's ``GenerationConfig`` defaults.
                 The session's config is never mutated by this call.
             stateless: do not mutate session history.
+            system_prompt: per-call system instruction, stamped in the node recipe.
+                Omission inherits the session; explicit None clears it. Raw
+                completion ignores this field. Replay uses the captured value.
             raw: skip chat template, tokenize input string directly.
             thinking: per-call thinking override.  ``None`` = auto-detect
                 via ``supports_thinking`` (or ``steering.thinking`` if set).
@@ -9796,6 +9835,7 @@ class DrowseSession:
             recipe_override=recipe_override,
             gen_seat=gen_seat,
             append_same_role=append_same_role,
+            system_prompt=system_prompt,
         )
 
     # -- Generation: streaming --
@@ -9815,6 +9855,7 @@ class DrowseSession:
         live_readouts: bool = True,
         gen_seat: str = "assistant",
         append_same_role: bool = True,
+        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
     ) -> GenerationStream:
         """Streaming generation.  See :meth:`generate` for kwargs.
 
@@ -9902,6 +9943,7 @@ class DrowseSession:
                         recipe_override=recipe_override,
                         gen_seat=gen_seat,
                         append_same_role=append_same_role,
+                        system_prompt=system_prompt,
                     )
                 result_holder.append(result)
             except BaseException as e:

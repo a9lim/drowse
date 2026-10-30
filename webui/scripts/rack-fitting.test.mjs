@@ -58,5 +58,58 @@ requests[2].reject(new Error("fit failed"));
 await flush();
 assert.equal(toasts.at(-1).kind, "error");
 assert.equal(state.busyKeys.size, 0);
-assert.match(source, /mounted && drawerState\.params === origin/);
-console.log("Rack fitting: duplicate prevention, cancellation, metadata refresh, stale inspector responses, and failure cleanup passed");
+assert.match(source, /mounted && drawerState\.open === originDrawer && drawerState\.params === origin/);
+
+const attach = source.slice(source.indexOf("  async function onCustomAttachSubmit("), source.indexOf("  // ----- fit / delete"));
+const probe = source.slice(source.indexOf("  async function onProbe("), source.indexOf("  // ----- custom-attach form"));
+const attachCode = ts.transpileModule(`${attach}\n${probe}\nreturn { onCustomAttachSubmit, onProbe };`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+for (const surface of ["custom", "catalog"]) {
+  for (const outcome of ["closed", "closing", "replaced", "switched", "token", "rack"]) {
+    const origin = null;
+    const returnTarget = outcome === "rack" ? null : { node_id: "original-token" };
+    let resolveAttach;
+    let finishes = 0;
+    const attachState = {
+      customAttaching: false,
+      customSelector: "local/test",
+      customAlias: "",
+      customTopN: 3,
+      browserMode: false,
+      mounted: true,
+      drawerState: { open: "subspace", params: origin },
+      busyKeys: new Set(),
+      rowKey: () => "local/test",
+      isProbed: () => false,
+      selectorChoice: () => ({ selector: "local/test", available: true }),
+      attachProbe: () => new Promise(resolve => { resolveAttach = resolve; }),
+      pushToast: () => {},
+      describeError: error => { throw error; },
+      finishProbeSetup: target => {
+        assert.equal(target, returnTarget, "attachment returns to the original token");
+        finishes += 1;
+      },
+      get returnToToken() {
+        assert.ok(this.mounted, "closed drawers must not read destroyed derived state");
+        assert.equal(this.drawerState.open, "subspace", "closing drawers must not read inert derived state");
+        assert.equal(this.drawerState.params, origin, "replaced drawers must not read stale derived state");
+        return returnTarget;
+      },
+    };
+    const handlers = new Function("state", `with (state) { ${attachCode} }`)(attachState);
+    const pending = surface === "custom"
+      ? handlers.onCustomAttachSubmit({ preventDefault() {} })
+      : handlers.onProbe(model);
+    if (outcome === "closed") attachState.mounted = false;
+    if (outcome === "closing") attachState.drawerState.open = null;
+    if (outcome === "replaced") attachState.drawerState.params = {};
+    if (outcome === "switched") attachState.drawerState.open = "manifolds";
+    resolveAttach({ name: "local/test" });
+    await pending;
+    assert.equal(finishes, outcome === "token" || surface === "catalog" && outcome === "rack" ? 1 : 0);
+    assert.equal(attachState.customAttaching, false);
+    assert.equal(attachState.busyKeys.size, 0);
+  }
+}
+console.log("Rack fitting: duplicate prevention, cancellation, metadata refresh, stale inspector responses, failure cleanup, and 12 delayed-attachment cases passed");

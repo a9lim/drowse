@@ -43,7 +43,7 @@ export interface BrowserSaeFeature {
   readonly threshold: number;
   readonly direction: Float32Array;
   readonly encoderDirection: Float32Array;
-  readonly decoderBias: Float32Array;
+  readonly encoderInputBias: Float32Array;
   readonly featureBias: number;
 }
 
@@ -92,6 +92,7 @@ interface BrowserSae {
   readonly decoder: Float32Array;
   readonly encoderBias: Float32Array;
   readonly encoderThreshold: Float32Array;
+  readonly encoderInputBias: Float32Array;
   readonly decoderBias: Float32Array;
 }
 
@@ -268,7 +269,8 @@ export class BrowserInstrumentRegistry {
       encoder: sae.encoder,
       encoderBias: sae.encoderBias,
       encoderThreshold: sae.encoderThreshold,
-      decoderBias: sae.decoderBias,
+      // The GPU ABI calls the encoder input offset decoderBias.
+      decoderBias: sae.encoderInputBias,
     };
   }
 
@@ -391,7 +393,7 @@ export class BrowserInstrumentRegistry {
       threshold: sae.encoderThreshold[feature],
       direction: saeDecoderDirection(sae.decoder, sae.hiddenSize, feature),
       encoderDirection,
-      decoderBias: sae.decoderBias,
+      encoderInputBias: sae.encoderInputBias,
       featureBias: sae.encoderBias[feature],
     };
   }
@@ -580,7 +582,8 @@ async function loadSae(
   const manifest = await jsonArtifact(manifestArtifact, request.signal);
   const hiddenSize = request.variant.runtimeIdentity.hiddenSize;
   if (
-    !sameStrings(Object.keys(manifest).sort(), LOCAL_SAE_V1_KEYS) ||
+    !sameStrings(Object.keys(manifest).filter((key) => key !== "apply_b_dec_to_input").sort(), LOCAL_SAE_V1_KEYS) ||
+    ("apply_b_dec_to_input" in manifest && typeof manifest.apply_b_dec_to_input !== "boolean") ||
     !(
       manifest.format_version === 1 && manifest.activation === "relu" ||
       manifest.format_version === 2 && manifest.activation === "jump_relu"
@@ -637,13 +640,24 @@ async function loadSae(
         manifest.release,
         manifest.d_sae,
       );
+  const gemmaScope2 = manifest.activation === "jump_relu" &&
+    typeof manifest.corpus_spec === "string" &&
+    /^provider:google\/gemma-scope-2-(270m|1b|4b|12b|27b)-(it|pt)$/u.test(manifest.corpus_spec);
+  const applyDecoderBias = manifest.apply_b_dec_to_input ?? (gemmaScope2 ? false : undefined);
+  if (applyDecoderBias === undefined && String(manifest.corpus_spec).startsWith("provider:")) {
+    throw instrumentError("SAE_PACK_INVALID", "Provider SAE packs must declare apply_b_dec_to_input");
+  }
+  const decoderBias = tensors.tensor("b_dec", [hiddenSize]).data;
+  const centered = applyDecoderBias ?? true;
   return {
     source: pack.pack.id,
     descriptionSource: verifiedSaeDescriptionSource(manifest),
     displayName: pack.pack.displayName,
     release: manifest.release,
     revision: manifest.tensor_sha256,
-    fingerprint: manifest.tensor_sha256,
+    fingerprint: centered ? manifest.tensor_sha256 : bytesToHex(sha256(new TextEncoder().encode(
+      `sae-uncentered-v1:${manifest.tensor_sha256}`,
+    ))),
     layer: manifest.layer,
     hiddenSize,
     featureCount: manifest.d_sae,
@@ -655,7 +669,8 @@ async function loadSae(
     encoderThreshold: manifest.activation === "jump_relu"
       ? tensors.tensor("threshold", [manifest.d_sae]).data
       : new Float32Array(manifest.d_sae),
-    decoderBias: tensors.tensor("b_dec", [hiddenSize]).data,
+    encoderInputBias: centered ? decoderBias : new Float32Array(hiddenSize),
+    decoderBias,
   };
 }
 
@@ -732,7 +747,7 @@ function reconstructSaeCentroids(
       let activation = sae.encoderBias[feature];
       for (let column = 0; column < sae.hiddenSize; column += 1) {
         activation += (
-          centroids.values[offset + column] - sae.decoderBias[column]
+          centroids.values[offset + column] - sae.encoderInputBias[column]
         ) * sae.encoder[column * sae.featureCount + feature];
       }
       if (activation <= sae.encoderThreshold[feature]) continue;

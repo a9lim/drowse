@@ -54,6 +54,7 @@ try {
     runtimeCapabilities() {
       return {
         topK: true,
+        positionSpans: true,
         forcedReplay: options.forcedReplay ?? true,
         replayScoring: false,
         tokenizer: true,
@@ -883,6 +884,7 @@ try {
   branchA.recipe = {
     ...branchA.recipe,
     steering: "left:role-pirate",
+    position_spans: [[1, 3], [5, 7]],
     thinking: false,
     seed: 7,
     sampling: {
@@ -945,6 +947,7 @@ try {
     runtimeCapabilities() {
       return {
         topK: true,
+        positionSpans: true,
         forcedReplay: true,
         replayScoring: true,
         tokenizer: true,
@@ -1123,6 +1126,7 @@ try {
   assert.equal(unsteeredReplayPlan.measurementTargetRawIndex, 0);
   assert.equal(unsteeredReplayPlan.thinking, false);
   assert.equal(unsteeredReplayPlan.steeringExpression, null);
+  assert.equal(unsteeredReplayPlan.position_spans, undefined);
   assert.equal(unsteeredReplayPlan.generationSeat, "assistant");
   assert.equal(unsteeredReplayPlan.generationRoleName, "pirate");
   assert.deepEqual(
@@ -1156,6 +1160,7 @@ try {
   });
   assert.equal(rawReplay.measurements.instruments.lens.binding.steering, "left:role-pirate");
   const rawReplayPlan = exactReplayEngine.plans[1];
+  assert.deepEqual(rawReplayPlan.position_spans, [[1, 3], [5, 7]]);
   assert.deepEqual(rawReplayPlan.input, { kind: "raw", prompt: "Question" });
   assert.deepEqual(rawReplayPlan.replay.forcedPrefixTokenIds, [10, 11]);
   assert.equal(rawReplayPlan.readoutTopK, 1);
@@ -1213,6 +1218,7 @@ try {
   assert.equal(forkPlan.sampling.persist_subspace_coords, false);
   assert.equal(forkPlan.sampling.return_top_k, 5);
   assert.equal(forkPlan.steeringExpression, "left:role-pirate");
+  assert.deepEqual(forkPlan.position_spans, [[1, 3], [5, 7]]);
   assert.equal(forkPlan.generationSeat, "assistant");
   assert.equal(forkPlan.generationRoleName, "pirate");
   const forked = exactReplayRuntime.snapshot().tree.nodes.at(-1);
@@ -1416,6 +1422,7 @@ try {
 
   const hookProgram = { hookAbi: "post-block-residual-v4" };
   const compiled = [];
+  const steeringEvents = [];
   const steeringEngine = generation();
   const steeringRuntime = new BrowserLoomRuntime({
     session: session(),
@@ -1433,12 +1440,56 @@ try {
       authored_role: "user",
       generated_role: "assistant",
       steering: "0.5 honest",
+      position_spans: [[5, 7], [1, 3], [3, 4]],
     },
-    () => {},
+    (event) => steeringEvents.push(event),
   );
   assert.deepEqual(compiled, ["0.5 honest"]);
   assert.equal(steeringEngine.plans[0].hookProgram, hookProgram);
+  assert.deepEqual(steeringEngine.plans[0].position_spans, [[1, 4], [5, 7]]);
+  assert.deepEqual(steeringRuntime.snapshot().tree.nodes[2].recipe.position_spans, [[1, 4], [5, 7]]);
   assert.equal(steeringRuntime.snapshot().tree.nodes[2].applied_steering, "0.5 honest");
+  assert.equal(steeringEvents.at(-1).result.applied_steering, "0.5 honest");
+  const comparisonEvents = [];
+  await steeringRuntime.generate({
+    type: "generate",
+    input: [{ role: "user", content: "Prompt" }],
+    parent_node_id: steeringRuntime.snapshot().tree.nodes[2].id,
+    stateless: true,
+    recipe_override: "unsteered",
+  }, event => comparisonEvents.push(event));
+  assert.equal(comparisonEvents.at(-1).result.applied_steering, null);
+  assert.equal(steeringEngine.plans.at(-1).steeringExpression, null);
+  assert.equal(steeringEngine.plans.at(-1).position_spans, undefined);
+  assert.deepEqual(steeringEngine.plans.at(-1).sampling, steeringEngine.plans[0].sampling);
+
+  const spansParent = steeringRuntime.snapshot().tree.nodes[2].id;
+  for (const [override, expected] of [
+    ["inverted", [[1, 4], [5, 7]]],
+    [{ position_indices: [8, 9, 11] }, [[8, 10], [11, 12]]],
+    [{ position_spans: null }, undefined],
+    [{ position_spans: [] }, []],
+  ]) {
+    const events = [];
+    await steeringRuntime.generate({ type: "generate", input: "Prompt", stateless: true,
+      parent_node_id: spansParent, recipe_override: override }, event => events.push(event));
+    assert.equal(events.some(event => event.type === "error"), false, JSON.stringify(events));
+    assert.deepEqual(steeringEngine.plans.at(-1).position_spans, expected);
+  }
+  for (const selection of [
+    { position_spans: [[1, 3]], position_indices: [1] },
+    { position_spans: [[1, 3], [2, 4]] },
+    { position_indices: [2, 2] },
+  ]) {
+    const before = steeringRuntime.snapshot().tree;
+    const planCount = steeringEngine.plans.length;
+    const events = [];
+    await assert.rejects(steeringRuntime.generate({ type: "submit", text: "Must not append", authored_role: "user",
+      generated_role: "assistant", steering: "0.5 honest", ...selection }, event => events.push(event)),
+    error => error.code === "INVALID_STEERING_POSITIONS");
+    assert.deepEqual(steeringRuntime.snapshot().tree, before);
+    assert.equal(steeringEngine.plans.length, planCount);
+  }
 
   const validationCompiles = [];
   const validationEngine = generation();
@@ -1746,6 +1797,16 @@ try {
   }, () => {});
   assert.equal(castEngine.plans.at(-1).steeringExpression, null);
   assert.deepEqual(castExpressions, ["0.25 calm", "0.5 direct"]);
+  const clearedEvents = [];
+  await castRuntime.generate({
+    type: "submit",
+    text: "The controls have been cleared",
+    authored_role: "user",
+    generated_role: "assistant",
+    steering: "",
+  }, event => clearedEvents.push(event));
+  assert.equal(castEngine.plans.at(-1).steeringExpression, null);
+  assert.equal(clearedEvents.at(-1).result.applied_steering, null);
 
   const unavailableSteering = new BrowserLoomRuntime({
     session: session(),
@@ -1819,6 +1880,32 @@ try {
   const failedTree = failedRuntime.snapshot().tree;
   assert.equal(failedTree.nodes.length, 2);
   assert.equal(failedTree.active_node_id, failedTree.nodes[1].id);
+
+  {
+    const engine = cancellableGeneration("reject");
+    const stream = engine.streamGeneration.bind(engine);
+    engine.streamGeneration = (plan, onToken) => stream(plan, async token => {
+      await onToken({ ...token, text: "Unknown ", logprob: null });
+      await onToken({ ...token, rawIndex: 1 });
+    });
+    const runtime = new BrowserLoomRuntime({
+      session: session(), generation: engine, createId: ids("cancel-unknown-score"),
+    });
+    const events = [];
+    const pending = runtime.generate({
+      type: "submit", text: "Keep incomplete score provenance",
+      authored_role: "user", generated_role: "assistant",
+    }, event => events.push(event));
+    await engine.started;
+    await runtime.stop();
+    await pending;
+    const node = runtime.snapshot().tree.nodes.at(-1);
+    assert.equal(node.text, "Unknown Partial");
+    assert.deepEqual(node.tokens.map(row => row.logprob), [null, -0.4]);
+    assert.equal(node.mean_logprob, null, "an incomplete distribution must not become a finite mean");
+    assert.equal(node.mean_surprise, null);
+    assert.equal(events.find(event => event.type === "done").result.mean_logprob, null);
+  }
 
   for (const mode of ["resolve", "reject"]) {
     const engine = cancellableGeneration(mode);
@@ -2480,6 +2567,45 @@ try {
     canonicalBrowserTree(sharedLoomRuntime.snapshot().tree),
     sharedLoomFixture.expected.final,
   );
+
+  for (const capturedPrompt of [undefined, null, "", "Speak like a pirate."]) {
+    const capturedTree = structuredClone(exactReplayRuntime.snapshot().tree);
+    const source = capturedTree.nodes.find(node => node.id === branchA.id);
+    if (capturedPrompt === undefined) delete source.recipe.system_prompt;
+    else source.recipe.system_prompt = capturedPrompt;
+    const savedPromptRuntime = new BrowserLoomRuntime({
+      session: session({ system_prompt: "Different current instruction." }),
+      initialTree: capturedTree,
+      generation: exactReplayEngine,
+      createId: ids("captured-prompt"),
+      compileSteering() { return { hookAbi: "post-block-residual-v4", activeRole: "pirate" }; },
+    });
+    const firstPlan = exactReplayEngine.plans.length;
+    await savedPromptRuntime.generate({ type: "generate", fork_node_id: branchA.id, fork_raw_index: 1, fork_alt_token_id: 42 }, () => {});
+    const expected = capturedPrompt === undefined ? "Different current instruction." : capturedPrompt;
+    const rendered = exactReplayEngine.plans[firstPlan].input.messages.filter(row => row.role === "system").map(row => row.content);
+    assert.deepEqual(rendered, expected ? [expected] : [], "token fork uses captured instructions, including explicit null/empty and legacy inheritance");
+    assert.equal(savedPromptRuntime.snapshot().tree.nodes.at(-1).recipe.system_prompt, expected);
+    assert.equal(savedPromptRuntime.snapshot().session.config.system_prompt, "Different current instruction.");
+  }
+
+  for (const defaultPrompt of [null, "", "Standing instruction."]) {
+    for (const requestedPrompt of [undefined, null, "", "Speak like a pirate."]) {
+      const promptEngine = generation();
+      const promptRuntime = new BrowserLoomRuntime({
+        session: session({ system_prompt: defaultPrompt }), generation: promptEngine,
+        createId: ids("request-prompt"),
+      });
+      await promptRuntime.generate({ type: "generate", input: "Hello", stateless: false }, () => {});
+      await promptRuntime.generate({ type: "generate", input: "Why use maps?", stateless: false,
+        append_same_role: false, ...(requestedPrompt === undefined ? {} : { system_prompt: requestedPrompt }) }, () => {});
+      const expected = requestedPrompt === undefined ? defaultPrompt : requestedPrompt;
+      assert.equal(promptRuntime.snapshot().tree.nodes.at(-1).recipe.system_prompt, expected,
+        "new comparison branches preserve explicit null/empty/text or the exact omitted default");
+      assert.deepEqual(promptEngine.plans.at(-1).input.messages.filter(row => row.role === "system").map(row => row.content), expected ? [expected] : []);
+      assert.equal(promptRuntime.snapshot().session.config.system_prompt, defaultPrompt);
+    }
+  }
 
   console.log("Browser authoritative loom checks passed");
 } finally {

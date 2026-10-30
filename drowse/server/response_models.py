@@ -185,6 +185,10 @@ class RecipeJSON(TypedDict):
     seed: int | None
     probes: list[str]
     probe_hashes: dict[str, str]
+    system_prompt: NotRequired[str | None]
+    # Browser-only receipt extension. The Python tree loader rejects it rather
+    # than replaying position-limited steering as an unrestricted expression.
+    position_spans: NotRequired[list[tuple[int, int]]]
 
 
 class CastMemberJSON(TypedDict):

@@ -28,7 +28,10 @@ const lockedTokenizerClosure = [...runtimeLock.models]
     tokenizerSha256: model.tokenizerSha256,
     tokenizerConfigSha256: model.chatTemplateSha256,
   }));
-assert.deepEqual(source.tokenizers, lockedTokenizerClosure);
+assert.ok(source.tokenizers.length > 0);
+for (const tokenizer of source.tokenizers) {
+  assert.deepEqual(tokenizer, lockedTokenizerClosure.find(model => model.id === tokenizer.id));
+}
 for (const manifestName of [
   "fineweb-sample-10bt-train.approved.json",
   "fineweb-sample-10bt-train.candidate.json",
@@ -37,8 +40,13 @@ for (const manifestName of [
     resolve(repositoryRoot, "browser-runtime/release-corpus", manifestName),
     "utf8",
   ));
-  assert.deepEqual(manifest.tokenizers, lockedTokenizerClosure);
+  assert.ok(manifest.tokenizers.length > 0);
+  for (const tokenizer of manifest.tokenizers) {
+    assert.deepEqual(tokenizer, lockedTokenizerClosure.find(model => model.id === tokenizer.id));
+  }
 }
+source.tokenizers = lockedTokenizerClosure;
+source.selection.algorithm = "drowse-release-corpus-v1";
 source.status = "approved";
 source.blockers = [];
 source.source.split = "train";
@@ -109,6 +117,7 @@ const inputClosure = await validateReleaseCorpusInputs({
   kind: "sae",
   corpusBytes: saeBytes,
   runtimeLock,
+  modelLock,
 });
 assert.deepEqual(inputClosure, {
   releaseBytes,
@@ -124,6 +133,7 @@ await assert.rejects(
     corpusBytes: jlensBytes,
     wordsBytes: Buffer.from("[]"),
     runtimeLock,
+    modelLock,
   }),
   /word bytes differ/,
 );
@@ -187,6 +197,20 @@ assert.equal((await validateReleaseInstrumentPack({
   runtimeLock,
   modelLock,
 })).words, 80);
+for (const change of [{ token_id: 999 }, { row: 1 }]) {
+  await assert.rejects(
+    validateReleaseInstrumentPack({
+      directory: jlensDirectory,
+      kind: "jlens",
+      instrumentManifest: jlensManifest,
+      vocabularyManifest: { words: vocabularyManifest.words.map((word, index) =>
+        index === 0 ? { ...word, ...change } : word) },
+      runtimeLock,
+      modelLock,
+    }),
+    /token.*closure/,
+  );
+}
 await assert.rejects(
   validateReleaseInstrumentPack({
     directory: jlensDirectory,
@@ -239,7 +263,37 @@ assert.deepEqual(await validateReleaseInstrumentPack({
   words: 1,
 });
 
-console.log("Hosted instrument release-policy checks passed");
+for (const scenario of [
+  "scoped", "missing-target", "unknown-model", "duplicate-model", "wrong-tokenizer",
+  "missing-token-model", "short-token-list", "negative-token", "duplicate-token", "fractional-token",
+]) {
+  const scopedSource = structuredClone(source);
+  scopedSource.tokenizers = source.tokenizers.filter(tokenizer => tokenizer.id === modelLock.id);
+  const scopedRelease = structuredClone(release);
+  scopedRelease.outputs.words.tokenIds = { [modelLock.id]: [...release.outputs.words.tokenIds[modelLock.id]] };
+  if (scenario === "missing-target") scopedSource.tokenizers = source.tokenizers.filter(tokenizer => tokenizer.id !== modelLock.id);
+  if (scenario === "unknown-model") scopedSource.tokenizers.push({ ...scopedSource.tokenizers[0], id: "unlocked-model" });
+  if (scenario === "duplicate-model") scopedSource.tokenizers.push({ ...scopedSource.tokenizers[0] });
+  if (scenario === "wrong-tokenizer") scopedSource.tokenizers[0].tokenizerSha256 = "0".repeat(64);
+  if (scenario === "missing-token-model") scopedRelease.outputs.words.tokenIds = {};
+  const tokenIds = scopedRelease.outputs.words.tokenIds[modelLock.id];
+  if (scenario === "short-token-list") tokenIds.pop();
+  if (scenario === "negative-token") tokenIds[0] = -1;
+  if (scenario === "duplicate-token") tokenIds[0] = tokenIds[1];
+  if (scenario === "fractional-token") tokenIds[0] = 0.5;
+  const sourceBytes = Buffer.from(JSON.stringify(scopedSource));
+  scopedRelease.sourceManifestSha256 = sha256(sourceBytes);
+  await writeFile(sourceManifestPath, sourceBytes);
+  await writeFile(releaseManifestPath, JSON.stringify(scopedRelease));
+  const validate = () => validateReleaseCorpusInputs({
+    releaseManifestPath, sourceManifestPath, licenseEvidencePath: join(root, "license-evidence"),
+    kind: "sae", corpusBytes: saeBytes, runtimeLock, modelLock,
+  });
+  if (scenario === "scoped") await validate();
+  else await assert.rejects(validate(), /token.*closure/);
+}
+
+console.log("Hosted instrument release-policy checks passed: scoped model identities, exact word token IDs, malformed closures, and provider packs");
 
 function output(path, bytes, documents) {
   return {

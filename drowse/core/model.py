@@ -4,13 +4,14 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import threading
 import warnings
 import weakref
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Iterable, cast
+from pathlib import Path, PureWindowsPath
+from typing import Any, Callable, Iterable, Iterator, cast
 
 import torch
 import torch.nn as nn
@@ -27,6 +28,7 @@ _MODEL_FINGERPRINT_CACHE: "weakref.WeakKeyDictionary[Any, tuple[object, str, str
     weakref.WeakKeyDictionary()
 )
 _MODEL_FINGERPRINT_LOCK = threading.Lock()
+_MODEL_LOAD_LOCK = threading.RLock()
 _SOURCE_FINGERPRINT_VERSION = 1
 
 
@@ -569,6 +571,49 @@ _ST_DTYPES: dict[str, torch.dtype] = {
     "I16": torch.int16, "I8": torch.int8, "U8": torch.uint8,
     "BOOL": torch.bool, "F8_E4M3": torch.float8_e4m3fn, "F8_E5M2": torch.float8_e5m2,
 }
+_ST_DTYPE_BITS = {
+    "F4": 4, "F6_E2M3": 6, "F6_E3M2": 6,
+    "BOOL": 8, "U8": 8, "I8": 8, "F8_E4M3": 8, "F8_E5M2": 8,
+    "F8_E8M0": 8, "F8_E4M3FNUZ": 8, "F8_E5M2FNUZ": 8,
+    "I16": 16, "U16": 16, "F16": 16, "BF16": 16,
+    "I32": 32, "U32": 32, "F32": 32,
+    "I64": 64, "U64": 64, "F64": 64, "C64": 64,
+}
+_ST_HEADER_MAX_BYTES = 100_000_000
+_CHECKPOINT_INDEX_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _checkpoint_json(raw: bytes) -> Any:
+    def unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate checkpoint metadata key {key!r}")
+            result[key] = value
+        return result
+
+    return json.loads(raw, object_pairs_hook=unique_keys)
+
+
+def _checkpoint_shard_names(index_path: str) -> list[str]:
+    with os.fdopen(_open_uncached(index_path), "rb") as handle:
+        raw = handle.read(_CHECKPOINT_INDEX_MAX_BYTES + 1)
+    if len(raw) > _CHECKPOINT_INDEX_MAX_BYTES:
+        raise ValueError("checkpoint shard index exceeds the metadata limit")
+    index = _checkpoint_json(raw)
+    weight_map = index.get("weight_map") if isinstance(index, dict) else None
+    if not isinstance(weight_map, dict) or not weight_map:
+        raise ValueError("checkpoint shard index requires a non-empty weight_map")
+    names: set[str] = set()
+    for name in weight_map.values():
+        if (
+            not isinstance(name, str) or not name.endswith(".safetensors")
+            or "\\" in name or "\x00" in name or PureWindowsPath(name).drive
+            or any(part in {"", ".", ".."} for part in name.split("/"))
+        ):
+            raise ValueError(f"unsafe checkpoint shard name {name!r}")
+        names.add(name)
+    return sorted(names)
 
 
 def _read_safetensors_header(path: str) -> tuple[dict[str, Any], int]:
@@ -578,11 +623,49 @@ def _read_safetensors_header(path: str) -> tuple[dict[str, Any], int]:
     of JSON (name → ``{dtype, shape, data_offsets}``), then the packed
     tensor data.  The ``__metadata__`` entry is dropped.
     """
-    import json
-    with open(path, "rb") as f:
-        n = int.from_bytes(f.read(8), "little")
-        header = json.loads(f.read(n))
+    with os.fdopen(_open_uncached(path), "rb") as f:
+        file_size = os.fstat(f.fileno()).st_size
+        prefix = f.read(8)
+        n = int.from_bytes(prefix, "little")
+        if len(prefix) != 8 or not 0 < n <= _ST_HEADER_MAX_BYTES or n > file_size - 8:
+            raise ValueError("invalid or oversized safetensors header")
+        header = _checkpoint_json(f.read(n))
+    if not isinstance(header, dict):
+        raise ValueError("safetensors header must be an object")
     header.pop("__metadata__", None)
+    data_bytes = file_size - 8 - n
+    intervals = []
+    for name, meta in header.items():
+        if not isinstance(meta, dict) or set(meta) != {"dtype", "shape", "data_offsets"}:
+            raise ValueError(f"invalid safetensors metadata for {name!r}")
+        dtype, shape, offsets = meta["dtype"], meta["shape"], meta["data_offsets"]
+        if (
+            not isinstance(dtype, str) or dtype not in _ST_DTYPE_BITS
+            or not isinstance(shape, list)
+            or any(type(dim) is not int or not 0 <= dim < 2**64 for dim in shape)
+            or not isinstance(offsets, list) or len(offsets) != 2
+            or any(type(offset) is not int for offset in offsets)
+        ):
+            raise ValueError(f"invalid safetensors shape/dtype/offsets for {name!r}")
+        start, end = offsets
+        expected_bits = 0 if 0 in shape else _ST_DTYPE_BITS[dtype]
+        for dim in shape:
+            expected_bits *= dim
+            if expected_bits > data_bytes * 8:
+                raise ValueError(f"invalid safetensors byte extent for {name!r}")
+        if (
+            not 0 <= start <= end <= data_bytes or expected_bits % 8
+            or end - start != expected_bits // 8
+        ):
+            raise ValueError(f"invalid safetensors byte extent for {name!r}")
+        intervals.append((start, end))
+    cursor = 0
+    for start, end in sorted(intervals):
+        if start != cursor:
+            raise ValueError("safetensors data has overlapping or non-contiguous tensors")
+        cursor = end
+    if cursor != data_bytes:
+        raise ValueError("safetensors data does not match its declared tensors")
     return header, 8 + n
 
 
@@ -600,7 +683,13 @@ def _open_uncached(path: str) -> int:
     """
     import os
     import sys
-    fd = os.open(path, os.O_RDONLY)
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"checkpoint {path!r} is not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
     if sys.platform == "darwin":
         import fcntl
         with suppress(OSError):
@@ -619,6 +708,9 @@ def _read_st_tensor(fd: int, header: dict[str, Any], data_start: int, name: str)
     import os
     import warnings
     meta = header[name]
+    dtype = _ST_DTYPES.get(meta["dtype"])
+    if dtype is None:
+        raise ValueError(f"unsupported safetensors dtype {meta['dtype']!r} for selected tensor {name!r}")
     start, end = meta["data_offsets"]
     nbytes = end - start
     offset = data_start + start
@@ -633,10 +725,14 @@ def _read_st_tensor(fd: int, header: dict[str, Any], data_start: int, name: str)
             break
         chunks.append(block)
         got += len(block)
+    if got != nbytes:
+        raise ValueError(f"safetensors tensor {name!r} is truncated")
+    if nbytes == 0:
+        return torch.empty(meta["shape"], dtype=dtype)
     buf = chunks[0] if len(chunks) == 1 else b"".join(chunks)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # frombuffer warns on read-only bytes
-        flat = torch.frombuffer(buf, dtype=_ST_DTYPES[meta["dtype"]])
+        flat = torch.frombuffer(buf, dtype=dtype)
     return flat.reshape(meta["shape"])
 
 
@@ -666,9 +762,9 @@ def _load_text_from_multimodal(
     model directly on the target device, then streams each safetensors
     shard tensor-by-tensor, drops the ``language_model.`` segment to
     recover the text model's own parameter names, dequantizes FP8
-    weights, and copies each into the preallocated parameter.  Vision
-    tower / projector weights (no ``language_model.`` segment) are
-    skipped.
+    weights, and copies each into the preallocated parameter. A top-level
+    ``lm_head`` is retained; unrelated vision tower / projector weights
+    are skipped.
 
     Two memory disciplines matter on Apple Silicon, where CPU and MPS
     share one unified-memory pool:
@@ -690,22 +786,9 @@ def _load_text_from_multimodal(
     caller can fall back to a full multimodal load.
     """
     import gc
-    import json
     import os
     from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
     from transformers.utils.hub import cached_file
-
-    # Create directly on target device — avoids a CPU copy that would
-    # spike RSS and eat into MPS's unified memory budget.
-    with torch.device(device):
-        model = AutoModelForCausalLM.from_config(text_config, dtype=dtype)
-
-    # The text model's own parameter / buffer names → their (already
-    # device-resident) tensors, so each shard tensor can be copy_'d in
-    # place.  named_parameters() de-dupes tied weights, so a tied lm_head
-    # is absent here and rides along on the shared embed_tokens storage.
-    targets: dict[str, torch.Tensor] = dict(model.named_parameters())
-    targets.update(model.named_buffers())
 
     # Prefer the sharded index; fall back to a single `model.safetensors`
     # for repos that ship consolidated weights (e.g. Ministral-3-3B).
@@ -714,8 +797,7 @@ def _load_text_from_multimodal(
         _raise_exceptions_for_missing_entries=False,
     )
     if index_path is not None:
-        with open(index_path) as f:
-            shard_names = sorted(set(json.load(f)["weight_map"].values()))
+        shard_names = _checkpoint_shard_names(index_path)
         # Resolve each shard through cached_file so HF hub downloads it
         # if it isn't already local (the index can land before the shards).
         shard_paths = [
@@ -726,6 +808,17 @@ def _load_text_from_multimodal(
         single_path = cached_file(model_id, SAFE_WEIGHTS_NAME, revision=revision)
         shard_paths = [single_path]
 
+    # Create directly on target device — avoids a CPU copy that would
+    # spike RSS and eat into MPS's unified memory budget.
+    with torch.device(device):
+        model = AutoModelForCausalLM.from_config(text_config, dtype=dtype)
+
+    # named_parameters de-duplicates tied storage. Nonpersistent buffers
+    # may legitimately be initialized by the model rather than the checkpoint.
+    targets: dict[str, torch.Tensor] = dict(model.named_parameters())
+    required = set(targets)
+    targets.update(model.named_buffers())
+    loaded: set[str] = set()
     matched = 0
     with torch.no_grad():
         for sf in shard_paths:
@@ -740,18 +833,21 @@ def _load_text_from_multimodal(
             fd = _open_uncached(sf)
             try:
                 for name in names:
-                    if "language_model." not in name:
+                    if name in {"lm_head.weight", "lm_head.bias"}:
+                        key = name
+                    elif "language_model." in name:
+                        # Both language_model.model.layers… and
+                        # model.language_model.layers… map to model.layers….
+                        key = name.replace("language_model.", "", 1)
+                    else:
                         continue  # vision tower / projector — skip
-                    # Drop the language_model. segment to recover the text
-                    # model's own parameter name. Works for both layouts:
-                    #   language_model.model.layers… -> model.layers…
-                    #   model.language_model.layers… -> model.layers…
-                    key = name.replace("language_model.", "", 1)
                     if key.endswith((".weight_scale_inv", ".activation_scale")):
                         continue
                     target = targets.get(key)
                     if target is None:
                         continue
+                    if tuple(header[name]["shape"]) != tuple(target.shape):
+                        raise ValueError(f"checkpoint tensor {name!r} has the wrong shape")
                     v = _read_st_tensor(fd, header, data_start, name)
                     # Dequantize FP8: real_weight = weight.to(dtype) * scale
                     if v.dtype in _FP8_DTYPES:
@@ -760,7 +856,9 @@ def _load_text_from_multimodal(
                                  if sk in header else None)
                         v = v.to(dtype) * scale.to(dtype) if scale is not None else v.to(dtype)
                     target.copy_(v)  # CPU→device cast + copy into preallocated param
-                    matched += 1
+                    loaded.add(key)
+                    if "language_model." in name:
+                        matched += 1
                     del v
             finally:
                 os.close(fd)
@@ -772,6 +870,9 @@ def _load_text_from_multimodal(
         raise _NoTextWeightsExtracted(
             f"no text-model weights matched the language_model. layout in {model_id!r}"
         )
+    missing = required - loaded
+    if missing:
+        raise ValueError(f"checkpoint is missing text-model parameters: {sorted(missing)!r}")
 
     if device == "mps":
         torch.mps.empty_cache()
@@ -1238,6 +1339,44 @@ def _resolve_load_plan(
     )
 
 
+@contextmanager
+def _model_load_environment(device: str) -> Iterator[None]:
+    # Transformers' concurrent dtype/device copies can segfault on MPS.
+    # Scope its supported synchronous-loading flag to the load, not inference.
+    with _MODEL_LOAD_LOCK:
+        previous = os.environ.get("HF_DEACTIVATE_ASYNC_LOAD")
+        if device == "mps":
+            os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+        try:
+            yield
+        finally:
+            if device == "mps":
+                if previous is None:
+                    os.environ.pop("HF_DEACTIVATE_ASYNC_LOAD", None)
+                else:
+                    os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = previous
+
+
+class _IncompleteCheckpointError(ValueError):
+    """A checkpoint would leave required model parameters newly initialized."""
+
+
+def _load_pretrained_checked(plan: LoadPlan) -> Any:
+    model, loading_info = cast(
+        tuple[Any, dict[str, Any]],
+        AutoModelForCausalLM.from_pretrained(
+            plan.model_id, output_loading_info=True, **plan.load_kwargs,
+        ),
+    )
+    parameters = {name for name, _ in model.named_parameters()}
+    missing = parameters.intersection(loading_info["missing_keys"])
+    if missing:
+        raise _IncompleteCheckpointError(
+            f"checkpoint is missing model parameters: {sorted(missing)!r}"
+        )
+    return model
+
+
 def _load_with_fallbacks(plan: LoadPlan) -> Any:
     """One ``from_pretrained`` attempt plus the attn / dtype retries.
 
@@ -1246,21 +1385,24 @@ def _load_with_fallbacks(plan: LoadPlan) -> Any:
     already-narrowed kwargs rather than repeating a known-bad attempt.
     """
     load_kwargs = plan.load_kwargs
-    try:
-        return AutoModelForCausalLM.from_pretrained(plan.model_id, **load_kwargs)
-    except ValueError as e:
-        if "does not support an attention implementation" not in str(e):
+    with _model_load_environment(plan.device):
+        try:
+            return _load_pretrained_checked(plan)
+        except _IncompleteCheckpointError:
             raise
-        log.info("attn_implementation %r unsupported, falling back to eager",
-                 load_kwargs.get("attn_implementation"))
-        load_kwargs["attn_implementation"] = "eager"
-        return AutoModelForCausalLM.from_pretrained(plan.model_id, **load_kwargs)
-    except Exception:
-        if plan.quantize is not None:
-            raise
-        fallback = torch.float16 if plan.device == "cuda" else torch.float32
-        load_kwargs["dtype"] = fallback
-        return AutoModelForCausalLM.from_pretrained(plan.model_id, **load_kwargs)
+        except ValueError as e:
+            if "does not support an attention implementation" not in str(e):
+                raise
+            log.info("attn_implementation %r unsupported, falling back to eager",
+                     load_kwargs.get("attn_implementation"))
+            load_kwargs["attn_implementation"] = "eager"
+            return _load_pretrained_checked(plan)
+        except Exception:
+            if plan.quantize is not None:
+                raise
+            fallback = torch.float16 if plan.device == "cuda" else torch.float32
+            load_kwargs["dtype"] = fallback
+            return _load_pretrained_checked(plan)
 
 
 def _materialize_model(plan: LoadPlan) -> Any:
@@ -1294,6 +1436,8 @@ def _materialize_model(plan: LoadPlan) -> Any:
     # --- standard load (with attention, dtype, and device fallbacks) ---
     try:
         return _load_with_fallbacks(plan)
+    except _IncompleteCheckpointError:
+        raise
     except (RuntimeError, ValueError) as e:
         if (
             isinstance(e, ValueError)
@@ -1461,7 +1605,7 @@ def get_layers(model: PreTrainedModel) -> nn.ModuleList:
         _warned.add(model_type)
         warnings.warn(
             f"architecture {model_type!r} is wired up but untested — "
-            "report issues at https://github.com/a9lim/polythetic",
+            "report issues at https://github.com/a9lim/drowse",
             UserWarning,
             stacklevel=2,
         )
@@ -1469,12 +1613,13 @@ def get_layers(model: PreTrainedModel) -> nn.ModuleList:
 
 
 def get_unembedding(model: PreTrainedModel) -> torch.Tensor:
-    """Return the unembedding matrix ``W_U``, shape ``[vocab, hidden]``.
+    """Return the unembedding matrix ``W_U``, shape ``[vocab, head_width]``.
 
     Uses the HF-standard ``get_output_embeddings()`` (the lm_head module,
     whether or not its weight is tied to the input embedding). Nothing else in
     drowse touches the unembedding outside the model's own forward; this
-    accessor exists for the Jacobian lens readout.
+    accessor exists for the Jacobian lens readout. Projected OPT models have
+    a head width distinct from the residual width; see get_output_projection.
     """
     out = model.get_output_embeddings()
     weight = getattr(out, "weight", None)
@@ -1487,7 +1632,47 @@ def get_unembedding(model: PreTrainedModel) -> torch.Tensor:
     return weight
 
 
-_FINAL_NORM_ATTRS = ("norm", "final_layernorm", "ln_f", "final_norm")
+_FINAL_NORM_ATTRS = ("norm", "final_layernorm", "final_layer_norm", "ln_f", "final_norm")
+
+
+def get_logit_softcap(model: PreTrainedModel) -> float | None:
+    return getattr(_text_config(model), "final_logit_softcapping", None)
+
+
+def get_output_projection(model: PreTrainedModel) -> torch.Tensor | None:
+    if model.config.model_type == "opt":
+        projection = model.model.decoder.project_out
+        return projection.weight if projection is not None else None
+    return None
+
+
+class LogitReadout(nn.Module):
+    """The model's final-residual-to-logits path, without another forward."""
+
+    def __init__(self, model: PreTrainedModel):
+        super().__init__()
+        self.norm = get_final_norm(model)
+        self.head = cast(nn.Module, model.get_output_embeddings())
+        self.projection = model.model.decoder.project_out if model.config.model_type == "opt" else None
+        self.softcap = get_logit_softcap(model)
+        self.scale = model.logit_scale if model.config.model_type in {"cohere", "cohere2"} else 1.0
+        if model.config.model_type == "falcon_h1":
+            self.scale = model.model.lm_head_multiplier
+        self.divisor = model.config.logits_scaling if model.config.model_type in {"granite", "granitemoe"} else 1.0
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        weight = cast(torch.Tensor, self.head.weight)
+        hidden = self.norm(hidden.to(weight.dtype))
+        if self.projection is not None:
+            hidden = self.projection(hidden)
+        logits = self.head(hidden)
+        if self.scale != 1.0:
+            logits = logits * self.scale
+        if self.divisor != 1.0:
+            logits = logits / self.divisor
+        if self.softcap is not None:
+            logits = (logits / self.softcap).tanh() * self.softcap
+        return logits
 
 
 def get_final_norm(model: PreTrainedModel) -> nn.Module:
@@ -1507,6 +1692,8 @@ def get_final_norm(model: PreTrainedModel) -> nn.Module:
                 cand = getattr(module, attr, None)
                 if isinstance(cand, nn.Module):
                     return cand
+            if model.config.model_type == "opt" and module.final_layer_norm is None:
+                return nn.Identity()
     raise ValueError(
         f"model_type {model.config.model_type!r}: no final norm found next to "
         f"the layer list (tried attributes {', '.join(_FINAL_NORM_ATTRS)})"

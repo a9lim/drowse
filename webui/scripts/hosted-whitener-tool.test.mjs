@@ -19,7 +19,7 @@ const runtimeLock = JSON.parse(await readFile(
   "utf8",
 ));
 const qwen4b = runtimeLock.models.find((model) => model.id === "qwen3-4b");
-assert.equal(qwen4b.quantization, "q4f16_1");
+assert.equal(qwen4b.quantization, "q4f32_1");
 const executionProfiles = lockedModelExecutionProfiles(qwen4b, {
   structuredHookProfile: qwen4b.structuredHookProfile,
   thinkingProfile: qwen4b.thinkingProfile,
@@ -28,8 +28,8 @@ const executionProfiles = lockedModelExecutionProfiles(qwen4b, {
 assert.deepEqual(executionProfiles, {
   structuredHookProfile: "standard-v3",
   thinkingProfile: qwen4b.thinkingProfile,
-  quantization: "q4f16_1",
-  requiredFeatures: ["shader-f16"],
+  quantization: "q4f32_1",
+  requiredFeatures: [],
 });
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {
@@ -140,6 +140,9 @@ try {
   assert.ok(transformed.code.includes("maxComputeWorkgroupSizeX"));
   assert.ok(transformed.code.includes("maxComputeInvocationsPerWorkgroup"));
   assert.ok(transformed.code.includes("contextBindingSha256"));
+  assert.ok(transformed.code.includes("for (const context of contexts)"));
+  assert.ok(transformed.code.includes("contextTokens: context.contextTokens"));
+  assert.ok(transformed.code.includes("fittingWorker.dispose()"));
   assert.ok(transformed.code.includes("consensusGram: foundation.consensusGram"));
   assert.ok(transformed.code.includes("evaluatedLayers: foundation.layers"));
   const { browserFittedFlatDiscoverPack } = await vite.ssrLoadModule(

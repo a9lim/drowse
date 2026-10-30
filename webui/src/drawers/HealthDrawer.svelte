@@ -8,57 +8,27 @@
     geometricMeanPpl,
     loomTree,
     probeRack,
-    refreshCorrelation,
-    refreshLoomTree,
-    refreshManifoldList,
-    refreshProbeList,
-    refreshSession,
-    refreshVectorList,
     sessionState,
     steerRack,
     vectorsState,
   } from "../lib/stores.svelte";
   import Button from "../lib/ui/Button.svelte";
-  import { userFacingError } from "../lib/runtime/userFacingError";
+  import { healthState, healthWarnings, refreshHealth } from "../lib/stores/health.svelte";
 
   let { params = null }: { params?: unknown } = $props();
   const embedded = $derived(
     (params as { embedded?: boolean } | null)?.embedded === true,
   );
 
-  let busy = $state(false);
-  let lastAudit: string | null = $state(null);
-  let errorMsg: string | null = $state(null);
+  const busy = $derived(healthState.busy);
+  const lastAudit = $derived(healthState.lastAudit ? new Date(healthState.lastAudit).toLocaleTimeString() : null);
+  const errorMsg = $derived(healthState.error);
 
   const ppl = $derived(geometricMeanPpl(genStatus));
-  const warnings = $derived.by(() => {
-    const out: string[] = [];
-    if (!sessionState.info) out.push("session info is not loaded");
-    if (sessionState.error) out.push(sessionState.error);
-    if (loomTree.error) out.push(`loom API error: ${loomTree.error}`);
-    if (steerRack.catalog.length === 0) out.push("no manifold artifacts are available");
-    if (probeRack.active.length === 0) out.push("no active probes; internal-state views will be sparse");
-    return out;
-  });
+  const warnings = $derived(healthWarnings());
 
   async function audit(): Promise<void> {
-    busy = true;
-    errorMsg = null;
-    try {
-      await Promise.all([
-        refreshSession(),
-        refreshVectorList(),
-        refreshProbeList(),
-        refreshLoomTree(),
-        refreshManifoldList(),
-        refreshCorrelation(),
-      ]);
-      lastAudit = new Date().toLocaleTimeString();
-    } catch (e) {
-      errorMsg = userFacingError(e, "Unable to refresh every diagnostic. Reopen the model and try again.");
-    } finally {
-      busy = false;
-    }
+    if (!healthState.busy) await refreshHealth();
   }
 </script>
 

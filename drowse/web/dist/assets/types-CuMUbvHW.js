@@ -1,0 +1,1 @@
+var e=class extends Error{code;details;constructor(e,t,n){super(t),this.code=e,this.details=n,this.name=`ToolError`}},t=(e={},t=[])=>({type:`object`,properties:e,required:t,additionalProperties:!1});export{t as n,e as t};

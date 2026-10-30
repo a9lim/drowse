@@ -3,6 +3,7 @@ import ts from "../../webui/node_modules/typescript/lib/typescript.js";
 import { dirname, resolve } from "node:path";
 import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 const [
   manifestPath,
   webllmRepository,
@@ -568,8 +569,23 @@ try {
       });
     }
     device.destroy();
-    return { adapter: adapter.info, checks: report };
+    return {
+      adapter: {
+        vendor: adapter.info.vendor,
+        architecture: adapter.info.architecture,
+        device: adapter.info.device,
+        description: adapter.info.description,
+      },
+      checks: report,
+    };
   }, manifest);
+  result.createdAt = new Date().toISOString();
+  result.browserVersion = browser.version();
+  result.verifierSha256 = createHash("sha256").update(await readFile(new URL(import.meta.url))).digest("hex");
+  result.shaders = manifest.map(({ file, code }) => ({
+    file,
+    sha256: createHash("sha256").update(code).digest("hex"),
+  }));
   await writeFile(reportPath, JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
 } finally {

@@ -3,7 +3,10 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { siteDescription, siteAccent, socialImagePath, socialImageAlt } from "./site-metadata.mjs";
+import { siteDescription, siteAccent, themeColors, socialImagePath, socialImageType, socialImageAlt } from "./site-metadata.mjs";
+import { guidePages, htmlGuidePaths, sitePages } from "./site-content.mjs";
+import { themeInitScript } from "./site-publication.mjs";
+import { agentCatalogPaths, agentResources, releaseRobots } from "./agent-discovery.mjs";
 
 const root = resolve("dist-hosted");
 const release = process.argv.includes("--release");
@@ -11,8 +14,27 @@ const manifest = JSON.parse(await readFile(resolve(root, "manifest.webmanifest")
 const index = await readFile(resolve(root, "index.html"), "utf8");
 const notFound = await readFile(resolve(root, "404.html"), "utf8");
 const redirects = await readFile(resolve(root, "_redirects"), "utf8");
-assert.equal(notFound, index, "The 404 page must render Drowse without an asset SPA fallback");
-assert.equal(redirects.trim(), "/app / 200\n/app/ / 200\n/credits / 200\n/credits/ / 200\n/contact / 200\n/contact/ / 200\n/app/* / 200");
+assert.match(notFound, /name="robots" content="noindex, follow"/);
+assert.doesNotMatch(notFound, /rel="canonical"|application\/ld\+json|data-prerendered/);
+assert.match(index, /data-prerendered="landing"/);
+const redirectRules = redirects.trim().split("\n").map(line => line.split(/\s+/));
+assert.deepEqual(redirectRules.slice(0, 2), [["/app", "/app-shell", "200"], ["/app/", "/app-shell", "200"]]);
+assert.ok(!redirectRules.some(([from]) => from.includes("*")), "unknown /app/* paths must reach the real 404 page");
+const appShell = await readFile(resolve(root, "app-shell.html"), "utf8");
+assert.match(appShell, /name="robots" content="noindex, follow"/);
+assert.match(appShell, /<title>Drowse workbench<\/title>/);
+// Every public page is a real prerendered document with its own metadata and a hydration key.
+const guideByPath = new Map(guidePages.map(page => [page.path, page]));
+for (const page of [...htmlGuidePaths.map(path => guideByPath.get(path)), ...sitePages]) {
+  const html = await readFile(resolve(root, `${page.path.slice(1)}.html`), "utf8");
+  const escaped = text => text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  assert.ok(html.includes(`<title>${page.title.replaceAll("&", "&amp;").replaceAll("<", "&lt;")}</title>`), `${page.path} title`);
+  assert.ok(html.includes(`name="description"\n      content="${escaped(page.description)}"`) || html.includes(`name="description" content="${escaped(page.description)}"`), `${page.path} description`);
+  assert.match(html, /data-prerendered="[^"]+"/, `${page.path} must be prerendered`);
+  assert.match(html, /<h1\b/, `${page.path} needs a heading`);
+  assert.doesNotMatch(html, /name="robots"|__DROWSE_/, `${page.path} must be indexable and fully resolved`);
+  if (/rel="canonical"/.test(index)) assert.match(html, new RegExp(`rel="canonical" href="https://[^"]+${page.path}"`), `${page.path} canonical`);
+}
 const serviceWorker = await readFile(resolve(root, "sw.js"), "utf8");
 assert.match(serviceWorker, /\.clientsClaim\(\)/u, "first-visit model code must be controlled and cached without a reload");
 const offlineRuntimeManifest = JSON.parse(await readFile(resolve(root, "runtime-assets.json"), "utf8"));
@@ -58,7 +80,14 @@ assert.equal(manifest.start_url, "/app");
 assert.equal(manifest.scope, "/");
 assert.equal(manifest.display, "standalone");
 assert.equal(manifest.theme_color, siteAccent);
-assert.equal(metadata("theme-color"), siteAccent);
+assert.ok(index.includes(`<meta name="theme-color" media="(prefers-color-scheme: dark)" content="${themeColors.dark}" />`));
+assert.ok(index.includes(`<meta name="theme-color" media="(prefers-color-scheme: light)" content="${themeColors.light}" />`));
+assert.equal(metadata("og:image:type"), socialImageType);
+const { source: themeSource, cspSource } = await themeInitScript();
+assert.ok(index.includes(`<script>${themeSource}</script>`), "the pre-paint theme script must be inlined");
+assert.doesNotMatch(index, /<script src="\/theme-init\.js">/);
+assert.match(index, /<link rel="preload" href="\/assets\/WixMadeforText-normal-latin-[^"]+\.woff2" as="font" type="font\/woff2" crossorigin \/>/);
+assert.match(index, /<link rel="preload" href="\/assets\/WixMadeforDisplay-latin-[^"]+\.woff2" as="font" type="font\/woff2" crossorigin \/>/);
 assert.equal(metadata("description"), siteDescription);
 assert.equal(metadata("og:description"), siteDescription);
 assert.equal(metadata("twitter:description"), siteDescription);
@@ -113,17 +142,47 @@ assert.match(serviceWorker, /index\.html/);
 assert.match(serviceWorker, /drowse-192\.png/);
 assert.match(serviceWorker, /LICENSE/);
 assert.match(serviceWorker, /drowse-hosted-on-demand-assets-v1/);
-assert.match(serviceWorker, /drowse-hosted-on-demand-wasm-v1/);
+assert.match(serviceWorker, /drowse-hosted-on-demand-wasm-v2/);
+const precacheUrls = [...serviceWorker.matchAll(/\burl:"([^"]+)"/g)].map(match => match[1]);
+assert.equal(new Set(precacheUrls).size, precacheUrls.length, "service worker precache entries must be unique");
+for (const url of precacheUrls) {
+  assert.doesNotMatch(url, /^icons\/tab-|^assets\/gemma-.*\.json$|^recordings\//, `${url} must load on demand, not in the precache`);
+}
+// /app is precached in place of the shell file it rewrites to (the file's own URL is a 404).
+const precacheFile = url => url === "app" ? "app-shell.html" : url;
+assert.ok(precacheUrls.includes("app") && !precacheUrls.includes("app-shell.html"), "the app shell must be precached as /app");
+const precacheBytes = (await Promise.all(precacheUrls.map(url => stat(resolve(root, precacheFile(url)))))).reduce((sum, file) => sum + file.size, 0);
+assert.ok(precacheBytes < 2.2 * 1024 * 1024, `service worker precache grew to ${precacheBytes} bytes`);
+assert.doesNotMatch(serviceWorker, /url:"assets\/[^"]+",revision:"/, "content-hashed assets must not carry a revision");
+for (const cache of ["drowse-hosted-on-demand-assets-v1", "drowse-hosted-landing-shader-v1", "drowse-hosted-on-demand-wasm-v2", "drowse-hosted-tab-icons-v1", "drowse-hosted-sae-descriptions-v1"]) {
+  assert.match(serviceWorker, new RegExp(`cacheName:"${cache}",(?:matchOptions:\\{[^}]*\\},)?plugins:\\[new [A-Za-z_$][\\w$]*\\.ExpirationPlugin\\(`), `${cache} must be bounded`);
+}
+assert.doesNotMatch(serviceWorker, /the-uncertain-loom/);
+const bundledWorkers = (await readdir(resolve(root, "assets"))).filter(name => /^fitting\.worker-.*\.js$/.test(name));
+for (const name of bundledWorkers) {
+  const source = await readFile(resolve(root, "assets", name), "utf8");
+  for (const file of fittingManifest.files) {
+    assert.ok(source.includes(`/wasm/${file.name}?v=${file.sha256.slice(0, 16)}`), `${name} must load ${file.name} by digest`);
+  }
+}
 assert.doesNotMatch(serviceWorker, /huggingface|cdn\.hf\.co|model-.*\.safetensors/i);
 if (release) {
   assert.doesNotMatch(headers.split(/\n\s*\n/)[0], /X-Robots-Tag:\s*noindex/i);
   assert.match(headers, /\/app\n  X-Robots-Tag: noindex, follow/);
-  assert.match(robots, /^User-agent: \*\nAllow: \/\n\nSitemap: https:\/\/[^\s]+\/sitemap\.xml\n$/);
+  const origin = new URL(/<link rel="canonical" href="([^"]+)"/.exec(index)[1]).origin;
+  assert.equal(robots, releaseRobots(origin));
+  const resources = agentResources(origin);
+  for (const path of agentCatalogPaths) {
+    assert.equal(await readFile(resolve(root, path.slice(1)), "utf8"), resources.get(path.slice(1)), `${path} must describe the exact released skill`);
+  }
 } else {
   assert.match(headers, /X-Robots-Tag: noindex, nofollow/);
   assert.match(robots, /^User-agent: \*\nDisallow: \/\n$/);
 }
+assert.ok(headers.includes(`script-src 'self' ${cspSource}`), "CSP must allow exactly the inlined theme script");
 for (const required of [
+  "Strict-Transport-Security: max-age=31536000",
+  "Content-Security-Policy-Report-Only: require-trusted-types-for 'script'",
   "Cross-Origin-Opener-Policy: same-origin",
   "Cross-Origin-Embedder-Policy: require-corp",
   "Cross-Origin-Resource-Policy: same-origin",
@@ -152,6 +211,15 @@ assert.ok(
 );
 assert.doesNotMatch(headers, /connect-src[^;]*https:\/\/\*/);
 assert.match(headers, /\/assets\/\*[\s\S]*Cache-Control: public, max-age=31536000, immutable/);
+for (const path of ["/video/*", "/icons/*", "/images/*"]) {
+  assert.ok(headers.includes(`${path}\n  Cache-Control: public, max-age=86400, stale-while-revalidate=604800`), `${path} must revalidate`);
+}
+assert.ok(headers.includes("/social/*\n  ! Cross-Origin-Resource-Policy\n  Cross-Origin-Resource-Policy: cross-origin"), "share images must be embeddable by other sites");
+const thirdPartyLicenses = await readFile(resolve(root, "third-party-licenses.txt"), "utf8");
+for (const name of ["@drowse/web-llm", "svelte", "workbox-core"]) {
+  assert.ok(thirdPartyLicenses.includes(`\n${name} `), `third-party notices must cover ${name}`);
+}
+assert.match(thirdPartyLicenses, /@drowse\/web-llm [^\n]+\nLicense: Apache-2\.0/);
 for (const path of ["/sw.js", "/manifest.webmanifest"]) {
   assert.ok(
     headers.includes(`${path}\n  Cache-Control: no-cache`),

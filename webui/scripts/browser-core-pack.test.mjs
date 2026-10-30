@@ -58,8 +58,8 @@ try {
   async function fixture(options = {}) {
     const fingerprint = options.fingerprint ?? "a".repeat(64);
     const contextBindingSha256 = options.contextBindingSha256 ?? "b".repeat(64);
-    const fittedContextBindingSha256 = options.fittedContextBindingSha256 ??
-      contextBindingSha256;
+    const fittedContextBindingSha256 = Object.hasOwn(options, "fittedContextBindingSha256")
+      ? options.fittedContextBindingSha256 : contextBindingSha256;
     const secondContextBindingSha256 = "c".repeat(64);
     const sphere = options.sphere === true;
     const curved = options.curved === true || sphere;
@@ -510,10 +510,13 @@ try {
         W_dec: { shape: [2, 2], data: new Float32Array([1, 0, 0, 1]) },
         b_enc: { shape: [2], data: new Float32Array([0.5, -1]) },
         b_dec: { shape: [2], data: new Float32Array([0.25, 0.5]) },
+        ...(options.saeFormatVersion === 2 ? {
+          threshold: { shape: [2], data: new Float32Array([1.25, 2.5]) },
+        } : {}),
       });
       const tensorFile = instrumentFile("packs/sae/layer-1.safetensors", saeTensors);
       const saeManifest = jsonBytes({
-        format_version: 1,
+        format_version: options.saeFormatVersion ?? 1,
         kind: "local",
         name: "fixture",
         release: "local:fixture",
@@ -534,6 +537,7 @@ try {
         learning_rate: 0.001,
         l1_coefficient: 0.01,
         dead_feature_threshold: 0,
+        ...options.saeManifestOverrides,
       });
       const manifestFile = instrumentFile("packs/sae/manifest.json", saeManifest);
       const saeFiles = [manifestFile, tensorFile];
@@ -777,6 +781,35 @@ try {
     }
   });
 
+  test("rejects explicitly context-bound core fits from a different context", async () => {
+    const { request } = await fixture({ fittedContextBindingSha256: "e".repeat(64) });
+    await assert.rejects(() => BrowserFeasibilityCorePackCompiler.load(request),
+      /has no fit for this exact browser runtime/);
+    const unbound = await fixture({ fittedContextBindingSha256: null });
+    assert.equal((await BrowserFeasibilityCorePackCompiler.load(unbound.request))
+      .compile("0.5 alert").layerCount, 2);
+  });
+
+  test("selects the exact-context fit from a bundled archive collection", async () => {
+    const first = await fixture({ archiveName: "demo-2048.drowse" });
+    const second = await fixture({ archiveName: "demo-4096.drowse",
+      fittedContextBindingSha256: "e".repeat(64) });
+    const request = first.request;
+    request.variant.contextProfiles.push({ contextTokens: 4096, bindingSha256: "e".repeat(64) });
+    request.artifacts.push(...second.request.artifacts);
+    request.requiredCorePack.files.push(...second.request.requiredCorePack.files);
+    for (const contextTokens of [2048, 4096]) {
+      request.contextTokens = contextTokens;
+      const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+      assert.equal(compiler.listManifolds().length, 1);
+      assert.equal(compiler.compile("0.5 alert").layerCount, 2);
+    }
+    request.variant.contextProfiles.push({ contextTokens: 8192, bindingSha256: "f".repeat(64) });
+    request.contextTokens = 8192;
+    await assert.rejects(() => BrowserFeasibilityCorePackCompiler.load(request),
+      /has no fit for this exact browser runtime/);
+  });
+
   test("accepts only the deterministic legacy runtime identity alias", async () => {
     const baseline = await fixture();
     const currentIdentity = {
@@ -789,7 +822,9 @@ try {
         ...currentIdentity,
         runtimeAbi: `${slug}-web-runtime-v1`,
       }));
-      const legacy = await fixture({ fingerprint: legacyFingerprint });
+      const { contextBindingSha256 } = await server.ssrLoadModule("/src/lib/runtime/catalog.ts");
+      const legacy = await fixture({ fingerprint: legacyFingerprint,
+        fittedContextBindingSha256: contextBindingSha256(legacyFingerprint, 2048) });
       legacy.request.variant.runtimeIdentity = currentIdentity;
       legacy.request.variant.runtimeIdentitySha256 = currentFingerprint;
 
@@ -1273,6 +1308,78 @@ try {
       generatedTokens: 1,
       priorMeasurements: prior,
     }).affineActive[4], 1);
+  });
+
+  test("uses uncentered Gemma Scope 2 encoding for discovery, probes, gates, and fitting", async () => {
+    for (const size of ["270m", "1b", "4b"]) {
+      for (const explicit of [false, true]) {
+        const { request } = await fixture({
+          withWhitener: true,
+          withSae: true,
+          saeFormatVersion: 2,
+          saeActivation: "jump_relu",
+          saeManifestOverrides: {
+            corpus_spec: `provider:google/gemma-scope-2-${size}-it`,
+            ...(explicit ? { apply_b_dec_to_input: false } : {}),
+          },
+        });
+        const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+        const dictionary = compiler.saeGpuDictionary();
+        assertFloatArray(dictionary.decoderBias, [0, 0]);
+        assertFloatArray(dictionary.encoderBias, [0.5, -1]);
+        compiler.attachProbe({ selector: "sae/0", name: "feature strength" });
+        const program = compiler.compile("");
+        const result = runStructuredHookLayer(program, initialStructuredHookState(program), 1, [1, 2]);
+        assert.equal(result.probes[0], 1.5);
+        const atThreshold = runStructuredHookLayer(program, initialStructuredHookState(program), 1, [0.75, 1.75]);
+        assert.equal(atThreshold.probes[0], 0, "JumpReLU is inactive at its threshold");
+        const gated = compiler.compile("0.5 alert@when:sae/0>1.4");
+        const prior = new Float32Array(gated.layerCount * gated.profile.maxProbes);
+        prior[gated.profile.maxProbes] = result.probes[0];
+        assert.equal(structuredHookControlsFor(gated, {
+          prefill: false, thinking: false, generatedTokens: 1, priorMeasurements: prior,
+        }).affineActive.some(Boolean), true);
+        const fitting = compiler.exactSaeFitting("fixture-sae");
+        const transformed = fitting.transformCentroids(1, {
+          rows: 2, columns: 2, values: new Float64Array([1, 2, 0.75, 1.75]),
+        });
+        assertFloatArray(transformed.values, [1.75, 3.5, 0.25, 0.5], 1e-6);
+        assert.notEqual(fitting.provenance.fingerprint, fitting.provenance.revision,
+          "uncentered reads and fitted artifacts must not reuse the old centered identity");
+        assert.equal(dictionary.bindingId, fitting.provenance.fingerprint);
+      }
+    }
+  });
+
+  test("preserves centered local SAEs and honors explicit encoder conventions", async () => {
+    const compilers = [];
+    for (const apply of [undefined, true, false]) {
+      const { request } = await fixture({
+        withWhitener: true, withSae: true, withSaeMetadata: true,
+        saeManifestOverrides: apply === undefined ? {} : { apply_b_dec_to_input: apply },
+      });
+      const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+      compiler.attachProbe({ selector: "sae/0", name: "feature strength" });
+      const program = compiler.compile("");
+      const result = runStructuredHookLayer(program, initialStructuredHookState(program), 1, [1, 2]);
+      assert.ok(Math.abs(result.probes[0] - (apply === false ? 0.6 : 0.5)) < 1e-6);
+      compilers.push(compiler);
+    }
+    assert.deepEqual(compilers[0].probeHashes(), compilers[1].probeHashes());
+    assert.notDeepEqual(compilers[0].probeHashes(), compilers[2].probeHashes());
+  });
+
+  test("rejects invalid or unknown provider SAE input conventions", async () => {
+    for (const overrides of [
+      { apply_b_dec_to_input: null },
+      { apply_b_dec_to_input: "false" },
+      { apply_b_dec_to_input: 0 },
+      { corpus_spec: "provider:unknown/sae" },
+    ]) {
+      const { request } = await fixture({ withSae: true, saeManifestOverrides: overrides });
+      await assert.rejects(BrowserFeasibilityCorePackCompiler.load(request),
+        error => error.code === "SAE_PACK_INVALID");
+    }
   });
 
   test("backfills published descriptions without changing activation calibration", async () => {
@@ -2351,7 +2458,8 @@ try {
   });
 
   test("selects the neutral whitener bound to the active context", async () => {
-    const { request } = await fixture({ withWhitener: true, withSecondWhitener: true });
+    const { request } = await fixture({ withWhitener: true, withSecondWhitener: true,
+      fittedContextBindingSha256: null });
     request.contextTokens = 4096;
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     assert.deepEqual([...compiler.fittingWhiteners().keys()], [0, 1]);

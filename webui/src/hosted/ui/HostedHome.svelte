@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onConversationLibraryChanged } from "../../lib/stores/savedConversations.svelte";
+  import { registerHomeController } from "../../lib/homeController";
   import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import BaseModelTag from "../../lib/ui/BaseModelTag.svelte";
@@ -17,7 +19,8 @@
 
   import { ConversationLibraryError, displayModelName, randomAvatarSeed, summarizeConversation, type SavedConversationIssue, type SavedConversationRecord, type SavedConversationSummary } from "../../lib/conversationLibrary";
   import { conversationLibrary, flushConversationAutosave, requestPersistentConversationStorage } from "../../lib/stores/savedConversations.svelte";
-  import { downloadChatBackup, importChatBackup } from "../../lib/chatBackup";
+  import { downloadAllChatBackups, downloadChatBackup, findImportedChat, readChatBackupFiles, saveChatImport } from "../../lib/chatBackup";
+  import Select from "../../lib/Select.svelte";
   import PageHeader from "./PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
   import SavedChatMenu from "./SavedChatMenu.svelte";
@@ -37,6 +40,7 @@
     controller,
     snapshot,
     onChooseModels,
+    onChats,
     workbenchError = null,
     workbenchNeedsReload = false,
     workbenchReloading = false,
@@ -45,6 +49,8 @@
     controller: HostedShellController;
     snapshot: HostedShellSnapshot;
     onChooseModels: (modelVariantId?: string, conversation?: SavedConversationSummary) => void;
+    /** Runs when the current "Chats" link is selected; keeps it from reloading the page. */
+    onChats?: () => void;
     workbenchError?: string | null;
     workbenchNeedsReload?: boolean;
     workbenchReloading?: boolean;
@@ -85,6 +91,49 @@
   const entryMemory = readEntryMemory();
   const persistenceRequestAvailable = typeof navigator.storage?.persist === "function";
 
+  const SORT_KEY = "drowse.chat-sort.v1";
+  const LAST_BACKUP_KEY = "drowse.last-backup.v1";
+  const RECOVERY_DISMISSED_KEY = "drowse.recovery-dismissed.v1";
+  const UNDO_MS = 10_000;
+  type ChatSort = "recent" | "name" | "created";
+  type UndoItem = {
+    key: string;
+    message: string;
+    undo: () => Promise<void> | void;
+    commit?: () => Promise<void> | void;
+    timer: number;
+  };
+  type ImportDuplicate = { label: string; name: string; existing: SavedConversationSummary };
+
+  let now = $state(Date.now());
+  let backingUpAll = $state(false);
+  let lastBackupAt = $state(readStoredNumber(LAST_BACKUP_KEY));
+  let searchQuery = $state("");
+  let sortOrder = $state<ChatSort>(readStoredSort());
+  let modelFilter = $state("all");
+  let undoItems: UndoItem[] = $state([]);
+  const pendingDeleteIds = new SvelteSet<string>();
+  let importDuplicates: ImportDuplicate[] = $state([]);
+  let recoveryDismissedFor = $state(readStoredString(RECOVERY_DISMISSED_KEY));
+
+  function readStoredString(key: string): string | null {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+  function readStoredNumber(key: string): number | null {
+    const value = Number(readStoredString(key));
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  function readStoredSort(): ChatSort {
+    const value = readStoredString(SORT_KEY);
+    return value === "name" || value === "created" ? value : "recent";
+  }
+  function writeStored(key: string, value: string | null): void {
+    try {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    } catch {}
+  }
+
   const installedModels = $derived(
     snapshot.models.filter((model) =>
       model.setupComplete && model.fit !== "blocked" && snapshot.runtime.available
@@ -95,23 +144,38 @@
       installedModels.find((model) => model.id === snapshot.selectedModelVariantId) ??
       installedModels[0] ?? null,
   );
+  // Until the device check finishes, model install state is unknown. The page
+  // still lists chats, but open and recovery actions wait for the check.
+  const deviceChecking = $derived(snapshot.phase === "idle" || snapshot.phase === "checking");
+  const visibleConversations = $derived(conversations.filter(record => !pendingDeleteIds.has(record.id)));
   const missingChats = $derived(
-    conversations.filter((record) => modelForConversation(record)?.setupComplete !== true),
-  );
-  const rememberedModel = $derived(
-    entryMemory
-      ? snapshot.models.find((model) => model.id === entryMemory.lastModelVariantId) ?? null
-      : null,
-  );
-  const rememberedModelMissing = $derived(
-    entryMemory !== null && rememberedModel?.setupComplete !== true,
+    deviceChecking ? [] : visibleConversations.filter((record) => modelForConversation(record)?.setupComplete !== true),
   );
   const missingModels = $derived(
-    snapshot.models.filter(model => !model.setupComplete && (
-      model.id === entryMemory?.lastModelVariantId
-      || missingChats.some(chat => modelForConversation(chat)?.id === model.id)
-    )),
+    snapshot.models.filter(model => !model.setupComplete
+      && missingChats.some(chat => modelForConversation(chat)?.id === model.id)),
   );
+  const recoverySignature = $derived(missingChats.map(chat => chat.id).sort().join(","));
+  const showRecovery = $derived(
+    recoveryQueue.length > 0 || (missingChats.length > 0 && recoveryDismissedFor !== recoverySignature),
+  );
+  const chatModelOptions = $derived.by(() => {
+    const seen = new Map<string, string>();
+    for (const record of visibleConversations) {
+      if (!seen.has(record.modelId)) seen.set(record.modelId, modelForConversation(record)?.name ?? displayModelName(record.modelId));
+    }
+    return [...seen].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label));
+  });
+  const shownConversations = $derived.by(() => {
+    const query = searchQuery.trim().normalize("NFC").toLocaleLowerCase();
+    const rows = visibleConversations.filter(record =>
+      (modelFilter === "all" || record.modelId === modelFilter)
+      && (!query || record.name.normalize("NFC").toLocaleLowerCase().includes(query)));
+    if (sortOrder === "name") return [...rows].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
+    if (sortOrder === "created") return [...rows].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+    return rows;
+  });
+  const filtering = $derived(searchQuery.trim() !== "" || modelFilter !== "all");
   const recoveryModel = $derived(snapshot.models.find(model => model.id === activeRecoveryId));
   const recoveryDownload = $derived(snapshot.download.modelVariantId === activeRecoveryId ? snapshot.download : null);
   const recoveryProgress = $derived(recoveryDownload?.progress);
@@ -145,7 +209,64 @@
     void refreshChats();
   });
 
-  onDestroy(() => { destroyed = true; });
+  // Keep relative times ("2 minutes ago") current while the page is visible.
+  onMount(() => {
+    let timer: number | undefined;
+    const sync = () => {
+      window.clearInterval(timer);
+      timer = undefined;
+      if (document.hidden) return;
+      now = Date.now();
+      timer = window.setInterval(() => { now = Date.now(); }, 30_000);
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", sync);
+    };
+  });
+
+  // Leaving the page finishes any deletes still waiting for Undo.
+  onMount(() => {
+    const flush = () => flushUndo();
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  });
+
+  onDestroy(() => {
+    destroyed = true;
+    flushUndo();
+  });
+
+  function pushUndo(item: Omit<UndoItem, "timer">): void {
+    dismissUndo(item.key, true);
+    const timer = window.setTimeout(() => dismissUndo(item.key, true), UNDO_MS);
+    undoItems = [...undoItems, { ...item, timer }];
+  }
+
+  function dismissUndo(key: string, commit: boolean): UndoItem | null {
+    const item = undoItems.find(candidate => candidate.key === key) ?? null;
+    if (!item) return null;
+    window.clearTimeout(item.timer);
+    undoItems = undoItems.filter(candidate => candidate.key !== key);
+    if (commit) void item.commit?.();
+    return item;
+  }
+
+  function flushUndo(): void {
+    for (const item of [...undoItems]) dismissUndo(item.key, true);
+  }
+
+  async function runUndo(key: string): Promise<void> {
+    const item = dismissUndo(key, false);
+    if (!item) return;
+    try {
+      await item.undo();
+    } catch (cause) {
+      error = userFacingError(cause, "That change could not be undone.");
+    }
+  }
 
   async function recoverModels(ids: string[], chat: SavedConversationSummary | null = null): Promise<void> {
     if (recoveryBlocked || recoveryQueue.length > 0 || ids.length === 0) return;
@@ -226,6 +347,26 @@
     ) ?? null;
   }
 
+  onMount(() => onConversationLibraryChanged(refreshChats));
+  onMount(() => registerHomeController({
+    metadataDraft: () => editingId ? { id: editingId, name: editingName, dirty: editingName !== conversations.find(row => row.id === editingId)?.name } : null,
+    metadataState: () => conversations.map(row => [row.id, row.metadataVersion]),
+    busy: () => openingId !== null || changingId !== null || importing || downloadBusy || recovering,
+    open: async (id) => {
+      if (openingId !== null || changingId !== null || importing || downloadBusy || recovering) throw new Error("Finish the current chat or model operation before opening another chat.");
+      if (deviceChecking) throw new Error("Drowse is still checking this device. Try again in a moment.");
+      const record = summarizeConversation(await conversationLibrary.get(id));
+      const model = modelForConversation(record);
+      if (!model?.setupComplete || model.fit === "blocked" || !snapshot.runtime.available) {
+        onChooseModels(model?.id, record);
+        return { state: "model_required", chat_id: id, model_id: record.modelId, model_variant_id: model?.id ?? null };
+      }
+      await openConversation(record);
+      if (error) throw new Error(error);
+      return { state: "opening", chat_id: id, model_id: record.modelId, model_variant_id: model.id };
+    },
+  }));
+
   async function refreshChats(): Promise<void> {
     loading = true;
     error = null;
@@ -246,9 +387,32 @@
     try {
       await flushConversationAutosave();
       await downloadChatBackup(conversationLibrary, record.id);
+      markBackedUp();
     } catch (cause) {
       error = userFacingError(cause, "This chat could not be downloaded. Your saved chat was not changed.");
     } finally { changingId = null; }
+  }
+
+  function markBackedUp(): void {
+    lastBackupAt = Date.now();
+    writeStored(LAST_BACKUP_KEY, String(lastBackupAt));
+  }
+
+  async function backUpAllChats(): Promise<void> {
+    if (backingUpAll || visibleConversations.length === 0) return;
+    backingUpAll = true;
+    error = null;
+    backupNotice = "";
+    try {
+      await flushConversationAutosave();
+      const count = await downloadAllChatBackups(conversationLibrary, visibleConversations.map(record => record.id));
+      markBackedUp();
+      backupNotice = `Downloaded a backup of ${count} ${count === 1 ? "chat" : "chats"}. Use Import chats to restore it.`;
+    } catch (cause) {
+      error = userFacingError(cause, "Your chats could not be backed up. Your saved chats were not changed.");
+    } finally {
+      backingUpAll = false;
+    }
   }
 
   async function duplicateConversation(record: SavedConversationSummary): Promise<void> {
@@ -272,20 +436,76 @@
 
   async function importBackup(event: Event): Promise<void> {
     const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
+    const files = [...(input.files ?? [])];
     input.value = "";
-    if (!file || importing) return;
+    if (files.length === 0 || importing) return;
     importing = true;
     error = null;
     backupNotice = "";
+    importDuplicates = [];
+    const imported: SavedConversationRecord[] = [];
+    const duplicates: ImportDuplicate[] = [];
+    const failures: string[] = [];
+    const known = [...conversations];
     try {
-      const record = await importChatBackup(file, conversationLibrary);
-      await refreshChats();
-      backupNotice = `Imported “${record.name}”.`;
-      void requestPersistentConversationStorage();
-    } catch (cause) {
-      error = userFacingError(cause, "This chat backup could not be imported. Existing chats were not changed.");
+      for (const file of files) {
+        let entries: Awaited<ReturnType<typeof readChatBackupFiles>>;
+        try {
+          entries = await readChatBackupFiles(file);
+        } catch (cause) {
+          failures.push(`${file.name}: ${userFacingError(cause, "This file could not be read.")}`);
+          continue;
+        }
+        for (const failure of entries.failures) {
+          failures.push(`${failure.label}: ${userFacingError(failure.error, "This chat could not be read.")}`);
+        }
+        for (const { label, candidate } of entries.candidates) {
+          try {
+            const existing = await findImportedChat(candidate, conversationLibrary, known);
+            if (existing) {
+              duplicates.push({ label, name: candidate.name, existing });
+              continue;
+            }
+            const record = await saveChatImport(candidate, conversationLibrary);
+            imported.push(record);
+            known.push(summarizeConversation(record));
+          } catch (cause) {
+            failures.push(`${label}: ${userFacingError(cause, "This chat could not be imported.")}`);
+          }
+        }
+      }
+      if (imported.length > 0) {
+        await refreshChats();
+        void requestPersistentConversationStorage();
+      }
+      importDuplicates = duplicates;
+      backupNotice = imported.length === 1
+        ? `Imported “${imported[0].name}”.`
+        : imported.length > 1 ? `Imported ${imported.length} chats.` : "";
+      if (failures.length > 0) {
+        error = `${failures.length === 1 ? "One backup" : `${failures.length} backups`} could not be imported. Existing chats were not changed. ${failures.join(" ")}`;
+      }
     } finally { importing = false; }
+  }
+
+  async function importDuplicateCopy(duplicate: ImportDuplicate): Promise<void> {
+    if (importing) return;
+    importing = true;
+    error = null;
+    try {
+      const copy = await conversationLibrary.duplicate(duplicate.existing.id);
+      importDuplicates = importDuplicates.filter(item => item !== duplicate);
+      await refreshChats();
+      backupNotice = `Imported a copy as “${copy.name}”.`;
+    } catch (cause) {
+      error = userFacingError(cause, "The copy could not be imported. Existing chats were not changed.");
+    } finally { importing = false; }
+  }
+
+  function openDuplicate(duplicate: ImportDuplicate): void {
+    importDuplicates = importDuplicates.filter(item => item !== duplicate);
+    const current = conversations.find(record => record.id === duplicate.existing.id) ?? duplicate.existing;
+    void openConversation(current);
   }
 
   function beginNewChat(): void {
@@ -319,6 +539,7 @@
   }
 
   async function openConversation(record: SavedConversationSummary): Promise<void> {
+    if (deviceChecking) return;
     const model = modelForConversation(record);
     if (model && !model.setupComplete && model.fit !== "blocked" && snapshot.runtime.available) {
       await recoverModels([model.id], record);
@@ -355,17 +576,26 @@
     }
   }
 
+  async function setAvatar(id: string, avatarSeed: string): Promise<string> {
+    const updated = await conversationLibrary.update(id, { avatarSeed });
+    const summary = conversations.find((conversation) => conversation.id === id);
+    if (summary) summary.avatarSeed = updated.avatarSeed;
+    return updated.avatarSeed;
+  }
+
   async function regenerateAvatar(record: SavedConversationSummary): Promise<void> {
     if (changingAvatars.has(record.id) || changingId === record.id) return;
     changingAvatars.add(record.id);
     error = null;
+    const previousSeed = record.avatarSeed;
     try {
-      const updated = await conversationLibrary.update(record.id, {
-        avatarSeed: randomAvatarSeed(),
-      });
-      const summary = conversations.find((conversation) => conversation.id === record.id);
-      if (summary) summary.avatarSeed = updated.avatarSeed;
+      await setAvatar(record.id, randomAvatarSeed());
       revealedAvatarId = record.id;
+      pushUndo({
+        key: `avatar:${record.id}`,
+        message: `New avatar for “${record.name}”.`,
+        undo: async () => { await setAvatar(record.id, previousSeed); },
+      });
     } catch (cause) {
       error = userFacingError(cause, "The avatar could not be changed.");
     } finally {
@@ -412,27 +642,70 @@
     }
   }
 
-  async function deleteConversation(id: string, source: HTMLElement): Promise<void> {
+  function focusAfterRemoval(source: HTMLElement): void {
     const card = source.closest(".chat-card");
     const adjacent = card?.nextElementSibling ?? card?.previousElementSibling;
+    void tick().then(() => {
+      const focusTarget = adjacent?.isConnected ? adjacent.querySelector<HTMLElement>(".chat-menu-trigger") : null;
+      (focusTarget ?? document.getElementById("home-title"))?.focus();
+    });
+  }
+
+  // Saved chats are hidden first and removed for good after the Undo window.
+  function deleteConversation(record: SavedConversationSummary, source: HTMLElement): void {
+    if (pendingDeleteIds.has(record.id)) return;
+    focusAfterRemoval(source);
+    pendingDeleteIds.add(record.id);
+    confirmDeleteId = null;
+    error = null;
+    if (recoveryChat?.id === record.id) recoveryChat = null;
+    pushUndo({
+      key: `delete:${record.id}`,
+      message: `Deleted “${record.name}”.`,
+      undo: () => { pendingDeleteIds.delete(record.id); },
+      commit: async () => {
+        try {
+          const deleted = await conversationLibrary.delete(record.id);
+          if (!deleted) throw new ConversationLibraryError("NOT_FOUND", "This saved chat no longer exists");
+          conversations = conversations.filter((row) => row.id !== record.id);
+        } catch (cause) {
+          if (!destroyed) error = userFacingError(cause, "The saved chat could not be deleted.");
+        } finally {
+          pendingDeleteIds.delete(record.id);
+        }
+      },
+    });
+  }
+
+  async function deleteIssue(id: string, source: HTMLElement): Promise<void> {
     changingId = id;
     error = null;
     try {
       const deleted = await conversationLibrary.delete(id);
       if (!deleted) throw new ConversationLibraryError("NOT_FOUND", "This saved chat no longer exists");
-      if (recoveryChat?.id === id) recoveryChat = null;
-      conversations = conversations.filter((record) => record.id !== id);
       issues = issues.filter((issue) => issue.id !== id);
       confirmDeleteId = null;
-      void tick().then(() => {
-        const focusTarget = adjacent?.querySelector<HTMLElement>(".chat-menu-trigger") ?? document.getElementById("home-title");
-        focusTarget?.focus();
-      });
+      focusAfterRemoval(source);
     } catch (cause) {
       error = userFacingError(cause, "The saved chat could not be deleted.");
     } finally {
       changingId = null;
     }
+  }
+
+  function dismissRecovery(): void {
+    recoveryDismissedFor = recoverySignature;
+    writeStored(RECOVERY_DISMISSED_KEY, recoverySignature);
+  }
+
+  function changeSort(value: ChatSort): void {
+    sortOrder = value;
+    writeStored(SORT_KEY, value);
+  }
+
+  function clearFilters(): void {
+    searchQuery = "";
+    modelFilter = "all";
   }
 
   function beginDelete(record: SavedConversationSummary): void {
@@ -469,7 +742,7 @@
 
   let viewportWidth = $state(1024);
   function relativeTime(timestamp: number, compact: boolean): string {
-    const elapsed = timestamp - Date.now();
+    const elapsed = timestamp - now;
     if (Math.abs(elapsed) < 60_000) return "just now";
     const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
       ["year", 365 * 24 * 60 * 60 * 1000],
@@ -496,7 +769,7 @@
 <a class="skip-link" href="#saved-chats">Skip to saved chats</a>
 
 <div class="home-shell workspace-material workspace-library">
-  <PageHeader current="chats" compact onModels={() => onChooseModels()} />
+  <PageHeader current="chats" compact variant="app" onChats={onChats ?? (() => document.getElementById("home-title")?.focus())} onModels={() => onChooseModels()} />
 
   <main>
     <section class="hero" aria-labelledby="home-title" data-page-group="0">
@@ -510,16 +783,20 @@
             class="secondary"
             disabled={openingId !== null}
             onclick={() => void openCurrent(continueModel)}
-          ><MorphText text={openingId === `continue:${continueModel.id}` ? "Opening…" : "Continue"} /></button>
+          ><MorphText text={openingId === `continue:${continueModel.id}` ? "Opening…" : `Continue with ${continueModel.name}`} numbers={false} /></button>
         {/if}
         <button
           type="button"
           class="primary"
-          disabled={openingId !== null}
+          disabled={openingId !== null || deviceChecking}
           onclick={beginNewChat}
-        >{installedModels.length === 0 ? "Download a model" : "New Instance"}</button>
+        >{deviceChecking || installedModels.length > 0 ? "New chat" : "Download a model"}</button>
       </div>
     </section>
+
+    {#if deviceChecking}
+      <p class="device-check loading-pulse" role="status">Checking this device…</p>
+    {/if}
 
     {#if workbenchError}
       <section class="notice danger" role="alert">
@@ -548,6 +825,11 @@
       <section class="notice storage-notice" role="status" aria-labelledby="storage-title" data-page-group="1">
         <div>
           <h2 id="storage-title">Keep your chats and models</h2>
+          {#if visibleConversations.length > 0}
+            <p class="backup-nudge">
+              {lastBackupAt ? `Last backed up ${relativeTime(lastBackupAt, false)}.` : "You haven't backed up your chats in this browser yet."}
+            </p>
+          {/if}
           <p>
             {persistenceAttempted
               ? "Storage protection isn't confirmed. Your chats still save in this browser, but you should keep a backup."
@@ -559,7 +841,7 @@
             <summary>How to keep your data</summary>
             <ol>
               <li>
-                Select Download beside a saved chat to back it up. Use Import chat to restore a backup. Autosave alone won't protect against cleared browser data.
+                Select Back up all chats, or Download beside a saved chat, to keep a copy. Use Import chats to restore a backup. Autosave alone won't protect against cleared browser data.
               </li>
               <li>
                 {persistenceRequestAvailable
@@ -610,11 +892,16 @@
       </section>
     {/if}
 
-    {#if rememberedModelMissing || missingChats.length > 0 || recoveryQueue.length > 0}
+    {#if showRecovery}
       <section bind:this={recoveryNotice} class="notice model-recovery" aria-labelledby="missing-model-title">
-        <div>
-          <h2 id="missing-model-title">{missingModels.length > 1 ? "Models need to be downloaded again" : "A model needs to be downloaded again"}</h2>
-          {#if missingChats.length > 0}<p>Your saved chats are safe.</p>{/if}
+        <div class="recovery-heading">
+          <div>
+            <h2 id="missing-model-title">{missingModels.length > 1 ? "Models need to be downloaded again" : missingModels.length === 1 || recoveryQueue.length > 0 ? "A model needs to be downloaded again" : "A model is no longer available"}</h2>
+            {#if missingChats.length > 0}<p>{missingChats.length === 1 ? "1 saved chat uses it" : `${missingChats.length} saved chats use ${missingModels.length > 1 ? "them" : "it"}`}. Your saved chats are safe.</p>{/if}
+          </div>
+          {#if recoveryQueue.length === 0}
+            <button type="button" class="quiet" onclick={dismissRecovery}>Dismiss</button>
+          {/if}
         </div>
         {#if recoveryQueue.length > 0}
           <div class="recovery-progress">
@@ -668,7 +955,7 @@
             onclick={() => void recoverModels([missingModels[0].id])}>Download model</button>
           {#if missingModels[0].fit === "blocked"}<p>{missingModels[0].reason}</p>{/if}
         {:else}
-          <p>This model is no longer available in the catalog.</p>
+          <p>This model is no longer in the catalog. You can still back up these chats or delete them.</p>
           <button type="button" class="secondary" onclick={() => onChooseModels()}>View models</button>
         {/if}
         {#if !snapshot.download.available}<p>{snapshot.download.reason}</p>{/if}
@@ -693,28 +980,82 @@
           <h2 id="chats-title">Saved chats</h2>
         </div>
         <div class="library-actions">
-          <span>{conversations.length} {conversations.length === 1 ? "chat" : "chats"}</span>
+          <span>{visibleConversations.length} {visibleConversations.length === 1 ? "chat" : "chats"}</span>
+          {#if visibleConversations.length > 0}
+            <button type="button" class="secondary backup-action" disabled={backingUpAll || importing || changingId !== null} aria-busy={backingUpAll} onclick={() => void backUpAllChats()}>
+              <FluentIcon name="download" size={18} />
+              <MorphText text={backingUpAll ? "Preparing backup…" : "Back up all chats"} />
+            </button>
+          {/if}
           <button type="button" class="secondary backup-action" disabled={importing || changingId !== null} aria-busy={importing} onclick={() => importInput?.click()}>
             <FluentIcon name="upload" size={18} />
-            <MorphText text={importing ? "Importing…" : "Import chat"} />
+            <MorphText text={importing ? "Importing…" : "Import chats"} />
           </button>
-          <input bind:this={importInput} type="file" accept=".drowsechat,.json,application/json" hidden aria-label="Import chat backup file" onchange={importBackup} />
+          <input bind:this={importInput} type="file" multiple accept=".drowsechat,.json,.zip,application/json,application/zip" hidden aria-label="Import chat backup files" onchange={importBackup} />
         </div>
       </div>
       {#if backupNotice}<p class="backup-result" role="status">{backupNotice}</p>{/if}
+      {#if importDuplicates.length > 0}
+        <div class="import-duplicates" role="status">
+          {#each importDuplicates as duplicate (duplicate)}
+            <div class="import-duplicate">
+              <span dir="auto">“{duplicate.name}” is already imported.</span>
+              <div class="panel-actions">
+                <button type="button" class="secondary compact" disabled={openingId !== null || deviceChecking} onclick={() => openDuplicate(duplicate)}>Open it</button>
+                <button type="button" class="quiet compact" disabled={importing} onclick={() => void importDuplicateCopy(duplicate)}>Import as a copy</button>
+              </div>
+            </div>
+          {/each}
+          <button type="button" class="quiet compact" onclick={() => (importDuplicates = [])}>Dismiss</button>
+        </div>
+      {/if}
+
+      {#if !loading && visibleConversations.length > 1}
+        <div class="chat-tools" role="search" aria-label="Find saved chats">
+          <label class="chat-search">
+            <span class="sr-only">Search chats by name</span>
+            <FluentIcon name="search" size={18} />
+            <input type="search" bind:value={searchQuery} placeholder="Search chats" autocomplete="off" spellcheck="false" />
+          </label>
+          <span class="chat-tool">
+            <span id="chat-sort-label" class="tool-label">Sort</span>
+            <Select value={sortOrder} ariaLabelledby="chat-sort-label" onchange={changeSort}
+              options={[{ value: "recent", label: "Recent" }, { value: "name", label: "Name" }, { value: "created", label: "Created" }]} />
+          </span>
+          {#if chatModelOptions.length > 1}
+            <span class="chat-tool">
+              <span id="chat-model-label" class="tool-label">Model</span>
+              <Select bind:value={modelFilter} ariaLabelledby="chat-model-label"
+                options={[{ value: "all", label: "All models" }, ...chatModelOptions]} />
+            </span>
+          {/if}
+        </div>
+      {/if}
 
       {#if loading}
         <p class="empty loading-pulse" role="status">Loading saved chats…</p>
-      {:else if conversations.length === 0 && issues.length === 0}
+      {:else if visibleConversations.length === 0 && issues.length === 0}
         <div class="empty">
-          <strong>No saved chats yet</strong>
+          {#if !deviceChecking && installedModels.length === 0}
+            <strong>No chats yet. Choose a model to start.</strong>
+            <button type="button" class="primary" onclick={() => onChooseModels()}>Choose a model</button>
+          {:else}
+            <strong>No saved chats yet. Start a chat with a model and it autosaves here.</strong>
+            <button type="button" class="primary" disabled={openingId !== null || deviceChecking} onclick={beginNewChat}>New chat</button>
+          {/if}
+        </div>
+      {:else if shownConversations.length === 0 && issues.length === 0}
+        <div class="empty" role="status">
+          <strong>No chats match your search.</strong>
+          <button type="button" class="secondary" onclick={clearFilters}>Clear search</button>
         </div>
       {:else}
+        {#if filtering}<p class="sr-only" role="status">{shownConversations.length} of {visibleConversations.length} chats shown</p>{/if}
         <div class="chat-list" role="list" aria-label="Saved chats">
-          {#each conversations as record (record.id)}
+          {#each shownConversations as record (record.id)}
             {@const model = modelForConversation(record)}
             {@const canOpen = model?.setupComplete && model.fit !== "blocked" && snapshot.runtime.available}
-            {@const modelActionUnavailable = model === null || model.fit === "blocked" || !snapshot.runtime.available}
+            {@const modelActionUnavailable = deviceChecking || model === null || model.fit === "blocked" || !snapshot.runtime.available}
             <div animate:flip={{ duration: () => motionDuration(180), easing: cubicOut }} class="chat-card" role="listitem" data-saved-conversation={record.id} data-chat-accent={record.accent ?? "purple"} style={chatAccentStyle(record.accent)}>
               <button
                 type="button"
@@ -723,7 +1064,7 @@
                 disabled={changingId === record.id}
                 aria-disabled={changingAvatars.has(record.id)}
                 aria-busy={changingAvatars.has(record.id)}
-                aria-label={`Generate another avatar for ${record.name}`}
+                aria-label={`New avatar for ${record.name}. You can undo this.`}
                 onpointerleave={() => { if (revealedAvatarId === record.id) revealedAvatarId = null; }}
                 onblur={() => { if (revealedAvatarId === record.id) revealedAvatarId = null; }}
                 onclick={() => void regenerateAvatar(record)}
@@ -752,13 +1093,15 @@
                 </div>
                 <span class="chat-model"><ModelProviderLogo modelId={record.modelId} /><span>{model?.name ?? displayModelName(record.modelId)}{#if (model?.modelType ?? record.modelType) === "base"}<BaseModelTag />{/if}</span></span>
                 <span class="chat-counts"><MorphText text={`${record.messageCount} ${record.messageCount === 1 ? "message" : "messages"} · ${record.threadCount} Loom ${record.threadCount === 1 ? "thread" : "threads"}`} /></span>
-                {#if !model?.setupComplete}<span class="missing">Download required</span>{/if}
+                {#if !deviceChecking && !model?.setupComplete}<span class="missing">Download required</span>{/if}
               </div>
               <div class="chat-footer" class:confirming={editingId === record.id || confirmDeleteId === record.id}>
                 {#if editingId !== record.id && confirmDeleteId !== record.id}
                   <button type="button" class="primary compact" disabled={openingId !== null || modelActionUnavailable || recovering || recoveryQueue.length > 0 || downloadBusy} onclick={() => void openConversation(record)}>
                     <MorphText text={openingId === record.id
                       ? "Opening…"
+                      : deviceChecking
+                        ? "Checking device…"
                       : canOpen
                         ? (model?.modelType ?? record.modelType) === "base" ? "Open completion" : "Open chat"
                         : model?.fit === "blocked"
@@ -778,9 +1121,9 @@
                   <button type="button" class="quiet" data-cancel-rename disabled={changingId !== null} onpointerdown={(event) => event.preventDefault()} onclick={() => (editingId = null)}>Cancel</button>
                   <button type="button" class="secondary" disabled={!editingName.trim() || changingId === record.id} onclick={() => void saveRename(record)}>Save name</button>
                 {:else if confirmDeleteId === record.id}
-                  <span>Delete this saved chat?</span>
+                  <span>Delete this saved chat? You can undo for 10 seconds.</span>
                   <button type="button" class="quiet" data-cancel-delete onclick={cancelDelete}>Cancel</button>
-                  <button type="button" class="delete" disabled={changingId === record.id} onclick={(event) => void deleteConversation(record.id, event.currentTarget)}>Delete chat</button>
+                  <button type="button" class="delete" disabled={changingId === record.id} onclick={(event) => deleteConversation(record, event.currentTarget)}>Delete chat</button>
                 {:else}
                   <button type="button" class="secondary backup-action" disabled={changingId !== null || importing} aria-label={`Download backup of ${record.name}`} aria-busy={changingId === record.id && duplicatingId === null} onclick={() => void downloadBackup(record)}>
                     <FluentIcon name="download" size={18} />
@@ -803,7 +1146,7 @@
                 {#if confirmDeleteId === issue.id}
                   <span>Delete this stored data?</span>
                   <button type="button" class="quiet" onclick={() => (confirmDeleteId = null)}>Cancel</button>
-                  <button type="button" class="delete" onclick={(event) => void deleteConversation(issue.id, event.currentTarget)}>Delete data</button>
+                  <button type="button" class="delete" onclick={(event) => void deleteIssue(issue.id, event.currentTarget)}>Delete data</button>
                 {:else}
                   <span class="issue">This chat could not be read</span>
                   <button type="button" class="delete-control" onclick={() => (confirmDeleteId = issue.id)}>Delete</button>
@@ -817,6 +1160,15 @@
   </main>
 
   <PageFooter />
+</div>
+
+<div class="undo-region" role="status" aria-live="polite">
+  {#each undoItems as item (item.key)}
+    <div class="undo-toast" in:slide={collapseIn()} out:slide={collapseOut()}>
+      <span dir="auto">{item.message}</span>
+      <button type="button" class="secondary compact" onclick={() => void runUndo(item.key)}>Undo</button>
+    </div>
+  {/each}
 </div>
 
 <style>
@@ -890,7 +1242,7 @@
     transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
   }
   button:active:not(:disabled) { transform: scale(0.96); }
-  button:disabled { opacity: 0.48; }
+  button:disabled { opacity: var(--disabled-opacity); }
   button.primary { color: var(--action-ink); background: var(--control-sheen), var(--action-bg); box-shadow: var(--shadow-control); }
   button.primary:hover:not(:disabled) { background: var(--control-sheen), var(--action-hover); box-shadow: var(--shadow-control-hover); }
   button.secondary { background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control); }
@@ -920,7 +1272,7 @@
     background: var(--warning-action);
     box-shadow: none;
   }
-  .storage-notice button.secondary:hover:not(:disabled) { background: var(--warning-action-hover); }
+  .storage-notice button.secondary:hover:not(:disabled) { color: var(--warning-action-ink); background: var(--warning-action-hover); }
   .storage-notice {
     align-items: start;
     background: var(--surface-card);
@@ -958,6 +1310,21 @@
   .backup-action :global(svg) { flex-shrink: 0; }
   .backup-result { margin: 0; color: var(--fg-muted); font-size: var(--text-sm); line-height: 1.5; max-width: 78ch; }
   .model-recovery { grid-template-columns: minmax(0, 1fr); justify-items: start; }
+  .recovery-heading { width: 100%; display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--space-5); }
+  .device-check { margin: 0; color: var(--fg-muted); font-size: var(--text-sm); }
+  .backup-nudge { color: var(--fg-strong); }
+  .import-duplicates { display: grid; justify-items: start; gap: var(--space-4); padding: var(--space-5); border-radius: var(--radius-lg); background: var(--surface-card); box-shadow: var(--shadow-card); }
+  .import-duplicate { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4); }
+  .import-duplicate > span { min-width: 0; overflow-wrap: anywhere; color: var(--fg-dim); font-size: var(--text-sm); }
+  .chat-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5); min-width: 0; }
+  .chat-search { flex: 1 1 14rem; min-width: 0; display: flex; align-items: center; gap: var(--control-label-gap); padding-inline: var(--space-4); min-height: var(--control-field); border-radius: var(--radius); color: var(--fg-muted); background: var(--input-well); box-shadow: var(--shadow-well); }
+  .chat-search:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+  .chat-search input { flex: 1; min-width: 0; min-height: var(--control-field); border: 0; padding: 0; color: var(--fg); background: transparent; font: inherit; outline: none; }
+  .chat-tool { display: inline-flex; align-items: center; gap: var(--control-label-gap); min-width: 0; }
+  .tool-label { color: var(--fg-muted); font-size: var(--text-sm); }
+  .undo-region { position: fixed; z-index: calc(var(--z-drawer) - 2); inset-inline-start: calc(var(--space-6) + env(safe-area-inset-left, 0px)); bottom: calc(var(--space-6) + env(safe-area-inset-bottom, 0px)); display: grid; gap: var(--space-4); width: min(26rem, calc(100vw - var(--space-8))); pointer-events: none; }
+  .undo-toast { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding: var(--space-4) var(--space-4) var(--space-4) var(--space-6); border: 1px solid var(--popup-border); border-radius: var(--popup-radius); color: var(--fg); background: var(--popup-bg); box-shadow: var(--popup-shadow); pointer-events: auto; }
+  .undo-toast > span { min-width: 0; overflow-wrap: anywhere; font-size: var(--text-sm); }
   .recovery-progress { width: 100%; min-width: 0; display: grid; gap: var(--space-5); }
   .recovery-progress p { margin: 0; }
   .recovery-progress .error { color: var(--accent-red); }
@@ -1048,6 +1415,7 @@
     background: var(--surface-sheen), var(--glass);
     text-align: center;
   }
+  .empty { display: grid; justify-items: center; gap: var(--space-5); }
   .empty strong { color: var(--fg); font-family: var(--font-structure); }
   @media (min-width: 761px) and (pointer: fine) {
     .home-shell { --control-target: 40px; --control-field: 40px; --control-compact: 40px; }

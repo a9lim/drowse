@@ -119,7 +119,22 @@ jobs:
       - name: Install the pinned Playwright browsers
         run: npx playwright install --with-deps chromium webkit firefox
         working-directory: webui
+      - name: Allow the pinned Chrome sandbox to create user namespaces
+        working-directory: webui
+        run: |
+          chrome_path="$(node --input-type=module -e 'import puppeteer from "puppeteer"; console.log(await puppeteer.executablePath())')"
+          test -x "$chrome_path"
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            "profile drowse-webmcp-chrome \"$chrome_path\" flags=(unconfined) {" \
+            '  userns,' \
+            '}' | sudo tee /etc/apparmor.d/drowse-webmcp-chrome
+          sudo apparmor_parser -r /etc/apparmor.d/drowse-webmcp-chrome
       - run: npm run check
+        working-directory: webui
+      - name: Verify native WebMCP with pinned Chrome and Puppeteer
+        run: npm run test:webmcp:native
         working-directory: webui
       - run: npm run check:hosted
         working-directory: webui
@@ -145,7 +160,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     defaults:
       run:
         working-directory: webui
@@ -159,7 +174,7 @@ jobs:
       - run: npm ci
       - name: Install the pinned Playwright browsers
         run: npx playwright install --with-deps chromium webkit firefox
-      - run: npm run test:e2e -- --shard=${{ matrix.shard }}/4 --workers=1
+      - run: npm run test:e2e -- --shard=${{ matrix.shard }}/6 --workers=1
       - name: Preserve browser failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

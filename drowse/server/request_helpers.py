@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedModel
+    from drowse.core.session import DrowseSession
 
 from drowse.core.errors import DrowseError
+from drowse.core.model import get_unembedding
 from drowse.core.results import TokenEvent
 from drowse.core.sampling import SamplingConfig
 from drowse.core.steering import Steering
@@ -17,6 +22,19 @@ class UnsupportedContentError(ValueError, DrowseError):
 
     def user_message(self) -> tuple[int, str]:
         return (400, str(self) or self.__class__.__name__)
+
+
+class InvalidSamplingError(ValueError, DrowseError):
+    def user_message(self) -> tuple[int, str]:
+        return 400, str(self)
+
+
+def validate_logit_bias(sampling: SamplingConfig | None, session: DrowseSession) -> None:
+    if sampling is None or not sampling.logit_bias:
+        return
+    vocabulary_size = get_unembedding(cast("PreTrainedModel", session.model)).shape[0]
+    if any(token_id < 0 or token_id >= vocabulary_size for token_id in sampling.logit_bias):
+        raise InvalidSamplingError(f"logit_bias token IDs must be between 0 and {vocabulary_size - 1}")
 
 
 def flatten_content(content: Any) -> str:

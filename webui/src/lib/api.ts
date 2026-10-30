@@ -60,6 +60,7 @@ import type {
   WSServerMessage,
 } from "./types";
 import { ApiError, describeError } from "./runtime/errors";
+import type { RuntimeOperationReceipt } from "./runtime/contracts";
 import {
   getApiKey,
   httpAuthHeaders,
@@ -197,6 +198,9 @@ function jsonBody(body: unknown): RequestInit {
 // =========================================================== sessions ==
 
 export const apiSessions = {
+  requestStatus(requestId: string, id: string = SESSION): Promise<import("./runtime/requestJournal").RuntimeRequestStatus> {
+    return request(`${SESSION_BASE(id)}/requests/${encodeURIComponent(requestId)}`);
+  },
   list(): Promise<{ sessions: SessionInfo[] }> {
     return request("/drowse/v1/sessions");
   },
@@ -209,7 +213,7 @@ export const apiSessions = {
       top_p: number;
       top_k: number | null;
       max_tokens: number;
-      system_prompt: string;
+      system_prompt: string | null;
       thinking: boolean;
     }>,
     id: string = SESSION,
@@ -363,6 +367,10 @@ export const apiManifolds = {
 
 const TEMPLATES_BASE = "/drowse/v1/templates";
 
+export function getOperationReceipt(operationId: string): Promise<RuntimeOperationReceipt> {
+  return request(`/drowse/v1/operations/${encodeURIComponent(operationId)}`);
+}
+
 /** The standalone templated-completion artifact — a slot + candidate values
  *  + multi-turn contexts, read by both the completion scorer and a
  *  ``manifold from-template`` fit. */
@@ -393,13 +401,20 @@ export const apiTemplates = {
     namespace: string,
     name: string,
     steering: string | null,
+    operationId?: string,
   ): Promise<ScoreTemplateResponse> {
     return request(
       `${TEMPLATES_BASE}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/score`,
-      jsonBody({ steering }),
+      { ...jsonBody({ steering }), ...(operationId ? { headers: { "Content-Type": "application/json", "X-Drowse-Request-Id": operationId } } : {}) },
     );
   },
 };
+
+function streamFailure(path: string, value: unknown, fallback: string): ApiError {
+  const details = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const message = typeof details.message === "string" ? details.message : fallback;
+  return new ApiError(typeof details.status === "number" ? details.status : 400, path, message, { ...details, detail: message });
+}
 
 /** Streaming manifold fit — mirrors ``apiExtractStream``.  ``done``
  *  data carries the detail shape plus ``layers_fitted`` /
@@ -411,6 +426,7 @@ export async function apiManifoldFitStream(
   name: string,
   body: FitManifoldRequest,
   onEvent: (ev: { event: string; data: unknown }) => void,
+  operationId?: string,
 ): Promise<ManifoldInfo> {
   const path = `${MANIFOLDS_BASE}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/fit`;
   const r = await fetch(path, {
@@ -418,6 +434,7 @@ export async function apiManifoldFitStream(
     headers: authHeaders({
       "Content-Type": "application/json",
       Accept: "text/event-stream",
+      ...(operationId ? { "X-Drowse-Request-Id": operationId } : {}),
     }),
     body: JSON.stringify(body),
   });
@@ -427,17 +444,16 @@ export async function apiManifoldFitStream(
   }
   if (!r.body) throw new Error("manifold fit: server returned no SSE body");
   let final: ManifoldInfo | null = null;
-  let lastError: string | null = null;
+  let lastError: ApiError | null = null;
   for await (const evt of consumeSse(r.body)) {
     onEvent(evt);
     if (evt.event === "done" && evt.data && typeof evt.data === "object") {
       final = evt.data as ManifoldInfo;
     } else if (evt.event === "error") {
-      lastError =
-        (evt.data as { message?: string } | null)?.message ?? "fit failed";
+      lastError = streamFailure(path, evt.data, "fit failed");
     }
   }
-  if (lastError) throw new Error(lastError);
+  if (lastError) throw lastError;
   if (!final) throw new Error("manifold fit: stream ended without done event");
   return final;
 }
@@ -449,6 +465,7 @@ export async function apiManifoldFitStream(
 export async function apiManifoldInstallStream(
   body: InstallManifoldRequest,
   onEvent: (ev: { event: string; data: unknown }) => void,
+  operationId?: string,
 ): Promise<ManifoldInfo> {
   const path = `${MANIFOLDS_BASE}/install`;
   const r = await fetch(path, {
@@ -456,6 +473,7 @@ export async function apiManifoldInstallStream(
     headers: authHeaders({
       "Content-Type": "application/json",
       Accept: "text/event-stream",
+      ...(operationId ? { "X-Drowse-Request-Id": operationId } : {}),
     }),
     body: JSON.stringify(body),
   });
@@ -465,17 +483,16 @@ export async function apiManifoldInstallStream(
   }
   if (!r.body) throw new Error("manifold install: server returned no SSE body");
   let final: ManifoldInfo | null = null;
-  let lastError: string | null = null;
+  let lastError: ApiError | null = null;
   for await (const evt of consumeSse(r.body)) {
     onEvent(evt);
     if (evt.event === "done" && evt.data && typeof evt.data === "object") {
       final = evt.data as ManifoldInfo;
     } else if (evt.event === "error") {
-      lastError =
-        (evt.data as { message?: string } | null)?.message ?? "install failed";
+      lastError = streamFailure(path, evt.data, "install failed");
     }
   }
-  if (lastError) throw new Error(lastError);
+  if (lastError) throw lastError;
   if (!final) {
     throw new Error("manifold install: stream ended without done event");
   }
@@ -490,6 +507,7 @@ export async function apiManifoldInstallStream(
 export async function apiManifoldGenerateStream(
   body: GenerateManifoldRequest,
   onEvent: (ev: { event: string; data: unknown }) => void,
+  operationId?: string,
 ): Promise<ManifoldInfo> {
   const path = `${MANIFOLDS_BASE}/generate`;
   const r = await fetch(path, {
@@ -497,6 +515,7 @@ export async function apiManifoldGenerateStream(
     headers: authHeaders({
       "Content-Type": "application/json",
       Accept: "text/event-stream",
+      ...(operationId ? { "X-Drowse-Request-Id": operationId } : {}),
     }),
     body: JSON.stringify(body),
   });
@@ -506,18 +525,16 @@ export async function apiManifoldGenerateStream(
   }
   if (!r.body) throw new Error("manifold generate: server returned no SSE body");
   let final: ManifoldInfo | null = null;
-  let lastError: string | null = null;
+  let lastError: ApiError | null = null;
   for await (const evt of consumeSse(r.body)) {
     onEvent(evt);
     if (evt.event === "done" && evt.data && typeof evt.data === "object") {
       final = evt.data as ManifoldInfo;
     } else if (evt.event === "error") {
-      lastError =
-        (evt.data as { message?: string } | null)?.message ??
-        "generate failed";
+      lastError = streamFailure(path, evt.data, "generate failed");
     }
   }
-  if (lastError) throw new Error(lastError);
+  if (lastError) throw lastError;
   if (!final) {
     throw new Error("manifold generate: stream ended without done event");
   }
@@ -533,12 +550,14 @@ export async function apiExtractStream(
   req: ExtractRequest,
   onEvent: (ev: { event: string; data: unknown }) => void,
   id: string = SESSION,
+  operationId?: string,
 ): Promise<{ canonical: string; profile: VectorInfo }> {
   const r = await fetch(`${SESSION_BASE(id)}/extract`, {
     method: "POST",
     headers: authHeaders({
       "Content-Type": "application/json",
       Accept: "text/event-stream",
+      ...(operationId ? { "X-Drowse-Request-Id": operationId } : {}),
     }),
     body: JSON.stringify(req),
   });
@@ -548,7 +567,7 @@ export async function apiExtractStream(
   }
   if (!r.body) throw new Error("extract: server returned no SSE body");
   let final: { canonical: string; profile: VectorInfo } | null = null;
-  let lastError: string | null = null;
+  let lastError: ApiError | null = null;
   for await (const evt of consumeSse(r.body)) {
     onEvent(evt);
     if (evt.event === "done" && evt.data && typeof evt.data === "object") {
@@ -557,11 +576,10 @@ export async function apiExtractStream(
         final = { canonical: d.canonical, profile: d.profile };
       }
     } else if (evt.event === "error") {
-      const d = evt.data as { message?: string };
-      lastError = d?.message ?? "extract failed";
+      lastError = streamFailure(`${SESSION_BASE(id)}/extract`, evt.data, "extract failed");
     }
   }
-  if (lastError) throw new Error(lastError);
+  if (lastError) throw lastError;
   if (!final) throw new Error("extract: stream ended without done event");
   return final;
 }

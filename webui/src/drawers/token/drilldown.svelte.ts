@@ -5,9 +5,23 @@
 // per-open reset kept bouncing the user off it.  Module scope = page
 // session; prefer j-lens when the inspected token can provide it.
 
+import type { ReplayReadout } from "./readout.svelte";
+
 export type DrilldownTab = "geometry" | "logits" | "sae" | "lens";
 
 export const drilldownUi: { tab: DrilldownTab } = $state({ tab: "lens" });
+
+export function readoutBadge<T>(
+  readout: ReplayReadout<T>,
+  captured: T | null,
+  steered: boolean,
+  count: (data: T) => number,
+): string | undefined {
+  if (readout.loading) return "…";
+  if (readout.error) return undefined;
+  const data = readout.data ?? (steered ? captured : null);
+  return data === null ? undefined : String(count(data));
+}
 
 export function availableDrilldownTab(
   preferred: DrilldownTab,

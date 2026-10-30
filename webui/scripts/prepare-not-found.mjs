@@ -44,7 +44,8 @@ const dataset = {
   recordingSha256: createHash("sha256").update(raw).digest("hex"),
   messages: [...messages.values()],
 };
-await mkdir(resolve(root, "public-hosted/recordings"), { recursive: true });
-await writeFile(resolve(root, "public-hosted/recordings/404-gemma3-4b.json"), raw);
+// The full recording is provenance for the bundled dataset, not a runtime asset.
+await mkdir(resolve(root, "scripts/recordings"), { recursive: true });
+await writeFile(resolve(root, "scripts/recordings/404-gemma3-4b.json"), raw);
 await writeFile(resolve(root, "src/hosted/data/not-found-messages.json"), JSON.stringify(dataset, null, 2) + "\n");
 console.log(`${dataset.totalRuns} verified runs, ${dataset.uniqueMessages} unique messages`);

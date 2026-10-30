@@ -209,9 +209,20 @@ export class BrowserFeasibilityCorePackCompiler {
       throw coreError("CORE_PACK_MANIFOLD_INVALID", "The required core pack has no manifold");
     }
     const manifolds: CoreManifold[] = [];
+    const requiredManifolds = new Set<string>();
     for (const artifact of manifoldArtifacts) {
       request.signal.throwIfAborted();
-      manifolds.push(...await loadCoreManifolds(artifact, request, structuredHookProfile));
+      const loaded = await loadCoreManifolds(artifact, request, structuredHookProfile);
+      requiredManifolds.add(loaded.key);
+      manifolds.push(...loaded.manifolds);
+    }
+    for (const key of requiredManifolds) {
+      if (!manifolds.some((manifold) => manifold.key === key)) {
+        throw coreError(
+          "CORE_PACK_RUNTIME_MISMATCH",
+          `Core manifold manifolds/${key} has no fit for this exact browser runtime`,
+        );
+      }
     }
     const coreManifolds = [...manifolds];
     for (const archive of options.installedManifoldArchives ?? []) {
@@ -1557,7 +1568,7 @@ export class BrowserFeasibilityCorePackCompiler {
       (layers[programIndex].probes as StructuredProbe[])[probeIndex] = saeFeatureProbe(
         feature.encoderDirection,
         feature.featureBias,
-        feature.decoderBias,
+        feature.encoderInputBias,
         feature.maxAct,
         feature.activation,
         feature.threshold,
@@ -2587,7 +2598,7 @@ async function loadCoreManifolds(
   artifact: BrowserModelArtifact,
   request: BrowserModelLoadRequest,
   profile: StructuredHookCapacityProfile,
-): Promise<CoreManifold[]> {
+): Promise<{ key: string; manifolds: CoreManifold[] }> {
   if (
     !artifact.manifest.path.endsWith(".drowse") &&
     !LEGACY_PRODUCT_SLUGS.some((slug) => artifact.manifest.path.endsWith(`.${slug}`)) &&
@@ -2600,15 +2611,12 @@ async function loadCoreManifolds(
   }
   const verified = await validateDrowseArchive(artifact.file, { signal: request.signal });
   const fitted = matchingFittedArtifacts(verified, request);
-  if (fitted.length === 0) {
-    throw coreError(
-      "CORE_PACK_RUNTIME_MISMATCH",
-      `Core manifold ${verified.manifest.primary} has no fit for this exact browser runtime`,
-    );
-  }
-  return Promise.all(fitted.map((candidate) =>
-    loadVerifiedManifold(verified, request, profile, candidate)
-  ));
+  return {
+    key: verified.primaryIdentity.join("/"),
+    manifolds: await Promise.all(fitted.map((candidate) =>
+      loadVerifiedManifold(verified, request, profile, candidate)
+    )),
+  };
 }
 
 async function loadInstalledManifolds(
@@ -3234,7 +3242,8 @@ function matchingFittedArtifacts(
     artifact.modelId === request.variant.runtimeIdentity.sourceModel &&
     compatibleBindings.some((binding) =>
       artifact.modelFingerprint === binding.runtimeIdentitySha256 &&
-      (!requireContextBinding || artifact.contextBindingSha256 === binding.contextBindingSha256)
+      (!requireContextBinding && artifact.contextBindingSha256 === null ||
+        artifact.contextBindingSha256 === binding.contextBindingSha256)
     )
   );
 }

@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
@@ -13,7 +14,7 @@ test("filled actions have visible but restrained top-down shading", async ({ pag
   await page.goto("/credits");
   const action = page.getByRole("link", { name: "Contribute on GitHub" });
   for (const theme of ["light", "dark"]) {
-    await page.getByRole("button", { name: theme === "light" ? "Light" : "Dark", exact: true }).click();
+    await setAppearance(page, theme);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.mouse.move(0, 0);
@@ -36,17 +37,15 @@ test("filled actions have visible but restrained top-down shading", async ({ pag
   }
 });
 
-test("compact controls put their size-aware gradient on the selection indicator", async ({ page }, testInfo) => {
+test("theme control has one icon without a track or filled background", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/credits");
   const toggle = page.getByRole("group", { name: "Appearance" });
   for (const theme of ["Light", "Dark"]) {
-    await toggle.getByRole("button", { name: theme, exact: true }).click();
-    await expect(toggle).toHaveCSS("background-image", /linear-gradient/);
-    const gradient = await toggle.locator(".selection-indicator").evaluate(element => getComputedStyle(element).backgroundImage);
-    expect(gradient.match(/linear-gradient/g)).toHaveLength(1);
-    expect(gradient).toContain("-48px");
-    expect(gradient).toContain("96px");
+    await setAppearance(page, theme);
+    await expect(toggle.getByRole("button")).toHaveCount(1);
+    await expect(toggle.locator(".selection-indicator")).toHaveCount(0);
+    await expect(toggle).toHaveCSS("background-image", "none");
     for (const button of await toggle.getByRole("button").all()) {
       await expect(button).toHaveCSS("background-image", "none");
     }

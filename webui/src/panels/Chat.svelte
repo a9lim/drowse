@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { chatViewSchema } from "../lib/interfaceSchemas";
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { ToolError } from "../lib/webmcp/types";
+  import { onMount as onInterfaceMount } from "svelte";
+
   import { createTokenArrival } from "../lib/tokenArrival";
   const arrivals = createTokenArrival();
   $effect.pre(() => {
@@ -36,6 +41,7 @@
   // fall-through when no probe is selected.
 
   import { onMount, tick, untrack } from "svelte";
+  import { registerComposerController } from "../lib/workspaceController";
   import { SvelteMap } from "svelte/reactivity";
   import { fly, slide } from "svelte/transition";
   import StatusFooter from "./StatusFooter.svelte";
@@ -63,6 +69,8 @@
     unpinComparison,
     probeRack,
     sendSubmit,
+    sendShadowGenerate,
+    currentSteeringExpression,
     sendStop,
     genStatus,
     openDrawer,
@@ -125,6 +133,7 @@
   let composerHeight: number | null = $state(null);
   let composerMaxHeight = $state(420);
   let composerManuallySized = $state(false);
+  let composerPointerHeld = $state(false);
   let resizeStart = $state<{
     pointerId: number;
     y: number;
@@ -460,6 +469,21 @@
   let thinkingOpen = $state(false);
   let thinkingDraft = $state("");
 
+  onMount(() => registerComposerController({
+    read: () => ({ text: input, authoredRole, generatedRole, authoredThinking: thinkingDraft }),
+    update: async (change) => {
+      if (change.text !== undefined) input = change.text;
+      if (change.authoredRole !== undefined) authoredRole = change.authoredRole;
+      if (change.generatedRole !== undefined) continuationRole = change.generatedRole ?? "none";
+      if (change.authoredThinking !== undefined) {
+        thinkingDraft = change.authoredThinking;
+        thinkingOpen = thinkingDraft.length > 0;
+      }
+      await tick();
+      autosize();
+    },
+  }));
+
   const hasText = $derived(input.trim() !== "");
   const appendSelected = $derived(generatedRole === null);
   const primaryDisabled = $derived(
@@ -772,10 +796,24 @@
 
   /** Do not open an empty comparison pane merely because the setting is on.
    * It appears when a shadow has started or a completed comparison exists. */
+  let manualComparisonVisible = $state(false);
+  const nextSteering = $derived(currentSteeringExpression());
   const autoRegenActive = $derived(
-    autoRegenState.enabled &&
+    (autoRegenState.enabled || manualComparisonVisible) &&
     (abState.processingAb || chatLog.turns.some((turn) => turn.abPair !== undefined)),
   );
+
+  function compareWithoutSteering(turnIdx: number): void {
+    if (genStatus.active) return;
+    manualComparisonVisible = true;
+    unpinComparison();
+    void sendShadowGenerate(turnIdx, "unsteered");
+  }
+
+  function hideComparison(): void {
+    manualComparisonVisible = false;
+    disableAutoRegen();
+  }
 
   /** A manually pinned Loom branch takes precedence over the automatic
    * comparison while it remains in the authoritative tree. */
@@ -986,6 +1024,21 @@
     if (!window.matchMedia("(pointer: coarse)").matches) textareaRef?.focus();
     updateComposerBounds();
     let resizeFrame = 0;
+    let releaseComposerFrame = 0;
+    const holdComposer = (event: PointerEvent) => {
+      if (event.button !== 0 || !textareaRef?.closest("form")?.contains(document.activeElement)) return;
+      cancelAnimationFrame(releaseComposerFrame);
+      composerPointerHeld = true;
+    };
+    const releaseComposer = () => {
+      if (!composerPointerHeld) return;
+      cancelAnimationFrame(releaseComposerFrame);
+      releaseComposerFrame = requestAnimationFrame(() => { composerPointerHeld = false; });
+    };
+    document.addEventListener("pointerdown", holdComposer, true);
+    window.addEventListener("pointerup", releaseComposer);
+    window.addEventListener("pointercancel", releaseComposer);
+    window.addEventListener("blur", releaseComposer);
     const scheduleComposerBounds = () => {
       if (resizeFrame) return;
       resizeFrame = requestAnimationFrame(() => {
@@ -1001,6 +1054,11 @@
     return () => {
       observer?.disconnect();
       cancelAnimationFrame(resizeFrame);
+      cancelAnimationFrame(releaseComposerFrame);
+      document.removeEventListener("pointerdown", holdComposer, true);
+      window.removeEventListener("pointerup", releaseComposer);
+      window.removeEventListener("pointercancel", releaseComposer);
+      window.removeEventListener("blur", releaseComposer);
       cancelAnimationFrame(_scrollFrame);
       _scrollFrame = 0;
       window.visualViewport?.removeEventListener("resize", scheduleComposerBounds);
@@ -1090,6 +1148,16 @@
       .map(({ tok }) => tok.text)
       .join("");
   }
+
+  onInterfaceMount(() => registerInterfaceController("chat", {
+    schema: chatViewSchema,
+    read: () => ({ values: { comparison_visible: pinnedActive || autoRegenActive }, comparison_available: chatLog.turns.some(turn => turn.abPair !== undefined) }),
+    update: (change) => {
+      if (change.comparison_visible === true && !pinnedActive && !chatLog.turns.some(turn => turn.abPair !== undefined)) throw new ToolError("NOT_FOUND", "Generate or pin a comparison before showing it.");
+      if (change.comparison_visible === false) { hideComparison(); unpinComparison(); }
+      if (change.comparison_visible === true) manualComparisonVisible = true;
+    },
+  }));
 </script>
 
 <div class="chat-panel">
@@ -1272,6 +1340,10 @@
               {@render bubble(turn, idx, true)}
             {/each}
           {:else}
+            <header class="pin-header">
+              <span class="pin-tag">Comparison</span>
+              <Button size="sm" variant="flat" onclick={hideComparison}>Hide comparison</Button>
+            </header>
             {#each chatLog.turns as turn, turnIdx (turnIdx)}
               {#if !turn.generated || turn.role === "system"}
                 {@render bubble(turn, turnIdx, false)}
@@ -1452,10 +1524,22 @@
   <form
     id="conversation-composer"
     class="input-row"
+    class:pointer-held={composerPointerHeld}
     class:has-draft={hasText}
     class:generating={genStatus.active}
     onsubmit={(ev) => { ev.preventDefault(); doSend(); }}
   >
+    <div class="steering-status" aria-label="Steering for next reply">
+      <span>{nextSteering ? "Next reply · Steering" : "Next reply · No steering"}</span>
+      {#if nextSteering}<code>{nextSteering}</code>{/if}
+      <Button size="sm" variant="flat"
+        onmousedown={(event) => { if (event.button === 0) event.preventDefault(); }}
+        onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "response" } }))}
+      >Edit steering</Button>
+      {#if !nextSteering && probeRack.entries.size > 0}
+        <span class="probe-note">Probes measure replies. Add steering to change them.</span>
+      {/if}
+    </div>
     <textarea
       class="input field-focus"
       bind:this={textareaRef}
@@ -1526,7 +1610,7 @@
   <span class="role-chip">
     {#if turn.role === "assistant"}
       {#if interactive}
-        <button type="button" class="model-avatar" aria-label="Edit name and avatar"
+        <button type="button" class="model-avatar" aria-label="Edit chat name and avatar"
           onclick={() => window.dispatchEvent(new CustomEvent("drowse:workspace", { detail: { view: "controls", section: "chat" } }))}>
           <Blobatar name={savedConversationState.avatarSeed ?? sessionState.info?.model_id ?? "drowse"} size={40} background="circle" alt="" />
         </button>
@@ -1577,7 +1661,6 @@
           ariaLabel={`Inspect tokens in ${roleDisplayLabel(turn.role, turn.roleLabel)} message`}
         >inspect tokens</Button>
       {/if}
-      {#if isShadow && !pinnedActive}<span class="who-meta">(unsteered)</span>{/if}
       {#if genStatus.active && (isShadow ? abState.pendingTurnIdx === turnIdx : !abState.processingAb && chatLog.pendingIndex === turnIdx)}
         <span class="who-meta generation-label" role="status"><MorphText text={(turn.tokens?.length ?? 0) > 0 ? "Writing…" : (turn.thinkingTokens?.length ?? 0) > 0 ? "Thinking…" : "Preparing reply…"} numbers={false} /></span>
       {/if}
@@ -1588,6 +1671,25 @@
         >seq ppl <MorphText text={Math.exp(-turn.meanLogprob).toFixed(1)} /></span>
       {/if}
     </div>
+
+    {#if turn.generated && turn.finishReason != null && turn.appliedSteering !== undefined}
+      <div class="steering-status recorded-steering" aria-label="Recorded steering">
+        <span>{turn.appliedSteering ? "Steering recipe" : "No steering"}</span>
+        {#if turn.appliedSteering}<code>{turn.appliedSteering}</code>{/if}
+      </div>
+    {/if}
+    {#if turn.generated && turn.finishReason != null && Object.keys(turn.aggregateReadings ?? {}).length > 0}
+      <details class="recorded-readings">
+        <summary>Recorded probe readings</summary>
+        <dl>
+          {#each Object.entries(turn.aggregateReadings ?? {}) as [name, value] (name)}
+            {#if Number.isFinite(value)}
+              <div><dt>{name}</dt><dd>{value.toLocaleString(undefined, { maximumFractionDigits: 4 })}</dd></div>
+            {/if}
+          {/each}
+        </dl>
+      </details>
+    {/if}
 
     {#if (turn.thinkingTokens?.length ?? 0) > 0 || turn.thinking}
       <div class="thinking-block" class:collapsed={turnCollapsed(turnIdx, turn)}>
@@ -1656,6 +1758,14 @@
         <span class="plain">{plainResponseText(turn)}</span>
       {/if}
     </div>
+    {#if turn.generated && !isShadow && turn.appliedSteering && automaticComparisonAvailable}
+      <div class="reply-actions">
+        <Button size="sm" variant="flat" disabled={genStatus.active}
+          onclick={() => compareWithoutSteering(turnIdx)}
+          title="Replay the preceding messages with the current system prompt and saved sampling settings, with steering removed"
+        >Compare without steering</Button>
+      </div>
+    {/if}
   </div>
   {/if}
 {/snippet}
@@ -1943,6 +2053,31 @@
     font-family: var(--font-data);
     font-size: var(--text-xs);
   }
+  .steering-status {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
+    min-width: 0;
+    color: var(--fg-dim);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .steering-status code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-family: var(--font-data);
+    color: var(--fg);
+  }
+  .recorded-steering { margin-block: var(--space-2); }
+  .reply-actions { margin-top: var(--space-3); }
+  .probe-note { flex-basis: 100%; }
+  .recorded-readings { margin-block: var(--space-2); font-size: var(--text-xs); color: var(--fg-dim); }
+  .recorded-readings summary { cursor: pointer; }
+  .recorded-readings dl { display: grid; gap: var(--space-2); margin-block: var(--space-3); }
+  .recorded-readings dl > div { display: flex; justify-content: space-between; gap: var(--space-3); }
+  .recorded-readings dt { min-width: 0; overflow-wrap: anywhere; }
+  .recorded-readings dd { margin: 0; font-family: var(--font-data); font-variant-numeric: tabular-nums; }
   .prov {
     margin-inline-start: auto;
     color: var(--fg-muted);
@@ -2121,10 +2256,10 @@
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-sm);
     width: 100%;
     min-height: var(--control-target);
-    padding: var(--space-2) var(--space-3);
+    padding: calc(2 * var(--space-unit));
     border-radius: var(--radius-lg);
     background: var(--workspace-panel-bg);
     color: var(--fg-dim);
@@ -2357,7 +2492,7 @@
   }
   .input-actions :global(button) { white-space: nowrap; }
   .input-actions :global(button:focus-visible) { outline-offset: -2px; }
-  .input-row:not(:focus-within):not(.has-draft):not(.generating) .input-actions-reveal {
+  .input-row:not(:focus-within):not(.pointer-held):not(.has-draft):not(.generating) .input-actions-reveal {
     grid-template-rows: 0fr;
     margin-top: 0;
     opacity: 0;
@@ -2402,7 +2537,7 @@
   }
   .clear-conversation:disabled {
     cursor: not-allowed;
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
   }
 
   @media (prefers-contrast: more), (forced-colors: active), (prefers-reduced-transparency: reduce) {
@@ -2588,11 +2723,18 @@
     .chat:not(:has(.chat-header)) > .log { grid-row: 1; min-height: 24px; }
     .chat:not(:has(.chat-header)) > .composer-resizer-shell { grid-column: 2; grid-row: 2; }
     .chat:not(:has(.chat-header)) > :global(.status-footer) { grid-column: 1; grid-row: 2; }
+    .chat:not(:has(.chat-header)):has(.turn-plan-summary) {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) 5.5rem;
+    }
+    .chat:not(:has(.chat-header)):has(.turn-plan-summary) > .composer-resizer-shell { grid-column: 3; }
+    .chat:not(:has(.chat-header)):has(.turn-plan-summary) > .turn-plan-shell { grid-column: 2; grid-row: 2; }
     .input-row {
       grid-template-columns: minmax(0, 1fr) max-content;
       align-items: end;
       padding: var(--space-1);
     }
+    .input-row > .steering-status { grid-column: 1 / -1; }
+    .input-actions-reveal { margin-top: 0; }
   }
 
   @media (max-width: 760px), (max-height: 600px) {

@@ -79,7 +79,7 @@ for (const viewport of [
       await expect(menu.getByRole("separator")).toBeVisible();
       expect(await backToChats.evaluate(button => button.nextElementSibling?.tagName)).toBe("HR");
       await expect(menu.getByRole("button", { name: "Download chat", exact: true })).toHaveCount(0);
-      await menu.getByRole("button", { name: theme, exact: true }).click();
+      await menu.getByRole("button", { name: `Switch to ${theme.toLowerCase()} theme`, exact: true }).click();
       expect(await menu.evaluate(element => {
         const rect = element.getBoundingClientRect();
         return { fits: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,

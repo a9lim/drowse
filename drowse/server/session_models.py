@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import Field, FiniteFloat
 
 from drowse.core.generation import supports_thinking, thinking_is_optional
 from drowse.core.session import DrowseSession
@@ -18,10 +19,10 @@ class CreateSessionRequest(NativeRequest):
 
 
 class PatchSessionRequest(NativeRequest):
-    temperature: float | None = None
-    top_p: float | None = None
+    temperature: FiniteFloat | None = None
+    top_p: FiniteFloat | None = Field(default=None, ge=0, le=1)
     top_k: int | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=0)
     system_prompt: str | None = None
     thinking: bool | None = None
 

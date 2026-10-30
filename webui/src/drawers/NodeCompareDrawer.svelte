@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { onMount as onInterfaceMount } from "svelte";
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { nodeCompareViewSchema } from "../lib/interfaceSchemas";
+  import { ToolError } from "../lib/webmcp/types";
+
   import MorphText from "../lib/ui/MorphText.svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Cross-branch diff drawer — phase 5.  Renders a side-by-side
@@ -420,6 +425,16 @@
     if (Math.abs(v) < 0.01) return v.toExponential(1);
     return v.toFixed(3);
   }
+
+  onInterfaceMount(() => registerInterfaceController("node_compare", {
+    schema: nodeCompareViewSchema,
+    read: () => ({ busy: false, values: { layout, sort_by: sortBy } }),
+    update: async (change) => {
+      if (false) throw new ToolError("BUSY", "Wait for this interface operation to finish.");
+      if (change.layout !== undefined) layout = change.layout as typeof layout;
+      if (change.sort_by !== undefined) sortBy = change.sort_by as typeof sortBy;
+    },
+  }));
 </script>
 
 <section class="drawer-shell" aria-label="Cross-branch diff drawer">

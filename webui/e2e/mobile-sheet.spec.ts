@@ -146,6 +146,24 @@ test("touch scrolling yields at content edges; landscape and downward dismissal 
   await expect(sheet(page)).toHaveCount(0);
 });
 
+test("token clicks keep their target when leaving the composer", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await generate(page);
+  await page.getByRole("textbox", { name: /^Compose as / }).focus();
+  const token = page.locator(".msg .tok").first();
+  await token.scrollIntoViewIfNeeded();
+  const before = (await token.boundingBox())!;
+  await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+  await page.mouse.down();
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  const during = (await token.boundingBox())!;
+  expect(Math.abs(during.y - before.y)).toBeLessThan(1);
+  await page.mouse.up();
+  await expect(page.getByRole("button", { name: "Full token details", exact: true })).toBeVisible();
+  await expect(page.locator("#conversation-composer")).not.toHaveClass(/pointer-held/);
+});
+
 test("mouse dragging, interrupted gestures, editing, and reduced motion remain usable", async ({ page }, info) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: "reduce" });

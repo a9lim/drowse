@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
+import { normalizeDrowsePositionSelection } from "@drowse/web-llm";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const server = await createServer({
@@ -13,6 +14,46 @@ const server = await createServer({
 });
 
 try {
+  const { normalizeSteeringPositions } = await server.ssrLoadModule("/src/lib/runtime/steeringPositions.ts");
+  let positionSeed = 739391;
+  const nextPositionRandom = () => (positionSeed = (Math.imul(positionSeed, 1664525) + 1013904223) >>> 0);
+  for (let trial = 0; trial < 256; trial++) {
+    const mask = Array.from({ length: 128 }, () => nextPositionRandom() % 7 < 3);
+    const indices = mask.flatMap((enabled, position) => enabled ? [position] : []);
+    const expected = [];
+    for (let position = 0; position < mask.length; position++) {
+      if (!mask[position]) continue;
+      const start = position;
+      while (mask[position + 1]) position++;
+      expected.push([start, position + 1]);
+    }
+    for (let index = indices.length - 1; index > 0; index--) {
+      const other = nextPositionRandom() % (index + 1);
+      [indices[index], indices[other]] = [indices[other], indices[index]];
+    }
+    const selection = { position_indices: indices };
+    const before = structuredClone(selection);
+    assert.deepEqual(normalizeSteeringPositions(selection), expected);
+    assert.deepEqual(normalizeDrowsePositionSelection(selection), expected);
+    assert.deepEqual(selection, before, "normalization must not mutate the caller's selection");
+    assert.deepEqual(normalizeSteeringPositions({ position_spans: expected.toReversed() }), expected);
+  }
+  for (const selection of [
+    {}, { position_spans: null }, { position_spans: [] },
+    { position_spans: [[5, 1000000], [0, 2], [2, 4]] },
+    { position_indices: [6, 1, 2] },
+  ]) assert.deepEqual(normalizeSteeringPositions(selection), normalizeDrowsePositionSelection(selection));
+  for (const selection of [
+    { position_spans: [], position_indices: [] },
+    { position_spans: [[0, 3], [2, 4]] }, { position_spans: [[1, 1]] },
+    { position_spans: [[-1, 2]] }, { position_spans: [[0, 2.5]] },
+    { position_spans: [[0, Infinity]] }, { position_spans: "0,1" },
+    { position_spans: [[0, 1, 2]] }, { position_indices: [true] },
+    { position_indices: [1, 1] }, { position_indices: [Number.MAX_SAFE_INTEGER] },
+  ]) {
+    assert.throws(() => normalizeSteeringPositions(selection), error => error.code === "INVALID_STEERING_POSITIONS");
+    assert.throws(() => normalizeDrowsePositionSelection(selection));
+  }
   const {
     measurementEnvelope,
     measurementGateScores,
@@ -79,6 +120,7 @@ try {
     async getDrowseRuntimeCapabilities() {
       return {
         topK: true,
+        positionSpans: true,
         forcedReplay: true,
         replayScoring: true,
         tokenizer: true,
@@ -799,6 +841,29 @@ try {
   assert.equal(zeroProbabilityResult.meanLogprob, null);
   assert.equal(zeroProbabilityResult.meanSurprise, null);
 
+  for (const invalidLogprob of [0.01, Number.POSITIVE_INFINITY, Number.NaN]) {
+    for (const field of ["token", "alternative", "replay"]) {
+      const row = { token: "x", token_id: 1, logprob: -1 };
+      if (field === "token") row.logprob = invalidLogprob;
+      if (field === "alternative") row.top_logprobs = [{ token: "y", token_id: 2, logprob: invalidLogprob }];
+      if (field === "replay") row.drowse_replay = {
+        emitted_token_id: 1, sampled_token_id: 1, forced_token_id: null,
+        selected_logprobs: [{ token_id: 1, logprob: invalidLogprob }],
+        argmax: { token_id: 1, logprob: -1 },
+        top_logprobs: [{ token_id: 1, logprob: -1 }],
+      };
+      await assert.rejects(streamWebLlmGeneration({
+        ...drowseEngineMethods,
+        chat: { completions: { async create() {
+          return from([{ choices: [{ index: 0, delta: { content: "x" }, finish_reason: "stop", logprobs: { content: [row] } }] }]);
+        } } },
+      }, hooks, {
+        input: { kind: "chat", messages: [{ role: "user", content: "test" }] },
+        sampling: { temperature: 1, return_top_k: 2 },
+      }, () => undefined), (error) => error.code === "INVALID_GENERATION_CHUNK", `${field} must reject invalid log-probabilities`);
+    }
+  }
+
   let unsupportedCreateCalled = false;
   let unsupportedClearCalled = false;
   await assert.rejects(
@@ -882,6 +947,27 @@ try {
     "clear",
   ]);
   assert.equal(steeredTokens[0].hookMeasurements, undefined);
+
+  for (const selection of [
+    { position_spans: [[4, 8], [1, 3]] },
+    { position_indices: [1, 2, 4, 5, 6, 7] },
+  ]) {
+    const installed = [];
+    await streamWebLlmGeneration(engine, { ...hooks, async install(program) { installed.push(program); } }, {
+      input: { kind: "raw", prompt: "x" }, steeringExpression: "0.5 honest", hookProgram, ...selection,
+    }, () => {});
+    assert.deepEqual(installed[0].position_spans, [[1, 3], [4, 8]]);
+    assert.equal(installed[0].basis, hookProgram.basis, "span targeting keeps the shared layer tensor");
+    assert.equal(hookProgram.position_spans, undefined, "generation must not mutate the cached compiler program");
+  }
+  const unsupported = { ...engine, async getDrowseRuntimeCapabilities() {
+    return { ...await drowseEngineMethods.getDrowseRuntimeCapabilities(), positionSpans: false };
+  } };
+  const beforeUnsupported = calls.length;
+  await assert.rejects(streamWebLlmGeneration(unsupported, hooks, {
+    input: { kind: "raw", prompt: "x" }, hookProgram, position_spans: [[0, 2]],
+  }, () => {}), error => error.code === "STEERING_POSITIONS_UNAVAILABLE");
+  assert.equal(calls.length, beforeUnsupported, "an older fork must never silently ignore position ranges");
 
   const gatedProgram = compileStructuredHookProgram(1, [{
     affineGroups: [{
@@ -1423,6 +1509,38 @@ try {
   });
   assert.equal(oriented.instruments.lens.readout, undefined);
   assert.equal(oriented.instruments.sae.readout, undefined);
+
+  const preciseProgram = {
+    format: "drowse-structured-v2", layerCount: 2,
+    probeKind: Uint32Array.of(3, 2, 3, 2),
+    measurementSchema: {
+      layerMap: [0, 1], modelLayerCount: 2,
+      probes: [
+        { name: "jlens/rare", family: "lens", tokenId: 17 },
+        { name: "sae/8", family: "sae", featureId: 8 },
+      ],
+      lensSource: "fixture-lens", saeSource: "fixture-sae",
+    },
+  };
+  const preciseValues = Float32Array.of(1e-8, 1.2345678, 3e-8, 2.3456789);
+  const precise = measurementEnvelope(preciseProgram, preciseValues, null);
+  for (const [index, family, name] of [[0, "lens", "jlens/rare"], [1, "sae", "sae/8"]]) {
+    const expected = (preciseValues[index] + preciseValues[index + 2]) / 2;
+    assert.equal(precise.scores[name], expected, "stored scores retain measured precision");
+    assert.equal(precise.instruments[family].readings[name].value, expected);
+    assert.equal(precise.instruments[family].readings[name].per_layer["0"], preciseValues[index]);
+    assert.equal(precise.per_layer_scores["0"][name], preciseValues[index]);
+  }
+  for (const [index, invalid] of [[0, NaN], [2, Infinity], [1, -Infinity], [0, -0.1], [2, 1.1], [3, -0.1]]) {
+    const invalidValues = preciseValues.slice();
+    invalidValues[index] = invalid;
+    assert.throws(() => measurementEnvelope(preciseProgram, invalidValues, null),
+      (error) => error.code === "INVALID_HOOK_MEASUREMENTS", "invalid layers must not silently change the average");
+  }
+  const inactiveProgram = { ...preciseProgram, probeKind: Uint32Array.of(0, 2, 3, 2) };
+  const inactiveValues = preciseValues.slice();
+  inactiveValues[0] = NaN;
+  assert.equal(measurementEnvelope(inactiveProgram, inactiveValues, null).scores["jlens/rare"], preciseValues[2]);
 
   const exactReadoutProgram = compileStructuredHookProgram(
     1,

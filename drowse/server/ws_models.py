@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, FiniteFloat, NonNegativeInt, model_validator
 from pydantic_core import PydanticCustomError
 
 from drowse.core.results import GenerationResult
@@ -14,15 +14,15 @@ from drowse.server.native_common import NativeRequest
 
 
 class WSSamplingParams(NativeRequest):
-    temperature: float | None = None
-    top_p: float | None = None
+    temperature: FiniteFloat | None = None
+    top_p: FiniteFloat | None = Field(default=None, ge=0, le=1)
     top_k: int | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=0)
     seed: int | None = None
     stop: list[str] | None = None
-    logit_bias: dict[int, float] | None = None
-    presence_penalty: float = 0.0
-    frequency_penalty: float = 0.0
+    logit_bias: dict[NonNegativeInt, FiniteFloat] | None = None
+    presence_penalty: FiniteFloat = 0.0
+    frequency_penalty: FiniteFloat = 0.0
     return_top_k: int = 0
     return_probe_readings: bool = True
     persist_per_layer_scores: bool = False
@@ -56,14 +56,16 @@ class WSGenerateMessage(NativeRequest):
     """
 
     type: Literal["generate"]
+    request_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     input: str | list[WSInputMessage] | None = None
+    system_prompt: str | None = None
     steering: str | None = None
     sampling: WSSamplingParams | None = None
     thinking: bool | None = None
     stateless: bool = True
     raw: bool = False
     parent_node_id: str | None = None
-    n: int = Field(default=1, ge=1)
+    n: int = Field(default=1, ge=1, le=1024)
     append_same_role: bool = True
     recipe_override: str | None = None
     fork_node_id: str | None = None
@@ -140,7 +142,9 @@ class WSSubmitMessage(NativeRequest):
     """
 
     type: Literal["submit"]
+    request_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     text: str | None = None
+    system_prompt: str | None = None
     authored_role: Literal["user", "assistant"] | None = None
     generated_role: Literal["user", "assistant"] | None = None
     steering: str | None = None
@@ -153,7 +157,7 @@ class WSSubmitMessage(NativeRequest):
     # reject a bad fan width at parse time, because ``_normalize_submit``
     # forwards this value into a ``WSGenerateMessage`` construction that is
     # not inside the handler's error-frame guard.
-    n: int = Field(default=1, ge=1)
+    n: int = Field(default=1, ge=1, le=1024)
     recipe_override: str | None = None
 
 
@@ -206,6 +210,7 @@ def result_to_json(result: GenerationResult) -> dict[str, Any]:
         "text": result.text,
         "tokens": completion,
         "finish_reason": result.finish_reason,
+        "applied_steering": result.applied_steering,
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion,

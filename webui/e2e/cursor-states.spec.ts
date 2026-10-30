@@ -12,7 +12,7 @@ test("workbench cursors describe editing, inspecting, adjusting and navigating",
   await expect(page.locator(".shell")).toBeVisible();
   await expect(page.locator(".page-brand")).toHaveCSS("cursor", "pointer");
   await openWorkspaceMenu(page);
-  await expect(page.getByRole("button", { name: "Dark", exact: true }).locator("svg")).toHaveCSS("cursor", "pointer");
+  await expect(page.getByRole("button", { name: "Switch to light theme", exact: true }).locator("svg").first()).toHaveCSS("cursor", "pointer");
   await page.getByRole("button", { name: "Show chat tools", exact: true }).click();
   await expect(page.getByRole("button", { name: "About word colors", exact: true })).toHaveCSS("cursor", "help");
   const composer = page.getByRole("textbox", { name: /^Compose as / });

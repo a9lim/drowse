@@ -141,6 +141,8 @@ export interface StructuredMeasurementSchema {
 }
 
 export interface StructuredHookProgramBuffers {
+  position_spans?: readonly (readonly [number, number])[] | null;
+  position_indices?: readonly number[] | null;
   hookAbi: typeof DROWSE_HOOK_ABI;
   format: StructuredHookFormat;
   activeRole?: string | null;

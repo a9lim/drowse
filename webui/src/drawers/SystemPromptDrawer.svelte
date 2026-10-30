@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { registerSystemPromptController } from "../lib/workspaceController";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // System-prompt drawer — edit the session's default system prompt.
   // Saves via PATCH /sessions/{id} (``patchSessionDefaults``); cancel
@@ -20,6 +22,10 @@
   let value = $state(sessionState.info?.config.system_prompt ?? "");
   let busy = $state(false);
   let errorMsg: string | null = $state(null);
+  onMount(() => registerSystemPromptController({
+    read: () => ({ busy, dirty: value !== (sessionState.info?.config.system_prompt ?? ""), values: { text: value } }),
+    sync: () => { value = sessionState.info?.config.system_prompt ?? ""; errorMsg = null; },
+  }));
 
   async function save(): Promise<void> {
     if (busy) return;

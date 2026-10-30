@@ -240,27 +240,29 @@ growing an unrelated one.
 
 ## Shell + layout
 
-`App.svelte` is three permanent columns — threads `376px` · chat `minmax(0,1fr)` ·
-rack `432px` — with a 1280px design floor (1280 − 376 − 432 ≈ 472px of chat).
-Below `1279px` the same three surfaces become explicit full-width views behind a
-`threads / chat / instruments` nav, so every workflow stays reachable without
-shrinking dense scientific controls into illegibility. It also owns the boot
+`App.svelte` has a collapsible workspace sidebar, a central Conversation /
+Controls / Loom / Tools view, and an optional right panel. At phone widths the
+workspace navigation becomes a horizontal bar. Tools lists the registry's
+launchers plus common creator/library/settings shortcuts and opens them in a
+side panel. It also owns the boot
 gate, the global accelerators (Esc priority: palette → loom modal → drawer → stop
 gen; ⌘R/E/B/N/D loom ops), and the drawer host. The searchable tool directory
-opens from Menu → All tools, without a global keyboard shortcut.
+also opens from Menu → All tools, without a global keyboard shortcut.
 
-Drawers are modal: the bench columns are `inert` while one is open, focus is
-trapped inside and restored to the launcher on close (`lib/stores/drawers`
-remembers the opener). The host paints the floating sheet — `--bg-alt` fill,
-`--glass-line` hairline, `--radius-lg`, overlay shadow — so every drawer interior
-is transparent with no border of its own.
+Every non-token drawer has a shared Side panel / Dialog switch; the choice is
+stored as `drowse.tools.presentation`. A side panel keeps the workspace usable,
+can expand to its full width, and fills it automatically below 1100px while
+navigation remains available. A dialog makes the workspace `inert`, traps
+focus, and restores the launcher on close. Both presentations reuse the same
+component instance. Token details retain their existing dock / undock and
+mobile-sheet behavior. The host owns sheet material and geometry.
 
 Every drawer is one row of `drawers/index.ts`'s `DRAWERS: Record<DrawerName,
 DrawerEntry>` — component, fixed `params` (how one `RackDrawer` serves both the
 `subspace` and `manifolds` names), `narrow` sizing (forms and pickers get
 `min(480px, 92%)` instead of the wide analysis panel), and reachability. The host
-renders `DRAWERS[drawerState.open]` through one dynamic component; there is no
-per-drawer branch, and a name added to the `DrawerName` union without a row is a
+renders `DRAWERS[drawerState.open]` through a dynamic component, except for the
+retained creator draft. A name added to the `DrawerName` union without a row is a
 compile error. Reachability is a typed either/or: a `launcher` (palette group +
 label + keywords) or `launcher: null` plus a `via` string naming the surface that
 opens it. `RAIL_CATEGORIES` is **derived** from those launchers, so a drawer
@@ -446,11 +448,14 @@ families — a flat fit is just a `pca` manifold, so there is no separate
 vector-extraction form in the dashboard; `POST /extract` remains the server route
 and `drowse manifold extract` the scripted path.
 
-`ManifoldBuilderDrawer` is a shell — header, `auto` / `template` / `custom` mode
-tabs, and the shared identity fields (namespace / name / description) — over three
+`ManifoldBuilderDrawer` is a shell — header, Generate examples / Use a template /
+Use your examples tabs, and shared Folder / Name / Description fields — over three
 disjoint sibling forms in `drawers/manifold/`. The internal `AuthoringMode` values
-are `discover` / `templated` / `authored`; the shell hands each form the raw
-identity and each slugs it at submit. `manifold/form.css` carries the field / step
+are `discover` / `templated` / `authored`, defaulting to `discover`. The shell
+hands each form the raw identity and each slugs it at submit. App retains the
+creator and visited authoring forms while switching tools or presentations, so
+drafts and pending callbacks survive closing the panel within this workbench.
+`manifold/form.css` carries the field / step
 / node-card rules under the `.mb-form` class on the shell's body, so the forms
 share one visual surface without duplicating it, and `FitMethodPicker` +
 `DiscoverTuningFields` are the two blocks more than one form needs.
@@ -463,7 +468,18 @@ radio, and posts to `POST /manifolds/discover` so the fitter derives coords
 per-model. **`DiscoverForm`** (auto) is a concept-slug textarea plus a `kind`
 (abstract/concrete/custom) radio and a `samples_per_prompt` count, calling
 `apiManifoldGenerateStream` (SSE) and optionally chaining `apiManifoldFitStream`
-with the same hyperparams; both legs drive one sticky progress toast.
+with the same hyperparams. Its example budgets are 1/2/4 complete rounds of the
+shared baseline prompts (currently 48/96/192 examples per concept), plus a
+custom whole number of responses per prompt. The total updates before submit;
+more examples are explicitly not a guarantee of probe quality.
+
+Generation and fitting wrappers in `runtime/services.ts` feed the shared
+`stores/manifoldJobs.svelte.ts` state. `ManifoldJobProgress` stays visible in the
+workspace or active modal, with completed counts, elapsed time, phase-specific
+ETA, cancellation on browser runtimes, and result actions. ETA uses observed
+progress rates and returns to estimating when stalled or changing stages. A
+successful generation followed by a failed fit retains a `Fit saved examples`
+action. Completion does not take the user away from another tool.
 **`TemplatedForm`** picks an existing template and derives a manifold from it
 (`apiManifolds.createFromTemplate` + the optional fit). It does **not** author
 templates — `TemplateLabDrawer`'s build tab is the one editor, deep-linked from

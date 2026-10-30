@@ -4,7 +4,8 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "vite";
 import { digestCanonical } from "./check-runtime-lock.mjs";
 
-const raw = await readFile(new URL("../public-hosted/recordings/404-gemma3-4b.json", import.meta.url), "utf8");
+await assert.rejects(readFile(new URL("../public-hosted/recordings/404-gemma3-4b.json", import.meta.url)), { code: "ENOENT" }, "the provenance recording must not ship as a public asset");
+const raw = await readFile(new URL("./recordings/404-gemma3-4b.json", import.meta.url), "utf8");
 const recording = JSON.parse(raw);
 const dataset = JSON.parse(await readFile(new URL("../src/hosted/data/not-found-messages.json", import.meta.url), "utf8"));
 assert.equal(dataset.recordingSha256, createHash("sha256").update(raw).digest("hex"));

@@ -12,6 +12,8 @@ export interface RankOneHookLayer {
 }
 
 export interface RankOneHookProgramBuffers {
+  position_spans?: readonly (readonly [number, number])[] | null;
+  position_indices?: readonly number[] | null;
   hookAbi: typeof DROWSE_HOOK_ABI;
   activeRole?: string | null;
   hiddenSize: number;

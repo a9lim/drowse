@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { onMount as onInterfaceMount } from "svelte";
+  import { registerInterfaceController } from "../../lib/workspaceController";
+  import { templatedDraftSchema } from "../../lib/interfaceSchemas";
+  import { ToolError } from "../../lib/webmcp/types";
+
   import MorphText from "../../lib/ui/MorphText.svelte";
   // Derive a manifold from a standalone template.
   //
@@ -29,7 +34,7 @@
     getRuntimeManifoldFitMaxIntrinsicDim,
   } from "../../lib/runtime/registry";
   import { closeDrawer, openDrawer, refreshManifoldList } from "../../lib/stores.svelte";
-  import { dismissToast, pushToast, updateToast } from "../../lib/stores/toasts.svelte";
+  import { dismissToast, pushToast } from "../../lib/stores/toasts.svelte";
   import type {
     CreateManifoldFromTemplateRequest,
     TemplateSummary,
@@ -52,7 +57,8 @@
   let { identity, oncomplete }: { identity: ManifoldIdentity; oncomplete?: () => void } = $props();
 
   const maxDimLimit = getRuntimeManifoldFitMaxIntrinsicDim();
-  const tuning = $state(defaultTuning(maxDimLimit));
+  const browserMode = runtimeClient.mode !== "http";
+  const tuning = $state(defaultTuning(maxDimLimit, browserMode));
   let templates: TemplateSummary[] = $state([]);
   let loadingTemplates = $state(true);
   let selectedKey = $state("");
@@ -69,7 +75,6 @@
   let fittingActive = $state(false);
   let cancelling = $state(false);
   const hostedController = getHostedController();
-  const browserMode = runtimeClient.mode !== "http";
 
   onMount(async () => {
     try {
@@ -211,10 +216,6 @@
       await apiManifolds.createFromTemplate(req);
       dismissToast(toastId);
       if (alsoFit) {
-        const fitToastId = pushToast(`fitting ${namespace}/${name}…`, {
-          kind: "info",
-          ttlMs: null,
-        });
         progress = "Starting fit…";
         fittingActive = true;
         try {
@@ -230,16 +231,13 @@
                   : null;
               if (msg) {
                 progress = msg;
-                updateToast(fitToastId, { detail: msg });
               }
             },
           );
-          dismissToast(fitToastId);
           pushToast(`fit ${namespace}/${name} (${tuning.fitMode})`, {
             kind: "info",
           });
         } catch (e) {
-          dismissToast(fitToastId);
           if (isFittingCancellation(e)) {
             pushToast(
               `Fit cancelled. ${namespace}/${name} was kept and can be fitted later.`,
@@ -275,6 +273,20 @@
       progress = "";
     }
   }
+
+  onInterfaceMount(() => registerInterfaceController("manifold_templated", {
+    schema: templatedDraftSchema,
+    read: () => ({ busy: submitting || fittingActive || cancelling, values: { selected_key: selectedKey, max_dim: maxDim, also_fit: alsoFit, advanced_open: advancedOpen, tuning }, validation, available_templates: options, loading_templates: loadingTemplates }),
+    update: async (change) => {
+      if (submitting || fittingActive || cancelling) throw new ToolError("BUSY", "Wait for this interface operation to finish.");
+      if (change.selected_key && !options.some(option => option.value === change.selected_key)) throw new ToolError("NOT_FOUND", "Choose a template from available_templates.");
+      if (change.selected_key !== undefined) selectedKey = change.selected_key as string;
+      if (change.max_dim !== undefined) maxDim = change.max_dim as number | null;
+      if (change.also_fit !== undefined) alsoFit = change.also_fit as boolean;
+      if (change.advanced_open !== undefined) advancedOpen = change.advanced_open as boolean;
+      if (change.tuning) Object.assign(tuning, change.tuning);
+    },
+  }));
 </script>
 
 <div

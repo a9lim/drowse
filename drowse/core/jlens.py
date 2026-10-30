@@ -163,14 +163,18 @@ class JacobianLens:
         unembed: torch.Tensor,
         *,
         layers: Sequence[int] | None = None,
+        output_projection: torch.Tensor | None = None,
     ) -> dict[int, torch.Tensor]:
         """Per-layer J-lens direction for one vocab id: ``W_U[v] @ J_l``.
 
         Returns fp32 CPU tensors in the ``dict[int, Tensor]`` shape every
         drowse profile consumer (``fold_directions_to_subspace``,
-        ``Profile``) expects.
+        ``Profile``) expects. With an output projection P (OPT), use
+        ``W_U[v] @ P @ J_l`` without materializing the full vocabulary map.
         """
         w = unembed[token_id].detach().to(torch.float32).cpu()
+        if output_projection is not None:
+            w = w @ output_projection.detach().to(device="cpu", dtype=torch.float32)
         requested = self.source_layers if layers is None else [int(l) for l in layers]
         missing = [l for l in requested if l not in self.jacobians]
         if missing:
@@ -304,13 +308,21 @@ class JacobianLens:
         return cls(union, n_prompts=first.n_prompts, d_model=first.d_model)
 
 
+def softcap_logits(logits: torch.Tensor, cap: float | None) -> torch.Tensor:
+    if cap is None:
+        return logits
+    return (logits / cap).tanh() * cap
+
+
 def lens_logits(
     lens: JacobianLens,
     hidden_per_layer: Mapping[int, torch.Tensor],
     *,
     unembed: torch.Tensor,
     final_norm: nn.Module,
+    logit_softcap: float | None = None,
     layers: Sequence[int] | None = None,
+    readout: nn.Module | None = None,
 ) -> dict[int, torch.Tensor]:
     """Full-vocabulary lens readout ``W_U · norm(J_l h)`` per requested layer.
 
@@ -318,14 +330,19 @@ def lens_logits(
     runs in the unembedding's own dtype (a fp32 copy of a ~256k-row W_U would
     be gigabytes); ranking precision matches the model's own logit path.
     Returns fp32 logits ``[..., vocab]`` per layer, on the unembed's device.
+    Pass ``LogitReadout(model)`` as ``readout`` for model-specific bias,
+    projection, and calibration; the default is the supplied matrix/norm path.
     """
     requested = list(layers) if layers is not None else lens.source_layers
     out: dict[int, torch.Tensor] = {}
     for layer in requested:
         h = hidden_per_layer[layer]
         transported = lens.transport(h.to(unembed.device), layer)
-        normed = final_norm(transported)
-        out[layer] = (normed.to(unembed.dtype) @ unembed.T).float()
+        if readout is not None:
+            out[layer] = readout(transported).float()
+        else:
+            normed = final_norm(transported.to(unembed.dtype))
+            out[layer] = softcap_logits(normed.to(unembed.dtype) @ unembed.T, logit_softcap).float()
     return out
 
 

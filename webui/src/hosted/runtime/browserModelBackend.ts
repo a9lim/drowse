@@ -205,14 +205,7 @@ export function createDrowseBrowserModelBackend(
     activeCompiler = next;
     compilers.set(loadRequest, next);
   };
-  const fitting = new BrowserManifoldFitting(
-    artifacts,
-    producer,
-    {
-      ...compilerBackedFittingDependencies(compilerFor),
-      allowAutomaticTopologyDiscovery: false,
-    },
-  );
+  let fitting: BrowserManifoldFitting | null = null;
   return new DrowseWebLlmBackend(module, {
     drowseVersion: producer.drowseVersion,
     runtime,
@@ -240,7 +233,8 @@ export function createDrowseBrowserModelBackend(
       return instruments;
     },
     onUnload() {
-      fitting.dispose();
+      fitting?.dispose();
+      fitting = null;
       activeLoadRequest = null;
       activeCompiler = null;
       activeInstruments = null;
@@ -269,7 +263,13 @@ export function createDrowseBrowserModelBackend(
       }
       return cached.compiler.steeringDelta(parent, child);
     },
-    authoringRequest: (context) => fitting.request(context),
+    authoringRequest(context) {
+      fitting ??= new BrowserManifoldFitting(artifacts, producer, {
+        ...compilerBackedFittingDependencies(compilerFor),
+        allowAutomaticTopologyDiscovery: false,
+      });
+      return fitting.request(context);
+    },
     async refreshAfterAuthoring(context) {
       if (!refreshesInstalledManifolds(context.request)) return;
       await refreshCompiler(context.loadRequest, context.signal);

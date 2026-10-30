@@ -328,14 +328,24 @@ const pageHeader = await readFile("src/hosted/ui/PageHeader.svelte", "utf8");
 const modelCardGeometry = await readFile("src/hosted/ui/HostedApp.svelte", "utf8");
 assert.match(modelCardGeometry, /\.model-grid > button \{[^}]*border-radius: var\(--radius\);/, "Model cards use restrained 8px corners");
 assert.match(pageHeader, /grid-template-columns: auto minmax\(0, 1fr\) auto;/, "Site header keeps brand, navigation, and appearance in one row");
-assert.match(pageHeader, /flex-wrap: nowrap;/, "Primary navigation never wraps");
-assert.doesNotMatch(pageHeader, /grid-row:\s*2|grid-column:\s*1\s*\/\s*-1/, "Mobile navigation must not move to a second row");
+assert.match(pageHeader, /flex-wrap: nowrap;/, "Primary navigation links stay on one line");
+assert.match(pageHeader, /grid-template-areas: "leading end" "nav nav";/, "On phones the public links move to their own row instead of hiding the wordmark");
+assert.doesNotMatch(pageHeader, /visibility:\s*hidden|tabindex=\{brandCollapsed|brandCollapsed/, "The home link is never hidden or removed from the tab order");
+assert.match(pageHeader, /position: sticky; top: 0;/, "Site header stays in reach while scrolling");
+assert.match(pageHeader, /variant\?: "site" \| "app"/, "Public pages and the app get different navigation");
+for (const label of ["Learn", "Models", "Credits", "Contribute", "Open Drowse", "Chats"]) assert.ok(pageHeader.includes(`>${label}</a>`), `Header links to ${label}`);
+assert.match(pageHeader, /href="\/contribute"/, "Contribute opens the on-site guide, not a source tree");
+const pageFooter = await readFile("src/hosted/ui/PageFooter.svelte", "utf8");
+assert.match(pageFooter, /href=\{sourceUrl\}/, "Footer keeps the AGPL source offer for this build");
+assert.match(pageFooter, /"Source for this build"/);
+assert.doesNotMatch(pageFooter, />\{CONTACT_ADDRESS\}</, "Footer says Email us instead of printing the address");
+assert.match(pageFooter, /\(opens GitHub\)/, "External GitHub links say where they go");
 const compactThemeToggle = await readFile("src/lib/ui/ThemeToggle.svelte", "utf8");
-assert.match(compactThemeToggle, /--radius-inset: var\(--radius-pill\)/, "The sliding theme selection stays circular");
-assert.match(compactThemeToggle, /width: var\(--control-target\);\s*height: var\(--control-target\);\s*min-width: 40px;\s*min-height: 40px;/, "Theme options have non-overlapping 40px minimum circular targets");
-assert.match(compactThemeToggle, /padding: calc\(var\(--space-xs\) \/ 4\)/, "Theme pill uses a compact 2px inset");
+assert.doesNotMatch(compactThemeToggle, /slidingSelection|selection-indicator/, "Theme switching uses one icon without a sliding track");
+assert.match(compactThemeToggle, /width: var\(--control-target\);\s*height: var\(--control-target\);\s*min-width: 44px;\s*min-height: 44px;/, "The theme button has a 44px minimum touch target");
+assert.match(compactThemeToggle, /prefers-reduced-motion: reduce/, "Icon switching respects reduced motion");
 assert.match(compactThemeToggle, /border-radius: var\(--radius-pill\)/, "Theme container follows the circular options");
-assert.match(compactThemeToggle, /background: var\(--surface-sheen\)/, "Theme pill retains the shared finish");
+assert.match(compactThemeToggle, /background: transparent/, "Theme control is icon-only");
 for (const path of ["src/App.svelte", "src/hosted/ui/NotFound.svelte", "src/hosted/ui/HostedRoot.svelte"]) {
   const source = await readFile(path, "utf8");
   assert.ok(source.includes("<PageHeader"), `${path} shares the page header`);
@@ -372,7 +382,11 @@ for (const [file, selector] of [
   const css = (source.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "").replace(/\/\*[\s\S]*?\*\//g, "");
   const rule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(match => match[1].trim() === selector)?.[2];
   assert.ok(rule, `${file}: compact group exists`);
-  assert.match(rule, /padding:\s*var\(--space-(?:xs|1)\)/, `${file}: group inset is 8px`);
+  if (selector === ".sk-mode-tabs") {
+    assert.match(rule, /padding:\s*calc\(var\(--radius-group\) - var\(--radius-inset\)\)/, `${file}: group inset follows the nested corner radii`);
+  } else {
+    assert.match(rule, /padding:\s*var\(--space-(?:xs|1)\)/, `${file}: group inset uses the compact spacing token`);
+  }
   assert.match(rule, /border-radius:\s*var\(--radius-group\)/, `${file}: group radius includes the child radius and inset`);
   assert.match(rule, /background:\s*var\(--surface-sheen\)/, `${file}: group keeps the shared finish`);
 }
@@ -407,7 +421,7 @@ assert.match(workspaceGeometry, /loomToolsVisible = \$state\(false\)/, "Loom too
 assert.doesNotMatch(workspaceGeometry, /headers-collapsed|header-toggle/, "Main navigation never disappears or grows a second disclosure row");
 assert.match(workspaceGeometry, /onToggleTools=\{toggleViewTools\}/, "View tools remain available in the menu");
 assert.match(workspaceGeometry, /\.workspace-navigation\s*\{[^}]*justify-content:\s*center;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/, "Compact workspace navigation centers its tabs across the available width");
-assert.match(workspaceGeometry, /@media \(max-width: 420px\)[\s\S]*\.workspace-navigation \{ justify-content: center; \}/, "Narrow navigation remains centered");
+assert.match(workspaceGeometry, /@media \(max-width: 420px\)[\s\S]*\.workspace-navigation\s*\{[^}]*justify-content:\s*center;/, "Narrow navigation remains centered");
 assert.doesNotMatch(workspaceGeometry, /--(?:radius(?:-[a-z]+)?|popup-radius):/, "Workbench and detached overlays share the same global corner geometry");
 assert.match(workspaceGeometry, /\.workspace-surface\s*\{[^}]*border-radius:\s*0;[^}]*background:\s*transparent;/, "The workspace has no decorative outer container");
 assert.match(workspaceGeometry, /--left-sidebar-width:\s*13\.25rem/, "Desktop retains the compact sidebar by default");

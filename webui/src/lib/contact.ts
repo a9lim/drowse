@@ -8,6 +8,8 @@ export const CONTACT_REASONS = [
   { value: "feature", label: "Feature suggestion" },
   { value: "media", label: "Media and press" },
   { value: "research", label: "Research and collaboration" },
+  { value: "teaching", label: "Teaching with Drowse" },
+  { value: "funding", label: "Funding and sponsorship" },
   { value: "other", label: "Other inquiry" },
 ];
 
@@ -29,7 +31,10 @@ export const CONTACT_TOPICS = [
   { value: "study", label: "Using Drowse in a study", reasons: ["research"] },
   { value: "methods", label: "Methods and validation", reasons: ["research"] },
   { value: "results", label: "Sharing results", reasons: ["research"] },
-  { value: "funding", label: "Funding & Sponsorship", reasons: ["research"] },
+  { value: "course", label: "Using Drowse in a course", reasons: ["teaching"] },
+  { value: "teaching-materials", label: "Teaching materials", reasons: ["teaching"] },
+  { value: "sponsorship", label: "Sponsoring Drowse", reasons: ["funding"] },
+  { value: "funding", label: "Grants and research funding", reasons: ["research", "funding"] },
   { value: "none", label: "Not applicable", reasons: ["other"] },
   { value: "other", label: "Something else", reasons: CONTACT_REASONS.filter(({ value }) => value !== "other").map(({ value }) => value) },
 ];

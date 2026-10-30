@@ -3,14 +3,50 @@
   import PageFooter from "./PageFooter.svelte";
   import TabIdentity from "../../lib/ui/TabIdentity.svelte";
   import ContactForm from "../../lib/ui/ContactForm.svelte";
-  import { CONTACT_ADDRESS } from "../../lib/contact";
+  import PwaUpdatePrompt from "./PwaUpdatePrompt.svelte";
+  import { CONTACT_ADDRESS, CONTACT_REASONS, contactTopics } from "../../lib/contact";
+  import { contactDrafts } from "../../lib/stores/contact.svelte";
+  import { onMount } from "svelte";
+
+  // Links such as /contact?reason=teaching preselect a reason, unless a draft is already in progress.
+  function applyReasonFromUrl(): void {
+    const reason = new URLSearchParams(window.location.search).get("reason");
+    const fields = contactDrafts.contact.fields;
+    if (!reason || fields.title || fields.body || !CONTACT_REASONS.some(({ value }) => value === reason)) return;
+    fields.reason = reason;
+    fields.topic = contactTopics(reason)[0]?.value ?? fields.topic;
+  }
+
+  const pageDescription = "Get in touch with the Drowse team. Ask for help, share feedback, or discuss working together.";
+
+  // Update the page's one description tag instead of adding a second one.
+  let mounted = $state(false);
+  onMount(() => {
+    mounted = true;
+    applyReasonFromUrl();
+    let meta = document.head.querySelector<HTMLMetaElement>('meta[name="description"]');
+    const created = !meta;
+    const previous = meta?.content ?? "";
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.name = "description";
+      document.head.append(meta);
+    }
+    const tag = meta;
+    tag.content = pageDescription;
+    return () => {
+      if (created) tag.remove();
+      else tag.content = previous;
+    };
+  });
 </script>
 
 <TabIdentity title="Contact us · Drowse" />
-<svelte:head><meta name="description" content="Get in touch with the Drowse team. Ask for help, share feedback, or discuss working together." /></svelte:head>
+<!-- The update prompt touches window on teardown, so it only renders in the browser. -->
+{#if mounted}<PwaUpdatePrompt />{/if}
 <div class="contact-page">
   <a class="skip-link" href="#contact-main">Skip to content</a>
-  <PageHeader />
+  <PageHeader current="contact" />
   <main id="contact-main" tabindex="-1">
     <div class="heading">
       <h1>Contact us.</h1>

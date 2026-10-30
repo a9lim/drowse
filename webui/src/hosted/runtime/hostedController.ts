@@ -144,6 +144,7 @@ export class HostedControllerImpl implements HostedController {
       capabilities: this.capabilities,
       contextTokens,
       loadRecords: this.loadRecords,
+      installedPackIds: [...this.installedPackIds],
       preference,
       language: language ?? this.capabilities.signals.language,
       explicitOomRetry: options.explicitOomRetry,
@@ -423,10 +424,10 @@ export class HostedControllerImpl implements HostedController {
   }
 
   private async unloadWorker(): Promise<void> {
-    await this.cancelDownloadIfActive();
-    await this.cancelFittingIfActive();
-    await this.stopGenerationIfActive();
     try {
+      await this.cancelDownloadIfActive();
+      await this.cancelFittingIfActive();
+      await this.stopGenerationIfActive();
       await this.transport.call("unload", undefined);
     } catch (error) {
       this.transport.terminateWithFailure(

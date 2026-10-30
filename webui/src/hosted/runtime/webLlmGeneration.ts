@@ -18,6 +18,7 @@ import {
   type StructuredHookProgramBuffers,
 } from "./structuredHookProgram";
 import { isRoleSlug } from "./roleSlug";
+import { normalizeSteeringPositions, type SteeringPositionSelection } from "../../lib/runtime/steeringPositions";
 
 export const BROWSER_EXACT_READOUT_TOP_K_CAPACITY = 8;
 
@@ -36,7 +37,7 @@ export type WebLlmGenerationInput =
     }
   | { kind: "raw"; prompt: string };
 
-export interface WebLlmGenerationPlan {
+export interface WebLlmGenerationPlan extends SteeringPositionSelection {
   input: WebLlmGenerationInput;
   sampling?: WSSampling | null;
   thinking?: boolean | null;
@@ -109,6 +110,7 @@ export interface WebLlmReplayScore {
 }
 
 export interface WebLlmRuntimeCapabilities {
+  positionSpans?: boolean;
   topK: boolean;
   forcedReplay: boolean;
   replayScoring: boolean;
@@ -242,6 +244,18 @@ export async function streamWebLlmGeneration(
   plan: WebLlmGenerationPlan,
   onToken: (token: WebLlmGeneratedToken) => void | Promise<void>,
 ): Promise<WebLlmGenerationResult> {
+  const selection = plan.position_spans !== undefined || plan.position_indices !== undefined
+    ? plan : plan.hookProgram ?? {};
+  const spans = normalizeSteeringPositions(selection);
+  if (spans !== undefined && !plan.hookProgram) {
+    throw generationError("STEERING_PROGRAM_REQUIRED", "Position targeting requires a compiled steering program");
+  }
+  if (plan.hookProgram && (spans !== undefined ||
+    plan.hookProgram.position_spans !== undefined || plan.hookProgram.position_indices !== undefined)) {
+    plan = { ...plan, hookProgram: {
+      ...plan.hookProgram, position_spans: spans, position_indices: undefined,
+    } };
+  }
   if (plan.hookProgram && isStructuredProgram(plan.hookProgram)) {
     plan = { ...plan, hookProgram: {
       ...plan.hookProgram,
@@ -646,6 +660,9 @@ export async function readWebLlmRuntimeCapabilities(
     );
   }
   const capabilities = await engine.getDrowseRuntimeCapabilities();
+  if (capabilities?.positionSpans !== undefined && typeof capabilities.positionSpans !== "boolean") {
+    throw generationError("INVALID_DROWSE_CAPABILITIES", "The browser model runtime returned invalid position-targeting capabilities");
+  }
   for (const key of [
     "topK",
     "forcedReplay",
@@ -710,13 +727,14 @@ async function assertWebLlmGenerationCapabilities(
       plan.input.messages.some((message) => message.name != null);
   const needsUserSeat = plan.generationSeat === "user";
   const needsSceneStitching = requiresSceneStitching(plan);
+  const needsPositions = plan.hookProgram?.position_spans != null;
   if (
     !needsTopK &&
     !needsForcedReplay &&
     !needsReplayScoring &&
     !needsNamedRoles &&
     !needsUserSeat &&
-    !needsSceneStitching
+    !needsSceneStitching && !needsPositions
   ) {
     return;
   }
@@ -727,6 +745,12 @@ async function assertWebLlmGenerationCapabilities(
     code: string;
     message: string;
   }> = [
+    {
+      needed: needsPositions,
+      supported: capabilities.positionSpans === true,
+      code: "STEERING_POSITIONS_UNAVAILABLE",
+      message: "This browser runtime does not support position-targeted steering; reload the updated app",
+    },
     {
       needed: needsTopK,
       supported: capabilities.topK,
@@ -1309,7 +1333,16 @@ export function measurementEnvelope(
       const slot = layerIndex * probeCount + probeIndex;
       if (hookProgram.probeKind[slot] === 0) continue;
       const value = values[slot];
-      if (!Number.isFinite(value)) continue;
+      if (
+        !Number.isFinite(value) ||
+        probe.family === "lens" && (value < 0 || value > 1) ||
+        probe.family === "sae" && value < 0
+      ) {
+        throw generationError(
+          "INVALID_HOOK_MEASUREMENTS",
+          `The browser model returned an invalid ${probe.family} reading at layer ${schema.layerMap[layerIndex]}`,
+        );
+      }
       readings.push({
         layer: schema.layerMap[layerIndex],
         depth: normalizedLayerDepth(
@@ -1322,15 +1355,15 @@ export function measurementEnvelope(
     if (readings.length === 0) return;
     const aggregateValue = readings.reduce((sum, item) => sum + item.value, 0) /
       readings.length;
-    scores[probe.name] = round6(aggregateValue);
+    scores[probe.name] = probe.family === "geometry" ? round6(aggregateValue) : aggregateValue;
     gateScores[probe.name] = aggregateValue;
     const perLayer = Object.fromEntries(
-      readings.map((item) => [String(item.layer), round6(item.value)]),
+      readings.map((item) => [String(item.layer), probe.family === "geometry" ? round6(item.value) : item.value]),
     );
     for (const reading of readings) {
       const layer = String(reading.layer);
       const row = perLayerScores[layer] ?? {};
-      row[probe.name] = round6(reading.value);
+      row[probe.name] = probe.family === "geometry" ? round6(reading.value) : reading.value;
       perLayerScores[layer] = row;
     }
     if (probe.family === "geometry") {
@@ -1340,7 +1373,7 @@ export function measurementEnvelope(
     if (probe.family === "sae" && probe.featureId !== undefined) {
       const maxAct = probe.maxAct ?? null;
       saeReadings[probe.name] = {
-        value: round6(aggregateValue),
+        value: aggregateValue,
         unit: maxAct === null ? "raw_activation" : "activation_over_max",
         per_layer: perLayer,
         depth: scalarDepthSummary(
@@ -1353,7 +1386,7 @@ export function measurementEnvelope(
     }
     if (probe.family === "lens" && probe.tokenId !== undefined) {
       lensReadings[probe.name] = {
-        value: round6(aggregateValue),
+        value: aggregateValue,
         unit: "mean_token_probability",
         per_layer: perLayer,
         depth: scalarDepthSummary(
@@ -2596,7 +2629,7 @@ function readSamplerLogprob(
 
 function isLogprob(value: unknown): value is number {
   return typeof value === "number" &&
-    (Number.isFinite(value) || value === Number.NEGATIVE_INFINITY);
+    value <= 0 && (Number.isFinite(value) || value === Number.NEGATIVE_INFINITY);
 }
 
 function readUsage(value: unknown): {

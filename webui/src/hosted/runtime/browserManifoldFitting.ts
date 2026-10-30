@@ -737,6 +737,7 @@ export class BrowserManifoldFitting {
         storedName,
         registryName,
         context,
+        exactSae?.provenance ?? null,
       );
       if (cached !== null) return { done: true, canonical: registryName, profile: cached };
     } else {
@@ -791,6 +792,7 @@ export class BrowserManifoldFitting {
       storedName,
       registryName,
       context,
+      exactSae?.provenance ?? null,
     );
     if (profile === null) {
       throw fittingError(
@@ -894,6 +896,7 @@ export class BrowserManifoldFitting {
     storedName: string,
     registryName: string,
     context: BrowserManifoldFittingContext,
+    sae: BrowserSaeFitIdentity | null,
   ): Promise<VectorInfo | null> {
     const archive = await this.artifacts.request({
       service: "manifolds",
@@ -912,7 +915,8 @@ export class BrowserManifoldFitting {
         ? artifact.variant === "raw" && artifact.variantIdentity === null
         : artifact.variant === "sae" && artifact.variantIdentity === saeRelease) &&
       artifact.modelId === context.loadRequest.variant.runtimeIdentity.sourceModel &&
-      artifact.modelFingerprint === context.loadRequest.variant.runtimeIdentitySha256
+      artifact.modelFingerprint === context.loadRequest.variant.runtimeIdentitySha256 &&
+      artifact.contextBindingSha256 === requireContextBinding(context.loadRequest)
     );
     if (!fitted) return null;
     const sidecarBytes = await readVerifiedDrowseArchiveFile(
@@ -923,7 +927,18 @@ export class BrowserManifoldFitting {
     const sidecar = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(sidecarBytes)) as {
       fitted_layers?: unknown;
       share_metric?: unknown;
+      sae_fingerprint?: unknown;
+      sae_revision?: unknown;
+      capture_version?: unknown;
+      fit_policy_version?: unknown;
     };
+    if (
+      sidecar.capture_version !== CAPTURE_VERSION ||
+      sidecar.fit_policy_version !== FIT_POLICY_VERSION ||
+      sae !== null && (
+        sidecar.sae_fingerprint !== sae.fingerprint || sidecar.sae_revision !== sae.revision
+      )
+    ) return null;
     if (
       !Array.isArray(sidecar.fitted_layers) || sidecar.fitted_layers.length === 0 ||
       sidecar.fitted_layers.some((layer) => !Number.isSafeInteger(layer) || layer < 0) ||

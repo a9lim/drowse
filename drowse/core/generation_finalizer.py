@@ -27,7 +27,7 @@ def finalize_generation(
     vector_snapshot: dict[str, float],
     prompt_tokens: int = 0,
     stateless: bool = False,
-    logprobs_list: list[tuple[int, float, list[Any]]] | None = None,
+    logprobs_list: list[tuple[int, float | None, list[Any]]] | None = None,
     applied_steering: str | None = None,
     *,
     return_hidden: bool = False,

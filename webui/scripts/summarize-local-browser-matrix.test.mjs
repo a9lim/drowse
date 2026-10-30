@@ -13,10 +13,14 @@ const runtimeLock = JSON.parse(await readFile(
   resolve(repositoryRoot, "browser-runtime/runtime-lock.json"),
   "utf8",
 ));
-const benchmarkLock = JSON.parse(await readFile(
-  resolve(repositoryRoot, "browser-runtime/benchmark-evidence.json"),
-  "utf8",
-));
+const benchmarkLock = {
+  requiredMatrix: {
+    modelIds: ["gemma3-270m-instruct", "qwen3-1.7b"],
+    contextTokens: [2048, 4096],
+    platforms: ["macos", "windows"],
+    browsers: ["chrome", "edge"],
+  },
+};
 assert.deepEqual(parseArguments(["one.json", "--output", "result.json"]), {
   reports: [resolve("one.json")],
   output: resolve("result.json"),
@@ -28,8 +32,8 @@ const second = report("gemma3-270m-instruct", 4096);
 const summary = summarizeLocalBrowserMatrix([first, second], runtimeLock, benchmarkLock);
 assert.equal(summary.releaseEvidence, false);
 assert.equal(summary.coverage.validatedLocalRuns, 2);
-assert.equal(summary.coverage.requiredReleaseCoordinates, 48);
-assert.equal(summary.coverage.percentOfRequiredCoordinates, 4.17);
+assert.equal(summary.coverage.requiredReleaseCoordinates, 16);
+assert.equal(summary.coverage.percentOfRequiredCoordinates, 12.5);
 assert.throws(
   () => summarizeLocalBrowserMatrix([first, first], runtimeLock, benchmarkLock),
   /repeat a matrix cell/,

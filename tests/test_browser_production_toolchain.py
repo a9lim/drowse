@@ -1,10 +1,13 @@
 import hashlib
+from dataclasses import dataclass
 import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+import numpy as np
 
 
 SCRIPT = Path(__file__).parents[1] / "browser-runtime/forks/build-production-webgpu.py"
@@ -22,6 +25,38 @@ def test_webllm_gemma_uses_global_context_without_top_level_sliding_window():
 
 def test_production_quantizations_cover_f32_compute_for_fp16_unsafe_models():
     assert TOOL.PRODUCTION_QUANTIZATIONS == ("q4f16_1", "q4f32_1", "q0f32")
+
+
+def test_gemma_norm_offset_is_added_after_upcasting_without_mutating_the_registry():
+    @dataclass
+    class Model:
+        source: dict[str, Any]
+
+    names = [
+        "language_model.model.layers.0.input_layernorm.weight",
+        "language_model.model.layers.0.post_attention_layernorm.weight",
+        "language_model.model.layers.0.pre_feedforward_layernorm.weight",
+        "language_model.model.layers.0.post_feedforward_layernorm.weight",
+        "language_model.model.layers.0.self_attn.q_norm.weight",
+        "language_model.model.layers.0.self_attn.k_norm.weight",
+        "language_model.model.norm.weight",
+    ]
+    def loader(config: Any, quantization: Any):
+        return SimpleNamespace(map_func={
+            **{name: lambda value: (value + np.float16(1)).astype("float32") for name in names},
+            "language_model.model.embed_tokens.weight": lambda value: value,
+        })
+    model = Model({"huggingface-safetensor": loader, "huggingface-torch": loader})
+    fixed = TOOL.gemma_conversion_model(model)
+    assert model.source["huggingface-safetensor"] is loader
+    assert fixed.source["huggingface-torch"] is loader
+    values = np.array([2048, -2048, 0.0001], dtype=np.float16)
+    original = loader(None, None)
+    converted = fixed.source["huggingface-safetensor"](None, None)
+    assert original.map_func[names[0]](values)[0] == 2048
+    for name in names:
+        np.testing.assert_array_equal(converted.map_func[name](values), values.astype("float32") + 1)
+    assert converted.map_func["language_model.model.embed_tokens.weight"](values) is values
 
 
 def test_gpt2_browser_shape_preserves_native_fields_and_adds_canonical_dimensions():
@@ -309,6 +344,26 @@ def test_verify_build_manifest_closes_and_hashes_every_artifact(tmp_path: Path):
     artifact.write_bytes(b"tampered")
     with pytest.raises(SystemExit, match="failed verification"):
         TOOL.verify_build_manifest(tmp_path, "qwen3", "q4f16_1")
+
+
+def test_gemma_unquantized_manifest_requires_precise_normalization_provenance(tmp_path: Path):
+    tensor_cache = tmp_path / "tensor-cache.json"
+    tensor_cache.write_text(json.dumps({"records": [{"records": [{"format": "raw", "dtype": "float32"}]}]}))
+    manifest = {
+        "schemaVersion": 1, "runtimeAbi": "drowse-web-runtime-v1",
+        "hookAbi": "post-block-residual-v4", "structuredHookProfile": TOOL.STANDARD_STRUCTURED_HOOK_PROFILE,
+        "thinkingProfile": None, "architecture": "gemma3_text", "quantization": "q0f32",
+        "weightEncoding": "raw", "toolchain": TOOL.toolchain_manifest("gemma3_text"),
+        "files": [{"path": tensor_cache.name, "bytes": tensor_cache.stat().st_size,
+                   "sha256": TOOL.sha256(tensor_cache)}],
+    }
+    path = tmp_path / "drowse-build.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(SystemExit, match="source-preserving normalization"):
+        TOOL.verify_build_manifest(tmp_path, "gemma3_text", "q0f32")
+    manifest["conversionPolicy"] = {"rmsNormOffset": "float32-before-add-one-v1"}
+    path.write_text(json.dumps(manifest))
+    TOOL.verify_build_manifest(tmp_path, "gemma3_text", "q0f32")
 
 
 def test_thinking_profile_is_tokenizer_derived_and_architecture_bound(tmp_path: Path):

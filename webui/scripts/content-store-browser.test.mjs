@@ -195,6 +195,59 @@ try {
   }, seeded.digests[1]);
   assert.equal(crashedReservationReclaimed, true);
 
+  const failedWrites = await third.evaluate(async () => {
+    const { BrowserContentStore } = await import("/src/hosted/runtime/contentStore.ts");
+    const store = new BrowserContentStore();
+    await store.initialize();
+    const data = Uint8Array.of(21, 22, 23, 24);
+    const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))]
+      .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const descriptor = {
+      sha256, expectedBytes: data.length, url: "https://example.invalid/cleanup",
+      revision: "b".repeat(40), etag: null,
+      partialOwners: [{ id: "cleanup-model", kind: "model", catalogSequence: 1 }],
+    };
+    const results = [];
+    for (const operation of ["seek", "truncate", "close"]) {
+      await store.resetPartial(descriptor);
+      const originalCreate = FileSystemFileHandle.prototype.createWritable;
+      const retained = [];
+      let aborts = 0;
+      FileSystemFileHandle.prototype.createWritable = async function (...args) {
+        const writer = await originalCreate.apply(this, args);
+        const abort = writer.abort.bind(writer);
+        retained.push(abort);
+        writer.abort = async (...abortArgs) => { aborts += 1; return abort(...abortArgs); };
+        writer[operation] = async () => { throw new Error(`${operation} failed`); };
+        return writer;
+      };
+      try {
+        let message;
+        try {
+          if (operation === "truncate") await store.resetPartial(descriptor);
+          else {
+            const writer = await store.openWrite(sha256, 0);
+            await writer.write(data);
+            await writer.checkpoint();
+          }
+        } catch (error) { message = error.message; }
+        results.push({ operation, message, aborts });
+      } finally {
+        FileSystemFileHandle.prototype.createWritable = originalCreate;
+        for (const abort of retained) await abort().catch(() => undefined);
+      }
+      const writer = await store.openWrite(sha256, 0);
+      await writer.write(data);
+      await writer.checkpoint();
+      const file = await store.partialFile(sha256);
+      results.at(-1).retry = [...new Uint8Array(await file.arrayBuffer())];
+    }
+    return results;
+  });
+  assert.deepEqual(failedWrites, ["seek", "truncate", "close"].map((operation) => ({
+    operation, message: `${operation} failed`, aborts: 1, retry: [21, 22, 23, 24],
+  })));
+
   const runtimeStorageCleanup = await third.evaluate(async () => {
     const {
       LEGACY_WEBLLM_CACHE_STORAGE_NAMES,

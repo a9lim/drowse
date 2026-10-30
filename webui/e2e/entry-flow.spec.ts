@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 import { returnToChats } from "./workbench-navigation";
@@ -10,6 +11,7 @@ test("first use chooses a model and later visits open the chat home", async ({ p
 
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "This device is ready" })).toHaveCount(0);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await expect.poll(() => new URL(page.url()).searchParams.get("reopen")).toBe("1");

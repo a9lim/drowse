@@ -573,6 +573,8 @@ export interface RecipeJSON {
   seed: number | null;
   probes: string[];
   probe_hashes: Record<string, string>;
+  system_prompt?: string | null;
+  position_spans?: [number, number][];
 }
 
 /**

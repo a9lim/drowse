@@ -33,7 +33,7 @@
     copied = false;
     await submitContact(source);
     await tick();
-    if (Object.keys(draft.errors).length) form?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+    if (Object.keys(draft.errors).length) form?.querySelector<HTMLElement>('[aria-invalid="true"], button[data-invalid]')?.focus();
     else result?.focus({ preventScroll: true });
   }
 
@@ -67,16 +67,18 @@
 {:else}
   <form class="contact-form" bind:this={form} onsubmit={submit} novalidate aria-label={source === "feedback" ? "Feedback form" : "Contact form"} aria-busy={busy}>
     {#if source === "feedback"}<p class="intro">Tell us what could work better.</p>{/if}
+    <p class="required-note">All fields are required unless marked optional.</p>
     <div class="categories">
       {#if source === "contact"}
         <div class="field">
-          <span class="label">Reason</span>
-          <Select bind:value={draft.fields.reason} options={CONTACT_REASONS} ariaLabel="Reason" disabled={busy} />
+          <span class="label" id={`${uid}-reason-label`}>Reason</span>
+          <Select bind:value={draft.fields.reason} options={CONTACT_REASONS} ariaLabel="Reason" ariaLabelledby={`${uid}-reason-label`} invalid={Boolean(draft.errors.reason)} ariaDescribedby={draft.errors.reason ? `${uid}-reason-error` : undefined} disabled={busy} />
+          {#if draft.errors.reason}<span id={`${uid}-reason-error`} class="error">{draft.errors.reason}</span>{/if}
         </div>
       {/if}
       <div class="field" class:is-disabled={topicDisabled}>
-        <span class="label">Topic</span>
-        <Select bind:value={draft.fields.topic} options={topics} ariaLabel="Topic" invalid={Boolean(draft.errors.topic)} ariaDescribedby={draft.errors.topic ? `${uid}-topic-error` : undefined} disabled={busy || topicDisabled} />
+        <span class="label" id={`${uid}-topic-label`}>Topic</span>
+        <Select bind:value={draft.fields.topic} options={topics} ariaLabel="Topic" ariaLabelledby={`${uid}-topic-label`} invalid={Boolean(draft.errors.topic)} ariaDescribedby={draft.errors.topic ? `${uid}-topic-error` : undefined} disabled={busy || topicDisabled} />
         {#if draft.errors.topic}<span id={`${uid}-topic-error`} class="error">{draft.errors.topic}</span>{/if}
       </div>
     </div>
@@ -111,7 +113,7 @@
         <div class="secondary-action">{#if hasDraft}<Button variant="flat" disabled={busy} onclick={() => { if (clearArmed) { resetContact(source); clearArmed = false; } else clearArmed = true; }}>{clearArmed ? "Confirm clear draft" : "Clear draft"}</Button>{/if}</div>
         <Button type="submit" variant="solid" disabled={busy} {busy}><FluentIcon name="send" /><MorphText text={busy ? "Sending…" : draft.uncertain ? "Check delivery" : "Send message"} /></Button>
       </div>
-      {#if hasDraft || busy}<p class="draft-note" role="status"><MorphText text={busy ? "Sending your message…" : "Your draft stays here while this page is open."} /></p>{/if}
+      {#if hasDraft || busy}<p class="draft-note" role="status"><MorphText text={busy ? "Sending your message…" : "Your draft is saved in this tab until you send it."} /></p>{/if}
     </div>
   </form>
 {/if}
@@ -119,7 +121,7 @@
 <style>
   .contact-form, .success { display: flex; flex-direction: column; gap: var(--space-md); min-width: 0; }
   p, h2 { margin: 0; }
-  .intro, .privacy, .hint, .draft-note, .success p { color: var(--fg-dim); line-height: 1.5; text-wrap: pretty; }
+  .intro, .privacy, .hint, .draft-note, .required-note, .success p { color: var(--fg-dim); line-height: 1.5; text-wrap: pretty; }
   .intro { font-size: var(--text); }
   .field { display: flex; flex-direction: column; gap: var(--control-label-gap); min-width: 0; }
   .categories { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: var(--space-sm); }
@@ -132,7 +134,7 @@
   input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--accent-red); }
   input:disabled, textarea:disabled { opacity: 0.7; }
   input::placeholder, textarea::placeholder { color: var(--fg-muted); }
-  .hint, .privacy, .draft-note, .reference { font-size: var(--text-xs); }
+  .hint, .privacy, .draft-note, .required-note, .reference { font-size: var(--text-xs); }
   .label-row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-sm); }
   .count { flex: none; color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-xs); font-weight: var(--weight-data); font-variant-numeric: tabular-nums; }
   .error { color: var(--accent-red); font-size: var(--text-xs); }

@@ -355,7 +355,7 @@ try {
     shell.dispose();
   });
 
-  test("base models can generate without optional instruments, including on mobile", async () => {
+  test("base models include available SAE features on mobile and work without an SAE", async () => {
     const document = catalogFixture();
     document.models[0].modelType = "base";
     const variant = document.models[0].variants[0];
@@ -369,9 +369,10 @@ try {
     assert.equal(option.modelType, "base");
     assert.match(option.context, /Text completion/);
     assert.deepEqual(option.firstRunPacks.map((pack) => [pack.kind, pack.requiredForSetup, pack.selected]),
-      [["jlens", false, false], ["sae", false, false]]);
+      [["jlens", false, false], ["sae", true, true]]);
     await shell.download(variant.id);
-    assert.ok(!calls.some((call) => call.startsWith("download-pack:")));
+    assert.ok(calls.includes(`download-pack:${variant.id}:base-sae`));
+    assert.ok(!calls.includes(`download-pack:${variant.id}:smollm2-jlens`));
     assert.equal(shell.current().models[0].setupComplete, true);
 
     variant.packs = variant.packs.filter((pack) => pack.kind !== "sae");
@@ -393,12 +394,19 @@ try {
     const variant = document.models[0].variants[0];
     variant.packs.push(optionalInstrumentPack(variant, "oversize-sae", "sae",
       OPTIONAL_PACK_RESIDENT_BUDGET_BYTES, "a".repeat(64)));
-    const shell = createShellController(createBundle({}, document).bundle);
+    const shell = createShellController(createBundle({
+      async check() {
+        const device = capabilities();
+        device.webGpu.limits.maxBufferSize = 64 * 1024 * 1024;
+        device.webGpu.limits.maxStorageBufferBindingSize = 64 * 1024 * 1024;
+        return device;
+      },
+    }, document).bundle);
     await shell.check();
     assert.notEqual(shell.current().models[0].fit, "blocked");
     const lens = shell.current().models[0].firstRunPacks.find((pack) => pack.kind === "jlens");
-    shell.setOptionalPackSelected(variant.id, lens.id, true);
-    assert.throws(() => shell.setOptionalPackSelected(variant.id, "oversize-sae", true));
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, lens.id, true));
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "oversize-sae", false), /SAE is required/);
     shell.setOptionalPackSelected(variant.id, lens.id, false);
     await shell.download(variant.id);
     assert.equal(shell.current().models[0].setupComplete, true);
@@ -594,6 +602,32 @@ try {
     assert.equal(runtime.state, "pass");
     assert.equal(runtime.detail, "The tested local engine is ready to load a model.");
   });
+
+  for (const code of ["WEBGPU_UNAVAILABLE", "WEBGPU_ADAPTER_MISSING", "OPFS_READ_WRITE_FAILED"]) {
+    test(`${code} does not mislabel a verified engine as a development build`, async () => {
+      const failure = { code, message: "Device check failed", severity: "hard" };
+      const { bundle } = createBundle({
+        async check() {
+          const base = capabilities();
+          return capabilities({
+            supported: false,
+            issues: [failure],
+            operations: {
+              ...base.operations,
+              generation: { available: false, reasons: [failure] },
+            },
+          });
+        },
+      });
+      const shell = createShellController(bundle);
+      await shell.check();
+      const runtime = shell.current().checks.find(({ id }) => id === "runtime");
+      assert.equal(runtime.state, "fail");
+      assert.equal(runtime.detail, "The local model engine cannot run until the failed device checks are resolved.");
+      assert.doesNotMatch(runtime.detail, /development|release checks/);
+      assert.equal(shell.current().runtime.available, false);
+    });
+  }
 
   test("data saver suppresses the pre-download network estimate", async () => {
     navigator.connection.saveData = true;
@@ -942,13 +976,14 @@ try {
 
     await shell.download(variant.id);
 
-    assert.deepEqual(fixture.calls.slice(-5), [
+    assert.deepEqual(fixture.calls.slice(-6), [
       "persist",
       "storage",
       `download:${variant.id}`,
       `download-pack:${variant.id}:fixture-jlens`,
       `download-pack:${variant.id}:fixture-sae`,
-    ]);
+      "storage",
+    ], "the storage estimate refreshes after a completed install");
     assert.equal(shell.current().download.phase, "installed");
     assert.equal(shell.current().download.progress.bytesReceived, baseFirstRunBytes + 100);
     assert.equal(shell.current().download.progress.bytesTotal, baseFirstRunBytes + 100);
@@ -959,7 +994,7 @@ try {
     assert.equal(shell.current().models[0].setupComplete, true);
   });
 
-  test("first-run pack choices update exact bytes and skip unselected downloads", async () => {
+  test("available SAE features are required and included in exact download bytes", async () => {
     const document = catalogFixture();
     const variant = document.models[0].variants[0];
     removeFixtureJlens(variant);
@@ -973,23 +1008,64 @@ try {
     await shell.check();
 
     assert.equal(shell.current().models[0].remainingDownloadBytes, modelBytes + 100);
-    shell.setOptionalPackSelected(variant.id, "fixture-sae", false);
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "fixture-sae", false), /SAE is required/);
     assert.deepEqual(
       shell.current().models[0].firstRunPacks.map((pack) => [pack.id, pack.selected]),
-      [["fixture-jlens", true], ["fixture-sae", false]],
+      [["fixture-jlens", true], ["fixture-sae", true]],
     );
-    assert.equal(shell.current().models[0].firstRunBytes, modelBytes + 40);
-    assert.equal(shell.current().models[0].remainingDownloadBytes, modelBytes + 40);
+    assert.equal(shell.current().models[0].firstRunBytes, modelBytes + 100);
+    assert.equal(shell.current().models[0].remainingDownloadBytes, modelBytes + 100);
 
     await shell.download(variant.id);
 
     assert.ok(fixture.calls.includes(`download-pack:${variant.id}:fixture-jlens`));
     assert.equal(
       fixture.calls.includes(`download-pack:${variant.id}:fixture-sae`),
-      false,
+      true,
     );
     assert.equal(shell.current().models[0].setupComplete, true);
     assert.equal(shell.current().models[0].remainingDownloadBytes, 0);
+  });
+
+  test("compatible SAE setup is required on iPhone and preview desktop browsers", async () => {
+    for (const signals of [{ appleMobile: true }, { runtimeClass: "desktop-webkit" }, { runtimeClass: "desktop-gecko" }]) {
+      const document = catalogFixture();
+      const variant = document.models[0].variants[0];
+      variant.packs.push(optionalInstrumentPack(variant, "fixture-sae", "sae", 60, "d".repeat(64)));
+      const shell = createShellController(createBundle({
+        async check() { return capabilities({ signals: { ...capabilities().signals, ...signals } }); },
+      }, document).bundle);
+      await shell.check();
+      const model = shell.current().models[0];
+      const sae = model.firstRunPacks.find(pack => pack.kind === "sae");
+      assert.equal(sae.requiredForSetup, true);
+      assert.equal(sae.selected, true);
+      assert.doesNotMatch(model.toolNotice ?? "", /separate download/);
+      assert.throws(() => shell.setOptionalPackSelected(variant.id, sae.id, false), /SAE is required/);
+      shell.dispose();
+    }
+  });
+
+  test("an installed alternative SAE satisfies the required feature setup", async () => {
+    const document = catalogFixture();
+    const variant = document.models[0].variants[0];
+    variant.packs.push(
+      optionalInstrumentPack(variant, "fixture-sae-a", "sae", 40, "c".repeat(64)),
+      optionalInstrumentPack(variant, "fixture-sae-b", "sae", 70, "d".repeat(64)),
+    );
+    const fixture = createBundle({}, document);
+    fixture.emitRuntime({ installedPackIds: ["fixture-sae-b"] });
+    const shell = createShellController(fixture.bundle);
+    await shell.check();
+    assert.deepEqual(shell.current().models[0].firstRunPacks.filter(pack => pack.kind === "sae")
+      .map(pack => [pack.id, pack.requiredForSetup, pack.selected, pack.installed]), [
+        ["fixture-sae-b", true, true, true],
+        ["fixture-sae-a", false, false, false],
+      ]);
+    await shell.download(variant.id);
+    assert.ok(!fixture.calls.some(call => call.includes("download-pack:") && call.includes("fixture-sae")));
+    assert.equal(shell.current().models[0].setupComplete, true);
+    shell.dispose();
   });
 
   test("a model with no released J-lens is blocked before download", async () => {
@@ -1029,6 +1105,9 @@ try {
       [["smollm2-jlens", true], ["fixture-sae-a", true], ["fixture-sae-b", false]],
     );
     shell.setOptionalPackSelected(variant.id, "fixture-sae-b", true);
+    assert.equal(shell.current().models[0].firstRunPacks.find(pack => pack.id === "fixture-sae-b").requiredForSetup, true);
+    assert.equal(shell.current().models[0].firstRunPacks.find(pack => pack.id === "fixture-sae-a").requiredForSetup, false);
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "fixture-sae-b", false), /SAE is required/);
     assert.deepEqual(
       shell.current().models[0].firstRunPacks.map((pack) => [pack.id, pack.selected]),
       [["smollm2-jlens", true], ["fixture-sae-a", false], ["fixture-sae-b", true]],
@@ -1431,7 +1510,6 @@ try {
       shell.current().models[0].firstRunPacks.map((pack) => [pack.id, pack.selected]),
       [
         ["fixture-jlens-resident", true],
-        ["fixture-sae-resident", false],
       ],
     );
     assert.equal(
@@ -1649,13 +1727,13 @@ try {
     assert.equal(shell.current().models[0].setupComplete, false);
     assert.equal(shell.current().models[0].firstRunPacks[0].selected, true);
     assert.equal(shell.current().models[0].firstRunPacks[0].requiredForSetup, true);
-    assert.equal(shell.current().models[0].remainingDownloadBytes, 40);
+    assert.equal(shell.current().models[0].remainingDownloadBytes, 100);
     assert.throws(
       () => shell.setOptionalPackSelected(variant.id, "smollm2-jlens", false),
       /J-lens is required/u,
     );
     assert.equal(shell.current().models[0].setupComplete, false);
-    shell.setOptionalPackSelected(variant.id, "fixture-sae", true);
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "fixture-sae", false), /SAE is required/);
     assert.equal(shell.current().models[0].setupComplete, false);
     assert.equal(shell.current().models[0].remainingDownloadBytes, 100);
     await shell.download(variant.id);
@@ -1722,6 +1800,87 @@ try {
     assert.match(snapshot.detail, /could not verify the model list/i);
     assert.match(snapshot.download.reason, /could not verify the model list/i);
     assert.doesNotMatch(snapshot.detail, /Ed25519|verification returned false/i);
+    assert.match(snapshot.catalogError, /could not verify the model list/i);
+    assert.equal(snapshot.headline, "The model list could not load");
+    assert.ok(snapshot.models.length > 0);
+    assert.ok(
+      snapshot.models.every((model) => model.fit === "blocked" && model.catalogAvailable === false),
+      "placeholder models never look downloadable after a catalog failure",
+    );
+  });
+
+  test("changing tools for one model keeps another model's paused download", async () => {
+    const document = catalogFixture();
+    const first = document.models[0];
+    const second = structuredClone(first);
+    second.id = `${first.id}-second`;
+    second.displayName = "Second fixture";
+    second.variants[0].id = `${first.variants[0].id}-second`;
+    second.variants[0].packs = second.variants[0].packs.map((pack) => ({ ...pack, id: `${pack.id}-second` }));
+    document.models.push(second);
+    const pending = deferred();
+    const { bundle } = createBundle({
+      recommend() {
+        return [recommendation(document), {
+          ...recommendation({ models: [second] }),
+          recommended: false,
+        }];
+      },
+      download() { return pending.promise; },
+      async cancelDownload() {
+        pending.resolve({ modelVariantId: first.variants[0].id, installed: false, cancelled: true });
+      },
+    }, document);
+    const shell = createShellController(bundle);
+    await shell.check();
+    const downloading = shell.download(first.variants[0].id);
+    await waitFor(() => shell.current().download.phase === "downloading");
+    await shell.cancelDownload();
+    await downloading;
+    assert.equal(shell.current().download.phase, "paused");
+    const other = shell.current().models.find((model) => model.id === second.variants[0].id);
+    const pack = other.firstRunPacks[0];
+    assert.ok(pack, "the second fixture model offers a tool pack");
+    shell.setOptionalPackSelected(other.id, pack.id, true);
+    assert.equal(shell.current().download.phase, "paused");
+    assert.equal(shell.current().download.modelVariantId, first.variants[0].id);
+    shell.dispose();
+  });
+
+  test("a completed install refreshes the storage estimate with quota and usage", async () => {
+    let reads = 0;
+    const fixture = createBundle({
+      async refreshStorage() {
+        reads += 1;
+        return { quotaBytes: 2_000_000_000, usageBytes: 100_000_000 * (reads + 1), availableBytes: 1_900_000_000 - 100_000_000 * reads, persisted: true };
+      },
+    });
+    const shell = createShellController(fixture.bundle);
+    await shell.check();
+    assert.equal(shell.current().storage.quotaBytes, 2_000_000_000);
+    await shell.download("smollm2-360m-q4f16");
+    await waitFor(() => reads >= 2 && shell.current().storage.availableBytes === 1_700_000_000);
+    assert.equal(shell.current().storage.usageBytes, 300_000_000);
+    shell.dispose();
+  });
+
+  test("kept partial downloads are reported and can be discarded when the runtime supports it", async () => {
+    const discarded = [];
+    const fixture = createBundle({
+      async partialDownloadBytes(id) { return id === "smollm2-360m-q4f16" ? 1_000 : 0; },
+      async discardPartialDownload(id) { discarded.push(id); },
+    });
+    const shell = createShellController(fixture.bundle);
+    assert.equal(typeof shell.discardPartialDownload, "function");
+    await shell.check();
+    const model = shell.current().models.find((candidate) => candidate.id === "smollm2-360m-q4f16");
+    assert.equal(model.partialBytes, Math.min(1_000, model.remainingDownloadBytes));
+    await shell.discardPartialDownload(model.id);
+    assert.deepEqual(discarded, [model.id]);
+    assert.equal(shell.current().models.find((candidate) => candidate.id === model.id).partialBytes, undefined);
+    assert.equal(createShellController(createBundle().bundle).discardPartialDownload, undefined,
+      "runtimes without partial-download support do not offer a discard action");
+    shell.dispose();
   });
 
   test("installed models open with their exact measured context", async () => {

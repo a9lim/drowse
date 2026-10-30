@@ -19,9 +19,11 @@ import { build as viteBuild, createServer as createViteServer } from "vite";
 import {
   BROWSER_PRODUCTION_APP_TOOL_VERSION,
   classifyInstalledAppState,
+  clickOpen,
+  waitForVisibleChoice,
   createProductionAppCatalog,
   createProductionAppFailureReport,
-  isExpectedOfflineCatalogFailure,
+  isExpectedCatalogRefreshFailure,
   isOfflineServiceWorkerMaintenanceRequest,
   isPublishedSaeDescriptionUrl,
   isVerifiedLocalArtifactAbort,
@@ -29,6 +31,7 @@ import {
   parseBrowserProductionAppArguments,
   parseSingleByteRange,
   stripHostedDevelopmentFixture,
+  trackIntentionalReload,
   validatorRuntimeLockArguments,
 } from "./browser-production-app-runtime-contract.mjs";
 import {
@@ -39,6 +42,7 @@ import { lockedModelExecutionProfiles } from "./hosted-model-profiles.mjs";
 import {
   grantReleaseToolStorageQuota,
   launchReleaseToolContext,
+  releaseToolGpuArgs,
 } from "./release-tool-storage-quota.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -50,6 +54,8 @@ const SECONDARY_KEY_ID = "production-app-next";
 const GENERATION_TIMEOUT_MS = 5 * 60_000;
 const SERVICE_WORKER_TIMEOUT_MS = 30_000;
 const options = parseBrowserProductionAppArguments(process.argv.slice(2));
+const nativeWebMcp = process.env.DROWSE_WEBMCP_NATIVE_EVIDENCE === "1"
+  ? await (await import("./webmcp-live-scenario.mjs")).nativeEvidenceBrowserOptions() : null;
 const isDescriptionRequest = (url) => isPublishedSaeDescriptionUrl(url, options.modelId);
 const webuiRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(webuiRoot, "..");
@@ -285,15 +291,13 @@ try {
   };
 
   const launchArgs = options.browserFlags === "compatibility"
-    ? [
-        "--enable-unsafe-webgpu",
-        "--disable-gpu-sandbox",
-        ...(process.platform === "darwin" ? ["--use-angle=metal"] : []),
-      ]
+    ? releaseToolGpuArgs({ headless: !options.headed })
     : [];
   launchArgs.push(`--ignore-certificate-errors-spki-list=${certificateSpkiSha256}`);
+  if (nativeWebMcp) launchArgs.push(...nativeWebMcp.args);
   releaseBrowser = await launchReleaseToolContext({
     channel: options.browserChannel,
+    ...(nativeWebMcp ? { executablePath: nativeWebMcp.executablePath } : {}),
     headless: !options.headed,
     args: launchArgs,
     serviceWorkers: "allow",
@@ -301,6 +305,7 @@ try {
   });
   const context = releaseBrowser.context;
   const page = releaseBrowser.page;
+  const intentionalReload = trackIntentionalReload(page);
   browser = context.browser();
   if (browser === null) throw new Error("persistent release browser is unavailable");
   page.setDefaultTimeout(30_000);
@@ -335,6 +340,7 @@ try {
       errorText: request.failure()?.errorText ?? "unknown",
       stage: currentStage,
       phase: routePhase,
+      intentionalReload: intentionalReload.includes(request),
     });
   });
   page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
@@ -447,12 +453,14 @@ try {
   await modelButton.waitFor({ timeout: 30_000 });
   requireEqual(await modelButtons.count(), 1, "production catalog model choice count");
   await modelButton.click();
-  await selectAllFirstRunPacks(page, 1);
+  await verifyFirstRunPacks(page);
   stage(`${options.modelId} ${options.contextTokens}-token profile selected`);
   routePhase = "download";
+  const downloadStartedAt = Date.now();
   await clickDownload(page);
   stage("signed setup download started");
   await waitForAuthoritativeInstalledState(page, catalog.variantId, "signed setup completion", options.timeoutMs);
+  runMeasurements.setupDownloadMs = Date.now() - downloadStartedAt;
   stage("signed setup installed and verified");
   const downloadedHashes = new Set(artifactRequests.map((request) => request.sha256));
   const missingHashes = [...expectedHashes].filter((hash) => !downloadedHashes.has(hash));
@@ -460,10 +468,12 @@ try {
   artifactRequestsAtInstall ??= artifactRequests.length;
 
   routePhase = "load";
+  const modelLoadStartedAt = Date.now();
   await clickOpen(page);
   stage("real backend load started");
   await page.locator(".shell").waitFor({ timeout: options.timeoutMs });
   await page.getByRole("textbox", { name: /^Compose as /u }).waitFor({ timeout: options.timeoutMs });
+  runMeasurements.initialModelLoadMs = Date.now() - modelLoadStartedAt;
   requireEqual(artifactRequestsOutsideDownload.length, 0, "artifact requests during model load");
   requireCondition((await page.title()).includes("Drowse"), "workbench title");
   stage("real Drowse workbench opened");
@@ -476,9 +486,13 @@ try {
   await page.getByRole("group", { name: "Controls section" })
     .getByRole("button", { name: "Model", exact: true }).click();
   const modelControls = page.getByRole("region", { name: "Model controls", exact: true });
-  await modelControls.getByRole("button", { name: "Close model", exact: true }).click();
-  await waitForReadyPage(page);
+  const finishReload = intentionalReload.begin();
+  try {
+    await modelControls.getByRole("button", { name: "Close model", exact: true }).click();
+    await waitForReadyPage(page);
+  } finally { finishReload(); }
   await page.getByText("Installed and verified", { exact: true }).waitFor();
+  await page.locator(".model-grid > button").filter({ hasText: "Installed and verified" }).click();
   const reopenedDocumentMarker = await page.evaluate(() => crypto.randomUUID());
   requireCondition(
     reopenedDocumentMarker !== initialDocumentMarker,
@@ -503,7 +517,7 @@ try {
   const instrumentResult = await attachInstrumentProbes(page, options);
   stage("J-lens and SAE probes attached");
   const onlineGeneration = await generate(page, {
-    prompt: `${PROMPT_SENTINEL}: Reply with the single word blue.`,
+    prompt: `Explain why sailors use maps in one sentence. My private reference is ${PROMPT_SENTINEL}.`,
     maxTokens: options.maxTokens,
   });
   stage("online real-backend generation completed");
@@ -568,7 +582,7 @@ try {
   await clickOpen(page);
   await page.getByRole("textbox", { name: /^Compose as /u }).waitFor({ timeout: options.timeoutMs });
   const offlineGeneration = await generate(page, {
-    prompt: `${PROMPT_SENTINEL}_OFFLINE: Reply with the single word green.`,
+    prompt: `Explain why sailors use a compass in one sentence. My private reference is ${PROMPT_SENTINEL}_OFFLINE.`,
     maxTokens: options.maxTokens,
   });
   offlineWorkbenchArmed = false;
@@ -594,6 +608,9 @@ try {
     "artifact requests after installed unload/reload and offline reopen",
   );
 
+  const webmcp = nativeWebMcp ? await (await import("./webmcp-live-scenario.mjs"))
+    .runConnectedNativeEvidence(nativeWebMcp.port, page.url(), { runtime: "browser", control: CORE_GEOMETRY_SELECTOR }) : undefined;
+  if (webmcp) runMeasurements.webmcp = webmcp;
   const promptUploads = requestBodies.filter(({ postData }) => postData.includes(PROMPT_SENTINEL));
   const verifiedLocalArtifactAborts = failedRequests.filter((request) =>
     isVerifiedLocalArtifactAbort({
@@ -604,13 +621,14 @@ try {
     })
   );
   const verifiedLocalArtifactAbortSet = new Set(verifiedLocalArtifactAborts);
-  const expectedOfflineCatalogFailureSet = new Set(
+  const expectedCatalogFailureSet = new Set(
     failedRequests.filter((request) =>
-      isExpectedOfflineCatalogFailure(request, { catalogUrl, signatureUrl })
+      isExpectedCatalogRefreshFailure(request, { catalogUrl, signatureUrl })
     ),
   );
   runMeasurements.verifiedLocalArtifactAborts = verifiedLocalArtifactAborts.length;
   runMeasurements.offlineCatalogRefreshes = offlineCatalogRefreshes.length;
+  runMeasurements.expectedCatalogRefreshFailures = [...expectedCatalogFailureSet];
   const unexpectedOfflineServerRequests = offlineServerRequests.filter(
     (request) => !isOfflineServiceWorkerMaintenanceRequest(request),
   );
@@ -623,7 +641,7 @@ try {
     failedRequests: failedRequests.filter(
       (request) =>
         !verifiedLocalArtifactAbortSet.has(request) &&
-        !expectedOfflineCatalogFailureSet.has(request) &&
+        !expectedCatalogFailureSet.has(request) &&
         !(isDescriptionRequest(request.url) && (request.errorText === "net::ERR_ABORTED" ||
           (request.phase === "offline" && request.errorText === "net::ERR_INTERNET_DISCONNECTED"))),
     ),
@@ -638,7 +656,6 @@ try {
   for (const [name, entries] of Object.entries(audit)) {
     if (entries.length > 0) throw new Error(`${name} is non-empty: ${JSON.stringify(entries)}`);
   }
-
   const report = {
     schemaVersion: 1,
     toolVersion: BROWSER_PRODUCTION_APP_TOOL_VERSION,
@@ -678,6 +695,8 @@ try {
     },
     measurements: {
       environment,
+      setupDownloadMs: runMeasurements.setupDownloadMs,
+      initialModelLoadMs: runMeasurements.initialModelLoadMs,
       signedFiles: artifactEntries.length,
       uniqueSignedHashes: expectedHashes.size,
       artifactRequests: artifactRequests.length,
@@ -688,6 +707,7 @@ try {
       jlensBytes: sumBytes(sets.jlens.files),
       saeBytes: sumBytes(sets.sae.files),
       plainConversation: runMeasurements.plainConversation,
+      ...(webmcp ? { webmcp } : {}),
       descriptionRequests,
       expectedResourceErrors,
       onlineGeneration,
@@ -707,6 +727,7 @@ try {
       offlineServerRequests: offlineServerRequests.length,
       offlineWorkbenchRequests: offlineWorkbenchRequests.length,
       offlineCatalogRefreshes: offlineCatalogRefreshes.length,
+      expectedCatalogRefreshFailures: [...expectedCatalogFailureSet],
     },
     audit,
   };
@@ -715,6 +736,11 @@ try {
   process.stdout.write(output);
 } catch (error) {
   if (releaseBrowser?.page && !releaseBrowser.page.isClosed()) {
+    if (nativeWebMcp) {
+      runMeasurements.nativeFailureState = await (await import("./webmcp-live-scenario.mjs"))
+        .readConnectedNativeState(nativeWebMcp.port, releaseBrowser.page.url())
+        .catch(diagnosticError => ({ error: diagnosticError.message }));
+    }
     runMeasurements.pageText = await releaseBrowser.page.locator("body").innerText().catch(() => "");
     if (options.output) {
       await releaseBrowser.page.screenshot({ path: `${resolve(options.output)}.failure.png`, fullPage: true }).catch(() => undefined);
@@ -842,6 +868,15 @@ async function assertTokenInstrumentReadouts(page) {
   await drawer.waitFor();
   const tabs = drawer.getByRole("group", { name: "Token detail view" });
 
+  await tabs.getByRole("button", { name: "j-lens", exact: true }).click();
+  const lensMatrix = drawer.getByRole("slider", { name: "Vocabulary matrix cell", exact: true });
+  await lensMatrix.waitFor();
+  await lensMatrix.press("Home");
+  const lensCell = await lensMatrix.getAttribute("aria-valuetext");
+  requireCondition(typeof lensCell === "string" && /logprob=/u.test(lensCell), "token J-lens readout returned no vocabulary scores");
+  const lensLayerCount = await lensMatrix.locator("tbody tr").count();
+  requireCondition(lensLayerCount > 0, "token J-lens readout returned no layers");
+
   await tabs.getByRole("button", { name: "sae", exact: true }).click();
   const saeFeatures = drawer.getByRole("list", { name: "Top SAE features" });
   await saeFeatures.waitFor();
@@ -863,7 +898,7 @@ async function assertTokenInstrumentReadouts(page) {
   );
 
   await drawer.getByRole("button", { name: "Close drawer", exact: true }).click();
-  return { saeFeatureCount, geometryProbe: CORE_GEOMETRY_SELECTOR };
+  return { lensCell, lensLayerCount, saeFeatureCount, geometryProbe: CORE_GEOMETRY_SELECTOR };
 }
 
 async function finiteAriaMeasurement(root, pattern) {
@@ -890,7 +925,7 @@ async function generate(page, { prompt, maxTokens }) {
   requireEqual(await composer.inputValue(), prompt, "composer prompt before generation");
   const statusLocator = page.getByLabel("Generation status", { exact: true });
   const responseLocator = page.locator(".msg .response-body").last();
-  const generatedTurns = page.getByRole("button", { name: /Inspect tokens in .* message/u });
+  const generatedTurns = page.locator(".msg:has(.model-avatar)");
   const previousGeneratedTurns = await generatedTurns.count();
   const previousStatus = await statusLocator.innerText({ timeout: 5_000 }).catch(() => "");
   const previousResponse = await responseLocator.innerText({ timeout: 5_000 }).catch(() => "");
@@ -968,7 +1003,11 @@ async function generate(page, { prompt, maxTokens }) {
     "generation stop control stayed enabled after completion",
   );
   response = (await responseLocator.innerText({ timeout: 10_000 })).trim();
-  requireCondition(response.length > 0, "assistant response is empty");
+  if (response.length === 0) {
+    const error = new Error(`generation completed with an empty assistant response; status: ${status}`);
+    error.code = "PRODUCTION_APP_EMPTY_RESPONSE";
+    throw error;
+  }
   status = (await statusLocator.innerText({ timeout: 10_000 })).replaceAll(/\s+/gu, " ").trim();
   const tokensMatch = /([0-9]+) tokens/u.exec(status);
   const speedMatch = /([0-9]+(?:\.[0-9]+)?) tokens\/s/u.exec(status);
@@ -1028,19 +1067,16 @@ async function clickDownload(page) {
   }
 }
 
-async function selectAllFirstRunPacks(page, expectedCount) {
+async function verifyFirstRunPacks(page) {
   const picker = page.locator(".tool-picker");
   await picker.waitFor({ state: "visible", timeout: 30_000 });
   const checkboxes = picker.getByRole("checkbox");
   requireEqual(
     await checkboxes.count(),
-    expectedCount,
+    0,
     "published optional first-run pack choices",
   );
-  for (let index = 0; index < expectedCount; index += 1) {
-    const checkbox = checkboxes.nth(index);
-    if (!(await checkbox.isChecked())) await checkbox.check();
-  }
+  requireEqual(await picker.locator(".required-tool").count(), 3, "included core, J-lens and SAE setup packs");
 }
 
 async function waitForReadyPage(page) {
@@ -1194,37 +1230,6 @@ async function withTimeout(operation, timeoutMs, label) {
   }
 }
 
-async function clickOpen(page) {
-  const choice = await waitForVisibleChoice(page, [
-    ["ready", page.locator(".shell")],
-    ["direct", page.getByRole("button", { name: "Open Drowse", exact: true })],
-    ["warning", page.getByRole("button", { name: "Review warning", exact: true })],
-  ], "model open control");
-  if (choice.name === "ready") return;
-  await choice.locator.click();
-  if (choice.name === "warning") {
-    const override = await waitForVisibleChoice(page, [
-      ["override", page.getByRole("button", {
-        name: /^(Load anyway|Retry this model)$/u,
-      })],
-    ], "unsafe model-load confirmation");
-    await override.locator.click();
-  }
-}
-
-async function waitForVisibleChoice(page, choices, label, timeoutMs = 30_000) {
-  try {
-    return await Promise.any(choices.map(async ([name, locator]) => {
-      await locator.waitFor({ state: "visible", timeout: timeoutMs });
-      return { name, locator };
-    }));
-  } catch (error) {
-    const body = (await page.locator("body").innerText().catch(() => ""))
-      .replaceAll(/\s+/gu, " ")
-      .slice(0, 2_000);
-    throw new Error(`${label} did not appear; page text: ${body}`, { cause: error });
-  }
-}
 
 async function persistentStorageInventory(page) {
   return page.evaluate(async () => ({

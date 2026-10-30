@@ -237,9 +237,10 @@ def _fast_batch_session():
         to_device: bool = True,
         gen_seat: str = "assistant",
         add_generation_prompt: bool = True,
+        system_prompt: Any = None,
     ):
         del raw, thinking, stateless, parent_node_id
-        del user_role, assistant_role, to_device, gen_seat, add_generation_prompt
+        del user_role, assistant_role, to_device, gen_seat, add_generation_prompt, system_prompt
         mapping = {
             "alpha": [1, 2],
             "beta": [3, 4, 5],
@@ -738,6 +739,7 @@ class TestPrefixCacheEligibility:
             user_role: str | None = None,
             assistant_role: str | None = None,
             to_device: bool = True,
+            system_prompt: Any = None,
         ) -> torch.Tensor:
             suffix = 100 if input == "a" else 101
             return torch.tensor([common + [suffix]], dtype=torch.long)

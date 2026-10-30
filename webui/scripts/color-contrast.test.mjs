@@ -44,7 +44,7 @@ for (const bootstrap of [localBootstrap, hostedBootstrap]) {
         addEventListener() {},
         localStorage: { getItem: key => key === "drowse.theme" ? saved : null },
       },
-      document: { documentElement: root, querySelector: () => meta },
+      document: { documentElement: root, querySelector: () => meta, querySelectorAll: () => [meta] },
     });
     assert.equal(root.dataset.theme, expected);
     assert.equal(root.style.colorScheme, expected);
@@ -56,7 +56,7 @@ for (const bootstrap of [localBootstrap, hostedBootstrap]) {
       addEventListener() {},
       localStorage: { getItem() { throw new Error("Storage unavailable"); } },
     },
-    document: { documentElement: root, querySelector: () => null },
+    document: { documentElement: root, querySelector: () => null, querySelectorAll: () => [] },
   });
   assert.equal(root.dataset.theme, "dark", "blocked storage still opens in dark mode");
 
@@ -72,7 +72,7 @@ for (const bootstrap of [localBootstrap, hostedBootstrap]) {
         callback(new Error("Transition was skipped"));
         initialTransitionHandled = true;
       } } },
-      documentElement: { dataset: {}, style: {} }, querySelector: () => null,
+      documentElement: { dataset: {}, style: {} }, querySelector: () => null, querySelectorAll: () => [],
     },
   });
   assert.ok(initialTransitionHandled, "An inbound transition can be skipped before pagereveal exposes it");
@@ -88,6 +88,35 @@ for (const bootstrap of [localBootstrap, hostedBootstrap]) {
     assert.ok(handled, `${name} must handle skipped transitions before the app mounts`);
   }
 }
+
+// The hosted site follows the system appearance until someone picks a theme.
+for (const [saved, systemLight, expected] of [[null, true, "light"], [null, false, "dark"], ["dark", true, "dark"], ["light", false, "light"], ["invalid", true, "light"]]) {
+  const root = { dataset: {}, style: {} };
+  const meta = {};
+  let ready = null;
+  const toggle = { attributes: { "data-theme-label-light": "Light label", "data-theme-label-dark": "Dark label" },
+    getAttribute(name) { return this.attributes[name]; }, setAttribute(name, value) { this.attributes[name] = value; } };
+  runInNewContext(hostedBootstrap, {
+    window: {
+      addEventListener() {},
+      localStorage: { getItem: key => key === "drowse.theme" ? saved : null },
+      matchMedia: query => ({ matches: query === "(prefers-color-scheme: light)" && systemLight }),
+    },
+    document: {
+      documentElement: root,
+      querySelector: () => meta,
+      querySelectorAll: (selector) => selector.includes("theme-color") ? [meta] : [toggle],
+      addEventListener: (name, handler) => { if (name === "DOMContentLoaded") ready = handler; },
+    },
+  });
+  assert.equal(root.dataset.theme, expected, `saved ${saved}, system light ${systemLight}`);
+  assert.equal(meta.content, expected === "dark" ? "#0b0e17" : "#f2f4f8");
+  assert.equal(typeof ready, "function", "prerendered theme controls are corrected once the page is parsed");
+  ready();
+  assert.equal(toggle.attributes["aria-label"], expected === "dark" ? "Dark label" : "Light label");
+}
+assert.match(themeRuntime, /prefers-color-scheme: light/, "theme runtime falls back to the system appearance");
+assert.match(themeRuntime, /addEventListener\?\.\("change"/, "theme runtime follows system changes until a choice is saved");
 
 for (const [name, source] of Object.entries({ themeRuntime, localBootstrap, hostedBootstrap })) {
   assert.ok(source.includes(light["--bg"]), `${name} must use the light canvas as its theme color`);
@@ -250,6 +279,9 @@ for (const [name, theme] of Object.entries({ dark, light })) {
   }
   reports.push(expectPair(theme, `${name} disabled`, "--fg-muted", "--glass-strong", 3, 30));
   reports.push(expectPair(theme, `${name} warning copy`, "--warning-ink", "--warning-bg", 7, 75));
+  for (const status of ["success", "warning", "danger"]) {
+    reports.push(expectPair(theme, `${name} device ${status}`, `--${status}-ink`, `--${status}-bg`, 7, 75));
+  }
   for (const surface of ["--warning-action", "--warning-action-hover"]) {
     reports.push(expectPair(theme, `${name} warning action on ${surface}`, "--warning-action-ink", surface, 7, 60));
   }

@@ -23,8 +23,10 @@ import { validatePublishDirectory } from "./publish-hosted-model.mjs";
 import {
   grantReleaseToolStorageQuota,
   launchReleaseToolContext,
+  releaseToolGpuArgs,
 } from "./release-tool-storage-quota.mjs";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
+import { validateBrowserFullRuntimeModelClosure } from "./browser-full-runtime-contract.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 if (options.help) {
@@ -87,10 +89,18 @@ if (
 const artifactsManifest = JSON.parse(
   await readFile(resolve(modelDirectory, "hosted-artifacts.json"), "utf8"),
 );
-await validatePublishDirectory(modelDirectory, lock, runtimeLock);
+validateBrowserFullRuntimeModelClosure({
+  lock,
+  runtimeLock,
+  manifest: artifactsManifest,
+  files: artifactsManifest.files,
+  contextTokens: Math.min(...lock.contextProfiles),
+});
+await validatePublishDirectory(modelDirectory, lock, runtimeLock, {
+  allowLegacyBranding: true, allowStaleToolchain: true,
+});
 const executionProfiles = lockedModelExecutionProfiles(lock, artifactsManifest);
 if (
-  artifactsManifest.runtimeAbi !== runtimeLock.runtimeAbi ||
   artifactsManifest.hookAbi !== runtimeLock.hookAbi ||
   artifactsManifest.hiddenSize !== lock.hiddenSize ||
   JSON.stringify(artifactsManifest.layerMap) !== JSON.stringify(lock.layerMap)
@@ -190,7 +200,7 @@ const origin = `http://127.0.0.1:${address.port}`;
 const browser = await launchReleaseToolContext({
   headless: true,
   channel: options.browserChannel,
-  args: ["--enable-unsafe-webgpu", "--use-angle=metal", "--disable-gpu-sandbox"],
+  args: releaseToolGpuArgs(),
 });
 let result;
 try {

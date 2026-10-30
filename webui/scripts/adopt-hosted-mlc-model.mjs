@@ -36,7 +36,7 @@ export function parseArguments(args) {
   };
 }
 
-export function productionMlcConfig(config, model, tokenizer = null) {
+export function productionMlcConfig(config, model, tokenizer = null, sourceConfig = null) {
   const result = structuredClone(config);
   const shape = result.model_config?.text_config ?? result.model_config;
   const compatibleArchitecture = result.model_type === model.architecture ||
@@ -50,6 +50,45 @@ export function productionMlcConfig(config, model, tokenizer = null) {
     throw new Error("upstream MLC configuration differs from the runtime lock");
   }
   result.model_type = model.architecture;
+  if (model.architecture === "gemma3_text") {
+    const source = sourceConfig?.text_config ?? sourceConfig;
+    for (const [sourceKey, compiledKey] of [
+      ["rope_theta", "position_embedding_base"],
+      ["rope_local_base_freq", "rope_local_base_freq"],
+      ["sliding_window", "sliding_window_size"],
+      ["sliding_window_pattern", "sliding_window_pattern"],
+    ]) {
+      const value = sourceKey === "sliding_window_pattern"
+        ? source?.sliding_window_pattern ?? source?._sliding_window_pattern
+        : source?.[sourceKey];
+      if (!Number.isFinite(value) || value <= 0 ||
+        sourceKey.startsWith("sliding_window") && !Number.isSafeInteger(value)) {
+        throw new Error(`Gemma adoption requires source attention setting ${sourceKey}`);
+      }
+      shape[compiledKey] = value;
+      if (sourceKey !== compiledKey) delete shape[sourceKey];
+      if (shape.kwargs) {
+        delete shape.kwargs[sourceKey];
+        delete shape.kwargs[compiledKey];
+      }
+    }
+    delete shape._sliding_window_pattern;
+    if (shape.kwargs) delete shape.kwargs._sliding_window_pattern;
+    if (source.layer_types !== undefined && (
+      !Array.isArray(source.layer_types) || source.layer_types.length !== model.layerMap.length ||
+      source.layer_types.some((type, layer) => type !== (
+        (layer + 1) % shape.sliding_window_pattern === 0 ? "full_attention" : "sliding_attention"
+      ))
+    )) throw new Error("Gemma source layer_types do not match the supported attention pattern");
+    delete shape.layer_types;
+    if (shape.kwargs) delete shape.kwargs.layer_types;
+    const scaling = source?.rope_scaling;
+    if (scaling !== null && (
+      scaling?.rope_type !== "linear" || !Number.isFinite(scaling.factor) || scaling.factor <= 0
+    )) throw new Error("Gemma adoption requires a supported source rope_scaling setting");
+    shape.rope_scaling = structuredClone(scaling);
+    if (shape.kwargs) delete shape.kwargs.rope_scaling;
+  }
   result.context_window_size = Math.max(...model.contextProfiles);
   result.prefill_chunk_size = Math.min(...model.contextProfiles);
   result.model_config.context_window_size = result.context_window_size;
@@ -183,7 +222,7 @@ async function main() {
       resolve(options.sourceDirectory, "tokenizer_config.json"),
       resolve(stage, "tokenizer_config.json"),
     );
-    const config = productionMlcConfig(upstreamConfig, model, tokenizer);
+    const config = productionMlcConfig(upstreamConfig, model, tokenizer, sourceConfig);
     config.drowse_capture_special_token_ids = captureSpecialTokenIds(
       tokenizer,
       sourceTokenizerConfig,

@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
+import { releaseToolBrowserOptions, releaseToolGpuArgs } from "./release-tool-storage-quota.mjs";
 
 const { values } = parseArgs({ options: {
   model: { type: "string" },
@@ -44,9 +45,7 @@ const server = createServer(async (request, response) => {
   }
 });
 await new Promise((done) => server.listen(0, "127.0.0.1", done));
-const browser = await chromium.launch({ args: [
-  "--enable-unsafe-webgpu", "--use-angle=metal", "--disable-gpu-sandbox",
-] });
+const browser = await chromium.launch(releaseToolBrowserOptions({ args: releaseToolGpuArgs() }));
 try {
   const page = await browser.newPage();
   page.on("console", (message) => {

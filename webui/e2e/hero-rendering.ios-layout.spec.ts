@@ -1,3 +1,4 @@
+import { setAppearance } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
@@ -29,7 +30,7 @@ test("the live canvas paints its own light and dark palettes without an SVG filt
   await expect(hero).toHaveAttribute("data-shader-status", "ready");
   await expect(hero.locator(".visual-layer")).toHaveCSS("filter", "none");
   for (const theme of ["light", "dark", "light", "dark"] as const) {
-    await page.getByRole("button", { name: theme === "light" ? "Light" : "Dark", exact: true }).click();
+    await setAppearance(page, theme);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     await expect.poll(async () => {
       const [red, green, blue, alpha] = (await canvas.getAttribute("data-pixel") ?? "").split(",").map(Number);
@@ -39,7 +40,7 @@ test("the live canvas paints its own light and dark palettes without an SVG filt
     }).toBe(true);
   }
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.getByRole("button", { name: "Light", exact: true }).click();
+  await setAppearance(page, "Light");
   await expect.poll(async () => Number((await canvas.getAttribute("data-pixel"))?.split(",")[2])).toBeGreaterThan(218);
 });
 
@@ -81,7 +82,7 @@ test("reduced motion keeps a themed static fallback without starting WebGL", asy
   await expect(hero).toHaveAttribute("data-shader-status", "fallback");
   await expect(hero.locator(".fallback")).toHaveCSS("opacity", "1");
   await expect(hero.locator(".fallback")).toHaveCSS("filter", /hero-light-palette/);
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
+  await setAppearance(page, "Dark");
   await expect(hero.locator(".fallback")).toHaveCSS("filter", /hero-dark-palette/);
   await expect(hero.locator("canvas")).not.toHaveAttribute("data-pixel");
 });
@@ -93,6 +94,6 @@ test("the credits shader stays contained and receives theme updates", async ({ p
   await expect(hero).toHaveCSS("position", "absolute");
   await expect.poll(() => hero.evaluate(el => el.clientHeight)).toBeLessThan(844);
   await expect.poll(async () => Number((await hero.locator("canvas").getAttribute("data-pixel"))?.split(",")[2])).toBeGreaterThan(218);
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
+  await setAppearance(page, "Dark");
   await expect.poll(async () => Number((await hero.locator("canvas").getAttribute("data-pixel"))?.split(",")[2])).toBeLessThan(112);
 });

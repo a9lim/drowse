@@ -145,7 +145,7 @@
     border-color: var(--accent);
   }
   .sk-radio.is-disabled {
-    opacity: 0.5;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
 

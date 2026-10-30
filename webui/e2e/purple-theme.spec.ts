@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 import { selectLoomView, showWorkspaceTools } from "./workbench-navigation";
@@ -6,6 +7,7 @@ test("purple accents connect conversation, controls, and Loom in both themes", a
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("http://127.0.0.1:4176/app?fixture=1");
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   const composer = page.getByRole("textbox", { name: /^Compose as / });

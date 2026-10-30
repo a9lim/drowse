@@ -56,6 +56,24 @@ try {
     assert.equal((await persistence.claim(binding("balanced", "owner-a"))).status, "missing");
   });
 
+  test("round-trips browser position receipts and rejects malformed spans", async () => {
+    const input = sessionInput("fastest", "span-session", 2);
+    input.tree.nodes[1].recipe = {
+      steering: "0.5 calm", sampling: null, thinking: false, seed: 1,
+      probes: [], probe_hashes: {}, position_spans: [[1, 4], [10, 12]],
+    };
+    const persistence = new BrowserSessionPersistence({ store: memoryStore(), runExclusive: serialRunner() });
+    await persistence.save(input, "owner-a");
+    input.tree.nodes[1].recipe.position_spans[0][1] = 3;
+    const restored = await persistence.claim(binding("fastest", "owner-a"));
+    assert.deepEqual(restored.record.tree.nodes[1].recipe.position_spans, [[1, 4], [10, 12]]);
+    for (const spans of [null, [[2, 1]], [[1, 4], [2, 3]], [[0, 1.5]]]) {
+      input.tree.rev += 1;
+      input.tree.nodes[1].recipe.position_spans = spans;
+      await assert.rejects(persistence.save(input, "owner-a"), /position|Steering/);
+    }
+  });
+
   test("serializes writes and rejects stale revisions and relinquished owners", async () => {
     const store = memoryStore();
     const runner = trackedSerialRunner();

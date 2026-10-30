@@ -5,10 +5,32 @@ import { chromium } from "playwright";
 
 const GIB = 1024 ** 3;
 
+export function releaseToolGpuArgs({ platform = process.platform, headless = true } = {}) {
+  return [
+    "--enable-unsafe-webgpu",
+    ...(platform === "darwin" ? ["--use-angle=metal"] : []),
+    ...(platform === "linux" ? [
+      "--use-angle=vulkan",
+      "--enable-features=Vulkan",
+      ...(headless ? ["--disable-vulkan-surface"] : []),
+    ] : []),
+  ];
+}
+
+export function releaseToolBrowserOptions(options = {}) {
+  return {
+    chromiumSandbox: true,
+    ...options,
+    ignoreDefaultArgs: options.ignoreDefaultArgs === true ? true : [
+      ...new Set([...(options.ignoreDefaultArgs ?? []), "--enable-unsafe-swiftshader"]),
+    ],
+  };
+}
+
 export async function launchReleaseToolContext(options) {
   const profileDirectory = await mkdtemp(join(tmpdir(), "drowse-chrome-"));
   try {
-    const context = await chromium.launchPersistentContext(profileDirectory, options);
+    const context = await chromium.launchPersistentContext(profileDirectory, releaseToolBrowserOptions(options));
     const page = context.pages()[0] ?? await context.newPage();
     return {
       context,

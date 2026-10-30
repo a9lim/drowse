@@ -1351,6 +1351,32 @@ async function saeExtractionCheck(
   assert.equal(flatInputs[0].sae.fullCoverage, true);
   assert.deepEqual([...flatInputs[0].sae.idsByLayer], [[0, "fixture-sae:layer-0"]]);
 
+  const repeatExtraction = (request = loadRequest()) => fitting.request({
+    request: {
+      service: "profiles", method: "extract",
+      args: [{ concept: "calm", namespace: "local", kind: "abstract", sae: "fixture-sae" }, "default"],
+    },
+    loadRequest: request,
+    runtime: harness.runtime,
+    onProgress() {},
+    signal: new AbortController().signal,
+  });
+  await repeatExtraction();
+  assert.equal(flatInputs.length, 1, "matching SAE extraction reuses its fit");
+  exactSae.provenance.fingerprint = "7".repeat(64);
+  await repeatExtraction();
+  assert.equal(flatInputs.length, 2, "changed SAE encoder must refit cached centroids");
+  assert.equal(flatInputs.at(-1).sae.fingerprint, "7".repeat(64));
+  exactSae.provenance.revision = "6".repeat(64);
+  await repeatExtraction();
+  assert.equal(flatInputs.length, 3, "changed SAE revision must not reuse an old fit");
+  const changedContext = loadRequest();
+  changedContext.variant.contextProfiles[0].bindingSha256 = "5".repeat(64);
+  await repeatExtraction(changedContext);
+  assert.equal(flatInputs.length, 4, "changed model context must refit");
+  assert.equal(flatInputs.at(-1).identity.contextBindingSha256, "5".repeat(64));
+  assert.equal(harness.published.length, 1, "refitting preserves the original research corpus");
+
   await assert.rejects(
     fitting.request({
       request: {

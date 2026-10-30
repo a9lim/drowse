@@ -17,6 +17,10 @@ build/
 webui/node_modules/
 webui/dist/
 webui/dist-hosted/
+webui/dist-local/
+# /neurons explorer data, built by webui/scripts/neurons/build-neuron-catalog.py from the
+# private neuron-lens catalog. Publish it only with the catalog owner's permission.
+/webui/public-hosted/neurons-data/
 .playwright-mcp/
 
 # Browser-runtime compiler scratch directories are local feasibility outputs.
@@ -27,6 +31,8 @@ browser-runtime/vendor/*.tgz
 !browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.36.tgz
 !browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.37.tgz
 !browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.38.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.39.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.40.tgz
 
 # Virtual environments
 .venv/
@@ -76,6 +82,10 @@ scripts/experiments/
 *-fixes*.md
 /browser-runtime/BASE_MODELS.md
 /webui/GEO-SCHEMA-REPORT.md
+/webui/.wrangler/
+/webui/docs/*-REVIEW.md
+/webui/docs/*-REPORT.md
+/webui/docs/*-20??-??-??.*
 /docs/cloudflare-configuration-20??-??-??.md
 /docs/*-20??-??-??.md
 /legacy/

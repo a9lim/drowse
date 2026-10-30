@@ -9,6 +9,50 @@ async function readableText(locator: Locator) {
   });
 }
 
+test("home example labels remain clear of the slider and its value bubble", async ({ page }, testInfo) => {
+  await page.goto("http://127.0.0.1:4176/");
+  const demo = page.getByRole("region", { name: "Recorded Drowse example" });
+  const slider = demo.getByRole("slider");
+  for (const width of [320, 641, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const reducedMotion of ["no-preference", "reduce"] as const) {
+      await page.emulateMedia({ reducedMotion });
+      for (const mode of ["Steer", "Inspect"]) {
+        await demo.getByRole("button", { name: mode, exact: true }).click();
+        await expect(slider).toHaveCount(1);
+        await slider.press("Home");
+        await slider.press("End");
+        await expect(demo.locator(".alpha .morph-source")).toHaveText("Toward welcoming · α 0.15");
+        await expect.poll(() => demo.evaluate(element => {
+          const label = element.querySelector(".alpha")!;
+          const labelBox = label.getBoundingClientRect();
+          const labelText = document.createRange();
+          labelText.selectNodeContents(label.querySelector(".morph-source")!);
+          const bubble = element.querySelector(".slider-bubble")!;
+          const slider = element.querySelector(".sk-slider")!;
+          const clipped = [...label.querySelectorAll("[torph-item]")].some(item => {
+            const rect = item.getBoundingClientRect();
+            for (let parent = item.parentElement; parent && label.contains(parent); parent = parent.parentElement) {
+              const style = getComputedStyle(parent);
+              const box = parent.getBoundingClientRect();
+              if (/(clip|hidden)/.test(style.overflowX) && (rect.left < box.left - 0.5 || rect.right > box.right + 0.5)) return true;
+              if (/(clip|hidden)/.test(style.overflowY) && (rect.top < box.top - 0.5 || rect.bottom > box.bottom + 0.5)) return true;
+            }
+            return false;
+          });
+          return {
+            unclipped: !clipped,
+            fits: labelBox.left >= 0 && labelBox.right <= innerWidth,
+            clearsSlider: slider.getBoundingClientRect().top - labelBox.bottom >= 8,
+            clearsBubble: bubble.matches(":popover-open") && bubble.getBoundingClientRect().top >= labelText.getBoundingClientRect().bottom,
+          };
+        })).toEqual({ unclipped: true, fits: true, clearsSlider: true, clearsBubble: true });
+      }
+    }
+    await page.screenshot({ path: testInfo.outputPath(`example-label-${width}.png`) });
+  }
+});
+
 test("the home example shares the surrounding card container", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/");
@@ -29,10 +73,26 @@ test("the home example shares the surrounding card container", async ({ page }, 
       expect(materials[1]).toEqual(materials[0]);
       expect(materials[2]).toEqual(materials[0]);
       expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-      await example.getByRole("button", { name: "Compare", exact: true }).click();
-      await expect(example.locator(".branch-reply")).toHaveCount(3);
-      await example.getByRole("button", { name: "Inspect toward welcoming reply", exact: true }).click();
-      await expect.poll(() => readableText(example.locator(".token-text"))).toBe(recording.runs[5].text);
+      await example.getByRole("button", { name: "Inspect", exact: true }).click();
+      await expect.poll(() => readableText(example.locator(".recorded-tokens"))).toBe(recording.runs[3].text);
+      await expect(example.getByRole("group", { name: "Example capability" }).getByRole("button")).toHaveText(["Steer", "Inspect"]);
+      await expect(example).not.toContainText("Recorded preset: a new neighbor");
+      for (const coloring of ["Surprisal", "Probability"]) {
+        await example.getByRole("button", { name: coloring, exact: true }).click();
+        await expect(example.getByRole("button", { name: coloring, exact: true })).toHaveAttribute("aria-pressed", "true");
+        expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+        await example.locator(".recorded-token").nth(9).click();
+        const popover = example.getByRole("dialog");
+        await expect(popover).toBeVisible();
+        const bounds = (await popover.boundingBox())!;
+        expect(bounds.x).toBeGreaterThanOrEqual(8);
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(width - 8);
+        expect(bounds.y).toBeGreaterThanOrEqual(8);
+        expect(bounds.y + bounds.height).toBeLessThanOrEqual(892);
+        await page.screenshot({ path: testInfo.outputPath(`inspect-${width}-${theme}-${coloring.toLowerCase()}.png`), fullPage: true });
+        await popover.getByRole("button", { name: "Close token probabilities" }).click();
+        await expect(popover).toBeHidden();
+      }
       await example.getByRole("button", { name: "Steer", exact: true }).click();
       await page.screenshot({ path: testInfo.outputPath(`example-${width}-${theme}.png`) });
     }
@@ -45,6 +105,7 @@ test("saved settings and every inspected step retain the actual recording", asyn
   await page.goto("http://127.0.0.1:4176/");
   const demo = page.getByRole("region", { name: "Recorded Drowse example" });
   const slider = demo.getByRole("slider");
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await slider.focus();
   await slider.press("Home");
   for (const [index, run] of recording.runs.entries()) {
@@ -53,27 +114,145 @@ test("saved settings and every inspected step retain the actual recording", asyn
   }
   await demo.getByRole("button", { name: "Inspect", exact: true }).click();
   const tokens = recording.runs.at(-1)!.tokens.filter(token => token.text.length > 0);
-  const buttons = demo.locator(".token");
+  const buttons = demo.locator(".recorded-token");
   await expect(buttons).toHaveCount(tokens.length);
   await expect(demo.locator(".mode-content")).toHaveCount(1);
   await expect.poll(() => demo.evaluate(el => Math.abs(el.getBoundingClientRect().height - el.firstElementChild!.getBoundingClientRect().height))).toBeLessThan(1);
   for (let index = 0; index < tokens.length; index++) {
     await buttons.nth(index).click();
-    await expect(buttons.nth(index)).toHaveAttribute("aria-pressed", "true");
+    await expect(buttons.nth(index)).toHaveAttribute("aria-expanded", "true");
     const selected = tokens[index];
-    const expected = Math.exp(selected.logprob) * 100;
-    const probability = expected > 0 && expected < 0.1 ? "<0.1%" : `${expected.toFixed(1)}%`;
-    await expect(demo.locator("tr.chosen .probability-value .morph-source")).toHaveText(probability);
+    const probability = Math.exp(selected.logprob);
+    const popover = demo.getByRole("dialog");
+    await expect(popover.locator("tr.chosen td:last-child")).toHaveText(probability >= 0.001 ? probability.toFixed(3) : probability.toExponential(2));
+    await expect(popover.locator("dl")).toContainText(`${(-selected.logprob / Math.LN2).toFixed(2)} bits`);
+    await popover.getByRole("button", { name: "Close token probabilities" }).click();
+    await expect(popover).toBeHidden();
+    await expect(buttons.nth(index)).toBeFocused();
   }
-  await expect(demo.getByRole("button", { name: "Next token", exact: true })).toBeDisabled();
-  await buttons.last().focus();
   await buttons.last().press("Home");
   await expect(buttons.first()).toBeFocused();
-  await expect(demo.getByRole("button", { name: "Previous token", exact: true })).toBeDisabled();
-  await expect(demo.getByRole("link", { name: "Recorded preset: a new neighbor" })).toHaveAttribute("download", "drowse-neighbor-recording.json");
+  await expect(demo.locator(".distribution, .step-controls, .token-reading")).toHaveCount(0);
   await expect(demo).not.toContainText(/Seven saved settings|Three saved paths|Probabilities use|curated example/);
 });
 
+
+test("home token popovers support hover, pinning, keyboard, and setting changes", async ({ page }, testInfo) => {
+  await page.clock.install();
+  await page.goto("http://127.0.0.1:4176/");
+  const demo = page.getByRole("region", { name: "Recorded Drowse example" });
+  await demo.getByRole("button", { name: "Inspect", exact: true }).click();
+  await expect(demo.locator(".mode-content")).toHaveCount(1);
+  const trigger = demo.locator(".recorded-token").nth(9);
+  const panel = demo.getByRole("dialog");
+  if (!testInfo.project.name.includes("webkit")) {
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    await trigger.hover();
+    await page.clock.runFor(999);
+    await expect(panel).toBeHidden();
+    await page.clock.runFor(1);
+    await expect(panel).toBeVisible();
+    await page.clock.resume();
+    await expect(trigger).not.toBeFocused();
+    await panel.hover();
+    await expect(panel).toBeVisible();
+    await page.mouse.move(0, 0);
+    await expect(panel).toBeHidden();
+  }
+  await trigger.click();
+  await expect(panel).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: "Close token probabilities" }).click();
+  await expect(trigger).toBeFocused();
+  await trigger.press("Enter");
+  await expect(panel).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await trigger.press("ArrowRight");
+  await expect(demo.locator(".recorded-token").nth(10)).toBeFocused();
+  await trigger.click();
+  await demo.getByRole("slider").press("End");
+  await expect(panel).toBeHidden();
+  await expect.poll(() => readableText(demo.locator(".recorded-tokens"))).toBe(recording.runs.at(-1)!.text);
+  await demo.locator(".recorded-token").first().click();
+  await demo.getByRole("button", { name: "Steer", exact: true }).click();
+  await expect(panel).toHaveCount(0);
+});
+
+test("Inspect morphs token text when steering changes and honors reduced motion", async ({ page }) => {
+  await page.goto("http://127.0.0.1:4176/");
+  await page.setViewportSize({ width: 600, height: 1000 });
+  const demo = page.getByRole("region", { name: "Recorded Drowse example" });
+  await demo.getByRole("button", { name: "Inspect", exact: true }).click();
+  await expect(demo.locator(".mode-content")).toHaveCount(1);
+  const reply = demo.locator(".recorded-tokens");
+  await reply.scrollIntoViewIfNeeded();
+  await expect.poll(() => reply.locator("[data-morph-active]").count()).toBeGreaterThan(0);
+  const first = await reply.locator(".recorded-token").first().elementHandle();
+  const motion = await reply.evaluateHandle(reply => {
+    const animate = Element.prototype.animate;
+    const animations: Animation[] = [];
+    const started: string[] = [];
+    Element.prototype.animate = function(...args) {
+      const animation = animate.apply(this, args);
+      if (reply.contains(this) && this.closest(".morph-paint")) {
+        started.push(animation.playState);
+        animation.pause();
+        animation.currentTime = Number(animation.effect!.getTiming().duration) / 2;
+        animations.push(animation);
+      }
+      return animation;
+    };
+    return { animations, started, finish() {
+      Element.prototype.animate = animate;
+      animations.forEach(animation => animation.finish());
+    } };
+  });
+  await demo.getByRole("slider").fill("5");
+  await expect.poll(() => readableText(reply)).toBe(recording.runs[5].text);
+  expect(await first!.evaluate(element => element.isConnected)).toBe(true);
+  await expect.poll(() => motion.evaluate(({ started }) => started.filter(state => state === "running").length)).toBeGreaterThan(0);
+  expect(await motion.evaluate(({ animations }) => animations.some(animation => {
+    const progress = animation.effect!.getComputedTiming().progress;
+    return progress !== null && progress > 0 && progress < 1;
+  }))).toBe(true);
+  await expect.poll(() => reply.locator("[data-morph-active]").count()).toBeGreaterThan(0);
+  await motion.evaluate(capture => capture.finish());
+  await motion.dispose();
+  await reply.locator(".recorded-token").nth(9).click();
+  await expect(demo.getByRole("dialog")).toBeVisible();
+  await expect(demo.getByRole("dialog").locator("dl")).toContainText(String(recording.runs[5].tokens[9].tokenId));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect.poll(() => page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
+  await expect.poll(() => reply.locator(".recorded-token").first().evaluate(element =>
+    Math.max(...getComputedStyle(element).transitionDuration.split(",").map(value => Number.parseFloat(value))),
+  )).toBeLessThanOrEqual(0.00001);
+  const reducedMotion = await reply.evaluateHandle(reply => {
+    const animate = Element.prototype.animate;
+    const durations: number[] = [];
+    Element.prototype.animate = function(...args) {
+      const animation = animate.apply(this, args);
+      if (reply.contains(this)) durations.push(Number(animation.effect!.getTiming().duration));
+      return animation;
+    };
+    return { durations, restore() { Element.prototype.animate = animate; } };
+  });
+  await demo.getByRole("slider").fill("6");
+  await expect(demo.getByRole("dialog")).toBeHidden();
+  await expect.poll(() => readableText(reply)).toBe(recording.runs[6].text);
+  await expect(reply.locator("[data-morph-active]")).toHaveCount(0);
+  await expect(reply.locator(".morph-paint > *")).toHaveCount(0);
+  await expect.poll(() => reply.evaluate(element => element.getAnimations({ subtree: true })
+    .filter(animation => animation.playState === "running").map(animation => ({
+      target: (animation.effect as KeyframeEffect).target?.className,
+      duration: animation.effect!.getTiming().duration,
+    })))).toEqual([]);
+  expect(await reducedMotion.evaluate(({ durations }) => durations.filter(duration => duration > 0))).toEqual([]);
+  await reducedMotion.evaluate(capture => capture.restore());
+  await reducedMotion.dispose();
+});
 
 test("reply motion resizes the unchanged panel and honors reduced motion", async ({ page }, testInfo) => {
   await page.goto("http://127.0.0.1:4176/");
@@ -123,8 +302,10 @@ test("reply motion resizes the unchanged panel and honors reduced motion", async
   await expect(panel).toHaveCSS("background-color", background);
   await demo.getByRole("button", { name: "Inspect", exact: true }).click();
   await expect(demo.locator(".mode-content")).toHaveCount(1);
-  const tones = await demo.locator(".token").evaluateAll(tokens => tokens.map(token => getComputedStyle(token).color));
+  const tones = await demo.locator(".recorded-token").evaluateAll(tokens => tokens.map(token => getComputedStyle(token).backgroundColor));
   expect(new Set(tones).size).toBeGreaterThan(1);
+  const inks = await demo.locator(".recorded-token").evaluateAll(tokens => tokens.map(token => getComputedStyle(token).color));
+  expect(new Set(inks).size).toBe(1);
   await expect.poll(() => demo.evaluate(el => Math.abs(el.getBoundingClientRect().height - el.firstElementChild!.getBoundingClientRect().height))).toBeLessThan(1);
   await page.screenshot({ path: testInfo.outputPath("demo-inspect.png"), fullPage: true });
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -133,3 +314,47 @@ test("reply motion resizes the unchanged panel and honors reduced motion", async
   await expect(demo.locator("[data-morph-active]")).toHaveCount(0);
   await expect(panel).toHaveCSS("background-color", background);
 });
+
+for (const width of [320, 390, 1440]) {
+  for (const theme of ["dark", "light"]) {
+    test(`home containers share readable type and larger controls without text shadows at ${width}px in ${theme}`, async ({ page }, testInfo) => {
+      await page.addInitScript(theme => localStorage.setItem("drowse.theme", theme), theme);
+      await page.setViewportSize({ width, height: 1000 });
+      await page.goto("http://127.0.0.1:4176/");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.locator("html")).toHaveCSS("color-scheme", theme);
+      const demo = page.getByRole("region", { name: "Recorded Drowse example" });
+      const slider = demo.getByRole("slider");
+      await demo.scrollIntoViewIfNeeded();
+      await expect(demo.locator(".context")).toHaveCSS("font-size", "16px");
+      const prose = await page.locator(".capabilities li p, .model-group > p, .model-row strong, .capability-demo .context, .capability-demo .result")
+        .evaluateAll(elements => elements.map(el => {
+          const style = getComputedStyle(el);
+          return [style.fontFamily, style.fontSize];
+        }));
+      expect(new Set(prose.map(style => JSON.stringify(style))).size).toBe(1);
+      await slider.evaluate(el => { el.dataset.stableControl = "original"; });
+      for (const mode of ["Inspect", "Steer"]) {
+        await demo.getByRole("button", { name: mode, exact: true }).click();
+        await expect(slider).toHaveAttribute("data-stable-control", "original");
+        await expect(demo.locator(".mode-content")).toHaveCount(1);
+        const buttons = await demo.locator(".sk-tabs .tab").evaluateAll(elements => elements.map(el => {
+          const rect = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+          return { width: rect.width, height: rect.height, size: style.fontSize, spacing: style.letterSpacing };
+        }));
+        for (const button of buttons) {
+          expect(button.height).toBeGreaterThanOrEqual(48);
+          expect(button.width).toBeGreaterThanOrEqual(80);
+          expect(button.size).toBe("16px");
+          expect(button.spacing).toBe("normal");
+        }
+        const shadows = await page.locator(".capabilities ol > li, .capabilities ol > li *, .model-group, .model-group *, .demo-panel, .demo-panel *")
+          .evaluateAll(elements => [...new Set(elements.map(el => getComputedStyle(el).textShadow))]);
+        expect(shadows).toEqual(["none"]);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await page.locator(".demo-panel").screenshot({ path: testInfo.outputPath(`harmony-${width}-${theme}-${mode}.png`) });
+      }
+    });
+  }
+}

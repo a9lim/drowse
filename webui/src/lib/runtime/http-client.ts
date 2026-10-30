@@ -11,6 +11,7 @@ import {
   apiTemplates,
   apiTree,
   connectWs,
+  getOperationReceipt,
 } from "../api";
 import type { WSClientMessage, WSServerMessage } from "../types";
 import type {
@@ -100,6 +101,8 @@ class HttpRuntimeEventChannel implements RuntimeEventChannel {
     this.socket.send(JSON.stringify(message));
   }
 
+  requestStatus(requestId: string) { return apiSessions.requestStatus(requestId); }
+
   async stop(): Promise<void> {
     if (this.isOpen) this.send({ type: "stop" });
   }
@@ -123,8 +126,8 @@ class HttpRuntimeEventChannel implements RuntimeEventChannel {
 
 const profiles: RuntimeProfilesService = {
   ...apiProfiles,
-  extract(request, onEvent, id) {
-    return apiExtractStream(request, onEvent, id);
+  extract(request, onEvent, id, operationId) {
+    return apiExtractStream(request, onEvent, id, operationId);
   },
 };
 
@@ -185,16 +188,16 @@ const instruments: RuntimeInstrumentsService = {
 
 const manifolds: RuntimeManifoldsService = {
   ...apiManifolds,
-  install(request, onEvent) {
+  install(request, onEvent, operationId) {
     return onEvent
-      ? apiManifoldInstallStream(request, onEvent)
+      ? apiManifoldInstallStream(request, onEvent, operationId)
       : apiManifolds.install(request);
   },
-  fit(namespace, name, request, onEvent) {
-    return apiManifoldFitStream(namespace, name, request, onEvent);
+  fit(namespace, name, request, onEvent, operationId) {
+    return apiManifoldFitStream(namespace, name, request, onEvent, operationId);
   },
-  generate(request, onEvent) {
-    return apiManifoldGenerateStream(request, onEvent);
+  generate(request, onEvent, operationId) {
+    return apiManifoldGenerateStream(request, onEvent, operationId);
   },
   async drowseArchiveList() {
     throw browserArtifactUnavailable();
@@ -221,7 +224,7 @@ function browserArtifactUnavailable(): ApiError {
 
 export class HttpRuntimeClient implements RuntimeClient {
   readonly mode = "http" as const;
-  readonly sessions = apiSessions;
+  readonly sessions = { ...apiSessions, operationStatus: getOperationReceipt };
   readonly profiles = profiles;
   readonly probes = apiProbes;
   readonly manifolds = manifolds;

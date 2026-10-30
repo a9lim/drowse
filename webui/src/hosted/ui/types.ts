@@ -41,6 +41,10 @@ export interface HostedModelOption {
   setupIssue?: string;
   setupComplete: boolean;
   requiresOomRetry?: boolean;
+  /** Verified bytes of an unfinished download kept from an earlier visit. */
+  partialBytes?: number;
+  /** Latest decode speed measured on this device for this exact setup. */
+  measuredTokensPerSecond?: number;
 }
 
 export interface HostedShellSnapshot {
@@ -50,6 +54,8 @@ export interface HostedShellSnapshot {
   checks: HostedCheckItem[];
   models: HostedModelOption[];
   selectedModelVariantId?: string;
+  /** Set when the signed model list could not be loaded or verified. */
+  catalogError?: string;
   download: {
     available: boolean;
     phase:
@@ -75,6 +81,8 @@ export interface HostedShellSnapshot {
   };
   storage?: {
     availableBytes?: number;
+    quotaBytes?: number;
+    usageBytes?: number;
     persisted?: boolean;
   };
   takeover?: {
@@ -99,6 +107,8 @@ export interface HostedShellController {
   ): void;
   cancelDownload(): Promise<void>;
   deleteModel(modelVariantId: string): Promise<void>;
+  /** Present only when the runtime can remove kept partial download files. */
+  discardPartialDownload?(modelVariantId: string): Promise<void>;
   open(
     modelVariantId: string,
     options?: { resetSession?: boolean },

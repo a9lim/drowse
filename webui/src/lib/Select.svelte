@@ -38,6 +38,8 @@
     placeholder?: string;
     disabled?: boolean;
     ariaLabel?: string;
+    /** Id of a visible label. The trigger then announces that label and its current value. */
+    ariaLabelledby?: string;
     invalid?: boolean;
     ariaDescribedby?: string;
     title?: string;
@@ -51,6 +53,7 @@
     placeholder = "",
     disabled = false,
     ariaLabel,
+    ariaLabelledby,
     invalid = false,
     ariaDescribedby,
     title,
@@ -309,13 +312,14 @@
     aria-haspopup="listbox"
     aria-expanded={open}
     aria-controls={open ? `${uid}-listbox` : undefined}
-    aria-label={ariaLabel}
+    aria-label={ariaLabelledby ? undefined : ariaLabel}
+    aria-labelledby={ariaLabelledby ? `${ariaLabelledby} ${uid}-value` : undefined}
     data-invalid={invalid || undefined}
     aria-describedby={ariaDescribedby}
     onclick={toggle}
     onkeydown={onTriggerKeydown}
   >
-    <span class="sk-select-label" class:is-placeholder={currentIndex < 0}>
+    <span id={`${uid}-value`} class="sk-select-label" class:is-placeholder={currentIndex < 0}>
       <MorphText text={currentLabel || placeholder} numbers={false} />
     </span>
     <span class="sk-select-caret" aria-hidden="true"><FluentIcon name="down" /></span>
@@ -331,7 +335,8 @@
       role="listbox"
       aria-invalid={invalid}
       tabindex="-1"
-      aria-label={ariaLabel}
+      aria-label={ariaLabelledby ? undefined : ariaLabel}
+      aria-labelledby={ariaLabelledby}
       aria-activedescendant={highlight >= 0
         ? `${uid}-opt-${highlight}`
         : undefined}
@@ -407,7 +412,7 @@
     background: var(--control-sheen), var(--surface-hi);
   }
   .sk-select-trigger:disabled {
-    opacity: 0.5;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .sk-select-trigger[data-invalid] { border-color: var(--accent-red); }

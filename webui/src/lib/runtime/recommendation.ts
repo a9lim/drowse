@@ -15,9 +15,46 @@ import { userFacingError } from "./userFacingError";
 export function requiredStorageBytes(
   downloadBytes: number,
   requiredCorePackBytes: number,
+  setupPackBytes = 0,
 ): number {
-  const headroom = Math.max(downloadBytes * 0.2, 256 * MEBIBYTE);
-  return Math.ceil(downloadBytes + requiredCorePackBytes + headroom);
+  const firstDownloadBytes = downloadBytes + setupPackBytes;
+  const headroom = Math.max(firstDownloadBytes * 0.2, 256 * MEBIBYTE);
+  return Math.ceil(firstDownloadBytes + requiredCorePackBytes + headroom);
+}
+
+// Room still needed before a download of `downloadBytes` can start, using the same
+// headroom as the catalog check. Returns 0 when it fits or the estimate is unknown.
+export function storageShortfallBytes(
+  downloadBytes: number,
+  availableBytes: number | null | undefined,
+): number {
+  if (availableBytes == null || downloadBytes <= 0) return 0;
+  return Math.max(0, requiredStorageBytes(downloadBytes, 0) - availableBytes);
+}
+
+// The tool packs the first download includes by default: the compatible J-lens for
+// chat models and the first compatible SAE. Packs already on the device are free.
+export function setupPackBytes(
+  model: CatalogModel,
+  variant: ModelVariant,
+  contextTokens: number,
+  installedPackIds: readonly string[] = [],
+): number {
+  const context = variant.contextProfiles.find((profile) => profile.contextTokens === contextTokens);
+  if (!context) return 0;
+  const compatible = variant.packs.filter((pack) =>
+    !pack.required && pack.kind !== "core" &&
+    pack.compatibleContextBindingSha256.includes(context.bindingSha256)
+  );
+  const jlens = model.modelType === "base"
+    ? undefined
+    : compatible.find((pack) => pack.kind === "jlens");
+  const saes = compatible.filter((pack) => pack.kind === "sae");
+  const sae = saes.some((pack) => installedPackIds.includes(pack.id)) ? undefined : saes[0];
+  return [jlens, sae].reduce(
+    (total, pack) => total + (pack && !installedPackIds.includes(pack.id) ? pack.bytes : 0),
+    0,
+  );
 }
 
 export interface AssessmentOptions {
@@ -25,6 +62,7 @@ export interface AssessmentOptions {
   contextTokens: number;
   loadRecords?: DeviceLoadRecord[];
   installedModelVariantIds?: readonly string[];
+  installedPackIds?: readonly string[];
   explicitOomRetry?: boolean;
 }
 
@@ -55,6 +93,7 @@ export function assessModelVariant(
     : requiredStorageBytes(
         variant.downloadBytes,
         variant.requiredCorePackBytes,
+        setupPackBytes(model, variant, contextTokens, options.installedPackIds),
       );
 
   const requiredOperations = installed
@@ -301,24 +340,39 @@ function supportsLanguage(model: CatalogModel, language: string): boolean {
   });
 }
 
+// The latest decode speed this exact model, runtime, context, and device recorded.
+export function measuredDecodeTokensPerSecond(
+  records: readonly DeviceLoadRecord[],
+  variant: Pick<ModelVariant, "id" | "runtimeIdentitySha256">,
+  deviceSignature: string,
+  contextTokens: number,
+): number | null {
+  const latest = records
+    .filter(
+      (record) =>
+        record.result === "success" &&
+        record.modelVariantId === variant.id &&
+        record.runtimeIdentitySha256 === variant.runtimeIdentitySha256 &&
+        record.deviceSignature === deviceSignature &&
+        record.contextTokens === contextTokens &&
+        record.decodeTokensPerSecond !== null,
+    )
+    .sort((a, b) => b.recordedAt - a.recordedAt)[0];
+  return latest?.decodeTokensPerSecond ?? null;
+}
+
 function priorDecodeSpeed(
   assessment: ModelAssessment,
   records: DeviceLoadRecord[],
   capabilities: RuntimeCapabilities,
   contextTokens: number,
 ): number {
-  const latest = records
-    .filter(
-      (record) =>
-        record.result === "success" &&
-        record.modelVariantId === assessment.variant.id &&
-        record.runtimeIdentitySha256 === assessment.variant.runtimeIdentitySha256 &&
-        record.deviceSignature === capabilities.deviceSignature &&
-        record.contextTokens === contextTokens &&
-        record.decodeTokensPerSecond !== null,
-    )
-    .sort((a, b) => b.recordedAt - a.recordedAt)[0];
-  return latest?.decodeTokensPerSecond ?? 0;
+  return measuredDecodeTokensPerSecond(
+    records,
+    assessment.variant,
+    capabilities.deviceSignature,
+    contextTokens,
+  ) ?? 0;
 }
 
 export function rankCatalogModels(

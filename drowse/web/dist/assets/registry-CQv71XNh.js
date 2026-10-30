@@ -1,0 +1,1 @@
+var e=null;function t(t){if(e&&e!==t)throw Error(`A Drowse runtime is already installed`);e=t}function n(){if(!e)throw Error(`Drowse runtime has not been installed`);return e}function r(){return null}function i(){return null}function a(){return null}export{t as a,i,r as n,n as r,a as t};

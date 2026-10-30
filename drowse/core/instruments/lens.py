@@ -617,9 +617,7 @@ class LensInstrument:
     def probe_hash(self, name: str) -> str | None:
         """Readout-channel identity digest (no baked tensor exists).
 
-        v2: single strength axis; v1 carried a salience axis; the depth-CoM
-        mass moved salience→probability within v2 — display-only, the
-        coords channel is bit-identical, so no bump.
+        v4 includes output bias, projection, scaling, and final soft-capping.
         """
         with self.state_lock:
             spec = self.probes.get(name)
@@ -628,7 +626,7 @@ class LensInstrument:
             return hashlib.sha256(
                 repr(
                     (
-                        "jlens-readout-v2", self._session.model_id,
+                        "jlens-readout-v4", self._session.model_id,
                         spec["word"], spec["token_id"],
                         tuple(spec["layers"]),
                     )
@@ -910,7 +908,7 @@ class LensInstrument:
         latest-slice buffers post-forward), so steering fast-path /
         compile eligibility is untouched.  Returns the resolved layer list.
         """
-        from drowse.core.model import get_final_norm, get_unembedding
+        from drowse.core.model import LogitReadout
 
         session = self._session
         if session._device.type == "cuda":
@@ -949,8 +947,7 @@ class LensInstrument:
                 "uses_all_layers": uses_all_layers,
                 "J_stack": j_stack,
                 "layer_rows": {l: i for i, l in enumerate(layer_list)},
-                "unembed": get_unembedding(session._model),
-                "norm": get_final_norm(session._model),
+                "readout": LogitReadout(session._model),
                 "source": self.active_source,
             }
             return list(layers)
@@ -1096,7 +1093,6 @@ class LensInstrument:
         if state is None or not self.active_for_generation:
             return None
         buckets = session._capture.per_layer_buckets()
-        unembed = state["unembed"]
         layers_present: list[int] = []
         hidden_rows: list[torch.Tensor] = []
         transport_rows: list[int] = []
@@ -1168,8 +1164,7 @@ class LensInstrument:
                     dim=0,
                 ).to(J.device)
                 transported = torch.bmm(J, H.unsqueeze(-1)).squeeze(-1)
-                normed = state["norm"](transported)
-                computed = normed.to(unembed.dtype) @ unembed.T
+                computed = state["readout"](transported)
                 if not cached_logits and len(missing) == len(layers_present):
                     logits = computed
                 else:

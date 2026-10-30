@@ -54,6 +54,7 @@ export async function validateReleaseInstrumentPack({
     wordSeedBytes,
     licenseEvidenceBytes,
     runtimeLock,
+    modelLock,
   });
   if (kind === "sae") {
     return validateSae(instrumentManifest, release, modelLock);
@@ -114,6 +115,7 @@ export async function validateReleaseCorpusInputs({
   corpusBytes,
   wordsBytes = null,
   runtimeLock,
+  modelLock,
 }) {
   const [
     releaseBytes,
@@ -138,6 +140,7 @@ export async function validateReleaseCorpusInputs({
     wordSeedBytes,
     licenseEvidenceBytes,
     runtimeLock,
+    modelLock,
   });
   const output = release.outputs[kind];
   if (corpusBytes.byteLength !== output.bytes || sha256(corpusBytes) !== output.sha256) {
@@ -161,6 +164,7 @@ function validateReleaseCorpus({
   wordSeedBytes,
   licenseEvidenceBytes,
   runtimeLock,
+  modelLock,
 }) {
   exactKeys(release, [
     "$schema", "schemaVersion", "algorithm", "generatorSha256",
@@ -233,7 +237,7 @@ function validateReleaseCorpus({
     source.wordSeeds.bytes !== wordSeedBytes.byteLength ||
     source.wordSeeds.sha256 !== sha256(wordSeedBytes)
   ) throw new Error("release corpus word seeds differ from the checked-in closure");
-  validateTokenizerClosure(source.tokenizers, runtimeLock);
+  validateTokenizerClosure(source.tokenizers, runtimeLock, modelLock);
   exactKeys(release.outputs, ["sae", "jlens", "words"], "release corpus outputs");
   for (const [name, output] of Object.entries(release.outputs)) {
     exactKeys(
@@ -244,6 +248,15 @@ function validateReleaseCorpus({
       `release corpus ${name} output`,
     );
     digest(output.sha256, `release corpus ${name} digest`);
+  }
+  exactKeys(release.outputs.words.tokenIds, source.tokenizers.map(tokenizer => tokenizer.id),
+    "release word token closure");
+  for (const tokenIds of Object.values(release.outputs.words.tokenIds)) {
+    if (!Array.isArray(tokenIds) || tokenIds.length !== release.outputs.words.count ||
+        tokenIds.some(id => !Number.isSafeInteger(id) || id < 0) ||
+        new Set(tokenIds).size !== tokenIds.length) {
+      throw new Error("release word token closure is invalid");
+    }
   }
   if (
     release.selection?.algorithm !== RELEASE_CORPUS_ALGORITHM ||
@@ -261,15 +274,17 @@ function validateReleaseCorpus({
   ) throw new Error("release corpus outputs do not close the approved selection");
 }
 
-function validateTokenizerClosure(value, runtimeLock) {
-  if (!Array.isArray(value) || value.length !== runtimeLock.models.length) {
-    throw new Error("release corpus tokenizer closure does not cover every launch model");
+function validateTokenizerClosure(value, runtimeLock, modelLock) {
+  if (!Array.isArray(value) || value.length === 0 ||
+      new Set(value.map(tokenizer => tokenizer?.id)).size !== value.length) {
+    throw new Error("release corpus tokenizer closure must name unique models");
   }
-  const expected = [...runtimeLock.models].sort((left, right) => left.id.localeCompare(right.id));
-  const actual = [...value].sort((left, right) => String(left.id).localeCompare(String(right.id)));
-  for (let index = 0; index < expected.length; index += 1) {
-    const model = expected[index];
-    const tokenizer = actual[index];
+  if (!modelLock || !value.some(tokenizer => tokenizer?.id === modelLock.id)) {
+    throw new Error("release corpus tokenizer closure does not cover the target model");
+  }
+  for (const tokenizer of value) {
+    const model = runtimeLock.models.find(model => model.id === tokenizer?.id);
+    if (!model) throw new Error("release corpus tokenizer closure names an unlocked model");
     exactKeys(tokenizer, [
       "id", "sourceRepository", "sourceRevision", "tokenizerSha256", "tokenizerConfigSha256",
     ], `release tokenizer ${model.id}`);
@@ -338,6 +353,10 @@ function validateJlens(manifest, vocabulary, release, modelLock) {
     wordBytes.byteLength !== release.outputs.words.bytes ||
     sha256(wordBytes) !== release.outputs.words.sha256
   ) throw new Error("release J-lens vocabulary does not match the approved shared-word closure");
+  const tokenIds = release.outputs.words.tokenIds[modelLock.id];
+  if (vocabulary.words.some((entry, index) => entry.row !== index || entry.token_id !== tokenIds[index])) {
+    throw new Error("release J-lens vocabulary does not match the approved token closure");
+  }
   return {
     corpusSha256: release.outputs.jlens.sha256,
     sourceRevision: release.source.revision,

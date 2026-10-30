@@ -24,7 +24,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, FiniteFloat, NonNegativeInt, model_validator
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -40,6 +40,7 @@ from drowse.server.request_helpers import (
     parse_request_steering,
     probe_token_readings,
     strict_model_enabled,
+    validate_logit_bias,
 )
 from drowse.server.streaming import (
     ClosingStreamingResponse,
@@ -105,10 +106,10 @@ class StreamOptions(BaseModel):
 
 class _SamplingBase(BaseModel):
     model: str | None = None
-    temperature: float | None = None
-    top_p: float | None = None
-    max_tokens: int | None = None
-    max_completion_tokens: int | None = None
+    temperature: FiniteFloat | None = None
+    top_p: FiniteFloat | None = Field(default=None, ge=0, le=1)
+    max_tokens: int | None = Field(default=None, ge=0)
+    max_completion_tokens: int | None = Field(default=None, ge=0)
     stream: bool = False
     stream_options: StreamOptions | None = None
     # Canonical native steering field — a steering expression string
@@ -119,9 +120,9 @@ class _SamplingBase(BaseModel):
     steering: str | None = None
     stop: str | list[str] | None = None
     seed: int | None = None
-    logit_bias: dict[int, float] | None = None
-    presence_penalty: float = 0.0
-    frequency_penalty: float = 0.0
+    logit_bias: dict[NonNegativeInt, FiniteFloat] | None = None
+    presence_penalty: FiniteFloat = 0.0
+    frequency_penalty: FiniteFloat = 0.0
     logprobs: bool | int | None = None  # chat: bool; completions: int
     top_logprobs: int | None = None
     user: str | None = None
@@ -441,7 +442,7 @@ class _HttpSecurityMiddleware:
 
 
 def _sampling_kwargs(
-    req: _SamplingBase, default_steering: "Steering | None",
+    req: _SamplingBase, default_steering: "Steering | None", session: DrowseSession,
 ) -> dict[str, Any]:
     """Build the kwargs dict passed to session.generate / generate_stream.
 
@@ -469,6 +470,7 @@ def _sampling_kwargs(
         logprobs=req.logprobs,
         top_logprobs=req.top_logprobs,
     )
+    validate_logit_bias(sc, session)
 
     steering = req.to_steering(default_steering)
 
@@ -531,7 +533,7 @@ def _render_logprobs_completions(result: GenerationResult, session: DrowseSessio
         return None
     tok = session.tokenizer
     tokens: list[str] = []
-    token_logprobs: list[float] = []
+    token_logprobs: list[float | None] = []
     top_logprobs: list[dict[str, float]] = []
     text_offset: list[int] = []
     offset = 0
@@ -867,7 +869,7 @@ def _register_routes(app: FastAPI) -> None:
     # -----------------------------------------------------------------------
 
     async def _run_blocking(req: _SamplingBase, prompt_or_messages: Any, *, raw: bool) -> Any:
-        gen_kwargs = _sampling_kwargs(req, app.state.default_steering)
+        gen_kwargs = _sampling_kwargs(req, app.state.default_steering, session)
         # Bounded lock so a non-streaming request can't queue forever behind
         # a stuck generation — it 503s like the streaming paths do.  Returns
         # a ``JSONResponse`` on timeout; callers return it verbatim.
@@ -882,7 +884,7 @@ def _register_routes(app: FastAPI) -> None:
         messages = [{"role": m.role, "content": m.content} for m in req.messages]
         rid = _make_id()
         model_id = session.model_id
-        gen_kwargs = _sampling_kwargs(req, app.state.default_steering)
+        gen_kwargs = _sampling_kwargs(req, app.state.default_steering, session)
 
         if req.stream:
             def _chat_delta(event: Any) -> dict[str, Any]:
@@ -941,7 +943,7 @@ def _register_routes(app: FastAPI) -> None:
         _check_openai_model_strict(session, req.model)
         rid = _make_id()
         model_id = session.model_id
-        gen_kwargs = _sampling_kwargs(req, app.state.default_steering)
+        gen_kwargs = _sampling_kwargs(req, app.state.default_steering, session)
 
         if req.stream:
             def stream_factory() -> GenerationStream:

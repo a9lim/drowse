@@ -37,6 +37,23 @@ try {
   const thanks = credits.split("const thanks = [")[1].split("] as const")[0];
   assert.deepEqual([...thanks.matchAll(/handle: "(@[^"]+)"/g)].map(match => match[1]),
     ["@transkatgirl", "@voooooogel", "@motion_so"]);
+  for (const heading of ["Models", "Research Drowse builds on", "Interpretability tools and data", "Software, fonts and icons", "Cite Drowse"]) {
+    assert.ok(credits.includes(`title: "${heading}"`) || credits.includes(`>${heading}</h2>`), `Credits has a ${heading} section`);
+  }
+  for (const source of ["arxiv.org/abs/2310.01405", "github.com/vgel/repeng", "arxiv.org/abs/2502.02716", "arxiv.org/abs/2605.05115", "arxiv.org/abs/2601.10387", "transformer-circuits.pub/2026/workspace"]) {
+    assert.ok(credits.includes(source), `research lineage links ${source}`);
+  }
+  assert.match(credits, /Gemma is provided under and subject to the Gemma Terms of Use found at ai\.google\.dev\/gemma\/terms\./, "Gemma attribution notice is shown");
+  for (const file of ["/LICENSE-Wix-Madefor.txt", "/LICENSE-Martian-Mono.txt", "/LICENSE-Fluent-System-Icons.txt", "/LICENSE-Torph.txt"]) {
+    assert.ok(credits.includes(file), `Credits links ${file}`);
+    assert.ok((await readFile(`public-hosted${file}`)).length > 0, `${file} ships with the hosted site`);
+  }
+  assert.match(credits, /class="sr-only"> by \{providerNames\[model\.provider\]\}/, "screen readers hear who made each credited model");
+  assert.match(credits, /role="status">\{citationStatus\}/, "copying the citation is announced");
+  assert.doesNotMatch(credits, /<svelte:head>/, "Credits updates the existing description instead of adding a second one");
+  assert.doesNotMatch(credits, /__DROWSE_SOURCE_URL__/, "Contribute goes to the on-site guide");
+  assert.match(credits, /href="\/contribute"/);
+  assert.match(credits, /People and groups who inspired, supported or contributed to Drowse\./);
   console.log("Credits: three verification states, unverified omission, profile mappings, and Motion portrait passed");
 } finally {
   await server.close();

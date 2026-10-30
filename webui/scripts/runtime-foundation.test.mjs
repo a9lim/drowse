@@ -899,6 +899,36 @@ try {
     }
   });
 
+  test("missing WebGPU explains Linux Chromium flags without disabling the sandbox", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    try {
+      for (const userAgent of [
+        "X11; Linux x86_64 Chrome/153.0",
+        "X11; Linux x86_64 Chromium/153.0",
+        "X11; Linux x86_64 Chrome/153.0 Edg/153.0",
+        "X11; Linux x86_64 Firefox/155.0",
+        "Linux; Android 16 Chrome/153.0",
+        "Macintosh Chrome/153.0",
+        "Windows NT 10.0 Chrome/153.0",
+      ]) {
+        Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent } });
+        const linuxChromium = userAgent.includes("X11") && !userAgent.includes("Firefox");
+        for (const code of ["WEBGPU_UNAVAILABLE", "WEBGPU_ADAPTER_MISSING"]) {
+          const message = userErrors.userFacingError({ code });
+          assert.equal(message.includes("--use-angle=vulkan"), linuxChromium);
+          assert.equal(message.includes("Keep the browser sandbox enabled"), linuxChromium);
+          assert.doesNotMatch(message, /--no-sandbox|--disable-gpu-sandbox/);
+        }
+        for (const code of ["WEBGPU_CALIBRATION_FAILED", "WEBGPU_DEVICE_LOST", "WEBGPU_FEATURE_MISSING"]) {
+          assert.doesNotMatch(userErrors.userFacingError({ code }), /--use-angle=vulkan/);
+        }
+      }
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor);
+      else delete globalThis.navigator;
+    }
+  });
+
   test("persistent storage requests protection while the user gesture is active", async () => {
     let requests = 0;
     const order = [];
@@ -1151,9 +1181,25 @@ try {
     assert.equal(eligible.eligible, true);
     assert.deepEqual(eligible.hardFailures, []);
     assert.deepEqual(eligible.advisories, []);
+    const setupPacks = recommendation.setupPackBytes(model, variant, 2048);
+    assert.ok(setupPacks > 0, "the default J-lens and SAE count toward the first download");
     assert.equal(
       eligible.requiredStorageBytes,
+      Math.ceil(1_200 + 250 + setupPacks + 256 * 1024 * 1024),
+    );
+    assert.equal(
+      recommendation.assessModelVariant(model, variant, {
+        ...base,
+        installedPackIds: variant.packs.map((pack) => pack.id),
+      }).requiredStorageBytes,
       Math.ceil(1_200 + 250 + 256 * 1024 * 1024),
+      "packs already on the device are not counted again",
+    );
+    assert.equal(recommendation.storageShortfallBytes(1_000, null), 0);
+    assert.equal(recommendation.storageShortfallBytes(1_000, 1024 * 1024 * 1024), 0);
+    assert.equal(
+      recommendation.storageShortfallBytes(1_000, 1_000),
+      recommendation.requiredStorageBytes(1_000, 0) - 1_000,
     );
 
     const unknownStorage = recommendation.assessModelVariant(model, variant, {
@@ -1423,9 +1469,9 @@ try {
     assert.equal(stalled.etaSeconds, null);
     assert.throws(() => estimator.observe(9 * mib, 40 * mib, 23_000), /monotonic/);
 
-    assert.equal(eta.formatEtaRange([1_080, 1_620]), "18 - 27 minutes");
-    assert.equal(eta.formatEtaRange([2_700, 5_400]), "45 minutes - 1.5 hours");
-    assert.equal(eta.formatEtaRange([3_600, 7_200]), "1 - 2 hours");
+    assert.equal(eta.formatEtaRange([1_080, 1_620]), "18–27 minutes");
+    assert.equal(eta.formatEtaRange([2_700, 5_400]), "45 minutes – 1.5 hours");
+    assert.equal(eta.formatEtaRange([3_600, 7_200]), "1–2 hours");
   });
 
   test("range validation appends only exact contiguous responses", () => {
@@ -2473,6 +2519,52 @@ try {
     assert.equal(result.downloadedBytes, fixture.base.byteLength - 2 + fixture.core.byteLength);
     assert.equal(store.installs.length, 1);
   });
+
+  for (const checkpointPolicy of ["bytes", "time"]) {
+    test(`artifact downloader bounds ${checkpointPolicy} checkpoints independently of slow disk work`, async () => {
+      const fixture = downloadCatalogFixture();
+      const store = new FakeContentStore();
+      const originalOpenWrite = store.openWrite.bind(store);
+      const checkpoints = [];
+      let now = 0;
+      store.openWrite = async (sha256, offset) => {
+        const writer = await originalOpenWrite(sha256, offset);
+        now += 20_000;
+        return {
+          get offset() { return writer.offset; },
+          write: (chunk) => {
+            if (checkpointPolicy === "time") now += 6_000;
+            return writer.write(chunk);
+          },
+          checkpoint: async () => {
+            checkpoints.push({ sha256, offset: writer.offset });
+            now += 20_000;
+            return writer.checkpoint();
+          },
+        };
+      };
+      const instance = new downloader.VerifiedArtifactDownloader(store, {
+        scheduler: noIntervalScheduler,
+        maxParallelDownloads: 1,
+        chunkBytes: 1,
+        ...(checkpointPolicy === "bytes" ? { durableCheckpointBytes: 2 } : {}),
+        durableCheckpointIntervalMs: 10_000,
+        wallNow: () => now,
+        fetch: async (url) => fullResponse(
+          url === fixture.baseFile.url ? fixture.base : fixture.core,
+        ),
+      });
+      await instance.download(fixture.catalog, fixture.variant.id, {
+        checkQuota: () => true,
+      });
+      assert.deepEqual(
+        checkpoints.filter(({ sha256 }) => sha256 === fixture.baseFile.sha256)
+          .map(({ offset }) => offset),
+        [2, 4, 6],
+      );
+      assert.equal(store.installs.length, 1);
+    });
+  }
 
   test("artifact downloader pauses an offline fetch and resumes the same object", async () => {
     const fixture = downloadCatalogFixture();
@@ -3786,6 +3878,54 @@ try {
     assert.equal(controller.snapshot.lifecycle, "failed");
     assert.equal(ownership.isOwner, false);
   });
+
+  for (const [operation, command] of [
+    ["download", "cancel"], ["fitting", "cancel_fitting"], ["generation", "stop"],
+  ]) {
+    test(`unload terminates the worker before releasing ownership when ${command} fails`, async () => {
+      const worker = new FakeWorker();
+      const transport = new browser.WorkerRpcTransport(worker, { requestTimeoutMs: 0 });
+      const terminatedAtRelease = [];
+      const ownership = {
+        isOwner: true,
+        acquire: async () => true,
+        release() { terminatedAtRelease.push(worker.terminated); this.isOwner = false; },
+        close() {},
+      };
+      const controller = new hostedController.HostedControllerImpl(transport, {
+        ownershipFactory: () => ownership,
+      });
+      const loading = controller.load("fixture-variant", 2048);
+      const load = await waitFor(() => worker.posted[0]);
+      worker.emit({ protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+        kind: "response", requestId: load.requestId, ok: true, result: undefined });
+      await loading;
+      worker.emit({ protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+        kind: "event", requestId: null, sequence: 1, generationId: null, event: "status",
+        payload: { ...controller.snapshot, lifecycle: "ready", modelVariantId: "fixture-variant",
+          [operation]: { phase: "running", startedAt: 1, finishedAt: null, error: null } },
+      });
+      try {
+        const unloading = controller.unload();
+        const rejected = assert.rejects(unloading, /fixture cancellation failed/);
+        const cancellation = await waitFor(() => worker.posted[1]);
+        assert.equal(cancellation.command, command);
+        worker.emit({ protocolVersion: contracts.RUNTIME_PROTOCOL_VERSION,
+          kind: "response", requestId: cancellation.requestId, ok: false,
+          error: { code: "CANCELLATION_FAILED", message: "fixture cancellation failed",
+            recoverable: true, status: 500 },
+        });
+        await rejected;
+        assert.equal(worker.terminated, true);
+        assert.deepEqual(terminatedAtRelease, [true]);
+        assert.equal(ownership.isOwner, false);
+        assert.equal(controller.snapshot.lifecycle, "failed");
+        assert.equal(worker.posted.some(({ command }) => command === "unload"), false);
+      } finally {
+        transport.dispose();
+      }
+    });
+  }
 
   test("destructive controller failures publish the final internal state", async () => {
     const worker = new FakeWorker();

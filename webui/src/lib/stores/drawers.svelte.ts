@@ -7,6 +7,25 @@ export const drawerState: DrawerState = $state({
   params: null,
 });
 
+export const toolPresentation = $state({ mode: "dialog" as "dialog" | "sidebar", expanded: false });
+
+export function setToolPresentation(mode: "dialog" | "sidebar"): void {
+  toolPresentation.mode = mode;
+  try { localStorage.setItem("drowse.tools.presentation", mode); } catch { /* Presentation still works without storage. */ }
+}
+
+export function restoreToolPresentation(): void {
+  try {
+    const mode = localStorage.getItem("drowse.tools.presentation");
+    if (mode === "dialog" || mode === "sidebar") toolPresentation.mode = mode;
+  } catch { /* Use the default when browser storage is unavailable. */ }
+}
+
+export function openToolInSidebar(name: DrawerName, params: unknown = null): void {
+  setToolPresentation("sidebar");
+  openDrawer(name, params);
+}
+
 let opener: HTMLElement | null = null;
 
 export const tokenInspectorUi = $state({ docked: false, visible: false, params: null as unknown });

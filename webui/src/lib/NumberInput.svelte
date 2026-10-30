@@ -198,7 +198,6 @@
 <style>
   .resting .sk-number-input { color: transparent; }
   .number-rest { position: absolute; inset-inline: calc(var(--space-3) + 1px) var(--space-6); top: 50%; transform: translateY(-50%); pointer-events: none; font: var(--text-sm)/normal var(--font-mono); color: var(--fg); overflow: hidden; }
-  .is-disabled .number-rest { opacity: .5; }
   .sk-number {
     position: relative;
     display: inline-flex;
@@ -249,7 +248,6 @@
     border-color: var(--accent-red);
   }
   .sk-number-input:disabled {
-    opacity: 0.5;
     cursor: not-allowed;
   }
 
@@ -295,7 +293,7 @@
   }
 
   .sk-number.is-disabled {
-    opacity: 0.6;
+    opacity: var(--disabled-opacity);
   }
 
   @media (max-width: 720px) {

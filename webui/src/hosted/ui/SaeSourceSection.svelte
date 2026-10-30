@@ -8,10 +8,7 @@
     saeSourceState,
   } from "../../lib/stores.svelte";
   import InstrumentSourceSection from "../../panels/rack/InstrumentSourceSection.svelte";
-  import {
-    currentCatalogInstrumentAvailability,
-    type CatalogInstrumentAvailability,
-  } from "../../lib/runtime/instrumentAvailability";
+  import InstrumentPackRecovery from "./InstrumentPackRecovery.svelte";
 
   const loaded = $derived(saeLoaded());
   const allowSourceSwitch = $derived(
@@ -30,7 +27,6 @@
     return live && "layer" in live ? live.layer : null;
   });
   let selectedSource = $state("");
-  let availability = $state<CatalogInstrumentAvailability>("unknown");
   let selectedLayer = $state("");
   let layerSource = $state("");
   const sourceBusy = $derived(saeSourceState.loading || saeSourceState.busy);
@@ -57,24 +53,7 @@
 
   onMount(() => {
     void refreshSaeSources();
-    let mounted = true;
-    void currentCatalogInstrumentAvailability("sae").then((value) => {
-      if (mounted) availability = value;
-    });
-    return () => {
-      mounted = false;
-    };
   });
-
-  const unavailableMessage = $derived(
-    availability === "unavailable"
-      ? "No SAE is available for this model"
-      : availability === "context-unavailable"
-        ? "No SAE is available for this conversation length"
-        : availability === "available"
-          ? "No SAE is installed. Add the available SAE in Model settings, then reopen the model."
-          : "No SAE is loaded. Check Model settings for a compatible SAE.",
-  );
 
   $effect(() => {
     const source = selectedSource;
@@ -130,8 +109,11 @@
   providerOptions={[]}
   providerPlaceholder="compatible SAE pack"
   onfetch={() => undefined}
-  {unavailableMessage}
   localActionLabel=""
   localActionDisabled
   onlocal={() => undefined}
-/>
+>
+  {#snippet messages()}
+    {#if !loaded}<InstrumentPackRecovery kind="sae" />{/if}
+  {/snippet}
+</InstrumentSourceSection>

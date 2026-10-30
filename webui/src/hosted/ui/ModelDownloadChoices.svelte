@@ -4,6 +4,8 @@
   import ModelProviderLogo from "./ModelProviderLogo.svelte";
   import { formatEtaRange } from "../../lib/runtime/eta";
   import { userFacingError } from "../../lib/runtime/userFacingError";
+  import { formatBytes } from "../../lib/format/bytes";
+  import { modelsForChooser } from "./modelSelection";
   import type { HostedModelOption, HostedShellController, HostedShellSnapshot } from "./types";
 
   let { controller, snapshot, disabled = false, onSelect }: {
@@ -18,6 +20,28 @@
   let pausing = $state(false);
   let failure = $state<{ id: string; message: string } | null>(null);
   const busy = $derived(pendingId !== null || ["requesting_persistence", "downloading", "cancelling"].includes(snapshot.download.phase));
+  const ARMED_TIMEOUT_MS = 8_000;
+
+  const tierLabel: Record<HostedModelOption["tier"], string> = {
+    fastest: "Fastest",
+    balanced: "Balanced",
+    quality: "Best quality",
+  };
+
+  // A confirmation that is not completed soon expires, so a later stray press
+  // never starts a download the visitor has forgotten about.
+  $effect(() => {
+    if (armedId === null) return;
+    const timer = setTimeout(() => { armedId = null; }, ARMED_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  });
+
+  function toolChips(model: HostedModelOption): string[] {
+    return [
+      ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (J-lens)"] : []),
+      ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
+    ];
+  }
 
   function unavailable(model: HostedModelOption): boolean {
     return disabled || busy || model.fit === "blocked" || (model.setupComplete
@@ -26,7 +50,13 @@
   }
 
   function downloadSize(model: HostedModelOption): string {
-    return `${(model.remainingDownloadBytes / 1_000_000_000).toFixed(2)} GB`;
+    return formatBytes(model.remainingDownloadBytes);
+  }
+
+  function cardSize(model: HostedModelOption): string {
+    return model.setupComplete || model.remainingDownloadBytes === 0
+      ? formatBytes(model.firstRunBytes)
+      : downloadSize(model);
   }
 
   async function choose(model: HostedModelOption): Promise<void> {
@@ -47,6 +77,11 @@
       await controller.download(model.id, {
         explicitUnsafeOverride: model.fit === "uncertain" || model.requiresOomRetry === true,
       });
+      // Open the model as soon as its setup finishes, as the Models page does.
+      const installed = controller.current().models.find((candidate) => candidate.id === model.id);
+      if (installed?.setupComplete && !disabled && controller.current().runtime.available) {
+        onSelect(installed);
+      }
     } catch (cause) {
       failure = { id: model.id, message: userFacingError(cause, "Download failed. Try again.") };
     } finally {
@@ -69,7 +104,7 @@
 
 <div class="model-choice-groups">
   {#each ["chat", "base"] as kind}
-    {@const models = snapshot.models.filter(model => (model.modelType === "base" ? "base" : "chat") === kind)}
+    {@const models = modelsForChooser(snapshot.models.filter(model => (model.modelType === "base" ? "base" : "chat") === kind))}
     {#if models.length}
       <section class="model-choice-group" aria-labelledby={`new-chat-${kind}-title`}>
         <div class="model-group-heading">
@@ -93,26 +128,40 @@
               : determinate && progress.bytesReceived >= progress.bytesTotal ? "Verifying files…"
               : progress?.etaSeconds ? `${formatEtaRange(progress.etaSeconds)} remaining` : "Downloading…"}
             <div class="model-choice" class:installed={model.installed} class:armed class:active data-model-id={model.id}>
-              <span class="model-download-size"><span class="sr-only">Total download: </span>{model.size}</span>
+              {#if model.catalogAvailable !== false}
+                <span class="model-download-size"><span class="sr-only">{model.setupComplete ? "Stored size: " : "Download size: "}</span>{cardSize(model)}</span>
+              {/if}
               <button type="button" class="model-choice-button" disabled={unavailable(model)}
-                onclick={() => void choose(model)} onkeydown={(event) => { if (event.key === "Escape") armedId = null; }}
-                aria-describedby={armed && (model.fit === "uncertain" || model.requiresOomRetry) ? `model-warning-${model.id}` : undefined}>
+                onclick={() => void choose(model)}
+                onkeydown={(event) => { if (event.key === "Escape") armedId = null; }}
+                onblur={() => { if (armedId === model.id) armedId = null; }}
+                aria-labelledby={`chooser-name-${model.id}`}
+                aria-describedby={[
+                  `chooser-status-${model.id}`,
+                  `chooser-chips-${model.id}`,
+                  ...(armed && (model.fit === "uncertain" || model.requiresOomRetry) ? [`model-warning-${model.id}`] : []),
+                ].join(" ")}>
                 <ModelProviderLogo modelId={model.modelId} size={28} />
                 <span class="model-choice-copy">
-                  <span class="model-name">{model.name}</span>
-                  <span class="model-status" aria-live="polite"><MorphText text={model.fit === "blocked" ? "Not supported on this device"
+                  <span class="model-name" id={`chooser-name-${model.id}`}>{model.name}</span>
+                  <span class="model-chips" id={`chooser-chips-${model.id}`}>
+                    {#if model.fit === "recommended"}<span class="chip recommended">Recommended for this device</span>{/if}
+                    <span class="chip">{tierLabel[model.tier]}</span>
+                    {#each toolChips(model) as chip (chip)}<span class="chip">{chip}</span>{/each}
+                  </span>
+                  <span class="model-status" id={`chooser-status-${model.id}`} aria-live={active || armed ? "polite" : undefined}><MorphText text={model.fit === "blocked" ? "Not supported on this device"
                     : model.setupComplete ? "Ready to use"
                     : active ? "Download in progress"
                     : model.catalogAvailable === false || !snapshot.download.available ? "Download unavailable"
-                    : armed ? `Click again to download - ${downloadSize(model)}`
-                    : paused ? "Download paused. Click to resume"
-                    : failed ? "Download failed. Click to retry"
-                    : model.installed ? "Model downloaded. Download remaining tools"
-                    : "Click to download"} /></span>
+                    : armed ? `Download ${downloadSize(model)}? Select again to confirm`
+                    : paused ? "Download paused. Select to resume"
+                    : failed ? "Download failed. Select to retry"
+                    : model.installed ? "Model downloaded. Select to add its tools"
+                    : "Select to download"} /></span>
                 </span>
               </button>
               {#if armed && (model.fit === "uncertain" || model.requiresOomRetry)}
-                <p class="model-warning" id={`model-warning-${model.id}`} role="alert">{model.reason} The browser may run out of memory. Click again only if you want to continue.</p>
+                <p class="model-warning" id={`model-warning-${model.id}`} role="alert">{model.reason} The browser may run out of memory. Select again only if you want to continue.</p>
               {/if}
               {#if active || (paused && !model.setupComplete)}
                 <div class="model-download">
@@ -152,11 +201,15 @@
   .model-choice-button:hover:not(:disabled) { background: var(--bg-hover); }
   .installed .model-choice-button:hover:not(:disabled) { background: var(--action-hover); }
   .model-choice-button:disabled { cursor: default; }
-  .model-choice:not(.active) .model-choice-button:disabled { opacity: 0.55; }
+  .model-choice:not(.active) .model-choice-button:disabled { opacity: var(--disabled-opacity); }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .model-choice-copy { min-width: 0; display: grid; gap: var(--space-2); overflow-wrap: anywhere; }
   .model-name { font-weight: var(--weight-medium); color: var(--fg); }
   .model-status { color: var(--fg-muted); font-size: var(--text-xs); line-height: 1.5; }
+  .model-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .chip { padding: var(--space-1) var(--space-3); border-radius: var(--radius-pill); background: var(--glass-strong); color: var(--fg-muted); font-size: var(--text-2xs); line-height: 1.4; }
+  .chip.recommended { background: color-mix(in srgb, var(--live) 14%, transparent); color: var(--live); }
+  .installed .chip { background: color-mix(in srgb, var(--action-ink) 12%, transparent); color: var(--action-ink); }
   .installed .model-status { color: var(--action-ink); }
   .model-download { display: grid; gap: var(--space-3); padding: 0 var(--model-card-padding) var(--space-7); }
   .progress-track { height: 7px; overflow: hidden; border-radius: var(--radius-pill); background: var(--glass-strong); }
@@ -166,7 +219,7 @@
   .download-detail > span { min-width: 0; overflow-wrap: anywhere; }
   .pause-download { min-height: var(--control-target); padding-inline: var(--space-4); }
   .pause-download:hover:not(:disabled) { background: var(--bg-hover); }
-  .pause-download:disabled { opacity: 0.55; cursor: default; }
+  .pause-download:disabled { opacity: var(--disabled-opacity); cursor: default; }
   .model-warning, .model-error { margin: 0; padding: 0 var(--model-card-padding) var(--model-card-padding); font-size: var(--text-xs); line-height: 1.5; overflow-wrap: anywhere; }
   .model-error { color: var(--accent-red); }
   .installed .model-error { color: var(--action-ink); }

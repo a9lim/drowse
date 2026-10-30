@@ -1,12 +1,55 @@
 """Tests for the recipe-override regen mechanism (v2.3 phase 5)."""
 from __future__ import annotations
 
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from drowse import Recipe, SamplingConfig
+from drowse.core.loom import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt, LoomTree
+from drowse.core.session import DrowseSession
 from drowse.core.steering_expr import ManifoldTerm, parse_expr
+
+
+def test_recipe_prompt_capture_distinguishes_legacy_null_empty_and_text():
+    legacy = Recipe.from_dict(Recipe().to_dict())
+    assert "system_prompt" not in legacy.to_dict()
+    assert legacy.resolved_system_prompt("current") == "current"
+    for prompt in (None, "", "Speak like a pirate"):
+        captured = Recipe.from_dict(Recipe(system_prompt=prompt).to_dict())
+        assert captured.resolved_system_prompt("different current instruction") == prompt
+        assert captured.overlay(Recipe(seed=7)).system_prompt == prompt
+    assert Recipe(system_prompt="pirate").overlay(Recipe(system_prompt=None)).system_prompt is None
+
+
+@pytest.mark.parametrize("prompt", [INHERIT_SYSTEM_PROMPT, None, "", "Speak like a pirate"])
+@pytest.mark.parametrize("raw", [False, True])
+def test_finalized_generation_recipe_keeps_prompt_through_probe_hashing(
+    prompt: str | None | InheritSystemPrompt, raw: bool,
+):
+    tree = LoomTree()
+    parent = tree.add_user_turn("Describe a voyage")
+    session = cast(Any, SimpleNamespace(
+        tree=tree,
+        config=SimpleNamespace(system_prompt="Current default instruction"),
+        _monitor=SimpleNamespace(probe_names=["calm", "missing"]),
+        _probe_hash=lambda name: "calm-sha256" if name == "calm" else None,
+    ))
+    node_id = DrowseSession._start_loom_assistant(
+        session, None, stateless=False, raw=raw, parent_node_id=parent,
+        sampling=SamplingConfig(seed=7), steering_obj=None,
+        use_thinking_req=False, system_prompt=prompt,
+    )
+    assert node_id is not None
+    tree.finalize_assistant(node_id, text="A voyage", finish_reason="stop", raw_token_ids=[1, 2])
+    saved_recipe = tree.get(node_id).to_dict()["recipe"]
+    expected = None if raw else "Current default instruction" if isinstance(prompt, InheritSystemPrompt) else prompt
+    assert saved_recipe["system_prompt"] == expected
+    assert saved_recipe["probe_hashes"] == {"calm": "calm-sha256"}
+    restored = LoomTree.from_dict(tree.to_dict()).get(node_id)
+    assert restored.recipe is not None
+    assert restored.recipe.resolved_system_prompt("Changed after generation") == expected
 
 
 # ---------------------------------------------------------------------------

@@ -7,11 +7,12 @@ import { loadGenUiMode } from "./chat.svelte";
 import { refreshLoomTree } from "./loom.svelte";
 import { loadPersistedPreferences } from "./persistence.svelte";
 import { refreshProbeList } from "./probes.svelte";
-import { refreshSession } from "./session.svelte";
+import { refreshSession, sessionState } from "./session.svelte";
 import {
   refreshCorrelation,
   refreshManifoldList,
   refreshVectorList,
+  steerRack,
 } from "./steering.svelte";
 
 /** Bootstrap the dashboard — call once on App mount.  Resolves only once
@@ -22,6 +23,9 @@ export async function bootstrap(): Promise<void> {
   // (it's scoped by model_id), so we serialize that step.  The other
   // refreshes parallelize as before.
   await refreshSession();
+  if (steerRack.customExpression === null && steerRack.entries.size === 0) {
+    steerRack.customExpression = sessionState.info?.default_steering ?? null;
+  }
   // Restore presentation preferences before attaching the persist effect so
   // we do not immediately overwrite them.  The tree always comes from the
   // authoritative server fetch below.

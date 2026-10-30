@@ -50,9 +50,7 @@
     setSubspaceLabel,
   } from "../lib/stores.svelte";
   import {
-    dismissToast,
     pushToast,
-    updateToast,
   } from "../lib/stores/toasts.svelte";
   import type { ManifoldInfo } from "../lib/types";
   import {
@@ -85,8 +83,8 @@
   let { params }: { params?: unknown } = $props();
   const returnToToken = $derived((params as { returnToToken?: unknown } | null)?.returnToToken);
 
-  function finishProbeSetup(): void {
-    if (returnToToken) openDrawer("token_drilldown", returnToToken);
+  function finishProbeSetup(target: unknown): void {
+    if (target) openDrawer("token_drilldown", target);
     else closeDrawer();
   }
 
@@ -393,6 +391,8 @@
   async function onProbe(m: ManifoldInfo): Promise<void> {
     if (isProbed(m) || busyKeys.has(rowKey(m))) return;
     const origin = drawerState.params;
+    const originDrawer = drawerState.open;
+    const returnTarget = returnToToken;
     const choice = selectorChoice(m);
     if (!choice || !choice.available) {
       pushToast(choice?.unavailableReason ?? `No compatible fit is available for ${rowKey(m)}.`, {
@@ -406,7 +406,9 @@
     try {
       const info = await attachProbe(choice.selector);
       pushToast(`probe ${info.name}`, { kind: "info" });
-      if (mounted && drawerState.params === origin) finishProbeSetup();
+      if (mounted && drawerState.open === originDrawer && drawerState.params === origin) {
+        finishProbeSetup(returnTarget);
+      }
     } catch (e) {
       pushToast(`attach: ${describeError(e)}`, {
         kind: "error",
@@ -428,6 +430,8 @@
     ev.preventDefault();
     if (customAttaching) return;
     const origin = drawerState.params;
+    const originDrawer = drawerState.open;
+    const returnTarget = returnToToken;
     const sel = customSelector.trim();
     if (!sel) {
       pushToast("selector required", { kind: "error" });
@@ -461,7 +465,9 @@
       pushToast(`probe ${info.name}`, { kind: "info" });
       customSelector = "";
       customAlias = "";
-      if (returnToToken && mounted && drawerState.params === origin) finishProbeSetup();
+      if (mounted && drawerState.open === originDrawer && drawerState.params === origin && returnTarget) {
+        finishProbeSetup(returnTarget);
+      }
     } catch (e) {
       pushToast(`attach: ${describeError(e)}`, {
         kind: "error",
@@ -486,21 +492,9 @@
     if (busyKeys.has(key)) return;
     busyKeys.add(key);
     errorMsg = null;
-    const toastId = pushToast(`fitting '${key}'…`, {
-      kind: "info",
-      ttlMs: null,
-    });
     void (async () => {
       try {
-        await apiManifoldFitStream(m.namespace, m.name, {}, (ev) => {
-          if (ev.event === "progress") {
-            const msg =
-              ev.data && typeof ev.data === "object"
-                ? (ev.data as { message?: string }).message
-                : null;
-            if (msg) updateToast(toastId, { detail: msg });
-          }
-        });
+        await apiManifoldFitStream(m.namespace, m.name, {}, () => {});
         detailCache.delete(key);
         detailErrors.delete(key);
         detailRevisions.set(key, (detailRevisions.get(key) ?? 0) + 1);
@@ -510,10 +504,8 @@
           inspectKeys.delete(key);
           await toggleInspect(m);
         }
-        dismissToast(toastId);
         pushToast(`fitted ${key}`, { kind: "info" });
       } catch (e) {
-        dismissToast(toastId);
         if (isFittingCancellation(e)) {
           pushToast(`Fitting ${key} cancelled.`, { kind: "info" });
           return;
@@ -627,7 +619,7 @@
 >
   <header class="header">
     <h2 class="title">{title}</h2>
-    {#if returnToToken}<Button onclick={finishProbeSetup}>Back to token</Button>{/if}
+    {#if returnToToken}<Button onclick={() => finishProbeSetup(returnToToken)}>Back to token</Button>{/if}
     <DrawerCloseButton onclick={closeDrawer} />
   </header>
 
@@ -1262,7 +1254,7 @@
     background: var(--glass-strong);
   }
   .act:disabled {
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   /* Steer + probe both ride the family accent so the white/purple split
@@ -1353,7 +1345,7 @@
     outline-offset: -1px;
   }
   .text-input:disabled {
-    opacity: 0.6;
+    opacity: var(--disabled-opacity);
   }
   .attach-form .act.probe {
     align-self: flex-end;
@@ -1401,7 +1393,7 @@
     color: var(--fg);
   }
   .refresh:disabled {
-    opacity: 0.45;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -1469,7 +1461,7 @@
     background: color-mix(in srgb, var(--family-accent) 16%, var(--glass));
   }
   .node-chip:disabled {
-    opacity: 0.5;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .node-name {

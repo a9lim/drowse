@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { clickWorkspaceAction } from "./workbench-navigation";
 import { openWorkspaceMenu } from "./workbench-navigation";
 import AxeBuilder from "@axe-core/playwright";
@@ -43,6 +44,7 @@ async function openFixtureWorkbench(page: Page): Promise<void> {
   await expect(
     page.getByRole("heading", { name: "Choose your first model" }),
   ).toBeVisible();
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
 }
@@ -58,6 +60,7 @@ test("landing, onboarding, and workbench meet automated WCAG checks", async ({ p
   ).toBeVisible();
   await expectAccessible(page);
 
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await expectAccessible(page);

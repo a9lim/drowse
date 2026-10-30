@@ -23,7 +23,7 @@ test("pointer controls stay quiet and keyboard navigation retains its focus ring
   await inspect.focus();
   await inspect.press(" ");
   await expect(inspect).toHaveCSS("outline-style", "solid");
-  await demo.getByRole("button", { name: "Compare", exact: true }).click();
+  await demo.getByRole("button", { name: "Steer", exact: true }).click();
   await expect(inspect).toHaveCSS("outline-style", "none");
   expect(await demo.locator(".context").evaluate(el => getComputedStyle(el).userSelect)).not.toBe("none");
 });

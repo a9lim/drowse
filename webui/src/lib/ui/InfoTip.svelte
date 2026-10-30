@@ -1,14 +1,18 @@
 <script lang="ts">
   import FluentIcon from "./FluentIcon.svelte";
+  import type { FluentIconName } from "../fluent-icons.mjs";
   import { onMount, tick } from "svelte";
   import { dropdownMotion } from "../dropdownMotion.svelte";
 
   let {
     text,
     label = "About this setting",
+    icon = "help",
   }: {
     text: string;
     label?: string;
+    /** "error" draws a circled exclamation mark, for a caution rather than help. */
+    icon?: FluentIconName;
   } = $props();
 
   let open = $state(false);
@@ -136,7 +140,7 @@
     onfocus={() => { if (trigger.matches(":focus-visible")) { clearTimeout(hoverOpenTimer); open = true; } }}
     onpointerdown={(event) => { touchInteraction = event.pointerType === "touch"; }}
     onclick={(event) => { clearTimeout(hoverOpenTimer); clearTimeout(hoverCloseTimer); open = event.detail > 0 && touchInteraction ? !open : true; }}
-  ><FluentIcon name="help" size={20} /></button>
+  ><FluentIcon name={icon} size={20} /></button>
   <span bind:this={tip} id={id} class="info-popover t-dropdown" role="tooltip" popover="manual" style={position}>{text}</span>
 </span>
 

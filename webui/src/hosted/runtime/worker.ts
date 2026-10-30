@@ -195,6 +195,7 @@ export class HostedRuntimeWorker {
   private admittedDownloadRequestId: string | null = null;
   private cancelAdmittedDownload = false;
   private admittedGenerationRequestId: string | null = null;
+  private admittedGenerationPublicId: string | null = null;
   private cancelAdmittedGeneration = false;
   private admittedFittingRequestId: string | null = null;
   private cancelAdmittedFitting = false;
@@ -314,6 +315,7 @@ export class HostedRuntimeWorker {
           return;
         }
         this.admittedGenerationRequestId = request.requestId;
+        this.admittedGenerationPublicId = request.payload.request_id ?? null;
         this.generationMutationAdmission = deferredVoid();
       }
       const fittingRequest = request.command === "request" &&
@@ -370,6 +372,7 @@ export class HostedRuntimeWorker {
             }
             if (this.admittedGenerationRequestId === request.requestId) {
               this.admittedGenerationRequestId = null;
+              this.admittedGenerationPublicId = null;
               this.cancelAdmittedGeneration = false;
             }
             if (this.admittedFittingRequestId === request.requestId) {
@@ -420,6 +423,8 @@ export class HostedRuntimeWorker {
             this.catalogRepository.get(request.payload)
           );
           this.acceptedCatalog = catalog;
+          await this.ensureContentStore();
+          await this.patchPersistedState(request.requestId);
           this.success(request.requestId, catalog);
           return;
         }
@@ -465,6 +470,11 @@ export class HostedRuntimeWorker {
           await this.handleFittingCancel(request.requestId);
           return;
         case "stop":
+          if (request.payload?.requestId !== undefined &&
+            request.payload.requestId !== this.admittedGenerationPublicId) {
+            this.success(request.requestId, undefined);
+            return;
+          }
           if (this.admittedGenerationRequestId !== null) {
             this.cancelAdmittedGeneration = true;
           }
@@ -710,7 +720,7 @@ export class HostedRuntimeWorker {
       this.patchSnapshot({
         selectedModelVariantId,
         installedModelVariantIds,
-        installedPackIds: packInstallIds(installs),
+        installedPackIds: packInstallIds(installs, this.acceptedCatalog),
         loadRecords,
         download: operationState(this.snapshot.download, "complete", null),
       }, requestId);
@@ -840,7 +850,7 @@ export class HostedRuntimeWorker {
           .map((profile) => profile.bindingSha256)
         : selection.pack.compatibleContextBindingSha256;
       const installedPackIds = new Set(
-        installs.filter((install) => install.kind === "pack").map((install) => install.id),
+        packInstallIds(installs, catalog),
       );
       const concurrentPacks = selection.variant.packs.filter((candidate) =>
         candidate.id !== packId && !candidate.required && candidate.kind !== "core" &&
@@ -920,7 +930,7 @@ export class HostedRuntimeWorker {
       );
       committed = true;
       const currentInstalls = await this.contentStore.listInstalls();
-      const installedPackIds = packInstallIds(currentInstalls);
+      const installedPackIds = packInstallIds(currentInstalls, this.acceptedCatalog);
       this.patchSnapshot({
         installedModelVariantIds: modelInstallIds(currentInstalls),
         installedPackIds,
@@ -1249,7 +1259,7 @@ export class HostedRuntimeWorker {
         modelVariantId,
         contextTokens,
         installedModelVariantIds: installedModelIds,
-        installedPackIds: packInstallIds(installs),
+        installedPackIds: packInstallIds(installs, this.acceptedCatalog),
         loadRecords,
         error: null,
       }, requestId);
@@ -1544,7 +1554,10 @@ export class HostedRuntimeWorker {
         const queuedEvent = eventQueue.then(async () => {
           if (queuedFailure !== null) return;
           try {
-            await this.emitModelMessage(message, requestId, protocol);
+            await this.emitModelMessage(
+              request.request_id === undefined ? message : { ...message, request_id: request.request_id },
+              requestId, protocol,
+            );
           } catch (error) {
             queuedFailure = error;
             void this.modelBackend.stop().catch(() => undefined);
@@ -1599,6 +1612,9 @@ export class HostedRuntimeWorker {
     requestId: string,
     protocol: GenerationProtocolState,
   ): Promise<void> {
+    if (message.type === "request_complete") {
+      throw generationProtocolViolation("Request completion belongs to the transport");
+    }
     if (message.type === "error") {
       protocol.terminalError = true;
       throw runtimeFailure(
@@ -2614,7 +2630,7 @@ export class HostedRuntimeWorker {
     this.patchSnapshot({
       selectedModelVariantId,
       installedModelVariantIds,
-      installedPackIds: packInstallIds(installs),
+      installedPackIds: packInstallIds(installs, this.acceptedCatalog),
       loadRecords,
     }, requestId);
   }
@@ -2800,8 +2816,11 @@ function validRequest(value: unknown): value is WorkerRequest {
     case "storage":
     case "unload":
     case "takeover":
-    case "stop":
       return payload === undefined;
+    case "stop":
+      return payload === undefined || (isRecord(payload) &&
+        Object.keys(payload).every((key) => key === "requestId") &&
+        typeof payload.requestId === "string" && payload.requestId.length > 0 && payload.requestId.length <= 128);
     case "catalog":
       return isRecord(payload) &&
         Object.keys(payload).every((key) =>
@@ -3171,9 +3190,17 @@ function modelInstallIds(
 
 function packInstallIds(
   installs: import("./contentStore").InstalledContentRecord[],
+  catalog: VerifiedCatalog | null,
 ): string[] {
+  const packs = catalog?.document.models.flatMap((model) =>
+    model.variants.flatMap((variant) => variant.packs)
+  );
   return installs
-    .filter((install) => install.kind === "pack")
+    .filter((install) => {
+      if (install.kind !== "pack") return false;
+      const pack = packs?.find((candidate) => candidate.id === install.id);
+      return !pack || sameObjectHashes(install.objectHashes, pack.files.map((file) => file.sha256));
+    })
     .map((install) => install.id)
     .sort();
 }

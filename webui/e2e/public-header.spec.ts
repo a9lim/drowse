@@ -18,7 +18,7 @@ for (const path of ["/", "/credits", "/app?layoutFixture=setup", "compact"]) {
     const header = page.locator(".page-header");
     const brand = header.locator(".page-brand");
     const nav = header.getByRole("navigation", { name: "Primary navigation" });
-    for (const width of [1440, 800, 761, 760, 600, 481, 480, 468, 390, 375, 320, 390, 600, 1440]) {
+    for (const width of [1440, 800, 761, 760, 600, 481, 480, 468, 431, 390, 375, 320, 390, 600, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       if (width === 320) await expect(brand).toBeHidden();
       if (width >= 600) await expect(brand).toBeVisible();
@@ -48,6 +48,43 @@ for (const path of ["/", "/credits", "/app?layoutFixture=setup", "compact"]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("public header balances its visible edges without shrinking the theme target", async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(`${devUrl}/app?layoutFixture=setup`);
+  await page.evaluate(() => document.fonts.ready);
+  const header = page.locator(".page-header");
+  for (const direction of ["ltr", "rtl"]) {
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate(async ({ direction, theme, themeUrl }) => {
+        document.documentElement.dir = direction;
+        (await import(themeUrl)).setTheme(theme);
+      }, { direction, theme, themeUrl: `/@fs${resolve("src/lib/theme.ts")}` });
+      for (const width of [320, 390, 431, 480, 760, 1440]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect.poll(() => header.evaluate(element => {
+          const header = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          const icon = element.querySelector(".theme-icon")!.getBoundingClientRect();
+          const button = element.querySelector(".theme-toggle button")!.getBoundingClientRect();
+          const nav = element.querySelector("nav")!;
+          const iconInset = style.direction === "rtl" ? icon.left - header.left : header.right - icon.right;
+          return {
+            aligned: Math.abs(iconInset - parseFloat(style.paddingInlineEnd)) <= 1,
+            target: button.width >= 44 && button.height >= 44,
+            fits: button.left >= 0 && button.right <= document.documentElement.clientWidth
+              && element.scrollWidth <= element.clientWidth + 1 && nav.scrollWidth <= nav.clientWidth + 1,
+          };
+        })).toEqual({ aligned: true, target: true, fits: true });
+        if (width === 431) {
+          await expect(header.locator(".page-brand")).toBeVisible();
+          await expect(header.locator("nav")).toHaveCSS("justify-content", "space-between");
+          await header.screenshot({ path: testInfo.outputPath(`aligned-${direction}-${theme}.png`) });
+        }
+      }
+    }
+  }
+});
 
 test("workbench keeps its wordmark without the public navigation row", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 844 });

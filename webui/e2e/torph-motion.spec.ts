@@ -103,11 +103,58 @@ test("layer, trace and template scrubbing selects real data", async ({ page }) =
   await expect(page.locator(".node-readout .morph-source")).toHaveText("alert · x 1 · y 0");
 });
 
+for (const reducedMotion of ["no-preference", "reduce"] as const) {
+  test(`reading values stay whole above the bar with ${reducedMotion} motion`, async ({ page }, info) => {
+    await page.emulateMedia({ reducedMotion });
+    await harness(page);
+    await page.evaluate(() => document.fonts.ready);
+    const card = page.getByTestId("reading-card");
+    const row = page.getByRole("group", { name: "Harness reading", exact: true });
+    for (const width of [180, 240, 320, 480]) {
+      await card.evaluate((element, width) => element.style.width = `${width}px`, width);
+      for (const value of ["0.031", "1.000", "−0.031", "9.99e−7"]) {
+        await page.getByRole("textbox", { name: "Reading value", exact: true }).fill(value);
+        await expect(row.locator(".morph-source")).toHaveText(value);
+        await row.scrollIntoViewIfNeeded();
+        if (reducedMotion === "no-preference") {
+          await expect(row.locator(".morph-text")).toHaveAttribute("data-morph-active", "");
+        }
+        await expect.poll(() => row.evaluate(element => {
+          const source = element.querySelector(".morph-source")!;
+          const range = document.createRange();
+          range.selectNodeContents(source);
+          const lines = [...range.getClientRects()];
+          const value = range.getBoundingClientRect();
+          const bounds = element.getBoundingClientRect();
+          const bar = element.querySelector(":scope > .bar")!.getBoundingClientRect();
+          const context = element.querySelector(".middle")!.getBoundingClientRect();
+          const fragments = [...element.querySelectorAll(".morph-paint > [torph-item]:not([torph-exiting])")]
+            .map(fragment => fragment.getBoundingClientRect());
+          const paintFits = fragments.every(fragment => fragment.left >= context.right
+            && fragment.right <= bounds.right + 1 && fragment.bottom <= bar.top)
+            && (!fragments.length || Math.max(...fragments.map(fragment => fragment.top))
+              - Math.min(...fragments.map(fragment => fragment.top)) <= 1);
+          return lines.length === 1 && value.left >= context.right
+            && value.right <= bounds.right + 1 && value.bottom <= bar.top
+            && element.scrollWidth <= element.clientWidth + 1 && paintFits;
+        })).toBe(true);
+      }
+      await page.getByRole("textbox", { name: "Reading value", exact: true }).fill("0.031");
+      if (reducedMotion === "no-preference") {
+        await expect(row.locator(".morph-text")).toHaveAttribute("data-morph-active", "");
+        await expect.poll(() => row.evaluate(element => element.getAnimations({ subtree: true })
+          .every(animation => animation.playState !== "running"))).toBe(true);
+      }
+      await card.screenshot({ path: info.outputPath(`reading-${width}-${reducedMotion}.png`) });
+    }
+  });
+}
+
 test("landing demonstration remains labeled and usable at phone widths", async ({page}) => {
   await page.goto(`${dev}/`);
   await page.setViewportSize({width:320,height:900});
   const demo=page.getByRole("region", {name:"Recorded Drowse example"});
-  await expect(demo).toContainText("Recorded preset");
+  await expect(demo).toContainText("Welcoming influence");
   await demo.getByRole("slider", {name:"Recorded welcoming setting"}).focus();
   await demo.getByRole("slider", {name:"Recorded welcoming setting"}).press("End");
   await expect.poll(() => demo.locator(".result").evaluate(element => {
@@ -115,8 +162,10 @@ test("landing demonstration remains labeled and usable at phone widths", async (
     copy.querySelectorAll('[aria-hidden="true"]').forEach(node => node.remove());
     return copy.textContent;
   })).toContain("Come find us sometime");
-  await demo.getByRole("button", {name:"Compare",exact:true}).click();
-  await demo.getByRole("button", {name:"Inspect toward welcoming reply"}).click();
+  await demo.getByRole("button", {name:"Inspect",exact:true}).click();
+  await expect.poll(async () => (await demo.locator(".token-text .morph-source").allTextContents()).join(""))
+    .toContain("Come find us sometime");
+  await demo.getByRole("slider", {name:"Recorded welcoming setting"}).press("ArrowLeft");
   await expect.poll(async () => (await demo.locator(".token-text .morph-source").allTextContents()).join(""))
     .toContain("moving can be a big change");
   expect(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth+1)).toBe(true);

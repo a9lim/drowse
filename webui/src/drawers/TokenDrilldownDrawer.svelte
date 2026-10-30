@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { tokenInspectorSchema } from "../lib/interfaceSchemas";
+  import { registerInterfaceController } from "../lib/workspaceController";
+  import { ToolError } from "../lib/webmcp/types";
+
   import MorphText from "../lib/ui/MorphText.svelte";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
   import SidebarIcon from "../lib/ui/SidebarIcon.svelte";
@@ -65,7 +69,7 @@
     ReplayReadout,
     type GeometryTokenReadout,
   } from "./token/readout.svelte";
-  import { availableDrilldownTab, drilldownUi, type DrilldownTab } from "./token/drilldown.svelte";
+  import { availableDrilldownTab, drilldownUi, readoutBadge, type DrilldownTab } from "./token/drilldown.svelte";
   import TokenRibbon from "./token/TokenRibbon.svelte";
   import GeometryTab from "./token/GeometryTab.svelte";
   import LogitsTab from "./token/LogitsTab.svelte";
@@ -467,37 +471,37 @@
 
   // ---- tabs ----------------------------------------------------------
 
-  const tabItems = $derived<Array<{
+  const tabItems = $derived.by<Array<{
     value: DrilldownTab;
     label: string;
-    meta: string;
+    meta?: string;
     color?: string;
     title: string;
-  }>>([
+  }>>(() => [
     {
       value: "geometry",
       label: "geometry",
-      meta: String(Object.keys(token?.measurements?.instruments.geometry?.readings ?? {}).length),
+      meta: readoutBadge(geometryReadout, capturedGeometryData, geometrySteered, data => Object.keys(data.readings).length),
       color: "var(--fg-dim)",
       title: "activation geometry",
     },
     {
       value: "logits",
       label: "logits",
-      meta: String(token?.topAlts?.length ?? 0),
+      meta: token?.topAlts ? String(token.topAlts.length) : undefined,
       title: "sampling alternatives",
     },
     {
       value: "sae",
       label: "sae",
-      meta: String(token?.measurements?.instruments.sae?.readout?.features.length ?? 0),
+      meta: readoutBadge(saeReadout, capturedSaeData, saeSteered, data => data.features.length),
       color: "var(--pillar-sae)",
       title: "sparse features",
     },
     {
       value: "lens",
       label: "j-lens",
-      meta: String(token?.measurements?.instruments.lens?.readout?.layers.length ?? 0),
+      meta: readoutBadge(lensReadout, capturedLensData, lensSteered, data => data.layers.length),
       color: "var(--pillar-lens)",
       title: "workspace readout",
     },
@@ -551,7 +555,7 @@
 
   const bodyStateKey = $derived.by(() => {
     const tab = drilldownUi.tab;
-    if (!token || !effCursor) return `${tab}:missing`;
+    if (!token || !effCursor) return params ? "missing:unavailable" : "missing:unselected";
     if (tab === "logits") return `${tab}:ready`;
     const readout = tab === "geometry"
       ? geometryReadout
@@ -576,6 +580,25 @@
   let lensSteered = $state(true);
   let saeSteered = $state(true);
   let geometrySteered = $state(true);
+
+  $effect(() => {
+    void token;
+    void loomNodeId;
+    void lensSteered;
+    lensReadout.clear();
+  });
+  $effect(() => {
+    void token;
+    void loomNodeId;
+    void saeSteered;
+    saeReadout.clear();
+  });
+  $effect(() => {
+    void token;
+    void loomNodeId;
+    void geometrySteered;
+    geometryReadout.clear();
+  });
 
   /** ≥1 attached Monitor probe (anything in the rack that isn't a lens
    *  or SAE readout probe) — the geometry replay 400s on an empty roster. */
@@ -780,6 +803,48 @@
         };
       },
     );
+  });
+
+  $effect(() => {
+    if (!active) return;
+    return registerInterfaceController("token_inspector", {
+      schema: tokenInspectorSchema,
+      read: () => ({ values: { cursor: effCursor, branch, tab: drilldownUi.tab, apply_recipe: { geometry: geometrySteered, lens: lensSteered, sae: saeSteered }, presentation: docked ? "dock" : "drawer" }, node_id: loomNodeId, raw_index: token?.rawIndex ?? null, shadow_available: hasAbPair, replay: { geometry: geometryTokenReplayAvailable, lens: lensTokenReplayAvailable, sae: saeTokenReplayAvailable } }),
+      update: async (change) => {
+        if (change.move && (change.cursor || change.branch)) throw new ToolError("INVALID_INPUT", "Choose a relative move or an explicit cursor and branch.");
+        const target = (change.cursor as TokenCursor | undefined) ?? effCursor;
+        const nextBranch = (change.branch as Branch | undefined) ?? (change.cursor && target?.turnIdx !== effCursor?.turnIdx ? "primary" : branch);
+        if (!target) throw new ToolError("NOT_FOUND", "Select a token before changing the inspector.");
+        const primary = chatLog.turns[target.turnIdx];
+        if (nextBranch === "shadow" && !primary?.abPair) throw new ToolError("NOT_FOUND", "This turn has no shadow comparison.");
+        const chosen = nextBranch === "shadow" ? primary?.abPair : primary;
+        const targetToken = segmentTokens(chosen ?? null, target.seg)[target.tokenIdx];
+        if (!targetToken) throw new ToolError("NOT_FOUND", "The requested token is not present on that branch and segment.");
+        const recipe = change.apply_recipe as Record<string, boolean> | undefined;
+        for (const [family, supported] of [["geometry", geometryTokenReplayAvailable], ["lens", lensTokenReplayAvailable], ["sae", saeTokenReplayAvailable]] as const) {
+          if (recipe?.[family] === false && (!supported || targetToken.rawIndex == null)) throw new ToolError("UNAVAILABLE", `Unsteered ${family} inspection requires token replay support and a recorded raw token index.`);
+          if (recipe?.[family] === false && ((family === "geometry" && !hasGeometryProbes) || (family === "lens" && !jlensFitted) || (family === "sae" && !saeResident))) throw new ToolError("UNAVAILABLE", `Prepare the ${family} instrument before requesting an unsteered replay.`);
+        }
+        let moved: TokenCursor | null = null;
+        if (change.move) {
+          if (change.move === "next" || change.move === "previous") moved = stepCursor(segments, target, change.move === "next" ? 1 : -1);
+          else if (change.move === "next_turn" || change.move === "previous_turn") moved = jumpTurn(segments, target, change.move === "next_turn" ? 1 : -1);
+          else if (change.move === "segment_start" || change.move === "segment_end") moved = { ...target, tokenIdx: change.move === "segment_start" ? 0 : tokenList.length - 1 };
+          else if (change.move === "anchor") moved = anchor;
+          else if (otherSeg) moved = { ...target, seg: otherSeg, tokenIdx: 0 };
+          if (!moved) throw new ToolError("NOT_FOUND", "There is no token in that direction.");
+        }
+        if (change.cursor || moved) { cursor = moved ?? { ...target }; await tick(); }
+        if (change.branch !== undefined) branch = nextBranch;
+        if (change.tab !== undefined) drilldownUi.tab = change.tab as DrilldownTab;
+        if (recipe?.geometry !== undefined) geometrySteered = recipe.geometry;
+        if (recipe?.lens !== undefined) lensSteered = recipe.lens;
+        if (recipe?.sae !== undefined) saeSteered = recipe.sae;
+        await tick();
+        if (change.presentation === "hide") closeDetails();
+        else if ((change.presentation === "dock" && !docked) || (change.presentation === "drawer" && docked)) toggleDock();
+      },
+    });
   });
 </script>
 
@@ -1225,7 +1290,7 @@
   }
   .scrub-btn:disabled {
     color: var(--fg-muted);
-    opacity: 0.35;
+    opacity: var(--disabled-opacity);
     cursor: default;
   }
   .scrub-pos {
@@ -1357,7 +1422,7 @@
     transform: scale(var(--press-scale));
   }
   .branch-point-actions button:disabled {
-    opacity: 0.42;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
   .replacement-form {

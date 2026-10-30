@@ -80,8 +80,27 @@ export function textMotion(node: HTMLElement, initial: TextMotionOptions) {
   let morph: TextMorph | null = null;
   let config = "";
   let disposed = false;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Torph adds its own screen-reader copy, but the real text already lives in
+  // `.morph-source`; remove it so the DOM holds the text once for search and agents.
+  function dropAccessibleCopy() {
+    for (const copy of node.querySelectorAll("[torph-sr]")) copy.remove();
+  }
+
+  // Once motion ends, hide the overlay again so idle text is plain, visible DOM.
+  // Torph keeps its painted items, so the next change still morphs from the old text.
+  function settle() {
+    clearTimeout(settleTimer);
+    if (disposed) return;
+    const running = node.getAnimations({ subtree: true }).some(animation => animation.playState === "running");
+    if (running) { settleTimer = setTimeout(settle, 60); return; }
+    dropAccessibleCopy();
+    host.removeAttribute("data-morph-active");
+  }
 
   function clear() {
+    clearTimeout(settleTimer);
     morph?.destroy();
     morph = null;
     node.replaceChildren();
@@ -117,11 +136,16 @@ export function textMotion(node: HTMLElement, initial: TextMotionOptions) {
           for (const animation of node.getAnimations({ subtree: true })) {
             if (animation.playState === "finished") animation.cancel();
           }
+          settle();
         }),
       });
     }
     morph.update(options.text);
+    dropAccessibleCopy();
     host.setAttribute("data-morph-active", "");
+    // Torph does not report completion when nothing changed, so settle on a timer as well.
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(settle, options.duration + 120);
   }
 
   const queue = () => schedule(host, paint);

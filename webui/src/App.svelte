@@ -1,7 +1,11 @@
 <script lang="ts">
   import FluentIcon from "./lib/ui/FluentIcon.svelte";
   import SidebarIcon from "./lib/ui/SidebarIcon.svelte";
-  import { tokenInspectorUi, dockTokenDetails, hideTokenDetails } from "./lib/stores/drawers.svelte";
+  import { tokenInspectorUi, dockTokenDetails, hideTokenDetails, toolPresentation, setToolPresentation, restoreToolPresentation, openToolInSidebar } from "./lib/stores/drawers.svelte";
+  import ManifoldBuilderDrawer from "./drawers/ManifoldBuilderDrawer.svelte";
+  import ManifoldJobProgress from "./lib/ui/ManifoldJobProgress.svelte";
+  import { manifoldJobs } from "./lib/stores/manifoldJobs.svelte";
+  import ToolDirectory from "./panels/ToolDirectory.svelte";
   import TokenDrilldownDrawer from "./drawers/TokenDrilldownDrawer.svelte";
   import BottomSheet from "./lib/ui/BottomSheet.svelte";
   import { MOBILE_SHEET_QUERY } from "./lib/bottomSheet";
@@ -12,6 +16,8 @@
   // the loom remains a separate workspace for navigating branches.
 
   import { onMount, tick } from "svelte";
+  import { registerWorkspaceController } from "./lib/workspaceController";
+  import { mountWorkspaceWebMcp, refreshWebMcp } from "./lib/webmcp";
   import { sessionState } from "./lib/stores/session.svelte";
   import { attachPersistence } from "./lib/stores/persistence.svelte";
   import { fade, fly } from "svelte/transition";
@@ -80,6 +86,10 @@
 
   async function returnHome(destination: "chats" | "models" = "chats"): Promise<void> {
     if (returningHome) return;
+    if (creationActive()) {
+      pushToast("Finish or cancel creation before leaving this model. Your progress stays visible above the workspace.", { kind: "warning" });
+      return;
+    }
     if (!onhome) {
       openDrawer("load_conversation");
       return;
@@ -93,8 +103,17 @@
   }
 
   type BootStatus = "loading" | "ready" | "failed";
-  type WorkspaceView = "conversation" | "branches" | "controls";
+  type WorkspaceView = "conversation" | "branches" | "controls" | "tools";
   let bootStatus: BootStatus = $state("loading");
+  const webMcpModelId = $derived(sessionState.info?.model_id);
+  const webMcpInstruments = $derived(JSON.stringify(sessionState.info?.instruments));
+  $effect(() => {
+    if (bootStatus === "ready" && webMcpModelId) return mountWorkspaceWebMcp();
+  });
+  $effect(() => {
+    webMcpInstruments;
+    refreshWebMcp();
+  });
   $effect(() => {
     if (bootStatus === "ready") return attachPersistence();
   });
@@ -120,6 +139,23 @@
     focusWithoutScrolling(visible ? collapseNavigationButton : restoreNavigationButton);
   }
   let narrowScreen = $state(false);
+  let compactTools = $state(false);
+  let builderVisited = $state(false);
+  let builderParams: unknown = $state(null);
+  $effect(() => {
+    if (drawerState.open === "manifold_builder") {
+      builderVisited = true;
+      builderParams = drawerState.params;
+    }
+  });
+  onMount(() => {
+    restoreToolPresentation();
+    const query = window.matchMedia("(max-width: 1100px)");
+    const update = () => { compactTools = query.matches; };
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  });
   onMount(() => {
     const navigationQuery = window.matchMedia("(max-width: 760px)");
     const updateNavigation = () => { compactNavigation = navigationQuery.matches; };
@@ -136,7 +172,9 @@
   });
   const dockedTokenDetails = $derived(tokenInspectorUi.visible);
   const mobileTokenDrawer = $derived(narrowScreen && drawerState.open === "token_drilldown");
-  const modalDrawerOpen = $derived(drawerState.open !== null || (narrowScreen && dockedTokenDetails));
+  const sideToolOpen = $derived(drawerState.open !== null && drawerState.open !== "token_drilldown" && toolPresentation.mode === "sidebar");
+  const toolTakesWorkspace = $derived(sideToolOpen && (compactTools || toolPresentation.expanded));
+  const modalDrawerOpen = $derived((drawerState.open !== null && !sideToolOpen) || (narrowScreen && dockedTokenDetails && drawerState.open === null));
   let workspaceView: WorkspaceView = $state("conversation");
   let conversationToolsVisible = $state(false);
   let loomToolsVisible = $state(false);
@@ -152,14 +190,43 @@
     boot: bootStatus, runtime: runtimeTabState, active: genStatus.active,
     replay: genStatus.replay !== null && genStatus.replay !== undefined,
     thinking: Boolean(pendingTurn?.thinkingTokens?.length && !pendingTurn?.tokens?.length),
-    view: workspaceView, section: controlsSection, drawer: drawerState.open, saveStatus: savedConversationState.status,
+    view: (workspaceView as WorkspaceView) === "tools" ? "controls" : workspaceView as Exclude<WorkspaceView, "tools">, section: controlsSection, drawer: drawerState.open, saveStatus: savedConversationState.status,
   }));
   let drawerTrigger: HTMLElement | null = null;
   let previousDrawer: string | null = null;
 
+  function creationActive(): boolean {
+    return manifoldJobs.current !== null && ["running", "waiting", "cancelling"].includes(manifoldJobs.current.status);
+  }
+
+  function beforeLeave(event: BeforeUnloadEvent): void {
+    if (!creationActive()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  }
+
   const workspacePage = $derived(
-    workspaceView === "conversation" ? "1" : workspaceView === "branches" ? "2" : "3",
+    workspaceView === "conversation" ? "1" : workspaceView === "branches" ? "2" : workspaceView === "controls" ? "3" : "4",
   );
+
+  function selectWorkspace(view: WorkspaceView): void {
+    workspaceView = view;
+    if (toolTakesWorkspace) closeDrawer();
+  }
+
+  onMount(() => registerWorkspaceController({
+    read: () => ({ view: workspaceView, section: controlsSection, leftSidebar: leftSidebarVisible, headersVisible }),
+    navigate: async (change) => {
+      if (change.section !== undefined) controlsSection = change.section;
+      if (change.view !== undefined) selectWorkspace(change.view);
+      if (change.leftSidebar !== undefined) leftSidebarVisible = change.leftSidebar;
+      if (change.headersVisible !== undefined) {
+        if (workspaceView === "branches") loomToolsVisible = change.headersVisible;
+        else conversationToolsVisible = change.headersVisible;
+      }
+      await tick();
+    },
+  }));
 
   function onWorkspaceRequest(event: Event): void {
     const requested = (event as CustomEvent<
@@ -169,11 +236,11 @@
       if (requested.section === "response" || requested.section === "model" || requested.section === "chat") {
         controlsSection = requested.section;
       }
-      workspaceView = requested.view;
+      selectWorkspace(requested.view);
       return;
     }
-    if (requested === "conversation" || requested === "branches" || requested === "controls") {
-      workspaceView = requested;
+    if (requested === "conversation" || requested === "branches" || requested === "controls" || requested === "tools") {
+      selectWorkspace(requested);
     }
   }
 
@@ -192,13 +259,13 @@
 
   $effect(() => {
     const open = drawerState.open;
-    const modal = open !== null && !mobileTokenDrawer;
+    const modal = open !== null && !mobileTokenDrawer && !sideToolOpen;
     if (open !== null && previousDrawer === null) {
       drawerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
-    if (modal) {
+    if (open !== null && !mobileTokenDrawer && (open !== previousDrawer || modal && !drawerEl?.contains(document.activeElement))) {
       void tick().then(() => {
-        const first = drawerEl?.querySelector<HTMLElement>(FOCUSABLE);
+        const first = [...(drawerEl?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(el => el.offsetParent !== null);
         focusWithoutScrolling(first ?? drawerEl);
       });
     } else if (open === null && previousDrawer !== null) {
@@ -317,7 +384,12 @@
   onMount(() => {
     void runBootstrap();
     window.addEventListener("drowse:workspace", onWorkspaceRequest);
-    return () => window.removeEventListener("drowse:workspace", onWorkspaceRequest);
+    const onModelsRequest = () => void returnHome("models");
+    window.addEventListener("drowse:models", onModelsRequest);
+    return () => {
+      window.removeEventListener("drowse:workspace", onWorkspaceRequest);
+      window.removeEventListener("drowse:models", onModelsRequest);
+    };
   });
 
   // Global keyboard accelerators. Esc stops generation; Cmd/Ctrl-Enter is
@@ -351,7 +423,7 @@
       if (loomUiState.modalRequest.kind !== null) {
         return;
       }
-      if (drawerState.open !== null) {
+      if (drawerState.open !== null && (!sideToolOpen || drawerEl?.contains(document.activeElement))) {
         closeDrawer();
         ev.preventDefault();
         return;
@@ -417,9 +489,9 @@
   }
 </script>
 
-<svelte:window onkeydown={onWindowKey} />
+<svelte:window onkeydown={onWindowKey} onbeforeunload={beforeLeave} />
 {#if bootStatus === "ready"}<ChatAccentTheme />{/if}
-<TabIdentity state={tabState} />
+<TabIdentity state={tabState} title={workspaceView === "tools" && drawerState.open === null && !runtimeTabState && !genStatus.active ? "Tools · Drowse" : undefined} />
 
 {#if bootStatus === "failed"}
   <div class="boot-failed" role="alert">
@@ -442,11 +514,12 @@
     <a class="skip-link" href="#workspace-main">Skip to workspace</a>
     <div class="workspace-notices" inert={modalDrawerOpen || paletteState.open}>
       {#if bootStatus === "ready"}<ConversationAutosave />{/if}
+      {#if !modalDrawerOpen}<ManifoldJobProgress compact />{/if}
     </div>
     <main
       class="layout"
       class:sidebar-collapsed={!leftSidebarVisible}
-      class:has-token-sidebar={dockedTokenDetails && !narrowScreen}
+      class:has-token-sidebar={(dockedTokenDetails && !narrowScreen && !sideToolOpen) || (sideToolOpen && !toolTakesWorkspace)}
       id="workspace-main"
       inert={paletteState.open || bootStatus !== "ready"}
       aria-busy={bootStatus === "loading"}
@@ -478,7 +551,7 @@
             <button type="button" class="sidebar-toggle" aria-expanded={dockedTokenDetails}
               aria-controls="workspace-token-sidebar" aria-label={dockedTokenDetails ? "Hide right sidebar" : "Show right sidebar"}
 
-              onclick={(event) => { focusWithoutScrolling(event.currentTarget); if (dockedTokenDetails) hideTokenDetails(); else dockTokenDetails(); }}><SidebarIcon side="right" /></button>
+              onclick={(event) => { focusWithoutScrolling(event.currentTarget); if (sideToolOpen) { closeDrawer(); dockTokenDetails(); } else if (dockedTokenDetails) hideTokenDetails(); else dockTokenDetails(); }}><SidebarIcon side="right" /></button>
           {/snippet}
         </PageHeader>
       </div>
@@ -502,10 +575,10 @@
               class:active={workspaceView === "conversation"}
               aria-current={workspaceView === "conversation" ? "page" : undefined}
               aria-describedby="workspace-conversation-description"
-              onclick={() => (workspaceView = "conversation")}
+              onclick={() => selectWorkspace("conversation")}
             >
               <FluentIcon name="conversation" size={16} />
-              <span class="nav-copy"><span class="wide-label">{sessionState.info?.is_base_model ? "Completion" : "Conversation"}</span>
+              <span class="nav-copy wide-label"><span>{sessionState.info?.is_base_model ? "Completion" : "Conversation"}</span>
                 <span class="nav-description" id="workspace-conversation-description" aria-hidden="true">Write and inspect text</span></span>
               <span class="short-label">{sessionState.info?.is_base_model ? "Text" : "Chat"}</span>
             </button>
@@ -516,7 +589,7 @@
                 class:active={workspaceView === "controls"}
                 aria-current={workspaceView === "controls" ? "page" : undefined}
                 aria-describedby="workspace-controls-description"
-                onclick={() => (workspaceView = "controls")}
+                onclick={() => selectWorkspace("controls")}
               >
                 <FluentIcon name="controls" size={16} /><span class="nav-copy"><span>Controls</span><span class="nav-description" id="workspace-controls-description" aria-hidden="true">Shape and measure output</span></span>
               </button>
@@ -529,9 +602,18 @@
             class:active={workspaceView === "branches"}
             aria-current={workspaceView === "branches" ? "page" : undefined}
             aria-describedby="workspace-loom-description"
-            onclick={() => (workspaceView = "branches")}
+            onclick={() => selectWorkspace("branches")}
           ><FluentIcon name="loom" size={16} /><span class="nav-copy"><span>Loom</span><span class="nav-description" id="workspace-loom-description" aria-hidden="true">Explore alternate paths</span></span></button>
 
+          <button type="button" class="workspace-parent" class:active={workspaceView === "tools"}
+            aria-current={workspaceView === "tools" ? "page" : undefined} onclick={() => selectWorkspace("tools")}
+          ><FluentIcon name="controls" size={16} /><span class="nav-copy"><span>Tools</span><span class="nav-description" aria-hidden="true">Create, inspect, and customize</span></span></button>
+
+          {#if runtimeClient.mode !== "http" && !compactNavigation}
+            <button type="button" class="workspace-parent" disabled={returningHome} onclick={() => void returnHome("models")}
+              aria-describedby="workspace-models-description"
+            ><FluentIcon name="models" size={16} /><span class="nav-copy"><span>Models</span><span class="nav-description" id="workspace-models-description" aria-hidden="true">Switch models and feature packs</span></span></button>
+          {/if}
         </nav>
         {#if compactNavigation}
           <button type="button" class="sidebar-toggle mobile-navigation-action" bind:this={collapseNavigationButton}
@@ -539,8 +621,8 @@
             onclick={() => void setMobileNavigation(false)}><FluentIcon name="up" /></button>
         {/if}
         <nav class="sidebar-links" aria-label="Library and tools">
-          {#if runtimeClient.mode !== "http"}<button type="button" disabled={returningHome} onclick={() => void returnHome("models")}><FluentIcon name="models" /><span>Models</span></button>{/if}
           <span class="sidebar-label">Workspace</span>
+          <button type="button" onclick={() => openToolInSidebar("manifold_builder")}><FluentIcon name="controls" /><span>Create a concept or scale</span></button>
           {#if workspaceView !== "controls"}
             <button type="button" aria-pressed={headersVisible} onclick={toggleViewTools}><FluentIcon name="controls" /><span>{headersVisible ? "Hide" : "Show"} {workspaceView === "branches" ? "Loom tools" : "chat tools"}</span></button>
           {/if}
@@ -565,7 +647,7 @@
         </div>
       </aside>
 
-      <div class="workspace-frame t-page-slide" data-page={workspacePage}>
+      <div class="workspace-frame t-page-slide" data-page={workspacePage} inert={toolTakesWorkspace} aria-hidden={toolTakesWorkspace}>
         <section
           class="workspace-page t-page conversation-page"
           data-page-id="1"
@@ -600,12 +682,16 @@
             <ControlsPanel bind:section={controlsSection} />
           </div>
         </section>
+        <section class="workspace-page t-page tools-page" data-page-id="4" aria-label="Tools"
+          aria-hidden={workspaceView !== "tools"} inert={workspaceView !== "tools" || modalDrawerOpen}>
+          <ToolDirectory />
+        </section>
       </div>
 
       <BottomSheet enabled={narrowScreen} open={dockedTokenDetails && drawerState.open === null} onclose={hideTokenDetails}>
         {#snippet children(dismiss)}
         <div class="drawer token-details docked t-panel-slide" class:mobile-sheet-content={narrowScreen} id="workspace-token-sidebar"
-        data-open={dockedTokenDetails} aria-hidden={!dockedTokenDetails}
+        data-open={dockedTokenDetails && !sideToolOpen} aria-hidden={!dockedTokenDetails || sideToolOpen}
         inert={!dockedTokenDetails || drawerState.open !== null} role={narrowScreen ? undefined : "complementary"} aria-label={narrowScreen ? undefined : "Generated word details"}>
         {#if tokenInspectorUi.docked}
           <TokenDrilldownDrawer docked mobile={narrowScreen} onclose={dismiss} params={tokenInspectorUi.params} active={dockedTokenDetails && drawerState.open === null} />
@@ -614,9 +700,9 @@
         {/snippet}
       </BottomSheet>
 
-      {#if drawerState.open !== null}
-        {@const entry = DRAWERS[drawerState.open]}
-        {#if !mobileTokenDrawer}
+      {#if drawerState.open !== null || builderVisited}
+        {@const entry = DRAWERS[drawerState.open ?? "manifold_builder"]}
+        {#if drawerState.open !== null && !mobileTokenDrawer && !sideToolOpen}
         <div
           class="drawer-backdrop"
           aria-hidden="true"
@@ -625,26 +711,46 @@
           out:fade={scrimOut()}
         ></div>
         {/if}
-        <BottomSheet enabled={mobileTokenDrawer} open onclose={closeDrawer}>
+        <BottomSheet enabled={mobileTokenDrawer} open={drawerState.open !== null} onclose={closeDrawer}>
           {#snippet children(dismiss)}
         <div
           bind:this={drawerEl}
           class="drawer"
+          class:docked={sideToolOpen}
+          class:workspace-tool={toolTakesWorkspace}
+          hidden={drawerState.open === null}
           class:narrow={entry.narrow}
           class:token-details={drawerState.open === "token_drilldown"}
           class:mobile-sheet-content={mobileTokenDrawer}
           class:download-confirm={drawerState.open === "download_chat"}
-          role={mobileTokenDrawer ? undefined : "dialog"}
-          aria-modal={mobileTokenDrawer ? undefined : "true"}
-          aria-label={mobileTokenDrawer ? undefined : drawerLabel(drawerState.open!)}
+          role={drawerState.open === null || mobileTokenDrawer ? undefined : sideToolOpen ? "complementary" : "dialog"}
+          aria-modal={drawerState.open === null || mobileTokenDrawer || sideToolOpen ? undefined : "true"}
+          aria-label={drawerState.open === null || mobileTokenDrawer ? undefined : drawerLabel(drawerState.open)}
           tabindex="-1"
-          onkeydown={event => { if (!mobileTokenDrawer) onDrawerKeydown(event); }}
-          in:fly={mobileTokenDrawer ? { duration: 0 } : panelIn(24)}
-          out:fly={mobileTokenDrawer ? { duration: 0 } : panelOut(14)}
+          onkeydown={event => { if (!mobileTokenDrawer && !sideToolOpen) onDrawerKeydown(event); }}
+          in:fly={mobileTokenDrawer || sideToolOpen ? { duration: 0 } : panelIn(24)}
+          out:fly={mobileTokenDrawer || sideToolOpen ? { duration: 0 } : panelOut(14)}
           onintrostart={(event) => { event.currentTarget.inert = false; }}
           onoutrostart={(event) => { event.currentTarget.inert = true; }}
         >
-          <entry.component params={drawerParams(drawerState.open!, drawerState.params)} mobile={mobileTokenDrawer} onclose={dismiss} />
+          {#if drawerState.open !== null && drawerState.open !== "token_drilldown"}
+            <div class="tool-presentation" role="group" aria-label="Tool presentation">
+              <div class="presentation-options">
+                <button type="button" aria-pressed={sideToolOpen} onclick={() => setToolPresentation("sidebar")}>Side panel</button>
+                <button type="button" aria-pressed={!sideToolOpen} onclick={() => setToolPresentation("dialog")}>Dialog</button>
+              </div>
+              {#if sideToolOpen && !compactTools}<button type="button" aria-pressed={toolPresentation.expanded} onclick={() => (toolPresentation.expanded = !toolPresentation.expanded)}>{toolPresentation.expanded ? "Restore width" : "Expand"}</button>{/if}
+            </div>
+          {/if}
+          {#if modalDrawerOpen}<ManifoldJobProgress compact />{/if}
+          {#if builderVisited}
+            <div class="tool-content" hidden={drawerState.open !== "manifold_builder"} inert={drawerState.open !== "manifold_builder"}>
+              <ManifoldBuilderDrawer params={builderParams} />
+            </div>
+          {/if}
+          {#if drawerState.open !== null && drawerState.open !== "manifold_builder"}
+            <entry.component params={drawerParams(drawerState.open, drawerState.params)} mobile={mobileTokenDrawer} onclose={dismiss} />
+          {/if}
         </div>
           {/snippet}
         </BottomSheet>
@@ -1191,6 +1297,27 @@
     transition-delay: var(--page-stagger);
   }
 
+  .t-page-slide[data-page="4"] .t-page[data-page-id="4"] {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: none;
+    filter: none;
+  }
+
+  .drawer[hidden], .tool-content[hidden] { display: none !important; }
+  .workspace-frame[aria-hidden="true"] { opacity: 0; }
+  .tool-content { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .tool-content > :global(*) { flex: 1; min-height: 0; }
+  .tool-presentation { display: flex; justify-content: space-between; gap: var(--space-sm); padding: var(--surface-padding); padding-block-end: 0; flex: none; flex-wrap: wrap; }
+  .presentation-options { display: flex; gap: var(--space-xs); padding: calc(var(--radius-group) - var(--radius)); border-radius: var(--radius-group); background: var(--workspace-field-bg); box-shadow: var(--shadow-well); }
+  .tool-presentation button { min-width: var(--control-target); min-height: var(--control-target); padding: var(--space-xs) var(--space-sm); border: 1px solid transparent; border-radius: var(--radius); background: transparent; color: var(--fg-dim); font: inherit; font-size: var(--text-sm); transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out); }
+  .tool-presentation button[aria-pressed="true"] { background: var(--workspace-neutral-bg); color: var(--fg); }
+  .tool-presentation button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+  .tool-presentation > button:active { scale: var(--press-scale); }
+  @media (hover: hover) { .tool-presentation button:hover { background: var(--workspace-neutral-hover); color: var(--fg); } }
+  @media (forced-colors: active) { .tool-presentation button[aria-pressed="true"] { border-color: Highlight; } }
+
   .drawer {
     top: var(--surface-padding);
     inset-inline-end: var(--surface-padding);
@@ -1325,7 +1452,7 @@
     }
     .workspace-nav {
       display: grid;
-      grid-template-columns: repeat(3, auto);
+      grid-template-columns: repeat(4, auto);
       width: 100%;
       max-width: 100%;
       margin-inline: auto;
@@ -1346,13 +1473,29 @@
   }
 
   @media (max-width: 420px) {
-    .workspace-navigation { justify-content: center; }
-    .workspace-nav { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .workspace-nav button { padding-inline: var(--space-1); }
+    .app-sidebar { padding-inline: max(var(--space-xs), env(safe-area-inset-left)) max(var(--space-xs), env(safe-area-inset-right)); }
+    .workspace-navigation { justify-content: center; gap: 0; }
+    .workspace-nav { width: 100%; grid-template-columns: minmax(0, 1fr) max-content minmax(0, 1fr) minmax(0, 1fr); }
+    .workspace-nav button { padding-inline: calc(var(--space-1) / 2); }
     .workspace-nav :global(.fluent-icon) { display: none; }
   }
 
   @media (min-width: 621px) and (max-height: 600px) {
     .chat-zone:not(:has(:global(.chat-header))) { padding: 0; }
+  }
+  .drawer.docked.narrow { width: var(--right-sidebar-width); }
+  .drawer.docked.workspace-tool {
+    position: relative;
+    inset: auto;
+    grid-column: 2 / -1;
+    grid-row: 2;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    z-index: 3;
+    background: var(--workspace-panel-bg);
+  }
+  @media (max-width: 760px) {
+    .drawer.docked.workspace-tool { grid-column: 1; grid-row: 3; width: 100%; border: 0; }
   }
 </style>

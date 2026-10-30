@@ -467,6 +467,29 @@ def test_gated_replay_passes_the_forward_step_to_the_gate_callback():
         assert steps[start:end] == list(range(end - start))
 
 
+@pytest.mark.parametrize("offset", [-1000., 0., 1000.])
+def test_joint_replay_preserves_finite_logit_offsets(offset: float):
+    from drowse.core.joint_logprobs import compute_joint_logprobs
+
+    session: Any = _MockSession()
+    vocab = len(session.tokenizer._vocab) + 16
+    logits = torch.arange(vocab, dtype=torch.float32) / 4
+    session.config = GenerationConfig(top_p=1., top_k=None)
+    session.model = session._model = FakeLogitsModel(
+        lambda ids: (logits + offset).expand(1, ids.shape[1], vocab).clone(),
+    )
+    result = compute_joint_logprobs(session, "a1", "a2")
+    expected = logits.log_softmax(-1)
+    for row in result.rows:
+        if row.a_text:
+            tid = session.tokenizer._vocab[row.a_text.strip()]
+            assert row.lp_a_in_a == pytest.approx(float(expected[tid]), abs=1e-6)
+        if row.b_text:
+            tid = session.tokenizer._vocab[row.b_text.strip()]
+            assert row.lp_b_in_b == pytest.approx(float(expected[tid]), abs=1e-6)
+    session.assert_runs_closed()
+
+
 def test_compute_joint_logprobs_runs_end_to_end_on_mock():
     from drowse.core.joint_logprobs import compute_joint_logprobs
 

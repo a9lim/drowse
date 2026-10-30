@@ -262,7 +262,7 @@ export function syncChatLogFromTree(preserveLiveTokens = true): void {
         prev.text = node.text;
       }
       prev.generated = node.recipe !== null;
-      prev.appliedSteering = node.applied_steering ?? prev.appliedSteering ?? null;
+      prev.appliedSteering = node.applied_steering ?? null;
       prev.aggregateReadings = node.aggregate_readings ?? prev.aggregateReadings;
       prev.finishReason = node.finish_reason ?? prev.finishReason;
       // Server-shipped node tokens are authoritative. Preserve the live
@@ -491,7 +491,7 @@ export function applyTreeDelta(ev: {
 }
 
 /** Bootstrap fetch of the required tree surface. */
-export async function refreshLoomTree(): Promise<void> {
+export async function refreshLoomTree(strict = false): Promise<void> {
   // Streaming events already maintain the map; a queued read would wait for
   // the entire reply and can time out in the browser runtime.
   if (genStatus.active && loomTree.loaded) return;
@@ -505,6 +505,7 @@ export async function refreshLoomTree(): Promise<void> {
     // fatal-error state.
     if (!loomTree.loaded) loomTree.error = msg;
     pushToast(`tree: ${msg}`, { kind: "error" });
+    if (strict) throw e;
   }
 }
 

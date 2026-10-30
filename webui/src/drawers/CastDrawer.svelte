@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   // Cast manager (phase 3 of the cast model) — the tree's roster of
   // named labels, each with a standing steering recipe.  A member's
@@ -24,6 +24,12 @@
   } from "../lib/stores.svelte";
   import { closeDrawer } from "../lib/stores/drawers.svelte";
   import InfoTip from "../lib/ui/InfoTip.svelte";
+  import { IDENTITY_HELP, SAMPLING_HELP } from "../lib/parameterHelp";
+  import { registerCastController } from "../lib/workspaceController";
+  import { SAMPLING_SEED_MAX, samplingSeedMinimum } from "../lib/runtime/samplingCapabilities";
+  import { getRuntimeClient } from "../lib/runtime/registry";
+  import NumberInput from "../lib/NumberInput.svelte";
+  import Select from "../lib/Select.svelte";
   import type { CastMemberJSON } from "../lib/types";
 
   let _drawerProps: { params?: unknown } = $props();
@@ -33,6 +39,8 @@
 
   let steering = $state("");
   let notes = $state("");
+  let thinking = $state("inherit");
+  let seed = $state<number | null>(null);
   let editingLabel = $state<string | null>(null);
   let editingKey = $state<string | null>(null);
   let busy = $state(false);
@@ -103,6 +111,8 @@
     editingKey !== null && (
       steering.trim() !== (selectedMember?.recipe?.steering ?? "")
       || notes.trim() !== (selectedMember?.notes ?? "")
+      || thinking !== (typeof selectedMember?.recipe?.thinking === "boolean" ? String(selectedMember.recipe.thinking) : "inherit")
+      || seed !== (selectedMember?.recipe?.seed ?? null)
     ),
   );
   const saveStatus = $derived(
@@ -120,8 +130,19 @@
     editingKey = row.key;
     steering = row.member?.recipe?.steering ?? "";
     notes = row.member?.notes ?? "";
+    thinking = typeof row.member?.recipe?.thinking === "boolean" ? String(row.member.recipe.thinking) : "inherit";
+    seed = row.member?.recipe?.seed ?? null;
     err = null;
   }
+
+  onMount(() => registerCastController({
+    read: () => ({ busy: busy || saveTimer !== null, dirty, values: { label: editingKey, steering, thinking, seed, notes } }),
+    sync: () => {
+      const row = roster.find(row => row.key === editingKey);
+      if (row) loadMember(row);
+      else { steering = ""; notes = ""; thinking = "inherit"; seed = null; }
+    },
+  }));
 
   function cancelScheduledSave(): void {
     if (saveTimer === null) return;
@@ -156,6 +177,8 @@
     const targetLabel = editingLabel;
     const nextSteering = steering.trim();
     const nextNotes = notes.trim();
+    const nextThinking = thinking === "inherit" ? null : thinking === "true";
+    const nextSeed = seed;
     busy = true;
     err = null;
     const request = (async (): Promise<boolean> => {
@@ -163,6 +186,8 @@
         const r = await apiTree.castPut(target, {
           steering: nextSteering === "" ? null : nextSteering,
           notes: nextNotes,
+          thinking: nextThinking,
+          seed: nextSeed,
         });
         // Optimistic merge — the ``op="cast"`` frame confirms shortly.
         castState.roster = { ...castState.roster, [target]: r.member };
@@ -203,6 +228,8 @@
       if (editingKey === slug) {
         steering = "";
         notes = "";
+        thinking = "inherit";
+        seed = null;
         lastSavedKey = null;
       }
     } catch (e) {
@@ -251,8 +278,8 @@
               <span class="glyph" aria-hidden="true">{row.label.slice(0, 1).toUpperCase()}</span>
               <span class="member-text">
                 <span class="member-label">{row.label}</span>
-                {#if row.member?.recipe?.steering}
-                  <span class="member-recipe">Custom guidance</span>
+                {#if row.member?.recipe && Object.keys(row.member.recipe).length > 0}
+                  <span class="member-recipe">Standing recipe</span>
                 {:else}
                   <span class="member-notes">Uses the current reply settings</span>
                 {/if}
@@ -275,10 +302,10 @@
         </div>
         <div class="field">
           <span class="field-heading">
-            <span class="label">Response guidance</span>
+            <span class="label">Steering expression</span>
             <InfoTip
               label="About role guidance"
-              text="Guidance used whenever this role writes. Settings for one reply take priority."
+              text={IDENTITY_HELP.cast}
             />
           </span>
           <input
@@ -287,9 +314,23 @@
             placeholder="Leave blank for normal behavior"
             spellcheck="false"
             autocomplete="off"
-            aria-label={`Response guidance for ${editingLabel}`}
+            aria-label={`Steering expression for ${editingLabel}`}
             oninput={scheduleSave}
           />
+        </div>
+        <div class="field">
+          <span class="field-heading"><span class="label">Thinking default</span><InfoTip text={SAMPLING_HELP.thinking} label="About role thinking" /></span>
+          <Select
+            value={thinking}
+            options={[{ value: "inherit", label: "Use reply setting" }, { value: "true", label: "On" }, { value: "false", label: "Off" }]}
+            disabled={!sessionState.info?.supports_thinking || !sessionState.info?.thinking_is_optional}
+            ariaLabel={`Thinking default for ${editingLabel}`}
+            onchange={(value) => { thinking = value; scheduleSave(); }}
+          />
+        </div>
+        <div class="field">
+          <span class="field-heading"><span class="label">Seed default</span><InfoTip text={SAMPLING_HELP.seed} label="About role seed" /></span>
+          <NumberInput value={seed} min={samplingSeedMinimum(getRuntimeClient().mode)} max={SAMPLING_SEED_MAX} step={1} allowEmpty placeholder="Use reply setting" ariaLabel={`Seed default for ${editingLabel}`} onchange={(value) => { seed = value === null ? null : Math.floor(value); scheduleSave(); }} />
         </div>
         <label class="field">
           <span class="label">Private note</span>

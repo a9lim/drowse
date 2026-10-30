@@ -391,12 +391,27 @@ export interface RuntimeEventChannel {
   subscribe(listener: (message: WSServerMessage) => void): () => void;
   subscribeState(listener: (state: RuntimeEventChannelState) => void): () => void;
   send(message: WSClientMessage): void;
+  requestStatus?(requestId: string): Promise<import("./requestJournal").RuntimeRequestStatus>;
   stop(): Promise<void>;
   acknowledgeSnapshot(): void;
   close(): void;
 }
 
+export interface RuntimeOperationReceipt {
+  request_id: string;
+  path: string;
+  model_id: string | null;
+  state: "queued" | "running" | "completed" | "failed" | "interrupted";
+  progress: string[];
+  result: unknown;
+  error: { code?: string; message: string; status?: number } | null;
+  result_truncated: boolean;
+  result_sha256: string | null;
+  result_bytes: number;
+}
+
 export interface RuntimeSessionsService {
+  operationStatus?(operationId: string): Promise<RuntimeOperationReceipt>;
   list(): Promise<{ sessions: SessionInfo[] }>;
   get(id?: string): Promise<SessionInfo>;
   patch(
@@ -405,7 +420,7 @@ export interface RuntimeSessionsService {
       top_p: number;
       top_k: number | null;
       max_tokens: number;
-      system_prompt: string;
+      system_prompt: string | null;
       thinking: boolean;
     }>,
     id?: string,
@@ -435,6 +450,7 @@ export interface RuntimeProfilesService {
     request: import("../types").ExtractRequest,
     onEvent: (event: RuntimeProgressEvent) => void,
     id?: string,
+    operationId?: string,
   ): Promise<{ canonical: string; profile: VectorInfo }>;
 }
 
@@ -457,6 +473,7 @@ export interface RuntimeManifoldsService {
   install(
     request: InstallManifoldRequest,
     onEvent?: (event: RuntimeProgressEvent) => void,
+    operationId?: string,
   ): Promise<ManifoldInfo>;
   merge(request: MergeManifoldRequest): Promise<ManifoldInfo>;
   fit(
@@ -464,10 +481,12 @@ export interface RuntimeManifoldsService {
     name: string,
     request: FitManifoldRequest,
     onEvent: (event: RuntimeProgressEvent) => void,
+    operationId?: string,
   ): Promise<ManifoldInfo>;
   generate(
     request: GenerateManifoldRequest,
     onEvent: (event: RuntimeProgressEvent) => void,
+    operationId?: string,
   ): Promise<ManifoldInfo>;
   drowseArchiveList(): Promise<{ packs: HostedManifoldPackInfo[] }>;
   drowseArchiveInstall(
@@ -498,7 +517,7 @@ export interface RuntimeTemplatesService {
   get(namespace: string, name: string): Promise<TemplateDetail>;
   create(request: CreateTemplateRequest): Promise<TemplateDetail>;
   delete(namespace: string, name: string): Promise<{ namespace: string; name: string; removed: boolean }>;
-  score(namespace: string, name: string, steering: string | null): Promise<ScoreTemplateResponse>;
+  score(namespace: string, name: string, steering: string | null, operationId?: string): Promise<ScoreTemplateResponse>;
 }
 
 export interface RuntimeTreeService {
@@ -604,6 +623,7 @@ export type RuntimeServiceName = keyof RuntimeServiceMap;
 
 export const RUNTIME_SERVICE_METHODS = Object.freeze({
   sessions: Object.freeze({
+    operationStatus: true,
     list: true,
     get: true,
     patch: true,
@@ -787,7 +807,7 @@ type WorkerCommandPayloads = {
   request: RuntimeServiceRequest;
   submit: WSSubmitRequest;
   generate: WSGenerateRequest;
-  stop: undefined;
+  stop: { requestId?: string } | undefined;
 };
 
 export type WorkerRequest = {

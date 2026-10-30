@@ -1,4 +1,4 @@
-import { WINDOWS_GPU_GUIDANCE, WINDOWS_INTEL_GEN9_BLOCK } from "./gpuRecovery";
+import { linuxChromiumWebGpuHint, WINDOWS_GPU_GUIDANCE, WINDOWS_INTEL_GEN9_BLOCK } from "./gpuRecovery";
 
 type ErrorMessage = string | ((raw: string) => string);
 
@@ -15,6 +15,13 @@ const MESSAGES: Array<[RegExp, ErrorMessage]> = [
   [/WEBGPU_LIMIT_TOO_LOW/u, webGpuLimitMessage],
   [/WEBGPU_FEATURE_(?:MISSING|UNAVAILABLE)/u,
     "This browser’s graphics support is missing a feature this model needs. Update your browser and graphics driver, then run the device check again. If it still fails, use another supported browser."],
+  [/^WEBGPU_(?:UNAVAILABLE|ADAPTER_MISSING)$/u,
+    () => {
+      const hint = typeof navigator === "undefined" ? null : linuxChromiumWebGpuHint(navigator.userAgent);
+      return hint
+        ? `Drowse could not find compatible hardware-accelerated graphics. ${hint}`
+        : "Drowse could not confirm compatible hardware-accelerated graphics. Update your browser and graphics driver, then run the device check again.";
+    }],
   [/WEBGPU_(?:UNAVAILABLE|ADAPTER_|CALIBRATION_|LIMIT_UNAVAILABLE)|SOFTWARE_ADAPTER|ADAPTER_KIND_UNKNOWN/u,
     "Drowse could not confirm compatible hardware-accelerated graphics. Update your browser and graphics driver, then run the device check again."],
   [/WEBGPU_(?:DEVICE|OUT_OF_MEMORY)|GPU_DEVICE|DEVICE_LOST/u,
@@ -46,7 +53,7 @@ const MESSAGES: Array<[RegExp, ErrorMessage]> = [
   [/DOWNLOAD_(?:HTTP_REJECTED|REDIRECT_REJECTED)|ARTIFACT_ROUTE_UNAVAILABLE/u,
     "The model host did not provide an approved download. Refresh the page and try again later."],
   [/ARTIFACT_|VERIFIED_ARTIFACT_|UNVERIFIED_ARTIFACT|CHECKSUM|HASH|INTEGRITY|SIZE_MISMATCH|SAFETENSORS/u,
-    "A downloaded file failed its safety check. Resume the download to replace it. If it fails again, remove the model and download it again."],
+    "A downloaded file failed its safety check. Retry the download to replace it. If it fails again, remove the model and download it again."],
   [/ARCHIVE_|INVALID_TRANSCRIPT|TRANSCRIPT_MODEL_MISMATCH|JSON_(?:INVALID|NOT_UTF8|DUPLICATE_KEY)/u,
     "Drowse could not read that file. Choose an unmodified Drowse file and try again."],
   [/LOCAL_SESSION_(?:INCOMPATIBLE|SCHEMA_UNSUPPORTED)|UNSUPPORTED_SESSION_SCHEMA/u,
@@ -73,6 +80,8 @@ const MESSAGES: Array<[RegExp, ErrorMessage]> = [
     "That analysis is not available in this browser session. Reopen the model and try again."],
   [/AUTHORING_OPERATION_UNAVAILABLE|FITTING_UNAVAILABLE|BROWSER_(?:AUTHORING|FITTING|FIT_)|HOSTED_(?:JLENS_FITTING|SAE_TRAINING)/u,
     "That building method is not available for this model in the browser."],
+  [/BROWSER_AUTOMATIC_TOPOLOGY_UNAVAILABLE/u,
+    "Choose linear PCA as the fit method. Automatic shape detection is not available in the browser."],
   [/FITTING_|WASM_FITTING/u,
     "Drowse could not finish building that model tool. Check the selected inputs and try again."],
   [/CAPTURE_|MEASUREMENT_|GEOMETRY_|PROBE_|RANK_ONE_CAPTURE|SCALAR_MEASUREMENTS|DROWSE_CAPTURE/u,

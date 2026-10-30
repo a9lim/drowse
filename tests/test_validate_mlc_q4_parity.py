@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -100,20 +101,24 @@ def test_smol_named_role_is_required_only_for_release_evidence(tmp_path: Path) -
         raise AssertionError("release evidence accepted a missing named-role row")
 
 
-@pytest.mark.parametrize("model_id", ["gemma3-1b-instruct", "gemma3-4b-instruct"])
-def test_gemma_parity_does_not_masquerade_as_270m_release_evidence(tmp_path: Path, model_id: str) -> None:
+@pytest.mark.parametrize(("model_id", "evidence", "required_model"), [
+    ("gemma3-1b-instruct", "gemmaProductionQ4Parity", "gemma3-270m-instruct"),
+    ("gemma3-4b-instruct", "gemmaProductionQ4Parity", "gemma3-270m-instruct"),
+    ("qwen3-4b", "qwenProductionQ4Parity", "qwen3-1.7b"),
+])
+def test_parity_evidence_is_bound_to_the_exact_model(tmp_path: Path, model_id: str, evidence: str, required_model: str) -> None:
     metadata = capture_metadata(model_id)
     (tmp_path / "capture.json").write_text(json.dumps(metadata))
     assert _VALIDATOR.load_capture_metadata(tmp_path) == metadata
     try:
         _VALIDATOR.release_evidence_receipt(
             {"modelId": model_id}, metadata,
-            "gemmaProductionQ4Parity", "candidate/capture.json",
+            evidence, "candidate/capture.json",
         )
     except ValueError as error:
-        assert "requires gemma3-270m-instruct" in str(error)
+        assert f"requires {required_model}" in str(error)
     else:
-        raise AssertionError(f"{model_id} parity was accepted as 270M release evidence")
+        raise AssertionError(f"{model_id} parity was accepted as {required_model} release evidence")
 
 
 def test_cosine_stays_in_range_despite_float32_reduction_rounding() -> None:
@@ -224,6 +229,37 @@ def test_capture_metadata_requires_same_vm_rank_one_control(tmp_path: Path) -> N
         assert "invalid schema" in str(error)
     else:
         raise AssertionError("schema-v3 capture accepted a missing rank-one control")
+
+
+def test_capture_is_bound_to_verified_model_files(tmp_path: Path):
+    files = []
+    for name in ["tensor-cache.json", "tokenizer.json", "tokenizer_config.json", "model.wasm", "params.bin"]:
+        data = name.encode()
+        (tmp_path / name).write_bytes(data)
+        files.append({"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+    manifest = {
+        "source": {"repository": "fixture/model", "revision": "a" * 40},
+        "quantization": "q4f32_1", "runtimeAbi": "drowse-web-runtime-v1",
+        "hookAbi": "post-block-residual-v4", "hiddenSize": 2, "layerMap": [0, 1], "files": files,
+    }
+    (tmp_path / "hosted-artifacts.json").write_text(json.dumps(manifest))
+    identity = {
+        "sourceModel": "fixture/model", "sourceRevision": "a" * 40,
+        "convertedManifestSha256": files[0]["sha256"], "quantization": "q4f32_1",
+        "tokenizerSha256": files[1]["sha256"], "chatTemplateSha256": files[2]["sha256"],
+        "modelLibrarySha256": files[3]["sha256"], "runtimeAbi": "drowse-web-runtime-v1",
+        "hookAbi": "post-block-residual-v4", "hiddenSize": 2, "layerMap": [0, 1],
+    }
+    metadata = capture_metadata()
+    metadata["runtime_identity_sha256"] = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    _VALIDATOR.validate_capture_model_identity(tmp_path, metadata)
+    with pytest.raises(ValueError, match="different model artifact identity"):
+        _VALIDATOR.validate_capture_model_identity(tmp_path, {**metadata, "runtime_identity_sha256": "f" * 64})
+    with pytest.raises(ValueError, match="different model artifact identity"):
+        _VALIDATOR.validate_capture_model_identity(tmp_path, {**metadata, "layer_map": [1, 0]})
+    (tmp_path / "params.bin").write_bytes(b"corrupted")
+    with pytest.raises(ValueError, match="artifact integrity mismatch"):
+        _VALIDATOR.validate_capture_model_identity(tmp_path, metadata)
 
 
 def test_release_receipt_retains_observed_runtime_identity() -> None:

@@ -1,3 +1,4 @@
+import { chooseFixtureModel } from "./workbench-navigation";
 import { selectWorkspaceView } from "./workbench-navigation";
 import { openWorkspaceMenu } from "./workbench-navigation";
 import { setAppearance, returnToChats, showWorkspaceTools, selectLoomView, openTokenDetails } from "./workbench-navigation";
@@ -6,6 +7,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 import { buffer as readStreamBuffer, text as readStreamText } from "node:stream/consumers";
 import { CHAT_ACCENTS } from "../src/lib/chatAccent";
+import { siteTitle } from "../scripts/site-metadata.mjs";
 
 const devUrl = "http://127.0.0.1:4176";
 const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
@@ -131,6 +133,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   test.setTimeout(120_000);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A complete local backup");
@@ -480,15 +483,17 @@ test("geometry setup offers clear actions and preserves the current token", asyn
 
   // Simulate successful authoring; the layout fixture never trains model weights.
   await page.evaluate(async url => {
-    const { apiManifolds } = await import(url);
+    const { getRuntimeClient } = await import(url);
+    const { manifolds } = getRuntimeClient();
     (window as any).__conceptCalls = [];
-    apiManifolds.generate = async (request: unknown) => { (window as any).__conceptCalls.push(request); };
-    apiManifolds.fit = async (namespace: string, name: string) => { (window as any).__conceptCalls.push({ namespace, name }); };
-  }, servicesUrl);
+    manifolds.generate = async (request: unknown) => { (window as any).__conceptCalls.push(request); };
+    manifolds.fit = async (namespace: string, name: string) => { (window as any).__conceptCalls.push({ namespace, name }); };
+  }, `/@fs${resolve("src/lib/runtime/registry.ts")}`);
   await sheet.getByRole("button", { name: "Create a concept", exact: true }).click();
-  await builder.getByRole("textbox", { name: "name *", exact: true }).fill("Test Concept");
-  await builder.getByRole("textbox", { name: /^concepts/ }).fill("formal\ncasual");
-  await builder.getByRole("button", { name: "generate + fit", exact: true }).click();
+  await builder.getByRole("textbox", { name: "Name (required)", exact: true }).fill("Test Concept");
+  await builder.getByRole("textbox", { name: "Concepts (at least 2)", exact: false }).fill("formal\ncasual");
+  await builder.getByRole("button", { name: "Generate and fit", exact: true }).click();
+  await builder.getByRole("button", { name: "Open library", exact: true }).click();
   await expect(rack).toBeVisible();
   expect(await page.evaluate(() => (window as any).__conceptCalls)).toEqual([
     expect.objectContaining({ namespace: "local", name: "test_concept", concepts: ["formal", "casual"] }),
@@ -549,6 +554,7 @@ test("sampling sliders accept full-height drags and reset to original", async ({
 test("model reset preserves chats and restores defaults after reopening", async ({ page, browserName }) => {
   test.skip(browserName === "webkit", "Persistent worker storage requires OPFS.");
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Keep this conversation after reset.");
@@ -657,6 +663,7 @@ test("Chat controls share the three-tab layout on desktop and phones", async ({ 
 test("Chat controls update the saved name and avatar without leaving the tab", async ({ page, browserName }) => {
   test.skip(browserName === "webkit", "The persistent worker fixture requires OPFS, unavailable in headless WebKit.");
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Save this chat from its controls.");
@@ -810,13 +817,14 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: width === 1000 ? "light" : "dark" });
     await page.goto(`${devUrl}/app?fixture=1&choose=1`);
+    await chooseFixtureModel(page);
     const openModel = page.getByRole("button", { name: /^(Download and open|Open Drowse)$/ });
     await expect(openModel).toBeEnabled();
     await settled();
     await page.evaluate(() => document.fonts.ready);
-    const modelLogo = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
+    const modelLogo = await page.locator(".page-brand").evaluate(el => ({ ...el.getBoundingClientRect().toJSON(), y: el.getBoundingClientRect().y + scrollY }));
     const assertHeader = async () => {
-      const logo = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
+      const logo = await page.locator(".page-brand").evaluate(el => ({ ...el.getBoundingClientRect().toJSON(), y: el.getBoundingClientRect().y + scrollY }));
       const inWorkbench = await page.locator(".shell").isVisible();
       const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
       expect(Math.abs(logo.width - modelLogo.width * (compact ? 5 / 6 : 1))).toBeLessThanOrEqual(1);
@@ -841,6 +849,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await expect(page.locator(".app-shell")).toBeVisible();
     await settled();
     await assertHeader();
+    await chooseFixtureModel(page);
     await page.getByRole("button", { name: /^(Download and open|Open Drowse)$/ }).click();
     await expect(page.locator(".shell")).toBeVisible();
     await settled();
@@ -1496,17 +1505,17 @@ test("dialog containers stay unselected while controls retain keyboard focus", a
   await openDrawer(page, "help");
   const dialog = page.getByRole("dialog", { name: "Help and shortcuts", exact: true });
   await expect(dialog).toBeVisible();
-  const close = dialog.getByRole("button", { name: /close/i }).first();
+  const firstControl = dialog.getByRole("button", { name: "Side panel", exact: true });
   for (const theme of ["dark", "light"]) {
     await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
     await dialog.focus();
     await expect(dialog).toHaveCSS("outline-style", "none");
     await page.keyboard.press("Tab");
-    await expect(close).toBeFocused();
-    await expect(close).toHaveCSS("outline-style", "solid");
-    await expect(close).toHaveCSS("outline-width", "2px");
+    await expect(firstControl).toBeFocused();
+    await expect(firstControl).toHaveCSS("outline-style", "solid");
+    await expect(firstControl).toHaveCSS("outline-width", "2px");
     await dialog.screenshot({ path: testInfo.outputPath(`dialog-focus-${theme}.png`) });
-    await dialog.click({ position: { x: 20, y: 20 } });
+    await dialog.getByRole("heading").first().click();
     await expect(dialog).toHaveCSS("outline-style", "none");
   }
   const copyable = dialog.locator(".intro p").first();
@@ -1523,8 +1532,8 @@ test("dialog containers stay unselected while controls retain keyboard focus", a
   await page.emulateMedia({ forcedColors: "active" });
   await dialog.focus();
   await page.keyboard.press("Tab");
-  await expect(close).toBeFocused();
-  await expect(close).toHaveCSS("outline-style", "solid");
+  await expect(firstControl).toBeFocused();
+  await expect(firstControl).toHaveCSS("outline-style", "solid");
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
@@ -1625,7 +1634,7 @@ test("theme transitions honor reduced motion and fall back to gradual colors", a
   await page.evaluate(() => Object.defineProperty(document, "startViewTransition", { value: undefined }));
   await page.emulateMedia({ reducedMotion: "no-preference" });
   const fallback = await page.getByRole("group", { name: "Appearance" })
-    .getByRole("button", { name: "Dark", exact: true }).evaluate(button => {
+    .getByRole("button", { name: "Switch to dark theme", exact: true }).evaluate(button => {
       button.click();
       return {
         mode: document.documentElement.dataset.themeTransition,
@@ -1642,8 +1651,11 @@ test("theme transitions honor reduced motion and fall back to gradual colors", a
 
 test("tab identity has static share metadata and branded assets", async ({ page, request }) => {
   const response = await request.get("/");
+  expect(response.status()).toBe(200);
   const html = await response.text();
-  expect(html).toContain("<title>Drowse</title>");
+  expect(html).toContain(`<title>${siteTitle}</title>`);
+  expect(html).toContain(`property="og:title" content="${siteTitle}"`);
+  expect(html).toContain(`name="twitter:title" content="${siteTitle}"`);
   expect(html).toContain('property="og:site_name" content="Drowse"');
   expect(html).toContain('name="twitter:card" content="summary_large_image"');
   expect(html).toContain('property="og:image:width" content="1200"');
@@ -1652,7 +1664,7 @@ test("tab identity has static share metadata and branded assets", async ({ page,
   expect(image.ok()).toBe(true);
   expect(image.headers()["content-type"]).toContain("image/png");
   await page.goto("/");
-  await expect(page).toHaveTitle("Drowse");
+  await expect(page).toHaveTitle(siteTitle);
   await expect(page.locator('link[rel="icon"]')).toHaveCount(1);
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("data-state", "home");
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", /\/icons\/tab-home-(light|dark)\.png/);
@@ -1786,6 +1798,7 @@ test("tab identity updates each state and releases its animation lifecycle", asy
 test("tab identity follows generation and Loom navigation", async ({ page, browserName }) => {
   test.skip(browserName === "webkit", "Headless WebKit lacks the fixture worker storage required for generation.");
   await page.goto(`${devUrl}/app?fixture=1&fixtureSlow=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page).toHaveTitle("Drowse");
   const icon = page.locator('link[rel="icon"]');
@@ -1921,6 +1934,7 @@ test("generation uses a stationary card glow and follows the active reply until 
   test.skip(browserName === "webkit", "Headless WebKit rejects OPFS; this test needs fixture worker storage.");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(`${devUrl}/app?fixture=1&fixtureSlow=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain how a loom works.");
@@ -1983,7 +1997,7 @@ test("base model disclosure is accessible and unclipped on compact screens", asy
   await expect(disclosure).toContainText("No verified base-model downloads");
   await expect(disclosure.getByRole("button")).toHaveCount(0);
   for (const theme of ["Light", "Dark"]) {
-    const toggle = page.getByRole("button", { name: theme, exact: true });
+    const toggle = page.getByRole("button", { name: `Switch to ${theme.toLowerCase()} theme`, exact: true });
     if (await toggle.isVisible()) await toggle.click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme.toLowerCase());
     for (const width of [320, 390, 1440]) {
@@ -2282,6 +2296,7 @@ test("Loom stays accessible while a reply streams", async ({ page, browserName }
     };
   });
   await page.goto(`${devUrl}/app?fixture=1&fixtureSlow=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Keep writing while I explore the branches.");
@@ -2318,6 +2333,7 @@ test("workspace menu returns to chats and restores the current conversation", as
   test.skip(browserName === "webkit", "Headless WebKit rejects OPFS; chat restoration requires persistent worker storage.");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   const home = page.getByRole("button", { name: "Workspace menu", exact: true });
@@ -2748,14 +2764,14 @@ for (const theme of ["light", "dark"] as const) {
     for (const name of ["help", "cast", "advanced_sampling", "system_prompt", "save_conversation", "load_conversation", "transcript", "manifold_pack", "manifold_builder", "manifold_merge", "template_lab", "health", "subspace", "manifolds", "compare", "correlation", "token_drilldown"]) {
       await openDrawer(page, name, name === "token_drilldown" ? { turnIdx: 1, tokenIdx: 0 } : undefined);
       const drawer = page.getByRole("dialog").last();
-      for (const disclosure of await drawer.locator('.sk-disclosure-trigger').all()) {
+      for (const disclosure of await drawer.locator('.sk-disclosure-trigger:visible').all()) {
         if (await disclosure.getAttribute("aria-expanded") === "false") await disclosure.click();
       }
       await audit(`Drawer, ${name}`, name === "token_drilldown" ? "[role='dialog']:has([data-token-details-scroll])" : ".drawer[role='dialog']");
       if (name === "manifold_builder") {
-        for (const mode of ["linear", "template", "custom"]) {
+        for (const mode of ["Generate examples", "Use a template", "Use your examples"]) {
           await drawer.getByRole("tab", { name: mode, exact: true }).click();
-          if (mode === "custom") await drawer.getByRole("button", { name: "+ add node", exact: true }).click();
+          if (mode === "Use your examples") await drawer.getByRole("button", { name: "+ add node", exact: true }).click();
           await audit(`Authoring, ${mode}`, ".drawer[role='dialog']");
         }
       }
@@ -3304,11 +3320,12 @@ test("mobile hero overlays the orb without selecting the section", async ({ page
       const header = (await page.locator(".page-header").boundingBox())!;
       expect(box.y).toBeGreaterThanOrEqual(header.y + header.height);
       expect(box.y).toBeLessThan(page.viewportSize()!.height * 0.3);
-      expect(await heading.evaluate(element => {
+      expect(await page.locator(".hero").evaluate(element => {
         const style = getComputedStyle(element);
         return style.getPropertyValue("user-select") || style.getPropertyValue("-webkit-user-select");
       })).toBe("none");
-      await heading.click();
+      await heading.click({ clickCount: 3 });
+      expect(await page.evaluate(() => getSelection()?.toString() ?? "")).toBe("");
       expect(await page.locator("main").evaluate(element => element === document.activeElement)).toBe(false);
       await expect(page.locator("main")).toHaveCSS("outline-style", "none");
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -3333,6 +3350,7 @@ test("passive offline notices stay hidden without moving or overflowing the work
   test.skip(browserName === "webkit", "Headless WebKit rejects OPFS; this reload test requires the persistent worker fixture.");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${devUrl}/app?fixture=1`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.addInitScript(() => {
@@ -3371,6 +3389,7 @@ test("template deletion names the saved work and requires confirmation", async (
   test.skip(browserName === "webkit", "Template persistence requires the OPFS-backed worker; WebKit's temporary profile rejects OPFS.");
   await page.setViewportSize({ width: 320, height: 720 });
   await page.goto(`${devUrl}/app?${browserName === "webkit" ? "layoutFixture=setup" : "fixture=1"}`);
+  await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await page.evaluate(async (url) => {

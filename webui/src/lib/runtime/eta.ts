@@ -110,7 +110,7 @@ export function formatEtaRange([lowerSeconds, upperSeconds]: [number, number]): 
   if (upper < 60) return formatSameUnitRange(lower, upper, 1, "second");
   if (upper < 3_600) return formatSameUnitRange(lower, upper, 60, "minute");
   if (lower >= 3_600) return formatSameUnitRange(lower, upper, 3_600, "hour");
-  return `${formatUnit(lower, 60, "minute")} - ${formatUnit(upper, 3_600, "hour")}`;
+  return `${formatUnit(lower, 60, "minute")} – ${formatUnit(upper, 3_600, "hour")}`;
 }
 
 function formatSameUnitRange(
@@ -122,7 +122,7 @@ function formatSameUnitRange(
   const lower = roundedUnit(lowerSeconds, unitSeconds);
   const upper = roundedUnit(upperSeconds, unitSeconds);
   const suffix = upper === 1 ? unit : `${unit}s`;
-  return lower === upper ? `${upper} ${suffix}` : `${lower} - ${upper} ${suffix}`;
+  return lower === upper ? `${upper} ${suffix}` : `${lower}–${upper} ${suffix}`;
 }
 
 function formatUnit(

@@ -90,6 +90,8 @@ def main():
         if args.quantization != "q0f32" or args.architecture == "qwen3_5":
             raise SystemExit("The readout golden currently requires q0f32")
         verify_readout(candidate, args.architecture)
+        if args.architecture == "gpt_neox":
+            verify_output_projection()
     if args.webgpu_codegen:
         verify_webgpu_codegen(candidate, config, args.architecture, args.quantization)
     print(json.dumps({"architecture": args.architecture, "quantization": args.quantization,
@@ -219,6 +221,72 @@ def verify_readout(model, architecture):
     np.testing.assert_allclose(directions, arrays[head_name][token_ids][None, :, :] @ jacobians,
                                atol=2e-6, rtol=2e-5)
     print(f"{architecture}: compiled LayerNorm J-lens probabilities and directions match NumPy")
+
+
+def verify_output_projection():
+    import importlib.util
+    import numpy as np
+    import tvm
+    from tvm import relax
+    from tvm.relax.frontend import nn
+    from tvm.runtime import tensor
+    from base_model_adapters import CenteredGPTNeoXQKV, PairwiseOutputLinear
+
+    helper_spec = importlib.util.spec_from_file_location(
+        "projection_verification", Path(__file__).with_name("verify-mlc-hook.py"))
+    helper = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helper)
+    rng = np.random.default_rng(734)
+    for hidden, vocab, bias in [(512, 256, False), (513, 259, True), (2048, 256, True)]:
+        model = PairwiseOutputLinear(hidden, vocab, bias=bias, dtype="float32")
+        module, parameters, _ = model.export_tvm(spec={"forward": {
+            "x": nn.spec.Tensor([2, 3, hidden], "float32"),
+            "$": {"param_mode": "packed", "effect_mode": "none"},
+        }}, allow_extern=True)
+        values = rng.normal(20 * 512 / hidden, 10, (2, 3, hidden)).astype("float32")
+        weights = (rng.normal(.15, .05, (1, hidden)) +
+                   rng.normal(0, .001, (vocab, hidden))).astype("float32")
+        arrays = {"weight": weights, "bias": rng.normal(0, .1, vocab).astype("float32")}
+        expected = values.astype("float64") @ weights.astype("float64").T
+        if bias:
+            expected += arrays["bias"]
+        module = helper.strip_gpu_thread_bindings(module, tvm)
+        vm = relax.VirtualMachine(relax.build(module, target=tvm.target.Target("llvm")), tvm.cpu())
+        actual = vm["forward"](tensor(values), [tensor(arrays[name]) for name, _ in parameters]).numpy()
+        np.testing.assert_allclose(actual, expected, rtol=2e-7, atol=2e-5)
+        p = np.exp(expected - expected.max(axis=-1, keepdims=True))
+        q = np.exp(actual.astype("float64") - actual.max(axis=-1, keepdims=True))
+        p, q = p / p.sum(axis=-1, keepdims=True), q / q.sum(axis=-1, keepdims=True)
+        tv = float(np.max(np.abs(p - q).sum(axis=-1) / 2))
+        assert tv < 1e-4
+        cancel_weights = np.zeros_like(weights)
+        cancel_weights[:, [0, 32, 64]] = [1e8, .25, -1e8]
+        cancel_arrays = {"weight": cancel_weights, "bias": np.zeros(vocab, dtype="float32")}
+        cancellation = vm["forward"](
+            tensor(np.ones_like(values)),
+            [tensor(cancel_arrays[name]) for name, _ in parameters],
+        ).numpy()
+        np.testing.assert_array_equal(cancellation, np.full((2, 3, vocab), .25, dtype="float32"))
+        print(f"GPT-NeoX pairwise projection: hidden={hidden}, vocab={vocab}, bias={bias}, "
+              f"six rows, full-vocabulary TV={tv:.8g}")
+    for rotary_dim in (0, 2, 8):
+        model = CenteredGPTNeoXQKV(32, 96, bias=True, dtype="float32")
+        model.head_dim, model.rotary_dim = 8, rotary_dim
+        module, parameters, _ = model.export_tvm(spec={"forward": {
+            "x": nn.spec.Tensor([1, 2, 32], "float32"),
+            "$": {"param_mode": "packed", "effect_mode": "none"},
+        }}, allow_extern=True)
+        arrays = {"weight": np.zeros((96, 32), dtype="float32"),
+                  "bias": np.arange(1, 97, dtype="float32")}
+        module = helper.strip_gpu_thread_bindings(module, tvm)
+        vm = relax.VirtualMachine(relax.build(module, target=tvm.target.Target("llvm")), tvm.cpu())
+        actual = vm["forward"](tensor(np.zeros((1, 2, 32), dtype="float32")),
+                               [tensor(arrays[name]) for name, _ in parameters]).numpy()
+        expected = arrays["bias"].copy().reshape(3, 4, 8)
+        expected[1, :, rotary_dim:] = 0
+        np.testing.assert_array_equal(actual, np.broadcast_to(expected.reshape(96), (1, 2, 96)))
+        np.testing.assert_array_equal(arrays["bias"], np.arange(1, 97, dtype="float32"))
+        print(f"GPT-NeoX nonrotary key-bias cancellation: rotary_dim={rotary_dim}, checkpoint unchanged")
 
 
 if __name__ == "__main__":

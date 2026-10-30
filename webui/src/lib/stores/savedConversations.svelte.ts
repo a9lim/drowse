@@ -22,6 +22,16 @@ export const savedConversationState: {
 });
 
 let flushHandler: (() => Promise<void>) | null = null;
+const libraryListeners = new Set<() => void | Promise<void>>();
+
+export async function notifyConversationLibraryChanged(): Promise<void> {
+  await Promise.all([...libraryListeners].map(listener => listener()));
+}
+
+export function onConversationLibraryChanged(listener: () => void | Promise<void>): () => void {
+  libraryListeners.add(listener);
+  return () => libraryListeners.delete(listener);
+}
 
 export function registerConversationAutosave(handler: () => Promise<void>): () => void {
   flushHandler = handler;

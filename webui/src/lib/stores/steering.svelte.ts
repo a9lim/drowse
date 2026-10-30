@@ -101,13 +101,15 @@ export async function refreshVectorList(): Promise<void> {
 
 export async function refreshCorrelation(
   names?: string[] | null,
+  strict = false,
 ): Promise<void> {
   const requestedAt = correlationEpoch;
   try {
     const data = await apiProfiles.correlation(names);
     if (requestedAt === correlationEpoch) steerRack.correlation = data;
-  } catch {
+  } catch (error) {
     if (requestedAt === correlationEpoch) steerRack.correlation = null;
+    if (strict) throw error;
   }
 }
 

@@ -464,6 +464,8 @@ export interface WSInputMessage {
 
 export interface WSGenerateRequest {
   type: "generate";
+  request_id?: string;
+  system_prompt?: string | null;
   /** False preserves the selected turn and creates a new child, even for n=1. */
   append_same_role?: boolean;
   /** ``null`` is a continue — no committed turn, the model speaks next
@@ -472,6 +474,16 @@ export interface WSGenerateRequest {
    *  conversation replay the unsteered shadow uses. */
   input?: string | WSInputMessage[] | null;
   steering?: string | null;
+  /** Browser runtime only: absolute input-token ranges [start, end).
+   * Includes template/BOS tokens; mutually exclusive with position_indices.
+   * Nonnegative integers, no overlap; adjacent ranges are merged. At most
+   * 4096 ranges (not 4096 tokens). [] disables injection; null clears targeting.
+   * Applied to input residuals: position p influences prediction p+1 and can
+   * causally affect later tokens. Intersects the expression's phase/gates.
+   * Saved recipes and token forks retain normalized spans. Python requests
+   * and tree imports reject this browser-only extension. */
+  position_spans?: [number, number][] | null;
+  position_indices?: number[] | null;
   sampling?: WSSampling | null;
   thinking?: boolean | null;
   /** Mirrors the native generate frame: omitted means stateless. Stateful
@@ -509,10 +521,15 @@ export type ChatRole = "user" | "assistant";
  * are independent; omit ``generated_role`` for an append-only action. */
 export interface WSSubmitRequest {
   type: "submit";
+  request_id?: string;
+  system_prompt?: string | null;
   text?: string | null;
   authored_role?: ChatRole | null;
   generated_role?: ChatRole | null;
   steering?: string | null;
+  /** Browser runtime only; same position contract as WSGenerateRequest. */
+  position_spans?: [number, number][] | null;
+  position_indices?: number[] | null;
   sampling?: WSSampling | null;
   thinking?: boolean | null;
   authored_thinking?: string | null;
@@ -524,12 +541,14 @@ export interface WSSubmitRequest {
 
 export interface WSStopRequest {
   type: "stop";
+  request_id?: string;
 }
 
 export type WSClientMessage = WSGenerateRequest | WSSubmitRequest | WSStopRequest;
 
 export interface WSStartedEvent {
   type: "started";
+  request_id?: string;
   generation_id: string;
   node_id: string | null;
   sibling_index: number;
@@ -538,6 +557,7 @@ export interface WSStartedEvent {
 
 export interface WSGenerationProgressEvent {
   type: "generation_progress";
+  request_id?: string;
   node_id: string;
   completed: number;
   total: number;
@@ -556,6 +576,7 @@ export interface TokenAltJSON {
 
 export interface WSTokenEvent {
   type: "token";
+  request_id?: string;
   text: string;
   thinking: boolean;
   token_id: number | null;
@@ -594,6 +615,7 @@ export interface WSDoneResult {
   text: string;
   tokens: number;
   finish_reason: string;
+  applied_steering?: string | null;
   terminal_reason?: "eos" | "stop_sequence" | "external_stop" | "length";
   usage: {
     prompt_tokens: number;
@@ -617,6 +639,7 @@ export interface WSDoneResult {
 
 export interface WSDoneEvent {
   type: "done";
+  request_id?: string;
   result: WSDoneResult;
   /** Loom: node id this gen finalised. */
   node_id: string | null;
@@ -626,6 +649,7 @@ export interface WSDoneEvent {
 
 export interface WSErrorEvent {
   type: "error";
+  request_id?: string;
   message: string;
   code?: string;
   node_id?: string;
@@ -675,6 +699,7 @@ export interface LoomTokenRowJSON {
  * because LoomMutated doesn't track which fields changed).  Clients merge
  * by replacing the node entry wholesale. */
 export interface WSTreeMutatedEvent {
+  request_id?: string;
   type: "tree_mutated";
   op:
     | "edit"
@@ -710,7 +735,15 @@ export type WSServerMessage =
   | WSTokenEvent
   | WSDoneEvent
   | WSErrorEvent
+  | WSRequestCompleteEvent
   | WSTreeMutatedEvent;
+
+export interface WSRequestCompleteEvent {
+  type: "request_complete";
+  request_id: string;
+  state: "completed" | "cancelled" | "failed";
+  completed_siblings: number;
+}
 
 // ----------------------------------------------------- chat / UI --
 
@@ -1024,6 +1057,7 @@ export interface PendingAction {
    *  effect.  Only set on instant rack/steering mutations; ``undefined``
    *  for sends, commits, and one-shot mutations, which never coalesce. */
   coalesceKey?: string;
+  onCancel?: () => void;
 }
 
 // ----------------------------------------------------- drawers --

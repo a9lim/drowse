@@ -2,6 +2,12 @@ export const WINDOWS_GPU_GUIDANCE = "If this laptop has a dedicated GPU, in Chro
 
 export const WINDOWS_INTEL_GEN9_BLOCK = `Drowse model initialization has been reported to hang Chrome on Windows with Intel Gen9 graphics, so loading is blocked on this configuration. ${WINDOWS_GPU_GUIDANCE} If no dedicated GPU is available, use another device or the Python edition.`;
 
+export function linuxChromiumWebGpuHint(userAgent: string): string | null {
+  return /Linux/iu.test(userAgent) && !/Android/iu.test(userAgent) && /(?:Chrome|Chromium)\//u.test(userAgent)
+    ? "On Linux, Chrome may need experimental WebGPU and Vulkan enabled. Try launching it with --enable-unsafe-webgpu --use-angle=vulkan --enable-features=Vulkan, then run the device check again. Keep the browser sandbox enabled."
+    : null;
+}
+
 export function windowsIntelGen9Blocked(
   vendor: string | undefined,
   architecture: string | undefined,

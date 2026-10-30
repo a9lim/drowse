@@ -125,7 +125,7 @@
     border-color: var(--accent-light);
   }
   .sk-checkbox-row.is-disabled {
-    opacity: 0.5;
+    opacity: var(--disabled-opacity);
     cursor: not-allowed;
   }
 

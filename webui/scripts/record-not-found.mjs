@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createServer as createViteServer } from "vite";
-import { grantReleaseToolStorageQuota, launchReleaseToolContext } from "./release-tool-storage-quota.mjs";
+import { grantReleaseToolStorageQuota, launchReleaseToolContext, releaseToolGpuArgs } from "./release-tool-storage-quota.mjs";
 
 const [directory, output] = process.argv.slice(2);
 if (!directory || !output) throw new Error("Usage: node scripts/record-not-found.mjs <artifact closure directory> <output.json>");
@@ -73,7 +73,7 @@ let browser;
 try {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  browser = await launchReleaseToolContext({ headless: true, channel: "chrome", args: ["--enable-unsafe-webgpu", "--disable-gpu-sandbox", "--use-angle=metal"] });
+  browser = await launchReleaseToolContext({ headless: true, channel: "chrome", args: releaseToolGpuArgs() });
   const page = browser.page;
   page.setDefaultTimeout(900_000);
   page.on("console", message => console.log(message.text()));

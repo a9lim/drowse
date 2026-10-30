@@ -70,7 +70,7 @@ class _GeometryStubSession(_TreeStubSession):
 def test_geometry_token_readout_shape_and_position() -> None:
     s = _GeometryStubSession()
     raw_ids = s._tokenizer.encode("abcdefg")
-    node_id = _tree_with_assistant(s, raw_ids)
+    node_id = _tree_with_assistant(s, raw_ids, Recipe(system_prompt=None))
 
     seen: list[tuple[int, int | None, tuple[int, ...]]] = []
     import drowse.core.capture as _capture_mod
@@ -115,6 +115,7 @@ def test_geometry_token_readout_shape_and_position() -> None:
     assert call["input"] is None
     assert call["parent_node_id"] == s.tree.get(node_id).parent_id
     assert call["gen_seat"] == "assistant"
+    assert call["system_prompt"] is None
 
 
 def test_geometry_token_readout_steering_scope() -> None:

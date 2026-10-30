@@ -127,13 +127,15 @@ class MlcRMSNorm(torch.nn.Module):
 
 
 class MlcLinear(torch.nn.Module):
-    def __init__(self, weight: torch.nn.Parameter, bias: torch.nn.Parameter | None) -> None:
+    def __init__(self, weight: torch.nn.Parameter, bias: torch.nn.Parameter | None,
+                 output_dtype: torch.dtype | None = None) -> None:
         super().__init__()
         self.weight = weight
         self.bias = bias
+        self.output_dtype = output_dtype
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        if inputs.device.type == "mps" and self.bias is None:
+        if inputs.device.type == "mps" and self.bias is None and self.output_dtype is None:
             if inputs.dtype == torch.float16 and self.weight.dtype == torch.float16:
                 return _MlcF16Linear.apply(inputs, self.weight)
             if inputs.dtype == torch.float32 and self.weight.dtype == torch.float32:
@@ -144,7 +146,7 @@ class MlcLinear(torch.nn.Module):
             self.weight.to(torch.float32),
             None if self.bias is None else self.bias.to(torch.float32),
         )
-        return output.to(inputs.dtype)
+        return output.to(self.output_dtype or inputs.dtype)
 
 
 class _MlcF16Linear(torch.autograd.Function):
@@ -155,13 +157,7 @@ class _MlcF16Linear(torch.autograd.Function):
         inputs = inputs.contiguous()
         weight = weight.contiguous()
         output = torch.empty((*inputs.shape[:-1], weight.shape[0]), dtype=torch.float16, device="mps")
-        _mlc_metal_linear().exact_f16_linear(
-            output,
-            inputs,
-            weight,
-            int(inputs.shape[-1]),
-            int(weight.shape[0]),
-        )
+        _run_mlc_linear(_mlc_metal_linear().exact_f16_linear, output, inputs, weight)
         return output
 
     @staticmethod
@@ -192,13 +188,7 @@ class _MlcF32Linear(torch.autograd.Function):
             dtype=torch.float32,
             device="mps",
         )
-        _mlc_metal_linear().exact_f32_linear(
-            output,
-            inputs,
-            weight,
-            int(inputs.shape[-1]),
-            int(weight.shape[0]),
-        )
+        _run_mlc_linear(_mlc_metal_linear().exact_f32_linear, output, inputs, weight)
         return output
 
     @staticmethod
@@ -222,6 +212,22 @@ class _MlcF32Linear(torch.autograd.Function):
 
 
 _METAL_LINEAR = None
+
+
+def _run_mlc_linear(kernel, output, inputs, weight):
+    input_rows = inputs.reshape(-1, inputs.shape[-1])
+    output_rows = output.reshape(-1, weight.shape[0])
+    output_width = int(weight.shape[0])
+    if len(input_rows) > 32:
+        weight = weight.transpose(0, 1).contiguous()
+        shader = _mlc_metal_linear()
+        kernel = (shader.exact_f16_linear_transposed if inputs.dtype == torch.float16
+                  else shader.exact_f32_linear_transposed)
+    for start in range(0, len(input_rows), 32):
+        kernel(output_rows[start:start + 32], input_rows[start:start + 32], weight,
+               int(inputs.shape[-1]), output_width)
+        if len(input_rows) > 32:
+            torch.mps.synchronize()
 
 
 def _mlc_metal_linear():
@@ -262,6 +268,40 @@ kernel void exact_f32_linear(
   for (uint inner = 0; inner < input_width; ++inner) {
     value = fma(inputs[row * input_width + inner],
                 weight[column * input_width + inner], value);
+  }
+  output[index] = value;
+}
+
+kernel void exact_f16_linear_transposed(
+    device half* output [[buffer(0)]],
+    device const half* inputs [[buffer(1)]],
+    device const half* weight [[buffer(2)]],
+    constant uint& input_width [[buffer(3)]],
+    constant uint& output_width [[buffer(4)]],
+    uint index [[thread_position_in_grid]]) {
+  const uint row = index / output_width;
+  const uint column = index - row * output_width;
+  half value = half(0.0);
+  for (uint inner = 0; inner < input_width; ++inner) {
+    value = fma(inputs[row * input_width + inner],
+                weight[inner * output_width + column], value);
+  }
+  output[index] = value;
+}
+
+kernel void exact_f32_linear_transposed(
+    device float* output [[buffer(0)]],
+    device const float* inputs [[buffer(1)]],
+    device const float* weight [[buffer(2)]],
+    constant uint& input_width [[buffer(3)]],
+    constant uint& output_width [[buffer(4)]],
+    uint index [[thread_position_in_grid]]) {
+  const uint row = index / output_width;
+  const uint column = index - row * output_width;
+  float value = 0.0f;
+  for (uint inner = 0; inner < input_width; ++inner) {
+    value = fma(inputs[row * input_width + inner],
+                weight[inner * output_width + column], value);
   }
   output[index] = value;
 }
@@ -521,7 +561,9 @@ def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.M
     model.tie_weights()
     replace_rms_norms(model)
     replace_linears(model)
+    model.lm_head.output_dtype = torch.float32
     model.requires_grad_(False)
+    del state
     model.to(device)
     model.eval()
     model._drowse_mlc_architecture = config["architecture"]

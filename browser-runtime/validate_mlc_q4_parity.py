@@ -17,7 +17,7 @@ EVIDENCE_MODEL_IDS = {
     "smolProductionQ4Parity": "smollm2-360m-instruct",
     "qwenProductionQ4Parity": "qwen3-1.7b",
 }
-PARITY_MODEL_IDS = {*EVIDENCE_MODEL_IDS.values(), "gemma3-1b-instruct", "gemma3-4b-instruct"}
+PARITY_MODEL_IDS = {*EVIDENCE_MODEL_IDS.values(), "gemma3-1b-instruct", "gemma3-4b-instruct", "qwen3-4b"}
 SMOL_NAMED_ROLE_INPUT_IDS = [
     1,
     9690,
@@ -59,6 +59,13 @@ def validate(
         capture_directory,
         require_smol_named_role=require_smol_named_role,
     )
+    validate_capture_model_identity(model_directory, metadata)
+    for threshold in (maximum_capture_relative_error, maximum_probe_relative_error,
+                      maximum_probe_capture_relative_error):
+        if not finite_number(threshold) or threshold <= 0:
+            raise ValueError("parity error thresholds must be finite and positive")
+    if not finite_number(minimum_steering_direction_cosine) or not -1 <= minimum_steering_direction_cosine <= 1:
+        raise ValueError("parity cosine threshold must be finite and in [-1, 1]")
     layers = [int(value) for value in metadata["layer_map"]]
     positions = [int(value) for value in metadata["positions"]]
     input_ids = [int(value) for value in metadata["input_ids"]]
@@ -234,6 +241,42 @@ def validate(
         "browserGreedyTokenIds": browser_greedy_ids,
         "torchGreedyTokenIds": torch_greedy_ids,
     }
+
+
+def validate_capture_model_identity(model_directory: Path, metadata: dict) -> None:
+    manifest = json.loads((model_directory / "hosted-artifacts.json").read_text())
+    files = {}
+    for file in manifest["files"]:
+        name = file["path"]
+        if Path(name).name != name or name in files or name in {".", ".."}:
+            raise ValueError("model artifact paths are invalid or repeated")
+        path = model_directory / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != file["bytes"] or hash_file(path) != file["sha256"]:
+            raise ValueError(f"model artifact integrity mismatch: {name}")
+        files[name] = file
+    identity = {
+        "sourceModel": manifest["source"]["repository"],
+        "sourceRevision": manifest["source"]["revision"],
+        "convertedManifestSha256": files["tensor-cache.json"]["sha256"],
+        "quantization": manifest["quantization"],
+        "tokenizerSha256": files["tokenizer.json"]["sha256"],
+        "chatTemplateSha256": files["tokenizer_config.json"]["sha256"],
+        "modelLibrarySha256": files["model.wasm"]["sha256"],
+        "runtimeAbi": manifest["runtimeAbi"],
+        "hookAbi": manifest["hookAbi"],
+        "hiddenSize": manifest["hiddenSize"],
+        "layerMap": manifest["layerMap"],
+    }
+    abis = [manifest["runtimeAbi"]]
+    if manifest["runtimeAbi"] in {"drowse-web-runtime-v1", "saklas-web-runtime-v1", "polythetic-web-runtime-v1"}:
+        abis = [f"{brand}-web-runtime-v1" for brand in ("drowse", "saklas", "polythetic")]
+    fingerprints = {
+        hashlib.sha256(json.dumps({**identity, "runtimeAbi": abi}, sort_keys=True,
+                                 ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        for abi in abis
+    }
+    if metadata["runtime_identity_sha256"] not in fingerprints or metadata["layer_map"] != identity["layerMap"] or metadata["hidden_size"] != identity["hiddenSize"]:
+        raise ValueError("capture belongs to a different model artifact identity")
 
 
 def load_capture_metadata(

@@ -846,14 +846,15 @@ try {
   assert.equal(recommendedPreference, "speed");
   const shellModel = shell.current().models[0];
   assert.equal(shellModel.firstRunPacks.find(({ kind }) => kind === "jlens").selected, true);
-  assert.equal(shellModel.firstRunPacks.find(({ kind }) => kind === "sae").selected, false);
+  assert.equal(shellModel.firstRunPacks.find(({ kind }) => kind === "sae").selected, true);
+  assert.equal(shellModel.firstRunPacks.find(({ kind }) => kind === "sae").requiredForSetup, true);
   assert.match(shellModel.toolNotice, /Live word readouts start off/i);
-  assert.match(shellModel.toolNotice, /separate download/i);
+  assert.doesNotMatch(shellModel.toolNotice, /separate download/i);
 
   console.log("ok - Safari admission uses capabilities and a real OPFS canary");
   console.log("ok - Apple mobile calibration repeats compute submissions and mapped readbacks");
   console.log("ok - Apple mobile model policy requires evidence and blocks 4B models");
-  console.log("ok - Apple mobile setup retains 270M, prefers speed, and defers SAE packs");
+  console.log("ok - Apple mobile setup retains 270M, prefers speed, and includes compatible SAE packs");
   console.log("ok - Safari and Firefox previews require exact-browser load evidence");
   console.log("ok - output limits follow context capacity across browsers");
   console.log("ok - Firefox 155 remains blocked when its adapter reports 9 of 10 buffers");

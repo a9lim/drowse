@@ -29,6 +29,7 @@ export interface SavedConversationRecord {
 }
 
 export type SavedConversationSummary = Omit<SavedConversationRecord, "snapshot"> & {
+  metadataVersion: string;
   messageCount: number;
   threadCount: number;
 };
@@ -75,6 +76,7 @@ export class ConversationLibraryError extends Error {
     readonly code:
       | "INVALID_RECORD"
       | "NOT_FOUND"
+      | "STALE_RECORD"
       | "STORAGE_LIMIT"
       | "INDEXEDDB_UNAVAILABLE"
       | "INDEXEDDB_BLOCKED",
@@ -119,6 +121,7 @@ export class ConversationLibrary {
   private readonly randomId: () => string;
   private readonly runExclusive: ConversationExclusiveRunner;
   private initialization: Promise<void> | null = null;
+  revision = 0;
 
   constructor(options: ConversationLibraryOptions) {
     this.samplingKeys = [...options.samplingKeys];
@@ -242,6 +245,7 @@ export class ConversationLibrary {
       };
       validateSavedConversationRecord(record, this.samplingKeys);
       await this.store.write(record);
+      this.revision += 1;
       return structuredClone(record);
     });
   }
@@ -249,6 +253,7 @@ export class ConversationLibrary {
   async update(
     id: string,
     changes: Partial<Pick<SavedConversationRecord, "name" | "avatarSeed" | "accent" | "snapshot">>,
+    expectedMetadataVersion?: string,
   ): Promise<SavedConversationRecord> {
     validateIdentifier(id, "saved conversation id");
     await this.initialize();
@@ -258,6 +263,7 @@ export class ConversationLibrary {
         throw new ConversationLibraryError("NOT_FOUND", "This saved conversation no longer exists");
       }
       validateSavedConversationRecord(currentValue, this.samplingKeys);
+      assertMetadataVersion(currentValue, expectedMetadataVersion);
       const snapshot = structuredClone(changes.snapshot ?? currentValue.snapshot);
       const record: SavedConversationRecord = {
         ...currentValue,
@@ -272,6 +278,7 @@ export class ConversationLibrary {
       };
       validateSavedConversationRecord(record, this.samplingKeys);
       await this.store.write(record);
+      this.revision += 1;
       return structuredClone(record);
     });
   }
@@ -351,14 +358,25 @@ export class ConversationLibrary {
       };
       validateSavedConversationRecord(record, this.samplingKeys);
       await this.store.write(record);
+      this.revision += 1;
       return structuredClone(record);
     });
   }
 
-  async delete(id: string): Promise<boolean> {
+  async delete(id: string, expectedMetadataVersion?: string): Promise<boolean> {
     validateIdentifier(id, "saved conversation id");
     await this.initialize();
-    return this.runExclusive(() => this.store.delete(id));
+    return this.runExclusive(async () => {
+      if (expectedMetadataVersion !== undefined) {
+        const current = await this.store.read(id);
+        if (current === undefined) return false;
+        validateSavedConversationRecord(current, this.samplingKeys);
+        assertMetadataVersion(current, expectedMetadataVersion);
+      }
+      const removed = await this.store.delete(id);
+      if (removed) this.revision += 1;
+      return removed;
+    });
   }
 
   close(): void {
@@ -515,6 +533,19 @@ export class BrowserSavedConversationStore implements SavedConversationStore {
   }
 }
 
+export function conversationMetadataVersion(record: Pick<SavedConversationRecord, "id" | "name" | "avatarSeed" | "accent" | "modelId">): string {
+  const text = JSON.stringify([record.id, record.name, record.avatarSeed, record.accent ?? null, record.modelId]);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
+  return (hash >>> 0).toString(16);
+}
+
+function assertMetadataVersion(record: SavedConversationRecord, expected?: string): void {
+  if (expected !== undefined && conversationMetadataVersion(record) !== expected) {
+    throw new ConversationLibraryError("STALE_RECORD", "This chat's name or avatar changed. List chats again before updating it.");
+  }
+}
+
 export function summarizeConversation(record: SavedConversationRecord): SavedConversationSummary {
   const { nodes, children_of, root_id } = record.snapshot.tree;
   return {
@@ -527,6 +558,7 @@ export function summarizeConversation(record: SavedConversationRecord): SavedCon
     ...(record.modelType === undefined ? {} : { modelType: record.modelType }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    metadataVersion: conversationMetadataVersion(record),
     messageCount: nodes.filter((node) =>
       (node.role === "user" || node.role === "assistant") &&
       (node.text.length > 0 || (node.raw_token_ids?.length ?? 0) > 0)

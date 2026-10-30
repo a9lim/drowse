@@ -8,6 +8,7 @@
   import TabIdentity from "../../lib/ui/TabIdentity.svelte";
   import { setupTabState } from "../../lib/tabIdentity";
   import { onMount } from "svelte";
+  import { registerModelPicker } from "../../lib/webmcp/lifecycle";
   import { fade, fly } from "svelte/transition";
   import InfoTip from "../../lib/ui/InfoTip.svelte";
   import PageHeader from "./PageHeader.svelte";
@@ -25,12 +26,21 @@
   import { userFacingError } from "../../lib/runtime/userFacingError";
   import { reloadInstructions, appRefreshSafetyMessage } from "../runtime/chunkRecovery";
   import { clearConversationOpen } from "../runtime/entryExperience";
-  import { defaultModelSelection, downloadUnavailableReason, modelsBySize } from "./modelSelection";
+  import {
+    defaultModelSelection,
+    downloadSizeSummary,
+    downloadUnavailableReason,
+    modelsBySize,
+    remainingDownloadParts,
+  } from "./modelSelection";
+  import { formatBytes } from "../../lib/format/bytes";
+  import { storageShortfallBytes } from "../../lib/runtime/recommendation";
 
   let {
     controller,
     firstRun = true,
     onBack,
+    onChats,
     workbenchError = null,
     workbenchNeedsReload = false,
     workbenchReloading = false,
@@ -39,6 +49,7 @@
     controller: HostedShellController;
     firstRun?: boolean;
     onBack?: () => void;
+    onChats?: () => void;
     workbenchError?: string | null;
     workbenchNeedsReload?: boolean;
     workbenchReloading?: boolean;
@@ -62,6 +73,12 @@
     },
   });
   let selectedModel = $state<string | null>(null);
+  // The model chosen for the visitor on first run, so its reason can be explained.
+  let autoSelectedModel = $state<string | null>(null);
+  let automaticSelectionDone = false;
+  let discardConfirmation = $state<string | null>(null);
+  let discardingPartial = $state(false);
+  let discardError = $state<string | null>(null);
   let baseModelsOpen = $state(false);
   let unsafeConfirmation = $state<string | null>(null);
   let confirmSessionReset = $state(false);
@@ -99,17 +116,50 @@
   const selectedOption = $derived(
     snapshot.models.find((model) => model.id === selectedModel) ?? null,
   );
+  const unfinishedDownloadPhases = ["requesting_persistence", "downloading", "cancelling", "paused", "failed"];
+  // Download progress, pauses, and failures belong to one model. Other models only
+  // see the global idle or locked state, so a paused download never relabels them.
+  const selectedDownloadPhase = $derived(
+    selectedModel !== null && snapshot.download.modelVariantId === selectedModel
+      ? snapshot.download.phase
+      : snapshot.download.available ? "idle" : "locked",
+  );
+  const selectedProgress = $derived(
+    selectedModel !== null && snapshot.download.modelVariantId === selectedModel
+      ? snapshot.download.progress
+      : undefined,
+  );
+  const otherDownloadActive = $derived(
+    snapshot.download.modelVariantId !== undefined &&
+      snapshot.download.modelVariantId !== selectedModel &&
+      ["requesting_persistence", "downloading", "cancelling"].includes(snapshot.download.phase),
+  );
+  const keptBytes = $derived(
+    !selectedOption || selectedOption.setupComplete
+      ? 0
+      : selectedDownloadPhase === "paused" && selectedProgress
+        ? selectedProgress.bytesReceived
+        : selectedOption.partialBytes ?? 0,
+  );
+  const downloadsLocked = $derived(
+    snapshot.phase === "supported" && !snapshot.download.available,
+  );
+  const modelChoicesAvailable = $derived(
+    snapshot.phase === "supported" &&
+      snapshot.models.some((model) => model.fit !== "blocked") &&
+      (snapshot.download.available || snapshot.models.some((model) => model.setupComplete)),
+  );
   const displayHeadline = $derived(
-    snapshot.phase === "supported" && snapshot.models.some((model) => model.fit !== "blocked")
+    modelChoicesAvailable
       ? firstRun
         ? "Choose your first model"
         : "Models"
       : snapshot.headline,
   );
   const displayDetail = $derived(
-    snapshot.phase === "supported" && snapshot.models.some((model) => model.fit !== "blocked")
+    modelChoicesAvailable
       ? firstRun
-        ? "Choose a model to download to this device. The workbench opens when setup finishes."
+        ? "The workbench opens automatically after download and setup."
         : "Open an installed model or download another one. Your saved chats are kept separately."
       : snapshot.detail,
   );
@@ -118,21 +168,32 @@
     snapshot.download.available && (
       !selectedOption?.setupComplete ||
       (selectedOption?.remainingDownloadBytes ?? 0) > 0 ||
-      ["requesting_persistence", "downloading", "cancelling", "paused", "failed"].includes(
-        snapshot.download.phase,
-      )
+      unfinishedDownloadPhases.includes(selectedDownloadPhase)
     ),
   );
   const downloadComplete = $derived(
     snapshot.phase === "supported" && selectedOption?.setupComplete === true &&
     selectedOption.fit !== "blocked" && !showDownloadAction &&
-    !["requesting_persistence", "downloading", "cancelling", "paused", "failed"].includes(snapshot.download.phase),
+    !unfinishedDownloadPhases.includes(selectedDownloadPhase),
   );
   const passedChecks = $derived(
     snapshot.checks.filter((check) => check.state === "pass").length,
   );
   const advisoryChecks = $derived(
     snapshot.checks.filter((check) => check.state === "warn").length,
+  );
+  const checkCountLabel = $derived(
+    `${passedChecks} of ${snapshot.checks.length} passed` +
+      (advisoryChecks ? ` · ${advisoryChecks} note${advisoryChecks === 1 ? "" : "s"}` : ""),
+  );
+  const checkStatus = $derived(
+    snapshot.phase === "checking" || snapshot.phase === "idle"
+      ? "checking"
+      : snapshot.checks.length > 0
+        ? passedChecks === snapshot.checks.length
+          ? "ready"
+          : passedChecks > 0 ? "partial" : "unavailable"
+        : snapshot.phase === "supported" ? "ready" : "unavailable",
   );
   const previewBrowser = $derived(
     runtimeClass === "desktop-webkit"
@@ -182,18 +243,39 @@
     blocked: "Not supported",
   };
 
-  const formatBytes = (bytes?: number) => {
-    if (bytes == null) return "Storage estimate unavailable";
-    if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB available`;
-    return `${Math.round(bytes / 1_000_000)} MB available`;
-  };
+  const formatAvailable = (bytes?: number) =>
+    bytes == null ? "Storage estimate unavailable" : `${formatBytes(bytes)} available`;
 
-  const formatByteCount = (bytes: number) => {
-    if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-    if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-    if (bytes >= 1_000) return `${Math.round(bytes / 1_000)} KB`;
-    return `${bytes} B`;
-  };
+  const spaceNeeded = (model: HostedModelOption) =>
+    model.setupComplete || model.catalogAvailable === false
+      ? 0
+      : storageShortfallBytes(model.remainingDownloadBytes, snapshot.storage?.availableBytes);
+
+  // Card size: what the next download still needs, or the stored size once set up.
+  const cardSize = (model: HostedModelOption) =>
+    model.setupComplete || model.remainingDownloadBytes === 0
+      ? formatBytes(model.firstRunBytes)
+      : formatBytes(model.remainingDownloadBytes);
+
+  const toolChips = (model: HostedModelOption) => [
+    ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (J-lens)"] : []),
+    ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
+  ];
+
+  const measuredSpeed = (model: HostedModelOption) =>
+    model.measuredTokensPerSecond
+      ? `Ran at ~${model.measuredTokensPerSecond >= 10 ? Math.round(model.measuredTokensPerSecond) : model.measuredTokensPerSecond.toFixed(1)} tok/s on this device`
+      : null;
+
+  const storedBytes = (model: HostedModelOption) =>
+    model.modelDownloadBytes + model.firstRunPacks
+      .filter((pack) => pack.installed)
+      .reduce((total, pack) => total + pack.bytes, 0);
+  const installedModels = $derived(snapshot.models.filter((model) => model.installed));
+  const comparableModels = $derived(
+    modelsBySize(snapshot.models.filter((model) => model.catalogAvailable !== false))
+      .toSorted((left, right) => Number(left.modelType === "base") - Number(right.modelType === "base")),
+  );
 
   const packName = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.name;
@@ -204,9 +286,6 @@
       : /gemma scope/i.test(pack.name)
         ? "Gemma Scope features"
         : "Feature explorer";
-
-  const packSummaryName = (pack: HostedModelOption["firstRunPacks"][number]) =>
-    /gemma scope/i.test(pack.name) ? "Gemma Scope features" : pack.name;
 
   const packDescription = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.kind === "jlens"
@@ -219,6 +298,19 @@
   const firefoxSwitchGuidance = macDesktop
     ? "Update Firefox to the latest version and check again. If it remains incompatible, switch to Safari or a Chromium-based browser such as Chrome, Edge, Brave, or Arc."
     : "Update Firefox to the latest version and check again. If it remains incompatible, switch to a Chromium-based browser such as Chrome, Edge, or Brave.";
+  // Never suggest the browser that just failed the check.
+  const alternativeBrowsers = (() => {
+    const agent = navigator.userAgent;
+    const current = /Firefox|FxiOS/i.test(agent)
+      ? "Firefox"
+      : /Edg\//i.test(agent)
+        ? "Edge"
+        : /Chrome|CriOS|Chromium/i.test(agent)
+          ? "Chrome"
+          : /Safari/i.test(agent) ? "Safari" : null;
+    const options = ["Safari", "Firefox", "Chrome", "Edge"].filter((name) => name !== current);
+    return `${options.slice(0, -1).join(", ")}, or ${options.at(-1)}`;
+  })();
   const firefoxIncompatible = $derived(
     runtimeClass === "desktop-gecko" &&
       snapshot.headline === "Firefox is incompatible with the current model runtime",
@@ -230,7 +322,14 @@
         ? "Review the failed check above. Drowse needs Safari 26 on macOS 26, working local storage, and a graphics adapter that passes the WebGPU compute check. Lockdown Mode can disable WebGPU."
         : runtimeClass === "desktop-gecko"
           ? firefoxSwitchGuidance
-          : "Use a current Safari, Firefox, Chrome, or Edge browser on a device with WebGPU, then check again.",
+          : `Use a current ${alternativeBrowsers} browser on a device with WebGPU, then check again.`,
+  );
+  const lockedDownloadGuidance = $derived(
+    snapshot.catalogError
+      ? "Drowse couldn't load the verified model list. Check your connection, then check again."
+      : firefoxIncompatible
+        ? null
+        : "Downloads are unavailable right now. Check again after reconnecting or updating your browser.",
   );
   const runtimeGateTitle = $derived(
     snapshot.runtime.phase === "loading"
@@ -240,7 +339,7 @@
         : "Ready to open",
   );
   const runtimeGateAction = $derived(
-    snapshot.runtime.phase === "failed" ? "Try opening again" : "Open Drowse",
+    snapshot.runtime.phase === "failed" ? "Try opening again" : "Open workbench",
   );
 
   const speedClass = (speed: string) => {
@@ -278,6 +377,10 @@
   };
 
   onMount(() => {
+    const disposeModelPicker = registerModelPicker(id => {
+      selectedModel = id;
+      if (snapshot.models.find(model => model.id === id)?.modelType === "base") baseModelsOpen = true;
+    });
     snapshot = controller.current();
     const unsubscribe = controller.subscribe((next) => {
       snapshot = next;
@@ -285,17 +388,27 @@
       appleMobile = capabilities?.signals.appleMobile === true;
       runtimeClass = capabilities?.signals.runtimeClass ?? null;
       if (!selectedModel || !next.models.some((model) => model.id === selectedModel)) {
-        selectedModel = defaultModelSelection(next.models, requestedModelId, next.selectedModelVariantId);
+        const requestedSelection = requestedModelId ?? (next.download.phase !== "idle" ? next.download.modelVariantId : undefined);
+        selectedModel = next.models.find((model) => model.id === requestedSelection)?.id ?? null;
+        if (
+          selectedModel === null && firstRun && requestedModelId === null && !automaticSelectionDone &&
+          next.phase === "supported" && next.catalogError === undefined && next.download.available &&
+          !unfinishedDownloadPhases.includes(next.download.phase)
+        ) {
+          automaticSelectionDone = true;
+          selectedModel = defaultModelSelection(next.models.filter((model) => model.fit !== "blocked"), null);
+          autoSelectedModel = selectedModel;
+        }
         if (next.models.find((model) => model.id === selectedModel)?.modelType === "base") {
           baseModelsOpen = true;
         }
       }
       void openInstalledModel(next);
     });
-    return () => unsubscribe();
+    return () => { unsubscribe(); disposeModelPicker(); };
   });
 
-  const etaLabel = (progress = snapshot.download.progress) => {
+  const etaLabel = (progress = selectedProgress) => {
     if (!progress) return "Preparing download";
     if (progress.bytesTotal > 0 && progress.bytesReceived >= progress.bytesTotal) {
       return "Complete";
@@ -306,7 +419,7 @@
     return `${formatEtaRange(progress.etaSeconds)} remaining`;
   };
 
-  const progressPercent = (progress = snapshot.download.progress) =>
+  const progressPercent = (progress = selectedProgress) =>
     progress && progress.bytesTotal > 0
       ? Math.min(100, (progress.bytesReceived / progress.bytesTotal) * 100)
       : 0;
@@ -359,6 +472,21 @@
     }
   };
 
+  const discardPartialDownload = async () => {
+    const id = discardConfirmation;
+    if (!id || !controller.discardPartialDownload || modelOperationBusy) return;
+    discardingPartial = true;
+    discardError = null;
+    try {
+      await controller.discardPartialDownload(id);
+      discardConfirmation = null;
+    } catch (error) {
+      discardError = userFacingError(error, "The kept files could not be removed. Close other Drowse tabs and try again.");
+    } finally {
+      discardingPartial = false;
+    }
+  };
+
   const openModel = async (resetSession = false) => {
     if (!selectedModel) return;
     try {
@@ -399,11 +527,11 @@
 <a class="skip-link" href="#device-check">Skip to device check</a>
 
 <div class="app-shell" class:hardware-compatible={snapshot.phase === "supported"} class:download-complete={downloadComplete}>
-  <PageHeader current="models" onChats={onBack} />
+  <PageHeader current="models" variant="app" onChats={onChats ?? onBack} onModels={() => document.querySelector<HTMLElement>("#models-title")?.focus()} />
 
   <main id="device-check">
     <div class="intro" data-page-group="0">
-      <h1><MorphText text={displayHeadline} numbers={false} /></h1>
+      <h1 id="models-title" tabindex="-1"><MorphText text={displayHeadline} numbers={false} /></h1>
       <p>{displayDetail}</p>
       {#if firefoxIncompatible}<p>{firefoxSwitchGuidance}</p>{/if}
     </div>
@@ -465,13 +593,13 @@
       </section>
     {/if}
 
-    <section class="check-panel" data-page-group="1" class:loading-pulse={snapshot.phase === "checking"} aria-label="Device check" aria-busy={snapshot.phase === "checking"}>
+    <section class="check-panel" data-status={checkStatus} data-page-group="1" class:loading-pulse={snapshot.phase === "checking"} aria-label="Device check" aria-busy={snapshot.phase === "checking"}>
       <h2 class="sr-only">Device checks</h2>
       <details use:animatedDetails class="device-details" open={snapshot.phase === "unsupported" || snapshot.phase === "failed"}>
         <summary>
           <span class="check-summary-copy">
             <strong><MorphText text={checkSummaryLabel} numbers={false} /></strong>
-            {#if snapshot.checks.length > 0}<small><MorphText text={`${passedChecks} checks complete`} /></small>{/if}
+            {#if snapshot.checks.length > 0}<small><MorphText text={checkCountLabel} /></small>{/if}
           </span>
           <span>View details</span>
         </summary>
@@ -491,9 +619,13 @@
         </ul>
       </details>
 
-      {#if snapshot.phase === "unsupported" || snapshot.phase === "failed"}
+      {#if snapshot.phase === "unsupported" || snapshot.phase === "failed" || downloadsLocked}
         <div class="recovery" in:fly={contentIn()} out:fly={contentOut()}>
-          <p>{recoveryGuidance}</p>
+          {#if snapshot.phase === "unsupported" || snapshot.phase === "failed"}
+            <p>{recoveryGuidance}</p>
+          {:else if lockedDownloadGuidance}
+            <p>{lockedDownloadGuidance}</p>
+          {/if}
           <button type="button" onclick={() => controller.check()}>Check again</button>
         </div>
       {/if}
@@ -520,11 +652,12 @@
             </h2>
           <div class="heading-side">
             <InfoTip label="About model choices" text="Smaller models use less memory and download faster. Larger models usually give better answers. The recommendation is an estimate of what this device can run." />
-            <code>{formatBytes(snapshot.storage?.availableBytes)}</code>
+            <code>{formatAvailable(snapshot.storage?.availableBytes)}</code>
           </div>
         </div>
 
         {#snippet modelCard(model: HostedModelOption)}
+            {@const shortfall = spaceNeeded(model)}
             <button
               type="button"
               class:selected={selectedModel === model.id}
@@ -532,30 +665,41 @@
               disabled={modelOperationBusy}
               aria-disabled={model.fit === "blocked" && model.catalogAvailable !== false}
               aria-pressed={selectedModel === model.id}
+              aria-labelledby={`model-name-${model.id}`}
+              aria-describedby={[
+                `model-topline-${model.id}`,
+                `model-fit-${model.id}`,
+                ...(model.installed ? [`model-installed-${model.id}`] : []),
+                ...(model.modelType === "base" ? [`model-kind-${model.id}`] : []),
+              ].join(" ")}
               onclick={() => {
                 if (model.id !== requestedModelId) clearConversationOpen();
                 selectedModel = model.id;
                 unsafeConfirmation = null;
                 confirmSessionReset = false;
                 deleteConfirmation = null;
+                discardConfirmation = null;
                 deletionError = null;
+                discardError = null;
                 packSelectionError = null;
               }}
             >
-              <span class="model-topline">
+              <span class="model-topline" id={`model-topline-${model.id}`}>
                 <span>{tierLabel[model.tier]}</span>
-                <code>{model.catalogAvailable === false ? "Chat model" : model.size}</code>
+                <code>{model.catalogAvailable === false ? "Chat model" : cardSize(model)}</code>
               </span>
               <span class="model-name">
                 <ModelProviderLogo modelId={model.id} />
-                <strong><span>{model.name}</span>{#if model.modelType === "base"}<BaseModelTag plain />{/if}</strong>
+                <strong><span id={`model-name-${model.id}`}>{model.name}</span>{#if model.modelType === "base"}<BaseModelTag plain /><span class="sr-only" id={`model-kind-${model.id}`}>Base model</span>{/if}</strong>
                 {#if model.firstRunPacks.some((pack) => pack.kind === "sae")}
                   <span class="sae-available" {...{ "aria-description": "Sparse autoencoder available" }}>SAE</span>
                 {/if}
               </span>
               {#if selectedModel === model.id}
                 <span class="model-meta">{model.context} · {model.language}</span>
-                {#if model.expectedSpeed}
+                {#if measuredSpeed(model)}
+                  <span class="model-detail">{measuredSpeed(model)}</span>
+                {:else if model.expectedSpeed}
                   <span class="model-detail" {...{ "aria-description": (`Measured estimate: ${model.expectedSpeed}. A token is a short piece of text.`) }}>
                     Expected response speed: {speedClass(model.expectedSpeed)}
                   </span>
@@ -563,9 +707,9 @@
                 {#if model.estimatedDownloadSeconds}
                   <span class="model-detail">Estimated download: <MorphText text={formatEtaRange(model.estimatedDownloadSeconds)} /></span>
                 {/if}
-                {#if model.catalogAvailable !== false}
+                {#if model.catalogAvailable !== false && model.remainingDownloadBytes > 0}
                 <span class="model-detail">
-                  Setup download: <MorphText text={formatByteCount(model.modelDownloadBytes + model.firstRunPacks.filter((pack) => pack.requiredForSetup).reduce((total, pack) => total + pack.bytes, 0))} />
+                  Download: <MorphText text={downloadSizeSummary(model)} />
                 </span>
                 {/if}
                 {#if model.firstRunPacks.some((pack) => pack.selected && !pack.requiredForSetup)}
@@ -573,11 +717,15 @@
                     Also selected: {model.firstRunPacks.filter((pack) => pack.selected && !pack.requiredForSetup).map(packName).join(", ")}
                   </span>
                 {/if}
-                <span class="model-reason">{model.reason}</span>
+                {#if autoSelectedModel !== model.id}<span class="model-reason">{model.reason}</span>{/if}
               {/if}
-              <span class="model-fit {model.fit}">{model.catalogAvailable === false ? "Download unavailable" : model.requiresOomRetry ? "Previously ran out of memory" : fitLabel[model.fit]}</span>
+              <span class="model-fit {shortfall > 0 ? "blocked" : model.fit}" id={`model-fit-${model.id}`}>{model.catalogAvailable === false
+                ? "Download unavailable"
+                : shortfall > 0
+                  ? `Needs ${formatBytes(shortfall)} more space`
+                  : model.requiresOomRetry ? "Previously ran out of memory" : fitLabel[model.fit]}</span>
               {#if model.installed}
-                <span class="installed-mark">
+                <span class="installed-mark" id={`model-installed-${model.id}`}>
                   {model.setupComplete ? "Installed and verified" : "Model downloaded · tools still needed"}
                 </span>
               {/if}
@@ -585,19 +733,18 @@
         {/snippet}
 
         <div class="model-grid">
-          {#each snapshot.models.filter((model) => model.modelType !== "base") as model}
+          {#each modelsBySize(snapshot.models.filter((model) => model.modelType !== "base")) as model}
             {@render modelCard(model)}
           {/each}
         </div>
 
         <details use:animatedDetails class="base-models" bind:open={baseModelsOpen}>
-          <summary>Base models <span class="base-models-note">Advanced · text completion</span></summary>
+          <summary>Base models <span class="base-models-note">Text completion</span></summary>
           <p class="base-model-warning">
             Base models predict what comes next in a piece of text. They don't follow instructions reliably
             and can produce unreliable or offensive text. Use a chat model for everyday conversations.
           </p>
           {#if snapshot.models.some((model) => model.modelType === "base")}
-            <p class="base-model-description">Each download includes the core pack for generation and concept steering. Compatible J-lens and SAE packs are optional.</p>
             <div class="model-grid">
               {#each modelsBySize(snapshot.models.filter((model) => model.modelType === "base")) as model}
                 {@render modelCard(model)}
@@ -608,9 +755,52 @@
           {/if}
         </details>
 
+        {#if comparableModels.length > 1}
+          <details use:animatedDetails class="compare-models">
+            <summary>Compare models</summary>
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard access for the horizontally scrolling table) -->
+            <div class="compare-scroll" role="region" aria-label="Model comparison" tabindex="0">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Model</th>
+                    <th scope="col">Download</th>
+                    <th scope="col">Speed</th>
+                    <th scope="col">Conversation length</th>
+                    <th scope="col">Languages</th>
+                    <th scope="col">Tools</th>
+                    <th scope="col">License</th>
+                    <th scope="col">Fit on this device</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each comparableModels as model (model.id)}
+                    <tr class:selected-row={selectedModel === model.id}>
+                      <th scope="row">{model.name}{#if model.modelType === "base"} <span class="compare-note">Base</span>{/if}</th>
+                      <td>{model.setupComplete ? "On this device" : formatBytes(model.remainingDownloadBytes)}</td>
+                      <td>{measuredSpeed(model) ?? (model.expectedSpeed ? `${speedClass(model.expectedSpeed)} · ${model.expectedSpeed}` : "Measured after the first reply")}</td>
+                      <td>{model.context}</td>
+                      <td>{model.language}</td>
+                      <td>{toolChips(model).join(", ") || "Response controls"}</td>
+                      <td>{model.license}</td>
+                      <td>{spaceNeeded(model) > 0 ? `Needs ${formatBytes(spaceNeeded(model))} more space` : fitLabel[model.fit]}<span class="compare-reason">{model.reason}</span></td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        {/if}
+
         {#if selectedOption}
           {#key selectedOption.id}
           <div class="selected-model-details" in:fly={contentIn()}>
+          {#if autoSelectedModel === selectedOption.id && selectedOption.fit !== "blocked"}
+            <details use:animatedDetails class="why-this">
+              <summary>Why this one?</summary>
+              <p>{selectedOption.fit === "recommended" ? `${selectedOption.name} is the recommended model for this device. ` : ""}{selectedOption.reason}</p>
+            </details>
+          {/if}
           <p class="model-provenance">
             <a href={selectedOption.sourceUrl} target="_blank" rel="noreferrer">
               {selectedOption.name} source
@@ -623,13 +813,13 @@
           <section class="tool-picker" aria-labelledby="tools-title">
             <div class="tool-picker-heading">
               <div>
-                <h3 id="tools-title">Choose this download</h3>
+                <h3 id="tools-title">{selectedOption.firstRunPacks.some((pack) => !pack.requiredForSetup) ? "Tools for" : "Included with"} {selectedOption.name}</h3>
               </div>
               <InfoTip
                 label="About model tools"
                 text={selectedOption.modelType === "base"
-                  ? "The model can generate text without extra tools. Add compatible word or feature insights now or later."
-                  : "This setup includes response controls and word insights. SAE features are optional. You can change feature and R-lens packs later in the workbench. These packs are already trained."}
+                  ? "This setup includes response controls and compatible SAE features when available. Word insights are optional for base models."
+                  : "This setup includes response controls, word insights, and compatible SAE features when available. These packs are already trained."}
               />
             </div>
             <div class="tool-option required-tool">
@@ -647,7 +837,7 @@
                   <strong>{pack.kind === "jlens" ? "Word insights" : "Feature insights"} <span>({pack.kind === "jlens" ? "J-lens" : "SAE"})</span></strong>
                   <p>{pack.kind === "jlens" ? `${pack.name}. Read word predictions across layers and steer toward a word.` : packDescription(pack)}</p>
                 </div>
-                <span><MorphText text={pack.installed ? "Already downloaded" : formatByteCount(pack.bytes)} /></span>
+                <span><MorphText text={pack.installed ? "Included · already downloaded" : `Included · ${formatBytes(pack.bytes)}`} /></span>
               </div>
             {/each}
             {#if selectedOption.setupIssue}
@@ -669,7 +859,7 @@
                       <strong>{pack.kind === "jlens" ? selectedOption.modelType === "base" ? pack.name : "Alternative R-lens" : packTitle(pack)} <span>({pack.kind === "jlens" ? "optional readout" : "optional SAE"})</span></strong>
                       <p>{packDescription(pack)}</p>
                     </div>
-                    <span><MorphText text={pack.installed ? "Already downloaded" : formatByteCount(pack.bytes)} /></span>
+                    <span><MorphText text={pack.installed ? "Already downloaded" : formatBytes(pack.bytes)} /></span>
                   </label>
                 {/each}
               {:else if !selectedOption.toolNotice}
@@ -678,7 +868,10 @@
             {/if}
             <div class="tool-total">
               <span>{selectedOption.installed ? "Download remaining" : "First download"}</span>
-              <strong><MorphText text={formatByteCount(selectedOption.remainingDownloadBytes)} /></strong>
+              <strong><MorphText text={formatBytes(selectedOption.remainingDownloadBytes) +
+                (remainingDownloadParts(selectedOption).modelBytes > 0 && remainingDownloadParts(selectedOption).toolBytes > 0
+                  ? ` · ${downloadSizeSummary(selectedOption)}`
+                  : "")} /></strong>
             </div>
             {#if packSelectionError}
               <p class="tool-error" role="alert">{packSelectionError}</p>
@@ -688,28 +881,6 @@
           </div>
           {/key}
         {/if}
-
-        {#if selectedOption?.installed}
-          <div class="model-storage">
-            <div>
-              <strong>Stored on this device</strong>
-              <p>Remove the model files to free storage. Your chats and analysis packs are kept.</p>
-            </div>
-            {#if deleteConfirmation === selectedModel}
-              <div class="delete-confirmation">
-                <p>Delete {selectedOption.name} from this device? You will need to download it again to continue its chats.</p>
-                <div class="warning-actions">
-                  <button type="button" class="secondary" disabled={deletingModel} onclick={() => deleteConfirmation = null}>Cancel</button>
-                  <button type="button" class="delete-model" disabled={modelOperationBusy} onclick={() => void deleteSelectedModel()}><MorphText text={deletingModel ? "Deleting…" : "Delete model"} /></button>
-                </div>
-              </div>
-            {:else}
-              <button type="button" class="secondary" disabled={modelOperationBusy} onclick={() => { deleteConfirmation = selectedModel; deletionNotice = null; }}>Delete from device</button>
-            {/if}
-            {#if deletionError}<p role="alert" class="tool-error">{deletionError}</p>{/if}
-          </div>
-        {/if}
-        {#if deletionNotice}<p role="status">{deletionNotice}</p>{/if}
 
         {#if selectedOption?.installed && !showDownloadAction}
           <div class="release-gate runtime-gate" class:loading-pulse={snapshot.runtime.phase === "loading"}>
@@ -728,7 +899,7 @@
                 else void openModel();
               }}
             >
-              <MorphText text={!selectedOption.setupComplete ? "Add selected tools first" : snapshot.runtime.phase === "loading" ? "Loading…" : snapshot.download.phase === "requesting_persistence" || snapshot.download.phase === "downloading" || snapshot.download.phase === "cancelling" ? "Finishing setup…" : snapshot.runtime.resetSessionAvailable ? "Conversation needs attention" : selectedOption.fit === "uncertain" ? "Review warning" : runtimeGateAction} />
+              <MorphText text={!selectedOption.setupComplete ? "Add selected tools first" : snapshot.runtime.phase === "loading" ? "Loading…" : ["requesting_persistence", "downloading", "cancelling"].includes(selectedDownloadPhase) ? "Finishing setup…" : snapshot.runtime.resetSessionAvailable ? "Conversation needs attention" : selectedOption.fit === "uncertain" ? "Review warning" : runtimeGateAction} />
             </button>
           </div>
           {#if selectedOption.fit === "uncertain" && unsafeConfirmation === selectedModel}
@@ -773,22 +944,24 @@
         {/if}
 
         {#if showDownloadAction}
-          <div class="release-gate download-gate" class:loading-pulse={snapshot.download.phase === "requesting_persistence" || snapshot.download.phase === "cancelling" || (snapshot.download.phase === "downloading" && !snapshot.download.progress?.offline && !snapshot.download.progress?.stalled)}>
+          <div class="release-gate download-gate" class:loading-pulse={selectedDownloadPhase === "requesting_persistence" || selectedDownloadPhase === "cancelling" || (selectedDownloadPhase === "downloading" && !selectedProgress?.offline && !selectedProgress?.stalled)}>
             <div>
-              <strong><MorphText text={snapshot.download.phase === "installed" ? "Setup complete" : snapshot.download.phase === "requesting_persistence" ? "Preparing download" : snapshot.download.phase === "downloading" ? "Downloading model files" : snapshot.download.phase === "cancelling" ? "Pausing download" : snapshot.download.phase === "paused" ? "Download paused" : snapshot.download.phase === "failed" ? "Download interrupted" : "Ready to download"} /></strong>
-              <p>{snapshot.download.reason}</p>
-              {#if selectedOption}
-                <p class="setup-disclosure">
-                  {selectedOption.modelType === "base"
-                    ? "Download the model and any selected tools, then open the completion workspace."
-                    : `One download installs the model, response controls, and word insights${selectedOption.firstRunPacks.some(pack => pack.selected && !pack.requiredForSetup && !pack.installed) ? `, plus ${selectedOption.firstRunPacks.filter(pack => pack.selected && !pack.requiredForSetup && !pack.installed).map(packSummaryName).join(", ")}` : ""}, then opens the workbench.`}
-                  You can add or change feature and R-lens packs later.
-                </p>
+              {#if selectedDownloadPhase !== "idle" && selectedDownloadPhase !== "locked"}
+              <strong><MorphText text={selectedDownloadPhase === "installed" ? "Setup complete" : selectedDownloadPhase === "requesting_persistence" ? "Preparing download" : selectedDownloadPhase === "downloading" ? "Downloading model files" : selectedDownloadPhase === "cancelling" ? "Pausing download" : selectedDownloadPhase === "paused" ? "Download paused" : "Download interrupted"} /></strong>
+              {#if snapshot.download.reason !== "Ready to download."}<p>{snapshot.download.reason}</p>{/if}
+              {:else if keptBytes > 0}
+              <strong>Download paused</strong>
+              {/if}
+              {#if keptBytes > 0 && !["requesting_persistence", "downloading", "cancelling"].includes(selectedDownloadPhase)}
+                <p class="kept-copy">{formatBytes(keptBytes)} already downloaded and kept on this device. Resume to finish setup.</p>
+              {/if}
+              {#if otherDownloadActive}
+                <p>Another model is downloading. Wait for it to finish or pause it first.</p>
               {/if}
               {#if storageUnprotected}
                 {@render storageProtectionNotice()}
               {/if}
-              {#if snapshot.download.progress}
+              {#if selectedProgress}
                 <div
                   class="progress-track"
                   role="progressbar"
@@ -807,22 +980,36 @@
                 </p>
               {/if}
             </div>
-            {#if snapshot.download.phase === "downloading" || snapshot.download.phase === "cancelling"}
+            {#if selectedDownloadPhase === "downloading" || selectedDownloadPhase === "cancelling"}
               <button
                 type="button"
-                disabled={snapshot.download.phase === "cancelling"}
+                disabled={selectedDownloadPhase === "cancelling"}
                 onclick={() => void controller.cancelDownload()}
               >
-                <MorphText text={snapshot.download.phase === "cancelling" ? "Pausing…" : "Pause download"} />
+                <MorphText text={selectedDownloadPhase === "cancelling" ? "Pausing…" : "Pause download"} />
               </button>
             {:else}
               <button
                 type="button"
-                disabled={modelOperationBusy || !selectedModel || selectedOption?.setupComplete || (snapshot.download.phase === "installed" && snapshot.download.modelVariantId === selectedModel)}
+                disabled={modelOperationBusy || !selectedModel || selectedOption?.setupComplete || selectedDownloadPhase === "installed"}
                 onclick={() => void startDownload(false)}
               >
-                <MorphText text={selectedOption?.setupComplete ? "Installed" : snapshot.download.phase === "paused" ? "Resume download" : snapshot.download.phase === "failed" ? "Retry download" : selectedOption?.fit === "uncertain" ? "Review warning" : snapshot.download.phase === "requesting_persistence" ? "Preparing…" : selectedOption?.installed ? "Add tools and open" : "Download and open"} />
+                <MorphText text={selectedOption?.setupComplete ? "Installed" : selectedDownloadPhase === "paused" || (keptBytes > 0 && selectedDownloadPhase !== "failed") ? "Resume download" : selectedDownloadPhase === "failed" ? "Retry download" : selectedOption?.fit === "uncertain" ? "Review warning" : selectedDownloadPhase === "requesting_persistence" ? "Preparing…" : selectedOption?.installed ? "Add tools and open" : "Download and open"} />
               </button>
+            {/if}
+            {#if keptBytes > 0 && controller.discardPartialDownload && ["idle", "paused", "failed"].includes(selectedDownloadPhase)}
+              {#if discardConfirmation === selectedModel}
+                <div class="delete-confirmation">
+                  <p>Discard the {formatBytes(keptBytes)} already downloaded? The next download starts from the beginning.</p>
+                  <div class="warning-actions">
+                    <button type="button" class="secondary" disabled={discardingPartial} onclick={() => discardConfirmation = null}>Keep files</button>
+                    <button type="button" class="delete-model" disabled={modelOperationBusy || discardingPartial} onclick={() => void discardPartialDownload()}><MorphText text={discardingPartial ? "Discarding…" : "Discard files"} /></button>
+                  </div>
+                </div>
+              {:else}
+                <button type="button" class="quiet-action" disabled={modelOperationBusy} onclick={() => { discardConfirmation = selectedModel; discardError = null; }}>Discard partial download</button>
+              {/if}
+              {#if discardError}<p role="alert" class="tool-error">{discardError}</p>{/if}
             {/if}
           </div>
           {#if selectedOption?.fit === "uncertain" && !selectedOption.installed && unsafeConfirmation === selectedModel}
@@ -851,6 +1038,53 @@
             <button type="button" disabled>Download and open</button>
           </div>
         {/if}
+
+        {#if installedModels.length > 0}
+          <section class="model-storage" aria-labelledby="stored-title">
+            <div class="stored-heading">
+              <h3 id="stored-title">Stored on this device</h3>
+              <p>Remove model files to free storage. Your chats and analysis packs are kept.</p>
+            </div>
+            <ul class="stored-list">
+              {#each installedModels as model (model.id)}
+                <li>
+                  <div class="stored-row">
+                    <div>
+                      <strong>{model.name}</strong>
+                      <p>
+                        Model {formatBytes(model.modelDownloadBytes)}{#each model.firstRunPacks.filter((pack) => pack.installed) as pack (pack.id)} · {pack.kind === "jlens" ? "Word insights" : "Feature insights"} {formatBytes(pack.bytes)}{/each}
+                      </p>
+                    </div>
+                    <span class="stored-size">{formatBytes(storedBytes(model))}</span>
+                    {#if deleteConfirmation !== model.id}
+                      <button type="button" class="secondary" disabled={modelOperationBusy} onclick={() => { deleteConfirmation = model.id; deletionNotice = null; deletionError = null; }}>Delete from device</button>
+                    {/if}
+                  </div>
+                  {#if deleteConfirmation === model.id}
+                    <div class="delete-confirmation">
+                      <p>Delete {model.name} from this device? You will need to download it again to continue its chats.</p>
+                      <div class="warning-actions">
+                        <button type="button" class="secondary" disabled={deletingModel} onclick={() => deleteConfirmation = null}>Cancel</button>
+                        <button type="button" class="delete-model" disabled={modelOperationBusy} onclick={() => void deleteSelectedModel()}><MorphText text={deletingModel ? "Deleting…" : "Delete model"} /></button>
+                      </div>
+                    </div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            <div class="stored-total">
+              <span>Total for these models</span>
+              <strong>{formatBytes(installedModels.reduce((total, model) => total + storedBytes(model), 0))}</strong>
+            </div>
+            {#if snapshot.storage?.usageBytes != null && snapshot.storage?.quotaBytes != null}
+              <p class="stored-quota">This browser is using {formatBytes(snapshot.storage.usageBytes)} of {formatBytes(snapshot.storage.quotaBytes)} it allows Drowse{snapshot.storage.availableBytes != null ? ` · ${formatBytes(snapshot.storage.availableBytes)} available` : ""}.</p>
+            {:else if snapshot.storage?.availableBytes != null}
+              <p class="stored-quota">{formatAvailable(snapshot.storage.availableBytes)}.</p>
+            {/if}
+            {#if deletionError}<p role="alert" class="tool-error">{deletionError}</p>{/if}
+          </section>
+        {/if}
+        {#if deletionNotice}<p role="status">{deletionNotice}</p>{/if}
       </section>
     {/if}
 
@@ -946,7 +1180,24 @@
   .model-panel { margin-top: var(--space-xl); }
   .check-panel,
   .model-panel { padding: 0; }
-  .check-panel { padding: var(--surface-padding); border-radius: var(--radius-lg); background: var(--surface-card); box-shadow: var(--shadow-card); }
+  .check-panel {
+    --check-bg: var(--bg-alt);
+    --check-ink: var(--fg-strong);
+    padding: var(--surface-padding);
+    border-radius: var(--radius-lg);
+    background: var(--check-bg);
+    color: var(--check-ink);
+    box-shadow: var(--shadow-card);
+  }
+  .check-panel[data-status="ready"] { --check-bg: var(--success-bg); --check-ink: var(--success-ink); }
+  .check-panel[data-status="partial"] { --check-bg: var(--warning-bg); --check-ink: var(--warning-ink); }
+  .check-panel[data-status="unavailable"] { --check-bg: var(--danger-bg); --check-ink: var(--danger-ink); }
+  @media (prefers-contrast: more) {
+    .check-panel { outline: 2px solid var(--check-ink); }
+  }
+  @media (forced-colors: active) {
+    .check-panel[data-status] { --check-bg: Canvas; --check-ink: CanvasText; outline: 1px solid CanvasText; }
+  }
 
   .panel-heading {
     display: flex;
@@ -973,14 +1224,14 @@
     justify-content: space-between;
     min-height: 3.5rem;
     padding-block: var(--space-4);
-    color: var(--fg-dim);
+    color: var(--check-ink);
     cursor: pointer;
     font-family: var(--font-structure);
     list-style: none;
   }
   .device-details > summary::-webkit-details-marker { display: none; }
   .device-details > summary span:last-child {
-    color: var(--fg-muted);
+    color: var(--check-ink);
     font-family: var(--font-data);
     font-size: var(--text-xs);
   }
@@ -990,13 +1241,13 @@
     gap: var(--space-sm);
   }
   .check-summary-copy strong {
-    color: var(--fg);
+    color: var(--check-ink);
     font-family: var(--font-structure);
     font-size: var(--text-md);
     font-weight: var(--weight-structure-bold);
   }
   .check-summary-copy small {
-    color: var(--fg-muted);
+    color: var(--check-ink);
     font-family: var(--font-data);
     font-size: var(--text-xs);
   }
@@ -1029,7 +1280,7 @@
     height: 24px;
     border-radius: 50%;
     background: var(--glass-strong);
-    color: var(--fg-muted);
+    color: var(--check-ink);
     font-family: var(--font-mono);
     font-weight: var(--weight-bold);
     transform: scale(1);
@@ -1043,11 +1294,9 @@
   .check-mark.pass { background: color-mix(in srgb, var(--live) 17%, transparent); color: var(--live); }
   .check-mark.fail { background: color-mix(in srgb, var(--accent-red) 17%, transparent); color: var(--accent-red); }
   .check-mark.warn { background: color-mix(in srgb, var(--accent-yellow) 17%, transparent); color: var(--accent-yellow); }
-  .check-list h3 { margin: var(--space-xs) 0 0; color: var(--fg); font-size: var(--text-md); font-weight: var(--weight-medium); }
-  .check-list p { margin: var(--space-xs) 0 0; color: var(--fg-dim); line-height: 1.5; }
-  .check-label { margin-top: var(--space-xs); color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
-  .failed .check-label { color: var(--accent-red); }
-  .warning .check-label { color: var(--accent-yellow); }
+  .check-list h3 { margin: var(--space-xs) 0 0; color: var(--check-ink); font-size: var(--text-md); font-weight: var(--weight-medium); }
+  .check-list p { margin: var(--space-xs) 0 0; color: var(--check-ink); line-height: 1.5; }
+  .check-label { margin-top: var(--space-xs); color: var(--check-ink); font-family: var(--font-mono); font-size: var(--text-xs); }
 
   .recovery,
   .release-gate {
@@ -1061,6 +1310,7 @@
   }
   .recovery p,
   .release-gate p { margin: 0; color: var(--fg-dim); line-height: 1.5; }
+  .recovery p { color: var(--check-ink); }
   .release-gate { padding: var(--surface-padding); border-radius: var(--radius); }
   .recovery > button,
   .release-gate > button {
@@ -1090,13 +1340,44 @@
   button:active:not(:disabled) { transform: scale(var(--press-scale)); box-shadow: var(--shadow-control-pressed); }
 
   .model-grid { display: grid; grid-template-columns: 1fr; gap: var(--space-6); }
-  .model-storage { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5); margin-block: var(--space-7); padding-block: var(--space-5); }
-  .model-storage > div:first-child { flex: 1 1 18rem; }
-  .model-storage p { margin-block: var(--space-3); overflow-wrap: anywhere; }
+  .model-storage { display: grid; gap: var(--space-5); margin-block: var(--space-7); padding-block: var(--space-5); border-top: 1px solid var(--glass-line); }
+  .model-storage h3 { margin: 0; color: var(--fg); font-family: var(--font-structure); font-size: var(--text-onboarding-subheading); font-weight: var(--weight-structure-bold); }
+  .model-storage p { margin-block: var(--space-3); color: var(--fg-dim); overflow-wrap: anywhere; }
+  .stored-list { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+  .stored-list > li { padding-block: var(--space-4); border-bottom: 1px solid var(--glass-line); }
+  .stored-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5); }
+  .stored-row > div { flex: 1 1 16rem; min-width: 0; }
+  .stored-row p { margin: var(--space-1) 0 0; font-family: var(--font-data); font-size: var(--text-xs); }
+  .stored-size,
+  .stored-total { color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+  .stored-total { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); }
+  .stored-total strong { color: var(--fg); font-size: var(--text-sm); }
+  .stored-quota { font-size: var(--text-sm); }
   .delete-confirmation { flex-basis: 100%; }
+  .kept-copy { font-family: var(--font-data); font-size: var(--text-xs); }
+  .download-gate > .quiet-action { justify-self: start; }
+  .why-this { margin: var(--space-sm) var(--space-xs) 0; color: var(--fg-dim); }
+  .why-this > summary { display: inline-flex; align-items: center; min-height: var(--control-target); color: var(--fg); cursor: pointer; font-family: var(--font-structure); }
+  .why-this p { max-width: 62ch; margin: var(--space-xs) 0 0; line-height: 1.5; }
+  .compare-models { margin-block: var(--space-7); }
+  .compare-models > summary { display: flex; align-items: center; min-height: var(--control-target); color: var(--fg); cursor: pointer; font-family: var(--font-structure); font-size: var(--text-md); font-weight: var(--weight-medium); }
+  .compare-scroll { max-width: 100%; margin-top: var(--space-4); overflow-x: auto; }
+  .compare-scroll table { width: 100%; min-width: 52rem; border-collapse: collapse; font-size: var(--text-sm); }
+  .compare-scroll th,
+  .compare-scroll td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--glass-line); text-align: start; vertical-align: top; }
+  .compare-scroll thead th { color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+  .compare-scroll tbody th { color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-structure); }
+  .compare-scroll td { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+  .compare-scroll .selected-row > * { background: color-mix(in srgb, var(--pillar-lens) 8%, transparent); }
+  .compare-note,
+  .compare-reason { color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-xs); }
+  .compare-reason { display: block; max-width: 28ch; margin-top: var(--space-1); }
   .delete-model { color: var(--accent-red); background: var(--control-sheen), var(--surface-hi); }
   .base-models { margin-block: var(--space-7); }
   .base-models > summary {
+    min-height: 56px;
+    font-size: var(--text-lg);
+    line-height: 1.4;
     padding-block: var(--space-5);
     cursor: pointer;
     color: var(--fg);
@@ -1106,7 +1387,7 @@
     display: inline-block;
     margin-inline-start: var(--space-4);
     color: var(--fg-muted);
-    font-size: var(--text-sm);
+    font-size: var(--text-md);
     font-weight: var(--weight-normal);
   }
   .base-model-warning,
@@ -1140,9 +1421,11 @@
   .model-grid > button:active:not(:disabled) {
     transform: scale(var(--press-scale));
   }
-  .model-grid > button.selected {
-    background: var(--surface-card);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent), var(--shadow-card);
+  .model-grid > button.selected,
+  .model-grid > button.selected:hover:not(:disabled),
+  .model-grid > button.selected:active:not(:disabled) {
+    background: color-mix(in srgb, var(--pillar-lens) 8%, var(--surface-card));
+    box-shadow: 0 0 0 2px var(--pillar-lens), 0 10px 28px -8px color-mix(in srgb, var(--pillar-lens) 40%, transparent), var(--shadow-card);
   }
   .model-grid > button.blocked {
     background: var(--danger-bg);
@@ -1185,6 +1468,7 @@
   .model-provenance {
     display: flex;
     flex-wrap: wrap;
+    align-items: baseline;
     gap: var(--space-xs);
     margin: var(--space-sm) var(--space-xs) 0;
     color: var(--fg-muted);
@@ -1261,13 +1545,12 @@
     font-family: var(--font-data);
     font-size: var(--text-xs);
   }
+  /* A plain mark, not a box: included tools cannot be switched off. */
   .tool-check {
     display: grid;
     place-items: center;
-    width: 20px;
+    width: 18px;
     height: 20px;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--live) 17%, transparent);
     color: var(--live);
     font-family: var(--font-data);
   }

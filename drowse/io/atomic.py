@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import threading
 import uuid
@@ -227,6 +228,25 @@ def write_bytes_atomic(path: Path, data: bytes) -> None:
             os.fsync(f.fileno())
         os.replace(tmp, path)
         fsync_directory(path.parent)
+    finally:
+        with suppress(FileNotFoundError):
+            tmp.unlink()
+
+
+def copy_file_atomic(source: Path, destination: Path) -> None:
+    """Copy a file in bounded chunks, then publish it atomically."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{destination.name[:40]}.", suffix=".tmp", dir=destination.parent,
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as output, open(source, "rb") as input_file:
+            shutil.copyfileobj(input_file, output, length=1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(tmp, destination)
+        fsync_directory(destination.parent)
     finally:
         with suppress(FileNotFoundError):
             tmp.unlink()

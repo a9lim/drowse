@@ -135,32 +135,28 @@ export class BrowserHfManifoldClient implements BrowserHfManifoldClientPort {
       throw new Error(`${model.id}@${model.sha} must contain exactly one root .drowse archive`);
     }
     return withNamedLock(DOWNLOAD_LOCK, "shared", async () => {
+      options.signal?.throwIfAborted();
       const directory = await hfDownloadDirectory();
       const temporaryName = `${randomUuid()}.drowse`;
       const handle = await directory.getFileHandle(temporaryName, { create: true });
-      const writable = await handle.createWritable();
+      let writable: FileSystemWritableFileStream | undefined;
+      let response: Response | undefined;
       try {
+        writable = await handle.createWritable();
         const archive = archives[0];
         const url = resolveUrl(this.apiOrigin, model.id, model.sha, archive.rfilename);
-        const response = await this.fetchImpl(url, requestInit(options.signal));
+        response = await this.fetchImpl(url, requestInit(options.signal));
         requireOk(response, `${model.id}@${model.sha}`);
         requireAllowedResponseOrigin(response, this.allowedDownloadOrigins);
         const declared = responseLength(response);
-        if (declared !== null && declared > DROWSE_ARCHIVE_MAX_TOTAL_BYTES) {
-          throw new Error("The Hugging Face Drowse pack exceeds the 2 GiB archive limit");
-        }
-        if (!response.body) throw new Error("The Hugging Face Drowse pack response has no body");
-        const reader = response.body.getReader();
         let downloaded = 0;
-        while (true) {
-          options.signal?.throwIfAborted();
-          const { done, value } = await reader.read();
-          if (done) break;
+        for await (const value of responseChunks(
+          response,
+          DROWSE_ARCHIVE_MAX_TOTAL_BYTES,
+          "The Hugging Face Drowse pack exceeds the 2 GiB archive limit",
+          options.signal,
+        )) {
           downloaded += value.byteLength;
-          if (downloaded > DROWSE_ARCHIVE_MAX_TOTAL_BYTES) {
-            await reader.cancel();
-            throw new Error("The Hugging Face Drowse pack exceeds the 2 GiB archive limit");
-          }
           await writable.write(ownedBytes(value));
           options.onProgress?.({
             phase: "downloading",
@@ -173,6 +169,7 @@ export class BrowserHfManifoldClient implements BrowserHfManifoldClientPort {
           throw new Error(`The Hugging Face Drowse pack stopped at ${downloaded} of ${declared} bytes`);
         }
         await writable.close();
+        writable = undefined;
         return await consume({
           file: await handle.getFile(),
           repository: model.id,
@@ -180,12 +177,13 @@ export class BrowserHfManifoldClient implements BrowserHfManifoldClientPort {
           filename: archive.rfilename,
         });
       } catch (error) {
-        await writable.abort(error).catch(() => undefined);
+        await writable?.abort(error).catch(() => undefined);
         throw error;
       } finally {
+        if (response && !response.bodyUsed) await response.body?.cancel().catch(() => undefined);
         await directory.removeEntry(temporaryName).catch(ignoreMissing);
       }
-    });
+    }, options.signal);
   }
 
   clear(): Promise<void> {
@@ -249,13 +247,17 @@ export class BrowserHfManifoldClient implements BrowserHfManifoldClientPort {
     allowedOrigins: ReadonlySet<string> = new Set([this.apiOrigin]),
   ): Promise<unknown> {
     const response = await this.fetchImpl(url, requestInit(signal));
-    requireOk(response, url.pathname);
-    requireAllowedResponseOrigin(response, allowedOrigins);
-    const bytes = await readBounded(response, maximumBytes, signal);
     try {
-      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    } catch {
-      throw new Error(`Hugging Face returned invalid JSON for ${url.pathname}`);
+      requireOk(response, url.pathname);
+      requireAllowedResponseOrigin(response, allowedOrigins);
+      const bytes = await readBounded(response, maximumBytes, signal);
+      try {
+        return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      } catch {
+        throw new Error(`Hugging Face returned invalid JSON for ${url.pathname}`);
+      }
+    } finally {
+      if (!response.bodyUsed) await response.body?.cancel().catch(() => undefined);
     }
   }
 }
@@ -332,21 +334,10 @@ async function readBounded(
   maximumBytes: number,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
-  const declared = responseLength(response);
-  if (declared !== null && declared > maximumBytes) throw new Error("Hugging Face response is too large");
-  if (!response.body) throw new Error("Hugging Face response has no body");
-  const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  while (true) {
-    signal?.throwIfAborted();
-    const { done, value } = await reader.read();
-    if (done) break;
+  for await (const value of responseChunks(response, maximumBytes, "Hugging Face response is too large", signal)) {
     total += value.byteLength;
-    if (total > maximumBytes) {
-      await reader.cancel();
-      throw new Error("Hugging Face response is too large");
-    }
     chunks.push(ownedBytes(value));
   }
   const result = new Uint8Array(total);
@@ -356,6 +347,40 @@ async function readBounded(
     offset += chunk.byteLength;
   }
   return result;
+}
+
+async function* responseChunks(
+  response: Response,
+  maximumBytes: number,
+  sizeError: string,
+  signal?: AbortSignal,
+): AsyncGenerator<Uint8Array> {
+  if (!response.body) throw new Error("Hugging Face response has no body");
+  const reader = response.body.getReader();
+  const cancel = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener("abort", cancel, { once: true });
+  let complete = false;
+  try {
+    const declared = responseLength(response);
+    if (declared !== null && declared > maximumBytes) throw new Error(sizeError);
+    let total = 0;
+    while (true) {
+      signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      signal?.throwIfAborted();
+      if (done) {
+        complete = true;
+        return;
+      }
+      total += value.byteLength;
+      if (total > maximumBytes) throw new Error(sizeError);
+      yield value;
+    }
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    if (!complete) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
 }
 
 function responseLength(response: Response): number | null {
@@ -404,9 +429,10 @@ function withNamedLock<T>(
   name: string,
   mode: "shared" | "exclusive",
   operation: () => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   if (!navigator.locks?.request) return Promise.reject(new Error("The Web Locks API is unavailable"));
-  return navigator.locks.request(name, { mode }, async (lock) => {
+  return navigator.locks.request(name, { mode, ...(signal ? { signal } : {}) }, async (lock) => {
     if (!lock) throw new Error("The Hugging Face download lock was not acquired");
     return operation();
   });

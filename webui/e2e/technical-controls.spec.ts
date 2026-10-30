@@ -143,8 +143,11 @@ test("technical controls preserve full names, slider behavior, and translucent s
 test("help supports hover and keyboard focus while Escape keeps the parent drawer open", async ({ page }) => {
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
   await expect(page.getByRole("button", { name: /^Controls/ })).toBeVisible();
+  await expect(page.locator(".boot-loading")).toHaveCount(0);
   await page.evaluate(async url => (await import(url)).openDrawer("advanced_sampling"), storesUrl);
   const drawer = page.getByRole("dialog", { name: "Sampling settings" });
+  await expect(drawer).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
   await expect.poll(() => drawer.evaluate(el => el.getAnimations({ subtree: true }).filter(animation => animation.playState === "running").length)).toBe(0);
   const help = drawer.getByRole("button", { name: "About Top K", exact: true });
   const tip = drawer.getByRole("tooltip").filter({ hasText: "Top K" });
