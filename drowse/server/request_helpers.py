@@ -12,7 +12,6 @@ if TYPE_CHECKING:
 
 from drowse.errors import DrowseError
 from drowse.model.readout import get_unembedding
-from drowse.generation.results import TokenEvent
 from drowse.generation.sampling import SamplingConfig
 from drowse.steering.terms import Steering
 
@@ -64,51 +63,30 @@ def flatten_content(content: Any) -> str:
     return str(content)
 
 
-def probe_token_readings(event: TokenEvent) -> dict[str, Any] | None:
-    """Serialize a token event's live probe readings, or ``None`` if absent."""
-    readings = event.probe_readings
-    if not readings:
-        return None
-    return {name: reading.to_dict() for name, reading in readings.items()}
+def compose_request_steering(
+    expr: str | None, default: Steering | None,
+) -> Steering | None:
+    """Compose a per-request steering expression over the server default.
 
-
-def parse_request_steering(
-    expr: str | None,
-) -> tuple[Steering | None, bool]:
-    """Parse a per-request steering expression string.
-
-    Returns ``(req_steering, explicit_clear)``: ``None`` expression inherits
-    the server default; an explicit empty / whitespace string clears it; a
-    non-empty string parses through the shared grammar.
+    ``None`` inherits the default.  An explicit empty / whitespace string
+    clears it and reaches the session as an *empty* :class:`Steering`, not
+    ``None`` — ``None`` means "unset" there, and the cast roster fills unset
+    steering with the gen label's standing recipe, so ``""`` is the escape
+    hatch that must win.  A non-empty expression parses through the shared
+    grammar and overrides the default at the key level: alphas named in both
+    come from the request; alphas only in the default pass through.  Thinking
+    is never carried here — it travels as the generation's ``thinking=``
+    keyword.
     """
     from drowse.steering.grammar import parse_expr
 
     if expr is None:
-        return None, False
+        return default
     if not expr.strip():
-        return None, True
-    return parse_expr(expr), False
-
-
-def merge_steering(
-    req_steering: Steering | None,
-    default_steering: Steering | None,
-    explicit_clear: bool,
-    thinking: bool | None,
-) -> Steering | None:
-    """Compose parsed request steering over the server default."""
-    merged_alphas: dict[str, Any] = {}
-    if default_steering is not None and not explicit_clear:
-        merged_alphas.update(default_steering.alphas)
-    if req_steering is not None:
-        merged_alphas.update(req_steering.alphas)
-    if not merged_alphas and thinking is None:
-        # An explicit clear must reach the session as an *empty*
-        # Steering, not None — None means "unset" there, and the cast
-        # roster fills unset steering with the gen label's standing
-        # recipe.  ``steering: ""`` is the escape hatch that must win.
-        return Steering(alphas={}) if explicit_clear else None
-    return Steering(alphas=merged_alphas, thinking=thinking)
+        return Steering(alphas={})
+    alphas: dict[str, Any] = dict(default.alphas) if default is not None else {}
+    alphas.update(parse_expr(expr).alphas)
+    return Steering(alphas=alphas)
 
 
 def normalize_stop(

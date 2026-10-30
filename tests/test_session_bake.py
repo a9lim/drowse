@@ -1,4 +1,4 @@
-"""Tests for POST /drowse/v1/sessions/{id}/profiles/bake."""
+"""``DrowseSession.bake``: the model-scoped merge, its fingerprint guard, and registration."""
 
 # pyright: reportUnusedVariable=false
 
@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-from fastapi.testclient import TestClient
 
 from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.session.session import DrowseSession
@@ -35,20 +34,16 @@ def _mock_session():
     session._layers = []
     session.events = MagicMock()
     session.events.subscribe = lambda cb: (lambda: None)
-    # ``POST /profiles/bake`` is a thin wrapper over ``DrowseSession.bake`` —
-    # bind the real method so the route's contract (including the
-    # loaded-weight fingerprint it forwards into the merge) is under test
-    # rather than a mock's return value.
+    # Bind the real method so its contract (including the loaded-weight
+    # fingerprint it forwards into the merge) is under test rather than a
+    # mock's return value.
     session.bake = MethodType(DrowseSession.bake, session)
     return session
 
 
 @pytest.fixture
-def session_and_client():
-    from drowse.server import create_app
-    session = _mock_session()
-    app = create_app(session, default_steering=None)
-    return session, TestClient(app)
+def session() -> Any:
+    return _mock_session()
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +52,7 @@ def session_and_client():
 
 
 class TestMergeVector:
-    def test_happy_path(self, session_and_client: tuple[DrowseSession, TestClient], tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        session, client = session_and_client
+    def test_happy_path(self, session: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # The merge now lands a corpus-less ``fit_mode="baked"`` manifold; the
         # route loads + folds it back to a steering Profile.  Build a real one
         # on disk so the route's ``load_manifold`` + fold has a valid target
@@ -113,17 +107,9 @@ class TestMergeVector:
             "drowse.fit.bake.merge_into_manifold",
             return_value=merged_folder,
         ) as m:
-            resp = client.post(
-                "/drowse/v1/sessions/default/profiles/bake",
-                json={
-                    "name": "noble",
-                    "expression": "0.3 default/honest + 0.4 default/warm",
-                },
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["name"] == "noble"
-        assert data["layers"] == [0, 5]
+            name, profile = session.bake("noble", "0.3 default/honest + 0.4 default/warm")
+        assert name == "noble"
+        assert profile.layers == [0, 5]
         # Confirm we forwarded model + expression + force=True, and that the
         # loaded-weight fingerprint guard rides along.
         kwargs = m.call_args.kwargs
@@ -144,53 +130,25 @@ class TestMergeVector:
         assert torch.allclose(call_profile[0].float(), expected[0].float(), atol=1e-5)
         assert torch.allclose(call_profile[5].float(), expected[5].float(), atol=1e-5)
 
-    def test_invalid_expression_400(self, session_and_client: tuple[DrowseSession, TestClient]):
+    @pytest.mark.parametrize("message", [
+        "merge requires at least one component",
+        "component default/missing not installed",
+    ])
+    def test_merge_errors_propagate_as_400(self, session: Any, message: str):
         from drowse.fit.bake import MergeError
-        _, client = session_and_client
-        with patch(
-            "drowse.fit.bake.merge_into_manifold",
-            side_effect=MergeError("merge requires at least one component"),
-        ):
-            resp = client.post(
-                "/drowse/v1/sessions/default/profiles/bake",
-                json={"name": "x", "expression": ""},
-            )
-        # MergeError is a DrowseError → 400 via the global handler.
-        assert resp.status_code == 400
+        with patch("drowse.fit.bake.merge_into_manifold", side_effect=MergeError(message)):
+            with pytest.raises(MergeError) as error:
+                session.bake("x", "0.3 default/missing")
+        assert error.value.user_message() == (400, message)
 
-    def test_missing_component_400(self, session_and_client: tuple[DrowseSession, TestClient]):
-        from drowse.fit.bake import MergeError
-        _, client = session_and_client
-        with patch(
-            "drowse.fit.bake.merge_into_manifold",
-            side_effect=MergeError("component default/missing not installed"),
-        ):
-            resp = client.post(
-                "/drowse/v1/sessions/default/profiles/bake",
-                json={
-                    "name": "x",
-                    "expression": "0.3 default/missing",
-                },
-            )
-        assert resp.status_code == 400
-
-    def test_session_not_found_404(self, session_and_client: tuple[DrowseSession, TestClient]):
-        _, client = session_and_client
-        resp = client.post(
-            "/drowse/v1/sessions/other/profiles/bake",
-            json={"name": "x", "expression": "0.3 default/a"},
-        )
-        assert resp.status_code == 404
-
-    def test_fingerprint_mismatch_400(self, session_and_client: tuple[DrowseSession, TestClient]):
+    def test_fingerprint_mismatch_400(self, session: Any):
         """Components fitted against other weights are refused.
 
-        The route forwards the session's live fingerprint into the merge, so
-        the guard that ``DrowseSession.bake`` exists to enforce fires over
-        HTTP too rather than baking a tensor the loaded model never produced.
+        The session forwards its live fingerprint into the merge, so the
+        guard fires rather than baking a tensor the loaded model never
+        produced.
         """
         from drowse.fit.bake import MergeError
-        session, client = session_and_client
         live = loaded_model_fingerprint(session._model, session.model_id)
         seen: dict[str, Any] = {}
 
@@ -206,22 +164,18 @@ class TestMergeVector:
             raise AssertionError("guard did not fire")
 
         with patch("drowse.fit.bake.merge_into_manifold", side_effect=_merge):
-            resp = client.post(
-                "/drowse/v1/sessions/default/profiles/bake",
-                json={"name": "x", "expression": "0.3 default/a"},
-            )
+            with pytest.raises(MergeError, match="different loaded weights"):
+                session.bake("x", "0.3 default/a")
         assert seen["expected_model_fingerprint"] == live
-        assert resp.status_code == 400
-        assert "different loaded weights" in resp.json()["detail"]
 
-    def test_no_tensor_for_model_400(self, session_and_client: tuple[DrowseSession, TestClient], tmp_path: Path):
+    def test_no_tensor_for_model_400(self, session: Any, tmp_path: Path):
         """If merge_into_manifold returns a folder with no tensor for our model.
 
         Defensive — merge_into_manifold should always produce one when given a
         model arg, but if it doesn't (e.g. silent skip), the session raises
-        ``MergeError`` and the global DrowseError handler reports 400.
+        ``MergeError``.
         """
-        session, client = session_and_client
+        from drowse.fit.bake import MergeError
         empty_folder = tmp_path / "local" / "x"
         empty_folder.mkdir(parents=True)
 
@@ -229,9 +183,5 @@ class TestMergeVector:
             "drowse.fit.bake.merge_into_manifold",
             return_value=empty_folder,
         ):
-            resp = client.post(
-                "/drowse/v1/sessions/default/profiles/bake",
-                json={"name": "x", "expression": "0.3 default/a"},
-            )
-        assert resp.status_code == 400
-        assert "produced no tensor" in resp.json()["detail"]
+            with pytest.raises(MergeError, match="produced no tensor"):
+                session.bake("x", "0.3 default/a")

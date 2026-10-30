@@ -4,15 +4,12 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, cast
+from typing import Any, cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
-from drowse.server.streaming import run_in_thread
-from drowse.server.app import acquire_session_lock
-from drowse.server.native_common import resolve_session_id
+from drowse.server.runtime import resolve_session_id, run_in_thread, session_lock
 from drowse.server.response_models import (
     ActivePathJSON,
     CastMemberResponse,
@@ -48,15 +45,6 @@ from drowse.server.tree_models import (
 )
 
 _JOINT_LOGPROB_CACHE_MAX = 8
-
-
-@asynccontextmanager
-async def _session_lock_or_503(session: Any) -> AsyncIterator[None]:
-    """Hold the session lock for the block, or raise 503 when it times out."""
-    async with acquire_session_lock(session) as acquired:
-        if not acquired:
-            raise HTTPException(503, "session locked")
-        yield
 
 
 def _cached_joint_logprobs(cache: dict[Any, Any], key: Any) -> Any | None:
@@ -101,7 +89,7 @@ def register_tree_routes(app: FastAPI) -> None:
         token ids and stamped generation recipes are model-specific.
         """
         resolve_session_id(session_id)
-        async with _session_lock_or_503(session):
+        async with session_lock(app):
             session.restore_tree(req.tree)
         return {
             "rev": session.tree.rev,
@@ -262,7 +250,7 @@ def register_tree_routes(app: FastAPI) -> None:
         in the tree itself).
         """
         resolve_session_id(session_id)
-        async with _session_lock_or_503(session):
+        async with session_lock(app):
             session.clear_history()
         return Response(status_code=204)
 
@@ -330,7 +318,7 @@ def register_tree_routes(app: FastAPI) -> None:
         ) -> None:
             captured.append(str(message))
 
-        async with _session_lock_or_503(session):
+        async with session_lock(app):
             with warnings.catch_warnings():
                 warnings.showwarning = _on_warning
                 try:
@@ -527,7 +515,7 @@ def register_tree_routes(app: FastAPI) -> None:
         key = _cache_key(req.a_id, req.b_id)
         hit = _cached_joint_logprobs(cache, key)
         if hit is None:
-            async with _session_lock_or_503(session):
+            async with session_lock(app):
                 # Double-check under lock — another request may have
                 # populated the cache while we waited.
                 hit = _cached_joint_logprobs(cache, key)

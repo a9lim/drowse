@@ -1,6 +1,5 @@
 """DrowseSession — unified backend for drowse's programmatic and server APIs."""
 from __future__ import annotations
-import asyncio
 import logging
 import queue
 import threading
@@ -1180,11 +1179,6 @@ class DrowseSession:
         # False — user code never flips this; it's an implementation-
         # detail signal between ``_generate_core`` and the pop path.
         self._internal_steering_pop: bool = False
-        # Async-level serializer owned by the HTTP server for back-pressure.
-        # Distinct from `_gen_lock` (threading, enforces single-flight at the
-        # Python level): `lock` queues concurrent async requests FIFO so they
-        # wait rather than 409.  Library-only callers never touch this.
-        self.lock: asyncio.Lock = asyncio.Lock()
         self._gen_state = GenerationState()
         # Typed lifecycle phase of the current generation (or ``IDLE`` between
         # gens).  Re-entry guard between preamble and finalize: prevents a

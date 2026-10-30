@@ -1,6 +1,5 @@
 """Tests for the OpenAI-compatible API server (no GPU required)."""
 
-import asyncio
 import json
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -88,10 +87,6 @@ def _mock_session():
     session.last_result = None
     session.tokenizer = MagicMock()
     session.tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
-
-    # Real asyncio.Lock so `async with session.lock:` works under the
-    # FastAPI test client's event loop.
-    session.lock = asyncio.Lock()
     return session
 
 
@@ -278,15 +273,17 @@ class TestChatCompletions:
         """The 503 busy frame is terminated like every other error frame."""
         import contextlib
 
-        import drowse.server.app as app_module
+        import drowse.server.compat as compat_module
+        from drowse.server.runtime import SessionLockTimeout
 
         session, client = session_and_client
 
         @contextlib.asynccontextmanager
-        async def _never_acquires(_session: Any):
-            yield False
+        async def _never_acquires(_app: Any):
+            raise SessionLockTimeout()
+            yield
 
-        monkeypatch.setattr(app_module, "acquire_session_lock", _never_acquires)
+        monkeypatch.setattr(compat_module, "session_lock", _never_acquires)
         session.generate_stream.return_value = TestGenerationStream([], None)
 
         resp = client.post("/v1/chat/completions", json={
@@ -446,6 +443,96 @@ class TestCLIParsing:
 # ---------------------------------------------------------------------------
 
 class TestOllamaApi:
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/generate", "/api/show", "/api/pull"])
+    @pytest.mark.parametrize("body", [b"[1, 2]", b"{not json", b'{"messages": "x"}', b'{"stream": "maybe"}'])
+    def test_malformed_bodies_are_ollama_400s(self, session_and_client: Any, path: str, body: bytes) -> None:
+        """Regression: untyped bodies made a non-object or unparseable body a
+        plain-text 500 instead of an Ollama-envelope 400."""
+        session, client = session_and_client
+        typed_for = {b'{"messages": "x"}': {"/api/chat"}, b'{"stream": "maybe"}': {"/api/chat", "/api/generate"}}
+        if path not in typed_for.get(body, {path}):
+            pytest.skip("that field is open (extra) on this body")
+        resp = client.post(path, content=body, headers={"Content-Type": "application/json"})
+        assert resp.status_code == 400
+        assert set(resp.json()) == {"error"} and isinstance(resp.json()["error"], str)
+        session.generate.assert_not_called()
+
+    def test_unknown_ollama_fields_are_accepted(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.generate.return_value = RunSet([GenerationResult(
+            text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
+        )])
+        resp = client.post("/api/chat", json={
+            "model": "x", "stream": False, "keep_alive": "5m", "format": "",
+            "messages": [{"role": "user", "content": "hi", "images": None}],
+        })
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["message"]["content"] == "ok"
+
+    def test_thinking_alone_leaves_steering_unset(self, session_and_client: Any) -> None:
+        """Regression: a request that set only ``think`` produced
+        ``Steering(alphas={}, thinking=…)`` — the explicit-unsteered sentinel —
+        so the cast roster could not fill the gen label's standing steering."""
+        session, client = session_and_client
+        session.generate.return_value = RunSet([GenerationResult(
+            text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
+        )])
+        client.post("/api/chat", json={
+            "stream": False, "think": True, "messages": [{"role": "user", "content": "hi"}],
+        })
+        client.post("/v1/chat/completions", json={
+            "thinking": True, "messages": [{"role": "user", "content": "hi"}],
+        })
+        for call in session.generate.call_args_list:
+            assert call.kwargs["steering"] is None
+            assert call.kwargs["thinking"] is True
+
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/generate"])
+    @pytest.mark.parametrize(("think", "expected"), [
+        ("high", True), ("medium", True), ("low", True), (False, False), (None, None),
+    ])
+    def test_think_accepts_reasoning_levels(
+        self, session_and_client: Any, path: str, think: Any, expected: bool | None,
+    ) -> None:
+        """Regression: typing ``think`` as ``bool | None`` 400'd the reasoning
+        levels current Ollama clients send for gpt-oss; any level means on."""
+        session, client = session_and_client
+        session.generate.return_value = _single_run(
+            text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
+        )
+        body: dict[str, Any] = {"stream": False, "think": think}
+        if path == "/api/chat":
+            body["messages"] = [{"role": "user", "content": "hi"}]
+        else:
+            body["prompt"] = "hi"
+        resp = client.post(path, json=body)
+        assert resp.status_code == 200, resp.text
+        assert session.generate.call_args.kwargs["thinking"] is expected
+
+    def test_unknown_think_level_is_an_ollama_400(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        resp = client.post("/api/chat", json={
+            "stream": False, "think": "extreme", "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 400
+        assert "think" in resp.json()["error"]
+        session.generate.assert_not_called()
+
+    def test_explicit_nulls_read_as_unset(self, session_and_client: Any) -> None:
+        """Regression: ``"stream": null`` (and null ``raw``/``messages``) fell
+        back to the falsy default on the untyped path; the typed bodies 400'd."""
+        session, client = session_and_client
+        session.generate.return_value = _single_run(
+            text="ok", tokens=[1], token_count=1, tok_per_sec=1.0, elapsed=0.1,
+        )
+        resp = client.post("/api/generate", json={"stream": None, "raw": None, "prompt": "hi"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["done"] is True and resp.json()["response"] == "ok"
+        assert session.generate.call_args.kwargs["raw"] is False
+        resp = client.post("/api/chat", json={"stream": None, "messages": None})
+        assert resp.status_code == 200, resp.text
+        assert session.generate.call_args.args[0] == []
+
     def test_version(self, client: Any) -> None:
         resp = client.get("/api/version")
         assert resp.status_code == 200
@@ -847,7 +934,7 @@ class TestOllamaApi:
 
 
 # ---------------------------------------------------------------------------
-# Cluster 4: LangChain compat, native steering field, session.lock back-pressure
+# Cluster 4: LangChain compat, native steering field, session-lock back-pressure
 # ---------------------------------------------------------------------------
 
 class TestLangChainCompat:
@@ -1028,25 +1115,64 @@ class TestNativeSteeringField:
         assert kw["thinking"] is False
 
 
-class TestSessionLockBackpressure:
-    def test_acquire_session_lock_queues_fifo(self):
-        """Two async waiters on ``session.lock`` run in order, not in parallel.
+def test_joint_logprobs_lock_timeout_is_a_503_without_model_work(monkeypatch: Any) -> None:
+    """Regression: joint-logprobs discarded the lock-acquired flag and ran its
+    model forwards concurrently with whatever generation held the lock."""
+    import asyncio as _asyncio
 
-        The real FastAPI path parks each request's ``async with session.lock``
-        on the same asyncio.Lock; this test drives ``acquire_session_lock``
-        directly under one event loop to prove queuing works without
-        introducing cross-loop lock state (which TestClient's per-request
-        thread+loop model cannot exercise honestly).
+    import httpx
+
+    import drowse.server.runtime as runtime
+    from drowse.server import create_app
+    from tests.test_server_loom import _StubSession
+
+    monkeypatch.setattr(runtime, "SESSION_LOCK_TIMEOUT_SECONDS", 0.05)
+    computed: list[Any] = []
+    monkeypatch.setattr(
+        "drowse.generation.joint_logprobs.compute_joint_logprobs",
+        lambda *args, **kwargs: computed.append(args),
+    )
+    session: Any = _StubSession()
+    session.joint_logprob_cache = {}
+    user_id = session.tree.add_user_turn("hi")
+
+    async def scenario() -> int:
+        app = create_app(session)
+        await app.state.session_lock.acquire()
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://localhost",
+            ) as client:
+                resp = await client.post(
+                    "/drowse/v1/sessions/default/tree/joint-logprobs",
+                    json={"a_id": session.tree.root_id, "b_id": user_id},
+                )
+        finally:
+            app.state.session_lock.release()
+        return resp.status_code
+
+    assert _asyncio.run(scenario()) == 503
+    assert computed == []
+
+
+class TestSessionLockBackpressure:
+    def test_session_lock_queues_fifo(self):
+        """Two waiters on the server's session lock run in order, not in parallel.
+
+        Driven directly under one event loop to prove queuing without
+        cross-loop lock state (which TestClient's per-request thread+loop
+        model cannot exercise honestly).
         """
         import asyncio as _asyncio
-        from drowse.server import acquire_session_lock
+        from types import SimpleNamespace
 
-        session = _mock_session()
+        from drowse.server.runtime import session_lock
+
         order: list[str] = []
+        app: Any = SimpleNamespace(state=SimpleNamespace(session_lock=_asyncio.Lock()))
 
         async def _waiter(tag: str, hold: float) -> None:
-            async with acquire_session_lock(session) as acquired:
-                assert acquired
+            async with session_lock(app):
                 order.append(f"{tag}:enter")
                 await _asyncio.sleep(hold)
                 order.append(f"{tag}:exit")
@@ -1062,11 +1188,24 @@ class TestSessionLockBackpressure:
         # Exact interleave proves b waited for a's exit before entering.
         assert order == ["a:enter", "a:exit", "b:enter", "b:exit"]
 
-    def test_no_app_state_gen_lock(self):
-        """``app.state.gen_lock`` is gone; all serialization is on session.lock."""
-        from drowse.server import create_app
-        app = create_app(_mock_session())
-        assert not hasattr(app.state, "gen_lock")
+    def test_session_lock_times_out_as_503(self, monkeypatch: Any):
+        import asyncio as _asyncio
+        from types import SimpleNamespace
+
+        import drowse.server.runtime as runtime
+        from drowse.server.runtime import SessionLockTimeout, session_lock
+
+        monkeypatch.setattr(runtime, "SESSION_LOCK_TIMEOUT_SECONDS", 0.01)
+        app: Any = SimpleNamespace(state=SimpleNamespace(session_lock=_asyncio.Lock()))
+
+        async def _contend() -> None:
+            async with session_lock(app):
+                with pytest.raises(SessionLockTimeout) as error:
+                    async with session_lock(app):
+                        pass
+                assert error.value.user_message()[0] == 503
+
+        _asyncio.run(_contend())
 
 
 # ---------------------------------------------------------------------------
@@ -1349,7 +1488,7 @@ class TestLensProbeRoutes:
     def test_detach_lens_probe(self, session_and_client: Any) -> None:
         session, client = session_and_client
         session.monitor.probe_names = []
-        session.lens.specs.return_value = {"jlens/fake": dict(self._SPEC)}
+        session.lens.names = ["jlens/fake"]
         resp = client.delete("/drowse/v1/sessions/default/probes/jlens%2Ffake")
         assert resp.status_code == 204
         session.remove_probe.assert_called_once_with("jlens/fake")
@@ -1357,6 +1496,6 @@ class TestLensProbeRoutes:
     def test_detach_unknown_404(self, session_and_client: Any) -> None:
         session, client = session_and_client
         session.monitor.probe_names = []
-        session.lens.specs.return_value = {}
+        session.lens.names = []
         resp = client.delete("/drowse/v1/sessions/default/probes/jlens%2Ffake")
         assert resp.status_code == 404

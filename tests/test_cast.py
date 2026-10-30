@@ -253,17 +253,18 @@ def test_session_set_cast_member_validates_steering():
 
 
 def test_ws_explicit_clear_survives_as_empty_steering():
-    """The server's steering merge must hand the session an *empty*
+    """The server's steering composition must hand the session an *empty*
     Steering on an explicit clear (``steering: ""``) — None means
     "unset" and would let the cast roster fill it back in."""
-    from drowse.server.request_helpers import merge_steering, parse_request_steering
+    from drowse.server.request_helpers import compose_request_steering
+    from drowse.steering.terms import Steering
 
-    req, clear = parse_request_steering("")
-    assert req is None and clear is True
-    merged = merge_steering(req, None, clear, None)
-    assert merged is not None
-    assert merged.alphas == {}
+    cleared = compose_request_steering("", Steering(alphas={"x": 0.5}))
+    assert cleared is not None
+    assert cleared.alphas == {}
 
-    # No expression at all stays None — the roster's fill case.
-    req, clear = parse_request_steering(None)
-    assert merge_steering(req, None, clear, None) is None
+    # No expression at all inherits the default — None when there is none,
+    # the roster's fill case.
+    assert compose_request_steering(None, None) is None
+    default = Steering(alphas={"x": 0.5})
+    assert compose_request_steering(None, default) is default

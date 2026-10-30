@@ -50,14 +50,11 @@ def build_token_event(
     # loom rows: doing so creates a second wire authority and masks tap bugs.
     payload = session.token_probe_payload
 
-    # The 5.x measurement envelope is the single read-side wire record: geometry
-    # / lens / SAE ``instruments`` plus the flat ``scores`` / ``per_layer_scores``
-    # views (:func:`drowse.readout.measurements.build_measurements`).  The token tap
-    # builds it once and stores it on the loom row; the WebSocket forwards it
-    # verbatim so live and rehydrated tokens share one rich-channel authority.
-    # It replaces the former top-level ``scores`` / ``per_layer_scores`` /
-    # ``probe_readings`` / ``captured`` / ``lens_readout`` / ``lens_aggregate`` /
-    # ``sae_readout`` aliases, which are gone from the token frame.
+    # The measurement envelope is the single read-side wire record: geometry /
+    # lens / SAE ``instruments`` plus the flat ``scores`` / ``per_layer_scores``
+    # views (:func:`drowse.readout.measurements.build_measurements`).  The token
+    # tap builds it once and stores it on the loom row; the WebSocket forwards
+    # it verbatim so live and rehydrated tokens share one authority.
     measurements = payload.get("measurements")
     if measurements:
         event["measurements"] = measurements

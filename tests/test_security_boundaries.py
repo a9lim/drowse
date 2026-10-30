@@ -109,7 +109,7 @@ def test_http_body_limit_checks_declared_and_streamed_bytes(chunked: bool) -> No
 def test_cors_wildcard_cannot_expose_conversations_or_authorize_mutations(method: str) -> None:
     app = create_app(cast(DrowseSession, _StubSession()), cors_origins=["*"])
     with TestClient(app) as client:
-        response = client.request(method, SESSION + ("/tree" if method == "GET" else "/clear"), headers={"Origin": "https://untrusted.example"})
+        response = client.request(method, SESSION + ("/tree" if method == "GET" else "/tree/reset"), headers={"Origin": "https://untrusted.example"})
     assert response.status_code == 403
 
 
@@ -117,7 +117,7 @@ def test_cors_wildcard_cannot_expose_conversations_or_authorize_mutations(method
 def test_http_origin_policy_preserves_trusted_clients(origin: str | None) -> None:
     app = create_app(cast(DrowseSession, _StubSession()), cors_origins=["https://trusted.example"])
     with TestClient(app) as client:
-        response = client.post(SESSION + "/clear", headers={"Origin": origin} if origin else {})
+        response = client.post(SESSION + "/tree/reset", headers={"Origin": origin} if origin else {})
     assert response.status_code == 204
 
 
@@ -133,9 +133,11 @@ def test_websocket_auth_subprotocol_keeps_credentials_out_of_url() -> None:
 
 
 @pytest.mark.parametrize("key", ["synthetic-secret", "invalid-secret"])
-def test_legacy_websocket_query_credentials_are_removed_before_access_logging(key: str) -> None:
+def test_websocket_query_credentials_are_rejected_and_scrubbed_before_access_logging(key: str) -> None:
+    """URL credentials never authenticate, and a stale client's ``?token=``
+    is removed from the scope the access log reads, valid key or not."""
     from starlette.websockets import WebSocket
-    from drowse.server.app import ws_auth_ok
+    from drowse.server.security import ws_auth_ok
 
     app = create_app(cast(DrowseSession, _StubSession()), api_key="synthetic-secret")
     scope: Any = {"type": "websocket", "app": app, "scheme": "ws", "path": SESSION + "/stream",
@@ -147,7 +149,7 @@ def test_legacy_websocket_query_credentials_are_removed_before_access_logging(ke
     async def unused_send(message: Message) -> None:
         pass
 
-    assert ws_auth_ok(WebSocket(scope, unused_receive, unused_send)) == (key == "synthetic-secret")
+    assert ws_auth_ok(WebSocket(scope, unused_receive, unused_send)) is False
     assert scope["query_string"] == b"view=tree"
 
 
@@ -170,11 +172,13 @@ def test_install_errors_never_disclose_filesystem_paths(monkeypatch: pytest.Monk
 def test_install_transport_errors_never_disclose_signed_urls(monkeypatch: pytest.MonkeyPatch, accept: str) -> None:
     import drowse.server.manifold_routes as routes
 
+    from drowse.base.hf import HFError
+
     def fail(*args: Any, **kwargs: Any) -> None:
         try:
             raise RuntimeError("https://synthetic.example/model?token=synthetic-download-credential")
         except RuntimeError as exc:
-            raise routes.ManifoldHFError(f"synthetic/model: download failed ({exc})") from exc
+            raise HFError(f"synthetic/model: download failed ({exc})") from exc
 
     monkeypatch.setattr(routes, "install_manifold", fail)
     monkeypatch.setattr(routes, "refuse_if_busy", lambda session: None)

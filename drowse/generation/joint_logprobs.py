@@ -644,9 +644,9 @@ def compute_joint_logprobs(
 
     Builds each branch's prompt through the chat template, force-replays
     its stored response tokens under that node's recipe, and assembles
-    per-aligned-position records.  Caller is responsible for holding
-    ``session.lock`` — model forwards must serialize against any
-    concurrent generation on the same session.
+    per-aligned-position records.  The caller serializes it against any
+    concurrent generation on the same session (the server holds its session
+    lock, ``app.state.session_lock``, around the call).
 
     Raises ``KeyError`` when either node id is unknown to the tree.
     Returns an empty-rows :class:`JointLogprobs` when the branches share

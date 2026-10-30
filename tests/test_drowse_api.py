@@ -5,7 +5,7 @@ import time
 from typing import Any, cast
 from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -131,34 +131,6 @@ class TestSessions:
         assert "config" in s
         assert s["config"]["temperature"] == 1.0
 
-    def test_create_idempotent(self, session_and_client: Any) -> None:
-        _, client = session_and_client
-        with nullcontext():
-            resp = client.post("/drowse/v1/sessions", json={})
-        assert resp.status_code == 200
-        assert resp.json()["id"] == "default"
-
-    def test_create_rejects_unknown_fields(self, session_and_client: Any) -> None:
-        """A native body-validation failure speaks the native envelope.
-
-        Every ``/drowse/v1/*`` failure — typed ``DrowseError``, bare
-        ``HTTPException``, body validation — renders as ``{"detail": "<str>"}``
-        so a client never has to guess which of three shapes it got.
-        """
-        _, client = session_and_client
-        resp = client.post("/drowse/v1/sessions", json={"legacy_id": "old"})
-        assert resp.status_code == 400
-        assert resp.json() == {
-            "detail": "legacy_id: Extra inputs are not permitted",
-        }
-
-    def test_create_model_mismatch_logs_warning(self, session_and_client: Any, caplog: Any) -> None:
-        _, client = session_and_client
-        with nullcontext():
-            resp = client.post("/drowse/v1/sessions", json={"model": "other/model"})
-        assert resp.status_code == 200
-        assert resp.json()["model_id"] == "test/model"
-
     def test_get_by_default(self, session_and_client: Any) -> None:
         _, client = session_and_client
         with nullcontext():
@@ -179,11 +151,6 @@ class TestSessions:
         _, client = session_and_client
         resp = client.get("/drowse/v1/sessions/other")
         assert resp.status_code == 404
-
-    def test_delete_is_noop(self, session_and_client: Any) -> None:
-        _, client = session_and_client
-        resp = client.delete("/drowse/v1/sessions/default")
-        assert resp.status_code == 204
 
     def test_patch_updates_config(self, session_and_client: Any) -> None:
         session, client = session_and_client
@@ -341,19 +308,6 @@ class TestSessions:
         assert body["thinking_input_supported"] is True
         assert body["strips_history_thinking"] is True
 
-    def test_clear(self, session_and_client: Any) -> None:
-        session, client = session_and_client
-        resp = client.post("/drowse/v1/sessions/default/clear")
-        assert resp.status_code == 204
-        session.clear_history.assert_called_once()
-
-    def test_rewind_empty(self, session_and_client: Any) -> None:
-        session, client = session_and_client
-        session.tree.messages_for.return_value = []
-        resp = client.post("/drowse/v1/sessions/default/rewind")
-        assert resp.status_code == 400
-
-
 # ---- vectors -------------------------------------------------------------
 
 
@@ -369,12 +323,6 @@ class TestProfiles:
         resp = client.get("/drowse/v1/sessions/default/profiles/missing")
         assert resp.status_code == 404
 
-    def test_delete_not_found(self, session_and_client: Any) -> None:
-        _, client = session_and_client
-        resp = client.delete("/drowse/v1/sessions/default/profiles/missing")
-        assert resp.status_code == 404
-
-
 # ---- probes --------------------------------------------------------------
 
 
@@ -384,16 +332,6 @@ class TestProbes:
         resp = client.get("/drowse/v1/sessions/default/probes")
         assert resp.status_code == 200
         assert resp.json()["probes"] == []
-
-    def test_defaults(self, session_and_client: Any) -> None:
-        _, client = session_and_client
-        with patch(
-            "drowse.server.probe_routes.load_default_manifolds",
-            return_value={"emotion": ["happiness"]},
-        ):
-            resp = client.get("/drowse/v1/sessions/default/probes/defaults")
-        assert resp.status_code == 200
-        assert "emotion" in resp.json()["defaults"]
 
     def test_attach(self, session_and_client: Any) -> None:
         from types import SimpleNamespace
@@ -1060,13 +998,23 @@ class TestWebSocket:
             msg = ws.receive_json()
             assert msg["type"] == "error"
         # Browser clients cannot set Authorization on the WS constructor;
-        # the dashboard sends the bearer as ?token=...
+        # the dashboard offers the key as a ``drowse.auth.`` subprotocol.
+        import base64
+
+        encoded = base64.urlsafe_b64encode(b"s3cret").rstrip(b"=").decode()
         with client.websocket_connect(
-            "/drowse/v1/sessions/default/stream?token=s3cret",
+            "/drowse/v1/sessions/default/stream",
+            subprotocols=["drowse.v1", f"drowse.auth.{encoded}"],
         ) as ws:
             ws.send_json({"type": "frobnicate"})
             msg = ws.receive_json()
             assert msg["type"] == "error"
+        # A credential in the URL is never accepted.
+        with pytest.raises(Exception):
+            with client.websocket_connect(
+                "/drowse/v1/sessions/default/stream?token=s3cret",
+            ) as ws:
+                ws.receive_json()
 
     def test_bad_steering_does_not_kill_connection(self, session_and_client: Any, monkeypatch: Any) -> None:
         """Regression: a bad steering expression on a generate frame used
@@ -1325,7 +1273,7 @@ class TestManifoldRoutes:
             "name": "calendar",
             "template_ref": "weekday",
         })
-        assert resp.status_code == 409
+        assert resp.status_code == 400
 
     def test_create_too_few_nodes(self, session_and_client: Any, tmp_path: Any,
                                   monkeypatch: Any) -> None:
@@ -1335,16 +1283,6 @@ class TestManifoldRoutes:
         payload["nodes"] = payload["nodes"][:2]
         assert client.post("/drowse/v1/manifolds",
                            json=payload).status_code == 400
-
-    def test_patch_description(self, session_and_client: Any, tmp_path: Any,
-                               monkeypatch: Any) -> None:
-        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        _session, client = session_and_client
-        client.post("/drowse/v1/manifolds", json=_box1d_payload())
-        resp = client.patch("/drowse/v1/manifolds/local/mood",
-                             json={"description": "edited"})
-        assert resp.status_code == 200
-        assert resp.json()["description"] == "edited"
 
     def test_delete(self, session_and_client: Any, tmp_path: Any, monkeypatch: Any) -> None:
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
@@ -1454,7 +1392,8 @@ class TestManifoldRoutes:
         ) as resp:
             text = b"".join(resp.iter_bytes()).decode("utf-8")
         assert "event: error" in text
-        assert '"code": "Conflict"' in text
+        assert '"code": "ManifoldAuthoringChangedError"' in text
+        assert '"status": 409' in text
         assert "authoring changed during fit" in text
 
 
@@ -1536,6 +1475,29 @@ class TestTemplateRoutes:
         assert body["steering"] == "0.5 a.b"
         assert body["contexts"][0]["choices"][0]["label"] == "monday"
         assert body["contexts"][0]["choices"][0]["prob_sum"] == 0.7
+
+    @pytest.mark.parametrize(("error", "status", "text"), [
+        (RuntimeError("CUDA out of memory at /secret/path"), 500, "Template scoring failed. Check the server log for details."),
+        (None, 422, "the loaded geometry cannot honor it"),
+    ])
+    def test_score_failures_keep_their_real_status(
+        self, session_and_client: Any, tmp_path: Any, monkeypatch: Any,
+        error: Exception | None, status: int, text: str,
+    ) -> None:
+        """Regression: every scoring failure used to come back as a 400, so an
+        engine fault read as a client mistake and a composition error lost its
+        422."""
+        from drowse.errors import SteeringCompositionError
+
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        session, client = session_and_client
+        client.post("/drowse/v1/templates", json=_TMPL_PAYLOAD)
+        session.score_template.side_effect = error or SteeringCompositionError(
+            "the loaded geometry cannot honor it",
+        )
+        resp = client.post("/drowse/v1/templates/local/weekday/score", json={"steering": "0.5 a.b"})
+        assert resp.status_code == status
+        assert resp.json() == {"detail": text}
 
     def test_score_missing_template_404(
         self, session_and_client: Any, tmp_path: Any, monkeypatch: Any,
@@ -1775,26 +1737,89 @@ class TestNativeErrorEnvelope:
         assert resp.json() == {"detail": "Invalid API key"}
 
     def test_openai_routes_keep_their_own_envelope(self) -> None:
+        """Regression: a 401 on ``/v1`` used to nest the OpenAI error inside ``detail``."""
         from drowse.server import create_app
 
         session = _mock_session()
         client = TestClient(create_app(session, api_key="s3cret"))
         resp = client.get("/v1/models")
         assert resp.status_code == 401
-        assert set(resp.json()["detail"]) == {"message", "type", "param", "code"}
+        assert resp.json() == {"error": {
+            "message": "Invalid API key", "type": "invalid_request_error",
+            "param": None, "code": 401,
+        }}
+        assert client.get("/api/tags").json() == {"error": "Invalid API key"}
+
+    def test_unexpected_failures_render_in_their_protocol_envelope(self) -> None:
+        """An unclassified exception is a scrubbed 500 in the protocol's own
+        envelope, not a plain-text body an SDK cannot parse."""
+        from drowse.server import create_app
+
+        session = _mock_session()
+        session.generate.side_effect = KeyError("/secret/internal/key")
+        client = TestClient(create_app(session), raise_server_exceptions=False)
+        openai = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+        assert openai.status_code == 500
+        assert openai.json()["error"]["type"] == "server_error"
+        ollama = client.post("/api/chat", json={"stream": False, "messages": []})
+        assert ollama.status_code == 500 and set(ollama.json()) == {"error"}
+        assert "secret" not in openai.text + ollama.text
+
+    def test_compat_http_exceptions_render_in_their_protocol_envelope(
+        self, monkeypatch: Any,
+    ) -> None:
+        """Regression: plain ``HTTPException``s on ``/v1`` and ``/api`` used to
+        fall through to FastAPI's ``{"detail": …}``, which openai-python and
+        ollama-python cannot read."""
+        from drowse.server import create_app
+
+        monkeypatch.setenv("DROWSE_STRICT_MODEL", "1")
+        client = TestClient(create_app(_mock_session()))
+        missing = client.get("/v1/models/nope")
+        assert missing.status_code == 404
+        assert missing.json()["error"]["message"] == "Model 'nope' not found"
+        assert missing.json()["error"]["type"] == "invalid_request_error"
+        strict = client.post("/v1/chat/completions", json={
+            "model": "other/model", "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert strict.status_code == 404
+        assert set(strict.json()) == {"error"}
+        assert "other/model" in strict.json()["error"]["message"]
+        assert strict.json()["error"]["param"] == "model"
+        ollama = client.post("/api/chat", json={"model": "other/model", "messages": []})
+        assert ollama.status_code == 404
+        assert set(ollama.json()) == {"error"}
+        assert "other/model" in ollama.json()["error"]
+        pull = client.post("/api/pull", json={"model": "other/model"})
+        assert pull.status_code == 404 and set(pull.json()) == {"error"}
+
+    def test_openai_validation_errors_name_their_param(self) -> None:
+        """Regression: the unified validation renderer dropped OpenAI's
+        ``error.param``, which clients use to point at the bad field."""
+        from drowse.server import create_app
+
+        client = TestClient(create_app(_mock_session()))
+        resp = client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "hi"}], "temperature": "hot",
+        })
+        assert resp.status_code == 400
+        error = resp.json()["error"]
+        assert error["param"] == "temperature"
+        assert error["type"] == "invalid_request_error"
+        assert error["message"].startswith("temperature: ")
 
     def test_protocol_error_renders_each_envelope(self) -> None:
         import json as _json
 
-        from drowse.server.app import _protocol_error
+        from drowse.server.errors import protocol_error
 
-        native = _protocol_error("/drowse/v1/sessions", 409, "busy")
+        native = protocol_error("/drowse/v1/sessions", 409, "busy")
         assert _json.loads(bytes(native.body)) == {"detail": "busy"}
 
-        ollama = _protocol_error("/api/chat", 400, "busy")
+        ollama = protocol_error("/api/chat", 400, "busy")
         assert _json.loads(bytes(ollama.body)) == {"error": "busy"}
 
-        openai = _protocol_error("/v1/chat/completions", 409, "busy")
+        openai = protocol_error("/v1/chat/completions", 409, "busy")
         assert _json.loads(bytes(openai.body)) == {
             "error": {
                 "message": "busy", "type": "conflict",

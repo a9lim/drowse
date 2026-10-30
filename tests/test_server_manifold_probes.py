@@ -359,7 +359,7 @@ class TestManifoldCrudRoutes:
         _, client = session_and_client
 
         def _raise(_q: str) -> None:
-            raise ImportError("huggingface_hub")
+            raise ModuleNotFoundError("No module named 'huggingface_hub'", name="huggingface_hub")
 
         monkeypatch.setattr(
             "drowse.server.manifold_routes.search_manifolds", _raise,

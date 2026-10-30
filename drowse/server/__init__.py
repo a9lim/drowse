@@ -1,20 +1,5 @@
-"""drowse HTTP server package.
+"""drowse HTTP server: OpenAI ``/v1``, Ollama ``/api``, and native ``/drowse/v1`` on one port."""
 
-Re-exports the public factory and a few symbols the CLI and tests reach
-for (``create_app``, ``acquire_session_lock``, ``ws_auth_ok``,
-``SESSION_LOCK_TIMEOUT_SECONDS``).
-"""
+from drowse.server.app import create_app
 
-from drowse.server.app import (
-    SESSION_LOCK_TIMEOUT_SECONDS,
-    acquire_session_lock,
-    create_app,
-    ws_auth_ok,
-)
-
-__all__ = [
-    "create_app",
-    "acquire_session_lock",
-    "ws_auth_ok",
-    "SESSION_LOCK_TIMEOUT_SECONDS",
-]
+__all__ = ["create_app"]

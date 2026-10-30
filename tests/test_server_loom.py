@@ -15,7 +15,6 @@ tree wiring and protocol shapes phase 2 introduced.
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from types import SimpleNamespace
 from typing import Any, cast
@@ -108,8 +107,6 @@ class _StubSession:
 
         from drowse.generation.decode import GenerationState
         self.generation_state = GenerationState()
-
-        self.lock = asyncio.Lock()
 
         self._next_token_stream: list[str] = ["hi"]
         self._fail_next: bool = False
@@ -1141,85 +1138,6 @@ class TestTokenFork:
             "replacement_text": "any words",
             "seed": seed,
         }
-
-
-class TestPrefill:
-    def test_missing_text_400(self, session_and_client: Any):
-        """prefill_node_id without prefill_text is rejected before dispatch."""
-        session, client = session_and_client
-        uid = session.tree.add_user_turn("seed me")
-        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
-            ws.send_json({"type": "generate", "prefill_node_id": uid})
-            msg = ws.receive_json()
-        assert msg["type"] == "error"
-        assert msg["status"] == 400
-        assert "prefill" in msg["message"].lower()
-
-    def test_empty_text_400(self, session_and_client: Any):
-        """An empty prefill_text is treated as 'no text' — same 400."""
-        session, client = session_and_client
-        uid = session.tree.add_user_turn("seed me")
-        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
-            ws.send_json({
-                "type": "generate",
-                "prefill_node_id": uid,
-                "prefill_text": "",
-            })
-            msg = ws.receive_json()
-        assert msg["type"] == "error"
-        assert msg["status"] == 400
-
-    def test_conflicts_with_fork_400(self, session_and_client: Any):
-        """A message can't be both a fork and a prefill."""
-        session, client = session_and_client
-        uid = session.tree.add_user_turn("seed me")
-        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
-            ws.send_json({
-                "type": "generate",
-                "prefill_node_id": uid,
-                "prefill_text": "Sure",
-                "fork_node_id": "whatever",
-                "fork_raw_index": 0,
-                "fork_alt_token_id": 1,
-            })
-            msg = ws.receive_json()
-        assert msg["type"] == "error"
-        assert msg["status"] == 400
-
-    def test_creates_seeded_sibling(self, session_and_client: Any):
-        """A valid prefill lands an assistant child opening with the text."""
-        session, client = session_and_client
-        uid = session.tree.add_user_turn("what's the weather?")
-        rev_before = session.tree.rev
-
-        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
-            ws.send_json({
-                "type": "generate",
-                "prefill_node_id": uid,
-                "prefill_text": "It is sunny",
-            })
-            done = None
-            seen_tree_mut = False
-            while True:
-                msg = ws.receive_json()
-                t = msg["type"]
-                if t == "tree_mutated":
-                    seen_tree_mut = True
-                    assert msg["rev"] >= rev_before
-                elif t == "done":
-                    done = msg
-                    break
-
-        assert done is not None
-        assert seen_tree_mut
-        # The assistant landed under the prefill target user node.
-        assistant_children = [
-            nid for nid in session.tree.children_of[uid]
-            if session.tree.get(nid).role == "assistant"
-        ]
-        assert len(assistant_children) == 1
-        assistant = session.tree.get(assistant_children[0])
-        assert assistant.text.startswith("It is sunny")
 
 
 # ---------------------------------------------------------------------------

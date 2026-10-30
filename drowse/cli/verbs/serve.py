@@ -205,7 +205,7 @@ def run(args: argparse.Namespace) -> None:
             "server dependencies missing; run `pip install --upgrade drowse.ai`",
             exit_code=1,
         ) from None
-    from drowse.server.app import is_loopback_host
+    from drowse.server.security import is_loopback_host
 
     api_key = args.api_key or os.environ.get("DROWSE_API_KEY")
     if not is_loopback_host(args.host) and not api_key:
