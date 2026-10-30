@@ -439,7 +439,7 @@ class TestPrefixCache:
         # Warm the cache.
         prefix_ids, _ = self._shared_prefix_messages(session, "Hello.")
         session.cache_prefix(prefix_ids)
-        assert session._prefix_cache is not None
+        assert session._engine.prefix_cache
 
         # Make sure there's a steering vector to push.
         if "happy" not in session.profiles:
@@ -450,12 +450,12 @@ class TestPrefixCache:
         # Registering a profile itself invalidates; re-warm and verify scope-entry
         # is what we're really testing.
         session.cache_prefix(prefix_ids)
-        assert session._prefix_cache is not None
+        assert session._engine.prefix_cache
 
         with session.steering("0.1 happy"):
             # Scope entry must drop the cache.
-            assert session._prefix_cache is None
+            assert not session._engine.prefix_cache
 
         # And the post-scope rebuild must NOT magically reinstate it.
-        assert session._prefix_cache is None
+        assert not session._engine.prefix_cache
         session.registry.pop_profile("happy")

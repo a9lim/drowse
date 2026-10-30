@@ -178,6 +178,20 @@ class _ProbeBatchModel(_BatchModel):
         return super().generate(**kwargs)
 
 
+def _batch_renderer(prepare_input: Any) -> Any:
+    """A renderer stand-in: the stub's token mapping, the session default
+    system prompt (none), and no seat stop strings."""
+    from drowse.generation.sampling import InheritSystemPrompt
+
+    return SimpleNamespace(
+        prepare_input=prepare_input,
+        resolve_system_prompt=lambda prompt: (
+            None if isinstance(prompt, InheritSystemPrompt) else prompt
+        ),
+        seat_stop_strings=lambda stop, **_kwargs: stop,
+    )
+
+
 def _fast_batch_session():
     import torch
     from drowse.generation.decode import GenerationConfig
@@ -244,7 +258,7 @@ def _fast_batch_session():
         }
         return torch.tensor([mapping[input]], dtype=torch.long)
 
-    s._renderer = SimpleNamespace(prepare_input=_prepare_input)
+    s._renderer = _batch_renderer(_prepare_input)
     return s, model
 
 
@@ -742,7 +756,7 @@ class TestPrefixCacheEligibility:
             suffix = 100 if input == "a" else 101
             return torch.tensor([common + [suffix]], dtype=torch.long)
 
-        cast(Any, s)._renderer = SimpleNamespace(prepare_input=_prepare_input)
+        cast(Any, s)._renderer = _batch_renderer(_prepare_input)
 
         prefix = s._batch_common_prefix_ids(["a", "b"], raw=False)
 

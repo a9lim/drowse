@@ -442,7 +442,12 @@ def test_inverted_regen_of_a_curved_term_is_refused_at_composition():
     inverted = anchor.compose_modifier("inverted")
     assert inverted.steering is not None
     terms = parse_expr(inverted.steering).alphas
-    (term,) = [t for t in terms.values() if isinstance(t, ManifoldTerm)]
+    # Filter by manifold: with the bundled ``emotions`` installed, the bare
+    # ``calm`` resolves to a node label and parses as a ``%`` term too.
+    (term,) = [
+        t for t in terms.values()
+        if isinstance(t, ManifoldTerm) and t.manifold == "months"
+    ]
     assert term.along == pytest.approx(-0.5)
 
     loop = Manifold(

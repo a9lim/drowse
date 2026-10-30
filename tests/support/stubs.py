@@ -60,6 +60,13 @@ def _no_lock(*_args: Any, **_kwargs: Any):
     yield
 
 
+def _drop_prefix_cache(stub: Any) -> None:
+    """Clear the stub engine's prefix cache, when it has an engine."""
+    cache = getattr(getattr(stub, "_engine", None), "prefix_cache", None)
+    if cache is not None:
+        cache.clear()
+
+
 def wire_stub_steering(
     stub: Any,
     *,
@@ -92,7 +99,7 @@ def wire_stub_steering(
         model=d.get("_model"), tokenizer=d.get("_tokenizer"),
         model_id=_model_id(stub), device=device, dtype=dtype,
     ))
-    registry.on_change(lambda: getattr(stub, "_invalidate_prefix_cache", lambda: None)())
+    registry.on_change(lambda: _drop_prefix_cache(stub))
     registry.set_atom_resolver("jlens", lambda atom: stub.lens.register_direction(atom))
     registry.set_atom_resolver("sae", lambda atom: stub.sae.register_direction(atom))
     if hasattr(stub, "_fold_profile_probe"):
@@ -115,7 +122,7 @@ def wire_stub_steering(
         neutral.adopt(dict(layer_means or {}), whitener)
 
     def _phase() -> str | None:
-        phase = getattr(stub, "_gen_phase", None)
+        phase = getattr(getattr(stub, "_engine", None), "phase", None)
         name = getattr(phase, "name", None)
         return name if name in ("RUNNING", "FINALIZING") else None
 
@@ -124,9 +131,7 @@ def wire_stub_steering(
         layers=layers, device=device, dtype=dtype,
         lock=stub._gen_lock, events=stub.events,
         generation_phase=_phase,
-        on_prefill_steering_change=lambda: getattr(
-            stub, "_invalidate_prefix_cache", lambda: None,
-        )(),
+        on_prefill_steering_change=lambda: _drop_prefix_cache(stub),
         gates=GateSources(
             monitor=lambda: stub._monitor,
             capture=lambda: stub._capture,

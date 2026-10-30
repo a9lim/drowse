@@ -21,7 +21,7 @@ from drowse.generation.compile_runtime import CompiledRuntime
 from drowse.generation.decode import GenerationConfig, GenerationState
 from drowse.generation.prefix_cache import PrefixCache
 from drowse.generation.results import GenerationResult, TokenAlt, TokenEvent
-from drowse.generation.sampling import SamplingConfig
+from drowse.generation.sampling import InheritSystemPrompt, SamplingConfig
 from drowse.generation.token_callback import TokenConsumer, TokenConsumerOptions
 from drowse.generation.types import GenState
 from drowse.readout.types import ScalarReading
@@ -32,6 +32,7 @@ from drowse.session.engine import (
     TokenTap,
 )
 from drowse.steering.terms import Steering
+from tests.support.sae import make_resident
 from tests.support.sessions import TinySessionFactory
 
 _FOUR = SamplingConfig(max_tokens=4, seed=0)
@@ -70,18 +71,26 @@ def test_transaction_releases_when_the_body_never_does() -> None:
     engine._lock.release()
 
 
+class _RecordingScope:
+    """A steering scope stand-in recording each teardown's ``swallow`` flag."""
+
+    def __init__(self, exits: list[bool]) -> None:
+        self._exits = exits
+
+    def close(self, *, internal: bool = False, swallow: bool = False) -> None:
+        assert internal
+        self._exits.append(swallow)
+
+
 def test_transaction_pops_a_scope_the_body_left_open() -> None:
     """A scope still open on failure is popped with ``swallow=True`` so a
     teardown error can't mask the failure already propagating."""
     exits: list[bool] = []
-    session = SimpleNamespace(
-        _exit_internal_steering=lambda _cm, *, swallow: exits.append(swallow),
-    )
-    engine = _bare_engine(session)
+    engine = _bare_engine()
 
     with pytest.raises(RuntimeError):
         with engine.transaction() as txn:
-            txn.steering_cm = object()
+            txn.steering_cm = _RecordingScope(exits)
             raise RuntimeError("preamble blew up")
 
     assert exits == [True]
@@ -89,13 +98,10 @@ def test_transaction_pops_a_scope_the_body_left_open() -> None:
 
 def test_transaction_leaves_a_popped_scope_alone() -> None:
     exits: list[bool] = []
-    session = SimpleNamespace(
-        _exit_internal_steering=lambda _cm, *, swallow: exits.append(swallow),
-    )
-    engine = _bare_engine(session)
+    engine = _bare_engine()
 
     with engine.transaction() as txn:
-        txn.steering_cm = object()
+        txn.steering_cm = _RecordingScope(exits)
         txn.steering_cm = None
 
     assert exits == []
@@ -111,6 +117,21 @@ def test_transaction_rejects_a_reentrant_generation() -> None:
             with engine.transaction():
                 pass  # pragma: no cover - the guard raises on entry
     assert engine.phase is GenState.IDLE
+
+
+def test_transaction_teardown_frees_the_loom_reservation(tiny_session: Any) -> None:
+    """The session release frees the loom reservation along with the phase
+    and the lock, even when the body never reached its own teardown."""
+    tree = tiny_session.tree
+    with pytest.raises(KeyboardInterrupt):
+        with tiny_session._engine.transaction():
+            tree.reserve(tree.root_id)
+            raise KeyboardInterrupt
+
+    assert tree.reservation is None
+    assert tiny_session._engine.phase is GenState.IDLE
+    assert tiny_session._gen_lock.acquire(blocking=False)
+    tiny_session._gen_lock.release()
 
 
 def test_transaction_release_failure_still_frees_phase_and_lock() -> None:
@@ -137,10 +158,16 @@ def _resolver(*, config: GenerationConfig, supports_thinking: bool = True,
               default_return_top_k: int = 0) -> GenerationEngine:
     session = SimpleNamespace(
         config=config,
-        profiles={},
+        registry=SimpleNamespace(profiles={}),
         chat_traits=SimpleNamespace(supports_thinking=supports_thinking),
         tree=SimpleNamespace(cast={}),
-        _seat_stop_augmentation=lambda stop, **_kw: stop,
+        renderer=SimpleNamespace(
+            seat_stop_strings=lambda stop, **_kw: stop,
+            resolve_system_prompt=lambda prompt: (
+                config.system_prompt
+                if isinstance(prompt, InheritSystemPrompt) else prompt
+            ),
+        ),
     )
     engine = _bare_engine(session)
     engine.default_return_top_k = default_return_top_k
@@ -232,10 +259,14 @@ def _tap_session(*, lens_live: Any = None, sae_live: Any = None,
         _capture_state=SimpleNamespace(incremental=False, lean=False),
         _incremental_readings=[],
         geometry=SimpleNamespace(current_run=SimpleNamespace(observe=_forbid("observe"))),
-        lens=SimpleNamespace(live=lens_live, last_step_readings=None),
-        sae=SimpleNamespace(live=sae_live, last_step_readings=None),
-        _live_lens_readout_step=lens_step or _forbid("lens readout"),
-        _live_sae_readout_step=_forbid("sae readout"),
+        lens=SimpleNamespace(
+            live=lens_live, last_step_readings=None,
+            live_readout_step=lens_step or _forbid("lens readout"),
+        ),
+        sae=SimpleNamespace(
+            live=sae_live, last_step_readings=None,
+            live_readout_step=_forbid("sae readout"),
+        ),
         tree=SimpleNamespace(
             append_token=lambda node_id, row, *, thinking: (rows if rows is not None else []).append(
                 (node_id, row, thinking),
@@ -635,6 +666,15 @@ def test_session_close_removes_both_persistent_hook_families(
     assert [len(layer._forward_hooks) for layer in layers] == [n + 2 for n in before]
     session.cache_prefix(torch.tensor([[1, 2, 3]]))
     assert session._engine.prefix_cache
+    # Lens and SAE residency (and the lens's derived caches) are dropped too.
+    lens_runtime = session._lens_instrument.runtime
+    lens_runtime.transport_stack(
+        cast(Any, SimpleNamespace(jacobians={0: torch.eye(2)})), [0], cpu,
+    )
+    lens_runtime._decoded.put(1, "one")
+    lens_runtime.lens = cast(Any, object())
+    make_resident(session.sae.runtime, layer=0)
+    session.events.subscribe(lambda _event: None)
 
     session.close()
 
@@ -642,6 +682,10 @@ def test_session_close_removes_both_persistent_hook_families(
     assert session._steering.has_compiled_offsets() is False
     assert runtime.capture_buffers == {}
     assert not session._engine.prefix_cache
+    assert len(lens_runtime._stacks) == 0
+    assert len(lens_runtime._decoded) == 0
+    assert session._lens_instrument.resident_lens is None
+    assert session.sae.runtime.resident is None
     assert session.events._subs == []
     session.close()  # idempotent
 
@@ -861,7 +905,7 @@ def test_cache_prefix_builds_a_static_entry_with_decode_headroom(
     monkeypatch.setattr(engine_mod, "make_static_cache", _make)
     model = _Model()
     session = SimpleNamespace(
-        _steering_composer=SimpleNamespace(_stack=[]),
+        _steering_composer=SimpleNamespace(active=False),
         _end_capture=lambda: None,
         device=torch.device("cpu"),
         model=model,
