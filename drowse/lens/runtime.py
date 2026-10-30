@@ -28,7 +28,7 @@ from drowse.lens.jlens import (
     topk_probabilities,
     transport_rows,
 )
-from drowse.lens.layers import LayerSelector, resolve_layer_selector
+from drowse.model.layers import LayerSelector, resolve_layer_selector
 from drowse.lens.store import lens_identity, lens_layers
 from drowse.model.fingerprint import loaded_model_fingerprint
 

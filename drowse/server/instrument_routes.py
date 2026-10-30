@@ -31,7 +31,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import Field
 
 from drowse.lens.jlens import JacobianLensCancelled, LensNotFittedError
-from drowse.lens.layers import parse_layer_selector
+from drowse.model.layers import parse_layer_selector
 from drowse.readout.measurements import MeasurementsEnvelope
 from drowse.sae.training import SaeTrainingCancelled
 from drowse.server.operations import Preparation, PreparationGroup
@@ -149,7 +149,7 @@ def _refuse(error: "tuple[int, str] | None", fallback: str) -> None:
 
 def _parse_layers(layers: str | None) -> list[int] | str | None:
     """``"3,7,11"`` → ``[3, 7, 11]``; ``workspace`` / ``sample`` / ``all`` pass
-    through (:func:`~drowse.lens.layers.parse_layer_selector`)."""
+    through (:func:`~drowse.model.layers.parse_layer_selector`)."""
     try:
         return parse_layer_selector(layers)
     except ValueError as e:

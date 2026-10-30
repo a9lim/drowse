@@ -3,7 +3,8 @@
 A selector is ``None`` or ``"all"`` (every available layer), ``"workspace"``
 (the 40-90% depth band), ``"sample"`` (nine evenly spaced layers, a readout
 convenience that fits refuse), or an explicit index list.  The CLI, the
-server and the lens runtime all parse and resolve through here.
+server, the lens runtime and lens fits, and manifold fits all parse and
+resolve through here.
 
 Torch-free at import: the CLI parses selectors before any model loads.
 """
@@ -78,10 +79,36 @@ def resolve_layer_selector(
     return [int(layer) for layer in selector]
 
 
+def resolve_model_layers(selector: LayerSelector, n_layers: int) -> list[int]:
+    """Resolve a fit's layer request against every layer of an ``n_layers`` model.
+
+    Returns the canonical sorted, de-duplicated index set.  A string parses
+    through :func:`parse_layer_selector`; ``sample`` is refused; an empty
+    request or an index outside ``[0, n_layers)`` raises ``ValueError``.  A
+    manifold fit and its weight-free preflight (which resolves against the
+    config's layer count) both resolve here, so a proof covers exactly the
+    roster the fit would evaluate.
+    """
+    if isinstance(selector, str):
+        parsed = parse_layer_selector(selector)
+        if parsed is None:
+            raise ValueError("layers must name at least one layer")
+        selector = parsed
+    requested = sorted(set(resolve_layer_selector(
+        selector, range(n_layers), n_layers=n_layers, allow_sample=False,
+    )))
+    if not requested:
+        raise ValueError("layers must name at least one layer")
+    if requested[0] < 0 or requested[-1] >= n_layers:
+        raise ValueError(f"layers must lie in [0, {n_layers}); got {requested}")
+    return requested
+
+
 __all__ = [
     "LAYER_MODES",
     "LayerSelector",
     "SAMPLE_COUNT",
     "parse_layer_selector",
     "resolve_layer_selector",
+    "resolve_model_layers",
 ]

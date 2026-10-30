@@ -40,8 +40,8 @@ from drowse.fit import capture as _capture
 from drowse.fit.capture_cache import CaptureCache
 from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION
 from drowse.geometry.topology import PcaDiagnostics, SpectralDiagnostics
-from drowse.model.arch import workspace_layer_indices
 from drowse.model.fingerprint import loaded_model_fingerprint
+from drowse.model.layers import resolve_model_layers
 from drowse.sae.backend import SaeBackend
 from drowse.base.paths import tensor_filename
 from drowse.fit.publish import (
@@ -106,43 +106,6 @@ class ModelHandle(Protocol):
 def _default_prompts() -> list[str]:
     """The shared baseline prompt set (looked up per call; tests substitute it)."""
     return list(_capture._load_baseline_prompts())
-
-
-def resolve_fit_layer_indices(
-    layer_indices: "Sequence[int] | str | None", n_layers: int,
-) -> list[int]:
-    """Normalize a ``layer_indices`` request against a model's layer count.
-
-    ``None``/``"all"`` is every layer, ``"workspace"`` the 40–90% band, any
-    other string a comma-separated index list.  Shared with the weight-free fit
-    preflight, which resolves the same request against the *config's* layer
-    count: the two must agree exactly or a proof could cover a different roster
-    than the fit would evaluate.
-    """
-    if layer_indices is None or layer_indices == "all":
-        requested = list(range(n_layers))
-    elif layer_indices == "workspace":
-        requested = workspace_layer_indices(range(n_layers), n_layers)
-    elif isinstance(layer_indices, str):
-        try:
-            requested = sorted({
-                int(part.strip()) for part in layer_indices.split(",")
-                if part.strip()
-            })
-        except ValueError as exc:
-            raise ValueError(
-                "layer_indices must be 'all', 'workspace', or a "
-                "comma-separated integer list"
-            ) from exc
-    else:
-        requested = sorted({int(idx) for idx in layer_indices})
-    if not requested:
-        raise ValueError("layer_indices must name at least one layer")
-    if any(idx < 0 or idx >= n_layers for idx in requested):
-        raise ValueError(
-            f"layer_indices must lie in [0, {n_layers}); got {requested}"
-        )
-    return requested
 
 
 def baseline_prompts_sha256(
@@ -1081,7 +1044,7 @@ class ManifoldExtractionPipeline:
             model_source_fingerprint=(
                 source_fp if isinstance(source_fp, str) and source_fp else None
             ),
-            requested_layers=resolve_fit_layer_indices(
+            requested_layers=resolve_model_layers(
                 layer_indices, len(handle.layers),
             ),
             layer_scope_explicit=layer_indices is not None,

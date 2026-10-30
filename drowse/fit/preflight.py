@@ -12,11 +12,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from drowse.base.paths import tensor_filename
-from drowse.fit.pipeline import (
-    MANIFOLD_CAPTURE_VERSION,
-    offline_fit_identity,
-    resolve_fit_layer_indices,
-)
+from drowse.fit.pipeline import MANIFOLD_CAPTURE_VERSION, offline_fit_identity
+from drowse.model.layers import resolve_model_layers
 from drowse.store.manifold_folder import ManifoldFolder, read_proven_sidecar
 from drowse.store.manifold_schema import ManifoldFormatError
 from drowse.store.manifold_tensors import fitted_tensor_layers
@@ -111,7 +108,7 @@ def preflight_manifold_fit_noop(
         return None
     try:
         n_layers, _hidden = config_model_shape(model_id)
-        requested_layers = resolve_fit_layer_indices(layer_indices, n_layers)
+        requested_layers = resolve_model_layers(layer_indices, n_layers)
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         return None
     try:
