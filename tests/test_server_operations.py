@@ -19,8 +19,8 @@ from fastapi.testclient import TestClient
 from starlette.requests import ClientDisconnect
 
 import drowse.server.operations as operations
-from drowse.errors import DrowseError
-from drowse.server.errors import ErrorInfo, install_error_handlers
+from drowse.errors import DrowseError, PoisednessError, SourceSpecError
+from drowse.server.errors import install_error_handlers
 from drowse.server.operations import (
     OperationLedger,
     Preparation,
@@ -253,10 +253,11 @@ class _Conflict(RuntimeError, DrowseError):
 
 @pytest.mark.parametrize(("error", "status", "text"), [
     (_Conflict(), 409, "already running"),
-    (ValueError("nodes are not poised"), 400, "nodes are not poised"),
+    (PoisednessError("nodes are not poised"), 400, "nodes are not poised"),
     (HTTPException(404, "no such folder"), 404, "no such folder"),
     (FileNotFoundError("/secret/cache/path"), 404, "Requested artifact not found"),
     (RuntimeError("/secret/cache/path"), 500, "Job failed. Check the server log for details."),
+    (ValueError("/secret/cache/path"), 500, "Job failed. Check the server log for details."),
 ])
 def test_one_error_policy_for_json_and_sse(error: Exception, status: int, text: str) -> None:
     async def job(_progress: ProgressCallback) -> dict[str, Any]:
@@ -273,14 +274,12 @@ def test_one_error_policy_for_json_and_sse(error: Exception, status: int, text: 
     assert "/secret" not in frames
 
 
-def test_classifier_refines_the_frame() -> None:
+def test_frame_code_is_the_typed_class_name() -> None:
+    """The client keys on the class name; no route-specific classifier."""
     async def job(_progress: ProgressCallback) -> dict[str, Any]:
-        raise ValueError("nodes are not poised")
+        raise PoisednessError("nodes are not poised")
 
-    def classify(exc: Exception) -> ErrorInfo | None:
-        return ErrorInfo(400, str(exc), "PoisednessError") if isinstance(exc, ValueError) else None
-
-    assert '"code": "PoisednessError"' in _sse(_client(job, classify=classify))
+    assert '"code": "PoisednessError"' in _sse(_client(job))
 
 
 def test_sse_heartbeats_while_idle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -558,7 +557,8 @@ def test_preparation_failures_never_surface_raw_exception_text() -> None:
         for error, expected in (
             (FileNotFoundError("/home/user/.cache/secret/lens.safetensors"), "Requested artifact not found"),
             (RuntimeError("/home/user/private"), "J-lens fetch failed. Check the server log for details."),
-            (ValueError("unknown source 'x'"), "unknown source 'x'"),
+            (SourceSpecError("unknown source 'x'"), "unknown source 'x'"),
+            (ValueError("/home/user/private"), "J-lens fetch failed. Check the server log for details."),
         ):
             async def body(error: Exception = error) -> None:
                 raise error

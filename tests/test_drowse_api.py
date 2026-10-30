@@ -472,22 +472,34 @@ class TestExtract:
         assert resp.status_code == 200
         assert resp.json()["progress"] == ["capturing", "fitting"]
 
-    def test_extract_json_maps_a_value_error_to_400(
+    def test_extract_json_maps_a_poisedness_error_to_400(
         self, session_and_client: Any,
     ) -> None:
-        """Extract shares manifold ``fit``'s typed error policy.
+        """Extract shares manifold ``fit``'s typed error policy: a request
+        error from the one extraction pipeline is a 400 with its text."""
+        from drowse.errors import PoisednessError
 
-        Both drive the one extraction pipeline; the JSON branch used to map
-        nothing, so an authoring-grade ``ValueError`` surfaced as a 500.
-        """
         session, client = session_and_client
-        session.extract.side_effect = ValueError("nodes are not poised")
+        session.extract.side_effect = PoisednessError("nodes are not poised")
         resp = client.post(
             "/drowse/v1/sessions/default/extract",
             json={"concept": "angry", "baseline": "calm"},
         )
         assert resp.status_code == 400
         assert "poised" in resp.text
+
+    def test_extract_json_scrubs_a_bare_value_error_to_500(
+        self, session_and_client: Any,
+    ) -> None:
+        """A bare ``ValueError`` is an engine invariant, not a client error."""
+        session, client = session_and_client
+        session.extract.side_effect = ValueError("/secret/cache: shape (3,) != (4,)")
+        resp = client.post(
+            "/drowse/v1/sessions/default/extract",
+            json={"concept": "angry", "baseline": "calm"},
+        )
+        assert resp.status_code == 500
+        assert resp.json() == {"detail": "Extract failed. Check the server log for details."}
 
     def test_extract_json_maps_a_concurrent_run_to_409(
         self, session_and_client: Any,
@@ -507,7 +519,9 @@ class TestExtract:
     ) -> None:
         """A typed failure keeps its message instead of the generic frame."""
         session, client = session_and_client
-        session.extract.side_effect = ValueError("poisedness check failed")
+        from drowse.errors import PoisednessError
+
+        session.extract.side_effect = PoisednessError("poisedness check failed")
         with client.stream(
             "POST",
             "/drowse/v1/sessions/default/extract",

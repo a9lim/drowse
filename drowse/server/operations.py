@@ -36,13 +36,11 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 
-from drowse.server.errors import ErrorInfo, describe_error
+from drowse.server.errors import describe_error
 from drowse.server.runtime import ClosingStreamingResponse, finish_worker, session_lock
 
 ProgressCallback = Callable[[str], None]
 ProgressJob = Callable[[ProgressCallback], Awaitable[Any]]
-#: Route-specific refinement of :func:`describe_error`; ``None`` defers to it.
-ErrorClassifier = Callable[[Exception], ErrorInfo | None]
 Admission = Literal["new", "existing", "conflict", "full"]
 
 #: Idle gap after which an SSE stream emits a comment line, so an intermediary
@@ -417,7 +415,6 @@ async def run_operation(
     job: ProgressJob,
     *,
     failure: str,
-    classify: ErrorClassifier | None = None,
     progress_key: str | None = None,
 ) -> Any:
     """Run ``job`` under the session lock and answer as SSE or JSON.
@@ -469,7 +466,7 @@ async def run_operation(
                 ledger.interrupt(request_id, "The server stopped before the operation finished.")
             raise
         except Exception as exc:  # noqa: BLE001 - classified once, reported as a frame or status
-            info = (classify(exc) if classify is not None else None) or describe_error(exc, failure=failure)
+            info = describe_error(exc, failure=failure)
             if request_id:
                 ledger.fail(request_id, info.frame())
             pump.finish("error", info.frame())

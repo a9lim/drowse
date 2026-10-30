@@ -14,13 +14,18 @@ same everywhere and no surface leaks a raw exception string:
   user-facing contract);
 - ``HTTPException`` keeps its status and flattened detail — or, when it wraps
   a typed or filesystem failure, that failure's safe text;
-- a plain ``ValueError`` is a rejected request (400, verbatim; its trace is
-  logged at debug);
 - filesystem errors keep a status but get a fixed message (their text is a
   path);
 - a missing third-party module (an optional extra) is a logged 503;
-- anything else — including a failed import of drowse's own modules — is
-  logged with its traceback and scrubbed to a generic 500.
+- anything else is logged with its traceback and scrubbed to a generic 500.
+  That includes a bare ``ValueError``: input a client can get wrong raises a
+  :class:`~drowse.errors.RequestError` (400, verbatim), so a bare one is an
+  engine invariant whose text must not leak; and a failed import of drowse's
+  own modules, which is a packaging bug, not a missing extra.
+
+The ``code`` of every envelope is the exception's class name, so a client
+keys on a typed failure (``PoisednessError``, ``RecipeOverrideError``)
+without a route-specific classifier.
 """
 
 from __future__ import annotations
@@ -170,30 +175,13 @@ def describe_error(exc: BaseException, *, failure: str = "Request failed") -> Er
         log.error("%s", failure, exc_info=exc)
         status = 404 if isinstance(exc, FileNotFoundError) else 409 if isinstance(exc, FileExistsError) else 500
         return ErrorInfo(status, _filesystem_message(status), code)
-    if isinstance(exc, ValueError):
-        # Usually a rejected argument, occasionally an engine bug: keep the
-        # trace reachable without blaming the client in the error log.
-        log.debug("%s: rejected as a bad request", failure, exc_info=exc)
-        return ErrorInfo(400, str(exc) or code, code)
     if isinstance(exc, ImportError) and (missing := _missing_extra(exc)) is not None:
         log.error("%s", failure, exc_info=exc)
         return ErrorInfo(503, f"optional dependency not installed: {missing}", code)
-    # Includes an ImportError of drowse's own modules: a packaging bug, not
-    # a missing extra.
+    # Includes a bare ValueError (an engine invariant: client input raises a
+    # RequestError) and an ImportError of drowse's own modules.
     log.error("%s", failure, exc_info=exc)
     return ErrorInfo(500, f"{failure}. Check the server log for details.", code)
-
-
-def classify_extraction_error(exc: Exception) -> ErrorInfo | None:
-    """Tag the RBF poisedness failure so the client can offer its layout hint.
-
-    The two routes that drive the extraction pipeline (``POST /extract`` and
-    manifold ``fit``) pass this to the operation runner; every other failure
-    falls through to :func:`describe_error`.
-    """
-    if isinstance(exc, ValueError) and not isinstance(exc, DrowseError) and "poisedness" in str(exc).lower():
-        return ErrorInfo(400, str(exc), "PoisednessError")
-    return None
 
 
 def error_param(exc: BaseException) -> str | None:

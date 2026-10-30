@@ -290,14 +290,28 @@ class TestDescribeError:
         assert info.message == "Lens fetch failed. Check the server log for details."
         assert caplog.records and caplog.records[0].exc_info is not None
 
-    def test_value_error_is_a_400_with_a_debug_trace(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_request_error_is_a_400_without_an_error_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        from drowse.errors import GenerationRequestError
         from drowse.server.errors import describe_error
 
         with caplog.at_level("DEBUG", logger="drowse.api"):
-            info = describe_error(ValueError("n must be >= 1"), failure="Generation failed")
-        assert (info.status, info.message) == (400, "n must be >= 1")
+            info = describe_error(GenerationRequestError("n must be >= 1"), failure="Generation failed")
+        assert (info.status, info.message, info.code) == (400, "n must be >= 1", "GenerationRequestError")
+        assert not caplog.records
+
+    def test_bare_value_error_is_a_logged_scrubbed_500(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A bare ``ValueError`` is an engine invariant: its text (often a
+        path or a tensor shape) never reaches the client, and its traceback
+        lands in the error log instead of a debug line blaming the client."""
+        from drowse.server.errors import describe_error
+
+        with caplog.at_level("DEBUG", logger="drowse.api"):
+            info = describe_error(ValueError("/secret/cache: shape (3,) != (4,)"), failure="Generation failed")
+        assert (info.status, info.message, info.code) == (
+            500, "Generation failed. Check the server log for details.", "ValueError",
+        )
         [record] = caplog.records
-        assert record.levelname == "DEBUG" and record.exc_info is not None
+        assert record.levelname == "ERROR" and record.exc_info is not None
 
     def test_lock_timeout_is_a_503_without_an_error_log(self, caplog: pytest.LogCaptureFixture) -> None:
         """Regression: the timeout chained its ``TimeoutError``, and a chained

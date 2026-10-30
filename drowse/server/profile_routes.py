@@ -16,7 +16,6 @@ from fastapi import FastAPI, HTTPException, Request
 
 from drowse.geometry.profile import Profile
 from drowse.readout.analytics import cosine_matrix, cross_layer_cosine
-from drowse.server.errors import classify_extraction_error
 from drowse.server.operations import ProgressCallback, run_operation
 from drowse.server.profile_models import ExtractRequest, extract_registry_name, profile_to_json
 from drowse.server.response_models import (
@@ -136,8 +135,7 @@ def register_profile_routes(app: FastAPI) -> None:
             return {"done": True, "profile": profile_to_json(name, profile), "canonical": name}
 
         return await run_operation(
-            request, job, failure="Extract failed",
-            classify=classify_extraction_error, progress_key="progress",
+            request, job, failure="Extract failed", progress_key="progress",
         )
 
     app.include_router(router)
