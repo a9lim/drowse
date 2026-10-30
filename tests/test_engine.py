@@ -808,6 +808,72 @@ def test_registry_changes_keep_the_unsteered_prefix(tiny_session: Any) -> None:
     assert steered.tokens == steered_full.tokens
 
 
+def test_probe_roster_changes_keep_the_prefix_and_its_reads(tiny_session: Any) -> None:
+    """Attaching or detaching a probe never touches a cached prefix.
+
+    The prefix is prefilled with capture suspended, so the entry holds no
+    read state, and every read a hit serves comes from forwards the hit still
+    runs: the suffix prefill (forward 0, whose last row is the last prompt
+    position) and the decode steps.  So a hit after a roster change reads the
+    same per-token stream and the same pooled aggregate as a full prefill.
+    """
+    from tests.support.sessions import register_vectors
+
+    messages = [{"role": "user", "content": "A fixed shared instruction prefix."}]
+    greedy = SamplingConfig(max_tokens=6, temperature=0.0)
+    register_vectors(tiny_session, "mood", "calm")
+    tiny_session.add_probe("mood")
+
+    def _run() -> tuple[GenerationResult, list[TokenEvent]]:
+        events: list[TokenEvent] = []
+        consumer = TokenConsumer(
+            events.append,
+            TokenConsumerOptions(live_scores=True, probe_readings=True),
+        )
+        result = tiny_session.generate(
+            messages, sampling=greedy, stateless=True, on_token=consumer,
+        ).first
+        return result, events
+
+    full, full_events = _run()
+
+    assert tiny_session.cache_prefix(messages) > 0
+    entry = tiny_session._engine.prefix_cache.entry
+    tiny_session.add_probe("calm")
+    tiny_session.remove_probe("calm")
+    tiny_session.remove_probe("mood")
+    tiny_session.add_probe("mood")
+    assert tiny_session._engine.prefix_cache.entry is entry
+
+    hit_calls: list[Any] = []
+    original_hit = tiny_session._engine.prefix_cache.hit
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        result = original_hit(*args, **kwargs)
+        hit_calls.append(result)
+        return result
+
+    tiny_session._engine.prefix_cache.hit = _spy
+    cached, cached_events = _run()
+
+    assert len(hit_calls) == 1 and hit_calls[0] is not None
+    assert cached.tokens == full.tokens
+    want, got = full.probe_readings["mood"], cached.probe_readings["mood"]
+    assert got.coords == pytest.approx(want.coords, abs=1e-5)
+    assert got.fraction == pytest.approx(want.fraction, abs=1e-5)
+    scored = 0
+    assert len(cached_events) == len(full_events) > 0
+    for a, b in zip(full_events, cached_events, strict=True):
+        assert (a.probe_readings is None) == (b.probe_readings is None)
+        if a.probe_readings is None or b.probe_readings is None:
+            continue
+        scored += 1
+        assert b.probe_readings["mood"].coords == pytest.approx(
+            a.probe_readings["mood"].coords, abs=1e-5,
+        )
+    assert scored > 0
+
+
 def test_cache_prefix_refuses_inside_a_steering_scope(tiny_session: Any) -> None:
     from tests.support.sessions import register_vectors
 

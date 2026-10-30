@@ -13,11 +13,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 
 from tests._jlens_toys import CharTokenizer, frozen_toy
+
+if TYPE_CHECKING:
+    from drowse.generation.render import PromptRenderer
 
 __all__ = ["PROMPT_RENDER", "ReplayRig", "unwired_replay"]
 
@@ -71,7 +74,8 @@ class ReplayRig:
         self.on_exclusive: Callable[[], None] | None = None
         self.replay = TokenReplayer(
             tree=lambda: self.tree,
-            renderer=self,
+            # The rig stands in for the renderer: it records ``prepare_input``.
+            renderer=cast("PromptRenderer", self),
             traits=self.traits,
             tokenizer=self.tokenizer,
             open_scope=self._open_scope,

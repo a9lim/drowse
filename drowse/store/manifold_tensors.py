@@ -15,7 +15,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import torch
 from safetensors import safe_open
@@ -306,7 +306,7 @@ def save_manifold(
             tensors[f"layer_{idx}.sigma_poly_coeffs"] = (
                 sub.sigma_poly_coeffs.contiguous().to(torch.float32).cpu()
             )
-    provenance = {
+    provenance: dict[str, Any] = {
         key: value for key, value in metadata.items()
         if key in SIDECAR_FIELDS and key not in SIDECAR_DERIVED_FIELDS
     }

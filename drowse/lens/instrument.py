@@ -712,6 +712,35 @@ class LensInstrument:
                     on_progress=on_progress, cancel_event=cancel_event,
                 )
 
+    def fit_is_noop(
+        self,
+        prompt_count: int,
+        *,
+        kind: str = "J",
+        corpus_spec: str,
+        source_layers: LayerSelector = None,
+        seq_len: int | None = None,
+    ) -> Mapping[str, Any] | None:
+        """Prove :meth:`fit` over the first ``prompt_count`` documents of the
+        pinned Hub corpus ``corpus_spec`` would be a no-op, before streaming
+        it (:func:`~drowse.lens.lifecycle.prove_lens_fit_noop` against this
+        model's exact source).  Returns the proven sidecar, or ``None`` when
+        a fit would do work.
+        """
+        from drowse.lens.lifecycle import prove_lens_fit_noop
+
+        request = LensFitRequest(
+            kind=kind, corpus_spec=corpus_spec, source_layers=source_layers,
+        )
+        return prove_lens_fit_noop(
+            self.model_id, request.kind.lower(),
+            requested=request.source_layers,
+            seq_len=seq_len,
+            source_fingerprint=self._fitter.source_fingerprint,
+            corpus_spec=request.corpus_spec,
+            prompt_count=int(prompt_count),
+        )
+
     # ---------------------------------------------------------- offline reads
 
     @overload
@@ -826,8 +855,8 @@ class LensInstrument:
         full fitted layer set, and pre-warms the device transport stack so
         the first decode step doesn't hitch on the J_l transfer.  The probe
         reads ONE channel — ``coords = (strength,)``, the mean layer
-        probability ``mean_l p_l(v)``.  Cache invalidation (prefix cache,
-        probe-hash cache, analytics) is the probe roster's job
+        probability ``mean_l p_l(v)``.  Cache invalidation (probe-hash
+        cache, analytics) is the probe roster's job
         (:class:`~drowse.readout.roster.ProbeRoster`).
         """
         word = selector.split("/", 1)[1]

@@ -71,7 +71,7 @@ def _sampler_candidates(
     decode token — on top of the unavoidable ``int(next_token.item())`` one,
     that's two syncs/token.  Callers consume the fixed width and must treat
     zero-prob entries as the excluded tail (see
-    ``joint_logprobs._sampler_pool``).
+    :func:`drowse.loom.joint_logprobs._sampler_pool`).
     """
     if config.temperature <= 0:
         token = logits.argmax(dim=-1).reshape(1).to(dtype=torch.long)

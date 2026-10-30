@@ -240,6 +240,37 @@ def test_fit_uses_the_kind_directory_and_policy() -> None:
     assert not lens_manifest_path(_MODEL_ID, "r").exists()
 
 
+def test_fit_is_noop_proves_a_pinned_corpus_fit_before_streaming() -> None:
+    """The pre-stream proof the fit route runs: a matching durable fit of
+    the same pinned corpus, prompt count, layers and exact model source."""
+    harness = LensHarness()
+    # Stamped the way the loader stamps it (drowse.model.load).
+    setattr(harness.model, "_drowse_source_fingerprint", "toy-source")
+    spec = "hf:org/data/cfg@" + "a" * 40 + ";preprocess=1;doc_chars=4000"
+    assert harness.lens.fit_is_noop(len(_PROMPTS), kind="J", corpus_spec=spec) is None
+    harness.lens.fit(_PROMPTS, kind="J", corpus_spec=spec, source_layers=[0, 1])
+
+    proven = harness.lens.fit_is_noop(
+        len(_PROMPTS), kind="J", corpus_spec=spec, source_layers=[1],
+    )
+    assert proven is not None and proven["corpus_spec"] == spec
+    for kwargs in (
+        {"kind": "R"},
+        {"corpus_spec": spec.replace("cfg", "other")},
+        {"source_layers": [2]},
+        {"seq_len": 64},
+    ):
+        call = {"kind": "J", "corpus_spec": spec, "source_layers": [1], **kwargs}
+        assert harness.lens.fit_is_noop(len(_PROMPTS), **call) is None
+    assert harness.lens.fit_is_noop(
+        len(_PROMPTS) + 1, kind="J", corpus_spec=spec, source_layers=[1],
+    ) is None
+    setattr(harness.model, "_drowse_source_fingerprint", "other-source")
+    assert harness.lens.fit_is_noop(
+        len(_PROMPTS), kind="J", corpus_spec=spec, source_layers=[1],
+    ) is None
+
+
 # ---------------------------------------------------------------------------
 # The executor
 # ---------------------------------------------------------------------------

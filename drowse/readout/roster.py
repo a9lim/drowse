@@ -6,8 +6,7 @@ instrument, and everything else to the geometry instrument (a manifold probe
 on the unified Monitor).  The roster also owns the transcript probe-hash
 caches, one per family, and the single place a roster change is reported:
 :meth:`ProbeRoster.changed` drops the affected digests and fires the
-``on_change`` callback (the session wires its prefix-cache and analytics
-invalidation there).
+``on_change`` callback (the session wires its analytics invalidation there).
 """
 
 from __future__ import annotations

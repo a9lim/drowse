@@ -190,13 +190,16 @@ def test_remove_probe():
     assert session._monitor.probe_names == []
 
 
-def test_add_probe_invalidates_prefix_cache():
+def test_add_probe_keeps_the_prefix_cache():
+    """The prefix is prefilled with capture suspended, so a roster change
+    leaves it valid (test_engine::test_probe_roster_changes_keep_the_prefix_and_its_reads)."""
     session = _stub_session()
     m = _toy_manifold()
     _serve(session, m)
     seed_prefix_cache(session._engine)
+    entry = session._engine.prefix_cache.entry
     session.add_probe("toy")
-    assert not session._engine.prefix_cache
+    assert session._engine.prefix_cache.entry is entry
 
 
 # ==================================================== capture widening ===

@@ -220,6 +220,15 @@ def _override(mode: str | Recipe, sampling: SamplingConfig | None = _CALLER, **k
     )
 
 
+def _sampling(
+    mode: str | Recipe, sampling: SamplingConfig | None = _CALLER, **kwargs: Any,
+) -> SamplingConfig:
+    """The composed sampling of an override (the anchor always carries one)."""
+    out = _override(mode, sampling, **kwargs).sampling
+    assert out is not None
+    return out
+
+
 @pytest.mark.parametrize("mode", ["cool", "hot", "reseed", "temperature=1.5", "unsteered"])
 def test_override_keeps_anchor_sampling_and_caller_fields(mode: str):
     """Regression: an override used to replace the caller's whole sampling."""
@@ -235,11 +244,11 @@ def test_override_keeps_anchor_sampling_and_caller_fields(mode: str):
 
 
 def test_override_modifier_fields_win():
-    assert _override("cool").sampling.temperature == pytest.approx(0.3)
-    assert _override("hot").sampling.temperature == pytest.approx(1.2)
-    assert _override("reseed").sampling.temperature == pytest.approx(0.7)
-    custom = _override("temperature=1.5", sampling=SamplingConfig(temperature=0.7))
-    assert custom.sampling.temperature == pytest.approx(1.5)
+    assert _sampling("cool").temperature == pytest.approx(0.3)
+    assert _sampling("hot").temperature == pytest.approx(1.2)
+    assert _sampling("reseed").temperature == pytest.approx(0.7)
+    custom = _sampling("temperature=1.5", sampling=SamplingConfig(temperature=0.7))
+    assert custom.temperature == pytest.approx(1.5)
 
 
 def test_override_anchor_steering_and_thinking_beat_the_caller():
@@ -254,7 +263,7 @@ def test_fanned_override_keeps_per_sibling_seeds(mode: str):
     """Regression: every n>1 override sibling collapsed onto the anchor seed."""
     schedule = derive_seed_schedule(None, 3)
     seeds = [
-        _override(mode, sampling=SamplingConfig(seed=seed)).sampling.seed
+        _sampling(mode, sampling=SamplingConfig(seed=seed)).seed
         for seed in schedule
     ]
     assert seeds == schedule
@@ -262,15 +271,15 @@ def test_fanned_override_keeps_per_sibling_seeds(mode: str):
 
 
 def test_unseeded_one_shot_regen_reproduces_the_anchor_seed():
-    assert _override("cool").sampling.seed == 11
-    assert _override("unsteered", sampling=None).sampling.seed == 11
+    assert _sampling("cool").seed == 11
+    assert _sampling("unsteered", sampling=None).seed == 11
 
 
 def test_modifier_seed_beats_the_caller_seed():
-    pinned = _override("seed=42", sampling=SamplingConfig(seed=7))
-    assert pinned.sampling.seed == 42
-    reseeded = _override("reseed", sampling=SamplingConfig(seed=7))
-    assert reseeded.sampling.seed not in (7, 11)
+    pinned = _sampling("seed=42", sampling=SamplingConfig(seed=7))
+    assert pinned.seed == 42
+    reseeded = _sampling("reseed", sampling=SamplingConfig(seed=7))
+    assert reseeded.seed not in (7, 11)
 
 
 def test_observation_fields_come_from_the_call_only():
@@ -356,7 +365,7 @@ def test_resolve_override_without_anchor_layers_the_partial_on_the_call():
     {"steering": "   "},
 ])
 def test_composed_blank_steering_reaches_generation_as_no_steering(
-    call: dict, tiny_session: Any,
+    call: dict[str, Any], tiny_session: Any,
 ):
     """Regression: the ``unsteered`` / ``inverted`` modes (and an explicit
     ``steering=""``) composed ``""``, which the grammar rejects, so every

@@ -283,16 +283,23 @@ def register_instrument_routes(app: FastAPI) -> None:
         except Exception:  # noqa: BLE001 - the artifact is in place; live is optional
             log.exception("could not enable live readout after %s", preparation.label)
 
+    async def select_lens_source(source: str) -> None:
+        """Make ``source`` the lens's runtime source with live readout off.
+
+        The caller holds the session lock.
+        """
+        session.lens.set_live(False)
+        try:
+            await run_in_thread(session.lens.select_source, source)
+        except FileNotFoundError as exc:
+            if exc.filename is not None:
+                raise  # an OS-level miss names a path: scrubbed by the policy
+            # The source registry's own "<kind>:<name> is not available".
+            raise HTTPException(404, str(exc)) from None
+
     async def activate_lens_source(source: str) -> list[int]:
         async with session_lock(app):
-            session.lens.set_live(False)
-            try:
-                await run_in_thread(session.lens.select_source, source)
-            except FileNotFoundError as exc:
-                if exc.filename is not None:
-                    raise  # an OS-level miss names a path: scrubbed by the policy
-                # The source registry's own "<kind>:<name> is not available".
-                raise HTTPException(404, str(exc)) from None
+            await select_lens_source(source)
             return await enable_lens_live()
 
     # -- live / sources / source -------------------------------------------
@@ -378,8 +385,37 @@ def register_instrument_routes(app: FastAPI) -> None:
         lens_fetch.start(lambda: lens_fetch_body(body), message="starting…", source=body.source, live_layers=None)
 
     async def lens_fit_body(body: LensFitRequest, source_layers: list[int] | str, corpus: Any) -> None:
-        from drowse.lens.corpus import stream_lens_corpus
+        from drowse.lens.corpus import pin_lens_corpus, stream_lens_corpus
 
+        kind = body.kind.upper()
+
+        async def enable() -> None:
+            lens_fit.state["live_layers"] = await enable_lens_live()
+
+        # Pin first, as ``lens fit`` does: the no-op proof and the stream
+        # then name the same Hub commit.  An unpinned corpus resolves in the
+        # isolated corpus worker, never in the server process.
+        if not corpus.pinned:
+            lens_fit.report(f"resolving {corpus}…")
+        corpus = await run_in_thread(
+            pin_lens_corpus, corpus, cancel_event=lens_fit.cancel_event,
+        )
+        if not body.force and await run_in_thread(
+            session.lens.fit_is_noop, body.prompts,
+            kind=kind, corpus_spec=corpus.spec,
+            source_layers=source_layers, seq_len=body.seq_len,
+        ) is not None:
+            # Nothing to fit: skip the stream and make the proven artifact
+            # the source, as a publishing fit leaves it; live readout is the
+            # same best-effort step as after a fit.
+            lens_fit.report(
+                "already fitted for this corpus and exact model source — nothing to do",
+            )
+            async with session_lock(app):
+                await select_lens_source(f"local:{kind.lower()}")
+            await enable_live_after(lens_fit, enable)
+            lens_fit.report("done")
+            return
         lens_fit.report(f"streaming {body.prompts} documents from {corpus}…")
         docs, spec = await run_in_thread(
             stream_lens_corpus, body.prompts, corpus, cancel_event=lens_fit.cancel_event,
@@ -387,14 +423,11 @@ def register_instrument_routes(app: FastAPI) -> None:
         lens_fit.report("fitting…")
         await run_in_thread(
             session.lens.fit, docs,
-            kind=body.kind.upper(),
+            kind=kind,
             corpus_spec=spec, source_layers=source_layers, seq_len=body.seq_len,
             prompt_batch=body.prompt_batch, force=body.force,
             on_progress=lens_fit.report, cancel_event=lens_fit.cancel_event,
         )
-        async def enable() -> None:
-            lens_fit.state["live_layers"] = await enable_lens_live()
-
         await enable_live_after(lens_fit, enable)
         lens_fit.report("done")
 

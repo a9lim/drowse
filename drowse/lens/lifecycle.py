@@ -296,6 +296,14 @@ def fit_covers_layers(
     return fitted >= set(wanted)
 
 
+def loaded_source_fingerprint(model: Any) -> str | None:
+    """A loaded model's ``model_source_fingerprint`` (``None`` when the
+    loader stamped none), through a compile wrapper."""
+    return getattr(
+        getattr(model, "_orig_mod", model), "_drowse_source_fingerprint", None,
+    )
+
+
 def prove_lens_fit_noop(
     model_id: str,
     name: str,
@@ -440,6 +448,10 @@ class LensFitter:
         self._model_id = model_id
         self._residency = residency
 
+    def source_fingerprint(self) -> str | None:
+        """The loaded model's exact source identity, as a fit records it."""
+        return loaded_source_fingerprint(self._model)
+
     def run(
         self,
         prompts: Sequence[str],
@@ -543,9 +555,7 @@ class _FitRun:
             usable_prompt_count=corpus.n_usable,
             model_layer_count=len(self.fit_layers),
             model_fingerprint=self.identity.model_fingerprint,
-            model_source_fingerprint=getattr(
-                self.model, "_drowse_source_fingerprint", None,
-            ),
+            model_source_fingerprint=loaded_source_fingerprint(self.model),
         )
 
     def resident_view(self) -> ResidentLens | None:
@@ -841,6 +851,7 @@ __all__ = [
     "LiveConfig",
     "ResidentLens",
     "fit_covers_layers",
+    "loaded_source_fingerprint",
     "plan_lens_fit",
     "prove_lens_fit_noop",
     "raw_corpus_sha256",

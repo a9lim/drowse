@@ -241,6 +241,62 @@ def test_adopt_fitted_drops_probe_folds_when_the_fit_no_longer_folds() -> None:
     assert seen.swaps == [{id(fold): None}]
 
 
+def test_put_profile_refolds_probe_folds_of_the_replaced_profile() -> None:
+    """Replacing a profile a probe was folded from moves the probe to a fold
+    of the new tensors; folds under other keys are untouched."""
+    registry = _registry()
+    registry.set_probe_folder(_Fold)  # type: ignore[arg-type]
+    seen = _Recorder(registry)
+    registry.put_profile("mood", {0: torch.ones(2)})
+    first = registry.fold_probe("mood", registry.profiles["mood"])
+    second = registry.fold_probe("mood", registry.profiles["mood"])
+    other = registry.fold_probe("local/mood", {0: torch.ones(2)})
+
+    new = {0: torch.tensor([3.0, 4.0])}
+    registry.put_profile("mood", new)
+    (swaps,) = seen.swaps
+    refold = swaps[id(first)]
+    assert swaps == {id(first): refold, id(second): refold}
+    assert isinstance(refold, _Fold) and refold.key == "mood"
+    assert torch.equal(refold.tensors[0], new[0])
+    assert torch.equal(registry.profiles["mood"][0], new[0])
+
+    # The refold is tracked in turn; the other key's fold still is.
+    registry.evict_artifact("local", "mood")
+    assert seen.swaps[-1] == {id(refold): None, id(other): None}
+
+
+def test_put_profile_without_probe_folds_fires_no_swap() -> None:
+    registry = _registry()
+    seen = _Recorder(registry)
+    registry.put_profile("mood", {0: torch.ones(2)})
+    registry.put_profile("mood", {0: torch.zeros(2)})
+    assert seen.swaps == [] and seen.changes == 2
+
+
+def test_a_failed_refold_leaves_the_profile_in_place() -> None:
+    registry = _registry()
+    folds: list[str] = []
+
+    def _fold(key: str, tensors: Any) -> Any:
+        if folds:
+            raise RuntimeError("fold failed")
+        folds.append(key)
+        return _Fold(key, tensors)
+
+    registry.set_probe_folder(_fold)
+    seen = _Recorder(registry)
+    old = {0: torch.ones(2)}
+    registry.put_profile("mood", old)
+    fold = registry.fold_probe("mood", old)
+    with pytest.raises(RuntimeError, match="fold failed"):
+        registry.put_profile("mood", {0: torch.zeros(2)})
+    assert torch.equal(registry.profiles["mood"][0], old[0])
+    assert seen.swaps == []
+    registry.evict_artifact("local", "mood")
+    assert seen.swaps == [{id(fold): None}]
+
+
 def test_detached_probe_folds_drop_out_of_the_index() -> None:
     import gc
 
