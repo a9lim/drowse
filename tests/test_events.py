@@ -165,11 +165,6 @@ def test_loom_mutated_is_in_the_event_union():
     from drowse.events import LoomMutated
 
     assert LoomMutated in typing.get_args(Event)
-    # ``drowse.loom.tree`` re-exports it, so the historical import path and
-    # the owning module hand back the same class.
-    from drowse.loom.tree import LoomMutated as ReExported
-
-    assert ReExported is LoomMutated
 
 
 def test_loom_mutated_rides_the_bus_as_an_event():

@@ -3,28 +3,37 @@
 The grammar is **adjacent to** the steering ``@when:`` clause grammar
 but deliberately distinct — the underlying scalars are different.
 ``@when:`` (in :mod:`drowse.steering.grammar`) gates on *per-step*
-probe readings during generation; this module gates on *per-node*
-aggregates that the monitor stamped on each assistant node when the gen
-finalized.  Reusing one grammar would silently change semantics across
-contexts.
+probe readings during generation; this module filters on the readings
+the loom *persisted* — each node's finalize-time aggregates and its
+per-token measurement rows.  Reusing one grammar would silently change
+semantics across contexts.
 
 Grammar::
 
     filter_clauses := clause ("," clause)*           # multi-clause is AND
-    clause         := agg_op ":" probe op threshold
+    clause         := [agg_op ":"] probe op threshold
     agg_op         := "agg" | "any" | "last"
-                      #   agg  = aggregate (default; ProbeReadings.mean)
-                      #   any  = max over per-token scores
+                      #   agg  = aggregate (the default)
+                      #   any  = max/min over per-token scores
                       #   last = last-token score
     op             := > | >= | < | <=
-    probe          := <probe name as in @when:>
+    probe          := [ns "/"] NAME ["." NAME] | "sae" "/" INT
     threshold      := <float>
+
+A probe key is a persisted reading key: the registered probe name, read on
+coordinate axis 0 (the only axis the loom persists).  Keys are classified
+by :func:`drowse.readout.types.parse_gate_ref`, so ``name[0]`` reads the
+same key as ``name``, while a channel the loom never persists — another
+axis (``personas[3]``), ``:fraction``/``:membership``, ``@label``,
+``~label`` — is a parse error rather than a filter that silently matches
+nothing.
 
 Examples::
 
     agg:confident.uncertain > 0.4
     any:formal.casual > 0.7, agg:honest.deceptive > 0
     last:refusing.compliant < 0
+    agg:sae/123 > 0.5
 
 Aggregate semantics:
 
@@ -32,19 +41,17 @@ Aggregate semantics:
 - ``any:`` and ``last:`` read the node's own per-token rows —
   :attr:`LoomNode.thinking_tokens` then :attr:`LoomNode.tokens`, in decode
   order — pulling each row's flat probe scores out of its ``measurements``
-  envelope (falling back to the row's ``probes`` alias).  Rows that carry no
-  reading for the clause's probe are skipped, so ``last:`` is the last row
-  that measured it.  When no row measured it at all the clause evaluates to
-  ``False`` per the documented "missing-probe = False, AND semantics" rule.
+  envelope.  Rows that carry no reading for the clause's probe are skipped,
+  so ``last:`` is the last row that measured it.  When no row measured it at
+  all the clause evaluates to ``False`` per the documented "missing-probe =
+  False, AND semantics" rule.
 
-Every clause is therefore a pure function of the node — there is no
-caller-supplied side table to plumb, which is what makes ``any:`` / ``last:``
+Every clause is therefore a pure function of the node, so all three ops
 work through every surface that exposes the grammar (notably
 ``GET /drowse/v1/sessions/{id}/tree/filter``).
 
 The grammar is intentionally minimal — no parentheses, no ``OR``, no
-negation.  Multi-clause AND covers the practical filter cases for
-v2.3; more elaborate predicates compose programmatically through
+negation.  More elaborate predicates compose programmatically through
 :meth:`LoomTree.filter`.
 """
 from __future__ import annotations
@@ -54,6 +61,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from drowse.errors import DrowseError
+from drowse.readout.types import Axis, parse_gate_ref
 
 
 AggOp = Literal["agg", "any", "last"]
@@ -88,21 +96,14 @@ class _Clause:
 
 
 def _row_scores(row: Any) -> Mapping[str, Any] | None:
-    """Flat ``{probe: axis0}`` view of one persisted token row.
-
-    The 5.x ``measurements`` envelope is canonical; the row-level ``probes``
-    key is the flat alias the same writers emit beside it, kept as a fallback
-    so pre-envelope rows still filter.
-    """
+    """Flat ``{probe: axis0}`` view of one persisted token row's envelope."""
     if not isinstance(row, Mapping):
         return None
     measurements = row.get("measurements")
-    if isinstance(measurements, Mapping):
-        scores = measurements.get("scores")
-        if isinstance(scores, Mapping):
-            return scores
-    probes = row.get("probes")
-    return probes if isinstance(probes, Mapping) else None
+    if not isinstance(measurements, Mapping):
+        return None
+    scores = measurements.get("scores")
+    return scores if isinstance(scores, Mapping) else None
 
 
 def node_token_series(node: Any, probes: frozenset[str]) -> dict[str, list[float]]:
@@ -199,14 +200,9 @@ class FilterClause:
                     if not _apply_op(c.op, min(float(x) for x in seq), c.threshold):
                         return False
                 continue
-            if c.agg == "last":
-                if not _apply_op(c.op, float(seq[-1]), c.threshold):
-                    return False
-                continue
-
-            raise FilterParseError(  # pragma: no cover — agg is Literal
-                f"unknown agg op {c.agg!r}"
-            )
+            # "last"
+            if not _apply_op(c.op, float(seq[-1]), c.threshold):
+                return False
         return True
 
 
@@ -214,17 +210,40 @@ class FilterClause:
 
 _AGG_OPS: tuple[AggOp, ...] = ("agg", "any", "last")
 
-# Allow the same probe-name shape the steering grammar accepts: ASCII
-# identifier, optional dotted second pole, optional embedded ``_``/``-``
-# inside an identifier segment.  Multi-word probe names use ``_``.  An
-# optional ``<ns>/`` prefix matches the qualified keys the fitted multi-node
-# defaults register under (``default/personas`` / ``default/emotions``), and
-# an optional ``[i]`` axis suffix matches a multi-axis probe's coordinate key
-# — both land verbatim in ``LoomNode.aggregate_readings``.
+# A persisted reading key's probe name: ``[ns/]name[.pole]`` (geometry and
+# J-lens probes) or ``sae/<feature id>`` (SAE features).
 _PROBE_NAME_RE = re.compile(
-    r"^(?:[A-Za-z][A-Za-z0-9_-]*/)?"
-    r"[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)?(?:\[[0-9]+\])?$"
+    r"^(?:(?:[A-Za-z][A-Za-z0-9_-]*/)?"
+    r"[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)?"
+    r"|sae/[0-9]+)$"
 )
+
+
+def _probe_key(raw: str, probe: str) -> str:
+    """Validate ``probe`` as a persisted axis-0 reading key and return it.
+
+    ``parse_gate_ref`` classifies the key's channel; only coordinate axis 0
+    is persisted on loom nodes, so ``name[0]`` normalizes to ``name`` and
+    every other channel is refused.
+    """
+    ref = parse_gate_ref(probe)
+    channel = ref.channel
+    if not isinstance(channel, Axis) or channel.index != 0:
+        reads = (
+            f"coordinate axis {channel.index}" if isinstance(channel, Axis)
+            else f"the {ref.describe_channel()} channel"
+        )
+        raise FilterParseError(
+            f"clause {raw!r}: {probe!r} reads {reads}, but loom nodes "
+            f"persist axis-0 readings only — filter on {ref.probe!r}"
+        )
+    if not _PROBE_NAME_RE.match(ref.probe):
+        raise FilterParseError(
+            f"clause {raw!r}: probe {probe!r} is not a valid identifier "
+            f"([ns/]name[.pole] or sae/<id>)"
+        )
+    return ref.probe
+
 
 # Compare op precedence: try two-char before single-char.
 _COMPARE_OP_RE = re.compile(r"(>=|<=|>|<)")
@@ -290,11 +309,7 @@ def _parse_one_clause(raw: str) -> _Clause:
         raise FilterParseError(
             f"clause {raw!r} missing probe name before {op_str!r}"
         )
-    if not _PROBE_NAME_RE.match(probe):
-        raise FilterParseError(
-            f"clause {raw!r}: probe {probe!r} is not a valid identifier "
-            f"(letter, then [A-Za-z0-9_-], optional .pole)"
-        )
+    probe = _probe_key(raw, probe)
 
     if not threshold_str:
         raise FilterParseError(
@@ -332,13 +347,8 @@ def parse_filter(text: str) -> FilterClause:
 def filter_tree(tree: Any, text: str) -> set[str]:
     """Apply a filter expression to every node in ``tree``.
 
-    ``tree`` is a :class:`drowse.loom.tree.LoomTree`.  Returns the set
-    of node ids whose nodes satisfy the parsed filter.  This is the
-    free-function form; :meth:`LoomTree.filter_by_expr` calls it.
-
-    Every clause reads the node itself — aggregates from
-    ``aggregate_readings``, per-token series from the node's own token rows
-    — so all three ops work through every surface that exposes the grammar.
+    ``tree`` is a :class:`drowse.loom.tree.LoomTree`.  Returns the set of
+    node ids whose nodes satisfy the parsed filter.
     """
     clause = parse_filter(text)
     return tree.filter(clause.evaluate)

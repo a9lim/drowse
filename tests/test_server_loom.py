@@ -25,7 +25,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from drowse.events import EventBus
-from drowse.loom.tree import LoomTree, Recipe
+from drowse.loom.recipe import Recipe
+from drowse.loom.tree import LoomTree
 from drowse.generation.results import GenerationResult, RunSet
 
 # ---------------------------------------------------------------------------
@@ -134,7 +135,7 @@ class _StubSession:
 
     # ----- loom conflict check (mirrors DrowseSession._loom_conflict_check)
     def _loom_conflict_check(self, node_id: str, op: str) -> None:
-        from drowse.loom.tree import MutationDuringGenerationError
+        from drowse.loom.errors import MutationDuringGenerationError
         reservation = self._active_gen_reservation
         if reservation is None:
             return
@@ -172,7 +173,7 @@ class _StubSession:
         """
         if n < 1:
             raise ValueError(f"n must be >= 1, got {n}")
-        from drowse.loom.tree import derive_seed_schedule
+        from drowse.loom.recipe import derive_seed_schedule
         base_seed = sampling.seed if sampling is not None else None
         schedule = derive_seed_schedule(base_seed, n) if n > 1 else [base_seed]
 
@@ -273,7 +274,7 @@ class _StubSession:
         with ``text`` (the seeded prefix) followed by a synthetic
         continuation token.
         """
-        from drowse.loom.tree import InvalidNodeOperationError
+        from drowse.loom.errors import InvalidNodeOperationError
         node = self.tree.get(node_id)
         if node.role != "user":
             raise InvalidNodeOperationError(
@@ -319,7 +320,7 @@ class _StubSession:
         base-model commit), otherwise wraps ``LoomTree.add_user_turn``
         so dedup + active-node advancement match the real session.
         """
-        from drowse.loom.tree import InvalidNodeOperationError
+        from drowse.loom.errors import InvalidNodeOperationError
         if text == "":
             raise InvalidNodeOperationError(
                 "append_user_turn: text must be non-empty"
@@ -364,7 +365,7 @@ class _StubSession:
         with ``text`` as the whole turn and a synthetic ``raw_token_ids``
         derived from the (mocked) tokenizer.
         """
-        from drowse.loom.tree import InvalidNodeOperationError
+        from drowse.loom.errors import InvalidNodeOperationError
         if text == "":
             raise InvalidNodeOperationError(
                 "append_assistant_turn: text must be non-empty"
@@ -1696,3 +1697,39 @@ class TestCast:
             assert frame is not None, "op=cast tree_mutated frame should arrive"
             assert frame["cast"]["deer"]["recipe"]["steering"] == "0.5 formal.casual"
             assert frame["added"] == [] and frame["updated"] == []
+
+
+class TestJointLogprobsLock:
+    def test_lock_timeout_is_503_and_never_runs_unlocked(
+        self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression: the route ignored the lock helper's timeout flag and
+        ran the model forwards without the session lock."""
+        import drowse.generation.joint_logprobs as joint_logprobs
+        import drowse.server.app as server_app
+
+        session, client = session_and_client
+        user = session.tree.add_user_turn("hi")
+        a = session.tree.begin_assistant(user, recipe=Recipe())
+        b = session.tree.begin_assistant(user, recipe=Recipe())
+
+        class _HeldLock:
+            async def acquire(self) -> None:
+                await asyncio.Event().wait()
+
+            def release(self) -> None:  # pragma: no cover - never acquired
+                raise AssertionError("released a lock that was never acquired")
+
+        def _forward(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("joint logprobs ran without the session lock")
+
+        session.lock = _HeldLock()
+        session.joint_logprob_cache = {}
+        monkeypatch.setattr(server_app, "SESSION_LOCK_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(joint_logprobs, "compute_joint_logprobs", _forward)
+        resp = client.post(
+            "/drowse/v1/sessions/default/tree/joint-logprobs",
+            json={"a_id": a, "b_id": b},
+        )
+        assert resp.status_code == 503
+        assert session.joint_logprob_cache == {}

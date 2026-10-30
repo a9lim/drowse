@@ -678,7 +678,7 @@ class TestTokenReadout:
         assert resp.status_code == 400
 
     def test_geometry_unknown_node_404(self, session_and_client: Any) -> None:
-        from drowse.loom.tree import UnknownNodeError
+        from drowse.loom.errors import UnknownNodeError
 
         session, client = session_and_client
         session.geometry_token_readout.side_effect = UnknownNodeError("gone")

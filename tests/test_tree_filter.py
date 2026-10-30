@@ -11,7 +11,7 @@ from drowse import (
     Recipe,
     parse_filter,
 )
-from drowse.loom.filter import node_token_series
+from drowse.loom.filter import filter_tree, node_token_series
 
 
 # ---------------------------------------------------------------------------
@@ -232,14 +232,50 @@ def test_token_series_reads_thinking_then_response_rows():
     assert parse_filter("any:angry > 0.8").evaluate(node) is True
 
 
-def test_token_series_falls_back_to_flat_probes_alias():
-    """Rows written before the envelope carry the flat ``probes`` alias."""
+def test_token_series_reads_the_measurements_envelope_only():
+    """The row-level ``probes`` alias is not a second score source."""
     node = _SyntheticNode(
         {"angry": 0.0},
         tokens=[{"text": "a", "probes": {"angry": 0.7}}],
     )
-    assert node_token_series(node, frozenset({"angry"})) == {"angry": [0.7]}
-    assert parse_filter("any:angry > 0.5").evaluate(node) is True
+    assert node_token_series(node, frozenset({"angry"})) == {}
+    assert parse_filter("any:angry > 0.5").evaluate(node) is False
+
+
+def test_sae_feature_keys_filter():
+    """Regression: ``sae/<id>`` aggregates are persisted but used to be
+    unparseable."""
+    node = _SyntheticNode(
+        {"sae/123": 0.8},
+        tokens=[{"text": "a", "measurements": {"scores": {"sae/123": 0.9}}}],
+    )
+    assert parse_filter("agg:sae/123 > 0.5").evaluate(node) is True
+    assert parse_filter("sae/123 > 0.5, any:sae/123 > 0.85").evaluate(node) is True
+    assert parse_filter("agg:sae/123[0] > 0.5").clauses[0].probe == "sae/123"
+
+
+@pytest.mark.parametrize("probe", [
+    "personas[3]",          # another coordinate axis — never persisted
+    "emotions:fraction",
+    "emotions:membership",
+    "emotions@happy",
+    "personas~hacker",
+])
+def test_unpersisted_channels_are_parse_errors(probe: str):
+    """Regression: ``agg:personas[3] > 0`` used to parse and match nothing."""
+    with pytest.raises(FilterParseError, match="axis-0 readings only"):
+        parse_filter(f"agg:{probe} > 0")
+
+
+@pytest.mark.parametrize("probe", ["jlens/7", "sae/1.2", "ns/a/b", "1bad"])
+def test_malformed_probe_keys_rejected(probe: str):
+    with pytest.raises(FilterParseError, match="not a valid identifier"):
+        parse_filter(f"agg:{probe} > 0")
+
+
+def test_axis_zero_suffix_normalizes_to_the_bare_key():
+    clause = parse_filter("agg:default/personas[0] > 0.1").clauses[0]
+    assert clause.probe == "default/personas"
 
 
 def test_token_series_skips_rows_missing_the_probe():
@@ -269,7 +305,7 @@ def test_agg_only_expression_skips_token_walk():
 # ---------------------------------------------------------------------------
 
 
-def test_filter_by_expr_returns_matching_ids():
+def test_filter_tree_returns_matching_ids():
     t = LoomTree()
     u = t.add_user_turn("hi")
 
@@ -282,13 +318,13 @@ def test_filter_by_expr_returns_matching_ids():
     a3 = t.begin_assistant(u, recipe=Recipe())
     t.finalize_assistant(a3, text="missing", aggregate_readings={"honest": 0.4})
 
-    ids = t.filter_by_expr("agg:angry.calm > 0.4")
+    ids = filter_tree(t, "agg:angry.calm > 0.4")
     assert a1 in ids
     assert a2 not in ids
     assert a3 not in ids
 
 
-def test_filter_by_expr_any_last_read_node_token_rows():
+def test_filter_tree_any_last_read_node_token_rows():
     """``any:`` / ``last:`` match through the plain tree API — no side table.
 
     Regression for the plumbing hole: the only caller that ever reached
@@ -308,11 +344,11 @@ def test_filter_by_expr_any_last_read_node_token_rows():
         t.append_token(flat, {"text": "x", "measurements": {"scores": {"a": value}}})
     t.finalize_assistant(flat, text="flat", aggregate_readings={"a": 0.3})
 
-    assert t.filter_by_expr("any:a > 0.85") == {spiky}
-    assert t.filter_by_expr("any:a > 0.75") == {spiky, flat}
-    assert t.filter_by_expr("last:a > 0.5") == {flat}
+    assert filter_tree(t, "any:a > 0.85") == {spiky}
+    assert filter_tree(t, "any:a > 0.75") == {spiky, flat}
+    assert filter_tree(t, "last:a > 0.5") == {flat}
     # AND across ops, mixing the aggregate and per-token tables.
-    assert t.filter_by_expr("agg:a > 0.2, last:a < 0.5") == {spiky}
+    assert filter_tree(t, "agg:a > 0.2, last:a < 0.5") == {spiky}
 
 
 # ---------------------------------------------------------------------------

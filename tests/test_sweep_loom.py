@@ -57,7 +57,13 @@ class _SweepStub:
         if not stateless:
             # Mimic the real path: spawn user + assistant under the
             # current active node so the tree shape matches a real run.
-            uid = self.tree.add_user_turn(prompt, parent_id=parent_node_id)
+            uid = self.tree.add_user_turn(
+                prompt, parent_id=parent_node_id,
+                role_label=(
+                    sampling.user_role
+                    if sampling is not None and not raw else None
+                ),
+            )
             aid = self.tree.begin_assistant(
                 uid,
                 recipe=Recipe(steering=str(steering) if steering else None),
@@ -101,6 +107,23 @@ def test_sweep_lands_siblings_under_user_turn():
     assert len(sibling_ids) == 3
     for sid in sibling_ids:
         assert stub.tree.nodes[sid].role == "assistant"
+
+
+def test_sweep_with_user_label_shares_one_labelled_anchor():
+    """Regression: label-aware dedup must still land every sibling on the
+    sweep's anchor, so the anchor carries the label the gens send."""
+    from drowse.session.session import DrowseSession
+
+    stub = _SweepStub()
+    sweep = DrowseSession.generate_sweep.__get__(stub, _SweepStub)
+    out = sweep(
+        "say hi", sweep={"honest.deceptive": [0.0, 0.3]},
+        sampling=SamplingConfig(user_role="captain"),
+        stateless=False,
+    )
+    (anchor_id,) = stub.tree.children_of[stub.tree.root_id]
+    assert stub.tree.nodes[anchor_id].role_label == "captain"
+    assert stub.tree.children_of[anchor_id] == list(out.node_ids)
 
 
 def test_sweep_runset_carries_parallel_node_ids():

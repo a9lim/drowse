@@ -7,7 +7,8 @@ import pytest
 
 import drowse.loom.tree as loom_module
 from drowse.events import EventBus, LoomMutated
-from drowse.loom.tree import CastMember, LoomTree, Recipe
+from drowse.loom.recipe import CastMember, Recipe
+from drowse.loom.tree import LoomTree
 
 
 FIXTURE = (
@@ -99,7 +100,7 @@ def test_shared_loom_operation_transcript_matches_python_source_of_truth(
             tree.set_cast_member(
                 operation["label"],
                 CastMember(
-                    recipe=Recipe(
+                    recipe=Recipe.from_parts(
                         steering=operation["steering"],
                         thinking=operation["thinking"],
                         seed=operation["seed"],

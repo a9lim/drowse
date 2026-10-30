@@ -26,12 +26,9 @@ from drowse.lens.jlens import (
 )
 from drowse.model.chat import ChatTraits
 from drowse.model.fingerprint import loaded_model_fingerprint, model_source_fingerprint
-from drowse.loom.tree import (
-    InvalidNodeOperationError,
-    LoomTree,
-    Recipe,
-    UnknownNodeError,
-)
+from drowse.loom.errors import InvalidNodeOperationError, UnknownNodeError
+from drowse.loom.recipe import Recipe
+from drowse.loom.tree import LoomTree
 from drowse.session.session import (
     ReadDemand,
     DrowseSession,

@@ -264,7 +264,7 @@ def per_token_diff(
 
 
 # ---------------------------------------------------------------------------
-# Node diff — top-level wrapper consumed by session.diff_nodes()
+# Node diff
 # ---------------------------------------------------------------------------
 
 
@@ -287,8 +287,28 @@ class NodeDiff:
     readings: list[ReadingDelta]
 
 
+def node_diff(tree: Any, a_id: str, b_id: str) -> NodeDiff:
+    """Diff two nodes of ``tree`` (a :class:`drowse.loom.tree.LoomTree`).
+
+    Bundles the word-level text diff and the aggregate-readings delta
+    table; ``parent_id`` is the shared parent when the two are siblings.
+    Unknown ids raise :class:`drowse.loom.errors.UnknownNodeError`.
+    """
+    a = tree.get(a_id)
+    b = tree.get(b_id)
+    return NodeDiff(
+        a_id=a_id,
+        b_id=b_id,
+        parent_id=a.parent_id if a.parent_id == b.parent_id else None,
+        text=text_diff(a.text or "", b.text or ""),
+        readings=readings_diff(
+            a.aggregate_readings or {}, b.aggregate_readings or {},
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
-# Steering-delta edge label (Phase 5)
+# Steering-delta edge label
 # ---------------------------------------------------------------------------
 
 

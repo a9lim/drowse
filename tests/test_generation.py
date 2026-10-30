@@ -18,6 +18,7 @@ from drowse.model.chat import chat_eos_ids, logits_keep_kwarg
 from drowse.readout.types import ScalarReading
 from drowse.generation.results import GenerationResult, ProbeReading
 from drowse.generation.sampling import SamplingConfig
+from drowse.loom.recipe import ComposedCall
 from drowse.session.session import (
     CaptureMode,
     CaptureState,
@@ -195,7 +196,8 @@ class _OffsetEchoTokenizer:
 
 
 def test_authored_prompt_targets_map_to_producer_rows_after_prefix_cache() -> None:
-    from drowse.loom.tree import LoomTree, Recipe
+    from drowse.loom.recipe import Recipe
+    from drowse.loom.tree import LoomTree
 
     tree = LoomTree()
     user_id = tree.add_user_turn(" ab ")
@@ -249,7 +251,8 @@ def test_authored_prompt_match_excludes_generation_role_and_preserves_trim() -> 
 
 
 def test_persist_authored_prompt_capture_writes_all_measurement_channels() -> None:
-    from drowse.loom.tree import LoomTree, Recipe
+    from drowse.loom.recipe import Recipe
+    from drowse.loom.tree import LoomTree
     from drowse.session.session import _AuthoredPromptMatch, _AuthoredPromptTarget
 
     tree = LoomTree()
@@ -1006,11 +1009,9 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
     session._gen_lock = threading.Lock()
     session._gen_phase = GenState.IDLE
     session._gen_state = GenerationState()
-    session._apply_cast_defaults = (
-        lambda steering, sampling, thinking, **_kwargs: (
-            steering,
-            sampling,
-            thinking,
+    session._compose_generation_call = (
+        lambda *, steering, sampling, thinking, system_prompt, **_kwargs: (
+            ComposedCall(steering, sampling, thinking, system_prompt)
         )
     )
     session._prepare_generation_call = lambda *_args: PreparedCall(

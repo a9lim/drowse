@@ -25,7 +25,7 @@ from pydantic import ValidationError
 from anyio import CancelScope
 
 from drowse.errors import DrowseError
-from drowse.loom.tree import LoomMutated
+from drowse.events import LoomMutated
 from drowse.generation.results import GenerationResult, TokenAlt
 from drowse.generation.sampling import SamplingConfig
 from drowse.session.session import DrowseSession
@@ -864,7 +864,7 @@ async def _ws_stream_generation(
     # Per-sibling seed schedule: when n>1, derive deterministic per-
     # sibling seeds from the request seed (or fresh entropy).  Single
     # streams (n=1) use the user's seed verbatim.
-    from drowse.loom.tree import derive_seed_schedule
+    from drowse.loom.recipe import derive_seed_schedule
     base_seed = sampling.seed if sampling is not None else None
     seeds: list[int | None]
     seeds = [base_seed] if n == 1 else list(derive_seed_schedule(base_seed, n))
@@ -946,12 +946,9 @@ async def _ws_stream_generation(
             result_holder: list[GenerationResult] = []
             error_holder: list[BaseException] = []
 
-            # Recipe-override (phase 5): accept either a mode string or a
-            # partial-recipe expression.  We pass it through ``generate``
-            # so the engine resolves the overlay against the parent's
-            # recipe; ``session.regen_with_modifier`` is the matching
-            # higher-level wrapper but the WS path already has the
-            # required context.
+            # Recipe override: a mode string or a partial-recipe expression,
+            # passed through ``generate`` so the engine composes it onto the
+            # anchor's recipe (``drowse.loom.recipe.compose_call``).
             recipe_override = msg.recipe_override
 
             def _worker(

@@ -35,14 +35,14 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ResultCollector": ("drowse.generation.results", "ResultCollector"),
     "LoomTree": ("drowse.loom.tree", "LoomTree"),
     "LoomNode": ("drowse.loom.tree", "LoomNode"),
-    "LoomMutated": ("drowse.loom.tree", "LoomMutated"),
-    "Recipe": ("drowse.loom.tree", "Recipe"),
-    "CastMember": ("drowse.loom.tree", "CastMember"),
-    "LoomTreeError": ("drowse.loom.tree", "LoomTreeError"),
-    "UnknownNodeError": ("drowse.loom.tree", "UnknownNodeError"),
-    "InvalidNodeOperationError": ("drowse.loom.tree", "InvalidNodeOperationError"),
-    "MutationDuringGenerationError": ("drowse.loom.tree", "MutationDuringGenerationError"),
-    "derive_seed_schedule": ("drowse.loom.tree", "derive_seed_schedule"),
+    "LoomMutated": ("drowse.events", "LoomMutated"),
+    "Recipe": ("drowse.loom.recipe", "Recipe"),
+    "CastMember": ("drowse.loom.recipe", "CastMember"),
+    "LoomTreeError": ("drowse.loom.errors", "LoomTreeError"),
+    "UnknownNodeError": ("drowse.loom.errors", "UnknownNodeError"),
+    "InvalidNodeOperationError": ("drowse.loom.errors", "InvalidNodeOperationError"),
+    "MutationDuringGenerationError": ("drowse.loom.errors", "MutationDuringGenerationError"),
+    "derive_seed_schedule": ("drowse.loom.recipe", "derive_seed_schedule"),
     "FilterClause": ("drowse.loom.filter", "FilterClause"),
     "FilterParseError": ("drowse.loom.filter", "FilterParseError"),
     "parse_filter": ("drowse.loom.filter", "parse_filter"),
@@ -213,18 +213,19 @@ if TYPE_CHECKING:
         SteeringCleared as SteeringCleared,
         ManifoldExtracted as ManifoldExtracted,
     )
-    from drowse.loom.tree import (
-        CastMember as CastMember,
+    from drowse.events import LoomMutated as LoomMutated
+    from drowse.loom.errors import (
         InvalidNodeOperationError as InvalidNodeOperationError,
-        LoomMutated as LoomMutated,
-        LoomNode as LoomNode,
-        LoomTree as LoomTree,
         LoomTreeError as LoomTreeError,
         MutationDuringGenerationError as MutationDuringGenerationError,
-        Recipe as Recipe,
         UnknownNodeError as UnknownNodeError,
+    )
+    from drowse.loom.recipe import (
+        CastMember as CastMember,
+        Recipe as Recipe,
         derive_seed_schedule as derive_seed_schedule,
     )
+    from drowse.loom.tree import LoomNode as LoomNode, LoomTree as LoomTree
     from drowse.loom.diff import (
         DiffSpan as DiffSpan,
         NodeDiff as NodeDiff,

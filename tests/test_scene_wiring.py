@@ -14,7 +14,8 @@ from typing import Any, cast
 import pytest
 import torch
 
-from drowse.loom.tree import InvalidNodeOperationError, LoomTree
+from drowse.loom.errors import InvalidNodeOperationError
+from drowse.loom.tree import LoomTree
 from drowse.generation.decode import build_chat_input as _real_build_chat_input
 from drowse.model.scene import (
     SceneRenderError,

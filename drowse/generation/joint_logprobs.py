@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import contextlib
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -61,7 +61,7 @@ from drowse.model.chat import logits_keep_kwarg
 from drowse.steering.terms import Steering
 
 if TYPE_CHECKING:  # avoid a hard import cycle at module load
-    from drowse.loom.tree import Recipe
+    from drowse.loom.recipe import Recipe
     from drowse.session.session import DrowseSession
 
 
@@ -323,12 +323,7 @@ def _row_token_ids(rows: list[dict[str, Any]] | None) -> tuple[list[int], list[s
 
 def _sampling_from_recipe(recipe: "Recipe | None") -> SamplingConfig:
     sampling = recipe.sampling if recipe is not None else None
-    if sampling is None:
-        sampling = SamplingConfig()
-    seed = recipe.seed if recipe is not None else None
-    if seed is not None and sampling.seed is None:
-        sampling = replace(sampling, seed=seed)
-    return sampling
+    return sampling if sampling is not None else SamplingConfig()
 
 
 def _branch_inputs(session: "DrowseSession", node_id: str) -> _ReplayBranch:

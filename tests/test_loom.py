@@ -24,11 +24,8 @@ from drowse import (
     UnknownNodeError,
     derive_seed_schedule,
 )
-from drowse.loom.tree import (
-    TOKEN_SIDECAR_FORMAT_VERSION,
-    TREE_FORMAT_VERSION,
-    LoomTreeError,
-)
+from drowse.loom.errors import LoomTreeError
+from drowse.loom.tree import TOKEN_SIDECAR_FORMAT_VERSION, TREE_FORMAT_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -142,17 +139,9 @@ def test_messages_for_active_path():
     ]
 
 
-def test_messages_for_skips_synthetic_root_by_default():
+def test_messages_for_skips_synthetic_root():
     t = LoomTree()
-    msgs = t.messages_for()
-    # Root has empty text and role=system; default include_system=False.
-    assert msgs == []
-
-
-def test_messages_for_include_system_true():
-    t = LoomTree()
-    msgs = t.messages_for(include_system=True)
-    assert msgs == [{"role": "system", "content": ""}]
+    assert t.messages_for() == []
 
 
 def test_messages_for_explicit_leaf():
@@ -207,14 +196,35 @@ def test_flat_text_assistant_chain():
     assert t.active_node_id == a2
 
 
-def test_descendants_dfs():
+def test_steering_expr_prefers_applied_steering_then_recipe():
     t = LoomTree()
-    u1 = t.add_user_turn("x")
-    a1 = t.begin_assistant(u1)
-    t.finalize_assistant(a1, text="A")
-    a2 = t.branch(a1, "B")
-    ids = {n.id for n in t.descendants(t.root_id)}
-    assert ids == {u1, a1, a2}
+    u = t.add_user_turn("hi")
+    a = t.begin_assistant(u, recipe=Recipe(steering="0.3 calm"))
+    assert t.get(u).steering_expr is None
+    assert t.get(a).steering_expr == "0.3 calm"
+    t.finalize_assistant(a, text="yo", applied_steering="0.3 local/calm")
+    assert t.get(a).steering_expr == "0.3 local/calm"
+
+
+def test_graft_validates_before_writing_and_noops_when_empty():
+    from drowse.loom.errors import InvalidNodeOperationError
+    from drowse.loom.recipe import CastMember
+    from drowse.loom.tree import LoomNode
+
+    bus = EventBus()
+    seen: list[Any] = []
+    bus.subscribe(seen.append)
+    t = LoomTree(events=bus)
+    assert t.graft(t.root_id, []) == t.root_id
+    for bad in (
+        LoomNode(id="", parent_id=None, role="system", text="x"),
+        LoomNode(id="", parent_id=None, role="user", text="x", role_label="Bad Label"),
+    ):
+        with pytest.raises(InvalidNodeOperationError):
+            t.graft(t.root_id, [LoomNode(id="", parent_id=None, role="user", text="ok"), bad])
+    assert t.rev == 0 and len(t.nodes) == 1 and seen == []
+    with pytest.raises(InvalidNodeOperationError):
+        t.graft(t.root_id, [], cast={"Bad Label": CastMember()})
 
 
 def test_ancestors_iter():
@@ -268,12 +278,12 @@ def test_edit_root_refused():
 
 
 def test_edit_emits_event():
-    t = _seed_tree()
     bus = EventBus()
     seen: list[Any] = []
     bus.subscribe(seen.append)
-    t.attach_events(bus)
-    t.edit(t.active_node_id, "edited")
+    t = LoomTree(events=bus)
+    u1 = t.add_user_turn("hi")
+    t.edit(u1, "edited")
     ops = [e.op for e in seen if isinstance(e, LoomMutated)]
     assert "edit" in ops
 
@@ -500,6 +510,28 @@ def test_add_user_turn_dedups_identical_text():
     # Re-send the same text from root: should resolve to existing u1.
     u1_again = t.add_user_turn("repeat me")
     assert u1_again == u1
+
+
+def test_add_user_turn_dedup_respects_label_and_thinking():
+    """Regression: same text under another cast label (or with another
+    thinking block) renders differently, so it is a different turn."""
+    t = LoomTree()
+    plain = t.add_user_turn("hello")
+    captain = t.add_user_turn("hello", parent_id=t.root_id, role_label="captain")
+    assert captain != plain
+    assert t.nodes[captain].role_label == "captain"
+    planned = t.add_user_turn(
+        "hello", parent_id=t.root_id, role_label="captain", thinking_text="plan",
+    )
+    assert planned not in (plain, captain)
+    assert t.nodes[planned].thinking_text == "plan"
+    # Identical rendering still dedups, in every combination.
+    assert t.add_user_turn("hello", parent_id=t.root_id) == plain
+    assert t.add_user_turn("hello", parent_id=t.root_id, role_label="captain") == captain
+    assert t.add_user_turn(
+        "hello", parent_id=t.root_id, role_label="captain", thinking_text="plan",
+    ) == planned
+    assert len(t.children_of[t.root_id]) == 3
 
 
 def test_add_user_turn_no_dedup_when_text_differs():
@@ -897,7 +929,6 @@ def test_recipe_round_trip():
             return_top_k=12,
         ),
         thinking=False,
-        seed=42,
         probes=["angry.calm", "honest.deceptive"],
         probe_hashes={"angry.calm": "abc123", "honest.deceptive": "def456"},
     )
@@ -905,7 +936,6 @@ def test_recipe_round_trip():
     r2 = Recipe.from_dict(rd)
     assert r2.steering == r.steering
     assert r2.thinking == r.thinking
-    assert r2.seed == r.seed
     assert r2.probes == r.probes
     assert r2.probe_hashes == r.probe_hashes
     assert r2.sampling is not None
@@ -960,7 +990,6 @@ def test_recipe_survives_node_and_cast_round_trips():
         steering="0.5 calm",
         sampling=SamplingConfig(temperature=0.4),
         thinking=True,
-        seed=7,
         probes=["calm"],
         probe_hashes={"calm": "abc"},
     )
@@ -968,7 +997,7 @@ def test_recipe_survives_node_and_cast_round_trips():
     u = t.add_user_turn("hi")
     a = t.begin_assistant(u, recipe=recipe)
     t.finalize_assistant(a, text="yo")
-    from drowse.loom.tree import CastMember
+    from drowse.loom.recipe import CastMember
     t.set_cast_member("deer", CastMember(recipe=Recipe(steering="0.2 skittish")))
 
     t2 = LoomTree.from_dict(t.to_dict())
@@ -1176,6 +1205,22 @@ def test_sidecar_preserves_explicit_null_raw_token_ids(tmp_path: Path):
         payload = json.load(f)
     assert payload["nodes"][node.id]["raw_token_ids"] is None
     assert LoomTree.load(path).nodes[node.id].raw_token_ids is None
+
+
+def test_sidecar_token_rows_are_type_checked_by_the_node_reader(tmp_path: Path):
+    tree = _seed_tree()
+    node = tree.nodes[tree.active_node_id]
+    node.tokens = [{"token_id": 7, "text": "x"}]
+    path = tmp_path / "tree.json"
+    tree.save(path)
+    sidecar = tmp_path / "tree.tokens.json.gz"
+    with gzip.open(sidecar, "rt", encoding="utf-8") as f:
+        payload = json.load(f)
+    payload["nodes"][node.id]["tokens"] = "not rows"
+    with gzip.open(sidecar, "wt", encoding="utf-8") as f:
+        json.dump(payload, f)
+    with pytest.raises(LoomTreeError, match="'tokens' must be a list or null"):
+        LoomTree.load(path)
 
 
 # ---------------------------------------------------------------------------

@@ -2,16 +2,16 @@
 
 The roster tier is the weakest: a cast member's recipe fills only the
 fields a call left unset, sampling merges field-wise with the call's
-non-default fields winning, and regen overrides still compose on top
-(covered by the existing ``_resolve_recipe_override`` tests — this file
-pins the roster tier itself).  ``_apply_cast_defaults`` needs only
-``self.tree``, so a bare stub stands in for the session.
+non-default fields winning, and a regen's anchor + modifier compose on top
+in the same ``compose_call`` pass (``_compose_generation_call``, which
+needs only ``self.tree``, so a bare stub stands in for the session).
 """
 from __future__ import annotations
 
 from typing import Any, cast
 
 from drowse import CastMember, LoomTree, Recipe, SamplingConfig
+from drowse.loom.recipe import INHERIT_SYSTEM_PROMPT
 from drowse.session.session import DrowseSession
 
 
@@ -33,10 +33,12 @@ def _apply(
     raw: bool = False,
     gen_seat: str = "assistant",
 ) -> tuple[Any, SamplingConfig | None, bool | None]:
-    return DrowseSession._apply_cast_defaults(
-        _as_session(stub), steering, sampling, thinking,
-        raw=raw, gen_seat=gen_seat,
+    out = DrowseSession._compose_generation_call(
+        _as_session(stub), steering=steering, sampling=sampling,
+        thinking=thinking, system_prompt=INHERIT_SYSTEM_PROMPT,
+        raw=raw, gen_seat=gen_seat, parent_node_id=None, recipe_override=None,
     )
+    return out.steering, out.sampling, out.thinking
 
 
 def test_no_label_no_change():
@@ -115,7 +117,7 @@ def test_sampling_merges_fieldwise():
 def test_seed_applies_only_when_unpinned():
     stub = _Stub()
     stub.tree.set_cast_member(
-        "deer", CastMember(recipe=Recipe(seed=1234)),
+        "deer", CastMember(recipe=Recipe(sampling=SamplingConfig(seed=1234))),
     )
     _, merged, _ = _apply(stub, sampling=SamplingConfig(assistant_role="deer"))
     assert merged is not None and merged.seed == 1234
@@ -123,6 +125,80 @@ def test_seed_applies_only_when_unpinned():
         stub, sampling=SamplingConfig(assistant_role="deer", seed=7),
     )
     assert merged is not None and merged.seed == 7
+
+
+def test_anchor_seed_beats_the_cast_seed_on_an_unseeded_regen():
+    """Regression: the cast tier composed in a first pass, so its seed
+    entered the regen pass as the *call* seed and beat the anchor's — an
+    unseeded ``cool`` regen of a seed-5 node ran on the cast's 1234."""
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer", CastMember(recipe=Recipe(sampling=SamplingConfig(seed=1234))),
+    )
+    user = stub.tree.add_user_turn("hi")
+    node = stub.tree.begin_assistant(
+        user, recipe=Recipe(sampling=SamplingConfig(seed=5, assistant_role="deer")),
+    )
+    stub.tree.finalize_assistant(node, text="hello")
+
+    def regen(sampling: SamplingConfig) -> SamplingConfig | None:
+        return DrowseSession._compose_generation_call(
+            _as_session(stub), steering=None, sampling=sampling, thinking=None,
+            system_prompt=INHERIT_SYSTEM_PROMPT, raw=False, gen_seat="assistant",
+            parent_node_id=node, recipe_override="cool",
+        ).sampling
+
+    composed = regen(SamplingConfig(assistant_role="deer"))
+    assert composed is not None
+    assert composed.seed == 5
+    assert composed.temperature == 0.3
+    # A seed the call pins still beats the anchor's (fan siblings).
+    pinned = regen(SamplingConfig(assistant_role="deer", seed=9))
+    assert pinned is not None and pinned.seed == 9
+
+
+def test_cast_member_steering_yields_to_the_regen_anchor():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer", CastMember(recipe=Recipe(steering="0.5 skittish", thinking=True)),
+    )
+    user = stub.tree.add_user_turn("hi")
+    node = stub.tree.begin_assistant(user, recipe=Recipe(
+        steering="0.3 calm", thinking=False,
+        sampling=SamplingConfig(seed=5, assistant_role="deer"),
+    ))
+    stub.tree.finalize_assistant(node, text="hello")
+    out = DrowseSession._compose_generation_call(
+        _as_session(stub), steering=None,
+        sampling=SamplingConfig(assistant_role="deer"), thinking=None,
+        system_prompt=INHERIT_SYSTEM_PROMPT, raw=False, gen_seat="assistant",
+        parent_node_id=node, recipe_override="hot",
+    )
+    assert out.steering == "0.3 calm"
+    assert out.thinking is False
+
+
+def test_seed_only_cast_member_keeps_its_null_sampling_shape():
+    """The HTTP cast surface takes a seed but never a sampling block; the
+    member persists as ``sampling: null`` + ``seed`` (the drowse.ai cast
+    shape) and reads back identically."""
+    stub = _Stub()
+    member = DrowseSession.set_cast_member(_as_session(stub), "deer", seed=1234)
+    data = member.to_dict()
+    assert data["recipe"]["sampling"] is None
+    assert data["recipe"]["seed"] == 1234
+    restored = CastMember.from_dict(data)
+    assert restored.recipe is not None
+    assert restored.recipe.sampling == SamplingConfig(seed=1234)
+    assert restored.to_dict() == data
+    # A member with a sampling block writes it in full beside the seed.
+    blocked = DrowseSession.set_cast_member(
+        _as_session(stub), "deer",
+        sampling=SamplingConfig(temperature=0.5), seed=7,
+    ).to_dict()["recipe"]
+    assert blocked["seed"] == 7
+    assert blocked["sampling"]["seed"] == 7
+    assert blocked["sampling"]["temperature"] == 0.5
 
 
 def test_user_seat_reads_user_role():
