@@ -1,678 +1,980 @@
-"""Batched generation: ``session.generate_batch`` / ``generate_sweep``.
+"""Multi-row generation: ``generate(n>1)``, ``generate_batch``, ``generate_sweep``.
 
-Tests cover the serial wrapper contract plus compatible stateless fast paths:
-ordering, sweep grid shape, and ``applied_steering`` round-trip.
-
-CPU-only.  Mock ``_generate_core`` so we exercise the wrapper logic
-without spinning up a real model.
+``BatchRunner`` orchestration (row order, seeds, sweep grids, loom sibling
+shape, stop semantics) runs against a fake single-generation engine and a real
+``LoomTree``.  The batched ``model.generate`` path, the serial shared-prefix KV
+reuse (a real ``DynamicCache``) and the fan run on a real tiny session.
 """
 from __future__ import annotations
 
-import threading
+import json
+from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
-import pytest
+from typing import Any, cast
 
-from drowse.generation.results import GenerationResult, ProbeReading
-from drowse.loom.tree import LoomTree
-from tests.support.engine import attach_engine
-from tests.support.sae import make_resident
+import pytest
+import torch
+
+from drowse import GenState, LoomTree, Recipe, SamplingConfig, derive_seed_schedule
+from drowse.generation.decode import GenerationConfig, GenerationState
+from drowse.generation.results import GenerationResult, RunSet
+from drowse.generation.types import CallSpec
+from drowse.session.batch import (
+    BatchRunner,
+    BatchStopCriteria,
+    common_prefix,
+    fast_batch_blocked,
+    generate_capable_model,
+    left_pad,
+    pad_token_id,
+    steering_always_on,
+    trim_generated,
+)
+from drowse.steering.terms import Steering
+from drowse.steering.triggers import Trigger
+from tests.support.sessions import TinySessionFactory, register_vectors
 from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
-if TYPE_CHECKING:
-    from drowse.session.session import DrowseSession
-
 
 # ---------------------------------------------------------------------------
-# Helpers — mock just enough of DrowseSession for the batch path.
+# A fake single-generation engine for the runner's orchestration.
 # ---------------------------------------------------------------------------
 
 
-def _make_result(text: str, applied: str | None = None) -> GenerationResult:
-    """Cheap GenerationResult stub."""
-    return GenerationResult(
-        text=text,
-        tokens=[1, 2, 3],
-        token_count=3,
-        tok_per_sec=50.0,
-        elapsed=0.06,
-        steering_alphas={},
-        prompt_tokens=4,
-        finish_reason="stop",
-        applied_steering=applied,
-    )
+class _Engine:
+    """Stands in for the engine's ``generate_one``: records each row, writes the loom
+    like the real engine, and ends every row the way the real one does (the
+    per-row stop event set on the way out)."""
 
-
-def _engine_of(session: Any) -> Any:
-    """The stub's engine, attaching the real one on first use."""
-    return session.__dict__.get("_engine") or attach_engine(session)
-
-
-def _stub_generate_core(session: DrowseSession, *, capture: list[Any]) -> None:
-    """Replace the engine's ``generate_one`` with a stub that records calls.
-
-    Returns one ``GenerationResult`` per call carrying the call's index
-    so tests can verify ordering.  Each call appends a ``(input,
-    steering)`` tuple to ``capture`` for assertions on the wrapper's
-    composition logic.
-    """
-    counter = {"n": 0}
-
-    def _fake(input: Any, *, steering: Any = None, sampling: Any = None, stateless: bool = False, raw: bool = False, thinking: Any = None, on_token: Any = None, **kwargs: Any) -> GenerationResult:
-        # ``kwargs`` swallows additions to ``generate_one``'s signature
-        # (``parent_node_id``, ``recipe_override``, ...) so this stub doesn't
-        # churn every time the core gains a new optional keyword.
-        idx = counter["n"]
-        counter["n"] += 1
-        capture.append({"input": input, "steering": steering})
-        applied = steering if isinstance(steering, str) else None
-        return _make_result(f"out_{idx}", applied=applied)
-
-    _engine_of(session).generate_one = _fake
-
-
-class _NoopSteeringContext:
-    def __enter__(self) -> "_NoopSteeringContext":
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        return None
-
-    def close(self, *, internal: bool = False, swallow: bool = False) -> None:
-        del internal, swallow
-
-
-def _install_noop_steering(session: DrowseSession) -> None:
-    session_any = cast(Any, session)
-    wire_stub_steering(session, profiles={"a": {}})
-    session_any.steering = lambda value: _NoopSteeringContext()
-    session_any._steering_composer.snapshot_steering_alphas = lambda: {"a": 0.0}
-
-
-class _BatchTokenizer:
-    pad_token_id = 0
-    eos_token_id = 99
-    name_or_path = "batch-test-tokenizer"
-    vocab_size = 200
-    chat_template = ""
-    added_tokens_encoder: dict[str, int] = {}
-
-    def decode(
-        self,
-        ids: list[int],
-        skip_special_tokens: bool = True,
-    ) -> str:
-        del skip_special_tokens
-        return " ".join(str(i) for i in ids)
-
-
-class _BatchModel:
-    def __init__(self) -> None:
+    def __init__(self, tree: LoomTree, state: GenerationState) -> None:
+        self.tree = tree
+        self.state = state
         self.calls: list[dict[str, Any]] = []
-        self.config = SimpleNamespace(vocab_size=200)
-        self.generation_config = SimpleNamespace(eos_token_id=99)
+        self.on_row: Any = None
 
-    def named_parameters(self):
-        return iter(())
-
-    def named_buffers(self):
-        return iter(())
-
-    def generate(self, **kwargs: Any):
-        import torch
-
-        self.calls.append(kwargs)
-        input_ids = kwargs["input_ids"]
-        tail = torch.tensor(
-            [
-                [10, 11, 99],
-                [12, 13, 14],
-                [15, 0, 0],
-            ],
-            dtype=torch.long,
-            device=input_ids.device,
+    def __call__(self, input: Any, **kwargs: Any) -> GenerationResult:
+        self.state.reset()  # the engine's preamble
+        index = len(self.calls)
+        self.calls.append({
+            "input": input, "active_at_start": self.tree.active_node_id, **kwargs,
+        })
+        if self.on_row is not None:
+            self.on_row(index)
+        steering = kwargs.get("steering")
+        sampling = kwargs.get("sampling")
+        if not kwargs.get("stateless"):
+            parent_id = kwargs.get("parent_node_id")
+            if isinstance(input, str):
+                anchor_id = self.tree.add_user_turn(
+                    input,
+                    parent_id=parent_id,
+                    role_label=(
+                        sampling.user_role
+                        if sampling is not None and not kwargs.get("raw") else None
+                    ),
+                )
+            else:
+                # ``None`` (continue the leaf) or a messages list anchors
+                # directly on the parent, as ``_start_loom_assistant`` does.
+                anchor_id = parent_id or self.tree.active_node_id
+            node_id = self.tree.begin_assistant(
+                anchor_id, recipe=Recipe(steering=str(steering) if steering else None),
+            )
+            self.tree.finalize_assistant(
+                node_id, text=f"out_{index}", applied_steering=str(steering),
+            )
+        self.state.stop_requested.set()  # end-of-generation signal
+        return GenerationResult(
+            text=f"out_{index}", tokens=[1, 2, 3], token_count=3,
+            tok_per_sec=50.0, elapsed=0.06, steering_alphas={},
+            prompt_tokens=4, finish_reason="stop",
+            applied_steering=steering if isinstance(steering, str) else None,
         )
-        return torch.cat([input_ids, tail[: input_ids.shape[0]]], dim=1)
 
 
-class _BatchProbeMonitor:
-    def __init__(self) -> None:
-        self.probe_names = ["mood"]
-        self.scored: list[float] = []
-
-    def probe_layers(self) -> set[int]:
-        return {0}
-
-    def enable_curved_warm(self, flag: bool) -> None:
-        del flag
-
-    def set_subspace_coords(self, flag: bool) -> None:
-        del flag
-
-    def score_aggregate(
-        self,
-        hidden_per_layer: dict[int, Any],
-    ) -> dict[str, ProbeReading]:
-        value = float(hidden_per_layer[0].reshape(-1)[0])
-        self.scored.append(value)
-        return {"mood": ProbeReading(fraction=value, nearest=[], coords=(value,))}
+def _runner(**overrides: Any) -> tuple[BatchRunner, _Engine]:
+    tree = LoomTree()
+    state = GenerationState()
+    engine = _Engine(tree, state)
+    deps: dict[str, Any] = {
+        "generate_one": engine,
+        "tree": lambda: tree,
+        "gen_state": state,
+        "render": lambda *_a, **_k: torch.tensor([[1, 2, 3]]),
+        "cache_prefix": lambda *_a, **_k: 0,
+        "prefill_inactive": lambda _steering: False,
+        "static_cache_active": lambda: False,
+        "default_max_tokens": lambda: 8,
+    }
+    deps.update(overrides)
+    return BatchRunner(**deps), engine
 
 
-class _ProbeBatchModel(_BatchModel):
-    def __init__(self, layers: Any) -> None:
-        super().__init__()
-        self.layers = layers
-
-    def generate(self, **kwargs: Any):
-        import torch
-
-        input_ids = kwargs["input_ids"]
-        for values in ([1.0, 10.0, 100.0], [2.0, 20.0, 200.0], [3.0, 30.0, 300.0]):
-            hidden = torch.tensor(
-                values[: input_ids.shape[0]],
-                dtype=torch.float32,
-                device=input_ids.device,
-            ).reshape(input_ids.shape[0], 1, 1)
-            for layer in self.layers:
-                layer(hidden)
-        return super().generate(**kwargs)
-
-
-def _batch_renderer(prepare_input: Any) -> Any:
-    """A renderer stand-in: the stub's token mapping, the session default
-    system prompt (none), and no seat stop strings."""
-    from drowse.generation.sampling import InheritSystemPrompt
-
-    return SimpleNamespace(
-        prepare_input=prepare_input,
-        resolve_system_prompt=lambda prompt: (
-            None if isinstance(prompt, InheritSystemPrompt) else prompt
-        ),
-        seat_stop_strings=lambda stop, **_kwargs: stop,
-    )
-
-
-def _fast_batch_session():
-    import torch
-    from drowse.generation.decode import GenerationConfig
-    from drowse.session.session import CaptureState, DrowseSession
-    from drowse.steering.triggers import TriggerContext
-
-    s = DrowseSession.__new__(DrowseSession)
-    model = _BatchModel()
-    s_any = cast(Any, s)
-    s_any._model = model
-    s._model_info = {"model_id": "batch/test"}
-    s_any._tokenizer = _BatchTokenizer()
-    attach_stub_instruments(s)
-    s._device = torch.device("cpu")
-    s_any._gen_lock = threading.Lock()
-    s_any._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
-    s.config = GenerationConfig(
-        max_new_tokens=3,
-        temperature=0.0,
-        top_p=1.0,
-        top_k=None,
-    )
-    events = SimpleNamespace(emitted=[])
-    events.emit = lambda event: events.emitted.append(event)
-    s_any.events = events
-    s_any._steering = SimpleNamespace(
-        ctx=TriggerContext(),
-        hooks={},
-        uses_compiled_offsets=False,
-        reset_manifold_feet=lambda: None,
-    )
-    s._lens_instrument.live = None
-    s._lens_instrument.probes = {}
-    s._sae_instrument.probes = {}
-    s._capture_state = CaptureState()
-    from drowse.readout.capture_buffer import HiddenCapture
-    s._capture = HiddenCapture()
-    attach_engine(s)
-    # Call resolution reads the cast roster even on the stateless fast path.
-    s.tree = LoomTree()
-    s._incremental_readings = []
-    s._incremental_gate_scores = []
-    wire_stub_steering(s)
-
-    def _prepare_input(
-        input: Any,
-        raw: bool = False,
-        thinking: bool = False,
-        stateless: bool = False,
-        parent_node_id: str | None = None,
-        user_role: str | None = None,
-        assistant_role: str | None = None,
-        to_device: bool = True,
-        gen_seat: str = "assistant",
-        add_generation_prompt: bool = True,
-        system_prompt: Any = None,
-    ):
-        del raw, thinking, stateless, parent_node_id
-        del user_role, assistant_role, to_device, gen_seat, add_generation_prompt, system_prompt
-        mapping = {
-            "alpha": [1, 2],
-            "beta": [3, 4, 5],
-            "gamma": [6],
-        }
-        return torch.tensor([mapping[input]], dtype=torch.long)
-
-    s._renderer = _batch_renderer(_prepare_input)
-    return s, model
-
-
-def _probe_fast_batch_session():
-    import torch
-    from drowse.readout.capture_buffer import HiddenCapture
-
-    s, _model = _fast_batch_session()
-    s._layers = torch.nn.ModuleList([torch.nn.Identity()])
-    s._capture = HiddenCapture()
-    s_any = cast(Any, s)
-    s_any._monitor = _BatchProbeMonitor()
-    model = _ProbeBatchModel(s._layers)
-    s_any._model = model
-    return s, model
-
-
-# ---------------------------------------------------------------------------
-# session.generate_batch — pure unit tests against a real DrowseSession
-# subclass that overrides _generate_core.
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateBatch:
-    def _session(self):
-        # Construct a minimal DrowseSession by bypassing __init__; the
-        # batch methods only need ``_generate_core`` to exist.  These tests
-        # pin the SERIAL fan-out contract (prompt order, per-row steering /
-        # sampling pass-through), so the one-shot fast path is declined
-        # outright rather than through some incidental engine attribute.
-        from drowse.session.session import DrowseSession
-
-        s = DrowseSession.__new__(DrowseSession)
-        attach_stub_instruments(s)
-        wire_stub_steering(s)
-        cast(Any, s)._generate_batch_fast = lambda *_a, **_kw: None
-        cast(Any, s)._maybe_cache_batch_prefix = lambda *_a, **_kw: False
-        return s
-
+class TestRunnerBatch:
     def test_returns_results_in_prompt_order(self) -> None:
-        s = self._session()
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
+        runner, engine = _runner()
+        runset = runner.batch(["alpha", "beta", "gamma"])
+        assert [r.text for r in runset] == ["out_0", "out_1", "out_2"]
+        assert [c["input"] for c in engine.calls] == ["alpha", "beta", "gamma"]
+        assert runset.kind == "batch"
+        assert runset.grid == [{"prompt_index": i} for i in range(3)]
+        assert runset.node_ids == [None, None, None]
 
-        prompts = ["alpha", "beta", "gamma"]
-        results = s.generate_batch(prompts)
+    def test_steering_and_sampling_pass_through_unchanged(self) -> None:
+        runner, engine = _runner()
+        sampling = SamplingConfig(seed=7, temperature=0.5)
+        runner.batch(["p1", "p2"], steering="0.3 honest", sampling=sampling)
+        assert [c["steering"] for c in engine.calls] == ["0.3 honest"] * 2
+        assert [c["sampling"] for c in engine.calls] == [sampling] * 2
 
-        assert len(results) == 3
-        assert [r.text for r in results] == ["out_0", "out_1", "out_2"]
-        assert [c["input"] for c in capture] == prompts
-
-    def test_steering_passes_through_unchanged(self) -> None:
-        s = self._session()
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
-
-        s.generate_batch(["p1", "p2"], steering="0.3 honest")
-
-        assert all(c["steering"] == "0.3 honest" for c in capture)
-
-    def test_on_result_callback_fires_per_completion(self) -> None:
-        s = self._session()
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
-
+    def test_on_result_fires_per_completion(self) -> None:
+        runner, _engine = _runner()
         seen: list[tuple[int, str]] = []
-        s.generate_batch(
+        runner.batch(
             ["p1", "p2", "p3"],
             on_result=lambda idx, result: seen.append((idx, result.text)),
         )
-
         assert seen == [(0, "out_0"), (1, "out_1"), (2, "out_2")]
 
-    def test_empty_prompt_list_raises(self) -> None:
-        s = self._session()
+    @pytest.mark.parametrize("prompts", [[], "not-a-list"])
+    def test_rejects_empty_or_non_list_prompts(self, prompts: Any) -> None:
+        runner, _engine = _runner()
         with pytest.raises(ValueError, match="non-empty list"):
-            s.generate_batch([])
+            runner.batch(prompts)
 
-    def test_compatible_batch_uses_one_model_generate(self) -> None:
-        s, model = _fast_batch_session()
+    def test_shared_prefix_is_cached_and_cleared(self) -> None:
+        rows = {"a": list(range(40)) + [100], "b": list(range(40)) + [101]}
+        cached: list[Any] = []
 
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
+        def _cache_prefix(ids: Any, **kwargs: Any) -> int:
+            cached.append((ids, kwargs))
+            return 0 if ids is None else int(ids.shape[0])
 
-        _engine_of(s).generate_one = _fail_generate_core
+        runner, engine = _runner(
+            render=lambda prompt, **_k: torch.tensor([rows[prompt]]),
+            cache_prefix=_cache_prefix,
+            prefill_inactive=lambda steering: steering is None,
+        )
+        runner.batch(["a", "b"], sampling=SamplingConfig(max_tokens=5))
+        (prefix, kwargs), (cleared, _) = cached
+        assert prefix.tolist() == list(range(40))
+        assert kwargs == {"max_new_tokens": 5, "prefer_static": False}
+        assert cleared is None
+        assert len(engine.calls) == 2
+
+    def test_prefill_active_steering_skips_the_prefix_cache(self) -> None:
+        cached: list[Any] = []
+        runner, _engine = _runner(
+            render=lambda prompt, **_k: torch.tensor([list(range(40)) + [len(prompt)]]),
+            cache_prefix=lambda ids, **_k: cached.append(ids) or 0,
+            prefill_inactive=lambda steering: steering is None,
+        )
+        runner.batch(["a", "bb"], steering="0.5 honest")
+        assert cached == []
+
+
+class TestRunnerFan:
+    def test_fan_returns_every_sibling(self) -> None:
+        # Regression: every engine row ends with the per-row stop event set;
+        # the fan used to read that as a user stop and return one sibling.
+        runner, engine = _runner()
+        runset = runner.fan("hi", n=3, sampling=SamplingConfig(seed=11))
+        assert runset.kind == "fan"
+        assert [r.text for r in runset] == ["out_0", "out_1", "out_2"]
+        assert [c["sampling"].seed for c in engine.calls] == derive_seed_schedule(11, 3)
+
+    def test_stateful_fan_lands_siblings_under_one_user_turn(self) -> None:
+        runner, engine = _runner()
+        runset = runner.fan("hi", n=3)
+        (user_id,) = engine.tree.children_of[engine.tree.root_id]
+        assert engine.tree.children_of[user_id] == list(runset.node_ids)
+
+    def test_fan_forwards_every_generation_kwarg(self) -> None:
+        runner, engine = _runner()
+        runner.fan(
+            "hi", n=2, steering="0.2 warm", stateless=True, raw=True,
+            thinking=False, parent_node_id="p", recipe_override="cool",
+            gen_seat="user", system_prompt="sys",
+        )
+        call = engine.calls[0]
+        assert call["steering"] == "0.2 warm"
+        assert call["raw"] is True and call["thinking"] is False
+        assert call["parent_node_id"] == "p"
+        assert call["recipe_override"] == "cool"
+        assert call["gen_seat"] == "user"
+        assert call["system_prompt"] == "sys"
+
+    def test_stateful_fan_places_rows_without_anchoring_them(self) -> None:
+        # Regression: the fan pinned the start node as ``parent_node_id``,
+        # which is also the anchor a ``recipe_override`` composes onto, so
+        # n>1 inherited the start node's recipe where n=1 composes onto none.
+        # Rows now keep the caller's parent and are placed by re-selecting
+        # the start node before each one.
+        runner, engine = _runner()
+        tree = engine.tree
+        earlier = tree.add_user_turn("earlier")
+        start = tree.begin_assistant(earlier, recipe=Recipe(steering="0.4 warm"))
+        tree.finalize_assistant(start, text="reply")
+
+        runset = runner.fan("next", n=3, recipe_override="cool")
+
+        assert [c["parent_node_id"] for c in engine.calls] == [None] * 3
+        assert [c["active_at_start"] for c in engine.calls] == [start] * 3
+        (user_id,) = tree.children_of[start]
+        assert tree.children_of[user_id] == list(runset.node_ids)
+
+    def test_explicit_parent_fan_does_not_reselect(self) -> None:
+        runner, engine = _runner()
+        tree = engine.tree
+        parent = tree.add_user_turn("q")
+        reply = tree.begin_assistant(parent, recipe=Recipe())
+        tree.finalize_assistant(reply, text="a")
+        runner.fan("next", n=2, parent_node_id=reply)
+        assert [c["parent_node_id"] for c in engine.calls] == [reply] * 2
+        # The second row starts from the first row's leaf: nothing navigated.
+        assert engine.calls[1]["active_at_start"] != reply
+
+    def test_rejects_non_positive_n(self) -> None:
+        runner, _engine = _runner()
+        with pytest.raises(ValueError, match="n must be >= 1"):
+            runner.fan("hi", n=0)
+
+
+@pytest.mark.parametrize("surface", ["fan", "batch", "sweep"])
+def test_user_stop_ends_the_series(surface: str) -> None:
+    runner, engine = _runner()
+    engine.on_row = lambda index: index == 1 and engine.state.request_stop()
+    if surface == "fan":
+        runset = runner.fan("hi", n=4, stateless=True)
+    elif surface == "batch":
+        runset = runner.batch(["a", "b", "c", "d"])
+    else:
+        runset = runner.sweep("hi", {"x": [0.0, 0.1, 0.2, 0.3]})
+    assert len(runset) == 2
+    assert len(engine.calls) == 2
+
+
+def test_stale_stop_before_the_series_is_ignored() -> None:
+    runner, engine = _runner()
+    engine.state.request_stop()
+    assert len(runner.fan("hi", n=3, stateless=True)) == 3
+
+
+class TestRunnerSweep:
+    def test_single_concept_sweep_yields_one_per_alpha(self) -> None:
+        runner, engine = _runner()
+        runset = runner.sweep("describe a sunset", {"happy.sad": [-0.4, 0.0, 0.4]})
+        assert len(runset) == 3
+        assert [c["steering"] for c in engine.calls] == [
+            "-0.4 happy.sad", "0.0 happy.sad", "0.4 happy.sad",
+        ]
+        assert runset.kind == "fan"
+
+    def test_two_concept_grid_is_the_full_product(self) -> None:
+        runner, engine = _runner()
+        runset = runner.sweep("test", {"a": [0.0, 0.3], "b": [0.0, 0.5]})
+        assert [c["steering"] for c in engine.calls] == [
+            "0.0 a + 0.0 b", "0.0 a + 0.5 b", "0.3 a + 0.0 b", "0.3 a + 0.5 b",
+        ]
+        assert runset.grid == [
+            {"a": 0.0, "b": 0.0}, {"a": 0.0, "b": 0.5},
+            {"a": 0.3, "b": 0.0}, {"a": 0.3, "b": 0.5},
+        ]
+
+    def test_base_steering_composes_under_swept_terms(self) -> None:
+        runner, engine = _runner()
+        runner.sweep("test", {"honest": [0.3, 0.6]}, base_steering="0.2 warm")
+        assert [c["steering"] for c in engine.calls] == [
+            "0.2 warm + 0.3 honest", "0.2 warm + 0.6 honest",
+        ]
+
+    def test_prebuilt_base_steering_renders_canonically(self) -> None:
+        runner, engine = _runner()
+        runner.sweep(
+            "test", {"honest": [0.3]},
+            base_steering=Steering.from_value("0.2 warm"),
+        )
+        assert engine.calls[0]["steering"] == "0.2 warm + 0.3 honest"
+
+    def test_on_result_carries_alpha_values(self) -> None:
+        runner, _engine = _runner()
+        seen: list[tuple[int, dict[str, float]]] = []
+        runner.sweep(
+            "test", {"a": [0.0, 0.3], "b": [0.5]},
+            on_result=lambda idx, result, alphas: seen.append((idx, dict(alphas))),
+        )
+        assert seen == [(0, {"a": 0.0, "b": 0.5}), (1, {"a": 0.3, "b": 0.5})]
+
+    def test_applied_steering_round_trips(self) -> None:
+        runner, _engine = _runner()
+        assert runner.sweep("test", {"honest": [0.4]})[0].applied_steering == "0.4 honest"
+
+    def test_seed_schedule_is_deterministic(self) -> None:
+        runner, engine = _runner()
+        runner.sweep(
+            "x", {"honest.deceptive": [0.1, 0.2, 0.3]},
+            sampling=SamplingConfig(seed=42), stateless=False,
+        )
+        seeds = [c["sampling"].seed for c in engine.calls]
+        assert seeds == derive_seed_schedule(42, 3)
+
+    @pytest.mark.parametrize("sweep", [{}, {"a": []}])
+    def test_rejects_empty_sweeps(self, sweep: dict[str, list[float]]) -> None:
+        runner, _engine = _runner()
+        with pytest.raises(ValueError, match="non-empty"):
+            runner.sweep("test", sweep)
+
+    def test_stateful_sweep_lands_siblings_under_one_user_turn(self) -> None:
+        runner, engine = _runner()
+        runset = runner.sweep(
+            "say hi", {"honest.deceptive": [0.0, 0.3, 0.6]}, stateless=False,
+        )
+        tree = engine.tree
+        (user_id,) = tree.children_of[tree.root_id]
+        assert tree.nodes[user_id].role == "user"
+        assert tree.children_of[user_id] == list(runset.node_ids)
+        assert all(tree.nodes[str(n)].role == "assistant" for n in runset.node_ids)
+        assert isinstance(runset, RunSet)
+
+    def test_labelled_stateful_sweep_shares_one_labelled_anchor(self) -> None:
+        # Label-aware dedup must still land every sibling on the anchor, so
+        # the anchor carries the label the rows send.
+        runner, engine = _runner()
+        runset = runner.sweep(
+            "say hi", {"honest.deceptive": [0.0, 0.3]},
+            sampling=SamplingConfig(user_role="captain"), stateless=False,
+        )
+        (anchor_id,) = engine.tree.children_of[engine.tree.root_id]
+        assert engine.tree.nodes[anchor_id].role_label == "captain"
+        assert engine.tree.children_of[anchor_id] == list(runset.node_ids)
+
+    @pytest.mark.parametrize("prompt", [None, [{"role": "user", "content": "hi"}]])
+    def test_stateful_non_string_sweep_lands_siblings(self, prompt: Any) -> None:
+        # Regression: only a string prompt got a shared anchor; ``None`` or a
+        # messages list anchored each row on the previous row's reply.
+        runner, engine = _runner()
+        tree = engine.tree
+        start = tree.add_user_turn("start")
+        runset = runner.sweep(prompt, {"x": [0.0, 0.2, 0.4]}, stateless=False)
+        assert [c["parent_node_id"] for c in engine.calls] == [start] * 3
+        assert tree.children_of[start] == list(runset.node_ids)
+
+
+# ---------------------------------------------------------------------------
+# The batched ``model.generate`` path: eligibility and pure helpers.
+# ---------------------------------------------------------------------------
+
+
+def _spec(**fields: Any) -> CallSpec:
+    base = CallSpec(
+        input=None,
+        steering_obj=None,
+        sampling=None,
+        system_prompt=None,
+        stateless=True,
+        raw=False,
+        gen_seat="assistant",
+        parent_node_id=None,
+        history_anchor=None,
+        use_thinking_req=False,
+        gen_config=GenerationConfig(max_new_tokens=4),
+        lp_count=None,
+        seed=None,
+        stop_list=None,
+        logit_bias=None,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+        collect_logprobs=False,
+        readout_top_k=8,
+        user_role=None,
+        assistant_role=None,
+        return_probe_readings=True,
+        want_hidden=False,
+        persist_per_layer_scores=False,
+        persist_subspace_coords=False,
+        forced_prefix=None,
+    )
+    return replace(base, **fields)
+
+
+class TestFastBatchEligibility:
+    def test_plain_call_is_eligible(self) -> None:
+        assert fast_batch_blocked(_spec()) is False
+        assert fast_batch_blocked(_spec(sampling=SamplingConfig())) is False
+
+    @pytest.mark.parametrize("fields", [
+        {"use_thinking_req": True},
+        {"gen_config": GenerationConfig(max_new_tokens=0)},
+        {"lp_count": 0},
+        {"stop_list": ["END"]},
+        {"logit_bias": {1: 2.0}},
+        {"presence_penalty": 0.5},
+        {"frequency_penalty": 0.5},
+        {"seed": 3, "gen_config": GenerationConfig(max_new_tokens=4, temperature=0.7)},
+        {"steering_obj": Steering.from_value("0.5 formal.casual@response")},
+    ])
+    def test_row_shaped_features_block(self, fields: dict[str, Any]) -> None:
+        assert fast_batch_blocked(_spec(**fields)) is True
+
+    def test_greedy_seed_stays_eligible(self) -> None:
+        greedy = GenerationConfig(max_new_tokens=4, temperature=0.0)
+        assert fast_batch_blocked(_spec(seed=3, gen_config=greedy)) is False
+
+    @pytest.mark.parametrize("flag", [
+        "want_hidden", "persist_per_layer_scores", "persist_subspace_coords",
+    ])
+    def test_capture_heavy_sampling_flags_block(self, flag: str) -> None:
+        assert fast_batch_blocked(_spec(**{flag: True})) is True
+
+
+class TestSteeringAlwaysOn:
+    """HF ``generate`` runs the whole batch in one call, so there is no
+    per-step hook re-evaluation to make a phased or gated trigger mean
+    anything: every entry kind must be inspected."""
+
+    @pytest.mark.parametrize(
+        "expr", [None, "0.5 formal.casual", "!gone", "0.5 personas%hacker"],
+    )
+    def test_default_trigger_entries_are_always_on(self, expr: str | None) -> None:
+        assert steering_always_on(Steering.from_value(expr)) is True
+
+    @pytest.mark.parametrize("expr", [
+        "0.5 formal.casual@response",
+        "!gone@thinking",
+        "0.5 personas%hacker@after",
+        "0.5 formal.casual@when:confident.uncertain>0.4",
+        "0.5 formal.casual + 0.3 warm.clinical@response",
+    ])
+    def test_phased_or_gated_entries_are_not(self, expr: str) -> None:
+        assert steering_always_on(Steering.from_value(expr)) is False
+
+    def test_a_steering_level_trigger_counts(self) -> None:
+        steering = Steering(
+            alphas={"formal.casual": 0.5}, trigger=Trigger.GENERATED_ONLY,
+        )
+        assert steering_always_on(steering) is False
+
+
+class TestBatchHelpers:
+    def test_trim_cuts_at_eos(self) -> None:
+        tokens, finish = trim_generated(
+            torch.tensor([10, 11, 99, 0]), eos_ids={99}, pad_id=0, max_new_tokens=4,
+        )
+        assert (tokens, finish) == ([10, 11], "stop")
+
+    def test_trim_full_row_without_eos_is_length(self) -> None:
+        tokens, finish = trim_generated(
+            torch.tensor([12, 13, 14]), eos_ids={99}, pad_id=0, max_new_tokens=3,
+        )
+        assert (tokens, finish) == ([12, 13, 14], "length")
+
+    def test_trim_strips_trailing_pad_as_an_early_stop(self) -> None:
+        tokens, finish = trim_generated(
+            torch.tensor([15, 0, 0]), eos_ids={99}, pad_id=0, max_new_tokens=3,
+        )
+        assert (tokens, finish) == ([15], "stop")
+
+    def test_left_pad(self) -> None:
+        ids, attention, lengths = left_pad(
+            [torch.tensor([1, 2]), torch.tensor([3, 4, 5]), torch.tensor([6])], 0,
+        )
+        assert ids.tolist() == [[0, 1, 2], [3, 4, 5], [0, 0, 6]]
+        assert attention.tolist() == [[0, 1, 1], [1, 1, 1], [0, 0, 1]]
+        assert lengths == [2, 3, 1]
+
+    @pytest.mark.parametrize(("tokenizer", "expected"), [
+        (SimpleNamespace(pad_token_id=5, eos_token_id=9), 5),
+        (SimpleNamespace(pad_token_id=None, eos_token_id=[9, 8]), 9),
+        (SimpleNamespace(pad_token_id=None, eos_token_id=None), 0),
+    ])
+    def test_pad_token_id(self, tokenizer: Any, expected: int) -> None:
+        assert pad_token_id(tokenizer) == expected
+
+    def test_common_prefix_keeps_a_suffix_and_stays_on_cpu(self) -> None:
+        shared = list(range(32))
+        rows = [torch.tensor(shared + [100]), torch.tensor(shared + [101])]
+        prefix = common_prefix(rows)
+        assert prefix is not None and prefix.device.type == "cpu"
+        assert prefix.tolist() == shared
+        identical = [torch.tensor(shared), torch.tensor(shared)]
+        assert cast(torch.Tensor, common_prefix(identical)).tolist() == shared[:-1]
+
+    def test_common_prefix_below_the_floor_is_none(self) -> None:
+        rows = [torch.tensor(list(range(10)) + [1] * 20), torch.tensor(list(range(10)) + [2] * 20)]
+        assert common_prefix(rows) is None
+
+    def test_generate_capable_model_unwraps_compiled_modules(self) -> None:
+        eager = SimpleNamespace(generate=lambda **_k: None)
+        assert generate_capable_model(eager) is eager
+        assert generate_capable_model(SimpleNamespace(_orig_mod=eager)) is eager
+        assert generate_capable_model(SimpleNamespace()) is None
+
+
+@pytest.mark.parametrize("score_kind", ["none", "tensor", "tuple"])
+def test_stop_criteria_accepts_transformers_score_shapes(score_kind: str) -> None:
+    state = GenerationState()
+    criterion = BatchStopCriteria(state)
+    input_ids = torch.LongTensor([[1, 2], [3, 4]])
+    score = torch.FloatTensor([[0.1, 0.9], [0.8, 0.2]])
+    scores = None if score_kind == "none" else score if score_kind == "tensor" else (score, score)
+    assert criterion(input_ids, scores).tolist() == [False, False]
+    state.request_stop()
+    assert criterion(input_ids, scores).tolist() == [True, True]
+    state.reset()
+    assert criterion(input_ids, scores).tolist() == [False, False]
+
+
+# ---------------------------------------------------------------------------
+# Real tiny sessions.
+# ---------------------------------------------------------------------------
+
+
+def _reply(_label: str, prompt_text: str) -> str:
+    for word in ("alpha", "beta", "gamma"):
+        if word in prompt_text:
+            return f"re {word}"
+    return "ok"
+
+
+def _spy_model_generate(monkeypatch: pytest.MonkeyPatch, session: Any) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    real = session.model.generate
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(session.model, "generate", _spy)
+    return calls
+
+
+def _numbers_blanked(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _numbers_blanked(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_numbers_blanked(item) for item in value]
+    if isinstance(value, float):
+        return "<float>"
+    return value
+
+
+_LENS_CORPUS = [
+    "The quick brown fox jumps over the lazy dog.",
+    "A small corpus for the tiny lens fit.",
+    "Every row of the batch reads its own tail.",
+]
+
+
+def _lens_session(factory: TinySessionFactory) -> Any:
+    """A scripted tiny session with a fitted J-lens and a ``jlens/e`` probe."""
+    session, _script = factory.scripted(_reply)
+    session.lens.fit(_LENS_CORPUS)
+    assert session.add_probe("jlens/e") == "jlens/e"
+    return session
+
+
+def _sae_session(factory: TinySessionFactory, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A scripted tiny session with a resident mock SAE at layer 1 and ``sae/3``."""
+    from drowse.sae import runtime as sae_runtime
+    from drowse.sae import sources as sae_sources
+    from drowse.sae.backend import ResolvedSae
+    from tests.support.sae import MockSaeBackend
+
+    session, _script = factory.scripted(_reply)
+    width = int(session.model.config.hidden_size)
+    backend = MockSaeBackend(layers=frozenset({1}), d_model=width)
+    monkeypatch.setattr(
+        sae_runtime, "resolve_sae_backend",
+        lambda *_a, **_k: ResolvedSae(backend, 1, width),
+    )
+    monkeypatch.setattr(sae_sources, "load_sae_feature_meta", lambda *_a, **_k: {})
+    monkeypatch.setattr(sae_sources, "save_sae_metadata", lambda *_a, **_k: None)
+    session.sae.load("mock-release", layer=1)
+    assert session.add_probe("sae/3") == "sae/3"
+    return session
+
+
+def _assert_rows_match_serial(
+    session: Any, batch: RunSet, prompts: list[str], probe: str,
+) -> None:
+    """Each batched row's reading and envelope equal a one-row generation's."""
+    serial = [
+        session.generate(prompt, stateless=True, thinking=False).first
+        for prompt in prompts
+    ]
+    for fast, one in zip(batch, serial, strict=True):
+        assert fast.tokens == one.tokens
+        assert set(fast.probe_readings) == set(one.probe_readings) == {probe}
+        got, want = fast.probe_readings[probe], one.probe_readings[probe]
+        assert got.coords == pytest.approx(want.coords, rel=1e-4, abs=1e-6)
+        assert set(got.coords_per_layer) == set(want.coords_per_layer)
+        for layer, coords in want.coords_per_layer.items():
+            assert got.coords_per_layer[layer] == pytest.approx(
+                coords, rel=1e-4, abs=1e-6,
+            )
+        assert fast.measurements is not None
+        assert json.dumps(_numbers_blanked(fast.measurements), sort_keys=True) == (
+            json.dumps(_numbers_blanked(one.measurements), sort_keys=True)
+        )
+
+
+class TestFastBatchOnTinySession:
+    def test_compatible_batch_uses_one_model_generate(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session, _script = make_tiny_session.scripted(_reply)
+        calls = _spy_model_generate(monkeypatch, session)
         seen: list[tuple[int, str]] = []
 
-        runset = s.generate_batch(
-            ["alpha", "beta", "gamma"],
+        runset = session.generate_batch(
+            ["alpha", "beta?", "gamma!!"],
             thinking=False,
             on_result=lambda idx, result: seen.append((idx, result.text)),
         )
 
-        assert len(model.calls) == 1
-        call = model.calls[0]
-        assert call["input_ids"].shape == (3, 3)
-        assert call["attention_mask"].tolist() == [
-            [0, 1, 1],
-            [1, 1, 1],
-            [0, 0, 1],
-        ]
-        assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14], [15]]
-        assert [r.finish_reason for r in runset] == ["stop", "length", "stop"]
-        assert [r.text for r in runset] == ["10 11", "12 13 14", "15"]
-        assert runset.grid == [
-            {"prompt_index": 0},
-            {"prompt_index": 1},
-            {"prompt_index": 2},
-        ]
+        assert len(calls) == 1
+        assert calls[0]["input_ids"].shape[0] == 3
+        assert calls[0]["attention_mask"][:, 0].tolist() == [0, 0, 1]
+        assert [r.text for r in runset] == ["re alpha", "re beta", "re gamma"]
+        assert [r.finish_reason for r in runset] == ["stop"] * 3
+        assert runset.kind == "batch"
+        assert runset.grid == [{"prompt_index": i} for i in range(3)]
         assert runset.node_ids == [None, None, None]
-        assert seen == [(0, "10 11"), (1, "12 13 14"), (2, "15")]
-        assert runset.metrics["batch_token_count"] == 6
-        assert runset.metrics["batch_elapsed"] > 0.0
-        assert "batch_tok_per_sec" in runset.metrics
-        assert s.last_result is runset[-1]
+        assert seen == [(0, "re alpha"), (1, "re beta"), (2, "re gamma")]
+        assert runset.metrics["batch_token_count"] == sum(r.token_count for r in runset)
+        assert session.last_result is runset[-1]
+        assert session.tree.rev == 0
 
-    def test_fast_path_passes_full_eos_set_to_model_generate(self) -> None:
-        # ``model.generate`` must stop on every EOS id the ordinary decode
-        # loop recognizes (generation_config + tokenizer + added
-        # end-of-turn specials) — the tokenizer's single ``eos_token_id``
-        # alone misses e.g. Gemma's ``<end_of_turn>``, and the batch would
-        # generate past it to the token cap.
-        s, model = _fast_batch_session()
-        # A tokenizer carrying an added end-of-turn special beyond the
-        # plain eos.
-        tok = _BatchTokenizer()
-        tok.name_or_path = "batch-test-tokenizer-eos-set"
-        tok.added_tokens_encoder = {"<end_of_turn>": 42}
-        cast(Any, s)._tokenizer = tok
-        model.generation_config = SimpleNamespace(eos_token_id=[99, 98])
+    def test_batch_passes_the_full_eos_set(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session, _script = make_tiny_session.scripted(_reply)
+        calls = _spy_model_generate(monkeypatch, session)
+        session.generate_batch(["alpha", "beta"], thinking=False)
+        assert calls[0]["generation_config"].eos_token_id == sorted(
+            session.chat_traits.eos_ids,
+        )
 
-        s.generate_batch(["alpha", "beta", "gamma"], thinking=False)
+    def test_row_aggregates_match_a_serial_generation(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The batch reads each row's aggregate from its slice of the batched
+        # tail ring and finalizes through the serial finalizer: readings and
+        # the envelope shape must match a one-row generation of the prompt.
+        session, _script = make_tiny_session.scripted(_reply)
+        register_vectors(session, "mood")
+        session.add_probe("mood")
+        calls = _spy_model_generate(monkeypatch, session)
+        prompts = ["alpha", "beta?", "gamma!!"]
 
-        assert len(model.calls) == 1
-        assert model.calls[0]["generation_config"].eos_token_id == [42, 98, 99]
+        batch = session.generate_batch(prompts, thinking=False)
+        assert len(calls) == 1
+        serial = [
+            session.generate(prompt, stateless=True, thinking=False).first
+            for prompt in prompts
+        ]
 
-    def test_greedy_batch_allows_seeded_sampling_config(self) -> None:
-        from drowse.generation.sampling import SamplingConfig
+        for fast, one in zip(batch, serial, strict=True):
+            assert fast.tokens == one.tokens
+            assert set(fast.probe_readings) == {"mood"}
+            assert fast.probe_readings["mood"].coords == pytest.approx(
+                one.probe_readings["mood"].coords, abs=1e-4,
+            )
+            assert fast.probe_readings["mood"].fraction == pytest.approx(
+                one.probe_readings["mood"].fraction, abs=1e-4,
+            )
+            assert fast.measurements is not None
+            assert json.dumps(_numbers_blanked(fast.measurements), sort_keys=True) == (
+                json.dumps(_numbers_blanked(one.measurements), sort_keys=True)
+            )
 
-        s, model = _fast_batch_session()
+    def test_batch_runs_and_finalizes_inside_the_generation_phases(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session, _script = make_tiny_session.scripted(_reply)
+        phases: list[GenState] = []
+        real = session.model.generate
 
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
+        def _generate(*args: Any, **kwargs: Any) -> Any:
+            phases.append(session.gen_state)
+            return real(*args, **kwargs)
 
-        _engine_of(s).generate_one = _fail_generate_core
+        monkeypatch.setattr(session.model, "generate", _generate)
+        session.generate_batch(
+            ["alpha", "beta"], thinking=False,
+            on_result=lambda _idx, _result: phases.append(session.gen_state),
+        )
+        assert phases == [GenState.RUNNING, GenState.FINALIZING, GenState.FINALIZING]
+        assert session.gen_state is GenState.IDLE
 
-        runset = s.generate_batch(
+    def test_return_probe_readings_false_skips_aggregates(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session, _script = make_tiny_session.scripted(_reply)
+        register_vectors(session, "mood")
+        session.add_probe("mood")
+        calls = _spy_model_generate(monkeypatch, session)
+        runset = session.generate_batch(
             ["alpha", "beta"],
-            sampling=SamplingConfig(seed=123),
+            sampling=SamplingConfig(return_probe_readings=False),
             thinking=False,
         )
+        assert len(calls) == 1
+        assert [r.probe_readings for r in runset] == [{}, {}]
 
-        assert len(model.calls) == 1
-        assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14]]
+    def test_lens_probe_row_aggregates_match_a_serial_generation(
+        self,
+        isolated_home: Any,
+        make_tiny_session: TinySessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The lens run scores each row from its slice of the batched tail
+        # ring; with the live readout on, the envelope also names the lens
+        # source, exactly as a serial generation's does.
+        session = _lens_session(make_tiny_session)
+        session.lens.set_live(True)
+        calls = _spy_model_generate(monkeypatch, session)
+        prompts = ["alpha", "beta?", "gamma!!"]
 
-    def test_stochastic_seeded_batch_stays_serial(self) -> None:
-        from drowse.generation.sampling import SamplingConfig
+        batch = session.generate_batch(prompts, thinking=False)
 
-        s, model = _fast_batch_session()
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
+        assert len(calls) == 1
+        _assert_rows_match_serial(session, batch, prompts, "jlens/e")
+        for row in batch:
+            lens = cast(dict[str, Any], row.measurements)["instruments"]["lens"]
+            assert lens["binding"] == {"source": "local:j", "steering": None}
+            assert lens["readings"]["jlens/e"]["unit"] == "mean_token_probability"
 
-        runset = s.generate_batch(
+    def test_sae_probe_row_aggregates_match_a_serial_generation(
+        self,
+        isolated_home: Any,
+        make_tiny_session: TinySessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session = _sae_session(make_tiny_session, monkeypatch)
+        session.sae.set_live(True)
+        calls = _spy_model_generate(monkeypatch, session)
+        prompts = ["alpha", "beta?", "gamma!!"]
+
+        batch = session.generate_batch(prompts, thinking=False)
+
+        assert len(calls) == 1
+        _assert_rows_match_serial(session, batch, prompts, "sae/3")
+        for row in batch:
+            sae = cast(dict[str, Any], row.measurements)["instruments"]["sae"]
+            assert sae["binding"] == {
+                "source": "saelens:mock-release", "steering": None, "layer": 1,
+            }
+            assert list(sae["readings"]["sae/3"]["per_layer"]) == ["1"]
+
+    @pytest.mark.parametrize("family", ["lens", "sae"])
+    def test_readout_probes_skip_aggregates_without_probe_readings(
+        self,
+        family: str,
+        isolated_home: Any,
+        make_tiny_session: TinySessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        if family == "lens":
+            session = _lens_session(make_tiny_session)
+            instrument = session.lens
+        else:
+            session = _sae_session(make_tiny_session, monkeypatch)
+            instrument = session.sae
+
+        def _no_scoring(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("return_probe_readings=False must not score")
+
+        monkeypatch.setattr(instrument, "score_aggregate", _no_scoring)
+        calls = _spy_model_generate(monkeypatch, session)
+
+        runset = session.generate_batch(
             ["alpha", "beta"],
-            sampling=SamplingConfig(seed=123, temperature=0.7),
-            thinking=False,
-        )
-
-        assert len(model.calls) == 0
-        assert [r.text for r in runset] == ["out_0", "out_1"]
-        assert [c["input"] for c in capture] == ["alpha", "beta"]
-
-    def test_sae_probes_without_layer_fall_back_to_serial_generation(self) -> None:
-        # Geometry probes ride the batched aggregate-only capture ring, but an
-        # SAE feature probe needs a resident SAE layer to encode against; with
-        # none the batch declines to the serial loop rather than reading
-        # nothing.
-        s, model = _fast_batch_session()
-        cast(Any, s)._sae_instrument.probes = {"sae/17": {"feature_id": 17}}
-        assert s.sae.runtime.layer is None
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
-
-        runset = s.generate_batch(["alpha", "beta"], thinking=False)
-
-        assert len(model.calls) == 0
-        assert [r.text for r in runset] == ["out_0", "out_1"]
-        assert [c["input"] for c in capture] == ["alpha", "beta"]
-
-    def test_probe_batch_fast_path_scores_per_row_aggregate(self) -> None:
-        s, model = _probe_fast_batch_session()
-
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
-
-        _engine_of(s).generate_one = _fail_generate_core
-
-        runset = s.generate_batch(["alpha", "beta", "gamma"], thinking=False)
-
-        assert len(model.calls) == 1
-        assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14], [15]]
-        assert [r.probe_readings["mood"].coords for r in runset] == [
-            (2.0,),
-            (30.0,),
-            (100.0,),
-        ]
-        assert cast(Any, s._monitor).scored == [2.0, 30.0, 100.0]
-
-    def test_probe_batch_fast_path_honors_return_probe_readings_false(self) -> None:
-        from drowse.generation.sampling import SamplingConfig
-
-        s, model = _probe_fast_batch_session()
-
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
-
-        _engine_of(s).generate_one = _fail_generate_core
-
-        runset = s.generate_batch(
-            ["alpha", "beta", "gamma"],
             sampling=SamplingConfig(return_probe_readings=False),
             thinking=False,
         )
 
-        assert len(model.calls) == 1
-        assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14], [15]]
-        assert [r.probe_readings for r in runset] == [{}, {}, {}]
-        assert cast(Any, s._monitor).scored == []
+        assert len(calls) == 1
+        assert [r.text for r in runset] == ["re alpha", "re beta"]
+        assert [r.probe_readings for r in runset] == [{}, {}]
+        assert [r.measurements for r in runset] == [None, None]
 
-    def test_sae_readout_probe_batch_fast_path_scores_per_row_aggregate(self) -> None:
-        from tests.support.sae import MockSaeBackend
+    def test_blank_steering_means_unsteered(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Regression: the fast path handed ``""`` to the grammar, which
+        # raised "empty steering expression"; the serial loop reads it as
+        # unsteered.
+        session, _script = make_tiny_session.scripted(_reply)
+        calls = _spy_model_generate(monkeypatch, session)
+        runset = session.generate_batch(["alpha", "beta"], steering="", thinking=False)
+        assert len(calls) == 1
+        assert [r.applied_steering for r in runset] == [None, None]
 
-        s, model = _probe_fast_batch_session()
-        cast(Any, s)._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
-        make_resident(
-            s.sae.runtime,
-            MockSaeBackend(layers=frozenset({0}), d_model=1, d_feature=1),
-            layer=0,
-        )
-        s._sae_instrument.probes = {
-            "sae/0": {
-                "feature_id": 0,
-                "layer": 0,
-                "label": None,
-                "max_act": None,
-            },
+    def test_cast_member_steers_batched_rows(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Regression: the fast path skipped the cast roster, so an assistant
+        # cast member's steering reached serial rows but not batched ones.
+        session, _script = make_tiny_session.scripted(_reply)
+        register_vectors(session, "castvec")
+        session.set_cast_member("assistant", steering="0.4 castvec")
+        calls = _spy_model_generate(monkeypatch, session)
+        runset = session.generate_batch(["alpha", "beta"], thinking=False)
+        assert len(calls) == 1
+        assert [r.applied_steering for r in runset] == ["0.4 castvec"] * 2
+        assert [r.steering_alphas for r in runset] == [{"castvec": 0.4}] * 2
+        serial = session.generate("alpha", stateless=True, thinking=False).first
+        assert serial.applied_steering == "0.4 castvec"
+
+    def test_sae_probe_without_a_resident_layer_stays_serial(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session, _script = make_tiny_session.scripted(_reply)
+        session.sae.probes["sae/17"] = {
+            "feature_id": 17, "layer": 0, "label": None, "max_act": None,
         }
+        assert session._batch._fast.run(
+            ["alpha", "beta"], steering=None, sampling=None, thinking=False,
+            stateless=True, raw=False, on_result=None,
+        ) is None
 
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
+    @pytest.mark.parametrize("sampling", [
+        SamplingConfig(seed=5, temperature=0.7),
+        SamplingConfig(stop=("END",)),
+        SamplingConfig(logprobs=2),
+    ])
+    def test_row_shaped_calls_run_serially(
+        self,
+        sampling: SamplingConfig,
+        make_tiny_session: TinySessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session, _script = make_tiny_session.scripted(_reply)
+        calls = _spy_model_generate(monkeypatch, session)
+        runset = session.generate_batch(["alpha", "beta"], sampling=sampling, thinking=False)
+        assert calls == []
+        assert [r.text for r in runset] == ["re alpha", "re beta"]
 
-        _engine_of(s).generate_one = _fail_generate_core
 
-        runset = s.generate_batch(["alpha", "beta", "gamma"], thinking=False)
+class TestSerialBatchOnTinySession:
+    def test_shared_prefix_reuses_one_real_dynamic_cache(
+        self, make_tiny_session: TinySessionFactory,
+    ) -> None:
+        # The serial batch prefills the rows' shared prefix once; every row
+        # decodes on top of that DynamicCache and rolls it back to the prefix
+        # afterwards.  ``script.prompts`` records only forwards that start
+        # from an empty cache, so one entry means every row hit the prefix
+        # (a failed rollback drops the entry and the next row re-prefills).
+        session, script = make_tiny_session.scripted(_reply)
+        head = "Answer in one short line, please, and stay on topic: "
+        # Distinct suffix lengths: the script keys replies by prompt length.
+        prompts = [head + "alpha", head + "beta", head + "gamma!!"]
+        sampling = SamplingConfig(seed=5, temperature=0.7, max_tokens=12)
 
-        assert len(model.calls) == 1
-        assert [r.probe_readings["sae/0"].coords for r in runset] == [
-            (2.0,),
-            (30.0,),
-            (100.0,),
-        ]
+        runset = session.generate_batch(prompts, sampling=sampling)
 
-    def test_sae_readout_probe_batch_fast_path_honors_return_probe_readings_false(self) -> None:
-        from drowse.generation.sampling import SamplingConfig
+        assert [r.text for r in runset] == ["re alpha", "re beta", "re gamma"]
+        assert len(script.prompts) == 1
+        assert head in script.prompts[0]
+        assert "alpha" not in script.prompts[0]
+        # The batch clears its prefix: the next generation prefills in full.
+        session.generate(prompts[0], stateless=True, sampling=sampling)
+        assert len(script.prompts) == 2
+        assert script.prompts[1].endswith("alpha<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n")
 
-        s, model = _probe_fast_batch_session()
-        cast(Any, s)._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
-        make_resident(s.sae.runtime, layer=0)
-        s._sae_instrument.probes = {
-            "sae/0": {
-                "feature_id": 0,
-                "layer": 0,
-                "label": None,
-                "max_act": None,
-            },
-        }
 
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
-
-        _engine_of(s).generate_one = _fail_generate_core
-
-        runset = s.generate_batch(
-            ["alpha", "beta", "gamma"],
-            sampling=SamplingConfig(return_probe_readings=False),
-            thinking=False,
-        )
-
-        assert len(model.calls) == 1
-        assert [r.probe_readings for r in runset] == [{}, {}, {}]
-
-    def test_lens_readout_probe_batch_fast_path_scores_per_row_aggregate(self) -> None:
-        s, model = _probe_fast_batch_session()
-        s_any = cast(Any, s)
-        s_any._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
-        s_any._lens_instrument.probes = {"jlens/g": {"token_id": 1, "layers": [0]}}
-        s_any._lens_instrument.probe_layers = lambda: {0}
-
-        def _score_lens_probes(
-            hidden: dict[int, Any],
-            **kwargs: Any,
-        ) -> dict[str, ProbeReading]:
-            del kwargs
-            value = float(hidden[0].reshape(-1)[0])
-            return {"jlens/g": ProbeReading(0.0, [], coords=(value,))}
-
-        # The batch per-row aggregate routes through the lens run's
-        # ``observe_aggregate``, which consumes the INSTRUMENT's
-        # ``score_probes`` — stub that (the session forwarder is bypassed).
-        s_any._lens_instrument.score_probes = _score_lens_probes
-
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
-
-        _engine_of(s).generate_one = _fail_generate_core
-
-        runset = s.generate_batch(["alpha", "beta", "gamma"], thinking=False)
-
-        assert len(model.calls) == 1
-        assert [r.probe_readings["jlens/g"].coords for r in runset] == [
-            (2.0,),
-            (30.0,),
-            (100.0,),
-        ]
-
-    def test_lens_readout_probe_batch_fast_path_honors_return_probe_readings_false(self) -> None:
-        from drowse.generation.sampling import SamplingConfig
-
-        s, model = _probe_fast_batch_session()
-        s_any = cast(Any, s)
-        s_any._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
-        s_any._lens_instrument.probes = {"jlens/g": {"token_id": 1, "layers": [0]}}
-        s_any._lens_instrument.probe_layers = lambda: {0}
-
-        def _score_lens_probes(*_args: Any, **_kwargs: Any) -> dict[str, ProbeReading]:
-            raise AssertionError("return_probe_readings=False should skip lens probes")
-
-        s_any._lens_instrument.score_probes = _score_lens_probes
-
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
-
-        _engine_of(s).generate_one = _fail_generate_core
-
-        runset = s.generate_batch(
-            ["alpha", "beta", "gamma"],
-            sampling=SamplingConfig(return_probe_readings=False),
-            thinking=False,
-        )
-
-        assert len(model.calls) == 1
-        assert [r.probe_readings for r in runset] == [{}, {}, {}]
-
-    def test_deterministic_fan_uses_batched_generation(self) -> None:
-        s, model = _fast_batch_session()
-
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
-
-        _engine_of(s).generate_one = _fail_generate_core
-
-        runset = s.generate("alpha", n=3, stateless=True, thinking=False)
-
-        assert len(model.calls) == 1
-        assert model.calls[0]["input_ids"].shape == (3, 2)
+class TestFanOnTinySession:
+    def test_stateful_fan_returns_every_sibling(
+        self, make_tiny_session: TinySessionFactory,
+    ) -> None:
+        # Regression: the serial fan returned one sibling (it read the
+        # end-of-generation stop event as a user stop).
+        session, _script = make_tiny_session.scripted(_reply)
+        runset = session.generate("alpha", n=3, sampling=SamplingConfig(seed=1))
         assert runset.kind == "fan"
-        assert runset.grid == [{}, {}, {}]
+        assert [r.text for r in runset] == ["re alpha"] * 3
+        (user_id,) = session.tree.children_of[session.tree.root_id]
+        assert session.tree.children_of[user_id] == list(runset.node_ids)
+        seeds = [session.tree.nodes[n].recipe.sampling.seed for n in runset.node_ids]
+        assert seeds == derive_seed_schedule(1, 3)
+
+    def test_fan_recipe_override_composes_like_a_one_shot(
+        self, make_tiny_session: TinySessionFactory,
+    ) -> None:
+        # Regression: a parentless stateful fan passed the start node as the
+        # regen anchor, so ``recipe_override`` with n>1 inherited the start
+        # node's steering while the same call at n=1 composed onto no anchor.
+        session, _script = make_tiny_session.scripted(_reply)
+        register_vectors(session, "anchorvec")
+        session.generate("alpha", steering="0.4 anchorvec", thinking=False)
+        start = session.tree.active_node_id
+
+        fan = session.generate(
+            "beta", n=2, recipe_override="cool", thinking=False,
+            sampling=SamplingConfig(seed=3),
+        )
+        session.tree.navigate(start)
+        one = session.generate("beta", recipe_override="cool", thinking=False).first
+
+        assert one.applied_steering is None
+        assert [r.applied_steering for r in fan] == [None, None]
+        temperatures = [
+            session.tree.nodes[str(node)].recipe.sampling.temperature
+            for node in fan.node_ids
+        ]
+        assert temperatures == [0.3, 0.3]
+        (user_id,) = session.tree.children_of[start]
+        assert session.tree.children_of[user_id][:2] == list(fan.node_ids)
+
+    def test_greedy_stateless_fan_runs_every_row_serially(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session, _script = make_tiny_session.scripted(_reply)
+        calls = _spy_model_generate(monkeypatch, session)
+        runset = session.generate(
+            "alpha", n=3, stateless=True, thinking=False,
+            sampling=SamplingConfig(temperature=0.0),
+        )
+        assert calls == []
+        assert runset.kind == "fan"
+        assert [r.text for r in runset] == ["re alpha"] * 3
         assert runset.node_ids == [None, None, None]
-        assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14], [15]]
 
-    def test_deterministic_fan_honors_return_probe_readings_false(self) -> None:
-        from drowse.generation.sampling import SamplingConfig
+    def test_stop_during_a_fan_ends_it(
+        self, make_tiny_session: TinySessionFactory,
+    ) -> None:
+        session, _script = make_tiny_session.scripted(_reply)
+        stopped: list[str] = []
 
-        s, model = _probe_fast_batch_session()
+        def _on_token(text: str, *_rest: Any) -> None:
+            if not stopped:
+                stopped.append(text)
+                session.stop()
 
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
+        runset = session.generate("alpha", n=3, stateless=True, on_token=_on_token)
+        assert len(runset) == 1
+        assert runset[0].text == "r"
 
-        _engine_of(s).generate_one = _fail_generate_core
 
-        runset = s.generate(
-            "alpha",
-            n=3,
-            stateless=True,
-            sampling=SamplingConfig(return_probe_readings=False),
-            thinking=False,
+class TestSweepOnTinySession:
+    def test_stateful_sweep_continuing_the_leaf_lands_siblings(
+        self, make_tiny_session: TinySessionFactory,
+    ) -> None:
+        # Regression: a stateful ``input=None`` sweep anchored each row on
+        # the previous row's reply instead of the leaf it started from.
+        session, _script = make_tiny_session.scripted(_reply)
+        register_vectors(session, "mood")
+        session.generate("alpha", thinking=False)
+        leaf = session.tree.active_node_id
+
+        runset = session.generate_sweep(
+            None, {"mood": [0.0, 0.2, 0.4]}, stateless=False, thinking=False,
         )
 
-        assert len(model.calls) == 1
-        assert runset.kind == "fan"
-        assert [r.probe_readings for r in runset] == [{}, {}, {}]
-        assert cast(Any, s._monitor).scored == []
-
-    def test_deterministic_fan_with_seed_uses_batched_generation(self) -> None:
-        from drowse.generation.sampling import SamplingConfig
-
-        s, model = _fast_batch_session()
-
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
-
-        _engine_of(s).generate_one = _fail_generate_core
-
-        runset = s.generate(
-            "alpha",
-            n=3,
-            sampling=SamplingConfig(seed=123),
-            stateless=True,
-            thinking=False,
-        )
-
-        assert len(model.calls) == 1
-        assert runset.kind == "fan"
-        assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14], [15]]
+        assert len(runset) == 3
+        assert session.tree.children_of[leaf] == list(runset.node_ids)
+        assert runset.grid == [{"mood": alpha} for alpha in (0.0, 0.2, 0.4)]
 
 
 # ---------------------------------------------------------------------------
@@ -735,233 +1037,3 @@ class TestPrefixCacheEligibility:
         gated = Trigger.when("honest.deceptive", ">", 0.4)
         s._steering_composer._stack = [{"honest": (0.5, gated)}]
         assert s._steering_composer.steering_active_in_prefill() is False
-
-    def test_batch_common_prefix_detection_keeps_scalar_walk_on_cpu(self) -> None:
-        import torch
-
-        s = self._session()
-        common = list(range(32))
-
-        def _prepare_input(
-            input: Any,
-            raw: bool = False,
-            thinking: bool = False,
-            stateless: bool = False,
-            parent_node_id: str | None = None,
-            user_role: str | None = None,
-            assistant_role: str | None = None,
-            to_device: bool = True,
-            system_prompt: Any = None,
-        ) -> torch.Tensor:
-            suffix = 100 if input == "a" else 101
-            return torch.tensor([common + [suffix]], dtype=torch.long)
-
-        cast(Any, s)._renderer = _batch_renderer(_prepare_input)
-
-        prefix = s._batch_common_prefix_ids(["a", "b"], raw=False)
-
-        assert prefix is not None
-        assert prefix.device.type == "cpu"
-        assert prefix.tolist() == common
-
-
-# ---------------------------------------------------------------------------
-# session.generate_sweep — Cartesian product, applied_steering receipts.
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateSweep:
-    def _session(self):
-        from drowse.session.session import DrowseSession
-
-        s = DrowseSession.__new__(DrowseSession)
-        attach_stub_instruments(s)
-        from drowse.generation.decode import GenerationConfig
-        s.config = GenerationConfig()
-        return s
-
-    def test_single_concept_sweep_yields_one_per_alpha(self) -> None:
-        s = self._session()
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
-
-        results = s.generate_sweep(
-            "describe a sunset",
-            sweep={"happy.sad": [-0.4, 0.0, 0.4]},
-        )
-
-        assert len(results) == 3
-        # Each call's steering string carries the unique alpha + concept.
-        steerings = [c["steering"] for c in capture]
-        assert steerings == [
-            "-0.4 happy.sad",
-            "0.0 happy.sad",
-            "0.4 happy.sad",
-        ]
-
-    def test_two_concept_grid_full_product(self) -> None:
-        s = self._session()
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
-
-        s.generate_sweep(
-            "test",
-            sweep={"a": [0.0, 0.3], "b": [0.0, 0.5]},
-        )
-
-        # 2 * 2 = 4 results.
-        assert len(capture) == 4
-        # Order is itertools.product over (a, b): a varies slowest.
-        steerings = [c["steering"] for c in capture]
-        assert steerings == [
-            "0.0 a + 0.0 b",
-            "0.0 a + 0.5 b",
-            "0.3 a + 0.0 b",
-            "0.3 a + 0.5 b",
-        ]
-
-    def test_base_steering_composes_under_swept_terms(self) -> None:
-        s = self._session()
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
-
-        s.generate_sweep(
-            "test",
-            sweep={"honest": [0.3, 0.6]},
-            base_steering="0.2 warm",
-        )
-
-        steerings = [c["steering"] for c in capture]
-        assert steerings == [
-            "0.2 warm + 0.3 honest",
-            "0.2 warm + 0.6 honest",
-        ]
-
-    def test_on_result_carries_alpha_values(self) -> None:
-        s = self._session()
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
-
-        seen: list[tuple[int, dict[str, float]]] = []
-        s.generate_sweep(
-            "test",
-            sweep={"a": [0.0, 0.3], "b": [0.5]},
-            on_result=lambda idx, result, alphas: seen.append((idx, dict(alphas))),
-        )
-
-        assert seen == [
-            (0, {"a": 0.0, "b": 0.5}),
-            (1, {"a": 0.3, "b": 0.5}),
-        ]
-
-    def test_applied_steering_round_trips_canonical(self) -> None:
-        s = self._session()
-        capture: list[Any] = []
-        _stub_generate_core(s, capture=capture)
-
-        results = s.generate_sweep(
-            "test", sweep={"honest": [0.4]},
-        )
-
-        # Stub propagates ``steering`` to ``applied_steering``; the
-        # canonical receipt round-trips through generate_sweep.
-        assert results[0].applied_steering == "0.4 honest"
-
-    def test_degenerate_greedy_sweep_uses_batched_generation(self) -> None:
-        s, model = _fast_batch_session()
-        _install_noop_steering(s)
-
-        def _fail_generate_core(*args: Any, **kwargs: Any) -> GenerationResult:
-            raise AssertionError("serial generation path should not run")
-
-        _engine_of(s).generate_one = _fail_generate_core
-        seen: list[tuple[int, str, dict[str, float]]] = []
-
-        runset = s.generate_sweep(
-            "alpha",
-            sweep={"a": [0.0, 0.0, 0.0]},
-            thinking=False,
-            on_result=lambda idx, result, alphas: seen.append(
-                (idx, result.text, dict(alphas)),
-            ),
-        )
-
-        assert len(model.calls) == 1
-        assert model.calls[0]["input_ids"].shape == (3, 2)
-        assert runset.kind == "fan"
-        assert runset.grid == [{"a": 0.0}, {"a": 0.0}, {"a": 0.0}]
-        assert [r.tokens for r in runset] == [[10, 11], [12, 13, 14], [15]]
-        assert seen == [
-            (0, "10 11", {"a": 0.0}),
-            (1, "12 13 14", {"a": 0.0}),
-            (2, "15", {"a": 0.0}),
-        ]
-
-    def test_empty_sweep_dict_raises(self) -> None:
-        s = self._session()
-        with pytest.raises(ValueError, match="non-empty"):
-            s.generate_sweep("test", sweep={})
-
-    def test_empty_alpha_list_raises(self) -> None:
-        s = self._session()
-        with pytest.raises(ValueError, match="non-empty list"):
-            s.generate_sweep("test", sweep={"a": []})
-
-
-# ---------------------------------------------------------------------------
-# Batch-fast eligibility: only always-on steering can ride HF ``generate``.
-# ---------------------------------------------------------------------------
-
-
-class TestBatchFastSteeringGate:
-    """``_batch_fast_steering_is_always_on`` over every entry shape.
-
-    HF ``generate`` runs the whole batch in one call, so there is no per-step
-    hook re-evaluation to make a phased or gated trigger mean anything — the
-    gate has to see every entry kind, not just the additive ones.
-    """
-
-    @staticmethod
-    def _gate(value: str | None) -> bool:
-        from drowse.session.session import DrowseSession
-        from drowse.steering.terms import Steering
-
-        return DrowseSession._batch_fast_steering_is_always_on(
-            Steering.from_value(value),
-        )
-
-    def test_unsteered_is_eligible(self) -> None:
-        assert self._gate(None) is True
-
-    @pytest.mark.parametrize(
-        "expr",
-        ["0.5 formal.casual", "!gone", "0.5 personas%hacker"],
-    )
-    def test_default_trigger_entries_are_eligible(self, expr: str) -> None:
-        assert self._gate(expr) is True
-
-    @pytest.mark.parametrize(
-        "expr",
-        [
-            "0.5 formal.casual@response",
-            "!gone@thinking",
-            "0.5 personas%hacker@after",
-            "0.5 formal.casual@when:confident.uncertain>0.4",
-        ],
-    )
-    def test_phased_or_gated_entries_are_not_eligible(self, expr: str) -> None:
-        assert self._gate(expr) is False
-
-    def test_one_phased_term_disqualifies_the_whole_expression(self) -> None:
-        assert self._gate("0.5 formal.casual + 0.3 warm.clinical@response") is False
-
-    def test_a_nondefault_steering_level_trigger_disqualifies(self) -> None:
-        """Bare floats inherit ``Steering.trigger``, so it counts too."""
-        from drowse.session.session import DrowseSession
-        from drowse.steering.terms import Steering
-        from drowse.steering.triggers import Trigger
-
-        steering = Steering(
-            alphas={"formal.casual": 0.5}, trigger=Trigger.GENERATED_ONLY,
-        )
-        assert DrowseSession._batch_fast_steering_is_always_on(steering) is False

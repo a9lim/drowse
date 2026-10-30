@@ -14,6 +14,7 @@ from drowse.generation.decode import (
     _PenaltyState,
     generate_steered,
 )
+from drowse.generation.finalize import MIN_ELAPSED_FOR_RATE
 from drowse.model.chat import chat_eos_ids, logits_keep_kwarg
 from drowse.generation.results import GenerationResult, ProbeReading
 from drowse.generation.types import GenState
@@ -289,6 +290,28 @@ def test_stop_sequence_trimmed_text_is_final_result_text():
         stateless=True,
     )
     assert result.text == "Hello"
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "expected"), [(MIN_ELAPSED_FOR_RATE / 2, 0.0), (0.5, 4.0)],
+)
+def test_finalize_owns_the_rate_floor(elapsed: float, expected: float) -> None:
+    # Regression: ``finalize_generation`` defaulted to a 1e-9 floor and only
+    # honored ``MIN_ELAPSED_FOR_RATE`` because the session passed it in; a
+    # direct call reported a noise rate for a near-instant generation.
+    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
+    session._gen_state = GenerationState()
+    session._tokenizer = _StopTokenizer()
+    session._monitor = SimpleNamespace(probe_names=[])
+    session._capture = SimpleNamespace(stacked=lambda: {})
+    session._capture_state = CaptureState(mode=CaptureMode.FULL)
+    session._last_per_token_scores = None
+    session._last_result = None
+    _complete_finalizer_session(session)
+
+    result = _finalize(session, [0, 2], elapsed, {}, stateless=True)
+
+    assert result.tok_per_sec == expected
 
 
 def test_decode_loop_hands_one_step_id_to_sink_gate_and_tap():
