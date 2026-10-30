@@ -24,8 +24,9 @@ alternating conversations and byte-compare against the template's own render.
 A family that passes gets scene mode — and, because extraction renders
 exactly such alternating conversations, routing extraction through the
 stitcher is bit-identical to ``apply_chat_template`` (the baseline-match
-contract holds with no manifold re-fit).  A family that fails falls back to
-raw-marker rendering (``render_scene_raw``) with a drift warning.
+contract holds with no manifold re-fit).  A family that fails keeps the
+chat-template and per-turn splice renders (``build_chat_input``) with a
+one-time warning; ``render_scene_raw`` serves only template-less base models.
 
 Thinking is a per-turn optional input on any seat (a9 convention, 2026-07-10):
 rendered through the family think delimiters when supplied.  History policy
@@ -715,8 +716,8 @@ def validate_turn_grammar(
     :class:`SceneGrammarError` at the first divergence.  This is the
     load-bearing gate: a passing family's extraction renders are bit-identical
     through the stitcher (the baseline-match contract), and a template
-    revision flips the family to the raw fallback instead of corrupting
-    silently.
+    revision flips the family to the chat-template renders instead of
+    corrupting silently.
     """
     messages = [
         {"role": "user", "content": "alpha beta"},

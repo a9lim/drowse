@@ -24,6 +24,7 @@ from drowse.lens.jlens import (
     LensNotFittedError,
     MultiTokenWordError,
 )
+from drowse.model.chat import ChatTraits
 from drowse.model.fingerprint import loaded_model_fingerprint, model_source_fingerprint
 from drowse.loom.tree import (
     InvalidNodeOperationError,
@@ -2480,6 +2481,7 @@ class _TreeStubSession(_StubSession):
 
     def __init__(self) -> None:
         super().__init__()
+        self.chat_traits = ChatTraits(self._tokenizer)
         self.tree = LoomTree(model_id=_MODEL_ID)
         self.prepare_calls: list[dict[str, Any]] = []
         self.steering_scopes: list[Any] = []

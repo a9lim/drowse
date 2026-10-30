@@ -18,6 +18,8 @@ from typing import Any
 import torch
 from transformers import AutoModelForCausalLM
 
+from drowse.errors import DrowseError
+
 _FP8_DTYPES = (torch.float8_e4m3fn, torch.float8_e5m2,
                torch.float8_e4m3fnuz, torch.float8_e5m2fnuz)
 
@@ -193,7 +195,7 @@ def read_st_tensor(fd: int, header: dict[str, Any], data_start: int, name: str) 
     return flat.reshape(meta["shape"])
 
 
-class NoTextWeightsExtracted(RuntimeError):
+class NoTextWeightsExtracted(DrowseError, RuntimeError):
     """No text-model weights matched the ``language_model.`` layout.
 
     Raised by :func:`load_text_from_multimodal` so the caller can fall

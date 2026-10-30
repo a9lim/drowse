@@ -627,19 +627,13 @@ def generate_steered(
     session always supplies one, and the capture itself decides whether that
     step does any scoring work.
 
-    ``use_static_cache`` routes generation through
-    :class:`transformers.StaticCache` instead of the default
-    ``DynamicCache`` — fixed-shape K/V buffers across decode steps,
-    so the kernel shapes the compiled artifact saw on warmup don't
-    change as the cache grows.  Caller must guarantee CUDA + a
-    StaticCache-compatible architecture (see
-    :func:`drowse.generation.static_cache.is_cuda_graphs_supported`); we
-    don't re-probe here.  When ``past_key_values`` is non-None (a prefix-cache
-    hit or a reset session-resident cache), it's expected to *already* be a
-    StaticCache sized to fit the upcoming decode; we don't re-allocate.  When
-    ``past_key_values is None``, we build a fresh fallback StaticCache sized
-    to ``input_ids.shape[1] + cache_position_offset +
-    config.max_new_tokens``.
+    ``use_static_cache`` routes generation through the caller's
+    :class:`transformers.StaticCache` (passed as ``past_key_values``: a
+    static prefix-cache hit or the reset session-resident cache, already
+    sized for the upcoming decode) with explicit ``cache_position``s, so the
+    kernel shapes a compiled artifact saw on warmup don't change as the cache
+    grows.  The caller probes StaticCache support
+    (:func:`drowse.generation.static_cache.is_static_cache_supported`).
 
     ``forced_prefix`` (logit fork) is a list of token ids to *force* for
     the first ``len(forced_prefix)`` decode steps instead of using the
@@ -701,13 +695,6 @@ def generate_steered(
     logits_keep_failed = False
 
     # ---- StaticCache ---------------------------------------------------
-    # Caller flips ``use_static_cache`` after probing
-    # :func:`drowse.generation.static_cache.is_cuda_graphs_supported` at session
-    # construction time.  When the caller supplies ``past_key_values`` (a
-    # prefix-cache hit or reset session-resident cache), it's expected to have
-    # enough headroom.  Otherwise we allocate a fresh fallback covering the
-    # upcoming generation, so the decode loop sees no allocator activity per
-    # step.
     cache_position: torch.Tensor | None = None
     # Tracked as a Python int so the per-step advance never crosses
     # CPU↔GPU — we ``fill_`` the GPU buffer rather than read its value
@@ -717,46 +704,22 @@ def generate_steered(
     # for every subsequent iteration.
     next_cache_pos: int = cache_position_offset + input_ids.shape[1]
     if use_static_cache:
-        try:
-            from drowse.generation.static_cache import make_static_cache
-        except ImportError:  # pragma: no cover — drowse is its own package
-            use_static_cache = False
-        else:
-            if past_key_values is None:
-                model_dtype = next(model.parameters()).dtype
-                max_cache_len = (
-                    cache_position_offset
-                    + input_ids.shape[1]
-                    + max(config.max_new_tokens, 1)
-                )
-                try:
-                    past_key_values = make_static_cache(
-                        model,
-                        max_cache_len=max_cache_len,
-                        device=device,
-                        dtype=model_dtype,
-                    )
-                except Exception as e:
-                    warnings.warn(
-                        f"StaticCache allocation failed ({type(e).__name__}: "
-                        f"{e}); falling back to DynamicCache",
-                        stacklevel=2,
-                    )
-                    use_static_cache = False
-                    past_key_values = None
-            # ``cache_position`` covers the prefill positions on the
-            # first forward, then narrows to the single new token per
-            # decode step.  Allocated once and updated in place via
-            # ``fill_`` so the captured graph (under
-            # ``torch.compile(mode="reduce-overhead")``) sees a stable
-            # tensor input across replays.
-            if use_static_cache:
-                cache_position = torch.arange(
-                    cache_position_offset,
-                    cache_position_offset + input_ids.shape[1],
-                    device=device,
-                    dtype=torch.long,
-                )
+        if past_key_values is None:
+            raise ValueError(
+                "use_static_cache requires the caller's preallocated "
+                "StaticCache as past_key_values"
+            )
+        # ``cache_position`` covers the prefill positions on the first
+        # forward, then narrows to the single new token per decode step.
+        # Updated in place via ``fill_`` so the captured graph (under
+        # ``torch.compile(mode="reduce-overhead")``) sees a stable tensor
+        # input across replays.
+        cache_position = torch.arange(
+            cache_position_offset,
+            cache_position_offset + input_ids.shape[1],
+            device=device,
+            dtype=torch.long,
+        )
 
     # Penalty / bias / stop / logprobs setup
     use_penalties = presence_penalty != 0.0 or frequency_penalty != 0.0
