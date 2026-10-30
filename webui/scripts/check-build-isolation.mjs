@@ -27,8 +27,6 @@ const forbidden = paths.filter((path) =>
   path === "manifest.webmanifest" ||
   path === "sw.js" ||
   !shipsInDashboard(path) ||
-  // The browser packs' published SAE description indexes.
-  (path.startsWith("assets/") && path.endsWith(".json")) ||
   path.startsWith("wasm/") ||
   path.endsWith(".wasm") ||
   /(?:^|\/)(?:mlc|webllm)/i.test(path)
@@ -36,6 +34,11 @@ const forbidden = paths.filter((path) =>
 if (forbidden.length) throw new Error(`hosted assets leaked into dashboard build: ${forbidden.join(", ")}`);
 const missing = requiredDashboardIcons.filter((icon) => !paths.includes(icon));
 if (missing.length) throw new Error(`dashboard icons missing from the build: ${missing.join(", ")}`);
+// A local SAELens gemma-scope-2 release labels its features offline from the
+// published-description indexes (src/lib/saeDescriptions.ts).
+const descriptionIndexes = ["270m", "1b", "4b"].map((size) => `assets/gemma-3-${size}-it.json`);
+const missingIndexes = descriptionIndexes.filter((path) => !paths.includes(path));
+if (missingIndexes.length) throw new Error(`SAE description indexes missing from the build: ${missingIndexes.join(", ")}`);
 const index = await readFile(resolve(root, "index.html"), "utf8");
 if (/manifest\.webmanifest|serviceWorker|registerSW/.test(index)) {
   throw new Error("dashboard bootstraps hosted PWA behavior");

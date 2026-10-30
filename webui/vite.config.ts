@@ -27,28 +27,12 @@ function dashboardPublicAssets(): Plugin {
   };
 }
 
-/** The browser packs' bundled SAE description indexes stay out of the
- *  dashboard; its lookups go to Neuronpedia (src/lib/saeDescriptionBundle.ts). */
-function omitBundledSaeDescriptions(): Plugin {
-  const bundle = resolve(__dirname, "src/lib/saeDescriptionBundle.ts");
-  const none = resolve(__dirname, "src/lib/saeDescriptionBundle.none.ts");
-  return {
-    name: "drowse-dashboard-omit-sae-descriptions",
-    enforce: "pre",
-    async resolveId(source, importer, options) {
-      if (!source.endsWith("saeDescriptionBundle")) return null;
-      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
-      return resolved?.id === bundle ? none : null;
-    },
-  };
-}
-
 // Build output goes directly into the drowse Python package so the
 // committed dist/ ships in the wheel.  emptyOutDir=true wipes any
 // stale assets between builds — the directory's only consumer is
 // FastAPI's StaticFiles mount, never user-authored files.
 export default defineConfig(({ command }) => ({
-  plugins: [svelte(), omitBundledSaeDescriptions(), dashboardPublicAssets()],
+  plugins: [svelte(), dashboardPublicAssets()],
   publicDir: command === "build" ? false : publicDir,
   resolve: {
     alias: {
