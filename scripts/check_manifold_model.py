@@ -58,11 +58,10 @@ def main():
         whitener = LayerWhitener.from_neutral_activations(
             {layer: activations}, {layer: activations.mean(0)},
         )
-        _fit = fit_affine_subspace(
+        flat = fit_affine_subspace(
             activations[:8], neutral_mean=activations.mean(0), n_components=2,
             whitener=whitener, layer=layer,
-        )
-        flat, _ = _fit.subspace, _fit.mu_coords
+        ).subspace
         domain = BoxDomain([BoxAxis("phase", periodic=True, period=1)])
         coords = torch.arange(8, dtype=torch.float32).reshape(-1, 1) / 8
         embedded = domain.embed(coords)

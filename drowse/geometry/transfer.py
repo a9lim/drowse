@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import torch
 
 from drowse.errors import DrowseError, WhitenerError
-from drowse.geometry.invert import invert_parameterization
+from drowse.geometry.invert import neutral_origin
 from drowse.geometry.manifold import Manifold
 from drowse.geometry.rbf import eval_rbf
 from drowse.geometry.subspace import LayerSubspace, subspace_share
@@ -245,24 +245,13 @@ def transfer_manifold_subspaces(
             mu_coords, sub_f.basis, whitener=whitener, layer=layer,
         )
 
-    new_origin: dict[int, torch.Tensor] = {}
-    for layer, sub_tgt in new_layers.items():
-        if sub_tgt.is_affine:
-            continue
-        sub_f = sub_tgt.to(device=torch.device("cpu"), dtype=torch.float32)
-        target_mean = target_layer_means[layer].to(
-            device="cpu", dtype=torch.float32,
-        ).reshape(-1)
-        if target_mean.shape != sub_f.mean.shape:
-            raise ValueError(
-                f"target neutral mean for layer {layer} has shape "
-                f"{tuple(target_mean.shape)}, expected {tuple(sub_f.mean.shape)}"
-            )
-        query = (target_mean - sub_f.mean) @ sub_f.basis.T
-        origin, _distance = invert_parameterization(
-            sub_f, src.domain, query, src.node_coords.to(torch.float32),
+    new_origin = {
+        layer: neutral_origin(
+            sub_tgt, src.domain, target_layer_means[layer], src.node_coords,
         )
-        new_origin[layer] = origin.reshape(-1).to(torch.float32)
+        for layer, sub_tgt in new_layers.items()
+        if not sub_tgt.is_affine
+    }
 
     transferred = replace(
         src, layers=new_layers,

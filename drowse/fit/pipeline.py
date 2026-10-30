@@ -1828,7 +1828,7 @@ class ManifoldExtractionPipeline:
         )
         from drowse.geometry.manifold import Manifold
         from drowse.geometry.rbf import RbfFitPlan
-        from drowse.geometry.invert import invert_parameterization
+        from drowse.geometry.invert import neutral_origin
         from drowse.geometry.tube import fit_sigma_field
         from drowse.fit.node_stats import (
             compute_manifold_node_stats,
@@ -2991,16 +2991,9 @@ class ManifoldExtractionPipeline:
         origin: dict[int, torch.Tensor] = {}
         if effective_fit_mode != "pca":
             for idx, sub in layer_subs.items():
-                mu = _handle_means[idx].to(
-                    device="cpu", dtype=torch.float32,
-                ).reshape(-1)
-                # Reduced coords of the neutral mean in this layer's subspace,
-                # then nearest-point invert onto ``M``.
-                q = (mu - sub.mean) @ sub.basis.T  # (R,)
-                O_coords, _dist = invert_parameterization(
-                    sub, domain, q, node_coords,
+                origin[idx] = neutral_origin(
+                    sub, domain, _handle_means[idx], node_coords,
                 )
-                origin[idx] = O_coords.reshape(-1).to(torch.float32)
 
         manifold = Manifold(
             name=mf.name,

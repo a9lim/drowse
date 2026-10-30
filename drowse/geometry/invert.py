@@ -161,10 +161,37 @@ def invert_parameterization(
     return pos.reshape(*lead, n), dist.reshape(lead)
 
 
+def neutral_origin(
+    subspace: LayerSubspace,
+    domain: ManifoldDomain,
+    neutral_mean: torch.Tensor,
+    node_coords: torch.Tensor,
+) -> torch.Tensor:
+    """A curved layer's origin: the foot of the neutral mean on its surface.
+
+    Projects ``neutral_mean`` ``(D,)`` into the layer frame and inverts it onto
+    the surface; returns the ``(n,)`` fp32 CPU authoring coords that seed the
+    steering foot-follower and anchor ``along``'s translate.
+    """
+    sub = subspace.to(device=torch.device("cpu"), dtype=torch.float32)
+    mean = neutral_mean.to(device="cpu", dtype=torch.float32).reshape(-1)
+    if mean.shape != sub.mean.shape:
+        raise ValueError(
+            f"neutral mean has shape {tuple(mean.shape)}, expected "
+            f"{tuple(sub.mean.shape)}"
+        )
+    query = (mean - sub.mean) @ sub.basis.T
+    origin, _distance = invert_parameterization(
+        sub, domain, query, node_coords.to(device="cpu", dtype=torch.float32),
+    )
+    return origin.reshape(-1)
+
+
 __all__ = [
     "DEFAULT_INVERSION_DAMPING",
     "DEFAULT_INVERSION_MAX_ITER",
     "DEFAULT_INVERSION_RESTARTS",
     "DEFAULT_INVERSION_WARM_ITER",
     "invert_parameterization",
+    "neutral_origin",
 ]
