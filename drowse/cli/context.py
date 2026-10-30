@@ -226,7 +226,7 @@ def iter_manifolds(namespace: str | None = None) -> Iterator[tuple[str, "Manifol
     otherwise a first ``drowse manifold fit default/personas`` would miss it.
     """
     from drowse.store.bundled import materialize_bundled_artifacts
-    from drowse.store.manifolds import iter_manifold_folders
+    from drowse.store.manifold_authoring import iter_manifold_folders
 
     materialize_bundled_artifacts()
     yield from iter_manifold_folders(namespace)

@@ -156,7 +156,7 @@ def behavior_inputs(
     import torch
 
     from drowse.geometry.manifold import domain_from_spec
-    from drowse.store.manifolds import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
 
     mf = ManifoldFolder.load(folder, verify_manifest=False)
     if mf.is_discover or not mf.domain:

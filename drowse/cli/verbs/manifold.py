@@ -62,7 +62,7 @@ def _fit_noop(
     hyperparams: dict[str, object] | None = None,
 ) -> Any:
     """The weight-free proof that this fit is already exact, or ``None``."""
-    from drowse.store.manifolds import preflight_manifold_fit_noop
+    from drowse.store.manifold_lifecycle import preflight_manifold_fit_noop
 
     if args.force or not (folder / "manifold.json").exists():
         return None
@@ -132,7 +132,7 @@ def run_generate(args: argparse.Namespace) -> None:
     leaves inspectable corpora, and ``manifold fit`` resumes from them.
     """
     from drowse.base.paths import manifold_dir
-    from drowse.store.manifolds import (
+    from drowse.store.manifold_authoring import (
         append_discover_manifold_node, plan_discover_generation,
     )
 
@@ -187,7 +187,7 @@ def run_generate(args: argparse.Namespace) -> None:
 def run_from_template(args: argparse.Namespace) -> None:
     """Pure IO: expand a template's values x contexts into node corpora and
     write a discover folder that ``template_ref``-erences it."""
-    from drowse.store.manifolds import create_manifold_from_template
+    from drowse.store.manifold_authoring import create_manifold_from_template
     from drowse.store.templates import resolve_template
 
     tmpl = resolve_template(args.template)
@@ -236,7 +236,7 @@ def run_fit(args: argparse.Namespace) -> None:
     lock (the one that derives the cache key); against an authored folder
     they are an error, as on the server.
     """
-    from drowse.store.manifolds import ManifoldFolder, domain_label
+    from drowse.store.manifold_folder import ManifoldFolder, domain_label
 
     layers = parse_layers(args.layers)
     if layers == "sample":
@@ -299,7 +299,7 @@ def run_bake(args: argparse.Namespace) -> None:
 
 
 def run_merge(args: argparse.Namespace) -> None:
-    from drowse.store.manifolds import merge_discover_manifolds
+    from drowse.store.manifold_authoring import merge_discover_manifolds
 
     if len(args.sources) < 2:
         raise CliError("need >= 2 sources (the union of one manifold is a no-op)")
@@ -319,7 +319,7 @@ def run_transfer(args: argparse.Namespace) -> None:
     models' neutral activations, then map the fitted manifold through it."""
     from drowse.base.paths import encode_release_id
     from drowse.store.alignment import load_or_fit_transfer_alignment
-    from drowse.store.manifolds import (
+    from drowse.store.manifold_lifecycle import (
         preflight_transfer_manifold, transfer_manifold,
     )
 
@@ -475,7 +475,7 @@ def _fold_all(model_id: str) -> "dict[tuple[str, str], Profile]":
     from drowse.fit.capture import folded_directions
     from drowse.geometry.profile import Profile
     from drowse.store.manifold_tensors import load_manifold
-    from drowse.store.manifolds import iter_manifold_folders
+    from drowse.store.manifold_authoring import iter_manifold_folders
 
     filename = tensor_filename(model_id)
     out: dict[tuple[str, str], Profile] = {}

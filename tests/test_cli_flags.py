@@ -702,7 +702,7 @@ def test_transcript_replay_reports_a_failing_turn_and_moves_on(
 
 
 def _authored_behavior_manifold() -> None:
-    from drowse.store.manifolds import create_manifold_folder
+    from drowse.store.manifold_authoring import create_manifold_folder
 
     domain = {"type": "box", "axes": [{"name": "t", "periodic": False, "period": 1.0, "lo": 0.0, "hi": 1.0}]}
     nodes = [{"label": label, "coords": [i / 2], "statements": [label]} for i, label in enumerate("abc")]
@@ -737,7 +737,7 @@ def test_experiment_naturalness_emits_pure_json(
 def test_experiment_naturalness_refuses_discover_folders_before_loading(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
 
     create_discover_manifold_folder("local", "moods", "", fit_mode="auto",
                                     node_corpora={"a": ["x"], "b": ["y"], "c": ["z"]})

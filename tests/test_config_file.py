@@ -225,7 +225,7 @@ def test_bare_pole_validates_against_installed_packs(monkeypatch: pytest.MonkeyP
     ``_bare_concept_resolves`` rather than the old ``vectors/`` pole alias.
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     from drowse.store.selectors import invalidate
     create_discover_manifold_folder(
         "local", "deer.wolf", "x", fit_mode="pca",

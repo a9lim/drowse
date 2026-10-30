@@ -14,7 +14,7 @@ from drowse.cli.spec import FORCE, JSON, MODEL_OPT, VERBOSE, YES, Verb, arg
 
 
 def run_ls(args: argparse.Namespace) -> None:
-    from drowse.store.manifolds import domain_label
+    from drowse.store.manifold_folder import domain_label
 
     rows = list(iter_manifolds(args.namespace))
     if args.json_output:
@@ -78,9 +78,8 @@ def run_show(args: argparse.Namespace) -> None:
     surfaces a discover folder's per-model derived node coordinates.
     """
     from drowse.store.manifold_tensors import load_manifold
-    from drowse.store.manifolds import (
-        ManifoldFolder, domain_label, manifold_fit_summary, manifold_summary,
-    )
+    from drowse.store.manifold_folder import ManifoldFolder, domain_label
+    from drowse.store.manifold_lifecycle import manifold_fit_summary, manifold_summary
 
     folder = existing_folder(args.name)
     if args.json_output:
@@ -184,7 +183,7 @@ def run_push(args: argparse.Namespace) -> None:
 
 
 def run_rm(args: argparse.Namespace) -> None:
-    from drowse.store.manifolds import remove_manifold_folder
+    from drowse.store.manifold_lifecycle import remove_manifold_folder
 
     ns, name = resolve_manifold(args.selector)
     if not args.yes:
@@ -202,7 +201,7 @@ def run_rm(args: argparse.Namespace) -> None:
 
 
 def run_clear(args: argparse.Namespace) -> None:
-    from drowse.store.manifolds import clear_manifold_tensors
+    from drowse.store.manifold_lifecycle import clear_manifold_tensors
 
     ns, name = resolve_manifold(args.selector)
     n = clear_manifold_tensors(ns, name, args.model, variant=args.variant)
@@ -210,7 +209,7 @@ def run_clear(args: argparse.Namespace) -> None:
 
 
 def run_refresh(args: argparse.Namespace) -> None:
-    from drowse.store.manifolds import refresh_manifold
+    from drowse.store.manifold_lifecycle import refresh_manifold
 
     ns, name = resolve_manifold(args.selector)
     tier = refresh_manifold(ns, name, model_scope=args.model)

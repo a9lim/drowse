@@ -53,7 +53,7 @@ def test_run_manifold_from_template_writes_folder(
     out = capsys.readouterr().out
     assert "3 nodes x 2 contexts" in out
 
-    from drowse.store.manifolds import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
     from drowse.base.paths import manifold_dir
     mf = ManifoldFolder.load(manifold_dir("local", "weekday"))
     assert mf.fit_mode == "auto"
@@ -154,7 +154,7 @@ def test_run_manifold_merge_calls_backend(monkeypatch: pytest.MonkeyPatch, capsy
         })
         return Path("/home/.drowse/manifolds/local/combined")
 
-    monkeypatch.setattr("drowse.store.manifolds.merge_discover_manifolds", fake_merge)
+    monkeypatch.setattr("drowse.store.manifold_authoring.merge_discover_manifolds", fake_merge)
     main([
         "manifold", "merge", "local/combined", "local/a", "alice/b",
         "--method", "spectral", "-f",
@@ -180,7 +180,7 @@ def test_merge_sources_resolve_existing_manifolds_cross_namespace(
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     calls: list[Any] = []
     monkeypatch.setattr(
-        "drowse.store.manifolds.merge_discover_manifolds",
+        "drowse.store.manifold_authoring.merge_discover_manifolds",
         lambda *_a, sources, **_k: calls.append(sources) or tmp_path,
     )
     main(["manifold", "merge", "mix", "personas", "formal.casual"])
@@ -193,7 +193,7 @@ def test_merge_sources_resolve_existing_manifolds_cross_namespace(
 def test_run_manifold_merge_one_source_errors(monkeypatch: pytest.MonkeyPatch):
     # The parser allows >=1 positional source; the runner refuses <2.
     monkeypatch.setattr(
-        "drowse.store.manifolds.merge_discover_manifolds",
+        "drowse.store.manifold_authoring.merge_discover_manifolds",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -292,7 +292,7 @@ def test_run_manifold_rm_calls_backend(monkeypatch: pytest.MonkeyPatch, capsys: 
         return {"namespace": ns, "name": name, "source": "local",
                 "removed": True, "rematerializes_on_restart": False}
 
-    monkeypatch.setattr("drowse.store.manifolds.remove_manifold_folder", fake_rm)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.remove_manifold_folder", fake_rm)
     main(["pack", "rm", "local/mood", "-y"])
     assert calls == [("local", "mood")]
     out = capsys.readouterr().out
@@ -305,7 +305,7 @@ def test_run_manifold_rm_local_refuses_without_yes(
     """The irrecoverable case is guarded too — a ``local/`` manifold costs
     real extraction/fit time and never re-materializes."""
     monkeypatch.setattr(
-        "drowse.store.manifolds.remove_manifold_folder",
+        "drowse.store.manifold_lifecycle.remove_manifold_folder",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -318,7 +318,7 @@ def test_run_manifold_rm_local_refuses_without_yes(
 
 def test_run_manifold_rm_bundled_refuses_without_yes(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "drowse.store.manifolds.remove_manifold_folder",
+        "drowse.store.manifold_lifecycle.remove_manifold_folder",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -331,7 +331,7 @@ def test_run_manifold_rm_bundled_with_yes(monkeypatch: pytest.MonkeyPatch, capsy
         return {"namespace": ns, "name": name, "source": "bundled",
                 "removed": True, "rematerializes_on_restart": True}
 
-    monkeypatch.setattr("drowse.store.manifolds.remove_manifold_folder", fake_rm)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.remove_manifold_folder", fake_rm)
     main(["pack", "rm", "default/personas", "-y"])
     out = capsys.readouterr().out
     assert "Removed default/personas" in out
@@ -342,7 +342,7 @@ def test_run_manifold_rm_missing_errors(monkeypatch: pytest.MonkeyPatch):
     def fake_rm(ns: str, name: str) -> dict[str, Any]:
         raise FileNotFoundError("manifold local/nope not found")
 
-    monkeypatch.setattr("drowse.store.manifolds.remove_manifold_folder", fake_rm)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.remove_manifold_folder", fake_rm)
     with pytest.raises(SystemExit) as ex:
         main(["pack", "rm", "local/nope", "-y"])
     assert ex.value.code == 1
@@ -359,7 +359,7 @@ def test_run_manifold_clear_calls_backend(
         calls.append({"ns": ns, "name": name, "model_scope": model_scope, "variant": variant})
         return 3
 
-    monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.clear_manifold_tensors", fake_clear)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare ``personas`` resolves cross-namespace to the bundled ``default/personas``
     # (the only installed match) — the lifecycle verbs no longer hard-default
@@ -384,7 +384,7 @@ def test_run_manifold_clear_passes_model_scope(
         calls.append({"ns": ns, "name": name, "model_scope": model_scope, "variant": variant})
         return 1
 
-    monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.clear_manifold_tensors", fake_clear)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare name resolves cross-namespace to bundled ``default/personas``.
     main(["pack", "clear", "personas", "-m", "foo/bar"])
@@ -401,7 +401,7 @@ def test_run_manifold_refresh_tiers(monkeypatch: pytest.MonkeyPatch, capsys: pyt
                            ("bundled", "bundled"),
                            ("hf", "re-pulled from HF")):
         monkeypatch.setattr(
-            "drowse.store.manifolds.refresh_manifold",
+            "drowse.store.manifold_lifecycle.refresh_manifold",
             lambda ns, name, *, model_scope=None, t=tier: t,
         )
         main(["pack", "refresh", "alice/circumplex"])
@@ -421,7 +421,7 @@ def test_run_manifold_refresh_passes_model_scope(
         calls.append({"ns": ns, "name": name, "model_scope": model_scope})
         return "scoped"
 
-    monkeypatch.setattr("drowse.store.manifolds.refresh_manifold", fake_refresh)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.refresh_manifold", fake_refresh)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare name resolves cross-namespace to bundled ``default/personas``.
     main(["pack", "refresh", "personas", "-m", "foo/bar"])
@@ -435,7 +435,7 @@ def test_run_manifold_refresh_missing_errors(monkeypatch: pytest.MonkeyPatch):
     def fake_refresh(ns: str, name: str, *, model_scope: Any = None) -> str:
         raise FileNotFoundError("not installed")
 
-    monkeypatch.setattr("drowse.store.manifolds.refresh_manifold", fake_refresh)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.refresh_manifold", fake_refresh)
     with pytest.raises(SystemExit) as ex:
         main(["pack", "refresh", "local/nope"])
     assert ex.value.code == 1
@@ -449,7 +449,7 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
     (folder / "manifold.json").write_text("{}")
     src_model = "google/gemma-3-4b-it"
     (folder / f"{safe_model_id(src_model)}.safetensors").write_bytes(b"x")
-    from drowse.store.manifolds import TransferSourceProof
+    from drowse.store.manifold_lifecycle import TransferSourceProof
 
     source_proof = TransferSourceProof(
         tensor_name="source.safetensors",
@@ -458,7 +458,7 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
         layers=(14, 15),
     )
     monkeypatch.setattr(
-        "drowse.store.manifolds.preflight_transfer_manifold",
+        "drowse.store.manifold_lifecycle.preflight_transfer_manifold",
         lambda *_args, **_kwargs: source_proof,
     )
 
@@ -505,7 +505,7 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
         })
         return folder_arg / "Qwen__Qwen3-4B_from-google__gemma-3-4b-it.safetensors"
 
-    monkeypatch.setattr("drowse.store.manifolds.transfer_manifold", fake_transfer)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.transfer_manifold", fake_transfer)
     main([
         "manifold", "transfer", "local/circumplex",
         "--from", src_model, "--to", "Qwen/Qwen3-4B",
@@ -535,7 +535,7 @@ def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     src_model = "src/model"
     (folder / f"{safe_model_id(src_model)}.safetensors").write_bytes(b"x")
     monkeypatch.setattr(
-        "drowse.store.manifolds.preflight_transfer_manifold",
+        "drowse.store.manifold_lifecycle.preflight_transfer_manifold",
         lambda *_args, **_kwargs: None,
     )
 
@@ -552,7 +552,7 @@ def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         ),
     )
     monkeypatch.setattr(
-        "drowse.store.manifolds.transfer_manifold",
+        "drowse.store.manifold_lifecycle.transfer_manifold",
         lambda f, **k: f / "out.safetensors",
     )
     main([
@@ -581,7 +581,7 @@ def test_run_manifold_transfer_retries_unproven_target(
     tgt_model = "tgt/model"
     (folder / f"{safe_model_id(src_model)}.safetensors").write_bytes(b"source")
     monkeypatch.setattr(
-        "drowse.store.manifolds.preflight_transfer_manifold",
+        "drowse.store.manifold_lifecycle.preflight_transfer_manifold",
         lambda *_args, **_kwargs: None,
     )
 
@@ -611,7 +611,7 @@ def test_run_manifold_transfer_retries_unproven_target(
             raise RuntimeError("injected post-pair manifest failure")
         return target
 
-    monkeypatch.setattr("drowse.store.manifolds.transfer_manifold", fail_once)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.transfer_manifold", fail_once)
     argv = [
         "manifold", "transfer", "local/circumplex",
         "--from", src_model, "--to", tgt_model,
@@ -633,7 +633,7 @@ def test_run_manifold_transfer_trusted_target_skips_alignment(
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text("{}")
     monkeypatch.setattr(
-        "drowse.store.manifolds.preflight_transfer_manifold",
+        "drowse.store.manifold_lifecycle.preflight_transfer_manifold",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             FileExistsError("trusted transferred target exists")
         ),
@@ -677,7 +677,7 @@ def test_lifecycle_bare_name_not_found_exits(monkeypatch: pytest.MonkeyPatch, tm
     """A bare name with no installed match exits 1, no backend call."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "drowse.store.manifolds.clear_manifold_tensors",
+        "drowse.store.manifold_lifecycle.clear_manifold_tensors",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -696,7 +696,7 @@ def test_lifecycle_bare_name_resolves_local(monkeypatch: pytest.MonkeyPatch, tmp
         calls.append((ns, name))
         return 0
 
-    monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.clear_manifold_tensors", fake_clear)
     main(["pack", "clear", "moodlite"])
     assert calls == [("local", "moodlite")]
 
@@ -704,7 +704,7 @@ def test_lifecycle_bare_name_resolves_local(monkeypatch: pytest.MonkeyPatch, tmp
 def test_lifecycle_bare_name_ambiguous_exits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """A bare name installed in two namespaces raises an ambiguity error (exit 2)."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import create_manifold_folder
+    from drowse.store.manifold_authoring import create_manifold_folder
     domain_spec = {"type": "box", "axes": [{"min": -1.0, "max": 1.0, "periodic": False}]}
     nodes = [
         {"label": "low", "coords": [-1.0], "statements": ["s."]},
@@ -715,7 +715,7 @@ def test_lifecycle_bare_name_ambiguous_exits(monkeypatch: pytest.MonkeyPatch, tm
         create_manifold_folder(ns, "dup", "d", domain_spec, nodes)
 
     monkeypatch.setattr(
-        "drowse.store.manifolds.clear_manifold_tensors",
+        "drowse.store.manifold_lifecycle.clear_manifold_tensors",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
@@ -732,7 +732,7 @@ def test_lifecycle_explicit_ns_pins_without_walk(monkeypatch: pytest.MonkeyPatch
         calls.append((ns, name))
         return 0
 
-    monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
+    monkeypatch.setattr("drowse.store.manifold_lifecycle.clear_manifold_tensors", fake_clear)
     main(["pack", "clear", "alice/ghost"])
     assert calls == [("alice", "ghost")]
 
@@ -748,7 +748,7 @@ def _author_circumplex_lite(home: Path) -> Path:
     and ``ManifoldFolder.load`` enforces it for authored folders — so use
     enough nodes to pass load).  Just enough to drive ls / show.
     """
-    from drowse.store.manifolds import create_manifold_folder
+    from drowse.store.manifold_authoring import create_manifold_folder
     domain_spec = {"type": "box", "axes": [{"min": -1.0, "max": 1.0, "periodic": False}]}
     nodes = [
         {"label": "low", "coords": [-1.0], "statements": ["a statement here."]},
@@ -813,7 +813,7 @@ def test_run_manifold_show_json_matches_summary_helper(monkeypatch: pytest.Monke
     folder = _author_circumplex_lite(tmp_path)
     from drowse.store import selectors
     selectors.invalidate()
-    from drowse.store.manifolds import manifold_summary
+    from drowse.store.manifold_lifecycle import manifold_summary
     expected = manifold_summary(folder, include_fits=True)
     assert "fitted" in expected
     main(["pack", "show", "local/moodlite", "-j"])

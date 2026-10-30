@@ -132,7 +132,7 @@ def _write_fitted_manifold(
         layers=layers,
         mahalanobis_share=share,
     )
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
 
     folder = manifold_dir(ns, name)
     if not (folder / "manifold.json").exists():
@@ -148,7 +148,7 @@ def _write_fitted_manifold(
     }
     manifest = folder / "manifold.json"
     if manifest.exists():
-        from drowse.store.manifolds import ManifoldFolder
+        from drowse.store.manifold_folder import ManifoldFolder
 
         metadata["nodes_sha256"] = ManifoldFolder.load(
             folder, verify_manifest=False,
@@ -156,7 +156,7 @@ def _write_fitted_manifold(
         metadata["fit_policy_version"] = MANIFOLD_FIT_POLICY_VERSION
     save_manifold(mfld, path, metadata)
     if manifest.exists():
-        from drowse.store.manifolds import ManifoldFolder
+        from drowse.store.manifold_folder import ManifoldFolder
 
         ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
             path, path.with_suffix(".json"),
@@ -199,7 +199,7 @@ class TestFoldHelper:
         from drowse.base.paths import encode_release_id
         from drowse.store.manifold_tensors import load_manifold, save_manifold
 
-        from drowse.store.manifolds import ManifoldFolder
+        from drowse.store.manifold_folder import ManifoldFolder
 
         folder = _write_fitted_manifold("default", "happy.sad").parent
         raw = folder / tensor_filename(_MODEL)
@@ -308,9 +308,9 @@ class TestCompareFold:
 
 def _make_full_manifold(ns: str, name: str, *, seed: int = 0) -> Path:
     """A complete manifold folder (manifold.json + nodes) plus a fitted tensor."""
-    from drowse.store.manifolds import (
-        create_discover_manifold_folder, ManifoldFolder, hash_manifold_files,
-    )
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
+    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.manifolds import hash_manifold_files
     pos_label, neg_label = (
         name.split(".", 1) if "." in name else (name, f"{name}_neg")
     )
@@ -377,7 +377,7 @@ class TestGgufFold:
         from drowse.store.gguf import export_gguf_manifold
 
         # manifold.json but no fitted tensor for the model.
-        from drowse.store.manifolds import create_discover_manifold_folder
+        from drowse.store.manifold_authoring import create_discover_manifold_folder
         create_discover_manifold_folder(
             "default", "happy.sad", "x", fit_mode="pca",
             node_corpora={"happy": ["a"], "sad": ["b"]},
@@ -396,7 +396,7 @@ class TestGgufFold:
         from drowse.store import gguf as gguf_io
         from drowse.base import integrity
         from drowse.store.gguf import export_gguf_manifold
-        from drowse.store.manifolds import ManifoldFolder
+        from drowse.store.manifold_folder import ManifoldFolder
 
         folder = _make_full_manifold("default", "happy.sad")
         raw = folder / tensor_filename(_MODEL)
@@ -437,7 +437,7 @@ def test_default_probe_preflight_skips_unrelated_variant_hashes(
     from drowse.store.manifold_tensors import load_manifold
     from drowse.session.session import DrowseSession
     from drowse.base import integrity
-    from drowse.store.manifolds import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
     import drowse.store.manifolds as manifolds_module
     import drowse.store.bundled_probes as probes_module
 
