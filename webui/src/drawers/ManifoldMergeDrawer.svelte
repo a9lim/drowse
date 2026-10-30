@@ -27,15 +27,13 @@
   } from "../lib/stores.svelte";
   import { dismissToast, pushToast } from "../lib/stores/toasts.svelte";
   import type { ManifoldInfo } from "../lib/types";
+  import { isDiscoverFit } from "../lib/manifolds/fitKind";
 
   let _drawerProps: { params?: unknown } = $props();
   $effect(() => { void _drawerProps.params; });
 
   function rowKey(m: ManifoldInfo): string {
     return `${m.namespace}/${m.name}`;
-  }
-  function isDiscoverMode(m: ManifoldInfo): boolean {
-    return m.fit_mode === "pca" || m.fit_mode === "spectral" || m.fit_mode === "auto";
   }
 
   // ----- form state ----------------------------------------------------
@@ -46,7 +44,7 @@
 
   /** Discover-only catalog — merge sources must be autofitted. */
   const discoverManifolds = $derived(
-    steerRack.catalog.filter((m) => isDiscoverMode(m)),
+    steerRack.catalog.filter((m) => isDiscoverFit(m)),
   );
 
   function toggleSource(key: string): void {

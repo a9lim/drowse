@@ -38,19 +38,15 @@ import type {
 
 /** Per-term trigger keyword from the steering-expression grammar.
  *
- * Wire/UI form mirrors ``_TRIGGER_PRESETS`` in steering_expr.py.  ``BOTH`` is
- * the default; the canonical render of each preset goes back through the
- * formatter (``before``/``after``/``both``/``thinking``/``response``).
- * ``prompt`` and ``generated`` are accepted as aliases on parse but
- * normalize to ``before`` and ``response`` respectively at format time. */
+ * Wire/UI form mirrors the canonical presets of ``_TRIGGER_PRESETS`` in
+ * steering/grammar.py (``both``/``before``/``after``/``thinking``/``response``).
+ * The grammar's ``prompt``/``generated`` aliases are not UI values. */
 export type Trigger =
   | "BOTH"
-  | "BEFORE" // == prompt
-  | "AFTER" // after-thinking
+  | "BEFORE" // prompt prefill only
+  | "AFTER" // reply after thinking
   | "THINKING"
-  | "RESPONSE" // == generated
-  | "PROMPT" // alias of BEFORE
-  | "GENERATED"; // alias of RESPONSE
+  | "RESPONSE"; // every generated token
 
 /** Tensor variant suffix from the shared steering grammar. */
 export type Variant =

@@ -36,6 +36,7 @@
   import ModeTabs from "../lib/builder/ModeTabs.svelte";
   import { closeDrawer, openDrawer, steerRack, drawerState } from "../lib/stores.svelte";
   import { manifoldJobs } from "../lib/stores/manifoldJobs.svelte";
+  import { steeringDrawerFor } from "../lib/manifolds/fitKind";
   import AuthoredForm from "./manifold/AuthoredForm.svelte";
   import DiscoverForm from "./manifold/DiscoverForm.svelte";
   import TemplatedForm from "./manifold/TemplatedForm.svelte";
@@ -69,8 +70,7 @@
     if (drawerState.open !== "manifold_builder") return;
     const { namespace, name } = result ?? identitySlugs(identity);
     const created = steerRack.catalog.find(row => row.namespace === namespace && row.name === name);
-    const mode = created?.resolved_fit_mode ?? created?.fit_mode;
-    openDrawer(mode === "spectral" || mode === "authored" ? "manifolds" : "subspace", { returnToToken });
+    openDrawer(steeringDrawerFor(created), { returnToToken });
   }
 
   onInterfaceMount(() => registerInterfaceController("manifold_builder", {
