@@ -2479,6 +2479,7 @@ class _TreeStubSession(_StubSession):
         self.tree = LoomTree(model_id=_MODEL_ID)
         self.prepare_calls: list[dict[str, Any]] = []
         self.steering_scopes: list[Any] = []
+        self._renderer = SimpleNamespace(prepare_input=self._prepare_input)
 
     def _prepare_input(
         self,

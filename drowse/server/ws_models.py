@@ -179,7 +179,7 @@ def build_input(
     """Lower the strict wire message objects to the engine's mapping shape.
 
     ``model_dump`` carries ``label`` through verbatim, which is exactly the
-    per-turn key ``session._prepare_input`` hands to ``build_chat_input`` —
+    per-turn key ``PromptRenderer.prepare_input`` hands to ``build_chat_input`` —
     the wire message and a loom-derived message dict are the same shape.
     """
     if not isinstance(body, list):

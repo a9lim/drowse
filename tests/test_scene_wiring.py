@@ -254,11 +254,6 @@ def _grammar_with_closes(user_close: str, assistant_close: str) -> "TurnGrammar"
     )
 
 
-class _StopStub:
-    def __init__(self, grammar: "TurnGrammar | None") -> None:
-        self.scene_grammar = grammar
-
-
 def _augment(
     grammar: "TurnGrammar | None",
     stop_list: list[str] | None,
@@ -266,14 +261,9 @@ def _augment(
     gen_seat: str = "user",
     raw: bool = False,
 ) -> list[str] | None:
-    from typing import cast as _cast
+    from drowse.generation.render import seat_stop_strings
 
-    from drowse.session.session import DrowseSession
-
-    return DrowseSession._seat_stop_augmentation(
-        _cast(DrowseSession, _StopStub(grammar)), stop_list,
-        gen_seat=gen_seat, raw=raw,
-    )
+    return seat_stop_strings(grammar, stop_list, gen_seat=gen_seat, raw=raw)
 
 
 def test_seat_stop_added_when_closes_differ():

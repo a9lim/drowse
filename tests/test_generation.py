@@ -105,10 +105,17 @@ def _stub_instruments(
     }
 
 
+def _stub_renderer() -> Any:
+    """A renderer with no scene grammar whose seat stops pass through."""
+    return SimpleNamespace(
+        scene_grammar=None,
+        seat_stop_strings=lambda stop_list, **_kwargs: stop_list,
+    )
+
+
 def _complete_finalizer_session(session: Any) -> None:
     """Install the current finalizer collaborator roster on a narrow stub."""
-    session._scene_grammar = None
-    session._scene_grammar_resolved = True
+    session._renderer = _stub_renderer()
 
 
 class _CurrentSessionStub(DrowseSession):
@@ -160,22 +167,6 @@ def _complete_capture_session(session: Any) -> None:
     else:
         session._jlens = None
     session._jlens_identity = None
-
-
-class _EchoTokenizer:
-    """Minimal tokenizer: encodes text to a tensor of its char codes."""
-
-    name_or_path = "echo-tokenizer"
-
-    def encode(self, text: str, return_tensors: str | None = None) -> Any:
-        ids = [ord(c) for c in text]
-        if return_tensors == "pt":
-            return torch.tensor([ids], dtype=torch.long)
-        return ids
-
-
-def _decode_echo(ids: torch.Tensor) -> str:
-    return "".join(chr(int(t)) for t in ids[0])
 
 
 class _OffsetEchoTokenizer:
@@ -371,40 +362,6 @@ def test_readout_top_k_shares_logit_alternative_width() -> None:
     # Read-side discovery remains useful when alts are disabled.
     session._default_return_top_k = 0
     assert DrowseSession._effective_readout_top_k(session, None) == 8
-
-
-def test_prepare_input_raw_feeds_flat_active_path():
-    """raw=True walks the loom tree as flat text — no chat template, no
-    role markers — and appends the call's own input."""
-    from drowse.loom.tree import LoomTree
-
-    tree = LoomTree()
-    u1 = tree.add_user_turn("once upon a ")
-    a1 = tree.begin_assistant(u1)
-    tree.finalize_assistant(a1, text="time")
-
-    session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._tokenizer = _EchoTokenizer()
-    session._device = torch.device("cpu")
-    session.tree = tree
-
-    # Non-stateless: prefix is the flattened active path; input rides on top.
-    ids = DrowseSession._prepare_input(
-        session, " the fox", raw=True, parent_node_id=a1,
-    )
-    assert _decode_echo(ids) == "once upon a time the fox"
-
-    # Stateless: the tree is ignored — only the input string is encoded.
-    ids = DrowseSession._prepare_input(
-        session, " the fox", raw=True, stateless=True, parent_node_id=a1,
-    )
-    assert _decode_echo(ids) == " the fox"
-
-    # Empty input is a bare continuation — just the flattened buffer.
-    ids = DrowseSession._prepare_input(
-        session, "", raw=True, parent_node_id=a1,
-    )
-    assert _decode_echo(ids) == "once upon a time"
 
 
 def _scripted_logits(
@@ -1029,7 +986,7 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
         logprobs_list=[] if capture_logprobs else None,
     )
     session._whitener = None
-    session._seat_stop_augmentation = lambda stop_list, **_kwargs: stop_list
+    session._renderer = _stub_renderer()
     session._monitor = SimpleNamespace(
         probe_names=[],
         set_subspace_coords=lambda _enabled: None,

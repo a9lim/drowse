@@ -48,21 +48,16 @@ from drowse.generation.token_callback import (
     TokenConsumerOptions,
     consumer_options,
 )
-from drowse.model.scene import (
-    SceneGrammarError,
-    TurnGrammar,
-    extract_turn_grammar,
-    validate_turn_grammar,
-)
+from drowse.model.scene import TurnGrammar
+from drowse.generation.render import PromptRenderer
 from drowse.events import LoomMutated
 from drowse.loom.errors import (
     InvalidNodeOperationError,
     LoomTreeError,
     MutationDuringGenerationError,
 )
+from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt
 from drowse.loom.recipe import (
-    INHERIT_SYSTEM_PROMPT,
-    InheritSystemPrompt,
     CastMember,
     ComposedCall,
     Recipe,
@@ -1112,13 +1107,17 @@ class DrowseSession:
         # ``assistant``.
         self._active_role: str | None = None
 
-        # Scene grammar (the cast model's stitcher): lazily autopsied +
-        # round-trip-validated against the live chat template on first
-        # access.  ``None`` after resolution = scene mode unavailable
-        # (base model, label-free family, or validation failure) — every
-        # render falls back to the standard chat-template paths.
-        self._scene_grammar: TurnGrammar | None = None
-        self._scene_grammar_resolved: bool = False
+        # Prompt rendering: model type, the lazily validated scene grammar,
+        # system-prompt resolution, the loom-path render, seat stop strings.
+        self._renderer = PromptRenderer(
+            tokenizer=tokenizer,
+            model=model,
+            traits=self._chat,
+            device=self._device,
+            history=lambda: self.tree,
+            default_system_prompt=lambda: self.config.system_prompt,
+            steering_role=lambda: self._active_role,
+        )
 
         # Synchronous event bus.  Emits on extraction, steering enter/exit,
         # probe scoring, generation start/finish.  Subscribers run on the
@@ -3239,7 +3238,7 @@ class DrowseSession:
                 else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
-                prompt_ids = self._prepare_input(
+                prompt_ids = self._renderer.prepare_input(
                     "", raw=True, parent_node_id=node.parent_id,
                 )
             else:
@@ -3249,7 +3248,7 @@ class DrowseSession:
                 # byte-identical to the one that produced the node — and
                 # seat-general, no user-parent assumption (a cast-model
                 # node may hang under any turn).
-                prompt_ids = self._prepare_input(
+                prompt_ids = self._renderer.prepare_input(
                     None,
                     thinking=use_thinking,
                     parent_node_id=node.parent_id,
@@ -4036,13 +4035,13 @@ class DrowseSession:
                 else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
-                prompt_ids = self._prepare_input(
+                prompt_ids = self._renderer.prepare_input(
                     "", raw=True, parent_node_id=node.parent_id,
                 )
             else:
                 # Continue-mode rebuild — seat-general, mirrors
                 # ``jlens_token_readout``.
-                prompt_ids = self._prepare_input(
+                prompt_ids = self._renderer.prepare_input(
                     None,
                     thinking=use_thinking,
                     parent_node_id=node.parent_id,
@@ -4170,13 +4169,13 @@ class DrowseSession:
                 else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
-                prompt_ids = self._prepare_input(
+                prompt_ids = self._renderer.prepare_input(
                     "", raw=True, parent_node_id=node.parent_id,
                 )
             else:
                 # Continue-mode rebuild — seat-general, mirrors
                 # ``jlens_token_readout``.
-                prompt_ids = self._prepare_input(
+                prompt_ids = self._renderer.prepare_input(
                     None,
                     thinking=use_thinking,
                     parent_node_id=node.parent_id,
@@ -7393,157 +7392,15 @@ class DrowseSession:
 
     # -- Generation helpers --
 
-    def _resolved_model_type(self) -> str | None:
-        """``model_type`` with the multimodal ``text_config`` unwrap."""
-        model_cfg = getattr(self._model, "config", None)
-        text_cfg = (
-            getattr(model_cfg, "text_config", None)
-            if model_cfg is not None else None
-        )
-        model_type = (
-            getattr(text_cfg, "model_type", None)
-            if text_cfg is not None else None
-        )
-        if model_type is None and model_cfg is not None:
-            model_type = getattr(model_cfg, "model_type", None)
-        return model_type
+    @property
+    def renderer(self) -> PromptRenderer:
+        """The session's :class:`~drowse.generation.render.PromptRenderer`."""
+        return self._renderer
 
     @property
     def scene_grammar(self) -> TurnGrammar | None:
-        """The validated turn grammar for the loaded chat template, or None.
-
-        Lazily runs the template autopsy + byte-exact round-trip validation
-        (``model/scene.py``) once per session.  A passing grammar makes the
-        stitcher the render authority — arbitrary seat sequences, per-turn
-        cast labels, generation prompts on either seat — with renders
-        bit-identical to ``apply_chat_template`` on standard alternating
-        conversations.  ``None`` = scene mode unavailable (base model,
-        label-free family like mistral, or a template shape that defeated
-        the autopsy); rendering falls back to the chat-template paths and a
-        one-time warning names the reason.
-        """
-        if not self._scene_grammar_resolved:
-            self._scene_grammar_resolved = True
-            self._scene_grammar = None
-            template = getattr(self._tokenizer, "chat_template", None)
-            if template:
-                think = (
-                    ("<think>", "</think>") if "<think>" in template else None
-                )
-                try:
-                    grammar = extract_turn_grammar(
-                        self._tokenizer,
-                        self._resolved_model_type() or "",
-                        think_delimiters=think,
-                    )
-                    validate_turn_grammar(grammar, self._tokenizer)
-                    self._scene_grammar = grammar
-                except SceneGrammarError as e:
-                    _log.warning(
-                        "scene mode unavailable for this model (%s); "
-                        "rendering falls back to the chat template", e,
-                    )
-        return self._scene_grammar
-
-    def _prepare_input(
-        self, input: Any, raw: bool = False, thinking: bool = False,
-        stateless: bool = False,
-        parent_node_id: str | None = None,
-        user_role: str | None = None,
-        assistant_role: str | None = None,
-        to_device: bool = True,
-        gen_seat: str = "assistant",
-        add_generation_prompt: bool = True,
-        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
-    ) -> torch.Tensor:
-        if raw and (isinstance(input, str) or input is None):
-            # Flat (base-model / completion) path: no chat template, no
-            # role markers.  The model sees the active-path text verbatim
-            # — every node along the loom path concatenated — plus this
-            # call's own ``input``.  ``stateless`` skips the tree walk so
-            # the buffer is purely ``input``.  ``input=None`` is a bare
-            # continuation (no new span).
-            prefix = "" if stateless else self.tree.flat_text(parent_node_id)
-            encoded = self._tokenizer.encode(
-                prefix + (input or ""), return_tensors="pt",
-            )
-            ids = cast(torch.Tensor, encoded)  # return_tensors="pt" gives Tensor, not list[int]
-            return ids.to(self._device) if to_device else ids
-        if isinstance(input, str) or input is None:
-            if stateless:
-                prior: list[dict[str, Any]] = []
-            else:
-                # Walk the path to ``parent_node_id`` (or the active node).
-                # Loom: the model sees the conversation along whatever path
-                # the user is currently focused on, not a single flat log.
-                # ``with_labels`` carries each prior turn's stamped
-                # ``role_label`` so the render is faithful per-turn — earlier
-                # turns render with the roles they were *sent* with.
-                prior = self.tree.messages_for(parent_node_id, with_labels=True)
-            # The new user turn carries this send's user-role label.
-            # ``input=None`` is a continue: no new turn, the generation
-            # prompt opens directly after the existing history (the a/a and
-            # u-continue shapes of the cast model).
-            if input is None:
-                messages = prior
-            else:
-                messages = prior + [
-                    {"role": "user", "content": input, "label": user_role}
-                ]
-        elif isinstance(input, list):
-            messages = list(input)
-        else:
-            raise TypeError(f"Unsupported input type: {type(input)}")
-        # Generation-prompt label.  Assistant seat: a role-augmented steering
-        # scope (``_active_role``, transient, set by ``_SteeringContext`` for
-        # ``:role-<slug>`` vectors / persona manifolds) wins so steer
-        # baseline matches extract baseline; otherwise this send's
-        # ``assistant_role`` box drives the to-be-generated turn.  User
-        # seat: the ``user_role`` box labels the turn being generated (the
-        # elicitation-baseline contract is an assistant-seat construct, so
-        # ``_active_role`` doesn't apply there).  Prior turns' labels ride
-        # on the messages themselves (above).
-        steer_role = self._active_role
-        if gen_seat == "assistant":
-            gen_role = steer_role if steer_role is not None else assistant_role
-            if (
-                add_generation_prompt
-                and steer_role is not None
-                and assistant_role is not None
-                and steer_role != assistant_role
-            ):
-                # The steering scope's role baseline wins over the send's
-                # label (extract baseline = steer baseline), but the caller
-                # asked for a different header — say so rather than
-                # silently rendering a turn they didn't label.
-                import warnings as _warnings
-                from drowse.errors import RoleBaselineMismatchWarning
-                _warnings.warn(
-                    f"steering scope implies role {steer_role!r} but this "
-                    f"send labels the generated turn {assistant_role!r}; "
-                    f"the steering role wins for the generation header",
-                    RoleBaselineMismatchWarning,
-                    stacklevel=2,
-                )
-        else:
-            gen_role = user_role
-        model_type_for_role: str | None = None
-        any_label = gen_role is not None or any(
-            isinstance(m, dict) and m.get("label") for m in messages
-        )
-        if any_label:
-            model_type_for_role = self._resolved_model_type()
-        ids = build_chat_input(
-            self._tokenizer, messages, self.config.system_prompt if isinstance(system_prompt, InheritSystemPrompt) else system_prompt,
-            thinking=thinking,
-            add_generation_prompt=add_generation_prompt,
-            gen_role=gen_role,
-            model_type=model_type_for_role,
-            scene=self.scene_grammar,
-            traits=self.chat_traits,
-            gen_seat=gen_seat,
-        )
-        return ids.to(self._device) if to_device else ids
+        """The validated turn grammar for the loaded chat template, or None."""
+        return self._renderer.scene_grammar
 
     def _finalize_generation(
         self, generated_ids: list[int], elapsed: float,
@@ -7590,10 +7447,10 @@ class DrowseSession:
         ``assistant_role`` are this send's per-message role labels (the
         roleplay scaffold): the new user turn renders under ``user_role``
         and the generation prompt under ``assistant_role`` (a role-bearing
-        steering scope overrides the latter inside ``_prepare_input``).
+        steering scope overrides the latter inside the renderer).
         """
         use_thinking = thinking and self.chat_traits.supports_thinking
-        input_ids = self._prepare_input(
+        input_ids = self._renderer.prepare_input(
             input, raw=raw, thinking=use_thinking, stateless=stateless,
             parent_node_id=parent_node_id,
             user_role=user_role, assistant_role=assistant_role,
@@ -8012,39 +7869,6 @@ class DrowseSession:
 
     # -- Generation: core --
 
-    def _seat_stop_augmentation(
-        self,
-        stop_list: list[str] | None,
-        *,
-        gen_seat: str,
-        raw: bool,
-    ) -> list[str] | None:
-        """Add the gen seat's close segment as a stop string when needed.
-
-        Convention 2 (the cast model): generating into a seat stops on
-        that seat's terminator.  On every validated family the two seats
-        share a terminator, which the engine's EOS-id union already
-        catches — so the assistant path (and any shared-close family)
-        adds nothing and keeps its zero-cost no-stop-list fast path.
-        Only a non-assistant-seat gen on a family whose seat closes
-        *differ* (gpt-oss: user ``<|end|>`` vs assistant ``<|return|>``)
-        gains a stop string, guaranteeing the stop even where the
-        seat's terminator escapes the EOS union.  Raw / flat mode has
-        no seat closes.
-        """
-        if raw or gen_seat == "assistant":
-            return stop_list
-        grammar = self.scene_grammar
-        if grammar is None:
-            return stop_list
-        close = grammar.seat(gen_seat).close.strip()
-        if not close or close == grammar.assistant.close.strip():
-            return stop_list
-        out = list(stop_list) if stop_list else []
-        if close not in out:
-            out.append(close)
-        return out
-
     def _compose_generation_call(
         self,
         *,
@@ -8235,7 +8059,7 @@ class DrowseSession:
             steering=str(steering_obj) if steering_obj is not None else None,
             sampling=sampling,
             thinking=use_thinking_req,
-            system_prompt=None if raw else self.config.system_prompt if isinstance(system_prompt, InheritSystemPrompt) else system_prompt,
+            system_prompt=None if raw else self._renderer.resolve_system_prompt(system_prompt),
             probes=list(self._monitor.probe_names),
         ).with_probe_hashes(self._probe_hash)
         # The generated node's label follows its seat (user-seat gens are
@@ -8629,7 +8453,7 @@ class DrowseSession:
                 and self._whitener is None
             ):
                 self._install_whitener_if_missing()
-            stop_list = self._seat_stop_augmentation(
+            stop_list = self._renderer.seat_stop_strings(
                 stop_list, gen_seat=gen_seat, raw=raw,
             )
             return_probe_readings = bool(
@@ -8933,7 +8757,7 @@ class DrowseSession:
             # creates becomes the active leaf, and ``messages_for(None)`` later
             # walks INCLUDING that empty assistant — producing a trailing
             # empty-content assistant message AND a duplicated trailing user
-            # turn after ``_prepare_input`` re-appends ``input``.  Strict chat
+            # turn after the render re-appends ``input``.  Strict chat
             # templates (Mistral 3) reject the empty assistant outright with
             # ``Assistant message must have a string or a list of chunks ...``;
             # permissive templates render the duplicate user silently and
@@ -8991,7 +8815,7 @@ class DrowseSession:
             )
             authored_search_end: int | None = None
             if authored_targets and authored_channels_active and not raw:
-                content_only_ids = self._prepare_input(
+                content_only_ids = self._renderer.prepare_input(
                     input,
                     raw=False,
                     thinking=use_thinking,
@@ -9787,7 +9611,7 @@ class DrowseSession:
         user_role = sampling.user_role if sampling is not None else None
         assistant_role = sampling.assistant_role if sampling is not None else None
         for prompt in prompts:
-            ids = self._prepare_input(
+            ids = self._renderer.prepare_input(
                 prompt,
                 raw=raw,
                 thinking=False,
@@ -10207,7 +10031,7 @@ class DrowseSession:
         """
         rendered: list[torch.Tensor] = []
         for prompt in prompts:
-            ids = self._prepare_input(
+            ids = self._renderer.prepare_input(
                 prompt, raw=raw, stateless=True, to_device=False,
             )
             # Prefix discovery is scalar-heavy Python work. Keep the token

@@ -247,7 +247,7 @@ def _fast_batch_session():
         }
         return torch.tensor([mapping[input]], dtype=torch.long)
 
-    s._prepare_input = _prepare_input
+    s._renderer = SimpleNamespace(prepare_input=_prepare_input)
     return s, model
 
 
@@ -742,7 +742,7 @@ class TestPrefixCacheEligibility:
             suffix = 100 if input == "a" else 101
             return torch.tensor([common + [suffix]], dtype=torch.long)
 
-        cast(Any, s)._prepare_input = _prepare_input
+        cast(Any, s)._renderer = SimpleNamespace(prepare_input=_prepare_input)
 
         prefix = s._batch_common_prefix_ids(["a", "b"], raw=False)
 

@@ -13,7 +13,16 @@ many concurrent requests without request-local overrides leaking across calls.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, replace
+from enum import Enum
 from typing import Any
+
+
+class InheritSystemPrompt(Enum):
+    """Sentinel: no system prompt was given for this call; use the session's."""
+    VALUE = "session_default"
+
+
+INHERIT_SYSTEM_PROMPT = InheritSystemPrompt.VALUE
 
 
 @dataclass(frozen=True, slots=True)

@@ -18,19 +18,14 @@ from __future__ import annotations
 import re
 import secrets
 from dataclasses import dataclass, field, fields, replace
-from enum import Enum
 from typing import Any, Callable, NamedTuple
 
-from drowse.generation.sampling import SamplingConfig
+from drowse.generation.sampling import (
+    INHERIT_SYSTEM_PROMPT,
+    InheritSystemPrompt,
+    SamplingConfig,
+)
 from drowse.loom.errors import LoomTreeError, require_fields
-
-
-class InheritSystemPrompt(Enum):
-    """Sentinel: the recipe captured no system prompt; inherit the session's."""
-    VALUE = "session_default"
-
-
-INHERIT_SYSTEM_PROMPT = InheritSystemPrompt.VALUE
 
 # The persisted recipe shape (tree_format 2 / transcript v2).  ``seed`` is a
 # top-level key on disk and on the wire; in memory it is ``sampling.seed``.
@@ -618,8 +613,6 @@ __all__ = [
     "CALL_ONLY_SAMPLING_FIELDS",
     "CastMember",
     "ComposedCall",
-    "INHERIT_SYSTEM_PROMPT",
-    "InheritSystemPrompt",
     "Recipe",
     "compose_call",
     "derive_seed_schedule",

@@ -11,6 +11,7 @@ forward-pass + cache + reorient path without HF weights.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -461,7 +462,9 @@ class _MockSession:
         self._steering_needs_probe_gating = lambda: False
         self._build_gating_score_callback = lambda: None
         self._resolve_read_demand = lambda **_kwargs: None
-        self._resolved_model_type = lambda: None
+        self.renderer = SimpleNamespace(
+            prepare_input=self._prepare_input, model_type=None,
+        )
         self.scene_grammar = None
 
     def _prepare_input(self, _input: Any, **kwargs: Any) -> torch.Tensor:
@@ -643,7 +646,7 @@ def test_branch_inputs_rebuilds_generated_human_seat_prompt():
         seen.update(kwargs)
         return torch.tensor([[0, 1]], dtype=torch.long)
 
-    session._prepare_input = prepare_input
+    session.renderer = SimpleNamespace(prepare_input=prepare_input, model_type=None)
     branch = _branch_inputs(session, "a1")
 
     assert branch.prompt_ids == [0, 1]
