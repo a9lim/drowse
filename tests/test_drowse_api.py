@@ -659,7 +659,7 @@ class TestExtract:
             json={"name": "custom", "source_path": "/tmp/profile.pt"},
         )
         assert resp.status_code == 405
-        session.load_profile.assert_not_called()
+        session.registry.put_profile.assert_not_called()
 
 
 # ---- WebSocket token+probe co-stream ------------------------------------

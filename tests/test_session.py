@@ -91,13 +91,13 @@ class TestSteering:
         )
         assert isinstance(profile, Profile)
         assert all(isinstance(k, int) for k in profile)
-        session.steer("happy", profile)
+        session.registry.put_profile("happy", profile)
         assert "happy" in session.profiles
         # profile registry stores raw per-layer tensor dicts (wrap in Profile for the public view).
         assert isinstance(session.profiles["happy"], dict)
 
     def test_unsteer(self, session: DrowseSession) -> None:
-        session.unsteer("happy")
+        session.registry.pop_profile("happy")
         assert "happy" not in session.profiles
 
     def test_extract_curated(self, session: DrowseSession) -> None:
@@ -166,10 +166,10 @@ class TestGeneration:
         name, profile = session.extract_from_corpora(
             "formal.casual", _corpus("formal"), _corpus("casual"),
         )
-        session.steer(name, profile)
+        session.registry.put_profile(name, profile)
         result = session.generate("Hello.", steering=f"0.1 {name}").first
         assert result.steering_alphas == {name: 0.1}
-        session.unsteer(name)
+        session.registry.pop_profile(name)
 
     def test_generate_with_probes(self, session: DrowseSession) -> None:
         session.clear_history()
@@ -187,7 +187,7 @@ class TestGeneration:
         name, profile = session.extract_from_corpora(
             "happy", _corpus("I am happy"), _corpus("I am sad"),
         )
-        session.steer(name, profile)
+        session.registry.put_profile(name, profile)
         session.clear_history()
         steered = session.generate("Describe a sunset.", steering=f"0.2 {name}").first
         session.clear_history()
@@ -197,7 +197,7 @@ class TestGeneration:
         # Both should produce text
         assert len(steered.text) > 0
         assert len(unsteered.text) > 0
-        session.unsteer(name)
+        session.registry.pop_profile(name)
 
     def test_unknown_vector_raises(self, session: DrowseSession) -> None:
         with pytest.raises(KeyError, match="nonexistent"):
@@ -256,13 +256,13 @@ class TestStreamingGeneration:
         name, profile = session.extract_from_corpora(
             "happy", _corpus("I am happy"), _corpus("I am sad"),
         )
-        session.steer(name, profile)
+        session.registry.put_profile(name, profile)
         session.clear_history()
         tokens = list(session.generate_stream("Hello.", steering=f"0.15 {name}"))
         assert len(tokens) > 0
         assert session.last_result is not None  # generate_stream guarantees last_result is set
         assert session.last_result.steering_alphas == {name: 0.15}
-        session.unsteer(name)
+        session.registry.pop_profile(name)
 
 
 class TestAblation:
@@ -442,12 +442,12 @@ class TestPrefixCache:
         assert session._prefix_cache is not None
 
         # Make sure there's a steering vector to push.
-        if not session.has_profile("happy"):
+        if "happy" not in session.profiles:
             _, prof = session.extract_from_corpora(
                 "happy", _corpus("I am happy"), _corpus("I am sad"),
             )
-            session.steer("happy", prof)
-        # steer() itself invalidates; re-warm and verify scope-entry
+            session.registry.put_profile("happy", prof)
+        # Registering a profile itself invalidates; re-warm and verify scope-entry
         # is what we're really testing.
         session.cache_prefix(prefix_ids)
         assert session._prefix_cache is not None
@@ -458,4 +458,4 @@ class TestPrefixCache:
 
         # And the post-scope rebuild must NOT magically reinstate it.
         assert session._prefix_cache is None
-        session.unsteer("happy")
+        session.registry.pop_profile("happy")

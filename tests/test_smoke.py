@@ -628,7 +628,7 @@ class TestDiscoverManifoldEndToEnd:
                 )
 
             # ---- 4. steered generation at one node vs another ----
-            # The manifold loads into session._manifolds lazily on
+            # The manifold loads into the session registry lazily on
             # scope entry; ManifoldTerm carries the authoring position.
             label_a = manifold.node_labels[0]  # pirate
             label_b = manifold.node_labels[2]  # robot
