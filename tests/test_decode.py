@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
-from tests.conftest import FakeLogitsModel
+from tests.support.decode import FakeLogitsModel
 
 # Vocabulary: a bracket-pair thinking family (Mistral-3 Reasoning shape).
 _THINK, _END_THINK, _A, _B, _EOS = 0, 1, 2, 3, 4

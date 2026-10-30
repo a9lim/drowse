@@ -64,19 +64,15 @@ def test_single_scope_attaches_hooks_and_detaches_on_exit(session: Any) -> None:
 def test_resolving_a_projection_leaves_the_neutral_baseline_alone() -> None:
     """Resolution only records a ``~``/``|`` term's operands; the projection
     (and the whitener it needs) is computed at composition, under the lock."""
-    from types import SimpleNamespace
+    from tests.support.composer import SteeringRig
 
-    from tests.support.stubs import wire_stub_steering
-
-    stub = SimpleNamespace()
-    composer = wire_stub_steering(
-        stub, profiles={"a": {0: torch.ones(2)}, "b": {0: torch.ones(2)}},
-    )
+    rig = SteeringRig(profiles={"a": {0: torch.ones(2)}, "b": {0: torch.ones(2)}})
 
     def _no_build(**_kwargs: Any) -> None:
         raise AssertionError("resolution touched the neutral baseline")
 
-    stub._neutral.ensure = _no_build
+    rig.neutral.ensure = _no_build  # type: ignore[method-assign]
+    composer = rig.composer
     entries = composer.resolve(Steering.from_value("0.3 a|b + 0.2 a"))
     assert set(entries) == {"a|b", "a"}
     assert composer.projection("a|b") is None

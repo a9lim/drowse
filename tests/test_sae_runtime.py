@@ -20,9 +20,9 @@ from drowse import SamplingConfig
 from drowse.readout.types import ReadRequest
 from drowse.sae.backend import ResolvedSae, sae_device_str, select_runtime_layer
 from drowse.steering.grammar import format_expr, parse_expr
-from tests.support.sae import MockSaeBackend, make_resident, stub_sae_instrument
+from tests.support.sae import MockSaeBackend, make_resident, sae_instrument
 from tests.support.sessions import TinySessionFactory
-from tests.support.read_plane import fake_readout_family, gate_refs, make_read_plane
+from tests.support.read_plane import ReadRig, fake_readout_family, gate_refs
 
 
 class _Capture:
@@ -47,9 +47,8 @@ def _instrument() -> Any:
         layers=[object(), object(), object(), object()],
         device=torch.device("cpu"),
         dtype=torch.float32,
-        _capture=_Capture(torch.tensor([0.2, 3.0, 5.0, 1.0])),
     )
-    inst = stub_sae_instrument(stub)
+    inst = sae_instrument(stub, capture=_Capture(torch.tensor([0.2, 3.0, 5.0, 1.0])))
     make_resident(
         inst.runtime,
         MockSaeBackend(layers=frozenset({1}), d_model=4, d_feature=4),
@@ -431,9 +430,9 @@ def test_sae_gate_keys_none_vs_empty_contract() -> None:
 
 
 def test_read_plane_resolves_an_attached_sae_gate() -> None:
-    plane = make_read_plane(
+    plane = ReadRig(
         sae=fake_readout_family(("sae/2",)), gate_refs=gate_refs("0.3 sae/2@when:sae/2>3"),
-    )
+    ).plane
     gates = plane.resolve_gates()
     assert gates.sae_keys == {"sae/2"}
     assert gates.monitor_keys == frozenset() and gates.lens_keys == frozenset()
@@ -444,19 +443,18 @@ def test_unsupported_sae_gate_channel_raises_at_preflight() -> None:
     error (the 5.x replacement for the silently-constant fake channels)."""
     from drowse.errors import UnsupportedProbeChannelError
 
-    stub = SimpleNamespace(_monitor=SimpleNamespace(probe_names=()))
-    instrument = stub_sae_instrument(stub)
+    instrument = sae_instrument()
     _attach(instrument, "sae/2", 2)
-    plane = make_read_plane(
+    plane = ReadRig(
         sae=instrument, gate_refs=gate_refs("0.3 sae/2@when:sae/2:membership>0.5"),
-    )
+    ).plane
     with pytest.raises(UnsupportedProbeChannelError) as exc_info:
         plane.resolve_gates()
     status, text = exc_info.value.user_message()
     assert status == 400
     assert "sae/2:membership" in text
     # A supported-channel gate on the same probe still composes.
-    plane = make_read_plane(sae=instrument, gate_refs=gate_refs("0.3 sae/2@when:sae/2>3"))
+    plane = ReadRig(sae=instrument, gate_refs=gate_refs("0.3 sae/2@when:sae/2>3")).plane
     assert plane.resolve_gates().sae_keys == {"sae/2"}
 
 

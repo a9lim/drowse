@@ -413,17 +413,13 @@ def _probe_session(
     sae_probes: dict[str, Any] | None = None,
     sae_layer: int | None = None,
 ) -> Any:
-    """A narrow session stub with real lens/SAE instruments, and a real read
-    plane over them whose capture is ``stub._capture``."""
-    from drowse.session.session import DrowseSession
+    """A real read plane over real lens/SAE instruments on eight layers;
+    :func:`_begin` points its capture at a fake."""
+    from tests.support.read_plane import ReadRig
     from tests.support.sae import make_resident
-    from tests.support.stubs import attach_stub_instruments, wire_stub_read_plane
 
-    session: Any = DrowseSession.__new__(DrowseSession)
-    session._layers = [object()] * 8
-    session._monitor = monitor
-    attach_stub_instruments(session)
-    lens, sae = session._lens_instrument, session._sae_instrument
+    rig = ReadRig(monitor=monitor, layers=[object()] * 8)
+    lens, sae = rig.lens, rig.sae
     lens.live = lens_live
     lens.probes = dict(lens_probes or {})
     lens.active_for_generation = True
@@ -441,8 +437,7 @@ def _probe_session(
         if lens_live is not None or lens.probes else None
     )
     lens.resident = lambda: resident
-    wire_stub_read_plane(session)
-    return session
+    return rig
 
 
 class _RecordingCapture:
@@ -488,9 +483,9 @@ _NO_FINAL: dict[str, Any] = dict(
 )
 
 
-def _begin(session: Any, capture: Any, demand: ReadDemand, **kwargs: Any) -> bool:
-    session._capture = capture
-    return session._read_plane.begin(demand, **kwargs)
+def _begin(rig: Any, capture: Any, demand: ReadDemand, **kwargs: Any) -> bool:
+    rig.capture.target = capture
+    return rig.plane.begin(demand, **kwargs)
 
 
 def test_lens_live_without_final_aggregate_keeps_one_latest_slice() -> None:
@@ -508,7 +503,7 @@ def test_dormant_lens_probe_without_final_aggregate_attaches_nothing() -> None:
     capture = _RecordingCapture()
     assert _begin(session, capture, ReadDemand(**_NO_FINAL)) is False
     assert capture.attached is None
-    assert session._read_plane.state.final_probe_aggregate is False
+    assert session.plane.state.final_probe_aggregate is False
 
 
 def test_lens_gate_without_final_aggregate_attaches_the_gated_band() -> None:
@@ -540,7 +535,7 @@ def test_dormant_sae_probe_without_final_aggregate_attaches_nothing() -> None:
     capture = _RecordingCapture()
     assert _begin(session, capture, ReadDemand(**_NO_FINAL)) is False
     assert capture.attached is None
-    assert session._read_plane.state.final_probe_aggregate is False
+    assert session.plane.state.final_probe_aggregate is False
 
 
 def test_sae_gate_without_final_aggregate_attaches_the_sae_layer() -> None:
@@ -553,7 +548,7 @@ def test_sae_gate_without_final_aggregate_attaches_the_sae_layer() -> None:
     assert capture.attached == [5]
     assert capture.depth == 1
     # The armed retention is a ring, so the recorded mode says so.
-    assert session._read_plane.state.mode is CaptureMode.AGGREGATE_ONLY
+    assert session.plane.state.mode is CaptureMode.AGGREGATE_ONLY
 
 
 def test_dormant_monitor_probes_attach_nothing() -> None:
@@ -569,14 +564,14 @@ def test_dormant_monitor_probes_attach_nothing() -> None:
 
     session = _probe_session(monitor=Monitor())
     assert _begin(session, Capture(), ReadDemand(**_NO_FINAL)) is False
-    assert session._read_plane.state.final_probe_aggregate is False
+    assert session.plane.state.final_probe_aggregate is False
 
 
 def test_begin_takes_per_token_full_consumer_from_the_demand() -> None:
     """``begin`` must not re-derive the demand's predicates: a gate-only
     generation has ``need_per_token`` with no full-roster consumer."""
     from drowse.readout.types import InstrumentPrep
-    from tests.support.read_plane import make_read_plane
+    from tests.support.read_plane import ReadRig
 
     class Recording:
         def __init__(self, family: str) -> None:
@@ -597,11 +592,11 @@ def test_begin_takes_per_token_full_consumer_from_the_demand() -> None:
             pass
 
     geometry, lens, sae = Recording("geometry"), Recording("lens"), Recording("sae")
-    plane = make_read_plane(
+    plane = ReadRig(
         capture=SimpleNamespace(clear=lambda: None),
         monitor=SimpleNamespace(probe_names=[]),
         geometry=geometry, lens=lens, sae=sae, layers=[object()] * 4,
-    )
+    ).plane
     demand = ReadDemand(need_per_token=True, per_token_full_consumer=False)
     assert plane.begin(demand) is False
     for instrument in (geometry, lens, sae):
@@ -634,7 +629,7 @@ def test_monitor_final_aggregate_arms_a_cold_aggregate_ring() -> None:
     assert capture.attached == [2, 4]
     assert capture.depth is not None and capture.depth > 1
     assert capture.sink is None
-    assert session._read_plane.state.mode is CaptureMode.AGGREGATE_ONLY
+    assert session.plane.state.mode is CaptureMode.AGGREGATE_ONLY
     assert monitor.warm is False
 
 
@@ -685,7 +680,7 @@ def test_a_gate_only_control_call_narrows_capture_to_the_gated_probes() -> None:
     assert monitor.layer_query == {"gate"}
     assert capture.attached == [2]
     assert capture.depth == 1 and capture.sink is not None
-    state = session._read_plane.state
+    state = session.plane.state
     assert state.mode is CaptureMode.GATING_SUBSET
     assert state.final_probe_aggregate is False
 
@@ -701,7 +696,7 @@ def test_the_gated_subset_sink_reuses_its_preplanned_gate_scalars() -> None:
     capture.sink(0, {2: torch.ones(4)})
     assert monitor.score_plans == [("plan",)]
     # The gate callback reads the sink's row for this forward.
-    plane = session._read_plane
+    plane = session.plane
     plane._gate_refs = lambda: [("gate@x", parse_gate_ref("gate@x"))]
     assert plane.gate_score_callback()(0) == {"gate": 0.25}
     assert monitor.score_plans == [("plan",)]
@@ -732,7 +727,7 @@ def test_full_incremental_capture_deep_rings_only_the_readout_aggregate_layers()
     assert capture.attached == [0, 1, 3, 5]
     assert capture.depth is not None and capture.depth > 1
     assert set(capture.tail_layers) == {3, 5}
-    assert session._read_plane.state.mode is CaptureMode.INCREMENTAL
+    assert session.plane.state.mode is CaptureMode.INCREMENTAL
 
 
 def test_persistent_buffers_carry_a_live_lens_compile_clean() -> None:
@@ -750,4 +745,4 @@ def test_persistent_buffers_carry_a_live_lens_compile_clean() -> None:
 
     assert _begin(session, Capture(), ReadDemand(), persistent_buffers=given) is True
     assert persistent == [1, 3]
-    assert session._read_plane.state.persistent is True
+    assert session.plane.state.persistent is True

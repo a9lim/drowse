@@ -9,13 +9,13 @@ import pytest
 
 from drowse.sae import neuronpedia
 from drowse.sae import sources as sae_io
-from tests.support.sae import MockSaeBackend, make_resident, stub_sae_instrument
+from tests.support.sae import MockSaeBackend, make_resident, sae_instrument
 
 
 def _instrument(feature_meta: dict[str, dict[str, Any]] | None = None) -> Any:
     """A real SAE instrument over a stub, with a 4-wide mock dictionary
     resident at layer 1 under the Neuronpedia binding ``test-model/1-dictionary``."""
-    inst = stub_sae_instrument(SimpleNamespace(model_id="org/model"))
+    inst = sae_instrument(SimpleNamespace(model_id="org/model"))
     make_resident(
         inst.runtime,
         MockSaeBackend(

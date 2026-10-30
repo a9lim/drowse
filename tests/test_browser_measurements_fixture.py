@@ -15,7 +15,7 @@ from drowse.lens.jlens import (
 from drowse.readout.measurements import build_measurements
 from drowse.readout.monitor import _depth_stats
 from drowse.readout.types import ProbeReading
-from tests.support.sae import make_resident, stub_sae_instrument
+from tests.support.sae import make_resident, sae_instrument
 
 
 FIXTURE = (
@@ -140,16 +140,16 @@ def test_browser_measurement_fixture_matches_python_source_of_truth() -> None:
     sae_session = SimpleNamespace(
         layers=[object() for _ in range(model_layer_count)],
     )
-    sae_instrument = stub_sae_instrument(sae_session)
+    sae_inst = sae_instrument(sae_session)
     make_resident(
-        sae_instrument.runtime,
+        sae_inst.runtime,
         layer=sae["layer"],
         width=sae["featureCount"],
         feature_meta={
             str(sae["featureId"]): {"label": sae["label"], "max_act": sae["maxAct"]},
         },
     )
-    sae_instrument.probes[sae["name"]] = {
+    sae_inst.probes[sae["name"]] = {
         "feature_id": sae["featureId"],
         "layer": sae["layer"],
         "label": sae["label"],
@@ -157,7 +157,7 @@ def test_browser_measurement_fixture_matches_python_source_of_truth() -> None:
     }
     sae_activations = torch.zeros(sae["featureCount"], dtype=torch.float32)
     sae_activations[sae["featureId"]] = sae["activation"]
-    sae_reading = sae_instrument.score_probes_from_activations(
+    sae_reading = sae_inst.score_probes_from_activations(
         sae_activations,
     )[sae["name"]]
     assert sae_reading.value == sae["value"]

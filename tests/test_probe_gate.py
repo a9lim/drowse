@@ -14,7 +14,6 @@ heavy to stub usefully.  These tests cover the moving parts.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 import pathlib
 from typing import cast
@@ -23,7 +22,7 @@ import pytest
 
 from drowse.steering.terms import Steering
 from drowse.steering.composer import SteeringComposer
-from tests.support.stubs import wire_stub_steering
+from tests.support.composer import SteeringRig
 from drowse.steering.grammar import (
     SteeringExprError, format_expr, parse_expr,
 )
@@ -252,7 +251,7 @@ class TestGrammar:
 
 def _new_composer() -> SteeringComposer:
     """A steering composer over an empty registry (no model)."""
-    return wire_stub_steering(SimpleNamespace())
+    return SteeringRig().composer
 
 
 class TestSessionProbeGateDetection:

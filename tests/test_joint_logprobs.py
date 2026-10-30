@@ -37,7 +37,7 @@ from drowse.server.tree_routes import (
     _remember_joint_logprobs,
 )
 from drowse.steering.triggers import TriggerContext
-from tests.conftest import FakeLogitsModel
+from tests.support.decode import FakeLogitsModel
 from tests.support.lens import stub_lens_instrument
 from tests.support.replay import unwired_replay
 
@@ -416,7 +416,7 @@ class _MockSession:
         from types import SimpleNamespace
 
         from drowse.readout.geometry import GeometryInstrument
-        from tests.support.read_plane import make_read_plane
+        from tests.support.read_plane import ReadRig
         from tests.support.sae import stub_sae_instrument
         from drowse.readout.types import ReadRequest
 
@@ -448,13 +448,13 @@ class _MockSession:
         self._sae_instrument = stub_sae_instrument(self)
 
         request = ReadRequest(final_aggregate=False)
-        plane = make_read_plane(
+        plane = ReadRig(
             capture=SimpleNamespace(detach=lambda: None),
             monitor=self._monitor,
             geometry=self._geometry_instrument,
             lens=self._lens_instrument,
             sae=self._sae_instrument,
-        )
+        ).plane
         plane.resolve_demand = lambda **_kwargs: None
         plane.begin = lambda *_args, **_kwargs: (
             plane.bind_runs(request, request, request) and False

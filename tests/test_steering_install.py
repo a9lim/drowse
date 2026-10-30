@@ -1,6 +1,6 @@
 """The installed steering is a function of the steering stack.
 
-CPU tests over a model-free session skeleton whose layers carry the persistent
+CPU tests over a model-free steering composer whose layers carry the persistent
 compiled-offset hooks a compiled CUDA/MPS session adopts, so the offset path
 is exercised without a compiled model:
 
@@ -12,40 +12,24 @@ is exercised without a compiled model:
 """
 from __future__ import annotations
 
-import threading
-from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import torch
 from torch import nn
 
 from drowse.errors import SteeringCompositionError
-from drowse.events import EventBus
 from drowse.generation.compile_runtime import CompiledRuntime
-from drowse.loom.tree import LoomTree
-from drowse.session.session import DrowseSession
-from tests.support.engine import attach_engine
 from drowse.steering.grammar import ManifoldTerm
 from drowse.steering.hooks import SteeringManager, install_persistent_offset_hooks
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
-from drowse.store import selectors as _sel
 from tests._whitener import isotropic_whitener
-from tests.test_manifold_steering import _manifold
-from tests.support.stubs import attach_stub_instruments, wire_stub_steering
+from tests.support.manifolds import loop_manifold as _manifold
+from tests.support.composer import SteeringRig
 
 _D = 8
 _N_LAYERS = 3
-
-
-@pytest.fixture(autouse=True)
-def _isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    _sel.invalidate()
-    yield
-    _sel.invalidate()
 
 
 def _unit(i: int) -> torch.Tensor:
@@ -54,35 +38,27 @@ def _unit(i: int) -> torch.Tensor:
     return v
 
 
-def _session(*, compiled: bool = True) -> tuple[DrowseSession, dict[int, torch.Tensor]]:
-    session = DrowseSession.__new__(DrowseSession)
-    attach_stub_instruments(session)
-    s = cast(Any, session)
-    s._model = None
-    s._tokenizer = None
-    s._model_info = {"model_id": "stub/model"}
-    s._layers = nn.ModuleList([nn.Identity() for _ in range(_N_LAYERS)])
-    s._device = torch.device("cpu")
-    s._dtype = torch.float32
-    s._steering = SteeringManager()
+def _session(*, compiled: bool = True) -> tuple[SteeringRig, dict[int, torch.Tensor]]:
+    """A steering composer over identity layers, with the persistent
+    compiled-offset hooks installed (``compiled=True``) as a compiled session
+    adopts them."""
+    layers = nn.ModuleList([nn.Identity() for _ in range(_N_LAYERS)])
+    manager = SteeringManager()
     buffers: dict[int, torch.Tensor] = {}
     if compiled:
         buffers, handles = install_persistent_offset_hooks(
-            s._layers, _D, torch.device("cpu"), torch.float32,
+            layers, _D, torch.device("cpu"), torch.float32,
         )
-        s._steering.adopt_compiled_offsets(buffers, handles)
-    s._gen_lock = threading.RLock()
-    attach_engine(s, runtime=CompiledRuntime(compiled=compiled))
-    s._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _on: None)
-    s.events = EventBus()
-    s.tree = LoomTree()
-    wire_stub_steering(
-        session,
+        manager.adopt_compiled_offsets(buffers, handles)
+    rig = SteeringRig(
+        layers=layers,
+        manager=manager,
         profiles={"a": {1: _unit(0)}, "b": {1: _unit(1)}},
         layer_means={1: torch.zeros(_D)},
         whitener=isotropic_whitener([1], _D),
     )
-    return session, buffers
+    rig.attach_engine(CompiledRuntime(compiled=compiled))
+    return rig, buffers
 
 
 def _offsets(buffers: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
@@ -101,7 +77,7 @@ def test_exited_scope_zeroes_the_compiled_offsets() -> None:
     route was steered by the exited scope.
     """
     session, buffers = _session()
-    manager = session._steering
+    manager = session.manager
     with session.steering("0.5 a"):
         assert manager.uses_compiled_offsets
         assert not manager.hooks
@@ -119,10 +95,10 @@ def test_generation_scope_restores_outer_offsets_through_teardown() -> None:
     scope ran unsteered.
     """
     session, buffers = _session()
-    manager = session._steering
+    manager = session.manager
     with session.steering("0.5 a"):
         outer = _offsets(buffers)
-        with session._engine.transaction() as txn:
+        with session.engine.transaction() as txn:
             txn.steering_cm = session.steering("0.3 b")
             txn.steering_cm.__enter__()
             assert not torch.equal(buffers[1], outer[1])
@@ -130,7 +106,7 @@ def test_generation_scope_restores_outer_offsets_through_teardown() -> None:
         for L, buf in buffers.items():
             assert torch.equal(buf, outer[L])
         # A generation with no inner steering keeps them too.
-        with session._engine.transaction():
+        with session.engine.transaction():
             pass
         for L, buf in buffers.items():
             assert torch.equal(buf, outer[L])
@@ -144,8 +120,8 @@ def test_failed_push_keeps_the_outer_scope_installed() -> None:
     the outer entries on the stack with nothing installed.
     """
     session, _buffers = _session(compiled=False)
-    session._registry.put_manifold("mood", _manifold(layers=(2,)))
-    manager = session._steering
+    session.registry.put_manifold("mood", _manifold(layers=(2,)))
+    manager = session.manager
     bad = Steering(alphas={
         "mood%0.5": ManifoldTerm(
             along=-0.5, onto=0.0, trigger=Trigger.BOTH,
@@ -162,7 +138,7 @@ def test_failed_push_keeps_the_outer_scope_installed() -> None:
         assert manager.plan is outer_plan
         assert manager.hooks == outer_hooks
         hidden = torch.zeros(1, 1, _D)
-        session._layers[1](hidden)
+        session.layers[1](hidden)
         assert bool(hidden.any())  # the outer push still fires
     assert not manager.hooks
 
@@ -179,17 +155,17 @@ def test_inverted_regen_flips_affine_manifold_terms_and_refuses_curved() -> None
 
     session, _buffers = _session(compiled=False)
     ray = fold_directions_to_subspace(
-        "ray", {1: _unit(0)}, session._neutral.means,
-        whitener=session._neutral.resident_whitener, label="pole",
+        "ray", {1: _unit(0)}, session.neutral.means,
+        whitener=session.neutral.resident_whitener, label="pole",
     )
-    session._registry.put_manifold("ray", ray)
-    session._registry.put_manifold("mood", _manifold(layers=(2,)))
-    manager = session._steering
+    session.registry.put_manifold("ray", ray)
+    session.registry.put_manifold("mood", _manifold(layers=(2,)))
+    manager = session.manager
 
     def pushed(expr: str) -> torch.Tensor:
         with session.steering(expr):
             hidden = torch.zeros(1, 1, _D)
-            session._layers[1](hidden)
+            session.layers[1](hidden)
         return hidden[0, 0]
 
     inverted = Recipe(steering="0.5 ray%pole").invert_steering().steering
@@ -203,7 +179,7 @@ def test_inverted_regen_flips_affine_manifold_terms_and_refuses_curved() -> None
     with pytest.raises(SteeringCompositionError, match="no opposite"):
         session.steering(inverted).__enter__()
     assert manager.plan is None
-    assert session._steering_composer._stack == []
+    assert session.composer._stack == []
 
 
 @pytest.mark.parametrize("compiled", [True, False])
@@ -218,13 +194,13 @@ def test_failed_pop_rebuild_uninstalls_the_exited_scope(compiled: bool) -> None:
     from drowse.errors import ProfileNotRegisteredError
 
     session, buffers = _session(compiled=compiled)
-    manager = session._steering
-    composer = session._steering_composer
+    manager = session.manager
+    composer = session.composer
     outer = session.steering("0.5 a")
     outer.__enter__()
     inner = session.steering("0.3 b")
     inner.__enter__()
-    session._registry.pop_profile("a")
+    session.registry.pop_profile("a")
     with pytest.raises(ProfileNotRegisteredError):
         inner.__exit__(None, None, None)
     assert [list(entry) for entry in composer._stack] == [["a"]]
@@ -233,18 +209,18 @@ def test_failed_pop_rebuild_uninstalls_the_exited_scope(compiled: bool) -> None:
     assert not manager.uses_compiled_offsets
     assert _zero(buffers)
     hidden = torch.zeros(1, 1, _D)
-    for layer in session._layers:
+    for layer in session.layers:
         hidden = layer(hidden)
     assert not bool(hidden.any())
     # Restoring the profile lets the outer scope exit cleanly.
-    session._registry.put_profile("a", {1: _unit(0)})
+    session.registry.put_profile("a", {1: _unit(0)})
     outer.__exit__(None, None, None)
     assert composer._stack == []
 
 
 def test_repeated_push_reuses_the_composed_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     session, _buffers = _session(compiled=False)
-    composer = session._steering_composer
+    composer = session.composer
     calls: list[tuple[str, ...]] = []
     original = composer.compose
 
@@ -255,15 +231,15 @@ def test_repeated_push_reuses_the_composed_plan(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(composer, "compose", counting)
     for _ in range(3):
         with session.steering("0.5 a"):
-            plan = session._steering.plan
+            plan = session.manager.plan
     assert calls == [("a",)]
     with session.steering("0.5 a"):
-        assert session._steering.plan is plan
+        assert session.manager.plan is plan
 
     # Re-registering the profile invalidates the cached plan.
-    session._registry.put_profile("a", {1: 2.0 * _unit(0)})
+    session.registry.put_profile("a", {1: 2.0 * _unit(0)})
     with session.steering("0.5 a"):
-        assert session._steering.plan is not plan
+        assert session.manager.plan is not plan
     assert calls == [("a",), ("a",)]
 
 
@@ -274,8 +250,8 @@ def test_bare_variant_manifold_term_concretizes_before_loading(
     from drowse.steering.grammar import parse_expr
 
     session, _buffers = _session(compiled=False)
-    composer = session._steering_composer
-    registry = session._registry
+    composer = session.composer
+    registry = session.registry
     monkeypatch.setattr(
         registry, "concretize_key",
         lambda key: key.replace(":role", ":role-pirate"),
@@ -295,4 +271,4 @@ def test_unknown_vector_raises_before_the_scope_is_entered() -> None:
     session, _buffers = _session(compiled=False)
     with pytest.raises(ProfileNotRegisteredError):
         session.steering("0.5 missing")
-    assert session._steering_composer._stack == []
+    assert session.composer._stack == []

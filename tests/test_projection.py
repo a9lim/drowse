@@ -1,8 +1,8 @@
 """Runtime projection: unit-level project_profile + session materialization.
 
 Pure tensor math is tested in ``TestProjectProfile``; the session-level
-integration uses a ``_Stub`` — a ``DrowseSession`` that bypasses the
-model-loading machinery and pre-registers profiles directly.
+integration runs on a real steering composer (``SteeringRig``) with the
+profiles pre-registered.
 
 Mahalanobis-only (4.0 collapse): ``project_profile`` is the closed-form LEACE
 projector and *requires* a whitener covering every projected layer — there is
@@ -23,7 +23,7 @@ from drowse.steering.grammar import parse_expr
 from drowse.steering.triggers import Trigger
 from drowse.geometry.fold import project_profile
 from tests._whitener import synthetic_whitener
-from tests.support.stubs import wire_stub_steering
+from tests.support.composer import SteeringRig
 
 
 def _whit(layers: Any, dim: int):
@@ -175,7 +175,7 @@ class TestProjectProfile:
 
 # ---------------------------------------------- session-level integration ---
 
-class _Stub:
+class _Stub(SteeringRig):
     """A steering composer over in-memory profiles (no model).
 
     Projection materialization is Mahalanobis-only, so the stub carries a real
@@ -192,23 +192,19 @@ class _Stub:
                 layers.add(L)
                 dim = t.shape[-1]
         self.whitener = _whit(sorted(layers), dim) if layers else None
-        self._model_info = {"model_id": "stub/model"}
-        self._rebuild_calls: list[dict[str, Any]] = []
-        self._rebuild_entries: list[dict[str, Any]] = []
-        self.composer = wire_stub_steering(
-            self, profiles=profiles,
+        super().__init__(
+            profiles=profiles,
             layer_means={L: torch.zeros(dim) for L in layers},
             whitener=self.whitener,
         )
+        self._rebuild_calls: list[dict[str, Any]] = []
+        self._rebuild_entries: list[dict[str, Any]] = []
         self.composer.rebuild_hooks = self._rebuild  # type: ignore[method-assign]
 
     def drop_whitener(self) -> None:
-        means = dict(self._neutral.means)
-        self._neutral.adopt(means, None)
-        self._neutral.ensure = lambda **_kw: None  # type: ignore[method-assign]
-
-    def steering(self, value: Any) -> Any:
-        return self.composer.open_scope(value)
+        means = dict(self.neutral.means)
+        self.neutral.adopt(means, None)
+        self.neutral.ensure = lambda **_kw: None  # type: ignore[method-assign]
 
     def projection(self, key: str) -> Any:
         return self.composer.projection(key)
@@ -240,7 +236,7 @@ class TestSessionProjection:
         steering = parse_expr("0.5 a|b")
         with s.steering(steering):
             # The projection never enters the artifact registry.
-            assert "a|b" not in s._registry.profiles
+            assert "a|b" not in s.registry.profiles
             # LEACE ``|`` erases b under the session's M-metric.
             proj = s.projection("a|b")[0]
             assert _m_dot(s.whitener, 0, proj, _profile_b()[0]) == pytest.approx(
@@ -252,7 +248,7 @@ class TestSessionProjection:
         s = _Stub({"a": _profile_a(), "b": _profile_b()})
         steering = parse_expr("0.5 a~b")
         with s.steering(steering):
-            assert "a~b" not in s._registry.profiles
+            assert "a~b" not in s.registry.profiles
             # ``~`` keeps the b-component: result ∥ b (b = e0, so only x ≠ 0).
             proj = s.projection("a~b")[0]
             assert proj[1].abs() < 1e-5
@@ -575,21 +571,21 @@ class TestNestedProjectionScopeLeak:
             with s.steering(parse_expr("0.7 a|b")):
                 assert s.projection("a|b") is outer
             assert s.projection("a|b") is outer
-        assert "a|b" not in s._registry.profiles
+        assert "a|b" not in s.registry.profiles
 
     def test_scope_never_registers_the_synthetic_key(self):
         s = _Stub({"a": _profile_a(), "b": _profile_b()})
-        before = dict(s._registry.profiles)
+        before = dict(s.registry.profiles)
         with s.steering(parse_expr("0.5 a|b")):
-            assert "a|b" not in s._registry.profiles
-        assert dict(s._registry.profiles) == before
+            assert "a|b" not in s.registry.profiles
+        assert dict(s.registry.profiles) == before
 
     def test_registered_profile_named_like_a_projection_is_untouched(self):
         s = _Stub({"a": _profile_a(), "b": _profile_b()})
         sentinel = {0: torch.tensor([99.0, 99.0])}
-        s._registry.put_profile("a|b", sentinel)
-        stored = s._registry.profiles["a|b"]
+        s.registry.put_profile("a|b", sentinel)
+        stored = s.registry.profiles["a|b"]
         with s.steering(parse_expr("0.5 a|b")):
-            assert s._registry.profiles["a|b"] is stored
+            assert s.registry.profiles["a|b"] is stored
             assert not torch.equal(s.projection("a|b")[0], sentinel[0])
-        assert s._registry.profiles["a|b"] is stored
+        assert s.registry.profiles["a|b"] is stored

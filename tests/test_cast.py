@@ -13,7 +13,7 @@ from typing import Any, cast
 from drowse import CastMember, LoomTree, Recipe, SamplingConfig
 from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT
 from drowse.session.session import DrowseSession
-from tests.support.engine import attach_engine
+from tests.support.engine import engine_over
 
 
 class _Stub:
@@ -34,7 +34,7 @@ def _apply(
     raw: bool = False,
     gen_seat: str = "assistant",
 ) -> tuple[Any, SamplingConfig | None, bool | None]:
-    out = attach_engine(stub).compose_call(
+    out = engine_over(stub).compose_call(
         steering=steering, sampling=sampling,
         thinking=thinking, system_prompt=INHERIT_SYSTEM_PROMPT,
         raw=raw, gen_seat=gen_seat, parent_node_id=None, recipe_override=None,
@@ -143,7 +143,7 @@ def test_anchor_seed_beats_the_cast_seed_on_an_unseeded_regen():
     stub.tree.finalize_assistant(node, text="hello")
 
     def regen(sampling: SamplingConfig) -> SamplingConfig | None:
-        return attach_engine(stub).compose_call(
+        return engine_over(stub).compose_call(
             steering=None, sampling=sampling, thinking=None,
             system_prompt=INHERIT_SYSTEM_PROMPT, raw=False, gen_seat="assistant",
             parent_node_id=node, recipe_override="cool",
@@ -169,7 +169,7 @@ def test_cast_member_steering_yields_to_the_regen_anchor():
         sampling=SamplingConfig(seed=5, assistant_role="deer"),
     ))
     stub.tree.finalize_assistant(node, text="hello")
-    out = attach_engine(stub).compose_call(
+    out = engine_over(stub).compose_call(
         steering=None,
         sampling=SamplingConfig(assistant_role="deer"), thinking=None,
         system_prompt=INHERIT_SYSTEM_PROMPT, raw=False, gen_seat="assistant",

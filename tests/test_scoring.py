@@ -37,7 +37,7 @@ from drowse.generation.scoring import (
     score_template,
 )
 
-from tests.conftest import CharTokenizer, FakeLogitsModel
+from tests.support.decode import CharTokenizer, FakeLogitsModel
 
 
 # --------------------------------------------------------------------------- #

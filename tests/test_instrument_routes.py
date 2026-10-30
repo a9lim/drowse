@@ -14,10 +14,10 @@ from fastapi.testclient import TestClient
 from drowse.readout.geometry import GeometryInstrument
 from drowse.lens.instrument import LensInstrument
 from drowse.lens.jlens import resolve_token_atom
-from tests.support.lens import stub_lens_kwargs
+from tests.support.lens import lens_kwargs
 from drowse.sae.instrument import SaeInstrument
 from drowse.server.instrument_routes import instrument_families
-from tests.support.sae import MockSaeBackend, make_resident, stub_sae_instrument
+from tests.support.sae import MockSaeBackend, make_resident, sae_instrument
 
 _SID = "default"
 _BASE = f"/drowse/v1/sessions/{_SID}/instruments"
@@ -29,7 +29,7 @@ class _FakeLens(LensInstrument):
     / ``active_source`` / ``token_readout`` contract."""
 
     def __init__(self, session: Any) -> None:
-        super().__init__(**stub_lens_kwargs(session, replay=session.lens_replay))
+        super().__init__(**lens_kwargs(replay=session.lens_replay))
         # The lifecycle and the resident lens touch artifacts: mocked.  The
         # token replay is the session's (``session.lens_replay``).
         self.fit = MagicMock()  # type: ignore[method-assign]
@@ -113,7 +113,7 @@ def _mock_session() -> Any:
     geometry = GeometryInstrument(session, replay=session.geometry_replay)
     lens = _FakeLens(session)
     # The SAE lifecycle the routes drive is mocked on the instrument.
-    sae = stub_sae_instrument(session, cls=_FakeSae, replay=session.sae_replay)
+    sae = sae_instrument(session, cls=_FakeSae, replay=session.sae_replay)
     for name in ("load", "unload", "train", "validate_feature", "fetch_meta"):
         setattr(sae, name, MagicMock(name=f"sae.{name}"))
     session.instruments = {

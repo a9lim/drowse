@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 import torch
 
-from tests.conftest import CharTokenizer, FakeLogitsModel
+from tests.support.decode import CharTokenizer, FakeLogitsModel
 from drowse.geometry.domains import BoxAxis, BoxDomain
 from drowse.fit.naturalness import (
     NaturalnessError,

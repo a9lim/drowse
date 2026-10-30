@@ -22,8 +22,8 @@ __all__ = [
     "LENS_PROMPTS",
     "LensHarness",
     "TOY_MODEL_ID",
-    "stub_lens_instrument",
-    "stub_lens_kwargs",
+    "lens_instrument",
+    "lens_kwargs",
 ]
 
 TOY_MODEL_ID = "toy/jlens-model"
@@ -63,18 +63,6 @@ class _CaptureSlot:
         return self._harness.capture.per_layer_buckets()
 
 
-def stub_lens_instrument(stub: Any, *, replay: Any = None) -> Any:
-    """A ``LensInstrument`` for a narrow ``DrowseSession.__new__`` stub.
-
-    The capture forwards to ``stub._capture`` per call, so a test can assign
-    it after wiring.  The resident lens comes from the store as usual.
-    ``replay`` is the token replay (unwired by default).
-    """
-    from drowse.lens.instrument import LensInstrument
-
-    return LensInstrument(**stub_lens_kwargs(stub, replay=replay))
-
-
 def _toy_registry(model_id: str, *, model: Any = None, tokenizer: Any = None) -> Any:
     """A real :class:`~drowse.session.registry.ArtifactRegistry` for a toy."""
     from drowse.session.registry import ArtifactRegistry, ModelBinding
@@ -85,68 +73,62 @@ def _toy_registry(model_id: str, *, model: Any = None, tokenizer: Any = None) ->
     ))
 
 
-class _StubRegistry:
-    """Forwards the instrument's profile writes to ``stub._registry`` (wired
-    by ``wire_stub_steering``, possibly after the instrument), or to a private
-    registry when the stub never gets one."""
-
-    def __init__(self, stub: Any) -> None:
-        self._stub = stub
-        self._own: Any = None
-
-    def _target(self) -> Any:
-        registry = getattr(self._stub, "__dict__", {}).get("_registry")
-        if registry is not None:
-            return registry
-        if self._own is None:
-            self._own = _toy_registry("stub/model")
-        return self._own
-
-    @property
-    def profiles(self) -> Mapping[str, Any]:
-        return self._target().profiles
-
-    def put_profile(self, name: str, tensors: Mapping[int, torch.Tensor]) -> None:
-        self._target().put_profile(name, tensors)
-
-    def evict_prefix(self, prefix: str) -> list[str]:
-        return self._target().evict_prefix(prefix)
+@contextmanager
+def _no_exclusive(_message: str, *, phase_msg: str | None = None) -> Iterator[None]:
+    del phase_msg
+    yield
 
 
-def stub_lens_kwargs(stub: Any, *, replay: Any = None) -> dict[str, Any]:
-    """The ``LensInstrument`` constructor arguments for a session stub (for
-    test fakes that subclass the instrument); ``replay`` is the token replay
-    (unwired by default)."""
+def lens_kwargs(
+    *,
+    model: Any = None,
+    tokenizer: Any = None,
+    layers: Any = (),
+    n_layers: int | None = None,
+    model_id: str = "stub/model",
+    capture: Any = None,
+    registry: Any = None,
+    replay: Any = None,
+) -> dict[str, Any]:
+    """The :class:`LensInstrument` constructor arguments, with inert defaults.
+
+    ``capture`` defaults to an empty :class:`FakeCapture`, ``registry`` to a
+    fresh artifact registry (profiles resolve from it), ``replay`` to
+    :func:`~tests.support.replay.unwired_replay`; the capture forward runs
+    ``model`` over ``layers``.  For tests (and instrument subclasses) that
+    construct the instrument themselves.
+    """
     from tests.support.replay import unwired_replay
-    from tests.support.stubs import StubCapture
 
-    @contextmanager
-    def _exclusive(_message: str, *, phase_msg: str | None = None) -> Iterator[None]:
-        del phase_msg
-        yield
+    registry = registry if registry is not None else _toy_registry(model_id)
 
     def _capture_hidden(input_ids: torch.Tensor, **kwargs: Any) -> dict[int, torch.Tensor]:
-        from drowse.fit import capture
+        from drowse.fit import capture as fit_capture
 
-        return capture._capture_all_hidden_states(
-            stub._model, stub._layers, input_ids, **kwargs,
-        )
+        return fit_capture._capture_all_hidden_states(model, layers, input_ids, **kwargs)
 
     return dict(
-        model=getattr(stub, "_model", None),
-        tokenizer=getattr(stub, "_tokenizer", None),
-        model_id="stub/model",
+        model=model,
+        tokenizer=tokenizer,
+        model_id=model_id,
         device=torch.device("cpu"),
-        n_layers=len(getattr(stub, "_layers", None) or ()),
-        capture=StubCapture(stub),
-        exclusive=_exclusive,
+        n_layers=len(layers) if n_layers is None else n_layers,
+        capture=capture if capture is not None else FakeCapture({}),
+        exclusive=_no_exclusive,
         capture_hidden=_capture_hidden,
-        registry=_StubRegistry(stub),
+        registry=registry,
         on_change=lambda _names: None,
-        resolve_profile=lambda selector: stub.ensure_profile_registered(selector),
+        resolve_profile=lambda selector: registry.profiles[selector],
         assert_unsteered=lambda: None,
         replay=unwired_replay if replay is None else replay,
     )
+
+
+def lens_instrument(**kwargs: Any) -> Any:
+    """A real :class:`LensInstrument` built from :func:`lens_kwargs`."""
+    from drowse.lens.instrument import LensInstrument
+
+    return LensInstrument(**lens_kwargs(**kwargs))
 
 
 class LensHarness:

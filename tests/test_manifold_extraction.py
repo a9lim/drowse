@@ -26,9 +26,7 @@ from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.base.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
-from tests.support.stubs import wire_stub_steering
 from tests.support.extraction import make_extraction
-from tests.support.engine import attach_engine, seed_prefix_cache
 
 _LABELS = ["calm", "uneasy", "afraid", "frantic", "numb"]
 _DIM = 8
@@ -2078,26 +2076,31 @@ def _fold_test_direction(name: str, direction: torch.Tensor):
     )
 
 
-def _registry_stub(
-    *, manifolds: Any, profiles: Any, monitor: Any, probe_hashes: dict[str, str],
-) -> Any:
-    """A session skeleton with the real registry, the probe roster as its
-    swap listener (cached geometry digests seeded) and a fake monitor."""
-    from drowse.session.session import DrowseSession
-    from tests.support.stubs import wire_stub_read_plane
+class _RegistryRig:
+    """The real artifact registry with the probe roster as its swap listener
+    (cached geometry digests seeded) over a fake monitor."""
 
-    session: Any = object.__new__(DrowseSession)
-    session._monitor = monitor
-    wire_stub_steering(session, profiles=profiles, manifolds=manifolds)
-    wire_stub_read_plane(session)
-    session._roster._hashes["geometry"].update(probe_hashes)
-    session._registry.on_swap(session._roster.swap)
-    seed_prefix_cache(attach_engine(session))
-    return session
+    def __init__(
+        self, *, manifolds: Any, profiles: Any, monitor: Any,
+        probe_hashes: dict[str, str],
+    ) -> None:
+        from tests.support.composer import SteeringRig
+        from tests.support.read_plane import ReadRig
 
+        self.steering = SteeringRig(profiles=profiles, manifolds=manifolds)
+        self.reads = ReadRig(monitor=monitor)
+        self.registry = self.steering.registry
+        self.monitor = monitor
+        self.reads.roster._hashes["geometry"].update(probe_hashes)
+        self.registry.on_swap(self.reads.roster.swap)
 
-def _cached_digests(session: Any) -> dict[str, str]:
-    return dict(session._roster._hashes["geometry"])
+    def cached_digests(self) -> dict[str, str]:
+        return dict(self.reads.roster._hashes["geometry"])
+
+    def prefix_cache_kept(self) -> bool:
+        """Neither the steering nor the probe roster asked the session to
+        drop its (unsteered) prefix cache."""
+        return self.steering.prefill_changes == 0 and self.reads.roster_changes == 0
 
 
 def _analytics_probe(session: Any, name: str) -> Any:
@@ -2105,7 +2108,7 @@ def _analytics_probe(session: Any, name: str) -> Any:
     import threading
 
     def _snapshot() -> Any:
-        return session._registry.analytics_snapshot(
+        return session.registry.analytics_snapshot(
             name, live=_live, lock=threading.Lock(),
         )
 
@@ -2147,7 +2150,7 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_and_profile(
                 manifold=manifold, top_n=top_n,
             )
 
-    session = _registry_stub(
+    session = _RegistryRig(
         manifolds={"local/mood": old, "other/mood": other},
         profiles={
             "local/mood": {0: torch.tensor([1.0, 0.0])},
@@ -2158,24 +2161,24 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_and_profile(
     )
     snapshots = _analytics_probe(session, "local/mood")
 
-    session._registry.adopt_fitted(tmp_path / "local" / "mood", new)
+    session.registry.adopt_fitted(tmp_path / "local" / "mood", new)
 
-    live = session._registry.manifolds["local/mood"]
+    live = session.registry.manifolds["local/mood"]
     assert torch.equal(live.layers[0].basis, new.layers[0].basis)
-    attached = session._monitor.probes["mood-probe"]
+    attached = session.monitor.probes["mood-probe"]
     assert attached.manifold is live
     assert attached.top_n == 4
     from drowse.geometry.fold import folded_directions
 
     assert torch.allclose(
-        session._registry.profiles["local/mood"][0], folded_directions(new)[0],
+        session.registry.profiles["local/mood"][0], folded_directions(new)[0],
     )
     # The cached prefix is unsteered, so a re-fit leaves it valid
     # (test_engine::test_registry_changes_keep_the_unsteered_prefix).
-    assert session._engine.prefix_cache
+    assert session.prefix_cache_kept()
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
-    assert "mood-probe" not in _cached_digests(session)
+    assert "mood-probe" not in session.cached_digests()
 
 
 def test_failed_fit_override_evicts_stale_manifold_consumers(
@@ -2199,7 +2202,7 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
         def remove_probe(self, name: str) -> None:
             self.probes.pop(name)
 
-    session = _registry_stub(
+    session = _RegistryRig(
         manifolds={"local/mood": old, "other/mood": other},
         profiles={
             "local/mood": {0: torch.tensor([1.0, 0.0])},
@@ -2220,8 +2223,8 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
 
     rig = make_extraction(
         monkeypatch, fit=_fail_fit,
-        adopt=session._registry.adopt_fitted,
-        evict=session._registry.evict_artifact,
+        adopt=session.registry.adopt_fitted,
+        evict=session.registry.evict_artifact,
     )
 
     with pytest.raises(RuntimeError, match="override fit failure"):
@@ -2230,11 +2233,11 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
             fit_mode="pca", hyperparams={"max_dim": 1},
         )
 
-    assert dict(session._registry.manifolds) == {"other/mood": other}
-    assert set(session._registry.profiles) == {"other/mood"}
-    assert set(session._monitor.probes) == {"other-mood-probe"}
-    assert _cached_digests(session) == {"other-mood-probe": "other"}
-    assert session._engine.prefix_cache  # unsteered, so still valid
+    assert dict(session.registry.manifolds) == {"other/mood": other}
+    assert set(session.registry.profiles) == {"other/mood"}
+    assert set(session.monitor.probes) == {"other-mood-probe"}
+    assert session.cached_digests() == {"other-mood-probe": "other"}
+    assert session.prefix_cache_kept()  # unsteered, so still valid
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
 
@@ -2248,7 +2251,7 @@ def test_override_validation_failure_preserves_unchanged_consumers(
         def attached_probes(self) -> dict[str, Any]:
             return {}
 
-    session = _registry_stub(
+    session = _RegistryRig(
         manifolds={"local/mood": old},
         profiles={"local/mood": {0: torch.tensor([1.0, 0.0])}},
         monitor=_Monitor(),
@@ -2263,15 +2266,15 @@ def test_override_validation_failure_preserves_unchanged_consumers(
 
     rig = make_extraction(
         monkeypatch, fit=_fail_without_write,
-        adopt=session._registry.adopt_fitted,
-        evict=session._registry.evict_artifact,
+        adopt=session.registry.adopt_fitted,
+        evict=session.registry.evict_artifact,
     )
 
     with pytest.raises(ValueError, match="discover-mode only"):
         rig.extraction.fit(folder, fit_mode="pca")
 
-    assert dict(session._registry.manifolds) == {"local/mood": old}
-    assert set(session._registry.profiles) == {"local/mood"}
+    assert dict(session.registry.manifolds) == {"local/mood": old}
+    assert set(session.registry.profiles) == {"local/mood"}
 
 
 def test_dls_false_keeps_every_axis(

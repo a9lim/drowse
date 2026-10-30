@@ -15,7 +15,7 @@ from drowse.loom.recipe import compose_call, derive_seed_schedule
 from drowse.loom.tree import LoomTree
 from drowse.session.session import DrowseSession
 from drowse.steering.grammar import ManifoldTerm, parse_expr
-from tests.support.engine import attach_engine
+from tests.support.engine import engine_over
 
 
 def test_recipe_prompt_capture_distinguishes_legacy_null_empty_and_text():
@@ -309,7 +309,7 @@ def _anchored_tree() -> tuple[LoomTree, str, str]:
 
 
 def _resolve(tree: LoomTree, mode: Any, **kwargs: Any):
-    engine = attach_engine(SimpleNamespace(tree=tree))
+    engine = engine_over(SimpleNamespace(tree=tree))
     call: dict[str, Any] = {
         "steering": None, "sampling": None, "thinking": None,
         "system_prompt": INHERIT_SYSTEM_PROMPT, "raw": False,

@@ -21,9 +21,8 @@ from drowse.server import create_app
 from drowse.server.errors import install_error_handlers
 from drowse.server.operations import register_operation_routes, run_operation
 from drowse.server.runtime import finish_worker
-from tests.test_generation import _StopTokenizer, _scripted_model
+from tests.support.decode import StopTokenizer, scripted_model
 from tests.test_server_loom import _StubSession
-from tests.support.engine import attach_engine
 
 STREAM_PATH = "/drowse/v1/sessions/default/stream"
 
@@ -97,15 +96,17 @@ def test_websocket_flood_is_rejected_while_session_locked() -> None:
     asyncio.run(scenario())
 
 
-def test_stream_close_before_first_read_waits_for_worker_and_survives_reset() -> None:
+def test_stream_close_before_first_read_waits_for_worker_and_survives_reset(
+    tiny_session: Any,
+) -> None:
     entered = threading.Event()
     release = threading.Event()
     finished = threading.Event()
     closed = threading.Event()
     generated: list[int] = []
     errors: list[BaseException] = []
-    session: Any = DrowseSession.__new__(DrowseSession)
-    engine = attach_engine(session)
+    session = tiny_session
+    engine = session._engine
 
     def worker(*_args: Any, **kwargs: Any) -> GenerationResult:
         import torch
@@ -114,7 +115,7 @@ def test_stream_close_before_first_read_waits_for_worker_and_survives_reset() ->
         engine.state.reset()
         try:
             generated.extend(generate_steered(
-                _scripted_model([0] * 20), cast(Any, _StopTokenizer()),
+                scripted_model([0] * 20), cast(Any, StopTokenizer()),
                 torch.tensor([[0]]), GenerationConfig(max_new_tokens=20, temperature=0),
                 engine.state,
             ))
@@ -415,9 +416,9 @@ def test_repeated_cancellation_keeps_worker_lock() -> None:
     asyncio.run(scenario())
 
 
-def test_closed_stream_does_not_cancel_a_later_generation() -> None:
-    session: Any = DrowseSession.__new__(DrowseSession)
-    engine = attach_engine(session)
+def test_closed_stream_does_not_cancel_a_later_generation(tiny_session: Any) -> None:
+    session = tiny_session
+    engine = session._engine
     engine.generate_one = lambda *args, **kwargs: GenerationResult(  # type: ignore[method-assign]
         text="", tokens=[], token_count=0, tok_per_sec=0, elapsed=0,
     )
@@ -581,9 +582,11 @@ def test_socket_lifecycles_release_subscriptions() -> None:
 
 
 @pytest.mark.parametrize("read_first", [True, False])
-def test_stream_reports_worker_error_once_and_close_is_idempotent(read_first: bool) -> None:
-    session: Any = DrowseSession.__new__(DrowseSession)
-    engine = attach_engine(session)
+def test_stream_reports_worker_error_once_and_close_is_idempotent(
+    read_first: bool, tiny_session: Any,
+) -> None:
+    session = tiny_session
+    engine = session._engine
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("worker failed")

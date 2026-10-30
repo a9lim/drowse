@@ -8,7 +8,7 @@ import torch
 
 from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
 from drowse.generation.results import GenerationResult
-from tests.conftest import FakeLogitsModel
+from tests.support.decode import FakeLogitsModel
 
 
 class MetadataTokenizer:

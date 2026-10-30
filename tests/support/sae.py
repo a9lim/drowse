@@ -1,10 +1,10 @@
-"""SAE test support: an in-memory backend and stub-session wiring.
+"""SAE test support: an in-memory backend and direct instrument construction.
 
 - :class:`MockSaeBackend` — an in-memory ``SaeBackend`` (identity encode/decode
   by default) for CPU tests.
-- :func:`stub_sae_instrument` — a real :class:`~drowse.sae.instrument.SaeInstrument`
-  over a narrow stub session, with a no-op exclusive section and recorded
-  registry effects.
+- :func:`sae_instrument` — a real :class:`~drowse.sae.instrument.SaeInstrument`
+  over a model handle and a capture, with a no-op exclusive section and
+  recorded registry effects.
 - :func:`make_resident` — install a backend as the runtime's residency without
   the provider/disk load path (the load path itself is covered through
   ``session.sae.load`` with ``resolve_sae_backend`` patched).
@@ -19,7 +19,7 @@ from typing import Any, cast
 
 import torch
 
-__all__ = ["MockSaeBackend", "make_resident", "stub_sae_instrument"]
+__all__ = ["MockSaeBackend", "make_resident", "sae_instrument"]
 
 
 @dataclass
@@ -91,53 +91,51 @@ class MockSaeBackend:
         return self.decode_layer(idx, one_hot)
 
 
-def stub_sae_instrument(
-    session: Any,
+def sae_instrument(
+    handle: Any = None,
     *,
+    capture: Any = None,
+    registry: Any = None,
     replay: Callable[..., tuple[Any, Any]] | None = None,
     cls: type | None = None,
 ) -> Any:
-    """A real SAE instrument + runtime over ``session`` (a narrow stub).
+    """A real SAE instrument + runtime.
 
-    ``cls`` substitutes an :class:`SaeInstrument` subclass (one that fakes
-    part of the surface) for the instrument itself.
-
-    The capture forwards to ``session._capture`` per call.  ``session``
-    doubles as the runtime's model handle, so it needs whatever
-    model surface the test exercises (``layers`` for depth summaries,
-    ``device``/``dtype`` for directions).  Registry effects land on the
-    returned instrument's ``effects`` dict: ``directions`` (``sae/<id>`` ->
-    tensors), ``evictions`` (count) and ``forgotten`` (probe names); a stub
-    that carries a real ``_registry`` (``wire_stub_steering``) also gets the
-    directions registered there.
+    ``handle`` is the runtime's model handle (default: a ``stub/model`` with
+    no layers); give it whatever model surface the test exercises
+    (``layers`` for depth summaries, ``device``/``dtype`` for directions).
+    ``capture`` is what the per-step reads see (default: none captured).
+    ``cls`` substitutes an :class:`SaeInstrument` subclass.  Registry effects
+    land on the instrument's ``effects`` dict: ``directions`` (``sae/<id>``
+    -> tensors), ``evictions`` (count) and ``forgotten`` (probe names); with
+    ``registry`` the directions are also registered there, as on a session.
     """
+    from types import SimpleNamespace
+
     from drowse.sae.instrument import SaeInstrument
     from drowse.sae.runtime import SaeRuntime
+    from tests.support.lens import FakeCapture
     from tests.support.replay import unwired_replay
-    from tests.support.stubs import StubCapture
 
+    if handle is None:
+        handle = SimpleNamespace(model_id="stub/model", layers=[])
     effects: dict[str, Any] = {"directions": {}, "evictions": 0, "forgotten": []}
-
-    def registry() -> Any:
-        # A stub wired with ``wire_stub_steering`` has a real artifact
-        # registry; directions land there too, as on a real session.
-        return getattr(session, "__dict__", {}).get("_registry")
 
     def put(name: str, tensors: Any) -> None:
         effects["directions"][name] = tensors
-        if (reg := registry()) is not None:
-            reg.put_profile(name, tensors)
+        if registry is not None:
+            registry.put_profile(name, tensors)
 
     def evict() -> None:
         effects["directions"].clear()
         effects["evictions"] += 1
-        if (reg := registry()) is not None:
-            reg.evict_prefix("sae/")
+        if registry is not None:
+            registry.evict_prefix("sae/")
 
     instrument = (cls or SaeInstrument)(
-        cast(Any, StubCapture(session)),
+        capture if capture is not None else FakeCapture({}),
         SaeRuntime(
-            session,
+            handle,
             exclusive=lambda *_a, **_k: nullcontext(),
             assert_unsteered=lambda: None,
         ),

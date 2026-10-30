@@ -143,26 +143,25 @@ def test_score_probes_without_whitener_raises():
 
 
 # ---------------------------------------------------------------------------
-# DrowseSession.score_hidden
+# ReadPlane.score_hidden (DrowseSession.score_hidden delegates here)
 # ---------------------------------------------------------------------------
 
 from drowse.errors import DrowseError  # noqa: E402
-from drowse.session.session import DrowseSession  # noqa: E402
-from tests.support.stubs import wire_stub_read_plane  # noqa: E402
+from tests.support.read_plane import ReadRig  # noqa: E402
 
 
-def _mock_session() -> DrowseSession:
-    """Build a DrowseSession without touching a real model.
+def _mock_session() -> Any:
+    """The read plane over a monitor with one probe; ``score_hidden`` must
+    not touch a model or a capture."""
+    return ReadRig(monitor=_monitor_with_probe()).plane
 
-    We bypass __init__ (which requires a PreTrainedModel) and wire up only
-    the monitor and the read plane ``score_hidden`` delegates to; it must not
-    touch the model.
-    """
-    s = DrowseSession.__new__(DrowseSession)
-    s._monitor = _monitor_with_probe()
-    s._device = torch.device("cpu")
-    wire_stub_read_plane(s)
-    return s
+
+def test_session_score_hidden_delegates_to_the_read_plane(tiny_session: Any) -> None:
+    hidden = {0: torch.zeros(2, int(tiny_session.model_info["hidden_dim"]))}
+    assert tiny_session.score_hidden(hidden) == {}
+    assert tiny_session.score_hidden(hidden, per_token=True) == ({}, {})
+    with pytest.raises(DrowseError, match="no layers"):
+        tiny_session.score_hidden({})
 
 
 def test_score_hidden_single_state_returns_probe_dict():

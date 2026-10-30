@@ -8,7 +8,6 @@ norm cap) lives in ``test_manifold_math.py``.
 """
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 
 import pytest
@@ -25,7 +24,6 @@ from drowse.steering.hooks import (
     SteeringPlan,
 )
 from drowse.geometry.domains import BoxAxis, BoxDomain
-from drowse.geometry.rbf import eval_rbf
 from drowse.geometry.manifold import Manifold
 from drowse.geometry.subspace import fit_curved_subspace
 from drowse.geometry.invert import invert_parameterization
@@ -35,6 +33,15 @@ from drowse.errors import (
     SteeringCompositionError,
 )
 from drowse.steering.triggers import Trigger, TriggerContext
+from tests.support.manifolds import (
+    DIM as _DIM,
+    circle_centroids as _circle,
+    disk_manifold as _manifold2d,
+    euclidean_shares as _euclidean_shares,
+    loop_manifold as _manifold,
+    open_manifold as _manifold_open,
+    stamp_current_geometry as _stamp_current_geometry,
+)
 
 
 def _perp(h: torch.Tensor, mean: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
@@ -42,120 +49,11 @@ def _perp(h: torch.Tensor, mean: torch.Tensor, basis: torch.Tensor) -> torch.Ten
     return centered - (centered @ basis.T) @ basis
 
 
-_DIM = 8
 
 
 @pytest.fixture(autouse=True)
 def _seed_rng():
     torch.manual_seed(0)
-
-
-def _circle(k: int, dim: int, scale: float = 1.0) -> torch.Tensor:
-    """K activation centroids on a planar circle, with a DC offset.
-
-    The 20.0 common-mode component mimics a real LM activation's large,
-    persona-agnostic norm — without it the per-node centroids vary wildly
-    in magnitude and the soft norm-cap inside ``subspace_inject`` fires on
-    synthetic fits, masking the geometry under test.
-    """
-    out = torch.zeros(k, dim)
-    base = torch.full((dim,), 20.0)
-    for i in range(k):
-        theta = 2.0 * math.pi * i / k
-        out[i] = base.clone()
-        out[i, 0] += scale * 2.0 * math.cos(theta)
-        out[i, 1] += scale * 2.0 * math.sin(theta)
-    return out
-
-
-def _manifold(layers: Sequence[int] = (0, 1)) -> Manifold:
-    """A 1-D periodic (loop) manifold over 6 nodes."""
-    domain = BoxDomain([BoxAxis("t", periodic=True, period=1.0)])
-    node_coords = torch.tensor([[i / 6] for i in range(6)])
-    node_params = domain.embed(node_coords)
-    manifold = Manifold(
-        name="mood",
-        domain=domain,
-        node_labels=[f"n{i}" for i in range(6)],
-        node_coords=node_coords,
-        layers={
-            L: fit_curved_subspace(_circle(6, _DIM, 1.0 + 0.2 * L), node_params).subspace
-            for L in layers
-        },
-        feature_space="raw",
-    )
-    return _stamp_current_geometry(manifold)
-
-
-def _manifold_open(layers: Sequence[int] = (0, 1)) -> Manifold:
-    """A 1-D *non-periodic* (open interval) manifold over 6 nodes.
-
-    Same activation pattern as ``_manifold`` so share-weighting tests that
-    assert share > 1 still hold; the only change is the domain, which disables
-    the periodic clamping fix and keeps the pre-fix share-weighted path.
-    """
-    domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
-    node_coords = torch.tensor([[i / 6] for i in range(6)])
-    node_params = domain.embed(node_coords)
-    manifold = Manifold(
-        name="mood_open",
-        domain=domain,
-        node_labels=[f"n{i}" for i in range(6)],
-        node_coords=node_coords,
-        layers={
-            L: fit_curved_subspace(_circle(6, _DIM, 1.0 + 0.2 * L), node_params).subspace
-            for L in layers
-        },
-        feature_space="raw",
-    )
-    return _stamp_current_geometry(manifold)
-
-
-def _manifold2d(layers: Sequence[int] = (0,)) -> Manifold:
-    """A 2-D box (disk-like) manifold over a 3x3 grid of 9 nodes."""
-    domain = BoxDomain([
-        BoxAxis("u", periodic=False, lo=0.0, hi=1.0),
-        BoxAxis("v", periodic=False, lo=0.0, hi=1.0),
-    ])
-    coords = torch.tensor(
-        [[x, y] for x in (0.0, 0.5, 1.0) for y in (0.0, 0.5, 1.0)]
-    )
-    node_params = domain.embed(coords)
-    torch.manual_seed(7)
-    manifold = Manifold(
-        name="disk",
-        domain=domain,
-        node_labels=[f"n{i}" for i in range(9)],
-        node_coords=coords,
-        layers={
-            L: fit_curved_subspace(20.0 + torch.randn(9, _DIM), node_params).subspace
-            for L in layers
-        },
-        feature_space="raw",
-    )
-    return _stamp_current_geometry(manifold)
-
-
-def _stamp_current_geometry(manifold: Manifold) -> Manifold:
-    """Give a synthetic fitted manifold the bakes current artifacts require."""
-    manifold.mahalanobis_share = _euclidean_shares(manifold)
-    manifold.origin = {
-        layer: torch.zeros(manifold.domain.intrinsic_dim)
-        for layer in manifold.layers
-    }
-    manifold.node_roles = [None] * len(manifold.node_labels)
-    manifold.node_kinds = [None] * len(manifold.node_labels)
-    for sub in manifold.layers.values():
-        if sub.is_affine or sub.node_params is None:
-            continue
-        sub.sigma_rbf_weights = torch.zeros(
-            (sub.node_params.shape[0], 1), dtype=sub.basis.dtype,
-        )
-        sub.sigma_poly_coeffs = torch.zeros(
-            (sub.node_params.shape[1] + 1, 1), dtype=sub.basis.dtype,
-        )
-        sub.sigma_poly_coeffs[0, 0] = -20.0
-    return manifold
 
 
 def _model_layers(n: int) -> nn.ModuleList:
@@ -550,19 +448,6 @@ def test_manager_periodic_clamps_and_drops_share_weighting():
         assert all(b <= 1.0 + 1e-9 for b in budgets), (
             f"along={along}: eff_along exceeded 1.0: {budgets}"
         )
-
-
-def _euclidean_shares(manifold: Manifold) -> dict[int, float]:
-    """Reference Euclidean ``‖coords‖_F`` share, **mean-1** normalized
-    (``Σ = n_layers``) to match ``_manifold_layer_shares``."""
-    raw = {}
-    for L, sub in manifold.layers.items():
-        _np, _rw, _pc = sub.rbf_params()
-        c = eval_rbf(_np, _rw, _pc, _np)
-        raw[L] = float(torch.linalg.vector_norm(c).item())
-    tot = sum(raw.values())
-    n = len(raw)
-    return {L: v / tot * n for L, v in raw.items()}
 
 
 def test_manifold_shares_use_baked_when_full_coverage():
