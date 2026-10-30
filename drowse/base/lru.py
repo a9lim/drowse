@@ -56,6 +56,10 @@ class BoundedLRU(Generic[K, V]):
         """Keys from least to most recently used."""
         return list(self._data)
 
+    def items(self) -> list[tuple[K, V]]:
+        """Entries from least to most recently used (no recency update)."""
+        return list(self._data.items())
+
     def __contains__(self, key: object) -> bool:
         return key in self._data
 

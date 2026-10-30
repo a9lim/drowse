@@ -40,6 +40,7 @@ from drowse.session.session import (
     ReadDemand,
     DrowseSession,
 )
+from tests.support.lens import stub_lens_instrument
 
 
 def _toy_manifold(*, dim: int = 8, n_layers: int = 2) -> Manifold:
@@ -115,12 +116,7 @@ def _stub_session() -> DrowseSession:
         set_incremental=lambda _sink: None,
     )
     session._capture_state = CaptureState()
-    session._jlens = None
-    session._jlens_identity = None
-    session._lens_instrument.generation_lens = None
-    session._lens_instrument.generation_lens_active = False
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {}
+    session._lens_instrument = stub_lens_instrument(session)
     session._sae_instrument.live = None
     session._sae_instrument.probes = {}
     # All three families route through real instruments now: geometry for
@@ -130,10 +126,8 @@ def _stub_session() -> DrowseSession:
     # layer union.  Lens/SAE state (live config, probe registry) lives ON
     # the instruments; tests set ``session._lens_instrument.live`` etc.
     from drowse.readout.geometry import GeometryInstrument
-    from drowse.lens.instrument import LensInstrument
     from drowse.sae.instrument import SaeInstrument
     session._geometry_instrument = GeometryInstrument(session)
-    session._lens_instrument = LensInstrument(session)
     session._sae_instrument = SaeInstrument(session)
     # ``_begin_capture`` runs the close → prepare → plan → bind ritual
     # through this helper; the MagicMock default would hand it an empty

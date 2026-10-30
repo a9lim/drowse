@@ -10,20 +10,18 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.steering.composer import SteeringComposer
 from drowse.steering.grammar import (
     SteeringExprError,
     format_expr,
     parse_expr,
     referenced_selectors,
 )
-from drowse.cli.verbs.lens import (
-    fit_covers_layers,
-    lens_fit_is_noop,
-)
+from drowse.cli.verbs.lens import lens_fit_is_noop
+from drowse.lens.lifecycle import fit_covers_layers
 from drowse.store.manifold_schema import ManifoldFormatError
 from drowse.store.manifold_authoring import create_discover_manifold_folder
-from tests.test_jlens_session import _PROMPTS, _StubSession
+from tests.support.lens import LENS_PROMPTS as _PROMPTS
+from tests.support.lens import LensHarness
 
 
 @pytest.fixture(autouse=True)
@@ -121,89 +119,94 @@ def test_token_id_and_reserved_atom_rejections(text: str) -> None:
         parse_expr(text)
 
 
-def test_reserved_but_unsteerable_namespaces_refuse_to_resolve() -> None:
+def test_reserved_but_unsteerable_namespaces_refuse_to_resolve(
+    make_tiny_session: Any,
+) -> None:
     from drowse.session.session import ProfileNotRegisteredError
 
-    session = _StubSession()
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
+    session = make_tiny_session(warm=False)
     for key in ("slens/owl", "neuron/L8n344", "head/L20h17"):
         with pytest.raises(ProfileNotRegisteredError, match="reserved"):
-            composer.ensure_profile_registered(key)
+            session.ensure_profile_registered(key)
 
 
 # ---------------------------------------------------------- lazy resolution --
 
 
-def test_profile_registration_resolves_jlens_atom() -> None:
-    session = _StubSession()
-    session.fit_jlens(_PROMPTS)
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
+#: Byte-tokenized prompts long enough for the estimator on the tiny session.
+_TINY_PROMPTS = [
+    "a first prompt that is long enough for the tiny model",
+    "the second prompt, also long enough for the tiny one",
+    "and a third one to round out the tiny model's corpus",
+]
 
-    dirs = composer.ensure_profile_registered("jlens/g")
-    assert "jlens/g" in session._profiles
-    assert set(dirs) == {0, 1}
+
+def test_profile_registration_resolves_jlens_atom(make_tiny_session: Any) -> None:
+    session = make_tiny_session(warm=False)
+    lens = session.lens.fit(_TINY_PROMPTS)
+
+    dirs = session.ensure_profile_registered("jlens/g")
+    assert "jlens/g" in session.profiles
+    assert set(dirs) == set(lens.source_layers)
     assert all(isinstance(v, torch.Tensor) for v in dirs.values())
 
 
-def test_token_id_atom_steers_and_probes_the_vocab_id() -> None:
+def test_token_id_atom_steers_and_probes_the_vocab_id(make_tiny_session: Any) -> None:
     """``jlens/#<id>`` addresses vocab id ``<id>`` directly, never tokenizing.
 
     The name used to reach ``resolve_word_token`` as the literal text
-    ``"#6"``: a misleading multi-token error, or on a tokenizer with a single
-    ``#6`` piece, the wrong token.  In the toy vocab ``g`` is id 6, so the
-    word and the id atoms must agree.
+    ``"#<id>"``: a misleading multi-token error, or on a tokenizer with a
+    single ``#<id>`` piece, the wrong token.  The word and the id atoms for
+    the same vocabulary entry must agree.
     """
-    from drowse.session.session import DrowseSession
+    from drowse.lens.jlens import resolve_word_token
+    from drowse.model.readout import get_unembedding
 
-    session = _StubSession()
-    lens = session.fit_jlens(_PROMPTS)
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
-    (key,) = parse_expr("0.3 jlens/#6").alphas
-    by_id = composer.ensure_profile_registered(key)
-    expected = lens.token_direction(6, session._model.lm_head.weight)
+    session = make_tiny_session()  # warm: a cold scope trips C2 (scope lane)
+    lens = session.lens.fit(_TINY_PROMPTS)
+    gid = resolve_word_token(session.tokenizer, "g")
+    (key,) = parse_expr(f"0.3 jlens/#{gid}").alphas
+    by_id = session.ensure_profile_registered(key)
+    expected = lens.token_direction(gid, get_unembedding(session.model))
     assert set(by_id) == set(expected)
     for layer, vec in by_id.items():
         assert torch.allclose(vec, expected[layer])
-    by_word = composer.ensure_profile_registered("jlens/g")
+    by_word = session.ensure_profile_registered("jlens/g")
     for layer, vec in by_id.items():
         assert torch.allclose(vec, by_word[layer])
 
-    name = DrowseSession.add_probe(session, "jlens/#6")  # type: ignore[arg-type]
-    assert name == "jlens/#6"
-    spec = session._lens_instrument.probes[name]
-    assert spec["token_id"] == 6
-    assert spec["word"] == "#6"
-    steering = parse_expr("0.3 jlens/g@when:jlens/#6>0.01")
-    composer._stack.append(dict(steering.alphas))  # type: ignore[arg-type]
-    session._monitor = type("_M", (), {"probe_names": ()})()
-    assert composer.gated_lens_probe_keys() == {"jlens/#6"}
+    name = session.add_probe(f"jlens/#{gid}")
+    assert name == f"jlens/#{gid}"
+    spec = session.lens.probes[name]
+    assert spec["token_id"] == gid
+    assert spec["word"] == f"#{gid}"
+    with session.steering(f"0.3 jlens/g@when:jlens/#{gid}>0.01"):
+        assert session._steering_composer.gated_lens_probe_keys() == {f"jlens/#{gid}"}
 
 
-def test_token_id_atom_rejects_ids_outside_the_vocab() -> None:
+def test_token_id_atom_rejects_ids_outside_the_vocab(make_tiny_session: Any) -> None:
     from drowse.lens.jlens import InvalidTokenIdError, resolve_token_atom
-    from drowse.session.session import DrowseSession
-    from tests._jlens_toys import TOY_VOCAB
+    from drowse.model.readout import get_unembedding
 
-    session = _StubSession()
-    session.fit_jlens(_PROMPTS)
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
+    session = make_tiny_session(warm=False)
+    session.lens.fit(_TINY_PROMPTS)
+    vocab = int(get_unembedding(session.model).shape[0])
     with pytest.raises(InvalidTokenIdError, match="outside this vocabulary"):
-        composer.ensure_profile_registered(f"jlens/#{TOY_VOCAB}")
+        session.ensure_profile_registered(f"jlens/#{vocab}")
     with pytest.raises(InvalidTokenIdError):
-        DrowseSession.add_probe(session, f"jlens/#{TOY_VOCAB}")  # type: ignore[arg-type]
-    assert not session._lens_instrument.probes
+        session.add_probe(f"jlens/#{vocab}")
+    assert not session.lens.probes
     for bad in ("#", "#-1", "#1.5", "#x"):
         with pytest.raises(InvalidTokenIdError):
-            resolve_token_atom(session._tokenizer, bad, vocab_size=TOY_VOCAB)
+            resolve_token_atom(session.tokenizer, bad, vocab_size=vocab)
 
 
-def test_profile_registration_jlens_requires_fitted_lens() -> None:
+def test_profile_registration_jlens_requires_fitted_lens(make_tiny_session: Any) -> None:
     from drowse.lens.jlens import LensNotFittedError
 
-    session = _StubSession()
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
+    session = make_tiny_session(warm=False)
     with pytest.raises(LensNotFittedError, match="drowse lens fit"):
-        composer.ensure_profile_registered("jlens/g")
+        session.ensure_profile_registered("jlens/g")
 
 
 def test_add_probe_routes_jlens_to_lens_registry() -> None:
@@ -211,18 +214,17 @@ def test_add_probe_routes_jlens_to_lens_registry() -> None:
     under the lens softmax), not a linear probe — ``add_probe``
     routes it to the session lens-probe registry, never folding the
     ``W_U[v] @ J_l`` direction and never falling through to ``extract()``."""
-    session = _StubSession()
-    session.fit_jlens(_PROMPTS)
-    from drowse.session.session import DrowseSession
+    session = LensHarness()
+    session.lens.fit(_PROMPTS)
 
-    name = DrowseSession.add_probe(session, "jlens/g")  # type: ignore[arg-type]
+    name = session.lens.attach("jlens/g")
     assert name == "jlens/g"
-    spec = session._lens_instrument.probes["jlens/g"]
+    spec = session.lens.probes["jlens/g"]
     assert spec["word"] == "g"
-    assert spec["layers"] == session.jlens.source_layers
+    assert spec["layers"] == session.lens.resident().source_layers
     # No direction fold, no profile registration — the readout channel is
     # computed from lens logits, not a whitened coordinate.
-    assert "jlens/g" not in session._profiles
+    assert "jlens/g" not in session.profiles
 
 
 def test_lens_probe_scores_strength_channel() -> None:
@@ -232,29 +234,28 @@ def test_lens_probe_scores_strength_channel() -> None:
     per-layer ``(p_l,)`` trace, matching ``token_readout_stats`` on the
     same logits."""
     from drowse.lens.jlens import token_readout_stats
-    from drowse.session.session import DrowseSession
 
-    session = _StubSession()
-    session.fit_jlens(_PROMPTS)
-    DrowseSession.add_probe(session, "jlens/g")  # type: ignore[arg-type]
-    layers = [int(l) for l in session.jlens.source_layers]
-    d_model = next(iter(session.jlens.jacobians.values())).shape[0]
+    session = LensHarness()
+    session.lens.fit(_PROMPTS)
+    session.lens.attach("jlens/g")
+    layers = [int(l) for l in session.lens.resident().source_layers]
+    d_model = next(iter(session.lens.resident().jacobians.values())).shape[0]
     hidden = {
         l: torch.randn(d_model, generator=torch.Generator().manual_seed(l))
         for l in layers
     }
-    readings = session._lens_instrument.score_probes(hidden)
+    readings = session.lens.score_probes(hidden)
     reading = readings["jlens/g"]
     strength = reading.value
     assert reading.unit == "mean_token_probability"
     assert 0.0 <= strength <= 1.0
     assert sorted(reading.per_layer) == layers
     # Cross-check against the pure math on the same logits.
-    logits = session._jlens_logits_rows(
-        session.jlens, [(l, hidden[l]) for l in layers],
+    logits = session.lens.runtime.logits_rows(
+        session.lens.resident(), [(l, hidden[l]) for l in layers],
     )
-    depths = [l / (len(session._layers) - 1) for l in layers]
-    token_id = session._lens_instrument.probes["jlens/g"]["token_id"]
+    depths = [l / (len(session.layers) - 1) for l in layers]
+    token_id = session.lens.probes["jlens/g"]["token_id"]
     ((exp_str, exp_com, exp_spread, per_layer),) = token_readout_stats(
         logits.float(), depths, [token_id],
     )
@@ -285,14 +286,12 @@ def test_lens_probe_scores_strength_channel() -> None:
 
 
 def test_gated_lens_probe_keys_and_gate_scalars() -> None:
-    """Composer detection + the gate scalar key space: ``jlens/<word>`` =
-    strength (the one channel), emitted by ``scalar_gate_keys`` over the
-    native readings — no ``:fraction`` / ``:membership`` constants."""
-    from drowse.session.session import DrowseSession
-
-    session = _StubSession()
-    session.fit_jlens(_PROMPTS)
-    DrowseSession.add_probe(session, "jlens/g")  # type: ignore[arg-type]
+    """The gate scalar key space: ``jlens/<word>`` = strength (the one
+    channel), emitted by ``scalar_gate_keys`` over the native readings — no
+    ``:fraction`` / ``:membership`` constants."""
+    session = LensHarness()
+    session.lens.fit(_PROMPTS)
+    session.lens.attach("jlens/g")
 
     class _FlatCapture:
         def __init__(self, latest: dict[int, torch.Tensor]) -> None:
@@ -301,46 +300,45 @@ def test_gated_lens_probe_keys_and_gate_scalars() -> None:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
             return self._latest
 
-    layers = [int(l) for l in session.jlens.source_layers]
-    d_model = next(iter(session.jlens.jacobians.values())).shape[0]
-    session._capture = _FlatCapture(
+    layers = [int(l) for l in session.lens.resident().source_layers]
+    d_model = next(iter(session.lens.resident().jacobians.values())).shape[0]
+    session.capture = _FlatCapture(
         {l: torch.randn(d_model, generator=torch.Generator().manual_seed(l))
          for l in layers}
     )
-    scalars = session._score_lens_gate_scalars(step_id=7)
+    scalars = session.lens.gate_scalars(step_id=7)
     assert "jlens/g" in scalars
     assert "jlens/g[0]" in scalars
     assert "jlens/g[1]" not in scalars  # one channel — strength only
     assert scalars["jlens/g"] == scalars["jlens/g[0]"]
     # The stash is armed for the display step to reuse this forward's logits —
     # keyed by the forward's step id (step identity replaced ``fresh``).
-    assert session._lens_instrument.step_stash is not None
-    assert session._lens_instrument.step_stash["step"] == 7
-    assert session._lens_instrument.step_stash["layers"] == tuple(layers)
+    assert session.lens.step_stash is not None
+    assert session.lens.step_stash["step"] == 7
+    assert session.lens.step_stash["layers"] == tuple(layers)
 
-    # Composer-side detection: a gate on the pinned lens probe is recognized
-    # from the steering stack without monitor attachment.
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
-    steering = parse_expr("0.3 jlens/g@when:jlens/g>0.4")
-    composer._stack.append(dict(steering.alphas))  # type: ignore[arg-type]
-    session._monitor = type(
-        "_M", (), {"probe_names": ()},
-    )()  # no monitor probes attached
-    assert composer.gated_lens_probe_keys() == {"jlens/g"}
+
+def test_composer_detects_gates_on_pinned_lens_probes(make_tiny_session: Any) -> None:
+    """A gate on a pinned lens probe is recognized from the steering stack
+    without any monitor probe attached."""
+    session = make_tiny_session()  # warm: a cold scope trips C2 (scope lane)
+    session.lens.fit(_TINY_PROMPTS)
+    session.add_probe("jlens/g")
+    with session.steering("0.3 jlens/g@when:jlens/g>0.4"):
+        assert session._steering_composer.gated_lens_probe_keys() == {"jlens/g"}
 
 
 def test_lens_gate_scalar_scores_only_referenced_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import drowse.lens.jlens as jlens_module
-    from drowse.session.session import DrowseSession
 
-    session = _StubSession()
-    session.fit_jlens(_PROMPTS)
-    DrowseSession.add_probe(session, "jlens/g")  # type: ignore[arg-type]
-    DrowseSession.add_probe(session, "jlens/a")  # type: ignore[arg-type]
-    session._lens_instrument.enable_live(layers=[1])
-    session._lens_instrument.active_for_generation = False
+    session = LensHarness()
+    session.lens.fit(_PROMPTS)
+    session.lens.attach("jlens/g")
+    session.lens.attach("jlens/a")
+    session.lens.enable_live(layers=[1])
+    session.lens.active_for_generation = False
 
     class _FlatCapture:
         def __init__(self, latest: dict[int, torch.Tensor]) -> None:
@@ -349,9 +347,9 @@ def test_lens_gate_scalar_scores_only_referenced_probe(
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
             return self._latest
 
-    layers = [int(l) for l in session.jlens.source_layers]
-    d_model = next(iter(session.jlens.jacobians.values())).shape[0]
-    session._capture = _FlatCapture(
+    layers = [int(l) for l in session.lens.resident().source_layers]
+    d_model = next(iter(session.lens.resident().jacobians.values())).shape[0]
+    session.capture = _FlatCapture(
         {l: torch.randn(d_model, generator=torch.Generator().manual_seed(l + 10))
          for l in layers}
     )
@@ -363,13 +361,13 @@ def test_lens_gate_scalar_scores_only_referenced_probe(
         jlens_module, "readout_probabilities", _fail_full_probabilities,
     )
 
-    scalars = session._score_lens_gate_scalars({"jlens/g"})
+    scalars = session.lens.gate_scalars({"jlens/g"})
 
     assert "jlens/g" in scalars
     assert "jlens/g[0]" in scalars
     assert "jlens/a" not in scalars
-    assert session._lens_instrument.step_stash is not None
-    assert "probabilities" not in session._lens_instrument.step_stash
+    assert session.lens.step_stash is not None
+    assert "probabilities" not in session.lens.step_stash
 
 
 # -------------------------------------------------------------- ns reservation

@@ -30,6 +30,7 @@ from drowse.session.session import (
 from drowse.steering.terms import Steering
 from drowse.generation.token_payloads import TokenProbePayload
 from tests.conftest import FakeLogitsModel
+from tests.support.lens import stub_lens_instrument
 
 
 class _StopTokenizer:
@@ -116,6 +117,7 @@ class _CurrentSessionStub(DrowseSession):
 
     def __new__(cls) -> "_CurrentSessionStub":
         instance = super().__new__(cls)
+        instance._lens_instrument = stub_lens_instrument(instance)
         instance._lens_instrument.probes = {}
         instance._sae_instrument.probes = {}
         instance._lens_instrument.live = None
@@ -126,10 +128,6 @@ class _CurrentSessionStub(DrowseSession):
         instance._lens_instrument.generation_lens_active = False
         instance._default_return_top_k = 0
         return instance
-
-    @property
-    def jlens(self) -> Any:
-        return self._jlens
 
 
 def _complete_capture_session(session: Any) -> None:
@@ -151,15 +149,17 @@ def _complete_capture_session(session: Any) -> None:
         for spec in session._lens_instrument.probes.values()
         for layer in spec.get("layers", [])
     }
-    if session._lens_instrument.live is not None or session._lens_instrument.probes:
-        session._jlens = SimpleNamespace(
+    lens = (
+        SimpleNamespace(
             source_layers=sorted(
                 {int(layer) for layer in live_layers} | probe_layers
             ),
         )
-    else:
-        session._jlens = None
-    session._jlens_identity = None
+        if session._lens_instrument.live is not None or session._lens_instrument.probes
+        else None
+    )
+    # The stub supplies its in-memory lens in place of the store refresh.
+    session._lens_instrument.resident = lambda: lens
 
 
 class _EchoTokenizer:
@@ -1068,7 +1068,7 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
     session._incremental_gate_scores = []
     session._lens_instrument.live = {"layers": [0]}
     session._sae_instrument.live = {"layer": 0}
-    session._live_lens_readout_step = lambda **_kwargs: (
+    session._lens_instrument.live_readout_step = lambda **_kwargs: (
         (_ for _ in ()).throw(AssertionError("lens readout not consumed"))
     )
     session._live_sae_readout_step = lambda **_kwargs: (
@@ -1436,7 +1436,7 @@ def test_finalize_reuses_one_aggregate_pool_for_monitor_lens_and_sae() -> None:
     session._sae_instrument.probes = {"sae/0": {}}
     session._aggregate_forward_index = lambda _ids: 1
     session._score_aggregate_only = score_aggregate_only
-    session._score_lens_probes_aggregate = score_lens
+    session._lens_instrument.score_aggregate = score_lens
     session._score_sae_probes_aggregate = score_sae
     session._last_result = None
     session._last_per_token_scores = None
@@ -1547,13 +1547,13 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
         (
             "0.3 jlens/g@when:jlens/g>0.4",
             "lens",
-            "_score_lens_gate_scalars",
+            "lens",
             {"jlens/g": 0.7},
         ),
         (
             "0.3 sae/2@when:sae/2>0.4",
             "sae",
-            "_score_sae_gate_scalars",
+            "sae",
             {"sae/2": 0.8},
         ),
     ],
@@ -1596,16 +1596,14 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
             **{f"{family}_names": (next(iter(expected)),)},
         ),
     )
-    setattr(
-        session, score_attr,
-        lambda _keys, *, step_id=-1: dict(expected),
+    # The lens gate scalars ride the lens run; the SAE's the session forwarder.
+    lens_scores = dict(expected) if score_attr == "lens" else {}
+    session.lens = SimpleNamespace(current_run=SimpleNamespace(
+        gate_scalars=lambda _step, _hidden, _keys: dict(lens_scores),
+    ))
+    session._score_sae_gate_scalars = (
+        lambda _keys, *, step_id=-1: dict(expected) if score_attr == "sae" else {}
     )
-    other_score_attr = (
-        "_score_sae_gate_scalars"
-        if score_attr == "_score_lens_gate_scalars"
-        else "_score_lens_gate_scalars"
-    )
-    setattr(session, other_score_attr, lambda _keys, *, step_id=-1: {})
     composer = SteeringComposer(session)
     composer._stack.append(cast(Any, dict(parse_expr(expr).alphas)))
 
@@ -1655,9 +1653,9 @@ def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
         _incremental_readings=[],
         _incremental_gate_scores=[],
         instruments=_stub_instruments(lens_names=("jlens/g",)),
-        _score_lens_gate_scalars=(
-            lambda _keys, *, step_id=-1: {"jlens/g": 0.7}
-        ),
+        lens=SimpleNamespace(current_run=SimpleNamespace(
+            gate_scalars=lambda _step, _hidden, _keys: {"jlens/g": 0.7},
+        )),
         _score_sae_gate_scalars=lambda _keys, *, step_id=-1: {},
         _geometry_instrument=SimpleNamespace(
             current_run=SimpleNamespace(observe=lambda _step, _hidden: {}),
@@ -1733,7 +1731,7 @@ def test_return_probe_readings_false_skips_probe_finalization() -> None:
     session._last_per_token_scores = None
     session._last_result = None
     session.events = SimpleNamespace(emit=lambda _event: None)
-    session._score_lens_probes_aggregate = lambda _ids: (
+    session._lens_instrument.score_aggregate = lambda *_args, **_kwargs: (
         (_ for _ in ()).throw(AssertionError("lens finalization disabled"))
     )
     session._score_sae_probes_aggregate = lambda _ids: (

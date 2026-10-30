@@ -21,6 +21,7 @@ from drowse.loom.tree import LoomTree
 from drowse.session.session import CaptureState, DrowseSession, GenState, PreparedCall
 from drowse.steering.triggers import TriggerContext
 from tests.test_generation import _CurrentSessionStub
+from tests.support.lens import stub_lens_instrument
 
 
 def test_to_dict_snapshots_token_lists() -> None:
@@ -98,7 +99,7 @@ def _stateful_tap_session(tree: LoomTree, node_id: str) -> Any:
     session._capture = SimpleNamespace(per_layer_buckets=lambda: {})
     session._incremental_readings = []
     session._incremental_gate_scores = []
-    session._lens_instrument.last_step_readings = None
+    session._lens_instrument = stub_lens_instrument(session)
     session._sae_instrument.last_step_readings = None
     session._last_token_probe_payload = None
     session._end_capture = lambda: None

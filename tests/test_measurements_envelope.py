@@ -20,6 +20,8 @@ from typing import Any
 
 import pytest
 
+from tests.support.lens import stub_lens_kwargs
+
 from drowse.readout.types import DepthSummary, ScalarReading
 from drowse.readout.measurements import MEASUREMENTS_VERSION, build_measurements
 from drowse.generation.results import ProbeReading
@@ -318,12 +320,17 @@ class TestReplayEnvelopes:
             model_id="test/model",
             sae_info=None,
             geometry_token_readout=lambda *a, **k: native,
-            jlens_token_readout=lambda *a, **k: native,
             sae_token_readout=lambda *a, **k: native,
         )
-        for cls in (GeometryInstrument, LensInstrument, SaeInstrument):
-            instrument = cls(session)  # type: ignore[arg-type]
-            out = _token_readout(instrument, cls.family)
+        lens = LensInstrument(**stub_lens_kwargs(session))
+        lens._replay_readout = lambda *a, **k: native  # type: ignore[method-assign]
+        instruments = (
+            GeometryInstrument(session),  # type: ignore[arg-type]
+            lens,
+            SaeInstrument(session),  # type: ignore[arg-type]
+        )
+        for instrument in instruments:
+            out = _token_readout(instrument, instrument.family)
             assert set(out) == {"measurements"}
 
 
@@ -372,21 +379,19 @@ class TestRejectedKnobs:
 # The family enumeration is one list
 # ---------------------------------------------------------------------------
 
-def test_payload_family_slots_match_the_registry() -> None:
+def test_payload_family_slots_match_the_registry(make_tiny_session: Any) -> None:
     """``token_payloads``' per-family slots are pinned to the registry, so a
     fourth read family cannot land a slot-less payload."""
-    from drowse.session.session import DrowseSession
     from drowse.generation.token_payloads import _FAMILY_SLOTS
 
-    session = DrowseSession.__new__(DrowseSession)
+    session = make_tiny_session(warm=False)
     assert set(_FAMILY_SLOTS) == set(session.instruments)
 
 
-def test_capability_table_covers_every_family() -> None:
-    from drowse.session.session import DrowseSession
+def test_capability_table_covers_every_family(make_tiny_session: Any) -> None:
     from drowse.server.instrument_routes import CAPABILITIES
 
-    session = DrowseSession.__new__(DrowseSession)
+    session = make_tiny_session(warm=False)
     assert set(CAPABILITIES) == set(session.instruments)
 
 

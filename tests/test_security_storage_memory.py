@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from tests.support.lens import stub_lens_instrument
 import torch
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
@@ -152,6 +154,7 @@ def test_large_chat_inputs_are_not_retained_in_the_render_cache() -> None:
 
 def test_session_close_releases_reusable_generation_device_cache() -> None:
     session: Any = DrowseSession.__new__(DrowseSession)
+    session._lens_instrument = stub_lens_instrument(session)
     session._steering = SteeringManager()
     session._capture_handles = []
     session._capture_buffers = {}

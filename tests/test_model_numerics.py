@@ -218,30 +218,29 @@ def test_generation_logprobs_and_entropy_match_numpy(model: Any, temperature: fl
 
 
 def test_live_and_batched_lens_use_model_logit_calibration(model: Any):
-    from tests.test_jlens_session import _FakeCapture, _StubSession
+    from tests.support.lens import FakeCapture, LensHarness
 
     layers = get_layers(model)
     last = len(layers) - 1
     ids = torch.tensor([[1, 7, 11, 13, 19]])
     hidden = _capture_all_hidden_states(model, layers, ids, layer_indices=[last])[last][0, -1]
     lens = JacobianLens({last: torch.eye(hidden.numel())}, n_prompts=1, d_model=hidden.numel())
-    session = _StubSession()
-    session._model, session._layers = model, layers
-    session._require_jlens = lambda: lens
+    session = LensHarness(model=model, layers=layers)
+    session.lens.resident = lambda: lens  # type: ignore[method-assign]
     with torch.inference_mode():
         expected = model(ids, use_cache=False).logits[0, -1]
-        actual = session._jlens_logits_rows(lens, [(last, hidden)])[0]
+        actual = session.lens.runtime.logits_rows(lens, [(last, hidden)])[0]
         torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
-        session._lens_instrument.enable_live(layers=[last])
-        session._capture = _FakeCapture({last: hidden})
-        result = session._live_lens_readout_step(top_k=5)
+        session.lens.enable_live(layers=[last])
+        session.capture = FakeCapture({last: hidden})
+        result = session.lens.live_readout_step(top_k=5)
         assert result is not None
         rows, aggregate, token_ids = result
     values, indices = expected.softmax(-1).topk(5)
     assert token_ids[last] == indices.tolist()
     torch.testing.assert_close(torch.tensor([value for _, value in rows[last]]), values, atol=1e-7, rtol=1e-5)
     torch.testing.assert_close(torch.tensor([row[1] for row in aggregate]), values, atol=1e-7, rtol=1e-5)
-    session._lens_instrument.disable_live()
+    session.lens.disable_live()
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("mps", marks=[pytest.mark.gpu, pytest.mark.skipif(
@@ -261,8 +260,7 @@ def test_identity_lens_preserves_native_bfloat16_normalization(model: Any, devic
 
 
 def test_token_directions_and_decomposition_include_output_projection(model: Any):
-    from drowse.session.session import DrowseSession
-    from tests.test_jlens_session import _StubSession
+    from tests.support.lens import LensHarness
 
     dim = model.config.hidden_size
     jacobian = torch.randn(dim, dim) / dim ** .5
@@ -275,9 +273,8 @@ def test_token_directions_and_decomposition_include_output_projection(model: Any
     expected = row @ jacobian.numpy().astype(np.float64)
     actual = lens.token_direction(7, unembed, output_projection=projection)[0]
     np.testing.assert_allclose(actual.numpy(), expected, atol=1e-7, rtol=1e-5)
-    session: Any = _StubSession()
-    session._model = model
-    session._require_jlens = lambda: lens
-    session.ensure_profile_registered = lambda _selector: {0: actual}
-    result = DrowseSession.jspace_decompose(session, "test", layers=[0], k=1)
+    session = LensHarness(model=model, layers=get_layers(model))
+    session.lens.resident = lambda: lens  # type: ignore[method-assign]
+    session.profiles["test"] = {0: actual}
+    result = session.lens.decompose("test", layers=[0], k=1)
     assert result[0][0] == pytest.approx(1., abs=1e-5)

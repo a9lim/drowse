@@ -843,10 +843,7 @@ class LensInstrument:
             # land in one lens-state transaction.
             with self.state_lock:
                 lens = self._require()
-                token_id = resolve_token_atom(
-                    runtime.tokenizer, word,
-                    vocab_size=int(runtime.readout_modules()[0].shape[0]),
-                )
+                token_id = self.resolve_token(word)
                 readout_layers = [int(l) for l in lens.source_layers]
                 runtime.transport_stack(lens, sorted(readout_layers))
                 self.probes[name] = {
@@ -855,6 +852,15 @@ class LensInstrument:
                     "layers": readout_layers,
                 }
         return name
+
+    def resolve_token(self, word: str) -> int:
+        """The vocab id a ``jlens/<word>`` atom names: a single-token word,
+        or ``#<id>`` addressing the id directly (the steering-atom contract)."""
+        runtime = self.runtime
+        return resolve_token_atom(
+            runtime.tokenizer, word,
+            vocab_size=int(runtime.readout_modules()[0].shape[0]),
+        )
 
     def try_detach(self, name: str) -> bool:
         """Atomic membership-check + detach under the lens-state lock — the
@@ -1442,18 +1448,18 @@ class LensInstrument:
         node = host.tree.get(node_id)
         if node.role not in ("assistant", "user"):
             raise InvalidNodeOperationError(
-                f"jlens_token_readout: {node_id!r} is a {node.role} node — "
+                f"lens token readout: {node_id!r} is a {node.role} node — "
                 f"only a turn with a decode record can be read out"
             )
         raw_ids = node.raw_token_ids
         if not raw_ids:
             raise InvalidNodeOperationError(
-                f"jlens_token_readout: {node_id!r} has no raw token record "
+                f"lens token readout: {node_id!r} has no raw token record "
                 f"(transcript-loaded node)"
             )
         if not 0 <= raw_index < len(raw_ids):
             raise InvalidNodeOperationError(
-                f"jlens_token_readout: raw_index {raw_index} out of range "
+                f"lens token readout: raw_index {raw_index} out of range "
                 f"[0, {len(raw_ids)}) for {node_id!r}"
             )
 

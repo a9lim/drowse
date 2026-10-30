@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 
 from drowse.readout.geometry import GeometryInstrument
 from drowse.lens.instrument import LensInstrument
+from drowse.lens.jlens import resolve_token_atom
+from tests.support.lens import stub_lens_kwargs
 from drowse.sae.instrument import SaeInstrument
 from drowse.server.instrument_routes import instrument_families
 
@@ -26,7 +28,15 @@ class _FakeLens(LensInstrument):
     / ``active_source`` / ``token_readout`` contract."""
 
     def __init__(self, session: Any) -> None:
-        super().__init__(session)
+        super().__init__(**stub_lens_kwargs(session))
+        # The lifecycle and the replay touch artifacts and the model: mocked.
+        self.fit = MagicMock()  # type: ignore[method-assign]
+        self.select_source = MagicMock()  # type: ignore[method-assign]
+        self._replay_readout = MagicMock()  # type: ignore[method-assign]
+        # The token resolver reads the session tokenizer over a large vocab.
+        self.resolve_token = lambda word: resolve_token_atom(  # type: ignore[method-assign]
+            session.tokenizer, word, vocab_size=1 << 20,
+        )
         self.layers: "list[int] | None" = None
         self.source: "str | None" = None
         self.default_layers = [10, 14, 18]
@@ -358,7 +368,7 @@ class TestSourceSwitch:
         assert resp.status_code == 200
         assert resp.json() == {"source": "neuronpedia", "live_layers": [10, 11]}
         assert session.lens.disable_calls == 1
-        session.select_jlens_source.assert_called_once_with("neuronpedia")
+        session.lens.select_source.assert_called_once_with("neuronpedia")
 
     def test_unfitted_lens_switch_is_a_409(self, session_and_client: Any) -> None:
         """Regression: the error-policy collapse turned this route's 409 into
@@ -375,7 +385,7 @@ class TestSourceSwitch:
         """Regression: the registry's path-free "not available" text was
         scrubbed to the generic filesystem message."""
         session, client = session_and_client
-        session.select_jlens_source.side_effect = FileNotFoundError(
+        session.lens.select_source.side_effect = FileNotFoundError(
             "J-lens source local:gone is not available",
         )
         resp = client.put(f"{_BASE}/lens/source", json={"source": "local:gone"})
@@ -384,7 +394,7 @@ class TestSourceSwitch:
 
     def test_os_level_miss_on_switch_stays_scrubbed(self, session_and_client: Any) -> None:
         session, client = session_and_client
-        session.select_jlens_source.side_effect = FileNotFoundError(
+        session.lens.select_source.side_effect = FileNotFoundError(
             2, "No such file or directory", "/secret/home/.drowse/models/x/jlens/active.json",
         )
         resp = client.put(f"{_BASE}/lens/source", json={"source": "local:default"})
@@ -466,7 +476,7 @@ class TestPreparations:
             started.set()
             assert release.wait(timeout=2.0)
 
-        session.fit_jlens.side_effect = _blocking_fit
+        session.lens.fit.side_effect = _blocking_fit
         monkeypatch.setattr(
             "drowse.lens.corpus.stream_lens_corpus",
             lambda _n, _corpus, *, cancel_event=None: (
@@ -535,7 +545,7 @@ class TestPreparations:
             HfLensCorpus("org/data", "cfg", "main", "body"),
             HfLensCorpus("org/zh", "cmn", files=8, seed=1),
         ), (2, 1)))]
-        assert session.fit_jlens.call_args.kwargs["corpus_spec"] == (
+        assert session.lens.fit.call_args.kwargs["corpus_spec"] == (
             "hf:org/data/cfg@sha"
         )
 
@@ -626,7 +636,7 @@ class TestPreparations:
 # ---------------------------------------------------------------------------
 
 class TestTokenReadout:
-    # ``jlens_token_readout`` hands back per-layer PROBABILITIES p_l — the
+    # The lens replay hands back per-layer PROBABILITIES p_l — the
     # unit the aggregate's ``strength`` averages.
     _LENS_OUT = {
         "node_id": "n1", "raw_index": 3, "token_id": 42, "token_text": " magic",
@@ -719,7 +729,7 @@ class TestTokenReadout:
     def test_lens_replay_envelope(self, session_and_client: Any) -> None:
         session, client = session_and_client
         session.lens.source = "local:default"
-        session.jlens_token_readout.return_value = dict(self._LENS_OUT)
+        session.lens._replay_readout.return_value = dict(self._LENS_OUT)
         resp = client.get(
             f"{_BASE}/lens/token-readout",
             params={"node_id": "n1", "raw_index": 3, "top_k": 2},
@@ -733,7 +743,7 @@ class TestTokenReadout:
         assert lens["binding"]["steering"] == "0.3 formal.casual"
         assert [row["layer"] for row in lens["readout"]["layers"]] == [12, 18]
         assert lens["readout"]["aggregate"][0]["token"] == " a"
-        assert session.jlens_token_readout.call_args.kwargs["top_k"] == 2
+        assert session.lens._replay_readout.call_args.kwargs["top_k"] == 2
         # ONE conversion on the whole path: the session's p_l reaches the
         # envelope untouched and ``build_measurements`` logs it exactly once,
         # so exponentiating the wire value returns the original probability.
@@ -750,7 +760,7 @@ class TestTokenReadout:
         self, session_and_client: Any,
     ) -> None:
         session, client = session_and_client
-        session.jlens_token_readout.return_value = dict(self._LENS_OUT)
+        session.lens._replay_readout.return_value = dict(self._LENS_OUT)
         resp = client.get(
             f"{_BASE}/lens/token-readout",
             params={"node_id": "n1", "raw_index": 3, "steered": "false"},
@@ -758,12 +768,12 @@ class TestTokenReadout:
         assert resp.status_code == 200
         binding = resp.json()["measurements"]["instruments"]["lens"]["binding"]
         assert binding["steering"] is None
-        assert session.jlens_token_readout.call_args.kwargs["apply_steering"] is False
+        assert session.lens._replay_readout.call_args.kwargs["apply_steering"] is False
 
     def test_lens_not_fitted_404(self, session_and_client: Any) -> None:
         from drowse.lens.jlens import LensNotFittedError
         session, client = session_and_client
-        session.jlens_token_readout.side_effect = LensNotFittedError("nope")
+        session.lens._replay_readout.side_effect = LensNotFittedError("nope")
         resp = client.get(
             f"{_BASE}/lens/token-readout",
             params={"node_id": "n1", "raw_index": 0},
@@ -805,6 +815,18 @@ class TestExtras:
         )
         assert resp.status_code == 200
         assert resp.json() == {"word": "magic", "token_id": 42}
+
+    def test_lens_token_validate_accepts_the_id_form(
+        self, session_and_client: Any,
+    ) -> None:
+        """``#<id>`` addresses a vocab id directly, like the steering atom;
+        it used to be tokenized as the text "#6"."""
+        session, client = session_and_client
+        session.tokenizer.encode.return_value = [3, 4]
+        resp = client.post(f"{_BASE}/lens/token/validate", json={"word": "#6"})
+        assert resp.status_code == 200
+        assert resp.json() == {"word": "#6", "token_id": 6}
+        session.tokenizer.encode.assert_not_called()
 
     def test_lens_token_validate_multi_token_400(
         self, session_and_client: Any,

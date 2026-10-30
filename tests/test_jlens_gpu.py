@@ -59,12 +59,12 @@ def micro_lens(session: Any, tmp_path_factory: pytest.TempPathFactory) -> Any:
     old = os.environ.get("DROWSE_HOME")
     os.environ["DROWSE_HOME"] = str(home)
     try:
-        lens = session.fit_jlens(
+        lens = session.lens.fit(
             _FIT_PROMPTS, corpus_spec="gpu-micro-test", dim_batch=64, seq_len=64,
         )
         yield lens
     finally:
-        session._jlens = None
+        session.lens.runtime.clear()
         if old is None:
             os.environ.pop("DROWSE_HOME", None)
         else:
@@ -84,10 +84,10 @@ def test_micro_fit_shape(session: Any, micro_lens: Any) -> None:
 def test_motor_regime_top1_matches_model(session: Any, micro_lens: Any) -> None:
     """At the last source layer J ≈ I, so the lens top-1 must equal the
     model's actual next-token prediction (the logit-lens identity)."""
-    session._jlens = micro_lens
+    session.lens.runtime.lens = micro_lens
     last = micro_lens.source_layers[-1]
     prompt = "Fact: the currency used in the country shaped like a boot is the"
-    out = session.jlens_readout(prompt, layers=[last], top_k=5)
+    out = session.lens.readout(prompt, layers=[last], top_k=5)
 
     ids = session.tokenizer(prompt, return_tensors="pt")["input_ids"].to(session.device)
     with torch.inference_mode():
@@ -98,7 +98,7 @@ def test_motor_regime_top1_matches_model(session: Any, micro_lens: Any) -> None:
 
 
 def test_jlens_steering_atom_generates(session: Any, micro_lens: Any) -> None:
-    session._jlens = micro_lens
+    session.lens.runtime.lens = micro_lens
     result = session.generate(
         "Say something brief.",
         steering="0.5 jlens/ocean",
@@ -110,9 +110,9 @@ def test_jlens_steering_atom_generates(session: Any, micro_lens: Any) -> None:
 
 
 def test_live_lens_does_not_break_static_steerable(session: Any, micro_lens: Any) -> None:
-    session._jlens = micro_lens
+    session.lens.runtime.lens = micro_lens
     baseline = session._steering.static_steerable()
-    layers = session._lens_instrument.enable_live()
+    layers = session.lens.enable_live()
     try:
         assert session._steering.static_steerable() == baseline
         assert layers  # resolved the fitted layer set
@@ -123,4 +123,4 @@ def test_live_lens_does_not_break_static_steerable(session: Any, micro_lens: Any
         )
         assert result.first.text
     finally:
-        session._lens_instrument.disable_live()
+        session.lens.disable_live()

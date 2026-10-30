@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+
+from tests.support.lens import stub_lens_instrument
 import torch
 
 from drowse.sae.backend import MockSaeBackend, sae_device_str, select_runtime_layer
@@ -54,7 +56,7 @@ def _session() -> DrowseSession:
     session._profiles = {}
     session._probe_hash_cache = {}
     session._analytics_cpu_cache = {}
-    session._readout_long_tensor_cache = {}
+    session._lens_instrument = stub_lens_instrument(session)
     session._capture = _Capture(torch.tensor([0.2, 3.0, 5.0, 1.0]))
     session._sae_instrument.active_for_generation = True
     session._invalidate_prefix_cache = lambda: None  # type: ignore[method-assign]
@@ -289,7 +291,7 @@ def test_sae_probe_values_reuse_feature_selector_tensor() -> None:
     first = session._sae_instrument.score_probes_from_activations(acts)
     first_ids = {
         key: id(value)
-        for key, value in session._readout_long_tensor_cache.items()
+        for key, value in session._sae_instrument._index_tensors.items()
     }
     second = session._sae_instrument.score_probes_from_activations(acts)
 
@@ -298,7 +300,7 @@ def test_sae_probe_values_reuse_feature_selector_tensor() -> None:
     assert first_ids
     assert {
         key: id(value)
-        for key, value in session._readout_long_tensor_cache.items()
+        for key, value in session._sae_instrument._index_tensors.items()
     } == first_ids
 
 

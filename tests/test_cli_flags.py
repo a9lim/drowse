@@ -331,28 +331,31 @@ def _lens_session(compatible: set[str]) -> Any:
     class _Lens:
         live = False
 
+        def __init__(self) -> None:
+            self.selected: list[str] = []
+
         def set_live(self, enabled: bool, **_kw: Any) -> Any:
             self.live = enabled
             return LensLiveState(enabled=enabled, layers=(4, 5))
+
+        def has_compatible(self) -> bool:
+            from drowse.lens.sources import LENS_SOURCES
+
+            active = LENS_SOURCES.active("org/model", "output")
+            return active is not None and LENS_SOURCES.format(active) in compatible
+
+        def select_source(self, source: str) -> None:
+            from drowse.lens.sources import use_lens_source
+
+            self.selected.append(source)
+            use_lens_source("org/model", source)
 
     class _Session:
         model_id = "org/model"
 
         def __init__(self) -> None:
             self.lens = _Lens()
-            self.selected: list[str] = []
-
-        def has_compatible_jlens(self) -> bool:
-            from drowse.lens.sources import LENS_SOURCES
-
-            active = LENS_SOURCES.active(self.model_id, "output")
-            return active is not None and LENS_SOURCES.format(active) in compatible
-
-        def select_jlens_source(self, source: str) -> None:
-            from drowse.lens.sources import use_lens_source
-
-            self.selected.append(source)
-            use_lens_source(self.model_id, source)
+            self.selected = self.lens.selected
 
     return _Session()
 
@@ -477,15 +480,20 @@ def test_serve_live_sae_prefers_prepared_sources(
 # -j purity: stdout is exactly one JSON document, narration goes to stderr
 # ---------------------------------------------------------------------------
 
-class _ReadoutSession(FakeSession):
-    jlens = SimpleNamespace(source_layers=[3, 4])
-    layers = [object()] * 8
+class _ReadoutLens:
+    def resident(self) -> Any:
+        return SimpleNamespace(source_layers=[3, 4])
 
-    def jlens_readout(self, _prompt: str, **_kw: Any) -> Any:
+    def readout(self, _prompt: str, **_kw: Any) -> Any:
         return {3: [[("a", 0.5)]], 4: [[("b", 0.25)]]}, [[("a", 0.4, 3.0, 0.5)]]
 
-    def jspace_decompose(self, _selector: str, **_kw: Any) -> Any:
+    def decompose(self, _selector: str, **_kw: Any) -> Any:
         return {3: (0.1, [("a", 0.2)]), 4: (0.3, [("b", 0.4)])}
+
+
+class _ReadoutSession(FakeSession):
+    layers = [object()] * 8
+    lens = _ReadoutLens()
 
     def train_sae(self, name: str, _docs: list[str], **kw: Any) -> dict[str, Any]:
         return {"source": f"local:{name}", "artifact": "x", "layer": kw["layer"],

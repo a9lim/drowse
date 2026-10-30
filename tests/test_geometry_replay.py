@@ -1,8 +1,7 @@
 """CPU tests for ``session.geometry_token_readout`` (stub session).
 
 The geometry family's token replay: same prompt-rebuild + one-capture-forward
-orchestration as the lens/SAE replays (whose stub machinery this reuses from
-``test_jlens_session``), scored through the Monitor roster.  The Monitor is
+orchestration as the lens/SAE replays, scored through the Monitor roster.  The Monitor is
 stubbed — its scoring math has its own suite; these tests pin the replay
 *orchestration*: validation, render/prefix/pool position, steering-scope
 ordering, cold-foot forcing, and the returned record.
@@ -15,15 +14,81 @@ from typing import Any
 import pytest
 import torch
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from drowse.generation.results import ProbeReading
 from drowse.loom.errors import InvalidNodeOperationError, UnknownNodeError
 from drowse.loom.recipe import Recipe
-from drowse.generation.results import ProbeReading
+from drowse.loom.tree import LoomTree
+from drowse.model.chat import ChatTraits
 from drowse.session.session import DrowseSession
-from tests.test_jlens_session import (
-    _PROMPT_RENDER,
-    _TreeStubSession,
-    _tree_with_assistant,
-)
+from tests._jlens_toys import CharTokenizer, frozen_toy
+
+_PROMPT_RENDER = "the prompt render, chat shaped."
+
+
+class _TreeStubSession:
+    """The replay's collaborators: a toy model, a real loom tree, and a
+    recorded prompt render / steering scope."""
+
+    def __init__(self) -> None:
+        model = frozen_toy(n_layers=3)
+        self._model = model
+        self._tokenizer = CharTokenizer()
+        self._layers = model.model.layers
+        self._device = torch.device("cpu")
+        self.chat_traits = ChatTraits(self._tokenizer)
+        self.tree = LoomTree(model_id="toy/jlens-model")
+        self.prepare_calls: list[dict[str, Any]] = []
+        self.steering_scopes: list[Any] = []
+
+    @contextmanager
+    def _model_exclusive(self, msg: str, *, phase_msg: str | None = None) -> Iterator[None]:
+        del msg, phase_msg
+        yield
+
+    def _prepare_input(
+        self,
+        input: Any,
+        raw: bool = False,
+        thinking: bool = False,
+        stateless: bool = False,
+        parent_node_id: str | None = None,
+        user_role: str | None = None,
+        assistant_role: str | None = None,
+        to_device: bool = True,
+        gen_seat: str = "assistant",
+        system_prompt: Any = None,
+    ) -> torch.Tensor:
+        self.prepare_calls.append({
+            "input": input, "raw": raw, "thinking": thinking, "system_prompt": system_prompt,
+            "parent_node_id": parent_node_id,
+            "user_role": user_role, "assistant_role": assistant_role,
+            "gen_seat": gen_seat,
+        })
+        return torch.tensor(
+            [self._tokenizer.encode(_PROMPT_RENDER)], dtype=torch.long,
+        )
+
+    @contextmanager
+    def steering(self, value: Any) -> Iterator[None]:
+        self.steering_scopes.append(value)
+        yield
+
+
+def _tree_with_assistant(
+    s: _TreeStubSession,
+    raw_ids: list[int] | None,
+    recipe: Recipe | None = None,
+) -> str:
+    user_id = s.tree.add_user_turn("a user turn")
+    node_id = s.tree.begin_assistant(user_id, recipe=recipe)
+    s.tree.finalize_assistant(
+        node_id, text="an assistant turn", finish_reason="stop",
+        raw_token_ids=raw_ids,
+    )
+    return node_id
 
 
 class _StubMonitor:

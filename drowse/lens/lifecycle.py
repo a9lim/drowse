@@ -40,7 +40,6 @@ from drowse.lens.key import FITTABLE_KINDS
 from drowse.lens.layers import LayerSelector, resolve_layer_selector
 from drowse.lens.store import (
     LensProvenance,
-    _load_lens_verified,
     lens_estimator_policy,
     lens_identity,
     lens_layers,
@@ -622,6 +621,8 @@ class _FitRun:
         self, use: DurableUse, sidecar: Mapping[str, Any],
     ) -> tuple[JacobianLens, Mapping[str, Any], Any] | None:
         """The durable lens for ``use``: ``(lens, sidecar, reuse proof)``."""
+        from drowse.lens.store import _load_lens_verified
+
         if use == "resident":
             lens = self.residency.resident_lens
             return None if lens is None else (lens, sidecar, None)

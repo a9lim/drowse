@@ -30,7 +30,7 @@ from typing import Any, cast
 from fastapi import FastAPI, HTTPException
 from pydantic import Field
 
-from drowse.lens.jlens import JacobianLensCancelled, LensNotFittedError, resolve_token_atom
+from drowse.lens.jlens import JacobianLensCancelled, LensNotFittedError
 from drowse.lens.layers import parse_layer_selector
 from drowse.readout.measurements import MeasurementsEnvelope
 from drowse.sae.training import SaeTrainingCancelled
@@ -538,11 +538,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         word = body.word.strip()
         if not word:
             raise HTTPException(400, "word must not be empty")
-        vocab_size = int(session.lens.runtime.readout_modules()[0].shape[0])
-        return {
-            "word": word,
-            "token_id": resolve_token_atom(session.tokenizer, word, vocab_size=vocab_size),
-        }
+        return {"word": word, "token_id": session.lens.resolve_token(word)}
 
     @router.post("/instruments/sae/features/validate")
     def sae_feature_validate(body: SaeFeatureRequest) -> SaeFeatureValidationJSON:

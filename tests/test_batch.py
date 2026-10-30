@@ -15,6 +15,7 @@ import pytest
 
 from drowse.generation.results import GenerationResult, ProbeReading
 from drowse.steering.composer import SteeringComposer
+from tests.support.lens import stub_lens_instrument
 
 if TYPE_CHECKING:
     from drowse.session.session import DrowseSession
@@ -181,7 +182,7 @@ def _fast_batch_session():
     s_any = cast(Any, s)
     s_any._model = model
     s._model_info = {"model_id": "batch/test"}
-    s._jlens = None
+    s_any._lens_instrument = stub_lens_instrument(s)
     s_any._tokenizer = _BatchTokenizer()
     s._device = torch.device("cpu")
     s_any._gen_lock = threading.Lock()

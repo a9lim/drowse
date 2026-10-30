@@ -127,7 +127,7 @@ function formatTriggerSuffix(trigger: Trigger): string {
 
 /** Render one J-lens token term — the plain atom ``<alpha> jlens/<word>``
  *  plus an optional ``@trigger``.  The rack key is the full atom (the
- *  engine resolves it through ``register_jlens_direction``); per-chip
+ *  engine resolves it through ``lens.register_direction``); per-chip
  *  ``alpha`` because lens atoms run hotter than concept vectors. */
 export function formatJLensTerm(name: string, entry: JLensSteerEntry): string {
   return `${formatCoeff(entry.alpha)} ${entry.ablate ? "!" : ""}${name}${formatTriggerSuffix(entry.trigger)}`;

@@ -29,6 +29,8 @@ from drowse.steering.hooks import (
     install_persistent_offset_hooks,
 )
 from drowse.session.session import DrowseSession
+from types import SimpleNamespace
+from tests.support.lens import stub_lens_instrument
 
 _D = 8
 _LAYERS = [0, 1, 2]
@@ -288,11 +290,15 @@ def test_session_close_removes_both_persistent_hook_families():
     session._manifolds = {}
     session.events = EventBus()
     session.events.subscribe(lambda _event: None)
-    cast(Any, session)._jlens_device_cache = {("lens",): torch.ones(2)}
-    session._jlens_decode_cache = {1: "one"}
+    session._lens_instrument = stub_lens_instrument(session)
+    runtime = session._lens_instrument.runtime
+    runtime.transport_stack(
+        SimpleNamespace(jacobians={0: torch.eye(2)}), [0], torch.device("cpu"),
+    )
+    runtime._decoded.put(1, "one")
     session._sae_feature_meta = {"1": {"label": "feature"}}
     cast(Any, session)._prefix_cache = object()
-    session._jlens = object()
+    runtime.lens = cast(Any, object())
     session._sae_backend = object()
 
     session.close()
@@ -302,11 +308,11 @@ def test_session_close_removes_both_persistent_hook_families():
     assert session._capture_handles == []
     assert session._capture_buffers == {}
     assert session._capture._per_layer == {}
-    assert session._jlens_device_cache == {}
-    assert session._jlens_decode_cache == {}
+    assert len(runtime._stacks) == 0
+    assert len(runtime._decoded) == 0
     assert session._sae_feature_meta == {}
     assert session._prefix_cache is None
-    assert session._jlens is None
+    assert session._lens_instrument.resident_lens is None
     assert session._sae_backend is None
     assert session.events._subs == []
 
