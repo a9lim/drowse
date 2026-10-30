@@ -76,16 +76,18 @@ class _StubCapture:
         return self._stub._capture.per_layer_buckets()
 
 
-def stub_lens_instrument(stub: Any) -> Any:
+def stub_lens_instrument(stub: Any, *, replay: Any = None) -> Any:
     """A ``LensInstrument`` for a narrow ``DrowseSession.__new__`` stub.
 
-    Every dependency is looked up on the stub when it is used, so a test can
-    assign ``stub._capture`` / ``stub._pooled_aggregate_slice`` after wiring.
-    The resident lens comes from the store as usual.
+    The capture, pooled-slice, registry and profile dependencies are looked up
+    on the stub when they are used, so a test can assign ``stub._capture`` /
+    ``stub._pooled_aggregate_slice`` after wiring.  The resident lens comes
+    from the store as usual.  ``replay`` is the token replay (unwired by
+    default).
     """
     from drowse.lens.instrument import LensInstrument
 
-    return LensInstrument(**stub_lens_kwargs(stub))
+    return LensInstrument(**stub_lens_kwargs(stub, replay=replay))
 
 
 def _toy_registry(model_id: str, *, model: Any = None, tokenizer: Any = None) -> Any:
@@ -126,9 +128,12 @@ class _StubRegistry:
         return self._target().evict_prefix(prefix)
 
 
-def stub_lens_kwargs(stub: Any) -> dict[str, Any]:
+def stub_lens_kwargs(stub: Any, *, replay: Any = None) -> dict[str, Any]:
     """The ``LensInstrument`` constructor arguments for a session stub (for
-    test fakes that subclass the instrument)."""
+    test fakes that subclass the instrument); ``replay`` is the token replay
+    (unwired by default)."""
+    from tests.support.replay import unwired_replay
+
 
     @contextmanager
     def _exclusive(_message: str, *, phase_msg: str | None = None) -> Iterator[None]:
@@ -156,7 +161,7 @@ def stub_lens_kwargs(stub: Any) -> dict[str, Any]:
         on_change=lambda _names: None,
         resolve_profile=lambda selector: stub.ensure_profile_registered(selector),
         assert_unsteered=lambda: None,
-        replay_host=stub,
+        replay=unwired_replay if replay is None else replay,
     )
 
 
@@ -170,6 +175,9 @@ class LensHarness:
     - ``capture``: what the per-step reads see (assign a :class:`FakeCapture`).
     - ``pooled``: what the finalize pool hands back.
     - ``exclusive_messages``: every model-exclusive section entered.
+
+    ``replay`` is the instrument's token replay (unwired by default; a
+    :class:`tests.support.replay.ReplayRig` supplies a real one).
     """
 
     def __init__(
@@ -180,9 +188,10 @@ class LensHarness:
         layers: Any = None,
         tokenizer: Any = None,
         model_id: str = TOY_MODEL_ID,
-        replay_host: Any = None,
+        replay: Any = None,
     ) -> None:
         from drowse.lens.instrument import LensInstrument
+        from tests.support.replay import unwired_replay
 
         self.model = frozen_toy(n_layers=n_layers) if model is None else model
         self.tokenizer = CharTokenizer() if tokenizer is None else tokenizer
@@ -210,7 +219,7 @@ class LensHarness:
             on_change=lambda names: self.changes.append(list(names)),
             resolve_profile=lambda selector: self.registry.profiles[selector],
             assert_unsteered=lambda: None,
-            replay_host=self if replay_host is None else replay_host,
+            replay=unwired_replay if replay is None else replay,
         )
 
     @property

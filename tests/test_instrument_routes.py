@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import threading
 import time
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -30,11 +29,15 @@ class _FakeLens(LensInstrument):
     / ``active_source`` / ``token_readout`` contract."""
 
     def __init__(self, session: Any) -> None:
-        super().__init__(**stub_lens_kwargs(session))
-        # The lifecycle and the replay touch artifacts and the model: mocked.
+        super().__init__(**stub_lens_kwargs(session, replay=session.lens_replay))
+        # The lifecycle and the resident lens touch artifacts: mocked.  The
+        # token replay is the session's (``session.lens_replay``).
         self.fit = MagicMock()  # type: ignore[method-assign]
         self.select_source = MagicMock()  # type: ignore[method-assign]
-        self._replay_readout = MagicMock()  # type: ignore[method-assign]
+        self._require = MagicMock(return_value=object())  # type: ignore[method-assign]
+        self.runtime.resolve_layers = MagicMock(  # type: ignore[method-assign]
+            return_value=[12, 18],
+        )
         # The token resolver reads the session tokenizer over a large vocab.
         self.resolve_token = lambda word: resolve_token_atom(  # type: ignore[method-assign]
             session.tokenizer, word, vocab_size=1 << 20,
@@ -102,11 +105,14 @@ def _mock_session() -> Any:
     # The read plane: real instruments over a faked source lifecycle, keyed
     # by the registry the routes validate ``{family}`` against.
     session._monitor.probe_names = []
-    geometry = GeometryInstrument(session)
-    lens = _FakeLens(session)
-    # The SAE lifecycle the routes drive is mocked on the instrument; the
-    # token replay is the session's replay primitive (``session.sae_replay``).
+    # Each family's token replay is a mock the tests script
+    # (``session.<family>_replay``); the instruments build the envelope.
+    session.geometry_replay = MagicMock()
+    session.lens_replay = MagicMock()
     session.sae_replay = MagicMock()
+    geometry = GeometryInstrument(session, replay=session.geometry_replay)
+    lens = _FakeLens(session)
+    # The SAE lifecycle the routes drive is mocked on the instrument.
     sae = stub_sae_instrument(session, cls=_FakeSae, replay=session.sae_replay)
     for name in ("load", "unload", "train", "validate_feature", "fetch_meta"):
         setattr(sae, name, MagicMock(name=f"sae.{name}"))
@@ -724,39 +730,43 @@ class TestPreparations:
 # ---------------------------------------------------------------------------
 
 class TestTokenReadout:
-    # The lens replay hands back per-layer PROBABILITIES p_l — the
-    # unit the aggregate's ``strength`` averages.
-    _LENS_OUT = {
-        "node_id": "n1", "raw_index": 3, "token_id": 42, "token_text": " magic",
-        "steering": "0.3 formal.casual",
-        "readout": {
+    # The lens read hands back per-layer PROBABILITIES p_l — the unit the
+    # aggregate's ``strength`` averages — plus the aggregate chips.
+    _LENS_READ = (
+        {
             18: [(" b", 0.6, 7), (" c", 0.3, 9)],
             12: [(" a", 0.78, 5), (" d", 0.13, 3)],
         },
-        "aggregate": [(" a", 0.41, 0.31, 0.05), (" b", 0.2, 0.8, 0.1)],
-    }
+        [(" a", 0.41, 0.31, 0.05), (" b", 0.2, 0.8, 0.1)],
+    )
 
     @staticmethod
-    def _geometry_out(steering: "str | None") -> dict[str, Any]:
+    def _token(steering: "str | None") -> Any:
+        from drowse.readout.replay import ReplayedToken
+
+        return ReplayedToken(
+            node_id="n1", raw_index=3, token_id=42, token_text=" magic",
+            steering=steering,
+        )
+
+    @staticmethod
+    def _geometry_readings() -> dict[str, Any]:
         from drowse.generation.results import ProbeReading
 
         return {
-            "node_id": "n1", "raw_index": 3, "token_id": 42,
-            "token_text": " magic", "steering": steering,
-            "readings": {
-                "formal.casual": ProbeReading(
-                    fraction=0.4,
-                    nearest=[("formal", 1.2)],
-                    coords=(0.7,),
-                    residual=0.0,
-                ),
-            },
+            "formal.casual": ProbeReading(
+                fraction=0.4,
+                nearest=[("formal", 1.2)],
+                coords=(0.7,),
+                residual=0.0,
+            ),
         }
 
     def test_geometry_replay_envelope(self, session_and_client: Any) -> None:
         session, client = session_and_client
-        session.geometry_token_readout.return_value = self._geometry_out(
-            "0.3 formal.casual",
+        session._monitor.probe_names = ["formal.casual"]
+        session.geometry_replay.return_value = (
+            self._token("0.3 formal.casual"), self._geometry_readings(),
         )
         resp = client.get(
             f"{_BASE}/geometry/token-readout",
@@ -773,7 +783,8 @@ class TestTokenReadout:
         reading = geo["readings"]["formal.casual"]
         assert reading["coords"] == [0.7]
         assert m["scores"]["formal.casual"] == 0.7
-        kwargs = session.geometry_token_readout.call_args.kwargs
+        args, kwargs = session.geometry_replay.call_args
+        assert args == ("n1", 3)
         assert kwargs["apply_steering"] is True
         assert kwargs["raw"] is False
 
@@ -781,7 +792,10 @@ class TestTokenReadout:
         self, session_and_client: Any,
     ) -> None:
         session, client = session_and_client
-        session.geometry_token_readout.return_value = self._geometry_out(None)
+        session._monitor.probe_names = ["formal.casual"]
+        session.geometry_replay.return_value = (
+            self._token(None), self._geometry_readings(),
+        )
         resp = client.get(
             f"{_BASE}/geometry/token-readout",
             params={"node_id": "n1", "raw_index": 3, "steered": "false"},
@@ -789,25 +803,26 @@ class TestTokenReadout:
         assert resp.status_code == 200
         geo = resp.json()["measurements"]["instruments"]["geometry"]
         assert geo["binding"] == {"source": None, "steering": None}
-        call = session.geometry_token_readout.call_args
+        call = session.geometry_replay.call_args
         assert call.kwargs["apply_steering"] is False
 
     def test_geometry_no_probes_400(self, session_and_client: Any) -> None:
         session, client = session_and_client
-        session.geometry_token_readout.side_effect = ValueError(
-            "no geometry probes attached",
-        )
+        # No geometry probe attached: refused before any replay.
         resp = client.get(
             f"{_BASE}/geometry/token-readout",
             params={"node_id": "n1", "raw_index": 0},
         )
         assert resp.status_code == 400
+        assert "no geometry probes attached" in resp.text
+        session.geometry_replay.assert_not_called()
 
     def test_geometry_unknown_node_404(self, session_and_client: Any) -> None:
         from drowse.loom.errors import UnknownNodeError
 
         session, client = session_and_client
-        session.geometry_token_readout.side_effect = UnknownNodeError("gone")
+        session._monitor.probe_names = ["formal.casual"]
+        session.geometry_replay.side_effect = UnknownNodeError("gone")
         resp = client.get(
             f"{_BASE}/geometry/token-readout",
             params={"node_id": "nope", "raw_index": 0},
@@ -817,7 +832,12 @@ class TestTokenReadout:
     def test_lens_replay_envelope(self, session_and_client: Any) -> None:
         session, client = session_and_client
         session.lens.source = "local:default"
-        session.lens._replay_readout.return_value = dict(self._LENS_OUT)
+        session.lens_replay.return_value = (
+            self._token("0.3 formal.casual"), self._LENS_READ,
+        )
+        session.lens.token_readout = MagicMock(  # type: ignore[method-assign]
+            wraps=session.lens.token_readout,
+        )
         resp = client.get(
             f"{_BASE}/lens/token-readout",
             params={"node_id": "n1", "raw_index": 3, "top_k": 2},
@@ -831,14 +851,16 @@ class TestTokenReadout:
         assert lens["binding"]["steering"] == "0.3 formal.casual"
         assert [row["layer"] for row in lens["readout"]["layers"]] == [12, 18]
         assert lens["readout"]["aggregate"][0]["token"] == " a"
-        assert session.lens._replay_readout.call_args.kwargs["top_k"] == 2
-        # ONE conversion on the whole path: the session's p_l reaches the
+        assert session.lens.token_readout.call_args.kwargs["top_k"] == 2
+        # The replay captures the layers the lens resolved.
+        assert session.lens_replay.call_args.kwargs["layers"] == [12, 18]
+        # ONE conversion on the whole path: the read's p_l reaches the
         # envelope untouched and ``build_measurements`` logs it exactly once,
         # so exponentiating the wire value returns the original probability.
         by_layer = {
             row["layer"]: row["tokens"] for row in lens["readout"]["layers"]
         }
-        for layer, rows in self._LENS_OUT["readout"].items():
+        for layer, rows in self._LENS_READ[0].items():
             for wire, (token, p_l, token_id) in zip(by_layer[layer], rows):
                 assert wire["token"] == token
                 assert wire["id"] == token_id
@@ -848,7 +870,7 @@ class TestTokenReadout:
         self, session_and_client: Any,
     ) -> None:
         session, client = session_and_client
-        session.lens._replay_readout.return_value = dict(self._LENS_OUT)
+        session.lens_replay.return_value = (self._token(None), self._LENS_READ)
         resp = client.get(
             f"{_BASE}/lens/token-readout",
             params={"node_id": "n1", "raw_index": 3, "steered": "false"},
@@ -856,17 +878,18 @@ class TestTokenReadout:
         assert resp.status_code == 200
         binding = resp.json()["measurements"]["instruments"]["lens"]["binding"]
         assert binding["steering"] is None
-        assert session.lens._replay_readout.call_args.kwargs["apply_steering"] is False
+        assert session.lens_replay.call_args.kwargs["apply_steering"] is False
 
     def test_lens_not_fitted_404(self, session_and_client: Any) -> None:
         from drowse.lens.jlens import LensNotFittedError
         session, client = session_and_client
-        session.lens._replay_readout.side_effect = LensNotFittedError("nope")
+        session.lens._require.side_effect = LensNotFittedError("nope")
         resp = client.get(
             f"{_BASE}/lens/token-readout",
             params={"node_id": "n1", "raw_index": 0},
         )
         assert resp.status_code == 404
+        session.lens_replay.assert_not_called()
 
     def test_sae_replay_envelope(self, session_and_client: Any) -> None:
         session, client = session_and_client
@@ -877,9 +900,7 @@ class TestTokenReadout:
             layer=14,
             feature_meta={"42": {"label": "fruit", "max_act": 121.1}},
         )
-        session.sae_replay.return_value = (
-            SimpleNamespace(steering=None), [(42, 3.5)],
-        )
+        session.sae_replay.return_value = (self._token(None), [(42, 3.5)])
         resp = client.get(
             f"{_BASE}/sae/token-readout",
             params={"node_id": "n1", "raw_index": 2},

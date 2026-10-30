@@ -1,99 +1,28 @@
-"""CPU tests for ``session.geometry_token_readout`` (stub session).
+"""CPU tests for ``GeometryInstrument.token_readout`` (the geometry token replay).
 
-The geometry family's token replay: same prompt-rebuild + one-capture-forward
-orchestration as the lens/SAE replays, scored through the Monitor roster.  The Monitor is
-stubbed — its scoring math has its own suite; these tests pin the replay
-*orchestration*: validation, render/prefix/pool position, steering-scope
-ordering, cold-foot forcing, and the returned record.
+The instrument reads the Monitor roster at the forward a real
+:class:`~drowse.session.replay.TokenReplayer` rebuilds over a toy model.  The
+Monitor is stubbed (its scoring math has its own suite): these tests pin the
+geometry read — the roster's layer union drives the capture, the read forces
+the cold foot solve, the readings land in the replay envelope, and an empty
+roster is a caller error even when the detach wins the race into the
+exclusive section.  The shared rebuild (anchor, render, prefix, steering) is
+pinned in ``test_token_replay``.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import torch
 
-from collections.abc import Iterator
-from contextlib import contextmanager
-
 from drowse.generation.results import ProbeReading
-from drowse.loom.errors import InvalidNodeOperationError, UnknownNodeError
+from drowse.loom.errors import UnknownNodeError
 from drowse.loom.recipe import Recipe
-from drowse.loom.tree import LoomTree
-from drowse.model.chat import ChatTraits
-from drowse.session.session import DrowseSession
-from tests._jlens_toys import CharTokenizer, frozen_toy
-
-_PROMPT_RENDER = "the prompt render, chat shaped."
-
-
-class _TreeStubSession:
-    """The replay's collaborators: a toy model, a real loom tree, and a
-    recorded prompt render / steering scope."""
-
-    def __init__(self) -> None:
-        model = frozen_toy(n_layers=3)
-        self._model = model
-        self._tokenizer = CharTokenizer()
-        self._layers = model.model.layers
-        self._device = torch.device("cpu")
-        self.chat_traits = ChatTraits(self._tokenizer)
-        self.tree = LoomTree(model_id="toy/jlens-model")
-        self.prepare_calls: list[dict[str, Any]] = []
-        self.steering_scopes: list[Any] = []
-
-    @contextmanager
-    def _model_exclusive(self, msg: str, *, phase_msg: str | None = None) -> Iterator[None]:
-        del msg, phase_msg
-        yield
-
-    @property
-    def renderer(self) -> Any:
-        """The prompt renderer the replay rebuilds through: this stub."""
-        return self
-
-    def prepare_input(
-        self,
-        input: Any,
-        raw: bool = False,
-        thinking: bool = False,
-        stateless: bool = False,
-        parent_node_id: str | None = None,
-        user_role: str | None = None,
-        assistant_role: str | None = None,
-        to_device: bool = True,
-        gen_seat: str = "assistant",
-        system_prompt: Any = None,
-    ) -> torch.Tensor:
-        self.prepare_calls.append({
-            "input": input, "raw": raw, "thinking": thinking, "system_prompt": system_prompt,
-            "parent_node_id": parent_node_id,
-            "user_role": user_role, "assistant_role": assistant_role,
-            "gen_seat": gen_seat,
-        })
-        return torch.tensor(
-            [self._tokenizer.encode(_PROMPT_RENDER)], dtype=torch.long,
-        )
-
-    @contextmanager
-    def steering(self, value: Any) -> Iterator[None]:
-        self.steering_scopes.append(value)
-        yield
-
-
-def _tree_with_assistant(
-    s: _TreeStubSession,
-    raw_ids: list[int] | None,
-    recipe: Recipe | None = None,
-) -> str:
-    user_id = s.tree.add_user_turn("a user turn")
-    node_id = s.tree.begin_assistant(user_id, recipe=recipe)
-    s.tree.finalize_assistant(
-        node_id, text="an assistant turn", finish_reason="stop",
-        raw_token_ids=raw_ids,
-    )
-    return node_id
+from drowse.readout.geometry import GeometryInstrument
+from tests.support.replay import ReplayRig
 
 
 class _StubMonitor:
@@ -126,137 +55,104 @@ class _StubMonitor:
         }
 
 
-class _GeometryStubSession(_TreeStubSession):
-    geometry_token_readout = DrowseSession.geometry_token_readout
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._monitor = _StubMonitor(["formal.casual"], {0, 1})
+def _geometry(rig: ReplayRig) -> tuple[GeometryInstrument, Any]:
+    session = SimpleNamespace(_monitor=_StubMonitor(["formal.casual"], {0, 1}))
+    return GeometryInstrument(session, replay=rig.replay), session  # type: ignore[arg-type]
 
 
-def test_geometry_token_readout_shape_and_position() -> None:
-    s = _GeometryStubSession()
-    raw_ids = s._tokenizer.encode("abcdefg")
-    node_id = _tree_with_assistant(s, raw_ids, Recipe(system_prompt=None))
+def _geometry_block(out: dict[str, Any]) -> dict[str, Any]:
+    measurements = out["measurements"]
+    assert measurements["scope"] == "replay"
+    assert measurements["provenance"] == "replayed"
+    return measurements["instruments"]["geometry"]
 
-    seen: list[tuple[int, int | None, tuple[int, ...]]] = []
-    import drowse.fit.capture as _capture_mod
 
-    real_capture = _capture_mod._capture_all_hidden_states
+def test_geometry_token_readout_reads_the_roster_at_the_producing_position() -> None:
+    rig = ReplayRig()
+    geometry, session = _geometry(rig)
+    node_id = rig.turn(rig.tokenizer.encode("abcdefg"), Recipe(system_prompt=None))
 
-    def _spy(model: Any, layers: Any, ids: torch.Tensor, **kw: Any) -> Any:
-        pool = kw.get("pool_index")
-        seen.append((
-            int(ids.shape[1]),
-            int(pool) if pool is not None else None,
-            tuple(kw.get("layer_indices") or ()),
-        ))
-        return real_capture(model, layers, ids, **kw)
+    block = _geometry_block(geometry.token_readout(node_id, 3))
 
-    _capture_mod._capture_all_hidden_states = _spy
-    try:
-        out = s.geometry_token_readout(node_id, 3)
-    finally:
-        _capture_mod._capture_all_hidden_states = real_capture
-
-    prompt_len = len(s._tokenizer.encode(_PROMPT_RENDER))
     # Readout position: the forward that PRODUCED the clicked token —
     # prompt + raw[:3], pooled at the final position, never including the
     # clicked token itself; capture narrowed to the roster's layer union.
-    assert seen == [(prompt_len + 3, prompt_len + 2, (0, 1))]
-    assert out["node_id"] == node_id
-    assert out["raw_index"] == 3
-    assert out["token_id"] == raw_ids[3]
-    assert out["token_text"] == s._tokenizer.decode([raw_ids[3]])
-    assert out["steering"] is None
-    assert set(out["readings"]) == {"formal.casual"}
-    assert out["readings"]["formal.casual"].coords == (0.7,)
+    assert rig.captures == [(rig.prompt_len + 3, rig.prompt_len + 2, (0, 1))]
+    assert block["binding"] == {"source": None, "steering": None}
+    assert block["readings"]["formal.casual"]["coords"] == [0.7]
     # The Monitor scored exactly the captured layer union, and the replay
-    # forced the cold foot solve (a stale warm foot from a prior
-    # generation must not seed a one-shot read).
-    assert set(s._monitor.scored[0]) == {0, 1}
-    assert s._monitor.warm_calls == [False]
-    # Continue-mode rebuild: no text resend — the history walk to the
-    # parent carries every prior turn.
-    call = s.prepare_calls[0]
-    assert call["input"] is None
-    assert call["parent_node_id"] == s.tree.get(node_id).parent_id
-    assert call["gen_seat"] == "assistant"
-    assert call["system_prompt"] is None
-
-
-def test_geometry_token_readout_steering_scope() -> None:
-    s = _GeometryStubSession()
-    recipe = Recipe(steering="0.3 formal.casual")
-    node_id = _tree_with_assistant(
-        s, s._tokenizer.encode("abcd"), recipe,
+    # forced the cold foot solve (a stale warm foot from a prior generation
+    # must not seed a one-shot read).
+    assert set(session._monitor.scored[0]) == {0, 1}
+    assert session._monitor.warm_calls == [False]
+    assert rig.exclusive_messages[0][0] == (
+        "session.geometry.token_readout called while another model use is "
+        "in flight"
     )
 
-    out = s.geometry_token_readout(node_id, 2)
-    assert out["steering"] == "0.3 formal.casual"
-    assert s.steering_scopes == ["0.3 formal.casual"]
+
+def test_geometry_token_readout_binds_the_recipe_steering() -> None:
+    rig = ReplayRig()
+    geometry, _session = _geometry(rig)
+    node_id = rig.turn(
+        rig.tokenizer.encode("abcd"), Recipe(steering="0.3 formal.casual"),
+    )
+
+    block = _geometry_block(geometry.token_readout(node_id, 2))
+    assert block["binding"]["steering"] == "0.3 formal.casual"
+    assert rig.steering_scopes == ["0.3 formal.casual"]
 
     # The unsteered counterfactual: no scope opened, steering reported null.
-    out = s.geometry_token_readout(node_id, 2, apply_steering=False)
-    assert out["steering"] is None
-    assert s.steering_scopes == ["0.3 formal.casual"]
+    block = _geometry_block(
+        geometry.token_readout(node_id, 2, apply_steering=False),
+    )
+    assert block["binding"]["steering"] is None
+    assert rig.steering_scopes == ["0.3 formal.casual"]
 
 
 def test_geometry_token_readout_raw_mode_render() -> None:
-    s = _GeometryStubSession()
-    node_id = _tree_with_assistant(s, s._tokenizer.encode("abcd"))
-    s.geometry_token_readout(node_id, 1, raw=True)
-    call = s.prepare_calls[0]
+    rig = ReplayRig()
+    geometry, _session = _geometry(rig)
+    node_id = rig.turn(rig.tokenizer.encode("abcd"))
+    geometry.token_readout(node_id, 1, raw=True)
+    call = rig.prepare_calls[0]
     assert call["raw"] is True
     assert call["input"] == ""
-    assert call["parent_node_id"] == s.tree.get(node_id).parent_id
+    assert call["parent_node_id"] == rig.tree.get(node_id).parent_id
 
 
 def test_geometry_token_readout_errors() -> None:
-    s = _GeometryStubSession()
-    node_id = _tree_with_assistant(s, s._tokenizer.encode("abc"))
+    rig = ReplayRig()
+    geometry, session = _geometry(rig)
+    node_id = rig.turn(rig.tokenizer.encode("abc"))
 
-    # Unknown node.
     with pytest.raises(UnknownNodeError):
-        s.geometry_token_readout("no-such-node", 0)
-    # Index out of range.
-    with pytest.raises(InvalidNodeOperationError, match="out of range"):
-        s.geometry_token_readout(node_id, 99)
-    # A system/root node has no decode record.
-    assert s.tree.root_id is not None
-    with pytest.raises(InvalidNodeOperationError):
-        s.geometry_token_readout(s.tree.root_id, 0)
-    # A finalized turn without raw ids (transcript import).
-    user_id = s.tree.get(node_id).parent_id
-    assert user_id is not None
-    bare = s.tree.begin_assistant(user_id)
-    s.tree.finalize_assistant(bare, text="no raw record", finish_reason="stop")
-    with pytest.raises(InvalidNodeOperationError, match="raw token record"):
-        s.geometry_token_readout(bare, 0)
-    # An empty roster is a clear caller error, not an empty reading.
-    s._monitor = _StubMonitor([], set())
+        geometry.token_readout("no-such-node", 0)
+    # An empty roster is a clear caller error, not an empty reading, and it
+    # is checked before any replay work.
+    session._monitor = _StubMonitor([], set())
     with pytest.raises(ValueError, match="no geometry probes attached"):
-        s.geometry_token_readout(node_id, 0)
+        geometry.token_readout(node_id, 0)
+    assert rig.captures == []
 
 
 def test_geometry_token_readout_detach_race_keeps_caller_error() -> None:
     """sol's round-3 P3: a detach winning the gap between the entry roster
     check and the exclusive section must still surface the caller-facing
     "no geometry probes attached" error — not a capture-layer
-    implementation leak.  The roster check is repeated under
-    ``_model_exclusive``; this session's exclusive guard performs the
-    detach to pin the interleaving deterministically."""
-    from contextlib import contextmanager
+    implementation leak.  The roster is re-read inside the exclusive
+    section; the rig's exclusive guard performs the detach to pin the
+    interleaving deterministically."""
+    rig = ReplayRig()
+    geometry, session = _geometry(rig)
+    node_id = rig.turn(rig.tokenizer.encode("abc"))
 
-    s = _GeometryStubSession()
-    node_id = _tree_with_assistant(s, s._tokenizer.encode("abc"))
+    def _detach() -> None:
+        # A detach mutates the session's one Monitor in place.
+        session._monitor.probe_names = []
+        session._monitor._layers = set()
 
-    @contextmanager
-    def _detaching_exclusive(msg: str, **_kw: Any):
-        del msg
-        s._monitor = _StubMonitor([], set())  # the detach lands here
-        yield
-
-    s._model_exclusive = _detaching_exclusive
+    rig.on_exclusive = _detach
     with pytest.raises(ValueError, match="no geometry probes attached"):
-        s.geometry_token_readout(node_id, 0)
+        geometry.token_readout(node_id, 0)
+    assert rig.captures == []

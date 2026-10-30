@@ -15,10 +15,9 @@
 
 Dependencies are explicit constructor arguments: the model, tokenizer and
 device handles, the capture buffer the per-step reads consume, the
-model-exclusive guard, and a few session callbacks (registry writes, cache
-invalidation, profile resolution, the capture forward).  ``replay_host`` is
-the session, used only by the token replay's prompt rebuild until the shared
-replay lands.
+model-exclusive guard, the loom token replay, and a few session callbacks
+(registry writes, cache invalidation, profile resolution, the capture
+forward).
 """
 
 from __future__ import annotations
@@ -27,11 +26,12 @@ import hashlib
 import logging
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager
 from typing import Any, Literal, Protocol, cast, overload
 
 import torch
 
+from drowse.readout.replay import TokenReplay
 from drowse.readout.types import (
     Axis,
     DepthSummary,
@@ -195,7 +195,7 @@ class LensInstrument:
         on_change: Callable[[Iterable[str]], None],
         resolve_profile: Callable[[str], Mapping[int, torch.Tensor]],
         assert_unsteered: Callable[[], None],
-        replay_host: Any = None,
+        replay: TokenReplay,
     ) -> None:
         self.model_id = model_id
         self.runtime = LensRuntime(
@@ -215,7 +215,9 @@ class LensInstrument:
         self._on_change = on_change
         self._resolve_profile = resolve_profile
         self._assert_unsteered = assert_unsteered
-        self._replay_host = replay_host
+        # The loom-anchored token replay (the producing forward's capture);
+        # this family supplies the lens read.
+        self._replay = replay
         self._fitter = LensFitter(
             model=model, tokenizer=tokenizer, model_id=model_id, residency=self,
         )
@@ -1375,30 +1377,48 @@ class LensInstrument:
         apply_steering: bool = True,
         raw: bool = False,
     ) -> dict[str, Any]:
-        """The loom-anchored J-lens replay, as the finished
-        ``scope="replay"`` measurement envelope.
+        """The lens readout at the forward that produced a loom token, as the
+        finished ``scope="replay"`` measurement envelope.
 
-        :meth:`_replay_readout` runs the replay itself (prompt rebuild, one
-        capture forward under the node's recipe steering); this method owns
-        the envelope, so the route never reshapes a family-native dict.  The
-        replay hands back per-layer *probabilities*, which is exactly what
-        ``build_measurements`` takes — there is no exp/log round-trip on
-        this hop.
+        The replay rebuilds the producing forward (under the node's recorded
+        steering when ``apply_steering``; ``raw`` selects the flat render) and
+        reads ``softmax(W_U · norm(J_l h))`` at the producing position for
+        each selected layer (default: every fitted layer), plus the
+        layer-aggregated chips from the same logits.  The read yields
+        per-layer *probabilities*, which is exactly what
+        ``build_measurements`` takes, so there is no exp/log round-trip on
+        this hop.  Raises :class:`~drowse.lens.jlens.LensNotFittedError` with
+        no lens, ``ValueError`` on a bad ``top_k`` or an unfitted layer, and
+        ``UnknownNodeError`` / ``InvalidNodeOperationError`` on a bad anchor.
         """
         from drowse.readout.measurements import build_measurements
 
         width = 8 if top_k is None else int(top_k)
         if not 1 <= width <= 256:
             raise ValueError("top_k must be in [1, 256]")
-        out = self._replay_readout(
-            node_id,
-            raw_index,
-            layers=layers if layers is not None else "all",
-            top_k=width,
-            apply_steering=apply_steering,
-            raw=raw,
+        runtime = self.runtime
+        lens = self._require()
+        req = runtime.resolve_layers(lens, layers if layers is not None else "all")
+
+        def read(
+            hidden: dict[int, torch.Tensor],
+        ) -> tuple[
+            dict[int, list[tuple[str, float, int]]],
+            list[tuple[str, float, float, float]],
+        ]:
+            pair_rows = [(layer, hidden[layer]) for layer in req]
+            logits = runtime.logits_rows(lens, pair_rows)
+            decoded = runtime.topk_rows(lens, pair_rows, top_k=width, logits=logits)
+            return (
+                dict(zip(req, decoded)),
+                runtime.aggregate_rows(logits, req, top_k=width),
+            )
+
+        token, (readout, aggregate) = self._replay(
+            node_id, raw_index, layers=req, read=read,
+            apply_steering=apply_steering, raw=raw,
+            label="session.lens.token_readout",
         )
-        readout = out.get("readout", {})
         measurements = build_measurements(
             scope="replay",
             provenance="replayed",
@@ -1412,141 +1432,12 @@ class LensInstrument:
             },
             lens_aggregate=[
                 (str(tok), float(strength), float(com), float(spread))
-                for tok, strength, com, spread in out.get("aggregate", [])
+                for tok, strength, com, spread in aggregate
             ],
             lens_source=self.active_source,
-            steering=(out.get("steering") if apply_steering else None),
+            steering=token.steering,
         )
         return {"measurements": measurements}
-
-    def _replay_readout(
-        self,
-        node_id: str,
-        raw_index: int,
-        *,
-        layers: LayerSelector = None,
-        top_k: int = 8,
-        apply_steering: bool = True,
-        raw: bool = False,
-    ) -> dict[str, Any]:
-        """Lens readout at one decode step of a loom node.
-
-        Rebuilds the exact token stream that *produced* the token (the
-        node's rendered prompt, as :meth:`DrowseSession.fork_from_token`
-        replays it, plus ``raw_token_ids[:raw_index]``), runs one capture
-        forward under the node's recipe steering when ``apply_steering``,
-        and reads ``softmax(W_U · norm(J_l h))`` at the final position per
-        layer.  An always-active affine term reproduces the decode
-        injections exactly; phase-split and probe-gated terms fire as the
-        trigger context's rest state decides.  ``raw`` selects the flat
-        render.
-
-        Returns ``{node_id, raw_index, token_id, token_text, steering,
-        readout: {layer: [(token, p_l, id), ...]}, aggregate: [(token,
-        strength, com, spread), ...]}``.  Raises
-        :class:`~drowse.lens.jlens.LensNotFittedError` with no lens,
-        :class:`UnknownNodeError` / :class:`InvalidNodeOperationError` on a
-        bad target, ``ValueError`` on an unfitted layer.
-        """
-        from drowse.loom.errors import InvalidNodeOperationError
-        from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT
-
-        host = self._replay_host
-        if host is None:
-            raise RuntimeError("the lens token replay needs a session replay host")
-        runtime = self.runtime
-        lens = self._require()
-        req = runtime.resolve_layers(lens, layers)
-        node = host.tree.get(node_id)
-        if node.role not in ("assistant", "user"):
-            raise InvalidNodeOperationError(
-                f"lens token readout: {node_id!r} is a {node.role} node — "
-                f"only a turn with a decode record can be read out"
-            )
-        raw_ids = node.raw_token_ids
-        if not raw_ids:
-            raise InvalidNodeOperationError(
-                f"lens token readout: {node_id!r} has no raw token record "
-                f"(transcript-loaded node)"
-            )
-        if not 0 <= raw_index < len(raw_ids):
-            raise InvalidNodeOperationError(
-                f"lens token readout: raw_index {raw_index} out of range "
-                f"[0, {len(raw_ids)}) for {node_id!r}"
-            )
-
-        recipe = node.recipe
-        steering_expr = (
-            recipe.steering if (apply_steering and recipe is not None) else None
-        )
-        # The steering scope opens OUTSIDE the exclusive guard: the
-        # composer's push/pop take the generation lock blocking, so nesting
-        # the scope inside the guard would self-deadlock.
-        scope = host.steering(steering_expr) if steering_expr else nullcontext()
-        with scope:
-            thinking_req = recipe.thinking if recipe is not None else None
-            supports_thinking = host.chat_traits.supports_thinking
-            use_thinking = (
-                supports_thinking
-                if thinking_req is None
-                else bool(thinking_req) and supports_thinking
-            )
-            if raw:
-                prompt_ids = host.renderer.prepare_input(
-                    "", raw=True, parent_node_id=node.parent_id,
-                )
-            else:
-                # Continue-mode rebuild: the history walk to the parent
-                # carries every prior turn with its stamped label, so the
-                # render is byte-identical to the one that produced the node.
-                prompt_ids = host.renderer.prepare_input(
-                    None,
-                    thinking=use_thinking,
-                    parent_node_id=node.parent_id,
-                    system_prompt=(
-                        recipe.system_prompt if recipe is not None
-                        else INHERIT_SYSTEM_PROMPT
-                    ),
-                    user_role=node.role_label if node.role == "user" else None,
-                    assistant_role=(
-                        node.role_label if node.role == "assistant" else None
-                    ),
-                    gen_seat=node.role,
-                )
-            if raw_index > 0:
-                prefix = torch.tensor(
-                    [[int(t) for t in raw_ids[:raw_index]]],
-                    dtype=prompt_ids.dtype, device=prompt_ids.device,
-                )
-                ids = torch.cat([prompt_ids, prefix], dim=1)
-            else:
-                ids = prompt_ids
-            with self._exclusive(
-                "session.lens.token_readout called while another model use "
-                "is in flight",
-                phase_msg="session.lens.token_readout called while a "
-                "generation is in flight",
-            ):
-                hidden = self._capture_hidden(
-                    ids, layer_indices=req, pool_index=ids.shape[1] - 1,
-                )
-                pair_rows = [(layer, hidden[layer]) for layer in req]
-                logits = runtime.logits_rows(lens, pair_rows)
-                decoded = runtime.topk_rows(
-                    lens, pair_rows, top_k=top_k, logits=logits,
-                )
-                readout = dict(zip(req, decoded))
-                agg = runtime.aggregate_rows(logits, req, top_k=top_k)
-        token_id = int(raw_ids[raw_index])
-        return {
-            "node_id": node_id,
-            "raw_index": int(raw_index),
-            "token_id": token_id,
-            "token_text": str(runtime.tokenizer.decode([token_id])),
-            "steering": steering_expr,
-            "readout": readout,
-            "aggregate": agg,
-        }
 
     def live_readout_step(
         self, *, top_k: int = 8, step_id: int = -1,

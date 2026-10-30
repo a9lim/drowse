@@ -1641,8 +1641,11 @@ class TestAnalyticsMultiNodeProbe:
         # instrument silently yields an empty roster, so wire the real one
         # (it reads the same ``session._monitor.manifolds`` stub above).
         from drowse.readout.geometry import GeometryInstrument
+        from tests.support.replay import unwired_replay
 
-        session._geometry_instrument = GeometryInstrument(session)
+        session._geometry_instrument = GeometryInstrument(
+            session, replay=unwired_replay,
+        )
         # Bind the real analytics methods onto the mock so the endpoint
         # exercises the production fold path, not a vacuous MagicMock.
         session.analytics_names = lambda: DrowseSession.analytics_names(session)

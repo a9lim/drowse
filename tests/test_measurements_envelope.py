@@ -308,33 +308,47 @@ class TestReplayEnvelopes:
         from drowse.lens.instrument import LensInstrument
         from tests.support.sae import make_resident, stub_sae_instrument
 
-        native = {
-            "steering": "0.3 formal.casual",
-            "readings": {"formal.casual": _geometry_reading()},
-            "readout": {},
-            "aggregate": [],
-            "features": [],
-            "layer": 14,
-        }
         session = SimpleNamespace(
             model_id="test/model",
-            geometry_token_readout=lambda *a, **k: native,
+            _monitor=SimpleNamespace(
+                probe_names=["formal.casual"], probe_layers=lambda: {0},
+            ),
         )
-        lens = LensInstrument(**stub_lens_kwargs(session))
-        lens._replay_readout = lambda *a, **k: native  # type: ignore[method-assign]
-        sae = stub_sae_instrument(
-            session,
-            replay=lambda *a, **k: (SimpleNamespace(steering=None), [(3, 1.5)]),
+        geometry = GeometryInstrument(  # type: ignore[arg-type]
+            session, replay=_canned_replay({"formal.casual": _geometry_reading()}),
         )
+        lens = LensInstrument(
+            **stub_lens_kwargs(session, replay=_canned_replay((
+            {0: [("a", 0.5, 7)]}, [("a", 0.5, 0.0, 0.0)],
+        ))),
+        )
+        # No fitted lens on the stub: resolve a stand-in over one layer.
+        lens._require = lambda: object()  # type: ignore[method-assign]
+        lens.runtime.resolve_layers = lambda _lens, _layers: [0]  # type: ignore[method-assign]
+        sae = stub_sae_instrument(session, replay=_canned_replay([(3, 1.5)]))
         make_resident(sae.runtime, layer=14)
-        instruments = (
-            GeometryInstrument(session),  # type: ignore[arg-type]
-            lens,
-            sae,
-        )
-        for instrument in instruments:
+        for instrument in (geometry, lens, sae):
             out = _token_readout(instrument, instrument.family)
             assert set(out) == {"measurements"}
+            binding = out["measurements"]["instruments"][instrument.family]["binding"]
+            assert binding["steering"] == "0.3 formal.casual"
+
+
+def _canned_replay(result: Any) -> Any:
+    """A token replay that skips the forward and hands back ``result`` as
+    the family read's output, under a steered replayed token."""
+    from drowse.readout.replay import ReplayedToken
+
+    def replay(
+        node_id: str, raw_index: int, *, apply_steering: bool = True, **_kw: Any,
+    ) -> tuple[ReplayedToken, Any]:
+        token = ReplayedToken(
+            node_id=node_id, raw_index=raw_index, token_id=1, token_text="x",
+            steering="0.3 formal.casual" if apply_steering else None,
+        )
+        return token, result
+
+    return replay
 
 
 def _token_readout(instrument: Any, family: str) -> dict[str, Any]:
@@ -354,14 +368,13 @@ class TestRejectedKnobs:
     @staticmethod
     def _instrument(family: str) -> Any:
         from drowse.readout.geometry import GeometryInstrument
+        from tests.support.replay import unwired_replay
         from tests.support.sae import stub_sae_instrument
 
-        session = SimpleNamespace(
-            model_id="test/model",
-            geometry_token_readout=lambda *a, **k: {"readings": {}},
-        )
+        # The knob is refused before any replay work: the replay is unwired.
+        session = SimpleNamespace(model_id="test/model")
         if family == "geometry":
-            return GeometryInstrument(session)  # type: ignore[arg-type]
+            return GeometryInstrument(session, replay=unwired_replay)  # type: ignore[arg-type]
         return stub_sae_instrument(session)
 
     def test_geometry_rejects_top_k(self) -> None:
