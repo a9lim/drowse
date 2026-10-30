@@ -52,6 +52,26 @@
     {
       "expression": "0.4 alice/happy.sad:sae-release~jlens/fake + !sae/12@first:5 + mood%calm",
       "selectors": [["alice", "happy.sad", "sae-release"], ["jlens", "fake", "raw"], ["sae", "12", "raw"]]
+    },
+    {
+      "expression": "0.3 jlens/#1234",
+      "selectors": [["jlens", "#1234", "raw"]]
+    },
+    {
+      "expression": "!slens/#12",
+      "selectors": [["slens", "#12", "raw"]]
+    },
+    {
+      "expression": "0.3 jlens/Paris@when:jlens/Paris>0.01",
+      "selectors": [["jlens", "Paris", "raw"]]
+    },
+    {
+      "expression": "x@when:jlens/#7>0.01",
+      "selectors": [[null, "x", "raw"]]
+    },
+    {
+      "expression": "0.2 neuron/L8n344",
+      "selectors": [["neuron", "L8n344", "raw"]]
     }
   ],
   "rejected": [
@@ -69,6 +89,14 @@
     "foo@when:bar==1",
     "foo@when:bar:unknown>0",
     "foo@when:bar:fraction[0]>0",
-    "sae/1.5"
+    "sae/1.5",
+    "0.3 #12",
+    "0.3 sae/#12",
+    "0.3 alice/#12",
+    "0.3 jlens/#1.5",
+    "0.3 jlens/#",
+    "0.3 jlens/fake:sae",
+    "0.3 jlens/x:raw",
+    "x@when:sae/#3>0"
   ]
 }
