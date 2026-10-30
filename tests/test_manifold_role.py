@@ -408,11 +408,8 @@ def test_namespace_qualified_bare_name_still_resolves(tmp_path: Path, monkeypatc
 def test_vector_authoring_rejects_role_cache_alias(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from typing import Any, cast
-    from types import SimpleNamespace
-
-    from drowse.session.session import DrowseSession
     from drowse.store.manifold_authoring import create_discover_manifold_folder
+    from tests.support.extraction import make_extraction
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
@@ -420,27 +417,26 @@ def test_vector_authoring_rejects_role_cache_alias(
         node_corpora={"honest": ["yes"], "deceptive": ["no"]},
         node_roles={"honest": "pirate", "deceptive": "pirate"},
     )
+    rig = make_extraction(monkeypatch)
     with pytest.raises(ValueError, match="not uniformly None"):
-        DrowseSession._author_and_fit_2node(
-            cast(Any, SimpleNamespace()), "local", "honest.deceptive", "",
-            node_corpora=None,
-            node_kinds={"honest": "abstract", "deceptive": "abstract"},
-            role=None, force=False, sae=None, sae_revision=None,
-            on_progress=None,
-        )
+        rig.extraction.extract("honest.deceptive", namespace="local")
+    assert rig.generated == [] and rig.fitted == []
 
 
-def test_vector_authoring_centrally_rejects_sae_plus_role() -> None:
-    from typing import Any, cast
-    from types import SimpleNamespace
+def test_vector_authoring_centrally_rejects_sae_plus_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.support.extraction import make_extraction
 
-    from drowse.session.session import DrowseSession
-
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    rig = make_extraction(monkeypatch)
     with pytest.raises(ValueError, match="mutually exclusive"):
-        DrowseSession._author_and_fit_2node(
-            cast(Any, SimpleNamespace()), "local", "honest.deceptive", "",
-            node_corpora=None,
-            node_kinds={"honest": "abstract", "deceptive": "abstract"},
-            role="pirate", force=False, sae="release", sae_revision=None,
-            on_progress=None,
+        rig.extraction.extract(
+            "honest.deceptive", namespace="local", role="pirate", sae="release",
         )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        rig.extraction.extract_from_corpora(
+            "honest.deceptive", ["yes"], ["no"], namespace="local",
+            role="pirate", sae="release",
+        )
+    assert rig.generated == [] and rig.fitted == []

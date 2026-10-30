@@ -20,12 +20,13 @@ from transformers import (
 )
 
 from drowse.fit.capture import CaptureMode, CaptureState
+from drowse.fit.corpus import RESPONSE_MAX_TOKENS, CorpusGenerator
+from drowse.session.extraction import Extraction
 from drowse.errors import DrowseError
 from drowse.events import (
     EventBus,
     GenerationFinished,
     GenerationStarted,
-    ManifoldExtracted,
     ProbeScored,
 )
 from drowse.generation.prefix_cache import PrefixCacheEntry
@@ -40,7 +41,6 @@ from drowse.generation.decode import (
 from drowse.model.chat import ChatTraits
 from drowse.readout.capture_buffer import HiddenCapture
 from drowse.steering.hooks import SteeringManager
-from drowse.naming import BIPOLAR_SEP, _slug, canonical_concept_name
 from drowse.generation.token_callback import (
     StepTokenCallback,
     TokenCallback,
@@ -129,17 +129,6 @@ class GenerationStream(Protocol):
     @property
     def result(self) -> GenerationResult | None: ...
 
-_RESPONSE_MAX_TOKENS = 256  # per in-character response (4.0 / A2 elicitation)
-# Chunk size for batched corpus generation (``_run_generator_batch``, the
-# generation half of ``generate_responses`` / ``generate_neutral_responses``).
-# One left-padded ``model.generate`` over this many baseline prompts replaces
-# that many sequential batch-1 decodes — the dominant cost of extraction's
-# corpus-generation phase (each decode is up to ``_RESPONSE_MAX_TOKENS`` long).
-_CORPUS_GEN_BATCH = 16
-# An EOS-only sampled row carries no conversational evidence and cannot be
-# installed as a manifold node.  Retry only that aligned row greedily while
-# suppressing EOS long enough to require a short content continuation.
-_CORPUS_RETRY_MIN_TOKENS = 8
 # Tail-ring depth for aggregate-only capture (probes attached, no per-token
 # consumer): how many trailing hidden slices to retain so finalize can pool the
 # last *content* token after walking back past trailing special tokens (EOS,
@@ -271,111 +260,6 @@ PROBE_CATEGORIES = [
     "cultural",
 ]
 MIN_ELAPSED_FOR_RATE = 0.1
-
-
-def _humanize_concept(name: str) -> str:
-    """Invert the slug `_` convention for LLM-facing prompts.
-
-    Pack names and alphas keys use underscores (``artificial_intelligence``);
-    the generator reads them better as spaces. Disk paths, canonical
-    names, and progress messages keep the slug form.
-    """
-    return name.replace("_", " ")
-
-
-# Conversational (4.0 / A2) elicitation templates keyed by node ``kind``.  The
-# concept goes in the system prompt; {c} is the humanized concept, {art} its
-# a/an article.  ``abstract`` traits read as "someone {c}", ``concrete``
-# entities as "{art} {c}".
-_KIND_TEMPLATES = {
-    "abstract": "You are someone {c}. Respond exactly as someone {c} would.",
-    "concrete": "You are {art} {c}. Respond exactly as {art} {c} would.",
-}
-
-
-def _article(word: str) -> str:
-    """Naive a/an for the concrete-entity template (an alien, a deer)."""
-    return "an" if word[:1].lower() in "aeiou" else "a"
-
-
-def _system_for(
-    concept_h: str, kind: str | None, custom: str | None = None,
-) -> str:
-    """A2 system prompt for a humanized concept under its kind (default abstract).
-
-    ``abstract`` reads as "someone {c}", ``concrete`` as "{art} {c}", and
-    ``custom`` uses the caller-supplied ``custom`` template — a free-form
-    elicitation frame (``{c}``/``{art}`` placeholders) for a concept that is
-    neither a trait nor an entity (a month embodying its season, say), so the
-    generation framing is no longer limited to the two fixed templates.
-    """
-    if (kind or "abstract") == "custom":
-        if not custom:
-            raise ValueError(
-                "_system_for: kind='custom' requires a custom system template"
-            )
-        return custom.format(c=concept_h, art=_article(concept_h))
-    template = _KIND_TEMPLATES.get(kind or "abstract", _KIND_TEMPLATES["abstract"])
-    return template.format(c=concept_h, art=_article(concept_h))
-
-
-def _role_for(slug: str, kind: str | None) -> str | None:
-    """A2 elicitation role label (the swapped assistant header) for a node.
-
-    Abstract traits get a ``someone_{slug}`` speaker ("someone happy"); concrete
-    entities are the bare slug ("pirate").  The underscore de-slugs to a space
-    at render (:func:`drowse.model.role_templates._render_label`).  ``custom``
-    returns ``None`` — no role swap; the custom system prompt carries the
-    framing and the corpus is pooled in standard-assistant space (the
-    persona-stays-generation-only pattern).
-    """
-    k = kind or "abstract"
-    if k == "custom":
-        return None
-    return f"someone_{slug}" if k == "abstract" else slug
-
-
-def _split_composite_source(
-    concept: str, baseline: str | None,
-) -> tuple[str, str | None]:
-    """Split a composite ``pos.neg`` slug when no explicit baseline is given.
-
-    ``canonical_concept_name`` already performs this split for the
-    storage name.  ``extract()`` needs the same split at the generator
-    interface so :meth:`DrowseSession.generate_responses` elicits
-    ``concept`` and ``baseline`` as two distinct poles — otherwise the LLM
-    sees one composite blob and the pole assignment no longer matches the
-    user's declared order.
-    """
-    if baseline is None and BIPOLAR_SEP in concept:
-        pos, neg = concept.split(BIPOLAR_SEP, 1)
-        return pos.strip(), neg.strip()
-    return concept, baseline
-
-
-def _installed_concept_namespace(name: str, *, force: bool) -> str:
-    """Namespace ``extract`` targets when the caller names none.
-
-    An installed manifold with this canonical name is fitted where it lives,
-    never shadowed by a second ``local/`` copy (that copy would make the bare
-    name ambiguous for every later steering expression).  Two installed copies
-    are already ambiguous and raise.  A bundled ``default/`` folder is
-    refreshed from the package, so regenerating its corpus in place would be
-    silently undone: ``force`` there requires an explicit namespace.
-    """
-    from drowse.store.selectors import Selector, resolve
-
-    matches = resolve(Selector(kind="name", value=name))
-    if not matches:
-        return "local"
-    (match,) = matches
-    if force and match.namespace == "default":
-        raise ValueError(
-            f"{name!r} is the bundled default/{name}; its corpus is refreshed "
-            "from the package. Pass namespace='local' to regenerate a forked "
-            "copy (bare references then need a namespace)."
-        )
-    return match.namespace
 
 
 class GenState(IntEnum):
@@ -1321,11 +1205,24 @@ class DrowseSession:
                 on_progress,
             )
 
-        # DLS toggle stored on the session so ``session.extract`` / ``fit``
-        # inherit it without re-passing; both thread it into
-        # ``ManifoldExtractionPipeline.fit(dls=...)``, which gates the flat
-        # branch's straddle-pruning.
-        self._dls: bool = bool(dls)
+        # Corpus generation and the extract/fit/bake glue.  Wired before the
+        # probe bootstrap below, which fits stale bundled axes through ``fit``;
+        # ``dls`` gates every flat fit's straddle-pruning.
+        self._corpus = CorpusGenerator(
+            lambda *args, **kwargs: self._model.generate(*args, **kwargs),  # pyright: ignore[reportCallIssue]  # transformers stubs don't expose generate
+            self._tokenizer, device=self._device,
+            traits=self._chat, scene=lambda: self.scene_grammar,
+            model_type=self._resolved_model_type(),
+        )
+        self._extraction = Extraction(
+            self, self.events, self._corpus,
+            exclusive=self._model_exclusive,
+            assert_unsteered=self._assert_unsteered_artifact_operation,
+            adopt=self._adopt_fitted_manifold,
+            evict_failed=self._evict_failed_manifold_override,
+            register_profile=self.steer,
+            dls=dls,
+        )
 
         # Steering-resolution collaborator is required while bootstrapping
         # manifold probes: the loader is the single artifact registration
@@ -4291,222 +4188,6 @@ class DrowseSession:
 
     # -- Extraction --
 
-    def _run_generator(
-        self,
-        system_msg: str,
-        prompt: str,
-        max_new_tokens: int,
-        *,
-        role: str | None = None,
-    ) -> str:
-        """Single-turn LLM call shared by scenario and pair generators.
-
-        Builds a chat input from (system_msg, prompt), runs the model
-        under inference_mode, decodes and returns the generated text.
-        No parsing, no retry — callers drive the retry loop.
-
-        An empty ``system_msg`` (``""``) drops the system role entirely
-        — the chat template sees only the user turn.  Useful for
-        measuring whether the system framing is biasing statement
-        register: with the persona-priming gone, the model writes from
-        its default assistant identity rather than the "interpretability
-        research output generator" framing the constant has historically
-        carried.
-
-        ``role`` (optional): substitute a custom assistant-role label so
-        the generation prompt opens with ``<role>`` instead of
-        ``assistant``.  Routed through :func:`build_chat_input`.  Mirrors
-        the role-augmented extraction path so the scenario / pair
-        generators inhabit the same persona the corpus will be pooled
-        from.  ``role=None`` is the zero-overhead default.
-        """
-        pad_id = self._tokenizer.pad_token_id or self._tokenizer.eos_token_id
-        messages: list[dict[str, str]] = []
-        if system_msg:
-            messages.append({"role": "system", "content": system_msg})
-        messages.append({"role": "user", "content": prompt})
-        model_type_for_role: str | None = None
-        if role is not None:
-            model_cfg = getattr(self._model, "config", None)
-            text_cfg = getattr(model_cfg, "text_config", None) if model_cfg is not None else None
-            model_type_for_role = (
-                getattr(text_cfg, "model_type", None)
-                if text_cfg is not None
-                else None
-            )
-            if model_type_for_role is None and model_cfg is not None:
-                model_type_for_role = getattr(model_cfg, "model_type", None)
-        input_ids = build_chat_input(
-            self._tokenizer, messages, system_prompt=None,
-            thinking=False,
-            gen_role=role, model_type=model_type_for_role,
-            scene=self.scene_grammar,
-            traits=self.chat_traits,
-        ).to(self._device)
-        attention_mask = torch.ones_like(input_ids)
-        with torch.inference_mode():
-            out = self._model.generate(  # pyright: ignore[reportCallIssue]  # transformers stubs don't expose generate on PreTrainedModel directly
-                input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=max_new_tokens,
-                do_sample=True, temperature=1.0, top_p=0.9,
-                pad_token_id=pad_id,
-            )
-        new_ids = out[0][input_ids.shape[-1]:]
-        decoded = self._tokenizer.decode(new_ids, skip_special_tokens=True)
-        return decoded if isinstance(decoded, str) else decoded[0]
-
-    def _run_generator_batch(
-        self,
-        system_msg: str,
-        prompts: list[str],
-        max_new_tokens: int,
-        *,
-        role: str | None = None,
-        deterministic: bool = False,
-        min_new_tokens: int = 0,
-    ) -> list[str]:
-        """Batched sibling of :meth:`_run_generator`.
-
-        Renders each prompt as a ``[system?, user]`` chat, **left-pads** the
-        batch to a common length (decoder-only generation aligns continuations
-        on the right, so every row's prompt must end at the same column), and
-        runs ONE ``model.generate`` over the whole batch.  Returns the decoded
-        continuations in prompt order.  Sampling is per-row independent
-        (``do_sample``), with the same ``temperature=1.0`` / ``top_p=0.9`` the
-        single-prompt generator uses, so a batched corpus is distributionally
-        the same as the sequential one — just far fewer ``generate`` calls.
-
-        The seam ``generate_responses`` / ``generate_neutral_responses`` call;
-        ``_run_generator`` is kept for the single-shot ``ModelHandle`` protocol
-        and any caller that wants one response.
-        """
-        if not prompts:
-            return []
-        # ``cast`` (not ``int()``): the tokenizer stub types pad/eos as a loose
-        # union (``int | list[int] | str | …``) though the id is an int; casting
-        # avoids a spurious ``int(list)`` type error without a runtime no-op.
-        pad_id = cast(
-            int,
-            self._tokenizer.pad_token_id
-            or self._tokenizer.eos_token_id
-            or 0,
-        )
-        model_type_for_role: str | None = None
-        if role is not None:
-            model_cfg = getattr(self._model, "config", None)
-            text_cfg = getattr(model_cfg, "text_config", None) if model_cfg is not None else None
-            model_type_for_role = (
-                getattr(text_cfg, "model_type", None)
-                if text_cfg is not None
-                else None
-            )
-            if model_type_for_role is None and model_cfg is not None:
-                model_type_for_role = getattr(model_cfg, "model_type", None)
-
-        # Render each prompt to ids (build_chat_input returns CPU tensors).
-        seqs: list[torch.Tensor] = []
-        for prompt in prompts:
-            messages: list[dict[str, str]] = []
-            if system_msg:
-                messages.append({"role": "system", "content": system_msg})
-            messages.append({"role": "user", "content": prompt})
-            ids = build_chat_input(
-                self._tokenizer, messages, system_prompt=None,
-                thinking=False,
-                gen_role=role, model_type=model_type_for_role,
-                scene=self.scene_grammar,
-                traits=self.chat_traits,
-            )
-            seqs.append(ids[0])
-
-        lengths = [int(s.shape[0]) for s in seqs]
-        max_len = max(lengths)
-        batch = len(seqs)
-        # Left-pad: each row's prompt occupies the rightmost ``lengths[i]``
-        # columns, so the continuation begins at ``max_len`` for every row and
-        # ``out[:, max_len:]`` is the batch's generated tail.
-        input_ids = torch.full(
-            (batch, max_len), pad_id, dtype=seqs[0].dtype,
-        )
-        attn = torch.zeros((batch, max_len), dtype=torch.long)
-        for i, seq in enumerate(seqs):
-            input_ids[i, max_len - lengths[i]:] = seq
-            attn[i, max_len - lengths[i]:] = 1
-        input_ids = input_ids.to(self._device)
-        attn = attn.to(self._device)
-
-        generation_kwargs: dict[str, Any] = {
-            "max_new_tokens": max_new_tokens,
-            "do_sample": not deterministic,
-            "pad_token_id": pad_id,
-        }
-        if deterministic:
-            if min_new_tokens > 0:
-                generation_kwargs["min_new_tokens"] = min(
-                    min_new_tokens, max_new_tokens,
-                )
-        else:
-            generation_kwargs.update(temperature=1.0, top_p=0.9)
-
-        with torch.inference_mode():
-            out = self._model.generate(  # pyright: ignore[reportCallIssue]  # transformers stubs don't expose generate on PreTrainedModel directly
-                input_ids,
-                attention_mask=attn,
-                **generation_kwargs,
-            )
-        new_ids = out[:, max_len:]
-        decoded = self._tokenizer.batch_decode(new_ids, skip_special_tokens=True)
-        return list(decoded)
-
-    def _run_corpus_batch(
-        self,
-        system_msg: str,
-        prompts: list[str],
-        max_new_tokens: int,
-        *,
-        role: str | None,
-    ) -> list[str]:
-        """Generate one aligned corpus chunk, repairing EOS-only rows.
-
-        Sampling can legitimately choose EOS as its first token for one row in
-        an otherwise healthy batch.  Dropping that row would shift every later
-        response away from its baseline prompt, while keeping it would create an
-        invalid blank node corpus.  Retry exactly the blank row with the same
-        system prompt, user prompt, and role, using deterministic greedy decode
-        and a short EOS suppression window.  The retry therefore remains model
-        output under the identical elicitation frame and cannot perturb corpus
-        order or the sampling RNG used by the other rows.
-        """
-        texts = self._run_generator_batch(
-            system_msg, prompts, max_new_tokens, role=role,
-        )
-        if len(texts) != len(prompts):
-            raise RuntimeError(
-                "corpus generation returned a different number of responses "
-                f"than prompts ({len(texts)} != {len(prompts)})"
-            )
-        repaired = list(texts)
-        for index, text in enumerate(texts):
-            if text.strip():
-                repaired[index] = text.strip()
-                continue
-            retry = self._run_generator_batch(
-                system_msg,
-                [prompts[index]],
-                max_new_tokens,
-                role=role,
-                deterministic=True,
-                min_new_tokens=_CORPUS_RETRY_MIN_TOKENS,
-            )
-            if len(retry) != 1 or not retry[0].strip():
-                raise RuntimeError(
-                    "the model produced no content for corpus prompt "
-                    f"{prompts[index]!r}, including the deterministic retry"
-                )
-            repaired[index] = retry[0].strip()
-        return repaired
-
     def generate_responses(
         self,
         concepts: list[str],
@@ -4515,117 +4196,28 @@ class DrowseSession:
         roles: dict[str, str | None] | None = None,
         custom_system: str | None = None,
         samples_per_prompt: int = 1,
-        max_new_tokens: int = _RESPONSE_MAX_TOKENS,
+        max_new_tokens: int = RESPONSE_MAX_TOKENS,
         on_progress: Callable[[str], None] | None = None,
     ) -> dict[str, list[str]]:
-        """Generate each concept\'s conversational corpus (4.0 / A2 elicitation).
-
-        For every ``(concept, kind)`` the model answers the shared baseline
-        prompts *in character* -- the concept rides the system prompt
-        (:func:`_system_for`, led by the shared :data:`~drowse.fit.capture._LENGTH_DIRECTIVE`
-        so responses stay one short paragraph) and the swapped assistant-role
-        label (:func:`_role_for`, overridable per concept via ``roles``).  The
-        length directive is common-mode with the neutral corpus and with capture
-        (it leads every system prompt), so it cancels at extraction.  Responses
-        are emitted samples-outer / prompts-inner so ``response[i]`` aligns to
-        ``prompt[i % k]`` -- the alignment
-        :func:`~drowse.fit.node_stats.compute_manifold_node_stats` and the node
-        corpus files assume.
-
-        ``custom_system`` is the system template used for any concept whose
-        ``kind`` is ``"custom"`` (``{c}`` = the humanized concept) -- the
-        free-form elicitation frame, e.g. ``"You are the month of {c}; speak as
-        that month."``.  ``custom`` kinds do **not** role-swap (role is ``None``,
-        the framing rides the system prompt and the corpus pools in
-        standard-assistant space), so ``custom`` works on every family including
-        those without a substitutable role header.
-
-        Returns ``{concept: [response, ...]}`` with
-        ``len == max(1, samples_per_prompt) * len(baseline_prompts)`` per
-        concept.  ``abstract``/``concrete`` role-swap (a family without role
-        support raises ``RoleSubstitutionUnsupportedError`` at generation);
-        ``custom`` is the system-only exception.
-        """
-        from drowse.fit.capture import _LENGTH_DIRECTIVE, _load_baseline_prompts
-
-        if any((k or "abstract") == "custom" for k in kinds) and not custom_system:
-            raise ValueError(
-                "generate_responses: kind='custom' requires custom_system "
-                "(a system template with a {c} placeholder)"
-            )
-        prompts = _load_baseline_prompts()
-        roles = roles or {}
-        reps = max(1, samples_per_prompt)
-        total = reps * len(prompts)
-        out: dict[str, list[str]] = {}
-        for concept, kind in zip(concepts, kinds, strict=True):
-            concept_h = _humanize_concept(concept)
-            # The length directive leads the persona system prompt (and is the
-            # whole system for the neutral baseline + capture), so it is shared
-            # common-mode that cancels at extraction.
-            system = f"{_LENGTH_DIRECTIVE} {_system_for(concept_h, kind, custom_system)}"
-            gen_role = roles.get(concept) or _role_for(_slug(concept), kind)
-            responses: list[str] = []
-            for _ in range(reps):
-                # Prompts-inner, batched in chunks: one model.generate per chunk
-                # rather than per prompt.  Order is preserved within the rep, so
-                # ``response[i] -> prompt[i % k]`` still holds.
-                for start in range(0, len(prompts), _CORPUS_GEN_BATCH):
-                    chunk = prompts[start:start + _CORPUS_GEN_BATCH]
-                    if on_progress:
-                        on_progress(
-                            f"Generating {concept!r} responses "
-                            f"{len(responses) + 1}-{len(responses) + len(chunk)}"
-                            f"/{total}..."
-                        )
-                    texts = self._run_corpus_batch(
-                        system, chunk, max_new_tokens, role=gen_role,
-                    )
-                    responses.extend(text.strip() for text in texts)
-            out[concept] = responses
-        return out
+        """Each concept's in-character corpus; see :meth:`CorpusGenerator.responses`."""
+        return self._corpus.responses(
+            concepts, kinds, roles=roles, custom_system=custom_system,
+            samples_per_prompt=samples_per_prompt, max_new_tokens=max_new_tokens,
+            on_progress=on_progress,
+        )
 
     def generate_neutral_responses(
         self,
         *,
         samples_per_prompt: int = 1,
-        max_new_tokens: int = _RESPONSE_MAX_TOKENS,
+        max_new_tokens: int = RESPONSE_MAX_TOKENS,
         on_progress: Callable[[str], None] | None = None,
     ) -> list[str]:
-        """Generate the neutral baseline corpus -- organic, unconditioned responses.
-
-        The neutral counterpart to :meth:`generate_responses`: the model answers
-        the shared baseline prompts under the shared
-        :data:`~drowse.fit.capture._LENGTH_DIRECTIVE` as its *only* system prompt
-        (no persona) with the standard assistant label, so the corpus is the
-        model\'s own voice -- just brief.  The directive is the only framing it
-        shares with the node corpora (same on every node system + every capture),
-        so it cancels at extraction while leaving neutral the default-voice
-        reference the contrast subtracts against.  Same prompts-cycled order
-        (``response[i] -> prompt[i % k]``).  This is what ``neutral_statements.json``
-        holds under 4.0 -- regenerate it with this and the per-model
-        ``layer_means`` / neutral-activation caches recompute conversationally.
-        """
-        from drowse.fit.capture import _LENGTH_DIRECTIVE, _load_baseline_prompts
-
-        prompts = _load_baseline_prompts()
-        reps = max(1, samples_per_prompt)
-        total = reps * len(prompts)
-        responses: list[str] = []
-        for _ in range(reps):
-            for start in range(0, len(prompts), _CORPUS_GEN_BATCH):
-                chunk = prompts[start:start + _CORPUS_GEN_BATCH]
-                if on_progress:
-                    on_progress(
-                        f"Generating neutral responses "
-                        f"{len(responses) + 1}-{len(responses) + len(chunk)}"
-                        f"/{total}..."
-                    )
-                texts = self._run_corpus_batch(
-                    _LENGTH_DIRECTIVE, chunk, max_new_tokens, role=None,
-                )
-                responses.extend(text.strip() for text in texts)
-        return responses
+        """The neutral baseline corpus; see :meth:`CorpusGenerator.neutral_responses`."""
+        return self._corpus.neutral_responses(
+            samples_per_prompt=samples_per_prompt, max_new_tokens=max_new_tokens,
+            on_progress=on_progress,
+        )
 
     @contextmanager
     def _model_exclusive(
@@ -4675,106 +4267,12 @@ class DrowseSession:
         namespace: str | None = None,
         role: str | None = None,
     ) -> tuple[str, Profile]:
-        """Author + fit a steering vector via conversational (4.0 / A2) extraction.
-
-        A steering vector is a flat ``pca`` manifold.  A **bipolar** axis
-        (``concept`` + ``baseline``) authors a 2-node manifold — node 0 the
-        positive pole, node 1 the negative.  A **monopolar** concept
-        (``baseline=None``) authors a genuinely **1-node** manifold; the fit
-        recognizes the single-node ``pca`` shape and folds ``concept − ν``
-        (ν = the model's neutral activation mean, ``layer_means``) into a
-        1-node neutral-anchored ray — neutral is the implicit negative pole,
-        sourced per-model at fit (never a stored corpus).  Both resolve as
-        steerable vectors: ``0.5 <concept>`` steers toward the concept pole.
-
-        Each node's corpus is generated by :meth:`generate_responses`: the model
-        answers the shared baseline prompts *in character* (concept in the system
-        prompt + a kind-derived elicitation role), and extraction pools the
-        swapped-back ``[user, assistant]`` pairs in standard-assistant space.
-
-        Returns ``(canonical_name, Profile)`` — the folded per-layer direction
-        view of the fitted manifold (the in-memory steering-vector shape), with
-        the manifold the single on-disk artifact.  Emits ``ManifoldExtracted``
-        (with its ``profile`` field carrying the folded view).
-
-        Flags:
-
-        - ``kind=`` (``"abstract"`` | ``"concrete"`` | ``"custom"``): selects each
-          node's system template + elicitation role label (``someone {c}`` vs
-          ``{c}``).  Applies to both poles of a bipolar axis.  ``"custom"``
-          rides ``custom_system`` (``{c}`` = the concept) with no role swap —
-          the system-only frame every model family supports — and requires it.
-        - ``force=True``: regenerate the corpora + re-author the folder
-          (otherwise an existing manifold's corpus is reused and the fit
-          cache-hits when a tensor for this model is already present).
-        - ``namespace=``: where a new folder is authored (``local`` by
-          default).  Omitted, an installed manifold with this canonical name
-          in any namespace (e.g. the bundled ``default/formal.casual``) is
-          fitted in place rather than shadowed by a second copy, which would
-          make the bare name ambiguous.
-        - ``role=<slug>``: persona-baselined extraction — the explicit role
-          overrides the kind-derived label at *both* generation and capture
-          (the centroid lives in role-baselined space; stored as the node
-          ``role``).  Omit for the standard swap-back baseline.
-        - ``sae=<release>``: fit in SAE feature space (a ``_sae-<release>``
-          tensor variant beside the raw one).
-
-        Gated against generation: fitting runs forward passes through the
-        model and would race an active gen.
-        """
-        with self._model_exclusive(
-            "session.extract called while another model use is in flight",
-            phase_msg="session.extract called while a generation is in flight",
-        ):
-            DrowseSession._assert_unsteered_artifact_operation(self)
-            from drowse.base.paths import manifold_dir
-
-            pos_raw, neg_raw = _split_composite_source(concept, baseline)
-            name = canonical_concept_name(concept, baseline)
-            ns = namespace or _installed_concept_namespace(name, force=force)
-            pos_label = _slug(pos_raw)
-            if neg_raw is None:
-                # Monopolar = a single concept node.  The folder is genuinely
-                # one node; the engine recognizes a 1-node ``pca`` fit and folds
-                # ``concept − ν`` (ν = the model's neutral activation mean,
-                # ``layer_means``) into a 1-node neutral-anchored ray
-                # (`ManifoldExtractionPipeline`).  ν is the implicit negative
-                # pole, sourced per-model at fit — never a stored corpus — so
-                # ``0.5 <concept>`` steers neutral → concept.
-                gen_concepts = [pos_raw]
-                labels = [pos_label]
-                desc = f"Monopolar axis: {pos_raw} (+) vs neutral baseline (-)."
-            else:
-                gen_concepts = [pos_raw, neg_raw]
-                labels = [pos_label, _slug(neg_raw)]
-                desc = f"Bipolar axis: {pos_raw} (+) vs {neg_raw} (-)."
-
-            manifest = manifold_dir(ns, name) / "manifold.json"
-            # An existing folder's role baseline is checked under the manifest
-            # lock by ``_author_and_fit_2node``; generation only runs when the
-            # folder is (re-)authored, so nothing expensive precedes that check.
-            node_corpora: dict[str, list[str]] | None = None
-            if force or not manifest.exists():
-                gen_roles: dict[str, str | None] | None = (
-                    {c: role for c in gen_concepts} if role else None
-                )
-                corpora = self.generate_responses(
-                    gen_concepts, [kind] * len(gen_concepts),
-                    roles=gen_roles, custom_system=custom_system,
-                    on_progress=on_progress,
-                )
-                node_corpora = {
-                    label: corpora[c]
-                    for label, c in zip(labels, gen_concepts, strict=True)
-                }
-            node_kinds: dict[str, str | None] = {
-                label: kind for label in labels
-            }
-            return self._author_and_fit_2node(
-                ns, name, desc, node_corpora=node_corpora, node_kinds=node_kinds,
-                role=role, force=force, sae=sae, sae_revision=sae_revision,
-                on_progress=on_progress,
-            )
+        """Author and fit a steering vector; see :meth:`Extraction.extract`."""
+        return self._extraction.extract(
+            concept, baseline, kind=kind, custom_system=custom_system, force=force,
+            on_progress=on_progress, sae=sae, sae_revision=sae_revision,
+            namespace=namespace, role=role,
+        )
 
     def extract_from_corpora(
         self,
@@ -4791,162 +4289,12 @@ class DrowseSession:
         force: bool = False,
         description: str = "",
     ) -> tuple[str, Profile]:
-        """Author + fit a steering vector from two ready-made pole corpora.
-
-        The corpus-in sibling of :meth:`extract` — used by persona cloning and
-        hand-authored HTTP/library paths, which already hold the positive and
-        negative corpora and so skip generation. Authors a 2-node ``pca``
-        manifold (``positive`` → pole node, ``negative`` → its opposite) and
-        fits it; returns ``(canonical_name, Profile)`` like :meth:`extract`.
-
-        Under 4.0 the corpora are pooled conversationally — each entry is treated
-        as a response to the shared baseline prompts (``response[i] -> prompt[i
-        % k]``), so each corpus length must be a multiple of the baseline prompt
-        set.  ``kind`` is recorded per node (provenance); ``role`` opts into a
-        persona-baselined fit as in :meth:`extract`.
-        """
-        with self._model_exclusive(
-            "session.extract_from_corpora called while another "
-            "model use is in flight",
-            phase_msg="session.extract_from_corpora called while a "
-            "generation is in flight",
-        ):
-            DrowseSession._assert_unsteered_artifact_operation(self)
-            ns = namespace or "local"
-            pos_raw, neg_raw = _split_composite_source(name, None)
-            canonical = canonical_concept_name(name)
-            pos_label = _slug(pos_raw)
-            neg_label = _slug(neg_raw) if neg_raw is not None else f"{pos_label}_neg"
-            return self._author_and_fit_2node(
-                ns, canonical, description,
-                node_corpora={pos_label: positive, neg_label: negative},
-                node_kinds={pos_label: kind, neg_label: kind},
-                role=role, force=force, sae=sae, sae_revision=sae_revision,
-                on_progress=on_progress,
-            )
-
-    def _author_and_fit_2node(
-        self,
-        ns: str,
-        name: str,
-        description: str,
-        *,
-        node_corpora: dict[str, list[str]] | None,
-        node_kinds: dict[str, str | None],
-        role: str | None,
-        force: bool,
-        sae: str | None,
-        sae_revision: str | None,
-        on_progress: Callable[[str], None] | None,
-    ) -> tuple[str, Profile]:
-        """Author a 2-node ``pca`` folder (when stale) + fit it — the shared tail
-        of :meth:`extract` / :meth:`extract_from_corpora`.
-
-        Both callers differ only in their corpus source (generate vs given); by
-        the time they reach here they hold ``node_corpora`` (label → corpus) and
-        ``node_kinds`` (label → kind).  This re-authors the folder in one staged
-        swap when ``force`` or the manifest is missing (``node_corpora`` is
-        consulted only then, so a cache-hit caller may pass ``None``), then
-        delegates to :meth:`_fit_concept_manifold`.  Runs with ``_gen_lock``
-        already held by the caller.
-        """
-        from drowse.store.manifold_authoring import create_discover_manifold_folder
-        from drowse.store.manifold_folder import ManifoldFolder
-        from drowse.base.paths import manifold_dir
-
-        if sae is not None and role is not None:
-            raise ValueError(
-                "SAE-backed and role-baselined extraction are mutually exclusive"
-            )
-
-        folder = manifold_dir(ns, name)
-        manifest = folder / "manifold.json"
-        from drowse.store.manifold_folder import _locked_manifest
-
-        with _locked_manifest(folder):
-            if manifest.exists() and not force:
-                existing = ManifoldFolder.load(
-                    folder, verify_manifest=False,
-                ).roles
-                if not existing or not all(value == role for value in existing):
-                    raise ValueError(
-                        f"manifold {ns}/{name} already carries role baseline "
-                        f"{existing!r}, not uniformly {role!r}; pass "
-                        "force=True to replace its corpus"
-                    )
-            if force or not manifest.exists():
-                assert node_corpora is not None
-                node_roles: dict[str, str | None] | None = (
-                    {label: role for label in node_corpora} if role else None
-                )
-                create_discover_manifold_folder(
-                    ns, name, description, fit_mode="pca",
-                    node_corpora=node_corpora,
-                    hyperparams={"max_dim": 1, "var_threshold": 0.7},
-                    node_roles=node_roles, node_kinds=node_kinds,
-                    force=force,
-                )
-        return self._fit_concept_manifold(
-            name, folder, sae=sae, sae_revision=sae_revision,
-            role=role, on_progress=on_progress,
+        """Fit a vector from given pole corpora; see :meth:`Extraction.extract_from_corpora`."""
+        return self._extraction.extract_from_corpora(
+            name, positive, negative, kind=kind, namespace=namespace, role=role,
+            sae=sae, sae_revision=sae_revision, on_progress=on_progress,
+            force=force, description=description,
         )
-
-    def _fit_concept_manifold(
-        self,
-        name: str,
-        folder: Any,
-        *,
-        sae: str | None,
-        sae_revision: str | None,
-        role: str | None,
-        on_progress: Callable[[str], None] | None,
-    ) -> tuple[str, Profile]:
-        """Fit a 2-node pca manifold (lock held) and return its folded Profile.
-
-        Shared tail of :meth:`extract` / :meth:`extract_from_corpora`:
-        runs :class:`ManifoldExtractionPipeline` directly (the public
-        :meth:`fit` re-acquires ``_gen_lock``, which the callers
-        already hold), folds the fitted manifold to a per-layer direction
-        :class:`Profile`, and emits a single ``ManifoldExtracted`` carrying that
-        folded profile (the pipeline's own emission is suppressed).
-
-        The returned name carries the variant tail (``:sae-<release>`` /
-        ``:role-<slug>``) so the caller steers the right per-model tensor; the
-        on-disk manifold folder stays the bare canonical name.
-        """
-        from drowse.fit.pipeline import ManifoldExtractionPipeline
-        from drowse.fit.capture import folded_directions
-
-        pipe = ManifoldExtractionPipeline(self, self.events)
-        # Suppress the pipeline's own ``ManifoldExtracted`` so the vector path
-        # fires exactly one event: the enriched emit below carries the folded
-        # ``Profile`` and the variant-tailed name.
-        manifold = pipe.fit(
-            folder, sae=sae, sae_revision=sae_revision, on_progress=on_progress,
-            emit_event=False, dls=self._dls,
-        )
-        self._adopt_fitted_manifold(folder, manifold)
-        if sae:
-            ret_name = f"{name}:sae-{sae}"
-        elif role:
-            ret_name = f"{name}:role-{role}"
-        else:
-            ret_name = name
-        profile = Profile(
-            folded_directions(manifold),
-            metadata={
-                "method": "manifold_pca",
-                "name": ret_name,
-                "share_metric": manifold.metadata.get("share_metric"),
-            },
-        )
-        self.events.emit(ManifoldExtracted(
-            name=ret_name, manifold=manifold,
-            metadata=dict(manifold.metadata), profile=profile,
-        ))
-        if ret_name in self._profiles:
-            self._profiles[ret_name] = self._promote_profile(profile.as_dict())
-        return ret_name, profile
 
     def _adopt_fitted_manifold(self, folder: Any, manifold: Manifold) -> None:
         """Refresh every in-memory consumer of a newly fitted artifact.
@@ -5094,61 +4442,12 @@ class DrowseSession:
         force: bool = False,
         on_progress: Callable[[str], None] | None = None,
     ) -> Manifold:
-        """Fit a steering manifold from a manifold folder (authored or discover).
-
-        Thin delegate to :class:`ManifoldExtractionPipeline` — that
-        pipeline owns corpus loading, per-node centroid pooling, the
-        per-layer PCA + spline fit (dispatching on the folder's ``fit_mode``),
-        and the cache short-circuit.  The Python mirror of CLI ``manifold fit``.
-        Gated against generation like :meth:`extract`: manifold fitting runs
-        forward passes through the model.  ``force=True`` bypasses the per-model
-        tensor cache and re-pools/re-fits unconditionally (CLI ``-f/--force``).
-        ``layers`` optionally restricts fitting to explicit transformer indices
-        or the 40–90% ``"workspace"`` band.
-        ``fit_mode`` and ``hyperparams`` are discover-folder overrides applied
-        under the same manifest lock as cache-key derivation and publication.
-        """
-        with self._model_exclusive(
-            "session.fit called while another model use is in flight",
-            phase_msg="session.fit called while a generation is in flight",
-        ):
-            DrowseSession._assert_unsteered_artifact_operation(self)
-            manifest_before: bytes | None = None
-            if fit_mode is not None or hyperparams is not None:
-                from pathlib import Path
-
-                try:
-                    manifest_before = (Path(folder) / "manifold.json").read_bytes()
-                except OSError:
-                    pass
-            try:
-                from drowse.fit.pipeline import ManifoldExtractionPipeline
-                pipe = ManifoldExtractionPipeline(self, self.events)
-                manifold = pipe.fit(
-                    folder, sae=sae, sae_revision=sae_revision,
-                    layer_indices=layers, fit_mode=fit_mode,
-                    hyperparams=hyperparams, force=force,
-                    on_progress=on_progress, dls=self._dls,
-                )
-                self._adopt_fitted_manifold(folder, manifold)
-                return manifold
-            except BaseException:
-                if manifest_before is not None:
-                    from pathlib import Path
-
-                    try:
-                        manifest_changed = (
-                            (Path(folder) / "manifold.json").read_bytes()
-                            != manifest_before
-                        )
-                    except OSError:
-                        manifest_changed = False
-                    if manifest_changed:
-                        self._evict_failed_manifold_override(folder, sae=sae)
-                raise
-            finally:
-                # A re-fit changes the folded directions any probe reads from.
-                self._invalidate_analytics_cache()
+        """Fit a manifold folder for this model; see :meth:`Extraction.fit`."""
+        return self._extraction.fit(
+            folder, sae=sae, sae_revision=sae_revision, layers=layers,
+            fit_mode=fit_mode, hyperparams=hyperparams, force=force,
+            on_progress=on_progress,
+        )
 
     def bake(
         self,
@@ -5158,39 +4457,8 @@ class DrowseSession:
         force: bool = True,
         strict: bool = False,
     ) -> tuple[str, Profile]:
-        """Bake additive steering terms into a corpus-less manifold.
-
-        The Python mirror of CLI ``manifold bake``.  Wraps
-        :func:`drowse.fit.bake.merge_into_manifold`, model-scoped to this
-        session's loaded model — the merge lands a corpus-less
-        ``fit_mode="baked"`` manifold under ``local/<name>/`` — then folds the
-        fitted tensor back to a steering :class:`Profile` and registers it
-        (:meth:`steer`) so it is immediately steerable.  Returns
-        ``(name, Profile)``, the same shape :meth:`extract` returns.
-
-        Dynamic terms and Mahalanobis projection operators are rejected because
-        the offline merge path does not carry an identity-matched whitener.
-        """
-        from drowse.fit.bake import MergeError, merge_into_manifold
-        from drowse.base.paths import tensor_filename
-        from drowse.store.manifold_tensors import load_manifold
-        from drowse.model.fingerprint import loaded_model_fingerprint
-        from drowse.fit.capture import folded_directions
-
-        live_fingerprint = loaded_model_fingerprint(self._model, self.model_id)
-        dst_folder = merge_into_manifold(
-            name, expression, self.model_id, force=force, strict=strict,
-            expected_model_fingerprint=live_fingerprint,
-        )
-        tensor_path = dst_folder / tensor_filename(self.model_id)
-        if not tensor_path.is_file():
-            raise MergeError(
-                f"bake produced no tensor for {self.model_id} at {tensor_path}"
-            )
-        manifold = load_manifold(str(tensor_path))
-        profile = Profile(folded_directions(manifold))
-        self.steer(name, profile)
-        return name, profile
+        """Bake additive terms into a steerable manifold; see :meth:`Extraction.bake`."""
+        return self._extraction.bake(name, expression, force=force, strict=strict)
 
     def load_profile(self, path: str) -> Profile:
         profile, meta = _load_profile(path)

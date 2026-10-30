@@ -2563,53 +2563,69 @@ def test_no_cache_fallback_does_not_cat_each_step(monkeypatch: pytest.MonkeyPatc
 # ---------------------------------------------------------------------------
 
 
-def _stub_session_with_lock() -> Any:
-    """A ``__new__``-bypass stub carrying the minimum state the extract gate
-    touches."""
+def _lock_free_for_another_thread(lock: Any) -> bool:
+    """Whether a second thread can take ``lock`` (it is an RLock: the owner can re-enter)."""
     import threading
 
-    s: Any = DrowseSession.__new__(DrowseSession)
-    s._gen_phase = GenState.IDLE
-    s._gen_lock = threading.Lock()
-    return s
+    acquired: list[bool] = []
+
+    def _try() -> None:
+        ok = lock.acquire(blocking=False)
+        acquired.append(ok)
+        if ok:
+            lock.release()
+
+    worker = threading.Thread(target=_try)
+    worker.start()
+    worker.join(5)
+    return acquired == [True]
 
 
-def test_extract_acquires_gen_lock_against_concurrent_generation():
-    """If ``_gen_lock`` is already held (generation in flight), extract
-    must raise ``ConcurrentExtractionError`` rather than reading
+def test_extract_acquires_gen_lock_against_concurrent_generation(
+    tiny_session: Any,
+) -> None:
+    """If ``_gen_lock`` is held by another thread (generation in flight),
+    extract must raise ``ConcurrentExtractionError`` rather than reading
     ``_gen_phase`` and racing the generation that's about to flip it."""
+    import threading
+
     from drowse.session.session import ConcurrentExtractionError
 
-    s = _stub_session_with_lock()
-    # Simulate "generation just acquired the lock" — phase still IDLE
-    # because the flip happens after acquire on the generation side.
-    assert s._gen_lock.acquire(blocking=False)
+    held, release = threading.Event(), threading.Event()
+
+    def _generation() -> None:
+        # Simulate "generation just acquired the lock": phase still IDLE
+        # because the flip happens after acquire on the generation side.
+        with tiny_session._gen_lock:
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target=_generation)
+    worker.start()
+    assert held.wait(5)
     try:
         with pytest.raises(ConcurrentExtractionError):
-            s.extract("honest.deceptive")
+            tiny_session.extract("honest.deceptive")
     finally:
-        s._gen_lock.release()
+        release.set()
+        worker.join(5)
 
 
-def test_extract_releases_lock_on_path_through_phase_gate():
-    """When extract bails on the phase gate (RUNNING from a stub), the
-    lock it acquired must be released so subsequent extract attempts
-    can proceed once the phase clears."""
-    import threading
-
+def test_extract_releases_lock_on_path_through_phase_gate(tiny_session: Any) -> None:
+    """When extract bails on the phase gate (a generation RUNNING), the lock
+    it acquired must be released so subsequent extract attempts can proceed
+    once the phase clears."""
     from drowse.session.session import ConcurrentExtractionError
 
-    s: Any = DrowseSession.__new__(DrowseSession)
-    s._gen_phase = GenState.RUNNING
-    s._gen_lock = threading.Lock()
-    s._extraction = SimpleNamespace(extract=lambda *a, **kw: ("x", None))
+    tiny_session._gen_phase = GenState.RUNNING
+    try:
+        with pytest.raises(ConcurrentExtractionError):
+            tiny_session.extract("honest.deceptive")
+    finally:
+        tiny_session._gen_phase = GenState.IDLE
 
-    with pytest.raises(ConcurrentExtractionError):
-        s.extract("honest.deceptive")
-
-    # Lock is back to free — caller can try again.
-    assert s._gen_lock.acquire(blocking=False)
-    s._gen_lock.release()
+    # Lock is back to free — another thread can take it.
+    assert _lock_free_for_another_thread(tiny_session._gen_lock)
 
 
 def _transaction_stub_session() -> Any:

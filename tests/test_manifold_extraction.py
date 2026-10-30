@@ -26,6 +26,7 @@ from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.base.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
+from tests.support.extraction import make_extraction
 
 _LABELS = ["calm", "uneasy", "afraid", "frantic", "numb"]
 _DIM = 8
@@ -2118,7 +2119,6 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
     }
     session._analytics_cpu_cache = {"local/mood": object()}
     session._prefix_cache = object()
-    session._dls = True
 
     session._adopt_fitted_manifold(tmp_path / "local" / "mood", new)
 
@@ -2172,31 +2172,23 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
     }
     session._analytics_cpu_cache = {"local/mood": object()}
     session._prefix_cache = object()
-    session._dls = True
-
-    @contextmanager
-    def _exclusive(*_args: Any, **_kwargs: Any):
-        yield
 
     folder = tmp_path / "local" / "mood"
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text('{"fit_mode":"auto"}')
 
-    def _fail_fit(
-        _pipe: Any, target: Any, *_args: Any, **_kwargs: Any,
-    ) -> Any:
+    def _fail_fit(target: Any, **_kwargs: Any) -> Any:
         (Path(target) / "manifold.json").write_text('{"fit_mode":"pca"}')
         raise RuntimeError("simulated override fit failure")
 
-    monkeypatch.setattr(DrowseSession, "_model_exclusive", _exclusive)
-    monkeypatch.setattr(
-        DrowseSession, "_assert_unsteered_artifact_operation",
-        lambda *_args, **_kwargs: None,
+    rig = make_extraction(
+        monkeypatch, fit=_fail_fit,
+        adopt=session._adopt_fitted_manifold,
+        evict_failed=session._evict_failed_manifold_override,
     )
-    monkeypatch.setattr(ManifoldExtractionPipeline, "fit", _fail_fit)
 
     with pytest.raises(RuntimeError, match="override fit failure"):
-        session.fit(
+        rig.extraction.fit(
             folder,
             fit_mode="pca", hyperparams={"max_dim": 1},
         )
@@ -2227,29 +2219,21 @@ def test_override_validation_failure_preserves_unchanged_consumers(
     session._probe_hash_cache = {}
     session._analytics_cpu_cache = {}
     session._prefix_cache = object()
-    session._dls = True
     folder = tmp_path / "local" / "mood"
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text('{"fit_mode":"authored"}')
 
-    @contextmanager
-    def _exclusive(*_args: Any, **_kwargs: Any):
-        yield
-
     def _fail_without_write(*_args: Any, **_kwargs: Any) -> Any:
         raise ValueError("overrides are discover-mode only")
 
-    monkeypatch.setattr(DrowseSession, "_model_exclusive", _exclusive)
-    monkeypatch.setattr(
-        DrowseSession, "_assert_unsteered_artifact_operation",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        ManifoldExtractionPipeline, "fit", _fail_without_write,
+    rig = make_extraction(
+        monkeypatch, fit=_fail_without_write,
+        adopt=session._adopt_fitted_manifold,
+        evict_failed=session._evict_failed_manifold_override,
     )
 
     with pytest.raises(ValueError, match="discover-mode only"):
-        session.fit(folder, fit_mode="pca")
+        rig.extraction.fit(folder, fit_mode="pca")
 
     assert session._manifolds == {"local/mood": old}
     assert set(session._profiles) == {"local/mood"}
@@ -2325,16 +2309,15 @@ def test_dls_true_passes_the_real_baseline(
 
 @pytest.mark.parametrize("dls", [True, False])
 def test_session_fit_forwards_its_dls_setting(
-    dls: bool, monkeypatch: pytest.MonkeyPatch,
+    dls: bool, make_tiny_session: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``DrowseSession.fit`` hands ``self._dls`` to the pipeline.
+    """``DrowseSession(dls=...)`` reaches the pipeline through ``session.fit``.
 
     The session-side half of the ``--no-dls`` chain: the CLI sets ``dls=`` at
     construction, and this is the hop that has to carry it into the fit that
     consumes it.
     """
-    import drowse.fit.pipeline as extraction_mod
-    from drowse.session.session import DrowseSession
+    import drowse.session.extraction as extraction_mod
 
     fit_kwargs: dict[str, Any] = {}
     fitted = object()
@@ -2350,18 +2333,7 @@ def test_session_fit_forwards_its_dls_setting(
     monkeypatch.setattr(
         extraction_mod, "ManifoldExtractionPipeline", _FakePipeline,
     )
-
-    @contextmanager
-    def _exclusive(*_args: Any, **_kwargs: Any) -> Any:
-        yield
-
-    session: Any = object.__new__(DrowseSession)
-    session._dls = dls
-    session.events = EventBus()
-    session._model_exclusive = _exclusive
-    session._steering_composer = cast(Any, type("_C", (), {"_stack": []})())
-    session._adopt_fitted_manifold = lambda *_a, **_kw: None
-    session._invalidate_analytics_cache = lambda: None
+    session = make_tiny_session(warm=False, dls=dls)
 
     assert session.fit("folder") is fitted
     assert fit_kwargs["dls"] is dls
