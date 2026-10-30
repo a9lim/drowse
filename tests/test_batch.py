@@ -755,11 +755,11 @@ class TestPrefixCacheEligibility:
 
     def test_static_prefix_hit_requires_static_eligibility_and_headroom(self) -> None:
         import torch
-        from drowse.session.session import _PrefixCacheEntry
+        from drowse.generation.prefix_cache import PrefixCacheEntry
 
         s = self._session()
         cache = object()
-        s._prefix_cache = _PrefixCacheEntry(
+        s._prefix_cache = PrefixCacheEntry(
             prefix_ids_cpu=torch.tensor([1, 2]),
             past_key_values=cache,
             prefix_len=2,
@@ -790,21 +790,17 @@ class TestPrefixCacheEligibility:
     ) -> None:
         import torch
         from drowse.generation.decode import GenerationConfig
-        from drowse.session.session import CaptureState, _PrefixCacheEntry
+        from drowse.generation.prefix_cache import PrefixCacheEntry
+        from drowse.session.session import CaptureState
 
         class _Cache:
-            def __init__(self) -> None:
-                self.crops: list[int] = []
-
-            def get_seq_length(self) -> int:
-                return 4
-
-            def crop(self, tokens_to_remove: int) -> None:
-                self.crops.append(tokens_to_remove)
+            # One static layer whose write counter the generation advanced
+            # past the 2-token prefix.
+            layers = [SimpleNamespace(cumulative_length=torch.tensor(4))]
 
         s = self._session()
         cache = _Cache()
-        s._prefix_cache = _PrefixCacheEntry(
+        s._prefix_cache = PrefixCacheEntry(
             prefix_ids_cpu=torch.tensor([1, 2]),
             past_key_values=cache,
             prefix_len=2,
@@ -870,7 +866,10 @@ class TestPrefixCacheEligibility:
         assert seen["past_key_values"] is cache
         assert seen["cache_position_offset"] == 2
         assert seen["use_static_cache"] is True
-        assert cache.crops == [-2]
+        # The static rollback rewinds the write counter to the prefix and the
+        # entry stays installed for the next reuse.
+        assert int(cache.layers[0].cumulative_length) == 2
+        assert s._prefix_cache is not None
 
     def test_cache_prefix_can_build_static_cache_entry(
         self, monkeypatch: pytest.MonkeyPatch,
