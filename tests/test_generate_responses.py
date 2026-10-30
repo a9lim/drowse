@@ -15,11 +15,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import torch
 
 from drowse.fit.capture import _LENGTH_DIRECTIVE
-from drowse.generation.decode import GenerationState
-from drowse.session.session import _SessionStopCriteria, _role_for, _system_for
+from drowse.session.session import _role_for, _system_for
 from tests.support.sessions import TinySessionFactory
 
 _TURN = re.compile(
@@ -59,20 +57,6 @@ def _three_baseline_prompts(isolated_home: Path) -> None:
 def _session(factory: TinySessionFactory, answerer: _Answerer) -> Any:
     session, _script = factory.scripted(answerer, warm=False)
     return session
-
-
-@pytest.mark.parametrize("score_kind", ["none", "tensor", "tuple"])
-def test_corpus_stop_criteria_accepts_transformers_score_shapes(score_kind: str) -> None:
-    state = GenerationState()
-    criterion = _SessionStopCriteria(state)
-    input_ids = torch.LongTensor([[1, 2], [3, 4]])
-    score = torch.FloatTensor([[0.1, 0.9], [0.8, 0.2]])
-    scores = None if score_kind == "none" else score if score_kind == "tensor" else (score, score)
-    assert criterion(input_ids, scores).tolist() == [False, False]
-    state.request_stop()
-    assert criterion(input_ids, scores).tolist() == [True, True]
-    state.reset()
-    assert criterion(input_ids, scores).tolist() == [False, False]
 
 
 def test_system_for_abstract_vs_concrete() -> None:

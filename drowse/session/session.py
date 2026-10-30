@@ -15,8 +15,6 @@ import torch
 from transformers import (
     PreTrainedModel,
     PreTrainedTokenizerBase,
-    StoppingCriteria,
-    StoppingCriteriaList,
 )
 
 from drowse.fit.capture import CaptureMode, CaptureState
@@ -26,7 +24,6 @@ from drowse.events import (
     GenerationFinished,
     GenerationStarted,
     ManifoldExtracted,
-    ProbeScored,
 )
 from drowse.generation.prefix_cache import PrefixCacheEntry
 from drowse.generation.decode import (
@@ -34,8 +31,6 @@ from drowse.generation.decode import (
     GenerationState,
     build_chat_input,
     generate_steered,
-    hf_generation_config,
-    hf_unneutralizable_processors,
 )
 from drowse.model.chat import ChatTraits
 from drowse.readout.capture_buffer import HiddenCapture
@@ -67,7 +62,6 @@ from drowse.loom.recipe import (
     ComposedCall,
     Recipe,
     compose_call,
-    derive_seed_schedule,
 )
 from drowse.loom.tree import LoomTree
 from drowse.model.arch import get_layers, get_model_info, workspace_layer_indices
@@ -79,10 +73,7 @@ from drowse.readout.types import (
     InstrumentPlan,
     ReadRequest,
     ScalarReading,
-    as_probe_reading,
-    reading_axis0,
 )
-from drowse.readout.measurements import build_measurements
 from drowse.readout.monitor import Monitor
 from drowse.store.bundled_probes import bootstrap_layer_means
 from drowse.geometry.profile import Profile, load_profile as _load_profile
@@ -94,6 +85,7 @@ from drowse.generation.results import (
     TokenEvent,
 )
 from drowse.generation.sampling import SamplingConfig
+from drowse.session.batch import BatchRunner, FastBatchPath
 from drowse.steering.terms import SteeringStackEntry, Steering
 from drowse.steering.grammar import ManifoldTerm
 from drowse.geometry.manifold import Manifold
@@ -103,11 +95,12 @@ if TYPE_CHECKING:
     from drowse.lens.instrument import LensInstrument
     from drowse.readout.protocol import Instrument
     from drowse.sae.instrument import SaeInstrument
+    from drowse.generation.finalize import FamilyAggregates
     from drowse.generation.scoring import ChoiceScores
     from drowse.steering.composer import SteeringComposer
     from drowse.generation.token_payloads import TokenProbePayload
     from drowse.store.templates import TemplateFolder
-from drowse.steering.triggers import Trigger
+from drowse.steering.triggers import Trigger  # noqa: F401  # steering.composer imports it from here
 
 _log = logging.getLogger(__name__)
 
@@ -148,13 +141,6 @@ _CORPUS_RETRY_MIN_TOKENS = 8
 # declare the ring depth they demand.
 _AGG_TAIL_DEPTH = AGG_TAIL_DEPTH
 
-# Floor on the shared token prefix ``generate_batch`` will KV-cache.  Below
-# this the saved prefill is in the noise and the double-render + cache-management
-# overhead isn't worth it; the prefix must also leave a non-empty suffix per row
-# (``_try_prefix_cache_hit`` requires it), so the cached length is capped at
-# ``min_row_len - 1``.
-_PREFIX_CACHE_MIN_TOKENS = 16
-
 
 @dataclass(slots=True)
 class _AuthoredPromptTarget:
@@ -187,81 +173,6 @@ class _AuthoredPromptCapture:
     persist_per_layer_scores: bool
     steering: str | None
     search_end: int | None = None
-
-
-@dataclass(slots=True)
-class _SerialGenerationJob:
-    input: Any
-    steering: Any = None
-    sampling: SamplingConfig | None = None
-    raw: bool = False
-    thinking: bool | None = None
-    on_token: TokenCallback | None = None
-    parent_node_id: str | None = None
-    recipe_override: Recipe | str | None = None
-    system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT
-    grid: dict[str, Any] | None = None
-    gen_seat: str = "assistant"
-
-
-class _SessionStopCriteria(StoppingCriteria):
-    """Bridge ``DrowseSession.stop()`` into ``transformers.generate``."""
-
-    def __init__(self, state: GenerationState) -> None:
-        self._state = state
-
-    def __call__(
-        self,
-        input_ids: torch.LongTensor,
-        scores: torch.FloatTensor | tuple[torch.FloatTensor, ...] | None,
-        **kwargs: Any,
-    ) -> Any:
-        del scores, kwargs
-        stop = 1 if self._state.is_stop_requested() else 0
-        return input_ids.new_full((int(input_ids.shape[0]),), stop).bool()
-
-
-def _run_serial_generation_jobs(
-    session: Any,
-    jobs: list[_SerialGenerationJob],
-    *,
-    stateless: bool,
-    kind: str,
-    on_result: Callable[[int, GenerationResult, dict[str, Any]], None] | None = None,
-    stop_between_jobs: bool = False,
-) -> RunSet:
-    """Run generation jobs through the shared serial executor.
-
-    This is still a one-row-at-a-time runner; centralizing it gives the
-    eventual true batched decode path one place to branch from, instead of
-    keeping separate loops in fan, batch, and sweep surfaces.
-    """
-    results: list[GenerationResult] = []
-    node_ids: list[str | None] = []
-    grid_rows: list[dict[str, Any]] = []
-    for idx, job in enumerate(jobs):
-        result = session._generate_core(
-            job.input,
-            steering=job.steering,
-            sampling=job.sampling,
-            stateless=stateless,
-            raw=job.raw,
-            thinking=job.thinking,
-            on_token=job.on_token,
-            parent_node_id=job.parent_node_id,
-            recipe_override=job.recipe_override,
-            system_prompt=job.system_prompt,
-            gen_seat=job.gen_seat,
-        )
-        row = dict(job.grid or {})
-        results.append(result)
-        node_ids.append(session.tree.active_node_id if not stateless else None)
-        grid_rows.append(row)
-        if on_result is not None:
-            on_result(idx, result, row)
-        if stop_between_jobs and session._gen_state.is_stop_requested():
-            break
-    return RunSet(results, node_ids=node_ids, grid=grid_rows, kind=kind)
 
 
 PROBE_CATEGORIES = [
@@ -1375,6 +1286,43 @@ class DrowseSession:
         # semantics: steering push/pop/steer/unsteer, probe install/remove,
         # profile mutation.
         self._prefix_cache: PrefixCacheEntry | None = None
+
+        # Fans, batches and sweeps: the multi-row runner over this engine.
+        self._batch = BatchRunner(
+            generate_one=self._generate_core,
+            tree=lambda: self.tree,
+            gen_state=self._gen_state,
+            render=self._prepare_input,
+            cache_prefix=self.cache_prefix,
+            prefill_inactive=self._steering_value_prefill_inactive,
+            static_cache_active=lambda: self._static_cache_active,
+            default_max_tokens=lambda: self.config.max_new_tokens,
+            fast=FastBatchPath(
+                model=lambda: self._model,
+                tokenizer=self._tokenizer,
+                device=self._device,
+                chat_traits=self._chat,
+                layers=self._layers,
+                gen_state=self._gen_state,
+                steering=self._steering,
+                events=self.events,
+                capture=self._capture,
+                geometry=self._geometry_instrument,
+                lens=self._lens_instrument,
+                sae=self._sae_instrument,
+                sae_layer=lambda: self._sae_layer,
+                compose_call=self._compose_generation_call,
+                prepare_call=self._prepare_generation_call,
+                render=self._prepare_input,
+                transaction=self._generation_transaction,
+                open_scope=self.steering,
+                snapshot_alphas=self._steering_composer.snapshot_steering_alphas,
+                set_phase=lambda phase: setattr(self, "_gen_phase", phase),
+                bind_runs=self._bind_instrument_runs,
+                score_geometry=self._score_aggregate_only,
+                finalize=self._finalize_generation,
+            ),
+        )
 
         self._restore_active_sae()
 
@@ -7557,6 +7505,7 @@ class DrowseSession:
         assistant_node_id: str | None = None,
         mean_logprob: float | None = None,
         mean_surprise: float | None = None,
+        aggregates: "FamilyAggregates | None" = None,
     ) -> GenerationResult:
         """Finalize result state through the generation finalizer collaborator."""
         from drowse.generation.finalize import finalize_generation
@@ -7573,6 +7522,7 @@ class DrowseSession:
             mean_logprob=mean_logprob,
             mean_surprise=mean_surprise,
             min_elapsed_for_rate=MIN_ELAPSED_FOR_RATE,
+            aggregates=aggregates,
         )
 
     def _generation_preamble(self, input: Any, raw: bool, thinking: bool, stateless: bool = False,
@@ -9143,136 +9093,7 @@ class DrowseSession:
             self.events.emit(GenerationFinished(result=result))
             return result
 
-    def _generate_runset(
-        self,
-        input: Any,
-        *,
-        steering: "str | Steering | None" = None,
-        sampling: SamplingConfig | None = None,
-        stateless: bool = False,
-        raw: bool = False,
-        thinking: bool | None = None,
-        on_token: TokenCallback | None = None,
-        parent_node_id: str | None = None,
-        n: int = 1,
-        recipe_override: "Recipe | str | None" = None,
-        gen_seat: str = "assistant",
-        append_same_role: bool = True,
-        system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
-    ) -> RunSet:
-        """Run one or more sibling generations and return a ``RunSet``."""
-        if n < 1:
-            raise ValueError(f"n must be >= 1, got {n}")
-        if n == 1:
-            result = self._generate_core(
-                input,
-                steering=steering,
-                sampling=sampling,
-                stateless=stateless,
-                raw=raw,
-                thinking=thinking,
-                on_token=on_token,
-                parent_node_id=parent_node_id,
-                recipe_override=recipe_override,
-                gen_seat=gen_seat,
-                system_prompt=system_prompt,
-                append_same_role=append_same_role,
-            )
-            node_id = self.tree.active_node_id if not stateless else None
-            return RunSet([result], node_ids=[node_id], kind="generation")
-
-        # The batched fast fan renders through its own prefix path — route
-        # non-assistant seats through the serial runner instead.
-        fast_fan = None if gen_seat != "assistant" or not isinstance(system_prompt, InheritSystemPrompt) else self._generate_fan_fast(
-            input,
-            steering=steering,
-            sampling=sampling,
-            stateless=stateless,
-            raw=raw,
-            thinking=thinking,
-            on_token=on_token,
-            parent_node_id=parent_node_id,
-            n=n,
-            recipe_override=recipe_override,
-        )
-        if fast_fan is not None:
-            return fast_fan
-
-        # N-way regen: derive per-sibling seeds from the supplied base seed
-        # (or a fresh entropy-derived one). Each iteration runs
-        # ``_generate_core`` independently; ``add_user_turn`` dedups so all
-        # siblings share the same user-parent.
-        base_seed = sampling.seed if sampling is not None else None
-        schedule = derive_seed_schedule(base_seed, n)
-        jobs: list[_SerialGenerationJob] = []
-        for seed_i in schedule:
-            from dataclasses import replace as _replace
-            si = sampling if sampling is not None else SamplingConfig()
-            si = _replace(si, seed=seed_i)
-            jobs.append(_SerialGenerationJob(
-                input=input,
-                steering=steering,
-                sampling=si,
-                raw=raw,
-                thinking=thinking,
-                on_token=on_token,
-                parent_node_id=parent_node_id,
-                recipe_override=recipe_override,
-                gen_seat=gen_seat,
-                system_prompt=system_prompt,
-            ))
-        return _run_serial_generation_jobs(
-            self,
-            jobs,
-            stateless=stateless,
-            kind="fan",
-            stop_between_jobs=True,
-        )
-
     # -- Generation: blocking --
-
-    def _generate_fan_fast(
-        self,
-        input: Any,
-        *,
-        steering: "str | Steering | None",
-        sampling: SamplingConfig | None,
-        stateless: bool,
-        raw: bool,
-        thinking: bool | None,
-        on_token: TokenCallback | None,
-        parent_node_id: str | None,
-        n: int,
-        recipe_override: "Recipe | str | None",
-    ) -> RunSet | None:
-        """Batch deterministic fan-out without changing seed semantics."""
-        del parent_node_id
-        if (
-            n <= 1
-            or not stateless
-            or on_token is not None
-            or recipe_override is not None
-        ):
-            return None
-        if self._compose_gen_config(sampling).temperature > 0:
-            return None
-        fast = self._generate_batch_fast(
-            [input for _ in range(n)],
-            steering=steering,
-            sampling=sampling,
-            thinking=thinking,
-            stateless=stateless,
-            raw=raw,
-            on_result=None,
-        )
-        if fast is None:
-            return None
-        return RunSet(
-            fast,
-            node_ids=[None] * len(fast),
-            grid=[{} for _ in fast],
-            kind="fan",
-        )
 
     def generate(
         self,
@@ -9343,7 +9164,15 @@ class DrowseSession:
             :class:`RunSet` in every case.  It is list-like for fan-out
             and exposes ``.first`` for the common single-result case.
         """
-        return self._generate_runset(
+        if n != 1:
+            return self._batch.fan(
+                input, n=n, steering=steering, sampling=sampling,
+                stateless=stateless, raw=raw, thinking=thinking,
+                on_token=on_token, parent_node_id=parent_node_id,
+                recipe_override=recipe_override, gen_seat=gen_seat,
+                system_prompt=system_prompt,
+            )
+        result = self._generate_core(
             input,
             steering=steering,
             sampling=sampling,
@@ -9352,12 +9181,13 @@ class DrowseSession:
             thinking=thinking,
             on_token=on_token,
             parent_node_id=parent_node_id,
-            n=n,
             recipe_override=recipe_override,
             gen_seat=gen_seat,
-            append_same_role=append_same_role,
             system_prompt=system_prompt,
+            append_same_role=append_same_role,
         )
+        node_id = None if stateless else self.tree.active_node_id
+        return RunSet([result], node_ids=[node_id], kind="generation")
 
     # -- Generation: streaming --
 
@@ -9524,532 +9354,6 @@ class DrowseSession:
 
     # -- Generation: batch + sweep --
 
-    def _generate_batch_fast(
-        self,
-        prompts: list[Any],
-        *,
-        steering: "str | Steering | None",
-        sampling: SamplingConfig | None,
-        thinking: bool | None,
-        stateless: bool,
-        raw: bool,
-        on_result: Callable[[int, GenerationResult], None] | None,
-    ) -> RunSet | None:
-        """Run a compatible stateless batch through one HF ``generate`` call.
-
-        ``None`` means "fall back to the serial Drowse decode loop."  The fast
-        path is intentionally narrow: no per-token consumers/logprobs/stop
-        strings, no stateful loom writes, and only always-active steering.  When
-        probes are attached it uses a batched aggregate-only capture ring and
-        scores one final reading per row after decode; per-token probe gates and
-        streams stay on the serial Drowse loop.
-        """
-        if len(prompts) < 2 or not stateless:
-            return None
-        if self._batch_fast_sampling_blocked(sampling):
-            return None
-        return_probe_readings = bool(
-            sampling is None or sampling.return_probe_readings
-        )
-        has_sae_probes = bool(return_probe_readings and self._sae_instrument.probes)
-        if has_sae_probes and self._sae_layer is None:
-            return None
-
-        prepared = self._prepare_generation_call(steering, sampling, thinking)
-        if (
-            prepared.use_thinking_req
-            or prepared.gen_config.max_new_tokens < 1
-            or prepared.lp_count is not None
-            or (
-                prepared.seed is not None
-                and prepared.gen_config.temperature > 0
-            )
-            or prepared.stop_list is not None
-            or prepared.logit_bias is not None
-            or prepared.presence_penalty != 0.0
-            or prepared.frequency_penalty != 0.0
-            or prepared.logprobs_list is not None
-            or not self._batch_fast_steering_is_always_on(prepared.steering_obj)
-        ):
-            return None
-
-        model = self._batch_generate_model()
-        if model is None or hf_unneutralizable_processors(model):
-            return None
-
-        return self._run_generate_batch_fast(
-            prompts,
-            model=model,
-            steering_obj=prepared.steering_obj,
-            sampling=sampling,
-            gen_config=prepared.gen_config,
-            stateless=stateless,
-            raw=raw,
-            on_result=on_result,
-        )
-
-    def _finalize_batch_probe_result(
-        self,
-        *,
-        generated_ids: list[int],
-        elapsed: float,
-        vector_snapshot: dict[str, float],
-        prompt_tokens: int,
-        finish_reason: str,
-        applied_steering: str | None,
-        geometry_readings: dict[str, ProbeReading],
-        lens_readings: "dict[str, ScalarReading]",
-        sae_readings: "dict[str, ScalarReading]",
-    ) -> GenerationResult:
-        """Build a stateless batch result with pre-scored probe aggregates.
-
-        Per-family in, per-family out: the aggregate envelope keeps each
-        family's native reading shape (the serial finalize does the same),
-        and ``probe_readings`` is the cross-family compatibility projection.
-        """
-        token_count = len(generated_ids)
-        tok_per_sec = (
-            token_count / elapsed if elapsed > MIN_ELAPSED_FOR_RATE else 0.0
-        )
-        decoded = self._tokenizer.decode(generated_ids, skip_special_tokens=True)
-        text = decoded if isinstance(decoded, str) else decoded[0]
-        merged: dict[str, Any] = {
-            **geometry_readings, **lens_readings, **sae_readings,
-        }
-        live_lens = self._lens_instrument.live
-        live_sae = self._sae_instrument.live
-        result = GenerationResult(
-            text=text,
-            tokens=list(generated_ids),
-            token_count=token_count,
-            tok_per_sec=tok_per_sec,
-            elapsed=elapsed,
-            steering_alphas=vector_snapshot,
-            prompt_tokens=prompt_tokens,
-            finish_reason=finish_reason,
-            logprobs=None,
-            applied_steering=applied_steering,
-            hidden_states=None,
-            probe_readings={
-                name: as_probe_reading(reading)
-                for name, reading in merged.items()
-            },
-            measurements=(
-                dict(measurement_envelope)
-                if (measurement_envelope := build_measurements(
-                    scope="aggregate",
-                    geometry_readings=geometry_readings or None,
-                    lens_readings=lens_readings or None,
-                    sae_readings=sae_readings or None,
-                    lens_source=(
-                        live_lens.get("source")
-                        if lens_readings and isinstance(live_lens, dict) else None
-                    ),
-                    sae_source=(
-                        live_sae.get("source")
-                        if sae_readings and isinstance(live_sae, dict) else None
-                    ),
-                    sae_layer=(
-                        live_sae.get("layer")
-                        if sae_readings and isinstance(live_sae, dict) else None
-                    ),
-                    steering=applied_steering,
-                )) is not None else None
-            ),
-        )
-        self._last_result = result
-        self._last_per_token_scores = None
-        if merged:
-            self.events.emit(ProbeScored(readings={
-                name: reading_axis0(reading)
-                for name, reading in merged.items()
-            }))
-        return result
-
-    def _batch_probe_aggregate_for_row(
-        self,
-        row_index: int,
-        generated_ids: list[int],
-        probe_names: list[str],
-        pooled: dict[int, torch.Tensor] | None = None,
-    ) -> dict[str, ProbeReading]:
-        """Score the final aggregate probe reading for one batched row."""
-        empty = self._empty_readings(probe_names)
-        if not generated_ids:
-            return empty
-        if pooled is None:
-            pooled = self._batch_pooled_aggregate_for_row(row_index, generated_ids)
-        if not pooled:
-            return empty
-        # Routed through the geometry run like the serial finalize
-        # (``_score_aggregate_only``); the cold-foot reset stays here.
-        self._monitor.enable_curved_warm(False)
-        agg_vals = self._geometry_instrument.current_run.observe_aggregate(
-            pooled,
-        )
-        return {name: agg_vals.get(name, empty[name]) for name in probe_names}
-
-    def _batch_pooled_aggregate_for_row(
-        self,
-        row_index: int,
-        generated_ids: list[int],
-    ) -> dict[int, torch.Tensor]:
-        """Shared final-token pooled slice for one batched generation row."""
-        if not generated_ids:
-            return {}
-        from drowse.fit.capture import last_content_index
-        agg_fwd = last_content_index(generated_ids, self._tokenizer)
-        return self._capture.batch_tail_slice_at(row_index, agg_fwd)
-
-    def _batch_readout_probe_aggregate_for_row(
-        self,
-        pooled: dict[int, torch.Tensor],
-    ) -> "tuple[dict[str, ScalarReading], dict[str, ScalarReading]]":
-        """Pinned J-lens/SAE readout probe aggregates from a batched tail
-        slice, kept per family (``(lens, sae)``).
-
-        The runs resolve through each family's bound state (frozen spec
-        snapshot + pinned lens), so every row of the batch measures against
-        the same bind-time binding — the guards consult the binding too, so
-        an ``on_result`` callback detaching a probe cannot change later
-        rows' roster."""
-        if not pooled:
-            return {}, {}
-        lens_readings: dict[str, ScalarReading] = {}
-        sae_readings: dict[str, ScalarReading] = {}
-        if self._lens_instrument._measurement_specs():
-            lens_readings = (
-                self._lens_instrument.current_run.observe_aggregate(pooled)
-            )
-        if self._sae_instrument._measurement_specs():
-            sae_readings = (
-                self._sae_instrument.current_run.observe_aggregate(pooled)
-            )
-        return lens_readings, sae_readings
-
-    @staticmethod
-    def _batch_fast_sampling_blocked(sampling: SamplingConfig | None) -> bool:
-        """True iff per-row custom-loop sampling features are requested."""
-        if sampling is None:
-            return False
-        return bool(
-            sampling.stop is not None
-            or sampling.logit_bias is not None
-            or sampling.presence_penalty != 0.0
-            or sampling.frequency_penalty != 0.0
-            or sampling.logprobs is not None
-            or sampling.return_hidden
-            or sampling.return_top_k != 0
-            or sampling.persist_per_layer_scores
-            or sampling.persist_subspace_coords
-        )
-
-    @staticmethod
-    def _batch_fast_steering_is_always_on(
-        steering_obj: Steering | None,
-    ) -> bool:
-        """HF ``generate`` can batch only trigger-free/``Trigger.BOTH`` terms."""
-        return steering_obj is None or steering_obj.triggers() <= {Trigger.BOTH}
-
-    def _batch_generate_model(self) -> Any | None:
-        """Model object exposing ``generate``; unwrap compiled modules if needed."""
-        model = self._model
-        if callable(getattr(model, "generate", None)):
-            return model
-        orig = getattr(model, "_orig_mod", None)
-        if orig is not None and callable(getattr(orig, "generate", None)):
-            return orig
-        return None
-
-    def _batch_pad_token_id(self) -> int:
-        """Pad id for left-padded generation batches."""
-        for attr in ("pad_token_id", "eos_token_id"):
-            value = getattr(self._tokenizer, attr, None)
-            if value is None:
-                continue
-            if isinstance(value, (list, tuple)):
-                if value:
-                    return int(value[0])
-            else:
-                return int(value)
-        return 0
-
-    def _prepare_batch_input_ids(
-        self,
-        prompts: list[Any],
-        *,
-        sampling: SamplingConfig | None,
-        raw: bool,
-        pad_id: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
-        """Render and left-pad a stateless prompt batch."""
-        rendered: list[torch.Tensor] = []
-        user_role = sampling.user_role if sampling is not None else None
-        assistant_role = sampling.assistant_role if sampling is not None else None
-        for prompt in prompts:
-            ids = self._prepare_input(
-                prompt,
-                raw=raw,
-                thinking=False,
-                stateless=True,
-                user_role=user_role,
-                assistant_role=assistant_role,
-                to_device=False,
-            )
-            if ids.ndim != 2 or ids.shape[0] != 1:
-                raise RuntimeError(
-                    "generate_batch fast path expected rendered prompt shape [1, T]"
-                )
-            rendered.append(ids[0].detach().to(device="cpu", dtype=torch.long))
-
-        lengths = [int(ids.shape[0]) for ids in rendered]
-        max_len = max(lengths)
-        batch = torch.full(
-            (len(rendered), max_len), pad_id, dtype=torch.long,
-        )
-        attention = torch.zeros_like(batch)
-        for row, ids in enumerate(rendered):
-            length = lengths[row]
-            batch[row, max_len - length:] = ids
-            attention[row, max_len - length:] = 1
-        return (
-            batch.to(self._device),
-            attention.to(self._device),
-            lengths,
-        )
-
-    @staticmethod
-    def _batch_generated_tokens(
-        row: torch.Tensor,
-        *,
-        eos_ids: set[int],
-        pad_id: int,
-        max_new_tokens: int,
-    ) -> tuple[list[int], str]:
-        """Trim HF batch output into Drowse' generated-token convention."""
-        raw_ids = [int(tok) for tok in row.detach().to("cpu").tolist()]
-        tokens: list[int] = []
-        finish_reason = "length"
-        for token_id in raw_ids:
-            if token_id in eos_ids:
-                finish_reason = "stop"
-                break
-            tokens.append(token_id)
-        else:
-            stripped_pad = False
-            while tokens and tokens[-1] == pad_id:
-                tokens.pop()
-                stripped_pad = True
-            if stripped_pad or len(tokens) < max_new_tokens:
-                finish_reason = "stop"
-        return tokens, finish_reason
-
-    def _run_generate_batch_fast(
-        self,
-        prompts: list[Any],
-        *,
-        model: Any,
-        steering_obj: Steering | None,
-        sampling: SamplingConfig | None,
-        gen_config: GenerationConfig,
-        stateless: bool,
-        raw: bool,
-        on_result: Callable[[int, GenerationResult], None] | None,
-    ) -> RunSet:
-        """Implementation of the compatible batched ``model.generate`` path.
-
-        Shares :meth:`_generation_transaction` with the ordinary decode path,
-        so the boundary guard and the teardown are the same code; only the
-        body differs (one batched ``model.generate`` instead of the decode
-        loop, and no loom attachment).
-        """
-        with self._generation_transaction() as txn:
-            if steering_obj is not None and steering_obj.alphas:
-                txn.steering_cm = self.steering(steering_obj)
-                txn.steering_cm.__enter__()
-            vector_snapshot: dict[str, float] = (
-                self._snapshot_steering_alphas()
-                if self._steering_composer._stack or txn.steering_cm is not None
-                else {}
-            )
-            pad_id = self._batch_pad_token_id()
-            input_ids, attention_mask, prompt_lengths = self._prepare_batch_input_ids(
-                prompts,
-                sampling=sampling,
-                raw=raw,
-                pad_id=pad_id,
-            )
-            return_probe_readings = bool(
-                sampling is None or sampling.return_probe_readings
-            )
-            probe_names = (
-                list(self._monitor.probe_names)
-                if return_probe_readings else []
-            )
-            has_lens_probes = bool(return_probe_readings and self._lens_instrument.probes)
-            has_sae_probes = bool(return_probe_readings and self._sae_instrument.probes)
-            # Batched generation bypasses ``_begin_capture`` but binds the
-            # instrument runs through the same helper.  One request serves all
-            # three families here: the lens prepare takes the disk refresh +
-            # pin and snapshots specs against that identity before the plans
-            # and bindings consume them (its pin-demand formula reduces to
-            # "probes attached and a final aggregate wanted" on a batch
-            # request), so one pinned lens serves every row aggregate rather
-            # than reopening all shards per batch item.
-            batch_request = ReadRequest(
-                final_aggregate=return_probe_readings,
-            )
-            geometry_plan, lens_plan, sae_plan = self._bind_instrument_runs(
-                batch_request, batch_request, batch_request,
-            )
-            capture_probe_aggregates = bool(
-                probe_names or has_lens_probes or has_sae_probes
-            )
-            if capture_probe_aggregates:
-                layer_set: set[int] = set()
-                for batch_plan in (geometry_plan, lens_plan, sae_plan):
-                    layer_set |= batch_plan.latest_layers
-                    layer_set |= batch_plan.tail_layers
-                layer_idxs = sorted(layer_set)
-                self._capture.clear()
-                if layer_idxs:
-                    self._capture.attach_batch_tail(
-                        self._layers,
-                        layer_idxs,
-                        depth=_AGG_TAIL_DEPTH,
-                    )
-                self._capture_state = CaptureState(mode=CaptureMode.AGGREGATE_ONLY)
-                if probe_names:
-                    self._monitor.enable_curved_warm(False)
-            self._gen_state.reset()
-            self._steering.ctx.reset()
-            self._steering.reset_manifold_feet()
-            self._gen_phase = GenState.RUNNING
-            for prompt in prompts:
-                self.events.emit(GenerationStarted(input=prompt, stateless=stateless))
-
-            # The full EOS set (generation_config + tokenizer + added
-            # end-of-turn specials), matching the ordinary decode loop —
-            # the tokenizer's single ``eos_token_id`` alone misses e.g.
-            # Gemma's ``<end_of_turn>`` and would generate past it to the
-            # token cap.  The explicit config pins the decode loop's sampler
-            # so the checkpoint's own ``generation_config`` (Qwen's
-            # ``top_k: 20`` / ``repetition_penalty: 1.1``) cannot leak in.
-            eos_ids = set(self.chat_traits.eos_ids)
-            text_cfg = getattr(model.config, "text_config", model.config)
-            hf_config = hf_generation_config(
-                gen_config,
-                vocab=int(text_cfg.vocab_size),
-                eos_ids=sorted(eos_ids),
-                pad_id=pad_id,
-                steering_active=bool(
-                    self._steering.hooks or self._steering.uses_compiled_offsets
-                ),
-            )
-
-            start = time.monotonic()
-            with torch.inference_mode():
-                generated = model.generate(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    generation_config=hf_config,
-                    stopping_criteria=StoppingCriteriaList([
-                        _SessionStopCriteria(self._gen_state),
-                    ]),
-                )
-            elapsed = time.monotonic() - start
-            if capture_probe_aggregates:
-                self._end_capture()
-            sequences = getattr(generated, "sequences", generated)
-            if not isinstance(sequences, torch.Tensor) or sequences.ndim != 2:
-                raise RuntimeError(
-                    "generate_batch fast path expected model.generate to return "
-                    "a [batch, sequence] tensor"
-                )
-
-            max_prompt_len = int(input_ids.shape[1])
-            self._gen_phase = GenState.FINALIZING
-            results: list[GenerationResult] = []
-            node_ids: list[str | None] = []
-            grid_rows: list[dict[str, Any]] = []
-            applied_steering = (
-                str(steering_obj) if steering_obj is not None else None
-            )
-            for idx, prompt in enumerate(prompts):
-                generated_ids, finish_reason = self._batch_generated_tokens(
-                    sequences[idx, max_prompt_len:],
-                    eos_ids=eos_ids,
-                    pad_id=pad_id,
-                    max_new_tokens=int(gen_config.max_new_tokens),
-                )
-                self._gen_state.thinking_end_idx = 0
-                self._gen_state.emit_map = []
-                self._gen_state.response_text = None
-                self._gen_state.response_aggregate_index = None
-                self._gen_state.finish_reason = finish_reason
-                if capture_probe_aggregates:
-                    pooled = self._batch_pooled_aggregate_for_row(idx, generated_ids)
-                    geometry_readings: dict[str, ProbeReading] = (
-                        self._batch_probe_aggregate_for_row(
-                            idx,
-                            generated_ids,
-                            probe_names,
-                            pooled=pooled,
-                        )
-                        if probe_names
-                        else {}
-                    )
-                    lens_readings, sae_readings = (
-                        self._batch_readout_probe_aggregate_for_row(pooled)
-                    )
-                    result = self._finalize_batch_probe_result(
-                        generated_ids=generated_ids,
-                        elapsed=elapsed,
-                        vector_snapshot=vector_snapshot,
-                        prompt_tokens=prompt_lengths[idx],
-                        finish_reason=finish_reason,
-                        applied_steering=applied_steering,
-                        geometry_readings=geometry_readings,
-                        lens_readings=lens_readings,
-                        sae_readings=sae_readings,
-                    )
-                else:
-                    result = self._finalize_generation(
-                        generated_ids,
-                        elapsed,
-                        vector_snapshot,
-                        prompt_tokens=prompt_lengths[idx],
-                        stateless=stateless,
-                        logprobs_list=None,
-                        applied_steering=applied_steering,
-                        return_hidden=False,
-                        return_probe_readings=return_probe_readings,
-                        assistant_node_id=None,
-                    )
-                results.append(result)
-                node_ids.append(None)
-                row = {"prompt_index": idx}
-                grid_rows.append(row)
-                self.events.emit(GenerationFinished(result=result))
-                if on_result is not None:
-                    on_result(idx, result)
-            self._gen_state.stop_requested.set()
-            total_tokens = sum(r.token_count for r in results)
-            batch_tok_per_sec = (
-                total_tokens / elapsed if elapsed > MIN_ELAPSED_FOR_RATE else 0.0
-            )
-            return RunSet(
-                results,
-                node_ids=node_ids,
-                grid=grid_rows,
-                kind="batch",
-                metrics={
-                    "batch_elapsed": elapsed,
-                    "batch_token_count": total_tokens,
-                    "batch_tok_per_sec": batch_tok_per_sec,
-                },
-            )
-
     def generate_batch(
         self,
         prompts: list[Any],
@@ -10068,9 +9372,10 @@ class DrowseSession:
         Anything that needs Drowse' row-shaped custom loop (stateful history,
         live lens, hidden capture returns, logprobs, stop strings, seeded
         per-row sampling, penalties, or phased/gated triggers) falls back to the
-        serial single-prompt path.  The session's threading lock keeps concurrent
-        ``generate_batch`` calls from interleaving — they queue FIFO at the
-        per-call level, same as today's ``generate``.
+        serial single-prompt path.  A cast member for the assistant seat
+        applies to both paths.  The session's threading lock keeps concurrent
+        ``generate_batch`` calls from interleaving.  :meth:`stop` ends the
+        whole batch.
 
         Args mirror ``generate``.  ``stateless`` defaults to ``True``
         (batch generation is overwhelmingly used for sweeps and evals
@@ -10082,12 +9387,10 @@ class DrowseSession:
         system prompt, few-shot preamble, or shared instruction) and the
         steering doesn't touch the prefill region (``None`` or ``@response`` /
         ``@generated`` / probe-gated), that shared prefix is prefilled once and
-        its KV reused across every row — the per-call saving scales with
-        ``shared_prefix_len / total_input_len``.  Skipped for ``stateless=False``
+        its KV reused across every serial row.  Skipped for ``stateless=False``
         (per-row history breaks the shared prefix), ``return_hidden`` (needs
         every prefix hidden state), thinking, or prefill-active steering (the
-        prompt KV would differ per row).  Correctness is unaffected either way —
-        a cache hit produces the identical token stream.
+        prompt KV would differ per row).
 
         ``on_result(idx, result)`` fires after each completion for local
         progress hooks.
@@ -10096,196 +9399,9 @@ class DrowseSession:
             ``RunSet`` aligned with ``prompts``.  ``runset.grid`` records
             ``{"prompt_index": i}`` for each row.
         """
-        prompts_in: Any = prompts
-        if not isinstance(prompts_in, list) or not prompts_in:
-            raise ValueError("generate_batch: prompts must be a non-empty list")
-
-        fast = self._generate_batch_fast(
-            prompts,
-            steering=steering,
-            sampling=sampling,
-            thinking=thinking,
-            stateless=stateless,
-            raw=raw,
-            on_result=on_result,
-        )
-        if fast is not None:
-            return fast
-
-        prefix_cached = self._maybe_cache_batch_prefix(
-            prompts, steering=steering, sampling=sampling,
-            thinking=thinking, stateless=stateless, raw=raw,
-        )
-        try:
-            jobs = [
-                _SerialGenerationJob(
-                    input=prompt,
-                    steering=steering,
-                    sampling=sampling,
-                    raw=raw,
-                    thinking=thinking,
-                    grid={"prompt_index": idx},
-                )
-                for idx, prompt in enumerate(prompts)
-            ]
-            runset = _run_serial_generation_jobs(
-                self,
-                jobs,
-                stateless=stateless,
-                kind="batch",
-                on_result=(
-                    (lambda idx, result, _row: on_result(idx, result))
-                    if on_result is not None
-                    else None
-                ),
-            )
-        finally:
-            if prefix_cached:
-                self.cache_prefix(None)
-        return runset
-
-    def _maybe_cache_batch_prefix(
-        self,
-        prompts: list[Any],
-        *,
-        steering: "str | Steering | None",
-        sampling: SamplingConfig | None,
-        thinking: bool | None,
-        stateless: bool,
-        raw: bool,
-    ) -> bool:
-        """Prefill + cache the batch's shared token prefix when reuse is valid.
-
-        Returns ``True`` iff a prefix was cached (the caller clears it after the
-        batch).  Eligibility (all must hold): ``stateless`` (per-row history
-        would break the shared prefix), the steering is prefill-inactive
-        (``_steering_value_prefill_inactive`` — else the prompt KV differs per
-        row and the consume gate would refuse the hit anyway), no
-        ``return_hidden`` and no thinking (both force a full re-prefill), at
-        least two rows, and a shared prefix of at least
-        :data:`_PREFIX_CACHE_MIN_TOKENS`. Ordinary ineligibility returns False;
-        lifecycle, rendering, and initialization failures propagate.
-        """
-        if len(prompts) < 2 or not stateless:
-            return False
-        if thinking:
-            return False
-        if sampling is not None and getattr(sampling, "return_hidden", False):
-            return False
-        if not self._steering_value_prefill_inactive(steering):
-            return False
-        common = self._batch_common_prefix_ids(prompts, raw=raw)
-        if common is None:
-            return False
-        max_new_tokens = (
-            sampling.max_tokens
-            if sampling is not None and sampling.max_tokens is not None
-            else self.config.max_new_tokens
-        )
-        return (
-            self.cache_prefix(
-                common,
-                max_new_tokens=max_new_tokens,
-                prefer_static=bool(
-                    self._static_cache_active and steering is None
-                ),
-            )
-            >= _PREFIX_CACHE_MIN_TOKENS
-        )
-
-    def _batch_common_prefix_ids(
-        self, prompts: list[Any], *, raw: bool,
-    ) -> "torch.Tensor | None":
-        """Longest shared leading token run across the batch's rendered inputs.
-
-        Renders each prompt to ``input_ids`` in stateless mode (the same render
-        ``_generate_core`` will reproduce, so the cached tokens are a true
-        byte-prefix of every row) and returns the shared head as a 1-D tensor,
-        or ``None`` when the shared run is shorter than
-        :data:`_PREFIX_CACHE_MIN_TOKENS`.  The run is capped at ``min_row_len -
-        1`` so every row keeps a non-empty suffix to sample from.
-        """
-        rendered: list[torch.Tensor] = []
-        for prompt in prompts:
-            ids = self._prepare_input(
-                prompt, raw=raw, stateless=True, to_device=False,
-            )
-            # Prefix discovery is scalar-heavy Python work. Keep the token
-            # comparison on CPU so MPS/CUDA do not pay one device sync per
-            # ``int(t[i])`` while walking the common prefix.
-            rendered.append(ids[0].detach().to("cpu"))
-        min_len = min(int(t.shape[0]) for t in rendered)
-        if min_len <= _PREFIX_CACHE_MIN_TOKENS:
-            return None
-        ref = rendered[0]
-        common = 0
-        for i in range(min_len):
-            tok = int(ref[i])
-            if all(int(t[i]) == tok for t in rendered):
-                common += 1
-            else:
-                break
-        common = min(common, min_len - 1)  # leave a >=1-token suffix per row
-        if common < _PREFIX_CACHE_MIN_TOKENS:
-            return None
-        return ref[:common].clone()
-
-    def _generate_sweep_fast(
-        self,
-        jobs: list[_SerialGenerationJob],
-        *,
-        stateless: bool,
-        on_result: Callable[[int, GenerationResult, dict[str, Any]], None] | None,
-    ) -> RunSet | None:
-        """Fast path for exact degenerate sweeps.
-
-        Different alpha rows intentionally install different hook coefficients,
-        so they must stay on the serial path until the hook layer can carry
-        per-row steering.  When every row resolves to the same steering
-        expression, however, a stateless greedy sweep is equivalent to a batch
-        of repeated prompts under one steering scope; route that through the
-        shared ``generate_batch`` fast path.
-        """
-        if len(jobs) < 2 or not stateless:
-            return None
-        first = jobs[0]
-        gen_config = self._compose_gen_config(first.sampling)
-        if gen_config.temperature > 0:
-            return None
-        for job in jobs[1:]:
-            if (
-                job.input != first.input
-                or job.steering != first.steering
-                or job.raw != first.raw
-                or job.thinking != first.thinking
-                or job.recipe_override is not None
-                or self._compose_gen_config(job.sampling).temperature > 0
-            ):
-                return None
-
-        def _batch_on_result(
-            idx: int,
-            result: GenerationResult,
-        ) -> None:
-            if on_result is not None:
-                on_result(idx, result, jobs[idx].grid or {})
-
-        fast = self._generate_batch_fast(
-            [job.input for job in jobs],
-            steering=first.steering,
-            sampling=first.sampling,
-            thinking=first.thinking,
-            stateless=True,
-            raw=first.raw,
-            on_result=_batch_on_result if on_result is not None else None,
-        )
-        if fast is None:
-            return None
-        return RunSet(
-            list(fast),
-            node_ids=[None] * len(fast),
-            grid=[job.grid or {} for job in jobs],
-            kind="fan",
+        return self._batch.batch(
+            prompts, steering=steering, sampling=sampling, thinking=thinking,
+            stateless=stateless, raw=raw, on_result=on_result,
         )
 
     def generate_sweep(
@@ -10303,137 +9419,26 @@ class DrowseSession:
     ) -> RunSet:
         """Fan a single prompt across a Cartesian product of alpha values.
 
-        ``sweep`` maps ``concept_name → [alpha_0, alpha_1, ...]``.  The
-        function generates one result per element of the product across
-        every concept's alpha list.  For a single-concept sweep
-        (``{"honest": [0.0, 0.3, 0.6]}``) you get three results; for
-        ``{"honest": [-0.4, 0.0, 0.4], "warm": [0.0, 0.3]}`` you get
-        six (3 × 2).
+        ``sweep`` maps ``concept_name -> [alpha_0, alpha_1, ...]``; one row per
+        element of the product, in ``itertools.product`` order over
+        ``sweep.items()`` (``{"honest": [-0.4, 0.0, 0.4], "warm": [0.0, 0.3]}``
+        gives six rows).  Each row runs under ``base_steering + " + ".join(
+        f"{alpha} {name}")`` with a derived per-row seed.  Stateful sweeps land
+        every row as a sibling under one shared user turn.  :meth:`stop` ends
+        the sweep.
 
-        Each generation runs under the steering expression
-        ``base_steering + " + ".join(f"{α} {name}")``.  ``base_steering``
-        defaults to ``None`` so the swept alphas are the only steering;
-        pass a string to layer a fixed-alpha context underneath.
-
-        ``on_result(idx, result, alpha_values)`` fires per completion.
-        ``alpha_values`` is the ``{concept: alpha}`` dict that produced
-        this row — recorded on each result's ``applied_steering`` too,
-        but exposed here so SSE consumers don't have to re-parse the
-        expression.
+        ``on_result(idx, result, alpha_values)`` fires per completion with the
+        ``{concept: alpha}`` dict that produced the row.
 
         Returns:
             ``RunSet`` in product order.  ``runset.grid[i]`` is the
             alpha dict for row ``i``; ``runset.node_ids[i]`` is the
             assistant node id when ``stateless=False``.
         """
-        sweep_in: Any = sweep
-        if not isinstance(sweep_in, dict) or not sweep_in:
-            raise ValueError("generate_sweep: sweep dict must be non-empty")
-        for name, alphas in sweep.items():
-            alphas_in: Any = alphas
-            if not isinstance(alphas_in, (list, tuple)) or not alphas_in:
-                raise ValueError(
-                    f"generate_sweep: sweep['{name}'] must be a non-empty "
-                    f"list of alpha values"
-                )
-
-        # Cartesian product across concepts.  ``itertools.product``
-        # preserves the order of ``sweep.items()`` so the per-concept
-        # alpha lists in the output are predictable.
-        import itertools
-
-        concept_names = list(sweep.keys())
-        alpha_lists = [list(sweep[name]) for name in concept_names]
-        total = 1
-        for values in alpha_lists:
-            total *= len(values)
-        base_seed = sampling.seed if sampling is not None else None
-        seed_schedule = derive_seed_schedule(base_seed, total)
-
-        base_str: str | None
-        if base_steering is None:
-            base_str = None
-        elif isinstance(base_steering, str):
-            base_str = base_steering
-        else:
-            # Pre-built Steering — render through the canonical formatter
-            # so we can compose with new alpha terms via string concat.
-            base_str = str(base_steering)
-
-        # Anchor every sibling under a shared user turn so
-        # the surfaces render the sweep as siblings under a common
-        # parent rather than a flat result list.  Stateless sweeps
-        # skip the tree mutation entirely;
-        # stateful sweeps land siblings under ``parent_node_id`` (or
-        # the active node when None) and dedup on identical user text.
-        anchor_user_id: str | None = None
-        if not stateless and isinstance(prompt, str):
-            # Stamp the label ``_generate_core`` will send so its label-aware
-            # dedup lands every sibling on this anchor.
-            anchor_user_id = self.tree.add_user_turn(
-                prompt, parent_id=parent_node_id,
-                role_label=(
-                    sampling.user_role
-                    if sampling is not None and not raw else None
-                ),
-            )
-            # The anchor parent for ``_generate_core`` is the user
-            # node's *parent* — generate's ``add_user_turn`` will dedup
-            # against the user we just spawned, so every sibling gets
-            # attached under it without spawning duplicate user turns.
-            gen_parent_id = self.tree.nodes[anchor_user_id].parent_id
-        else:
-            gen_parent_id = parent_node_id
-
-        jobs: list[_SerialGenerationJob] = []
-        for idx, combo in enumerate(itertools.product(*alpha_lists)):
-            alpha_values = dict(zip(concept_names, combo, strict=True))
-            alpha_values = {k: float(v) for k, v in alpha_values.items()}
-            terms = [f"{alpha} {name}" for name, alpha in alpha_values.items()]
-            expr = " + ".join(terms)
-            if base_str:
-                expr = f"{base_str} + {expr}"
-
-            from dataclasses import replace as _replace
-            si = sampling if sampling is not None else SamplingConfig()
-            si = _replace(si, seed=seed_schedule[idx])
-
-            jobs.append(_SerialGenerationJob(
-                input=prompt,
-                steering=expr,
-                sampling=si,
-                raw=raw,
-                thinking=thinking,
-                parent_node_id=gen_parent_id,
-                grid=alpha_values,
-            ))
-
-        fast_sweep = self._generate_sweep_fast(
-            jobs,
-            stateless=stateless,
-            on_result=(
-                (lambda idx, result, row: on_result(
-                    idx, result, cast(dict[str, float], row),
-                ))
-                if on_result is not None
-                else None
-            ),
-        )
-        if fast_sweep is not None:
-            return fast_sweep
-
-        return _run_serial_generation_jobs(
-            self,
-            jobs,
-            stateless=stateless,
-            kind="fan",
-            on_result=(
-                (lambda idx, result, row: on_result(
-                    idx, result, cast(dict[str, float], row),
-                ))
-                if on_result is not None
-                else None
-            ),
+        return self._batch.sweep(
+            prompt, sweep, base_steering=base_steering, sampling=sampling,
+            thinking=thinking, stateless=stateless, raw=raw,
+            on_result=on_result, parent_node_id=parent_node_id,
         )
 
     # -- Generation control --

@@ -720,10 +720,11 @@ def test_token_payload_reuses_the_full_incremental_sink_row():
     session._geometry_instrument.close_run()
 
 
-def test_batch_geometry_aggregate_routes_through_the_run():
-    """``_batch_probe_aggregate_for_row`` reaches the roster through
-    ``current_run.observe_aggregate`` — this exact site was the round-2
-    bypass, so a run spy pins the route."""
+def test_pooled_geometry_aggregate_routes_through_the_run():
+    """``_score_aggregate_only`` with a caller-pooled slice (the batched
+    ``model.generate`` path's per-row read) reaches the roster through
+    ``current_run.observe_aggregate`` — the round-2 bypass site, so a run
+    spy pins the route."""
     session = _stub_session()
     m = _toy_manifold()
     session.ensure_manifold_loaded = lambda key: session._manifolds.update(
@@ -746,9 +747,7 @@ def test_batch_geometry_aggregate_routes_through_the_run():
         return orig(p)
 
     run.observe_aggregate = _spy  # type: ignore[method-assign]
-    out = DrowseSession._batch_probe_aggregate_for_row(
-        session, 0, [1, 2, 3], ["toy"], pooled=pooled,
-    )
+    out = DrowseSession._score_aggregate_only(session, [1, 2, 3], pooled=pooled)
     assert seen and seen[0] is pooled
     assert "toy" in out
 
