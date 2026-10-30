@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, Sequence
@@ -603,9 +603,17 @@ def plan_discover_generation(
         raise ManifoldFormatError(f"manifold at {folder} is named {spec.name!r}, not {name!r}")
     existing = spec.labels
     new_labels = [label for label in labels if label not in existing]
-    nodes = list(spec.nodes) + [
-        ManifestNode(label, roles[label], kinds[label]) for label in new_labels
-    ]
+
+    def has_corpus(index: int, label: str) -> bool:
+        return (folder / "nodes" / node_filename(index, label)).exists()
+
+    # Kind is generation provenance: a node about to be generated with no
+    # recorded kind takes the caller's, so its corpus and manifest agree.
+    nodes = [
+        replace(node, kind=kinds.get(node.label))
+        if node.kind is None and not has_corpus(i, node.label) else node
+        for i, node in enumerate(spec.nodes)
+    ] + [ManifestNode(label, roles[label], kinds[label]) for label in new_labels]
     updated = spec_payload(spec)
     updated["description"] = description
     if tags is not None:
@@ -620,8 +628,7 @@ def plan_discover_generation(
         folder=folder,
         index_of=index_of,
         pending=tuple(
-            node.label for i, node in enumerate(nodes)
-            if not (folder / "nodes" / node_filename(i, node.label)).exists()
+            node.label for i, node in enumerate(nodes) if not has_corpus(i, node.label)
         ),
         added=tuple(new_labels),
         resumed=True,

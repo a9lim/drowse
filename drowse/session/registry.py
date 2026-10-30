@@ -8,8 +8,8 @@ a method here, so the dependent caches move with it:
 
 - an *invalidating* mutation (``put_profile`` / ``pop_profile`` /
   ``evict_prefix`` / ``adopt_fitted`` / ``evict_artifact`` / ``clear``) drops
-  the analytics CPU snapshots and fires the ``on_change`` listeners (the
-  session wires its prefix-cache invalidation there);
+  the analytics CPU snapshots.  The prefix cache survives it: the cached
+  prefix is unsteered, and ``steering_active_in_prefill`` gates its reuse;
 - a manifold *swap* (``adopt_fitted`` / ``evict_artifact``) also fires the
   ``on_swap`` listeners with a map from each replaced object's identity to its
   replacement (``None`` when evicted), so the session can refresh or drop the

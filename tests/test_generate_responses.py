@@ -280,6 +280,31 @@ def test_a_resumed_node_keeps_its_declared_kind(
     assert {c["role"] for c in answerer.calls} == {"someone happy", "someone sad"}
 
 
+def test_a_resumed_node_with_no_recorded_kind_takes_the_callers(
+    make_tiny_session: TinySessionFactory, tmp_path: Path,
+) -> None:
+    """A builder-authored node with ``kind=None`` resumes under the caller's
+    kind (custom frame included) and records it; a node that already has its
+    corpus keeps its unrecorded kind."""
+    from drowse.store.manifold_authoring import append_discover_manifold_node
+
+    folder = tmp_path / "local" / "pair"
+    _plan(folder, ["kept", "late"])
+    append_discover_manifold_node(folder, 0, "kept", ["done"])
+    resumed = _plan(folder, ["kept", "late"], node_kinds={"kept": "custom", "late": "custom"})
+    assert resumed.kinds == {"kept": None, "late": "custom"}
+    assert resumed.pending == ("late",)
+    manifest = json.loads((folder / "manifold.json").read_text())
+    assert [node["kind"] for node in manifest["nodes"]] == [None, "custom"]
+
+    answerer = _Answerer()
+    _session(make_tiny_session, answerer).generate_manifold(
+        resumed, custom_system="It is the month of {c}.",
+    )
+    assert {c["role"] for c in answerer.calls} == {"assistant"}
+    assert all("It is the month of late." in c["system"] for c in answerer.calls)
+
+
 def test_seed_is_per_node_so_a_resumed_run_matches_a_full_run(
     make_tiny_session: TinySessionFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

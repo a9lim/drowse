@@ -680,8 +680,8 @@ class DrowseSession:
 
         Call after the folder changes on disk (deleted, edited, replaced,
         regenerated): loaded manifolds, folded profiles, attached geometry
-        probes that read them, the prefix cache and the analytics snapshots
-        all go, so the next steer or attach reloads from disk.  ``feature``
+        probes that read them and the analytics snapshots all go, so the next
+        steer or attach reloads from disk.  The unsteered prefix cache stays.  ``feature``
         (``"raw"`` / ``"sae-<release>"``) narrows it to one tensor family.
         Refuses (``ConcurrentExtractionError``) while a model op runs.
         """
