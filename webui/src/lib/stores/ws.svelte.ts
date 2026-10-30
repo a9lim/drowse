@@ -36,14 +36,13 @@ import {
   autoRegenState,
   scheduleAutoComparison,
 } from "./ab.svelte";
-import { chatLog, genStatus, geometricMeanPpl, liveTokenStream } from "./chat.svelte";
+import { chatLog, genStatus, geometricMeanPpl } from "./chat.svelte";
 import {
   backfillSaeMeta,
   lensReadoutSnapshot,
   lensState,
   mergedReadings,
   recordSaeReadoutFrame,
-  saeState,
 } from "./instruments.svelte";
 import {
   applyTreeDelta,
@@ -74,7 +73,7 @@ import { buildSamplingPayload, samplingState } from "./sampling.svelte";
 import { refreshSession } from "./session.svelte";
 import {
   currentSteeringExpression,
-  refreshCorrelation,
+  markCorrelationStale,
   refreshManifoldList,
   refreshVectorList,
 } from "./steering.svelte";
@@ -346,7 +345,6 @@ export function ensureRuntimeChannel(): Promise<RuntimeEventChannel> {
         refreshSession(),
         refreshVectorList(),
         refreshProbeList(),
-        refreshCorrelation(),
         refreshManifoldList(),
       ]);
     } catch (error) {
@@ -474,8 +472,6 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
       genStatus.tokPerSec = 0;
       genStatus.ppl = { logSum: 0, count: 0, mean: null };
       genStatus.finishReason = null;
-      liveTokenStream.responseTokens = [];
-      liveTokenStream.thinkingTokens = [];
       // Manifold probes: drop the previous gen's trajectory + aggregate so
       // the inspector mini-map starts blank.  Sparkline carries across.
       if (!abState.processingAb) resetProbeStreams();
@@ -629,17 +625,9 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
         if (msg.thinking) {
           turn.thinking = true;
           (turn.thinkingTokens ??= []).push(tokenScore);
-          // Live-stream buffer is steered-only — the shadow run doesn't
-          // feed the main chat highlight pipeline.
-          if (!abState.processingAb) {
-            liveTokenStream.thinkingTokens.push(tokenScore);
-          }
         } else {
           turn.text = (turn.text ?? "") + msg.text;
           (turn.tokens ??= []).push(tokenScore);
-          if (!abState.processingAb) {
-            liveTokenStream.responseTokens.push(tokenScore);
-          }
         }
       }
       // Probe rack — unified per-token readings.  Every probe shape rides the
@@ -743,7 +731,8 @@ function handleWsMessage(msg: WSServerMessage, receivedAt = performance.now()): 
 
       // Snapshot probe baselines on the steered done event only.
       snapshotProbeBaseline();
-      void refreshCorrelation();
+      // The open correlation drawer refetches; a closed one does not.
+      markCorrelationStale();
       // SAE discovery backfill — fetch Neuronpedia metadata (label +
       // maxActApprox) for features the live top-k surfaced this
       // generation.  Between generations only, never per token.
@@ -888,12 +877,6 @@ function buildSubmitPending(
       : (newText: string) =>
           buildSubmitPending(newText, authoredRole, generatedRole, opts),
     createdAt: Date.now(),
-    endsOnUserNode:
-      (generatedRole ?? authoredRole) === "user"
-        ? true
-        : (generatedRole ?? authoredRole) === "assistant"
-          ? false
-          : null,
   };
 }
 
@@ -930,7 +913,6 @@ export async function sendSubmit(
         apply: item.apply,
         awaitsGen: item.awaitsGen,
         rebuild: item.rebuild,
-        endsOnUserNode: item.endsOnUserNode,
       },
       { replaceSlot: replaceSlot ?? null },
     );

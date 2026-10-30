@@ -1,0 +1,1 @@
+import{Et as e}from"./index-client-S2mwursc.js";e();

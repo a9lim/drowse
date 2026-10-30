@@ -38,19 +38,15 @@ import type {
 
 /** Per-term trigger keyword from the steering-expression grammar.
  *
- * Wire/UI form mirrors ``_TRIGGER_PRESETS`` in steering_expr.py.  ``BOTH`` is
- * the default; the canonical render of each preset goes back through the
- * formatter (``before``/``after``/``both``/``thinking``/``response``).
- * ``prompt`` and ``generated`` are accepted as aliases on parse but
- * normalize to ``before`` and ``response`` respectively at format time. */
+ * Wire/UI form mirrors the canonical presets of ``_TRIGGER_PRESETS`` in
+ * steering/grammar.py (``both``/``before``/``after``/``thinking``/``response``).
+ * The grammar's ``prompt``/``generated`` aliases are not UI values. */
 export type Trigger =
   | "BOTH"
-  | "BEFORE" // == prompt
-  | "AFTER" // after-thinking
+  | "BEFORE" // prompt prefill only
+  | "AFTER" // reply after thinking
   | "THINKING"
-  | "RESPONSE" // == generated
-  | "PROMPT" // alias of BEFORE
-  | "GENERATED"; // alias of RESPONSE
+  | "RESPONSE"; // every generated token
 
 /** Tensor variant suffix from the shared steering grammar. */
 export type Variant =
@@ -121,8 +117,6 @@ export interface SaeTokenReadoutJSON {
 // ``captured`` record and the six top-level per-token aliases (``scores`` /
 // ``per_layer_scores`` / ``probe_readings`` / ``lens_readout`` /
 // ``lens_aggregate`` / ``sae_readout``); see drowse.readout.measurements.
-
-export type TokenReadoutProvenance = "captured" | "replayed";
 
 /** Either family's reading shape, as it arrives inside the envelope. */
 export type AnyReadingJSON = ProbeReadingJSON | ScalarReadingJSON;
@@ -1040,15 +1034,6 @@ export interface PendingAction {
   awaitsGen: boolean;
   rebuild: ((newText: string) => PendingAction) | null;
   createdAt: number;
-  /** Predicted active-node role after this action drains.  Drives the
-   *  input box's role-aware placeholder + send-button label: a queued
-   *  ``commit_user`` (this field = ``true``) flips the next message into
-   *  prefill / commit-assistant mode even though the live active node
-   *  hasn't moved yet.  ``null`` for actions that don't change the
-   *  active node (rack mutations, sampling tweaks).  ``false`` for
-   *  actions that land an assistant or root active node (send, prefill,
-   *  commit_assistant, regen, /clear). */
-  endsOnUserNode?: boolean | null;
   /** Coalesce tag for fold-into-tail batching.  When a fresh action
    *  carries the same ``coalesceKey`` as the *current queue tail*, its
    *  ``apply`` is chained onto that tail item instead of appending a

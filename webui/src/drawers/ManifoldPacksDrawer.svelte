@@ -30,9 +30,6 @@
 
   type Tab = "installed" | "search";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => { void _drawerProps.params; });
-
   let tab: Tab = $state("installed");
 
   // ----- search-tab state ----------------------------------------------

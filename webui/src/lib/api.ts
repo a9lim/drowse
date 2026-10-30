@@ -25,12 +25,9 @@ import type {
   FitManifoldRequest,
   GenerateManifoldRequest,
   InstallManifoldRequest,
-  JointLogprobRowJSON,
   JointLogprobsJSON,
   InstrumentFamily,
-  InstrumentFamilyBlock,
   InstrumentLiveState,
-  InstrumentSourceJSON,
   LensTokenValidationJSON,
   LoomNodeJSON,
   LoomTreeJSON,
@@ -56,66 +53,10 @@ import type {
   TemplateSummary,
   TranscriptLoadResponseJSON,
   VectorInfo,
-  WSClientMessage,
-  WSServerMessage,
 } from "./types";
-import { ApiError, describeError } from "./runtime/errors";
+import { ApiError } from "./runtime/errors";
 import type { RuntimeOperationReceipt } from "./runtime/contracts";
-import {
-  getApiKey,
-  httpAuthHeaders,
-  setApiKey,
-} from "./runtime/http-auth";
-
-export { ApiError, describeError, getApiKey, setApiKey };
-
-// Re-export the wire-shape types other modules consume.  Doing this here
-// rather than via barrel-export keeps `import { ApiError, getSession }`
-// consumers one-stop without a separate type import line.
-export type {
-  CorrelationData,
-  CreateDiscoverManifoldRequest,
-  CreateManifoldRequest,
-  CreateTemplateRequest,
-  CreateManifoldFromTemplateRequest,
-  FitManifoldRequest,
-  GenerateManifoldRequest,
-  ExtractRequest,
-  FilterMatchesJSON,
-  InstallManifoldRequest,
-  JointLogprobRowJSON,
-  JointLogprobsJSON,
-  InstrumentFamily,
-  InstrumentFamilyBlock,
-  InstrumentLiveState,
-  InstrumentSourceJSON,
-  LensTokenValidationJSON,
-  LoomNodeJSON,
-  LoomTreeJSON,
-  ManifoldInfo,
-  ManifoldListResponse,
-  MeasurementsEnvelopeJSON,
-  MergeManifoldRequest,
-  NodeDiffJSON,
-  PairwiseCompareResponse,
-  PreparationOp,
-  PreparationStatusJSON,
-  ProbeGeometryResponse,
-  ProbeInfo,
-  ProbeListResponse,
-  ProbeRequest,
-  ProfileListResponse,
-  RemoteManifoldInfo,
-  ScoreTemplateResponse,
-  SaeFeatureMetaResponse,
-  SessionInfo,
-  TemplateDetail,
-  TemplateSummary,
-  TranscriptLoadResponseJSON,
-  VectorInfo,
-  WSClientMessage,
-  WSServerMessage,
-} from "./types";
+import { getApiKey, httpAuthHeaders } from "./runtime/http-auth";
 
 // --------------------------------------------------------- session id --
 
@@ -134,21 +75,6 @@ function authHeaders(extra: HeadersInit = {}): HeadersInit {
   return httpAuthHeaders(extra);
 }
 
-// --------------------------------------------------------- error type --
-
-/** Wraps a non-2xx HTTP response with structured detail.  Always thrown
- * from the typed helpers below — call sites can ``catch (e) { if (e
- * instanceof ApiError) ... }`` to extract status / parsed body / raw text. */
-/** THE error → user-facing message formatter.  Every surface that shows
- *  a failed request — toast, inline form error, empty-state reason —
- *  goes through this one, so the same backend failure reads identically
- *  wherever it surfaces.
- *
- *  An :class:`ApiError` renders as ``"<status>: <detail>"``, preferring
- *  the drowse error body's structured ``detail`` over the generic HTTP
- *  message.  The status code carries real meaning across this API (400
- *  malformed vs 404 missing vs 409 busy vs 503 unavailable), so it is
- *  always shown.  Anything else falls back to its ``message``. */
 // --------------------------------------------------------- core fetch --
 
 async function parseBody(r: Response): Promise<{ text: string; json: unknown }> {
@@ -413,19 +339,18 @@ function streamFailure(path: string, value: unknown, fallback: string): ApiError
   return new ApiError(typeof details.status === "number" ? details.status : 400, path, message, { ...details, detail: message });
 }
 
-/** Streaming manifold fit — mirrors ``apiExtractStream``.  ``done``
- *  data carries the detail shape plus ``layers_fitted`` /
- *  ``feature_space``; ``progress`` events fire as the pipeline runs;
- *  ``error`` data carries ``message`` + ``code`` (the engine emits
- *  ``PoisednessError`` for an RBF poisedness failure). */
-export async function apiManifoldFitStream(
-  namespace: string,
-  name: string,
-  body: FitManifoldRequest,
-  onEvent: (ev: { event: string; data: unknown }) => void,
-  operationId?: string,
-): Promise<ManifoldInfo> {
-  const path = `${MANIFOLDS_BASE}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/fit`;
+/** POST a JSON body to an SSE route, forward every frame to ``onEvent``,
+ *  and resolve with the ``done`` frame's payload (shaped by ``pickDone``;
+ *  null means the frame was incomplete).  An ``error`` frame rejects with
+ *  an :class:`ApiError` carrying the engine's message and code. */
+async function postSse<T>(
+  path: string,
+  body: unknown,
+  onEvent: (event: SseEvent) => void,
+  operation: string,
+  operationId: string | undefined,
+  pickDone: (data: object) => T | null,
+): Promise<T> {
   const r = await fetch(path, {
     method: "POST",
     headers: authHeaders({
@@ -439,146 +364,75 @@ export async function apiManifoldFitStream(
     const { text, json } = await parseBody(r);
     throw new ApiError(r.status, path, text, json);
   }
-  if (!r.body) throw new Error("manifold fit: server returned no SSE body");
-  let final: ManifoldInfo | null = null;
+  if (!r.body) throw new Error(`${operation}: server returned no SSE body`);
+  let final: T | null = null;
   let lastError: ApiError | null = null;
   for await (const evt of consumeSse(r.body)) {
     onEvent(evt);
     if (evt.event === "done" && evt.data && typeof evt.data === "object") {
-      final = evt.data as ManifoldInfo;
+      final = pickDone(evt.data);
     } else if (evt.event === "error") {
-      lastError = streamFailure(path, evt.data, "fit failed");
+      lastError = streamFailure(path, evt.data, `${operation} failed`);
     }
   }
   if (lastError) throw lastError;
-  if (!final) throw new Error("manifold fit: stream ended without done event");
+  if (!final) throw new Error(`${operation}: stream ended without done event`);
   return final;
+}
+
+const manifoldDone = (data: object) => data as ManifoldInfo;
+
+/** Streaming manifold fit.  ``progress`` events fire as the pipeline runs;
+ *  ``done`` carries the detail shape plus ``layers_fitted`` /
+ *  ``feature_space``; ``error`` carries ``message`` + ``code`` (the engine
+ *  emits ``PoisednessError`` for an RBF poisedness failure). */
+export function apiManifoldFitStream(
+  namespace: string,
+  name: string,
+  body: FitManifoldRequest,
+  onEvent: (ev: SseEvent) => void,
+  operationId?: string,
+): Promise<ManifoldInfo> {
+  const path = `${MANIFOLDS_BASE}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/fit`;
+  return postSse(path, body, onEvent, "manifold fit", operationId, manifoldDone);
 }
 
 /** Streaming manifold install — an HF pull carries a per-model safetensors
  *  payload, so the route narrates the stages (resolve / download / validate /
  *  stage / install) as ``progress`` frames and ends with the same
  *  manifold-detail ``done`` payload the plain JSON POST returns. */
-export async function apiManifoldInstallStream(
+export function apiManifoldInstallStream(
   body: InstallManifoldRequest,
-  onEvent: (ev: { event: string; data: unknown }) => void,
+  onEvent: (ev: SseEvent) => void,
   operationId?: string,
 ): Promise<ManifoldInfo> {
-  const path = `${MANIFOLDS_BASE}/install`;
-  const r = await fetch(path, {
-    method: "POST",
-    headers: authHeaders({
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      ...(operationId ? { "X-Drowse-Request-Id": operationId } : {}),
-    }),
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) {
-    const { text, json } = await parseBody(r);
-    throw new ApiError(r.status, path, text, json);
-  }
-  if (!r.body) throw new Error("manifold install: server returned no SSE body");
-  let final: ManifoldInfo | null = null;
-  let lastError: ApiError | null = null;
-  for await (const evt of consumeSse(r.body)) {
-    onEvent(evt);
-    if (evt.event === "done" && evt.data && typeof evt.data === "object") {
-      final = evt.data as ManifoldInfo;
-    } else if (evt.event === "error") {
-      lastError = streamFailure(path, evt.data, "install failed");
-    }
-  }
-  if (lastError) throw lastError;
-  if (!final) {
-    throw new Error("manifold install: stream ended without done event");
-  }
-  return final;
+  return postSse(`${MANIFOLDS_BASE}/install`, body, onEvent, "manifold install", operationId, manifoldDone);
 }
 
-/** Streaming manifold generate — LLM-author a discover-mode folder from
- *  a flat concept list.  Mirrors ``apiManifoldFitStream`` shape: SSE
- *  progress events as the K-tuple generator runs, then a ``done`` event
- *  carrying the freshly-written manifold detail.  Pair with a follow-up
- *  ``apiManifoldFitStream`` call to derive coords + fit. */
-export async function apiManifoldGenerateStream(
+/** Streaming manifold generate — LLM-author a discover-mode folder from a
+ *  flat concept list, then ``done`` with the freshly written manifold
+ *  detail.  Pair with a follow-up fit to derive coords. */
+export function apiManifoldGenerateStream(
   body: GenerateManifoldRequest,
-  onEvent: (ev: { event: string; data: unknown }) => void,
+  onEvent: (ev: SseEvent) => void,
   operationId?: string,
 ): Promise<ManifoldInfo> {
-  const path = `${MANIFOLDS_BASE}/generate`;
-  const r = await fetch(path, {
-    method: "POST",
-    headers: authHeaders({
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      ...(operationId ? { "X-Drowse-Request-Id": operationId } : {}),
-    }),
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) {
-    const { text, json } = await parseBody(r);
-    throw new ApiError(r.status, path, text, json);
-  }
-  if (!r.body) throw new Error("manifold generate: server returned no SSE body");
-  let final: ManifoldInfo | null = null;
-  let lastError: ApiError | null = null;
-  for await (const evt of consumeSse(r.body)) {
-    onEvent(evt);
-    if (evt.event === "done" && evt.data && typeof evt.data === "object") {
-      final = evt.data as ManifoldInfo;
-    } else if (evt.event === "error") {
-      lastError = streamFailure(path, evt.data, "generate failed");
-    }
-  }
-  if (lastError) throw lastError;
-  if (!final) {
-    throw new Error("manifold generate: stream ended without done event");
-  }
-  return final;
+  return postSse(`${MANIFOLDS_BASE}/generate`, body, onEvent, "manifold generate", operationId, manifoldDone);
 }
 
 // ============================================================ extract ==
 
-/** Streaming extract — pass ``onEvent`` to receive each SSE frame as it
- * arrives.  Resolves with the final ``done`` payload (or rejects on the
- * server's ``error`` frame). */
-export async function apiExtractStream(
+/** Streaming extract — resolves with the final ``done`` payload. */
+export function apiExtractStream(
   req: ExtractRequest,
-  onEvent: (ev: { event: string; data: unknown }) => void,
+  onEvent: (ev: SseEvent) => void,
   id: string = SESSION,
   operationId?: string,
 ): Promise<{ canonical: string; profile: VectorInfo }> {
-  const r = await fetch(`${SESSION_BASE(id)}/extract`, {
-    method: "POST",
-    headers: authHeaders({
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      ...(operationId ? { "X-Drowse-Request-Id": operationId } : {}),
-    }),
-    body: JSON.stringify(req),
+  return postSse(`${SESSION_BASE(id)}/extract`, req, onEvent, "extract", operationId, data => {
+    const d = data as { canonical?: string; profile?: VectorInfo };
+    return d.canonical && d.profile ? { canonical: d.canonical, profile: d.profile } : null;
   });
-  if (!r.ok) {
-    const { text, json } = await parseBody(r);
-    throw new ApiError(r.status, `${SESSION_BASE(id)}/extract`, text, json);
-  }
-  if (!r.body) throw new Error("extract: server returned no SSE body");
-  let final: { canonical: string; profile: VectorInfo } | null = null;
-  let lastError: ApiError | null = null;
-  for await (const evt of consumeSse(r.body)) {
-    onEvent(evt);
-    if (evt.event === "done" && evt.data && typeof evt.data === "object") {
-      const d = evt.data as { canonical?: string; profile?: VectorInfo };
-      if (d.canonical && d.profile) {
-        final = { canonical: d.canonical, profile: d.profile };
-      }
-    } else if (evt.event === "error") {
-      lastError = streamFailure(`${SESSION_BASE(id)}/extract`, evt.data, "extract failed");
-    }
-  }
-  if (lastError) throw lastError;
-  if (!final) throw new Error("extract: stream ended without done event");
-  return final;
 }
 
 // ============================================================== tree ==
@@ -805,12 +659,6 @@ export const apiTree = {
 };
 
 // ========================================================= instruments ==
-
-// The read-side families and their per-family block live in ``types.ts``
-// with the rest of the wire shapes: the SAME block is listed by
-// ``GET /instruments`` and embedded in ``session_info.instruments``, so
-// there is exactly one declaration of it on the client.
-export type InstrumentFamilyJSON = InstrumentFamilyBlock;
 
 /** The unified read-side instrument client — one surface over geometry /
  *  lens / sae.  The former per-family live toggles, source lifecycle, the

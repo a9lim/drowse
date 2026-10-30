@@ -11,6 +11,7 @@
   import { paletteCommands, type PaletteCommand } from "../lib/commands";
   import { openDrawer, setInspectorTab } from "../lib/stores.svelte";
   import { modalIn, modalOut, scrimIn, scrimOut } from "../lib/motion";
+  import { containTab } from "../lib/focusTrap";
   import FluentIcon from "../lib/ui/FluentIcon.svelte";
 
   const COMMANDS = paletteCommands();
@@ -20,15 +21,6 @@
   let inputEl: HTMLInputElement | null = $state(null);
   let listEl: HTMLElement | null = $state(null);
   let paletteEl: HTMLElement | null = $state(null);
-
-  const FOCUSABLE = [
-    "button:not([disabled]):not([tabindex='-1'])",
-    "[href]",
-    "input:not([disabled])",
-    "select:not([disabled])",
-    "textarea:not([disabled])",
-    '[tabindex]:not([tabindex="-1"])',
-  ].join(",");
 
   const filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -119,27 +111,6 @@
     }
   }
 
-  function trapFocus(ev: KeyboardEvent): void {
-    if (ev.key !== "Tab" || !paletteEl) return;
-    const focusable = [...paletteEl.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
-      (el) => el.offsetParent !== null,
-    );
-    if (focusable.length === 0) {
-      ev.preventDefault();
-      paletteEl.focus();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (ev.shiftKey && (document.activeElement === first || document.activeElement === paletteEl)) {
-      ev.preventDefault();
-      last.focus();
-    } else if (!ev.shiftKey && document.activeElement === last) {
-      ev.preventDefault();
-      first.focus();
-    }
-  }
-
   const TAB_HUE: Record<string, string> = {
     subspace: "var(--pillar-subspace)",
     manifold: "var(--pillar-manifold)",
@@ -171,7 +142,7 @@
     aria-modal="true"
     aria-label="Command palette"
     tabindex="-1"
-    onkeydown={trapFocus}
+    onkeydown={(event) => { if (paletteEl) containTab(event, paletteEl); }}
     in:fly={modalIn()}
     out:fly={modalOut()}
     onintrostart={(event) => { event.currentTarget.inert = false; }}

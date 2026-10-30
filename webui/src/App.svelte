@@ -2,22 +2,21 @@
   import FluentIcon from "./lib/ui/FluentIcon.svelte";
   import SidebarIcon from "./lib/ui/SidebarIcon.svelte";
   import { tokenInspectorUi, dockTokenDetails, hideTokenDetails, toolPresentation, setToolPresentation, restoreToolPresentation, openToolInSidebar } from "./lib/stores/drawers.svelte";
-  import ManifoldBuilderDrawer from "./drawers/ManifoldBuilderDrawer.svelte";
   import ManifoldJobProgress from "./lib/ui/ManifoldJobProgress.svelte";
   import { manifoldJobs } from "./lib/stores/manifoldJobs.svelte";
   import ToolDirectory from "./panels/ToolDirectory.svelte";
-  import TokenDrilldownDrawer from "./drawers/TokenDrilldownDrawer.svelte";
   import BottomSheet from "./lib/ui/BottomSheet.svelte";
   import { MOBILE_SHEET_QUERY } from "./lib/bottomSheet";
   import "./lib/style/workspace.css";
   import WorkspaceBackground from "./lib/ui/WorkspaceBackground.svelte";
   import { slidingSelection } from "./lib/slidingSelection";
+  import { containTab, tabStops } from "./lib/focusTrap";
   // Drowse workbench shell. Conversation owns its response-shaping tools;
   // the loom remains a separate workspace for navigating branches.
 
   import { onMount, tick } from "svelte";
   import { registerWorkspaceController } from "./lib/workspaceController";
-  import { mountWorkspaceWebMcp, refreshWebMcp } from "./lib/webmcp";
+  import { loadWebMcp } from "./lib/webmcp/loader";
   import { sessionState } from "./lib/stores/session.svelte";
   import { attachPersistence } from "./lib/stores/persistence.svelte";
   import { fade, fly } from "svelte/transition";
@@ -63,6 +62,7 @@
   // host below renders whichever row ``drawerState.open`` names, so there
   // is no per-drawer branch here to fall out of sync with the union.
   import { DRAWERS, drawerParams } from "./drawers";
+  import DrawerOutlet from "./drawers/DrawerOutlet.svelte";
 
   import {
     bootstrap,
@@ -108,11 +108,17 @@
   const webMcpModelId = $derived(sessionState.info?.model_id);
   const webMcpInstruments = $derived(JSON.stringify(sessionState.info?.instruments));
   $effect(() => {
-    if (bootStatus === "ready" && webMcpModelId) return mountWorkspaceWebMcp();
+    if (bootStatus !== "ready" || !webMcpModelId) return;
+    const webMcp = loadWebMcp();
+    if (!webMcp) return;
+    let unmount: (() => void) | null = null;
+    let cancelled = false;
+    void webMcp.then(module => { if (!cancelled) unmount = module.mountWorkspaceWebMcp(); });
+    return () => { cancelled = true; unmount?.(); };
   });
   $effect(() => {
     webMcpInstruments;
-    refreshWebMcp();
+    void loadWebMcp()?.then(module => module.refreshWebMcp());
   });
   $effect(() => {
     if (bootStatus === "ready") return attachPersistence();
@@ -244,15 +250,6 @@
     }
   }
 
-  const FOCUSABLE = [
-    "button:not([disabled])",
-    "[href]",
-    "input:not([disabled])",
-    "select:not([disabled])",
-    "textarea:not([disabled])",
-    '[tabindex]:not([tabindex="-1"])',
-  ].join(",");
-
   function focusWithoutScrolling(element: HTMLElement | null | undefined): void {
     element?.focus({ preventScroll: true });
   }
@@ -265,8 +262,7 @@
     }
     if (open !== null && !mobileTokenDrawer && (open !== previousDrawer || modal && !drawerEl?.contains(document.activeElement))) {
       void tick().then(() => {
-        const first = [...(drawerEl?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(el => el.offsetParent !== null);
-        focusWithoutScrolling(first ?? drawerEl);
+        focusWithoutScrolling((drawerEl && tabStops(drawerEl)[0]) ?? drawerEl);
       });
     } else if (open === null && previousDrawer !== null) {
       const trigger = drawerTrigger;
@@ -278,27 +274,6 @@
     }
     previousDrawer = open;
   });
-
-  function onDrawerKeydown(ev: KeyboardEvent): void {
-    if (ev.key !== "Tab" || !drawerEl) return;
-    const focusable = [...drawerEl.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
-      (el) => el.offsetParent !== null,
-    );
-    if (focusable.length === 0) {
-      ev.preventDefault();
-      focusWithoutScrolling(drawerEl);
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (ev.shiftKey && (document.activeElement === first || document.activeElement === drawerEl)) {
-      ev.preventDefault();
-      focusWithoutScrolling(last);
-    } else if (!ev.shiftKey && (document.activeElement === last || document.activeElement === drawerEl)) {
-      ev.preventDefault();
-      focusWithoutScrolling(first);
-    }
-  }
 
   function drawerLabel(name: string): string {
     const labels: Record<string, string> = {
@@ -693,7 +668,7 @@
         data-open={dockedTokenDetails && !sideToolOpen} aria-hidden={!dockedTokenDetails || sideToolOpen}
         inert={!dockedTokenDetails || drawerState.open !== null} role={narrowScreen ? undefined : "complementary"} aria-label={narrowScreen ? undefined : "Generated word details"}>
         {#if tokenInspectorUi.docked}
-          <TokenDrilldownDrawer docked mobile={narrowScreen} onclose={dismiss} params={tokenInspectorUi.params} active={dockedTokenDetails && drawerState.open === null} />
+          <DrawerOutlet name="token_drilldown" docked mobile={narrowScreen} onclose={dismiss} params={tokenInspectorUi.params} active={dockedTokenDetails && drawerState.open === null} />
         {/if}
         </div>
         {/snippet}
@@ -726,7 +701,7 @@
           aria-modal={drawerState.open === null || mobileTokenDrawer || sideToolOpen ? undefined : "true"}
           aria-label={drawerState.open === null || mobileTokenDrawer ? undefined : drawerLabel(drawerState.open)}
           tabindex="-1"
-          onkeydown={event => { if (!mobileTokenDrawer && !sideToolOpen) onDrawerKeydown(event); }}
+          onkeydown={event => { if (!mobileTokenDrawer && !sideToolOpen && drawerEl) containTab(event, drawerEl); }}
           in:fly={mobileTokenDrawer || sideToolOpen ? { duration: 0 } : panelIn(24)}
           out:fly={mobileTokenDrawer || sideToolOpen ? { duration: 0 } : panelOut(14)}
           onintrostart={(event) => { event.currentTarget.inert = false; }}
@@ -744,11 +719,11 @@
           {#if modalDrawerOpen}<ManifoldJobProgress compact />{/if}
           {#if builderVisited}
             <div class="tool-content" hidden={drawerState.open !== "manifold_builder"} inert={drawerState.open !== "manifold_builder"}>
-              <ManifoldBuilderDrawer params={builderParams} />
+              <DrawerOutlet name="manifold_builder" params={builderParams} />
             </div>
           {/if}
           {#if drawerState.open !== null && drawerState.open !== "manifold_builder"}
-            <entry.component params={drawerParams(drawerState.open, drawerState.params)} mobile={mobileTokenDrawer} onclose={dismiss} />
+            <DrawerOutlet name={drawerState.open} params={drawerParams(drawerState.open, drawerState.params)} mobile={mobileTokenDrawer} onclose={dismiss} />
           {/if}
         </div>
           {/snippet}

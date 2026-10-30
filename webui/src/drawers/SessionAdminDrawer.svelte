@@ -6,11 +6,6 @@
   import type { SessionInfo } from "../lib/types";
   import { closeDrawer, refreshSession, sessionState } from "../lib/stores.svelte";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => {
-    void _drawerProps.params;
-  });
-
   let key = $state(getApiKey() ?? "");
   let sessions: SessionInfo[] = $state([]);
   let busy = $state(false);

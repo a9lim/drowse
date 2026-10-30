@@ -24,20 +24,11 @@
 
   import type { SteerEntry, SubspaceSteerEntry, ManifoldSteerEntry } from "../../lib/types";
   import {
-    setSubspaceCoords,
-    setSubspaceLabel,
-    setSubspaceTrigger,
-    setSubspaceEnabled,
-    setSubspaceAblate,
-    removeSubspaceFromRack,
-    setManifoldBlend,
-    setManifoldOnto,
-    setManifoldCoords,
-    setManifoldLabel,
-    setManifoldTrigger,
-    setManifoldEnabled,
-    removeManifoldFromRack,
     manifoldByName,
+    patchSteerEntry,
+    removeSteerEntry,
+    setSteerCoords,
+    setSteerLabel,
   } from "../../lib/stores.svelte";
   import Slider from "../../lib/Slider.svelte";
   import Select from "../../lib/Select.svelte";
@@ -80,33 +71,26 @@
   // ---------- trigger cycle (shared vocabulary in ./triggers) ----------
 
   function cycleTrigger(): void {
-    const next = nextTrigger(entry.trigger);
-    if (entry.mode === "subspace") setSubspaceTrigger(name, next);
-    else setManifoldTrigger(name, next);
+    patchSteerEntry(name, { trigger: nextTrigger(entry.trigger) });
   }
 
   function toggleEnabled(): void {
-    if (entry.mode === "subspace") setSubspaceEnabled(name, !entry.enabled);
-    else setManifoldEnabled(name, !entry.enabled);
+    patchSteerEntry(name, { enabled: !entry.enabled });
   }
 
   function removeTerm(): void {
     // Remove from the rack only — never deletes the server-side artifact
     // (the RackDrawer's delete button owns that, behind a confirm).
-    if (entry.mode === "subspace") removeSubspaceFromRack(name);
-    else removeManifoldFromRack(name);
+    removeSteerEntry(name);
   }
 
   // ---------- position controls (shared snap + XYPad) ----------
 
   function onSnapToNode(val: string): void {
-    const label = val === "" ? null : val;
-    if (entry.mode === "subspace") setSubspaceLabel(name, label);
-    else setManifoldLabel(name, label);
+    setSteerLabel(name, val === "" ? null : val);
   }
   function onCoordsChange(coords: number[]): void {
-    if (entry.mode === "subspace") setSubspaceCoords(name, coords);
-    else setManifoldCoords(name, coords);
+    setSteerCoords(name, coords);
   }
 
   const snapOptions = $derived.by<{ value: string; label: string }[]>(() => {
@@ -129,10 +113,10 @@
   // ---------- manifold-only controls ----------
 
   function onBlendInput(val: number): void {
-    if (Number.isFinite(val)) setManifoldBlend(name, val);
+    if (Number.isFinite(val)) patchSteerEntry(name, { blend: val }, ["manifold"]);
   }
   function onOntoInput(val: number): void {
-    if (Number.isFinite(val)) setManifoldOnto(name, val);
+    if (Number.isFinite(val)) patchSteerEntry(name, { onto: val }, ["manifold"]);
   }
 </script>
 
@@ -191,13 +175,13 @@
             type="button"
             class:active={!s.ablate}
             aria-pressed={!s.ablate}
-            onclick={() => setSubspaceAblate(name, false)}
+            onclick={() => patchSteerEntry(name, { ablate: false }, ["subspace"])}
           >push</button>
           <button
             type="button"
             class:active={s.ablate}
             aria-pressed={s.ablate}
-            onclick={() => setSubspaceAblate(name, true)}
+            onclick={() => patchSteerEntry(name, { ablate: true }, ["subspace"])}
           >ablate</button>
         </div>
       {/if}

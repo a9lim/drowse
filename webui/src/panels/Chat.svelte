@@ -776,7 +776,6 @@
         apply: () => void loomRegenerateNode(nodeId, 1),
         awaitsGen: true,
         rebuild: null,
-        endsOnUserNode: turn.role === "user",
       });
     } else {
       void loomRegenerateNode(nodeId, 1);

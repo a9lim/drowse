@@ -15,7 +15,7 @@
 
   import type { AtomMode, AtomSteerEntry } from "../../lib/types";
   import Slider from "../../lib/Slider.svelte";
-  import { ATOM_PREFIX, atomActions } from "../../lib/stores.svelte";
+  import { ATOM_PREFIX, patchSteerEntry, removeSteerEntry } from "../../lib/stores.svelte";
   import RackCard from "./RackCard.svelte";
   import RackMarker from "./RackMarker.svelte";
   import type { RackMarkerShape } from "./RackMarker.svelte";
@@ -40,11 +40,10 @@
   let { mode, name, entry }: Props = $props();
 
   const family = $derived(FAMILY[mode]);
-  const actions = $derived(atomActions(mode));
   const atomId = $derived(name.slice(ATOM_PREFIX[mode].length));
 
   function cycleTrigger(): void {
-    actions.setTrigger(name, nextTrigger(entry.trigger));
+    patchSteerEntry(name, { trigger: nextTrigger(entry.trigger) });
   }
 </script>
 
@@ -54,7 +53,7 @@
       type="button"
       class="enable"
       class:off={!entry.enabled}
-      onclick={() => actions.setEnabled(name, !entry.enabled)}
+      onclick={() => patchSteerEntry(name, { enabled: !entry.enabled })}
       aria-pressed={entry.enabled}
       aria-label="Toggle steering for {name}"
     >
@@ -68,7 +67,7 @@
     <button
       type="button"
       class="icon remove"
-      onclick={() => actions.remove(name)}
+      onclick={() => removeSteerEntry(name)}
       aria-label="remove {name}"
     >
       <FluentIcon name="dismiss" />
@@ -91,13 +90,13 @@
         type="button"
         class:active={!entry.ablate}
         aria-pressed={!entry.ablate}
-        onclick={() => actions.setAblate(name, false)}
+        onclick={() => patchSteerEntry(name, { ablate: false }, [mode])}
       >push</button>
       <button
         type="button"
         class:active={entry.ablate}
         aria-pressed={entry.ablate}
-        onclick={() => actions.setAblate(name, true)}
+        onclick={() => patchSteerEntry(name, { ablate: true }, [mode])}
       >ablate</button>
     </div>
     <div class="alpha-row">
@@ -108,7 +107,7 @@
         max={1}
         step={0.05}
         ariaLabel="alpha for {name}"
-        oninput={(v) => Number.isFinite(v) && actions.setAlpha(name, v)}
+        oninput={(v) => Number.isFinite(v) && patchSteerEntry(name, { alpha: v }, [mode])}
       />
       <span class="alpha-val"><RollingNumber value={entry.alpha} digits={2} /></span>
     </div>

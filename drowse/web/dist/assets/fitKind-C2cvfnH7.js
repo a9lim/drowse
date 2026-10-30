@@ -1,0 +1,1 @@
+function e(e){let t=e.resolved_fit_mode??e.fit_mode;return t===`pca`||t===`baked`?`flat`:t===`spectral`||t===`authored`?`curved`:`unresolved`}function t(e){return e===`pca`||e===`spectral`||e===`auto`}function n(e){return e.is_discover}function r(t){return t&&e(t)===`curved`?`manifolds`:`subspace`}export{r as i,n,t as r,e as t};

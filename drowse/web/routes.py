@@ -68,7 +68,7 @@ def register_web_routes(app: FastAPI) -> None:
 
     # Mount public asset directories on StaticFiles; fall back to index.html
     # for any other path so client-side routing in the SPA works.
-    for directory in ("assets", "icons", "social"):
+    for directory in ("assets", "icons"):
         static_dir = dist / directory
         if static_dir.is_dir():
             app.mount(

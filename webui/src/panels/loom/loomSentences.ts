@@ -43,3 +43,14 @@ export function splitTokenSentences(
 
   return sentences;
 }
+
+const sentenceCache = new WeakMap<readonly SentenceToken[], TokenSentence[]>();
+
+/** ``splitTokenSentences`` memoized on the token array's identity: saved
+ *  replies never change their arrays in place, and the live overlay hands
+ *  out a fresh array each frame. */
+export function tokenSentences(tokens: readonly SentenceToken[]): TokenSentence[] {
+  let sentences = sentenceCache.get(tokens);
+  if (!sentences) sentenceCache.set(tokens, sentences = splitTokenSentences(tokens));
+  return sentences;
+}

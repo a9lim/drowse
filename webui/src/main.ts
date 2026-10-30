@@ -4,7 +4,7 @@ import { HttpRuntimeClient } from "./lib/runtime/http-client";
 import { installRuntimeClient } from "./lib/runtime/registry";
 import { initializeTheme } from "./lib/theme";
 import { initializeInputModality } from "./lib/inputModality";
-import { startWebMcp } from "./lib/webmcp";
+import { loadWebMcp } from "./lib/webmcp/loader";
 // Side-effect CSS imports — Vite extracts these into the bundled CSS.
 // Imported here (not from App.svelte) so svelte-check, which runs sans
 // Vite's CSS plugin, doesn't trip on missing module declarations.
@@ -23,7 +23,7 @@ if (!target) throw new Error("drowse web: #app element missing in index.html");
 
 initializeTheme();
 initializeInputModality();
-startWebMcp(false);
+void loadWebMcp()?.then(webMcp => webMcp.startWebMcp(false));
 
 installRuntimeClient(new HttpRuntimeClient());
 const { default: App } = await import("./App.svelte");

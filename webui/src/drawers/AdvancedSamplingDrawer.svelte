@@ -24,11 +24,6 @@
     tokenAlternativeLimit,
   } from "../lib/runtime/samplingCapabilities";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => {
-    void _drawerProps.params;
-  });
-
   // Render mode — two-state: chat renders bubbles + roles, raw renders a
   // single flat completion buffer.  The mode is seeded from the model's
   // ``is_base_model`` flag the first time the model is seen, then it's a

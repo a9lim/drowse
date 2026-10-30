@@ -1,5 +1,4 @@
 import type {
-  ExtractRequest,
   FitManifoldRequest,
   GenerateManifoldRequest,
   InstallManifoldRequest,
@@ -60,14 +59,6 @@ export async function apiManifoldGenerateStream(
     failManifoldJob(job, error);
     throw error;
   }
-}
-
-export function apiExtractStream(
-  request: ExtractRequest,
-  onEvent: (event: { event: string; data: unknown }) => void,
-  id?: string,
-) {
-  return runtimeClient.profiles.extract(request, onEvent, id);
 }
 
 export { ApiError, describeError };

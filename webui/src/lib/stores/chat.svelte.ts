@@ -8,7 +8,7 @@
 // gesture, the per-generation token/perplexity counters, and the
 // per-model chat-vs-raw render mode.
 
-import type { ChatTurn, GenStatus, TokenScore } from "../types";
+import type { ChatTurn, GenStatus } from "../types";
 import { loomNavigate, loomTree } from "./loom.svelte";
 import { sessionState } from "./session.svelte";
 import { enqueuePending, pendingActions } from "./pending.svelte";
@@ -90,10 +90,6 @@ export function clearChat(): void {
       apply: resetChatToRoot,
       awaitsGen: false,
       rebuild: null,
-      // /clear navigates to the synthetic root (system role) — not a
-      // user node, so the next submission goes through "message" mode
-      // and lands a fresh user branch off root.
-      endsOnUserNode: false,
     });
   } else {
     void resetChatToRoot();
@@ -101,19 +97,6 @@ export function clearChat(): void {
 }
 
 // ----------------------------------------- live token / gen status ---
-
-/** Captures the in-flight generation's per-token scores so the chat
- * renderer can highlight live before the WS ``done`` event lands.  Reset
- * on each ``started``. */
-export interface LiveTokenStream {
-  responseTokens: TokenScore[];
-  thinkingTokens: TokenScore[];
-}
-
-export const liveTokenStream: LiveTokenStream = $state({
-  responseTokens: [],
-  thinkingTokens: [],
-});
 
 export const genStatus: GenStatus = $state({
   active: false,

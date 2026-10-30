@@ -35,18 +35,14 @@ import type {
 
 // ----------------------------------------------- triggers ----------------
 
-/** Map UI Trigger values to the keyword the formatter emits.  Aliases
- * (PROMPT->before, GENERATED->response) collapse onto the canonical
- * render so round-trips are deterministic.  BOTH is the default and is
- * omitted from the output. */
+/** Map UI Trigger values to the keyword the formatter emits.  BOTH is the
+ * default and is omitted from the output. */
 const TRIGGER_TO_KEYWORD: Record<Trigger, string | null> = {
   BOTH: null,
   BEFORE: "before",
   AFTER: "after",
   THINKING: "thinking",
   RESPONSE: "response",
-  PROMPT: "before",
-  GENERATED: "response",
 };
 
 // ----------------------------------------------- formatter ---------------

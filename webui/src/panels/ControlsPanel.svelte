@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { DRAWERS } from "../drawers";
+  import DrawerOutlet from "../drawers/DrawerOutlet.svelte";
   import SaveConversationDrawer from "../drawers/SaveConversationDrawer.svelte";
   import { runtimeClient } from "../lib/runtime/client";
   import SegmentedTabs from "../lib/ui/SegmentedTabs.svelte";
@@ -28,7 +28,7 @@
     },
     { value: "chat", label: "Chat" },
   ]);
-  const modelEntry = DRAWERS[runtimeClient.mode === "browser" ? "local_runtime" : "health"];
+  const modelDrawer = runtimeClient.mode === "browser" ? "local_runtime" : "health";
 </script>
 
 <section class="controls" aria-label={`${generationLabel}, model, and chat controls`}>
@@ -49,7 +49,7 @@
     {#if section === "response"}
       <InspectorPanel />
     {:else if section === "model"}
-      <modelEntry.component params={{ embedded: true }} />
+      <DrawerOutlet name={modelDrawer} params={{ embedded: true }} />
     {:else}
       <SaveConversationDrawer embedded />
     {/if}

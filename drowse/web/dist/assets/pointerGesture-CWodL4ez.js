@@ -1,0 +1,1 @@
+function e(e,t){let n=t.x-e.x,r=t.y-e.y;return{center:{x:e.x+n/2,y:e.y+r/2},distance:Math.hypot(n,r)}}function t(e,t,n,r,i){return!Number.isFinite(e)||!Number.isFinite(t)||!Number.isFinite(n)||t<=0||n<=0?Math.min(i,Math.max(r,e)):Math.min(i,Math.max(r,e*n/t))}export{t as n,e as t};
