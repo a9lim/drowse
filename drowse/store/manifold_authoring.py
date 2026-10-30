@@ -52,7 +52,7 @@ from drowse.store.manifold_schema import (
     validate_node_role,
 )
 # No manifold may be authored under an instrument namespace (it would shadow it).
-from drowse.steering.grammar import RESERVED_NAMESPACES
+from drowse.naming import RESERVED_NAMESPACES
 # Every authoring entry point that changes the installed manifold roster drops
 # the resolver's memoized walks itself — callers carry no invalidation duty.
 from drowse.store.selectors import invalidate as invalidate_selector_index

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from drowse.cli import config_file as cfg
-from drowse.store.manifold_authoring import RESERVED_NAMESPACES
+from drowse.naming import RESERVED_NAMESPACES
 
 
 def test_parse_minimal(tmp_path: Path) -> None:

@@ -34,7 +34,7 @@ from drowse.base.integrity import NAME_REGEX, hash_file
 from drowse.base.paths import manifold_dir, manifolds_dir
 from drowse.base.staging import promote, recover_backup, staging_area
 from drowse.errors import DrowseError
-from drowse.steering.grammar import RESERVED_NAMESPACES
+from drowse.naming import RESERVED_NAMESPACES
 from drowse.store.archive import (
     LOCAL_ONLY_MANIFOLD_KEYS,
     ArchiveClosure,

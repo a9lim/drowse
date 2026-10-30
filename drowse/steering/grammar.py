@@ -123,17 +123,12 @@ from dataclasses import dataclass, replace
 from typing import Literal, Optional, TYPE_CHECKING, cast
 
 from drowse.errors import SteeringExprError
+from drowse.naming import RESERVED_NAMESPACES
 from drowse.steering.triggers import Trigger
 
 if TYPE_CHECKING:
     from drowse.steering.terms import AlphaEntry, Steering
 
-
-#: Instrument namespaces: atoms under them name instrument units (J-/S-lens
-#: tokens, SAE features, neurons, heads), not fitted concepts.  Their names
-#: skip slug canonicalization and take no variant, and no manifold may be
-#: authored under them.
-RESERVED_NAMESPACES = frozenset({"jlens", "slens", "sae", "neuron", "head"})
 
 # Namespaces whose atom also takes the exact-vocab-id form ``#<int>``.
 _TOKEN_ID_NAMESPACES = frozenset({"jlens", "slens"})

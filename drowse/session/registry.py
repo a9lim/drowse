@@ -39,7 +39,7 @@ from drowse.errors import ManifoldNotRegisteredError, ProfileNotRegisteredError
 from drowse.geometry.fold import folded_directions, is_foldable_vector_manifold
 from drowse.geometry.manifold import Manifold
 from drowse.geometry.profile import Profile
-from drowse.steering.grammar import RESERVED_NAMESPACES
+from drowse.naming import RESERVED_NAMESPACES
 
 Tensors = dict[int, torch.Tensor]
 
