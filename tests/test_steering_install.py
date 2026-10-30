@@ -297,3 +297,21 @@ def test_unknown_vector_raises_before_the_scope_is_entered() -> None:
     with pytest.raises(ProfileNotRegisteredError):
         session.steering("0.5 missing")
     assert session._steering_composer._stack == []
+
+
+def test_curved_manifold_terms_names_only_curved_positions() -> None:
+    """The composer's curvature query (loom's ``inverted`` regen asks which
+    ``%`` terms have no signed opposite)."""
+    from drowse.fit.capture import fold_directions_to_subspace
+
+    session, _buffers = _session(compiled=False)
+    ray = fold_directions_to_subspace(
+        "ray", {1: _unit(0)}, session._neutral.means,
+        whitener=session._neutral.resident_whitener, label="pole",
+    )
+    session._registry.put_manifold("ray", ray)
+    session._registry.put_manifold("mood", _manifold(layers=(2,)))
+    composer = session._steering_composer
+    assert composer.curved_manifold_terms("0.5 ray%pole + 0.3 mood%n1") == ["mood"]
+    assert composer.curved_manifold_terms("0.5 ray%pole") == []
+    assert composer.curved_manifold_terms(None) == []

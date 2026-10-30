@@ -185,3 +185,21 @@ class TestMergeVector:
         ):
             with pytest.raises(MergeError, match="produced no tensor"):
                 session.bake("x", "0.3 default/a")
+
+    def test_replacing_an_existing_bake_needs_explicit_force(self, session: Any):
+        """C6: ``bake`` used to default to ``force=True`` and silently replace
+        an existing ``local/<name>`` manifold (authored corpora included)."""
+        from drowse.fit.bake import MergeError
+
+        seen: list[Any] = []
+
+        def _merge(*_args: Any, **kwargs: Any) -> Path:
+            seen.append(kwargs["force"])
+            raise MergeError("stop after the forwarded flags")
+
+        with patch("drowse.fit.bake.merge_into_manifold", side_effect=_merge):
+            with pytest.raises(MergeError):
+                session.bake("x", "0.3 default/a")
+            with pytest.raises(MergeError):
+                session.bake("x", "0.3 default/a", force=True)
+        assert seen == [False, True]
