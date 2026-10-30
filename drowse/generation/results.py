@@ -4,10 +4,10 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable
 
-from drowse.readout.types import ProbeReading
-
 if TYPE_CHECKING:
     import torch
+
+    from drowse.readout.types import ProbeReading
 
 
 @dataclass(frozen=True)
