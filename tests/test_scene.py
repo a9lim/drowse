@@ -30,6 +30,7 @@ from tests.test_role_templates import (
     LLAMA_TEMPLATE,
     MISTRAL_TEMPLATE,
     QWEN_TEMPLATE,
+    SMOLLM2_TEMPLATE,
     TALKIE_TEMPLATE,
 )
 
@@ -99,14 +100,32 @@ def _grammar(template: str, model_type: str):
         (GLM_TEMPLATE, "glm"),
         (TALKIE_TEMPLATE, "talkie"),
         (QWEN_STRIP_TEMPLATE, "qwen3"),
+        # A llama-architecture checkpoint whose pinned template renders
+        # ChatML: the autopsy must resolve headers through the same template
+        # override the splice path uses.
+        (SMOLLM2_TEMPLATE, "llama"),
     ],
     ids=["qwen", "gemma", "gemma-strict", "gemma4", "llama", "glm", "talkie",
-         "qwen-strip"],
+         "qwen-strip", "smollm2"],
 )
 def test_round_trip_validation(template: str, model_type: str):
     """The stitcher reproduces the template's bytes on alternating input."""
     tok, grammar = _grammar(template, model_type)
     validate_turn_grammar(grammar, tok)
+
+
+def test_real_smollm2_tokenizer_passes_the_autopsy():
+    """The default GPU test model gets scene mode (its cached tokenizer only)."""
+    transformers = pytest.importorskip("transformers")
+    from tests._gpu_model import DEFAULT_GPU_MODEL_ID
+
+    try:
+        tok = transformers.AutoTokenizer.from_pretrained(
+            DEFAULT_GPU_MODEL_ID, local_files_only=True,
+        )
+    except OSError:
+        pytest.skip(f"{DEFAULT_GPU_MODEL_ID} tokenizer is not cached")
+    validate_turn_grammar(extract_turn_grammar(tok, "llama"), tok)
 
 
 def test_mistral_is_unsupported():

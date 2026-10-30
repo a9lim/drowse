@@ -41,10 +41,9 @@ from typing import Any, Literal
 
 from drowse.errors import DrowseError
 from drowse.model.role_templates import (
-    ROLE_HEADERS,
-    USER_ROLE_HEADERS,
     RoleHeader,
     render_role_label,
+    resolve_seat_headers,
     validate_role,
 )
 
@@ -313,8 +312,9 @@ def extract_turn_grammar(
     policy follows it (a9 convention 3); a template that chokes on the
     embedded markers degrades to ``None`` rather than losing scene mode.
     """
-    asst_header = ROLE_HEADERS.get(model_type)
-    user_header = USER_ROLE_HEADERS.get(model_type)
+    seats = resolve_seat_headers(tokenizer, model_type)
+    asst_header = seats.assistant if seats is not None else None
+    user_header = seats.user if seats is not None else None
     if asst_header is None or user_header is None:
         raise SceneGrammarError(
             f"scene mode is not supported for model_type {model_type!r}: "

@@ -24,13 +24,14 @@ import pytest
 from drowse.errors import DrowseError
 from drowse.model.role_templates import (
     InvalidRoleError,
-    ROLE_HEADERS,
-    USER_ROLE_HEADERS,
+    SEAT_HEADERS,
     RoleHeader,
+    SeatHeaders,
     RoleSubstitutionUnsupportedError,
     RoleTemplateDriftError,
     apply_with_role,
     apply_with_per_turn_roles,
+    resolve_seat_headers,
 )
 
 
@@ -721,41 +722,34 @@ def test_unsupported_error_caught_as_value_error():
 
 
 def test_registry_covers_tested_archs():
-    """Every model_type in model.loading._TESTED_ARCHS has an *exact* registry
-    entry (either a RoleHeader or an explicit None).
+    """Every tested architecture has an *exact* seat-header entry.
 
-    Exact-match, not suffix-stripping: the runtime ``_lookup_header`` does a
-    plain ``model_type not in registry`` lookup with no ``_text``/``_moe``
-    fallback, so a sub-variant only works if it's listed explicitly.  A
-    lenient parent-fallback check here is exactly what once let
-    ``qwen3_5_text``/``qwen3_5_moe`` read as covered while the code raised on
-    them — so the test must mirror the lookup, not paper over it.
+    Exact-match, not suffix-stripping: :func:`resolve_seat_headers` does a
+    plain registry lookup with no ``_text``/``_moe`` fallback, so a
+    sub-variant only works if it's listed explicitly.  Support is per family,
+    not per seat: a label-free template has no label on either side.
     """
-    from drowse.model.loading import _TESTED_ARCHS
+    from drowse.model.arch import TESTED_ARCHS
 
-    missing = [arch for arch in _TESTED_ARCHS if arch not in ROLE_HEADERS]
+    missing = [arch for arch in sorted(TESTED_ARCHS) if arch not in SEAT_HEADERS]
     assert not missing, (
-        f"_TESTED_ARCHS members have no role_templates registry entry "
+        f"tested architectures have no role_templates registry entry "
         f"(runtime lookup is exact — list each variant explicitly): {missing}"
     )
-
-
-def test_seat_views_derive_from_one_registry():
-    """``ROLE_HEADERS`` / ``USER_ROLE_HEADERS`` are views over ``SEAT_HEADERS``.
-
-    The two per-seat tables used to be independent literals — a family edit
-    in two places with nothing enforcing agreement.  They are derived now, so
-    key sets and per-family support cannot drift.
-    """
-    from drowse.model.role_templates import SEAT_HEADERS
-
-    assert set(ROLE_HEADERS) == set(SEAT_HEADERS) == set(USER_ROLE_HEADERS)
-    for model_type, seats in SEAT_HEADERS.items():
-        assert ROLE_HEADERS[model_type] is seats.assistant
-        assert USER_ROLE_HEADERS[model_type] is seats.user
-        # Support is per-family, not per-seat: a label-free template has no
-        # label on either side.
+    for seats in SEAT_HEADERS.values():
         assert (seats.assistant is None) == (seats.user is None)
+
+
+def test_template_override_resolves_both_seats():
+    """The SmolLM2 template override replaces the architecture's headers."""
+    seats = resolve_seat_headers(FakeTokenizer(SMOLLM2_TEMPLATE), "llama")
+    assert seats is not None
+    assert seats.assistant == RoleHeader("<|im_start|>", "\n", "assistant")
+    assert seats.user == RoleHeader("<|im_start|>", "\n", "user")
+    assert resolve_seat_headers(FakeTokenizer(LLAMA_TEMPLATE), "llama") is (
+        SEAT_HEADERS["llama"]
+    )
+    assert resolve_seat_headers(FakeTokenizer(LLAMA_TEMPLATE), "wumpus") is None
 
 
 def test_seat_headers_share_delimiters_except_gpt_oss():
@@ -1024,24 +1018,10 @@ def test_apply_with_user_role_invalid_slug_raises():
         )
 
 
-def test_user_role_registry_covers_tested_archs():
-    """Every ``_TESTED_ARCHS`` member has an *exact* USER_ROLE_HEADERS entry
-    (RoleHeader or explicit None), mirroring the assistant registry — and the
-    runtime lookup, which is exact (no suffix fallback)."""
-    from drowse.model.loading import _TESTED_ARCHS
-
-    missing = [arch for arch in _TESTED_ARCHS if arch not in USER_ROLE_HEADERS]
-    assert not missing, (
-        f"_TESTED_ARCHS members have no USER_ROLE_HEADERS entry "
-        f"(runtime lookup is exact — list each variant explicitly): {missing}"
-    )
-
-
 def test_user_role_registry_opt_outs_match_assistant():
     """The label-free families opt out of *both* sides."""
     for mt in ("mistral3", "ministral3"):
-        assert ROLE_HEADERS[mt] is None
-        assert USER_ROLE_HEADERS[mt] is None
+        assert SEAT_HEADERS[mt] == SeatHeaders(assistant=None, user=None)
 
 
 def test_build_chat_input_user_label_distinct_from_plain():

@@ -167,15 +167,6 @@ def _build_seat_headers() -> dict[str, SeatHeaders]:
 
 SEAT_HEADERS: dict[str, SeatHeaders] = _build_seat_headers()
 
-# Per-seat views over the one registry, kept because they are the lookup shape
-# every call site already speaks (``_lookup_header`` takes a side's table).
-ROLE_HEADERS: dict[str, RoleHeader | None] = {
-    model_type: seats.assistant for model_type, seats in SEAT_HEADERS.items()
-}
-USER_ROLE_HEADERS: dict[str, RoleHeader | None] = {
-    model_type: seats.user for model_type, seats in SEAT_HEADERS.items()
-}
-
 # SmolLM2 is a Llama-architecture checkpoint whose pinned instruction
 # tokenizer renders ChatML headers.  Architecture alone therefore cannot pick
 # the literal splice bytes.  The override is keyed to the exact chat-template
@@ -184,14 +175,29 @@ USER_ROLE_HEADERS: dict[str, RoleHeader | None] = {
 _SMOLLM2_CHAT_TEMPLATE_SHA256 = (
     "872be49dbb638044ad01b60388f48d469ff2980e5f0dccdc22ec907db54d0788"
 )
-_TEMPLATE_HEADER_OVERRIDES: dict[tuple[str, str, str], RoleHeader] = {
-    ("llama", _SMOLLM2_CHAT_TEMPLATE_SHA256, "assistant"): RoleHeader(
-        "<|im_start|>", "\n", "assistant",
-    ),
-    ("llama", _SMOLLM2_CHAT_TEMPLATE_SHA256, "user"): RoleHeader(
-        "<|im_start|>", "\n", "user",
-    ),
+_TEMPLATE_HEADER_OVERRIDES: dict[tuple[str, str], SeatHeaders] = {
+    ("llama", _SMOLLM2_CHAT_TEMPLATE_SHA256): _seat_headers("<|im_start|>", "\n"),
 }
+
+
+def resolve_seat_headers(tokenizer: Any, model_type: str) -> SeatHeaders | None:
+    """The seat headers the *live* chat template emits, or ``None`` if unknown.
+
+    The one resolver every render path uses — the scene autopsy and the
+    render-then-splice fallback alike — so the two can never disagree about a
+    family's header bytes.  Starts from the ``model_type`` registry entry and
+    applies an exact chat-template override when the checkpoint's tokenizer
+    renders a different family's headers than its architecture suggests.
+    ``None`` means the family is absent from the registry; a present family
+    with label-free markers returns ``SeatHeaders(None, None)``.
+    """
+    template = getattr(tokenizer, "chat_template", None)
+    if isinstance(template, str):
+        identity = hashlib.sha256(template.encode("utf-8")).hexdigest()
+        override = _TEMPLATE_HEADER_OVERRIDES.get((model_type, identity))
+        if override is not None:
+            return override
+    return SEAT_HEADERS.get(model_type)
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +219,8 @@ class RoleSubstitutionUnsupportedError(DrowseError, ValueError):
     """Raised when role substitution is requested for a family that doesn't
     support it.
 
-    Two sub-cases share this error: the family is in :data:`ROLE_HEADERS`
-    with value ``None`` (positional, label-free templates like Mistral-3),
+    Two sub-cases share this error: the family's :data:`SEAT_HEADERS` seat
+    is ``None`` (positional, label-free templates like Mistral-3),
     or the family is absent from the registry entirely (unknown or
     unsupported architecture).
     """
@@ -286,16 +292,17 @@ def render_role_label(case_from: str, role: str) -> str:
     return label
 
 
-def _lookup_header(
-    registry: dict[str, RoleHeader | None], model_type: str, *, side: str
+def _require_header(
+    tokenizer: Any, model_type: str, *, side: str,
 ) -> RoleHeader:
-    """Resolve a family's :class:`RoleHeader` or raise an unsupported error."""
-    if model_type not in registry:
+    """Resolve one seat's live :class:`RoleHeader` or raise an unsupported error."""
+    seats = resolve_seat_headers(tokenizer, model_type)
+    if seats is None:
         raise RoleSubstitutionUnsupportedError(
             f"{side}-role substitution is not supported for model_type "
             f"{model_type!r}: family is not in the role-header registry"
         )
-    header = registry[model_type]
+    header = seats.assistant if side == "assistant" else seats.user
     if header is None:
         raise RoleSubstitutionUnsupportedError(
             f"{side}-role substitution is not supported for model_type "
@@ -303,18 +310,6 @@ def _lookup_header(
             f"chat-template markers"
         )
     return header
-
-
-def _template_header(
-    tokenizer: Any, header: RoleHeader, *, model_type: str, side: str,
-) -> RoleHeader:
-    template = getattr(tokenizer, "chat_template", None)
-    if not isinstance(template, str):
-        return header
-    identity = hashlib.sha256(template.encode("utf-8")).hexdigest()
-    return _TEMPLATE_HEADER_OVERRIDES.get(
-        (model_type, identity, side), header,
-    )
 
 
 def _splice_header(
@@ -392,9 +387,8 @@ def apply_with_role(
         ``user_role`` are ``None`` this is a zero-overhead transparent
         pass-through to :meth:`apply_chat_template`.
     model_type:
-        ``model.config.model_type`` — used to look up the family's
-        :class:`RoleHeader` in :data:`ROLE_HEADERS` (assistant) and
-        :data:`USER_ROLE_HEADERS` (user).
+        ``model.config.model_type`` — resolved with the tokenizer's chat
+        template through :func:`resolve_seat_headers`.
     add_generation_prompt:
         Forwarded to ``apply_chat_template``.
     tokenize:
@@ -438,11 +432,11 @@ def apply_with_role(
     assistant_header: RoleHeader | None = None
     if role is not None:
         validate_role(role)
-        assistant_header = _lookup_header(ROLE_HEADERS, model_type, side="assistant")
+        assistant_header = _require_header(tokenizer, model_type, side="assistant")
     user_header: RoleHeader | None = None
     if user_role is not None:
         validate_role(user_role)
-        user_header = _lookup_header(USER_ROLE_HEADERS, model_type, side="user")
+        user_header = _require_header(tokenizer, model_type, side="user")
 
     rendered = tokenizer.apply_chat_template(
         messages,
@@ -461,9 +455,6 @@ def apply_with_role(
 
     spliced = rendered
     if assistant_header is not None and role is not None:
-        assistant_header = _template_header(
-            tokenizer, assistant_header, model_type=model_type, side="assistant",
-        )
         spliced = _splice_header(
             spliced,
             assistant_header,
@@ -473,9 +464,6 @@ def apply_with_role(
             strict=True,
         )
     if user_header is not None and user_role is not None:
-        user_header = _template_header(
-            tokenizer, user_header, model_type=model_type, side="user",
-        )
         spliced = _splice_header(
             spliced,
             user_header,
@@ -632,12 +620,12 @@ def apply_with_per_turn_roles(
         for lbl in user_labels:
             if lbl is not None:
                 validate_role(lbl)
-        user_header = _lookup_header(USER_ROLE_HEADERS, model_type, side="user")
+        user_header = _require_header(tokenizer, model_type, side="user")
     if has_asst:
         for lbl in asst_labels:
             if lbl is not None:
                 validate_role(lbl)
-        asst_header = _lookup_header(ROLE_HEADERS, model_type, side="assistant")
+        asst_header = _require_header(tokenizer, model_type, side="assistant")
 
     rendered = tokenizer.apply_chat_template(
         clean,
@@ -653,19 +641,9 @@ def apply_with_per_turn_roles(
 
     sides: list[tuple[RoleHeader, list[str | None]]] = []
     if user_header is not None:
-        sides.append((
-            _template_header(
-                tokenizer, user_header, model_type=model_type, side="user",
-            ),
-            user_labels,
-        ))
+        sides.append((user_header, user_labels))
     if asst_header is not None:
-        sides.append((
-            _template_header(
-                tokenizer, asst_header, model_type=model_type, side="assistant",
-            ),
-            asst_labels,
-        ))
+        sides.append((asst_header, asst_labels))
     rendered = _splice_occurrences(rendered, sides)
 
     if not tokenize:
