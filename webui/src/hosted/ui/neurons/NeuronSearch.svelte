@@ -5,8 +5,10 @@
 
   interface Result { layer: number; neuron: number; side: 0 | 1; title: string; matched: string; score: number }
 
-  let { index, onopen, onmatches, examples = [] }: {
+  let { index, onopen, onmatches, examples = [], anyNeuron = false }: {
     index: CatalogIndex | null;
+    /** With every neuron available, an ID opens any neuron, not just the easiest. */
+    anyNeuron?: boolean;
     onopen: (layer: number, neuron: number, pole: 1 | -1) => void;
     /** Every matching neuron, as "layer:neuron" keys, so the ribbon can light them up. */
     onmatches: (keys: Set<string>, query: string) => void;
@@ -38,7 +40,8 @@
     const ref = parseNeuronRef(trimmed);
     if (ref) {
       const row = index.neurons.find((r) => r[0] === ref[0] && r[1] === ref[1]);
-      results = row ? [{ layer: row[0], neuron: row[1], side: 0, title: row[2], matched: "", score: 1 }] : [];
+      results = row ? [{ layer: row[0], neuron: row[1], side: 0, title: row[2], matched: "", score: 1 }]
+        : anyNeuron ? [{ layer: ref[0], neuron: ref[1], side: 0, title: "Open this neuron", matched: "", score: 1 }] : [];
       total = results.length;
       onmatches(new Set(results.map((r) => `${r.layer}:${r.neuron}`)), trimmed);
       active = results.length ? 0 : -1;
@@ -131,7 +134,7 @@
     !query.trim() ? ""
     : searchFailed ? "Unable to load search. Check your connection and try again."
     : loading ? "Loading search…"
-    : !results.length ? `No neurons match “${query.trim()}”. Try another word, or an ID like L8 344.`
+    : !results.length ? `No neurons match “${query.trim()}”. Try another word or an ID like L8 344.`
     : total === 1 ? "1 neuron matches."
     : `${total} neurons match. Showing the top ${results.length}.`,
   );
@@ -150,7 +153,7 @@
       aria-expanded={open && results.length > 0}
       aria-controls="neuron-results"
       aria-activedescendant={open && active >= 0 ? `neuron-result-${active}` : undefined}
-      placeholder="owl, 圣经, or L8 344"
+      placeholder="Search a word or an ID like L8 344"
       autocomplete="off"
       spellcheck="false"
       oninput={changed}

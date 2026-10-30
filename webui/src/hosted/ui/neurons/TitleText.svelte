@@ -16,7 +16,9 @@
 
 <style>
   .title-text { overflow-wrap: anywhere; }
+  /* Inline so a long translated part wraps with the title instead of overflowing its box. */
+  .title-text :global(.morph-text) { display: inline; }
   .sep { color: var(--fg-muted); }
   .translated { color: var(--neuron-translated-ink, var(--accent-amber)); font-style: italic; }
-  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .sr-only { position: absolute; inset-inline-start: 0; top: 0; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 </style>

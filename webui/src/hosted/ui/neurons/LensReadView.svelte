@@ -3,10 +3,12 @@
   import Token from "./Token.svelte";
   import { LENSES, type LensRead } from "./data";
 
-  let { read, twinOf }: {
+  let { read, twinOf, compact = false }: {
     read: LensRead;
     /** The read whose twin this is, when only extra tokens are listed. */
     twinOf?: string;
+    /** The main view: the strongest tokens large, the rest behind "more", and strength as a word. */
+    compact?: boolean;
   } = $props();
 
   const info = $derived(LENSES[read.col]);
@@ -15,6 +17,8 @@
   const deep = $derived(read.tokens.filter((token) => token[2] >= 24));
   // Strength is a percentile of the layer's poles: under about the 20th it is usually the noise floor.
   const strength = $derived(read.pct >= 90 ? "strong" : read.pct >= 60 ? "clear" : read.pct >= 20 ? "faint" : "noise");
+  const strengthWord = $derived({ strong: "Strong signal", clear: "Clear signal", faint: "Faint signal", noise: "Mostly noise" }[strength]);
+  const hidden = $derived(compact ? [...middle, ...deep] : deep);
   let open = $state(false);
   const ordinal = new Intl.PluralRules("en", { type: "ordinal" });
   const suffixes: Record<string, string> = { one: "st", two: "nd", few: "rd", other: "th" };
@@ -24,27 +28,31 @@
 <div class={`read ${read.trust}`}>
   <div class="read-head">
     <span class="lens">{info.short}</span>
-    <span class="name">{read.twin && twinOf ? `${info.short} adds` : info.name}</span>
-    <span class="meter" role="img" aria-label={`Strength: ${read.pct}${suffix} percentile of the layer`}>
+    {#if !compact}<span class="name">{read.twin && twinOf ? `${info.short} adds` : info.name}</span>{/if}
+    <span class="meter" role="img" aria-label={`${strengthWord}: ${read.pct}${suffix} percentile of the layer`}>
       <span class="bar"><span class="fill" style:--v={Math.max(read.pct, 3) / 100}></span></span>
-      <span class={`strength ${strength}`}><MorphText text={read.pct} duration={300} /><span class="th">{suffix}</span></span>
+      {#if compact}
+        <span class={`strength word ${strength}`}><MorphText text={strengthWord} numbers={false} duration={260} /></span>
+      {:else}
+        <span class={`strength ${strength}`}><MorphText text={read.pct} duration={300} /><span class="th">{suffix}</span></span>
+      {/if}
     </span>
   </div>
   {#if read.tokens.length === 0}
     <p class="empty">{read.twin ? `Nothing beyond ${twinOf ?? "the read above"}` : "Only common tokens"}</p>
   {:else}
     {#if top.length}
-      <div class="tier tier-top">{#each top as [token, count, , flags]}<Token {token} {count} {flags} size={read.trust === "primary" ? "lg" : "md"} />{/each}</div>
+      <div class="tier tier-top">{#each top as [token, count, , flags]}<Token {token} {count} {flags} size={compact || read.trust === "primary" ? "lg" : "md"} />{/each}</div>
     {/if}
-    {#if middle.length}
+    {#if middle.length && !compact}
       <div class="tier">{#each middle as [token, count, , flags]}<Token {token} {count} {flags} size="sm" />{/each}</div>
     {/if}
-    {#if deep.length}
+    {#if hidden.length}
       {#if open}
-        <div class="tier deep">{#each deep as [token, count, , flags]}<Token {token} {count} {flags} size="sm" />{/each}</div>
+        <div class="tier deep">{#each hidden as [token, count, , flags]}<Token {token} {count} {flags} size="sm" />{/each}</div>
       {/if}
       <button type="button" class="more" aria-expanded={open} onclick={() => (open = !open)}>
-        {open ? "Show fewer" : `${deep.length} more`}
+        {open ? "Show fewer" : `${hidden.length} more`}
       </button>
     {/if}
   {/if}
@@ -68,6 +76,9 @@
   .strength.strong { color: var(--fg); }
   .strength.noise { color: var(--fg-muted); }
   .th { font-size: var(--text-2xs); }
+  .strength.word { min-width: 0; font-family: var(--font-reading); }
+  .tier-top { animation: tier-in 360ms var(--ease-enter) backwards; }
+  @keyframes tier-in { from { opacity: 0; translate: 0 4px; } }
   .tier { display: flex; flex-wrap: wrap; gap: var(--space-1); min-width: 0; }
   .tier-top { gap: var(--space-1); }
   .deep { animation: reveal var(--dur-slow) var(--ease-enter) backwards; }
@@ -81,5 +92,5 @@
   .more::after { content: ""; position: absolute; inset: calc(var(--space-xs) * -0.5) 0; }
   .more:hover { background: var(--bg-hover); color: var(--fg); }
   .more:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-  @media (prefers-reduced-motion: reduce) { .deep { animation: none; } .fill { transition: none; } .more { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .deep, .tier-top { animation: none; } .fill { transition: none; } .more { transition: none; } }
 </style>

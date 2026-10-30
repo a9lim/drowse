@@ -63,15 +63,14 @@
     font-size: var(--text-xs);
     line-height: 1.4;
     white-space: pre;
-    overflow: hidden;
-    text-overflow: ellipsis;
     transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
   }
   .tok.lg { min-height: 26px; font-size: var(--text-sm); }
   .tok.sm { min-height: 20px; font-size: var(--text-xs); color: var(--fg-dim); }
   .tok.zh { border: 0; font-family: var(--font-reading); cursor: help; }
   .tok.zh:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-  .text { overflow: hidden; text-overflow: ellipsis; }
+  /* Long tokens (runs of punctuation, URLs) wrap inside the chip rather than being cut off. */
+  .text { white-space: pre-wrap; overflow-wrap: anywhere; }
   .mark { color: var(--fg-muted); }
   .mark:empty { display: none; }
   .byte { color: var(--fg-muted); background: transparent; box-shadow: none; outline: 1px dashed var(--glass-line); outline-offset: -1px; }

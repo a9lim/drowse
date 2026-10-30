@@ -1,8 +1,12 @@
 <script lang="ts">
   import { BANDS, BAND_ORDER, bandOf, depthColor, neuronId, type CatalogIndex, type IndexRow } from "./data";
 
-  let { index, layer, neuron, highlight, onlayer, onneuron }: {
+  let { index, layer, neuron, highlight, onlayer, onneuron, scores = null, peek }: {
     index: CatalogIndex | null;
+    /** All mode: a neuron's row if its layer's index has loaded (asking loads it). */
+    peek?: (layer: number, neuron: number) => IndexRow | null;
+    /** With the "All" toggle on: each layer's 12,288 readability bytes, drawn as a texture instead of dots. */
+    scores?: Uint8Array[] | null;
     layer: number;
     neuron: number | null;
     /** "layer:neuron" keys to light up, such as search matches. */
@@ -11,10 +15,9 @@
     onneuron: (layer: number, neuron: number) => void;
   } = $props();
 
-  const COL = 28;
-  const DOT = 3.4;
-  const TOP = 14;
-  const PROFILE = 30;
+  const COL = 32;
+  const GAP = 10;
+  const TOP = 20;
   const W = COL * 36;
 
   const columns = $derived.by(() => {
@@ -24,8 +27,8 @@
     return byLayer;
   });
   const ROWS = $derived(Math.max(40, ...columns.map((rows) => rows.length)));
-  const PLOT = $derived(TOP + ROWS * DOT + 6);
-  const H = $derived(PLOT + PROFILE + 62);
+  const PLOT = $derived(TOP + ROWS * GAP);
+  const H = $derived(PLOT + 64);
   // Dots are sized and lit by their score's rank across the whole catalog, so the clearest stand out.
   const rankOf = $derived.by(() => {
     const scores = (index?.neurons ?? []).map((row) => row[4]).sort((a, b) => a - b);
@@ -35,43 +38,117 @@
       return scores.length ? lo / scores.length : 0;
     };
   });
-  // Share of the layer's poles that a weight-only lens reads, or that fire on one token.
-  const readable = $derived(Array.from({ length: 36 }, (_, L) => {
-    const stats = index?.layerMeta.find((meta) => meta.layer === L)?.stats;
-    return stats ? Math.min(1, stats.legible + stats.detector) : 0;
-  }));
-  const readableMax = $derived(Math.max(0.01, ...readable));
-  const missing = $derived(new Set((index?.layerMeta ?? []).filter((meta) => meta.missing).map((meta) => meta.layer)));
   const bands = $derived(BAND_ORDER.map((band) => {
     const layers = Array.from({ length: 36 }, (_, L) => L).filter((L) => bandOf(L) === band);
     return { band, from: layers[0], to: layers[layers.length - 1] };
   }));
 
+  // ---------- all-neurons texture: each column is a 24 × 512 grid, one cell per neuron in index order,
+  // so a cell's position is its neuron number and the easiest neurons show as bright points.
+  const GRID_W = 24;
+  const GRID_H = 512;
+  const everyNeuron = $derived(!!scores);
+  const order = $derived(scores ? scores.map((layerScores) => Array.from({ length: layerScores.length }, (_, n) => n)) : null);
+  let texture = $state("");
+  let themeTick = $state(0);
+
+  function channels(hex: string): [number, number, number] {
+    const value = hex.trim().replace("#", "");
+    const n = parseInt(value.length === 3 ? value.split("").map((c) => c + c).join("") : value, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  $effect(() => {
+    void themeTick;
+    if (!scores || !order) { texture = ""; return; }
+    const style = getComputedStyle(document.documentElement);
+    const deep = channels(style.getPropertyValue("--neuron-deep"));
+    const late = channels(style.getPropertyValue("--neuron-late"));
+    const canvas = document.createElement("canvas");
+    canvas.width = W;
+    canvas.height = GRID_H;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const image = ctx.createImageData(W, GRID_H);
+    for (let L = 0; L < 36; L += 1) {
+      const t = L / 35;
+      const color = deep.map((c, i) => Math.round(c + (late[i] - c) * t));
+      const x0 = L * COL + (COL - GRID_W) / 2;
+      const layerOrder = order[L];
+      const layerScores = scores[L];
+      for (let rank = 0; rank < layerOrder.length; rank += 1) {
+        const x = x0 + (rank % GRID_W);
+        const y = Math.floor(rank / GRID_W);
+        // Four brightness steps keep the cells crisp rather than a smooth wash.
+        const v = Math.round((layerScores[layerOrder[rank]] / 255) * 4) / 4;
+        const at = (y * W + x) * 4;
+        image.data[at] = color[0];
+        image.data[at + 1] = color[1];
+        image.data[at + 2] = color[2];
+        image.data[at + 3] = Math.round(255 * (0.1 + 0.9 * v ** 1.6));
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+    texture = canvas.toDataURL("image/png");
+  });
+
+  // Redraw the texture when the theme changes, since the depth colours differ per theme.
+  $effect(() => {
+    const observer = new MutationObserver(() => (themeTick += 1));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  });
+
+  function cellOf(L: number, n: number): { x: number; y: number } | null {
+    if (!order) return null;
+    const rank = n;
+    if (rank < 0 || rank >= order[L].length) return null;
+    return { x: L * COL + (COL - GRID_W) / 2 + (rank % GRID_W) + 0.5, y: TOP + ((Math.floor(rank / GRID_W) + 0.5) / GRID_H) * (ROWS * GAP) };
+  }
+  const selectedCell = $derived(everyNeuron && neuron !== null ? cellOf(layer, neuron) : null);
+  let hoverNeuron = $state<number | null>(null);
+
   let svg: SVGSVGElement | undefined = $state();
-  let drawn = $state(1008);
-  // The viewBox scales with the pane; scale the labels back so they stay 10–11px on screen.
+  let scroller: HTMLDivElement | undefined = $state();
+  let drawn = $state(W);
+  // The viewBox scales with the drawn width; scale labels back so they keep a fixed on-screen size.
   const k = $derived(W / Math.max(drawn, 1));
-  let hover = $state<{ layer: number; row: IndexRow | null; x: number; y: number } | null>(null);
+  let hover = $state<{ layer: number; row: IndexRow | null; x: number; y: number; flip: boolean } | null>(null);
   let dragging = $state(false);
   let moved = false;
 
-  function locate(event: PointerEvent): { layer: number; row: IndexRow | null; x: number; y: number } | null {
-    if (!svg) return null;
+  // Fisheye: the hovered column and its neighbours grow, so dots are easy to aim at.
+  function lift(L: number): number {
+    if (!hover) return 1;
+    const d = L - hover.layer;
+    return 1 + 0.75 * Math.exp(-(d * d) / 2.2);
+  }
+
+  function locate(event: PointerEvent) {
+    if (!svg || !scroller) return null;
     const box = svg.getBoundingClientRect();
     const x = ((event.clientX - box.left) / box.width) * W;
     const y = ((event.clientY - box.top) / box.height) * H;
     const L = Math.max(0, Math.min(35, Math.floor(x / COL)));
-    const slot = Math.round((y - TOP - DOT / 2) / DOT);
+    const slot = Math.round((y - TOP - GAP / 2) / GAP);
     const rows = columns[L];
-    // Pointer targets are generous: the nearest dot within two rows counts.
     let row: IndexRow | null = null;
-    if (y < PLOT && rows.length) {
+    if (y < PLOT + GAP && rows.length) {
       const clamped = Math.max(0, Math.min(rows.length - 1, slot));
-      if (Math.abs(clamped - slot) <= 2) row = rows[clamped];
+      if (Math.abs(clamped - slot) <= 1) row = rows[clamped];
     }
-    // The tooltip is up to 18rem (288px) wide; keep it inside the ribbon.
-    const left = Math.max(0, Math.min(box.width - 288, event.clientX - box.left - 144));
-    return { layer: L, row, x: left, y: event.clientY - box.top };
+    if (order) {
+      row = null;
+      const cx = Math.floor(x - (L * COL + (COL - GRID_W) / 2));
+      const cy = Math.floor(((y - TOP) / (ROWS * GAP)) * GRID_H);
+      const rank = cx >= 0 && cx < GRID_W && cy >= 0 && cy < GRID_H ? cy * GRID_W + cx : -1;
+      hoverNeuron = rank >= 0 && rank < order[L].length ? order[L][rank] : null;
+    }
+    const outer = scroller.getBoundingClientRect();
+    const px = event.clientX - outer.left;
+    // The tip is centred on the pointer; keep it inside the panel, which clips anything outside.
+    const py = Math.max(90, Math.min(outer.height - 90, event.clientY - outer.top));
+    return { layer: L, row, x: px, y: py, flip: px > outer.width - 300 };
   }
 
   function move(event: PointerEvent) {
@@ -87,7 +164,7 @@
     if (event.button !== 0) return;
     dragging = true;
     moved = false;
-    svg?.setPointerCapture(event.pointerId);
+    if (event.pointerType === "mouse") svg?.setPointerCapture(event.pointerId);
     move(event);
   }
 
@@ -96,7 +173,8 @@
     dragging = false;
     const spot = locate(event);
     if (!spot) return;
-    if (!moved && spot.row) onneuron(spot.row[0], spot.row[1]);
+    if (!moved && order && hoverNeuron !== null) onneuron(spot.layer, hoverNeuron);
+    else if (!moved && spot.row) onneuron(spot.row[0], spot.row[1]);
     else onlayer(spot.layer, true);
     if (event.pointerType !== "mouse") hover = null;
   }
@@ -113,153 +191,188 @@
     onlayer(Math.max(0, Math.min(35, next)), true);
   }
 
-  const valueText = $derived(`Layer ${layer}, ${BANDS[bandOf(layer)].name}, ${columns[layer]?.length ?? 0} neurons shown`);
+  // On narrow screens the explorer scrolls sideways; keep the selected layer in view.
+  $effect(() => {
+    void layer;
+    if (!scroller || scroller.scrollWidth <= scroller.clientWidth + 1) return;
+    const colWidth = scroller.scrollWidth / 36;
+    const target = layer * colWidth - scroller.clientWidth / 2 + colWidth / 2;
+    scroller.scrollTo({ left: target, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  });
+
+  const valueText = $derived(`Layer ${layer}, ${BANDS[bandOf(layer)].name}, ${columns[layer]?.length ?? 0} neurons`);
   const tipRow = $derived(hover?.row ?? null);
+  const peeked = $derived(everyNeuron && hoverNeuron !== null && hover ? peek?.(hover.layer, hoverNeuron) ?? null : tipRow);
+  const selectedSlot = $derived(neuron === null ? -1 : columns[layer]?.findIndex((row) => row[1] === neuron) ?? -1);
 </script>
 
-<div class="ribbon" bind:clientWidth={drawn} class:ready={!!index} class:scrubbing={dragging}>
-  <svg
-    bind:this={svg}
-    viewBox={`0 0 ${W} ${H}`}
-    role="slider"
-    tabindex="0"
-    aria-label="Layer"
-    aria-valuemin={0}
-    aria-valuemax={35}
-    aria-valuenow={layer}
-    aria-valuetext={valueText}
-    aria-describedby="ribbon-help"
-    onpointermove={move}
-    onpointerdown={down}
-    onpointerup={up}
-    onpointercancel={() => { dragging = false; hover = null; }}
-    onpointerleave={() => { if (!dragging) hover = null; }}
-    onkeydown={key}
-  >
-    <defs>
-      <pattern id="ribbon-field" width="3.4" height="3.4" patternUnits="userSpaceOnUse"><circle cx="1.7" cy="1.7" r="0.45" class="field-dot" /></pattern>
-      <pattern id="ribbon-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" class="hatch" /></pattern>
-    </defs>
-
-    <rect x="0" y={TOP - 4} width={W} height={ROWS * DOT + 8} fill="url(#ribbon-field)" class="field" />
-    <rect class="lens" x={layer * COL + 2} y={TOP - 8} width={COL - 4} height={ROWS * DOT + 16} rx="8" style:--c={depthColor(layer)} />
-    {#if hover && hover.layer !== layer}
-      <rect class="hover-col" x={hover.layer * COL + 2} y={TOP - 8} width={COL - 4} height={ROWS * DOT + 16} rx="8" />
-    {/if}
-
-    {#each columns as rows, L}
-      <g class="col" class:active={L === layer} style:--c={depthColor(L)} style:--L={L}>
-        {#if missing.has(L)}
-          <rect x={L * COL + 6} y={TOP} width={COL - 12} height={ROWS * DOT} rx="4" fill="url(#ribbon-hatch)" />
-        {/if}
-        {#each rows as row, slot (row[1])}
-          {@const key = `${L}:${row[1]}`}
-          {@const rank = rankOf(row[4])}
-          {@const r = 0.9 + 0.9 * rank * rank}
-          <circle
-            class="dot"
-            class:lit={highlight.has(key)}
-            class:dim={highlight.size > 0 && !highlight.has(key)}
-            class:selected={neuron === row[1] && L === layer}
-            class:labelled={(row[5] & 1) !== 0}
-            cx={L * COL + COL / 2}
-            cy={TOP + slot * DOT + DOT / 2}
-            {r}
-            style:--slot={slot}
-            style:--o={0.28 + 0.6 * rank}
-          />
-        {/each}
-      </g>
-    {/each}
-
-    <g class="profile">
-      <text class="profile-label" x="2" y={PLOT + 10} font-size={10 * k}>Readable by the lenses</text>
-      {#each readable as share, L}
-        {@const h = Math.max(1.5, (share / readableMax) * (PROFILE - 12))}
-        <rect class="bar" class:active={L === layer} x={L * COL + 8} y={PLOT + PROFILE - h} width={COL - 16} height={h} rx="2" style:--c={depthColor(L)}></rect>
+<div class="ribbon" class:ready={!!index} class:scrubbing={dragging} class:hovering={!!hover}>
+  <div class="scroller" bind:this={scroller}>
+    <svg
+      bind:this={svg}
+      bind:clientWidth={drawn}
+      viewBox={`0 0 ${W} ${H}`}
+      role="slider"
+      tabindex="0"
+      aria-label="Layer"
+      aria-valuemin={0}
+      aria-valuemax={35}
+      aria-valuenow={layer}
+      aria-valuetext={valueText}
+      aria-describedby="ribbon-help"
+      onpointermove={move}
+      onpointerdown={down}
+      onpointerup={up}
+      onpointercancel={() => { dragging = false; hover = null; }}
+      onpointerleave={() => { if (!dragging) hover = null; }}
+      onkeydown={key}
+    >
+      {#each Array.from({ length: 36 }, (_, L) => L) as L}
+        <rect class="col-bg" class:active={L === layer} class:hot={hover?.layer === L && L !== layer} x={L * COL + 3} y={TOP - 12} width={COL - 6} height={ROWS * GAP + 16} rx="10" style:--c={depthColor(L)} />
       {/each}
-    </g>
-    {#each Array.from({ length: 36 }, (_, L) => L) as L}
-      <text class="layer-num" class:active={L === layer} class:minor={L % 4 !== 0 && L !== 35} x={L * COL + COL / 2} y={PLOT + PROFILE + 16} font-size={10 * k}>{L}</text>
-    {/each}
-    {#each bands as b}
-      <g class="band" class:active={bandOf(layer) === b.band}>
-        <line x1={b.from * COL + 4} x2={(b.to + 1) * COL - 4} y1={PLOT + PROFILE + 28} y2={PLOT + PROFILE + 28} />
-        <text x={((b.from + b.to + 1) * COL) / 2} y={PLOT + PROFILE + 46} font-size={11 * k}>{b.to - b.from >= 2 ? BANDS[b.band].name.replace(" layers", "") : BANDS[b.band].range}</text>
-      </g>
-    {/each}
-  </svg>
 
-  {#if hover}
-    <div class="tip" style:--x={`${hover.x}px`} style:--y={`${hover.y}px`} aria-hidden="true">
-      <strong>{tipRow ? neuronId(tipRow[0], tipRow[1]) : `Layer ${hover.layer}`}</strong>
-      {#if tipRow}
-        <span><b>+</b> {tipRow[2] || "unclear"}</span>
-        <span><b>−</b> {tipRow[3] || "unclear"}</span>
-      {:else}
-        <span>{BANDS[bandOf(hover.layer)].name} · {columns[hover.layer]?.length ?? 0} shown</span>
+      {#if index}<rect class="scan" x="0" y={TOP - 12} width="6" height={ROWS * GAP + 16} rx="3" />{/if}
+
+      {#if everyNeuron && texture}
+        <image class="texture" href={texture} x="0" y={TOP} width={W} height={ROWS * GAP} preserveAspectRatio="none" />
+        {#if selectedCell}
+          {#key `${layer}:${neuron}`}<circle class="ripple" cx={selectedCell.x} cy={selectedCell.y} r="6" style:--c={depthColor(layer)} />{/key}
+          <circle class="cell-ring" cx={selectedCell.x} cy={selectedCell.y} r="4" />
+        {/if}
       {/if}
-    </div>
-  {/if}
+
+      {#each everyNeuron ? [] : columns as rows, L}
+        <g class="col" class:active={L === layer} style:--c={depthColor(L)} style:--L={L} style:--s={lift(L)}>
+          {#each rows as row, slot (row[1])}
+            {@const key = `${L}:${row[1]}`}
+            {@const rank = rankOf(row[4])}
+            <circle
+              class="dot"
+              class:lit={highlight.has(key)}
+              class:dim={highlight.size > 0 && !highlight.has(key)}
+              class:selected={neuron === row[1] && L === layer}
+              class:labelled={(row[5] & 1) !== 0}
+              class:pointed={tipRow === row}
+              cx={L * COL + COL / 2}
+              cy={TOP + slot * GAP + GAP / 2}
+              r={1.8 + 2 * rank}
+              style:--slot={slot}
+              style:--o={0.35 + 0.65 * rank}
+            />
+          {/each}
+        </g>
+      {/each}
+
+      {#if selectedSlot >= 0 && !everyNeuron}
+        {#key `${layer}:${neuron}`}
+          <circle class="ripple" cx={layer * COL + COL / 2} cy={TOP + selectedSlot * GAP + GAP / 2} r="6" style:--c={depthColor(layer)} />
+        {/key}
+      {/if}
+
+      {#each Array.from({ length: 36 }, (_, L) => L) as L}
+        <text class="layer-num" class:active={L === layer} x={L * COL + COL / 2} y={PLOT + 18} font-size={11 * Math.min(k, 1.25)}>{L}</text>
+      {/each}
+      {#each bands as b}
+        <g class="band" class:active={bandOf(layer) === b.band}>
+          <line x1={b.from * COL + 6} x2={(b.to + 1) * COL - 6} y1={PLOT + 32} y2={PLOT + 32} />
+          <text x={((b.from + b.to + 1) * COL) / 2} y={PLOT + 52} font-size={12 * Math.min(k, 1.25)}>{b.to - b.from >= 2 ? BANDS[b.band].name.replace(" layers", "") : BANDS[b.band].range}</text>
+        </g>
+      {/each}
+    </svg>
+
+    {#if hover}
+      <div class="tip" class:flip={hover.flip} style:--x={`${hover.x}px`} style:--y={`${hover.y}px`} aria-hidden="true">
+        {#if everyNeuron && hoverNeuron !== null}
+          <strong>{neuronId(hover.layer, hoverNeuron)}</strong>
+          {#if peeked?.[6] || peeked?.[7]}
+            <span class="tip-over"><em>Triggered by:</em>{peeked[6] || "unclear"}</span>
+            <span class="tip-over"><em>Steers outputs:</em>{peeked[7] || "unclear"}</span>
+          {:else}
+            <span class="tip-line">{BANDS[bandOf(hover.layer)].name}</span>
+          {/if}
+          <span class="tip-hint">Click to open</span>
+        {:else if tipRow}
+          <strong>{neuronId(tipRow[0], tipRow[1])}</strong>
+          <span class="tip-over"><em>Triggered by:</em>{tipRow[6] || "unclear"}</span>
+          <span class="tip-over"><em>Steers outputs:</em>{tipRow[7] || "unclear"}</span>
+          <span class="tip-hint">Click to open</span>
+        {:else}
+          <strong>Layer {hover.layer}</strong>
+          <span class="tip-line">{BANDS[bandOf(hover.layer)].name}</span>
+        {/if}
+      </div>
+    {/if}
+  </div>
   <p id="ribbon-help" class="sr-only">Use the arrow keys to change layer and Enter to open its clearest neuron.</p>
 </div>
 
 <style>
-  .ribbon { position: relative; display: grid; gap: var(--space-3); min-width: 0; user-select: none; -webkit-user-select: none; }
-  svg { display: block; width: 100%; height: auto; overflow: visible; cursor: pointer; touch-action: pan-y; border-radius: var(--radius-lg); }
-  svg:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 6px; }
-  .field-dot { fill: var(--fg-muted); opacity: 0.22; }
-  .hatch { stroke: var(--grid-line); stroke-width: 2; }
-  .lens {
-    fill: color-mix(in oklch, var(--c) 16%, transparent);
-    stroke: color-mix(in oklch, var(--c) 55%, transparent);
-    stroke-width: 1;
-    transform-box: fill-box;
-    transition: x var(--dur-fast) var(--ease-out), fill var(--dur) var(--ease-out), stroke var(--dur) var(--ease-out);
+  .ribbon { position: relative; min-width: 0; user-select: none; -webkit-user-select: none; }
+  .scroller { position: relative; overflow-x: auto; overflow-y: visible; scrollbar-width: thin; overscroll-behavior-inline: contain; }
+  svg { display: block; width: 100%; min-width: 56rem; height: auto; overflow: visible; cursor: pointer; touch-action: pan-x pan-y; border-radius: var(--radius-lg); }
+  svg:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; }
+
+  .col-bg { fill: transparent; transition: fill var(--dur) var(--ease-out); }
+  .col-bg.hot { fill: var(--bg-hover); }
+  .col-bg.active { fill: color-mix(in oklch, var(--c) 14%, transparent); stroke: color-mix(in oklch, var(--c) 50%, transparent); stroke-width: 1; }
+
+  .scan { fill: var(--neuron-tint); opacity: 0; pointer-events: none; }
+  .ready .scan { animation: scan 1.3s cubic-bezier(0.45, 0, 0.2, 1) backwards; }
+  @keyframes scan {
+    0% { opacity: 0.9; transform: translateX(0); }
+    90% { opacity: 0.9; }
+    100% { opacity: 0; transform: translateX(1146px); }
   }
-  .scrubbing .lens { transition: none; }
-  .hover-col { fill: var(--bg-hover); pointer-events: none; }
+
   .dot {
     fill: var(--c);
     opacity: var(--o, 0.6);
     transform-box: fill-box;
     transform-origin: center;
-    transition: opacity var(--dur) var(--ease-out), r var(--dur) var(--ease-out);
+    scale: var(--s, 1);
+    transition: scale 180ms var(--ease-out), opacity var(--dur) var(--ease-out);
   }
-  .ready .dot { animation: dot-in 520ms var(--ease-enter) backwards; animation-delay: calc(var(--L) * 16ms + var(--slot) * 4ms); }
-  @keyframes dot-in { from { opacity: 0; transform: scale(0.2); } }
-  .col.active .dot { opacity: calc(var(--o, 0.6) + 0.3); }
-  .bar { fill: color-mix(in oklch, var(--c) 45%, transparent); transition: fill var(--dur) var(--ease-out); }
-  .bar.active { fill: var(--c); }
-  .profile-label { fill: var(--fg-muted); font-family: var(--font-reading); }
-  .dot.labelled { stroke: var(--fg); stroke-width: 0.7; stroke-opacity: 0.6; }
-  .dot.dim { opacity: 0.16; }
-  .dot.lit { opacity: 1; r: 2.2; }
-  .dot.selected { opacity: 1; r: 2.4; stroke: var(--fg); stroke-width: 1.4; stroke-opacity: 1; }
+  .ready .dot { animation: dot-in 600ms var(--ease-enter) backwards; animation-delay: calc(var(--L) * 32ms + var(--slot) * 3ms); }
+  @keyframes dot-in { from { opacity: 0; scale: 0; } }
+  .col.active .dot { opacity: 1; }
+  .dot.labelled { stroke: var(--fg); stroke-width: 1; stroke-opacity: 0.55; }
+  .dot.dim { opacity: 0.14; }
+  .dot.lit { opacity: 1; scale: 1.6; }
+  .dot.pointed { scale: 2.1; opacity: 1; }
+  .dot.selected { opacity: 1; stroke: var(--fg); stroke-width: 1.6; stroke-opacity: 1; scale: 1.7; }
+  .texture { image-rendering: pixelated; animation: texture-in 900ms var(--ease-enter) backwards; }
+  @keyframes texture-in { from { opacity: 0; clip-path: inset(0 100% 0 0); } }
+  .cell-ring { fill: none; stroke: var(--fg); stroke-width: 1.5; pointer-events: none; }
+  .ripple { fill: none; stroke: var(--c); stroke-width: 2; opacity: 0; pointer-events: none; transform-box: fill-box; transform-origin: center; animation: ripple 900ms var(--ease-out); }
+  @keyframes ripple { from { opacity: 0.9; scale: 0.6; } to { opacity: 0; scale: 3.2; } }
+
   .layer-num { fill: var(--fg-muted); font-family: var(--font-mono); text-anchor: middle; font-variant-numeric: tabular-nums; transition: fill var(--dur-fast) var(--ease-out); }
   .layer-num.active { fill: var(--fg); font-weight: var(--weight-data-bold); }
-  .band line { stroke: var(--grid-line); stroke-width: 2; stroke-linecap: round; transition: stroke var(--dur) var(--ease-out); }
+  .band line { stroke: var(--grid-line); stroke-width: 3; stroke-linecap: round; transition: stroke var(--dur) var(--ease-out); }
   .band text { fill: var(--fg-muted); font-family: var(--font-reading); text-anchor: middle; transition: fill var(--dur) var(--ease-out); }
   .band.active line { stroke: var(--neuron-tint); }
   .band.active text { fill: var(--fg); }
+
   .tip {
-    position: absolute; left: 0; top: 0; z-index: 3; transition: transform 90ms var(--ease-out); display: grid; gap: 0; width: max-content; max-width: min(18rem, 80vw);
+    position: absolute; left: 0; top: 0; z-index: 3; display: grid; gap: var(--space-1); width: max-content; max-width: 18rem;
     padding: var(--space-3) var(--space-4); border-radius: var(--radius); background: var(--bg-elev); box-shadow: var(--shadow-card);
-    color: var(--fg-dim); font-size: var(--text-xs); line-height: 1.45; pointer-events: none;
-    transform: translate(var(--x), calc(var(--y) - 100% - 14px));
+    color: var(--fg-dim); font-size: var(--text-sm); line-height: 1.4; pointer-events: none;
+    transform: translate(calc(var(--x) + 16px), calc(var(--y) - 50%));
+    animation: tip-in 140ms var(--ease-out) backwards;
   }
-  .tip strong { color: var(--fg); font-family: var(--font-mono); font-size: var(--text-sm); }
-  .tip b { color: var(--fg-muted); }
+  .tip.flip { transform: translate(calc(var(--x) - 100% - 16px), calc(var(--y) - 50%)); }
+  @keyframes tip-in { from { opacity: 0; } }
+  .tip strong { color: var(--fg); font-family: var(--font-mono); font-size: var(--text-md); }
+  .tip-line { display: flex; gap: var(--space-2); }
+  .tip-over { display: grid; gap: 0; color: var(--fg); }
+  .tip-over em { color: var(--fg-muted); font-size: var(--text-xs); font-style: normal; }
+  .tip-hint { color: var(--fg-muted); font-size: var(--text-xs); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  @media (max-width: 640px) {
-    .layer-num.minor { display: none; }
-    .profile-label { display: none; }
-    .band text { display: none; }
-    .band.active text { display: block; }
-  }
+
   @media (prefers-reduced-motion: reduce) {
-    .ready .dot { animation: none; }
-    .lens, .dot, .layer-num, .band line, .band text, .bar, .tip { transition: none; }
+    .ready .dot, .ready .scan, .ripple, .tip, .texture { animation: none; }
+    .dot, .col-bg, .layer-num, .band line, .band text { transition: none; }
+    .dot { scale: 1; }
   }
-  @media (forced-colors: active) { .dot { fill: CanvasText; } .lens { stroke: Highlight; } }
+  @media (forced-colors: active) { .dot { fill: CanvasText; } .col-bg.active { stroke: Highlight; } }
 </style>

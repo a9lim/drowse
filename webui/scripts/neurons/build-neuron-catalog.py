@@ -200,6 +200,9 @@ layers_meta, neurons_index, search = [], [], collections.defaultdict(list)
 search_display = {}
 
 ONLY = {int(x) for x in os.environ.get("NEURON_LAYERS", "").split(",") if x}
+# NEURON_ALL=1 writes every neuron (slimmer: trusted reads only) under <out>/all/ for the "All" toggle.
+ALL = os.environ.get("NEURON_ALL") == "1"
+CHUNK = 256
 for L in range(LAYERS):
     if ONLY and L not in ONLY:
         continue
@@ -306,6 +309,13 @@ for L in range(LAYERS):
     for (lL, ln, lp), lab in labels.items():
         if lL == L and lab["confidence"] >= 0.6 and ln not in chosen:
             chosen.append(ln)
+    if ALL:
+        chosen = list(range(MLP))
+    # Row lookups through pyarrow are slow one at a time; materialize the few columns used per pole.
+    acts_rows = acts.to_pylist() if acts is not None else None
+    drivers_rows = drivers.select(["drivers_ids", "drivers_val", "drivers_sum_ids", "drivers_sum_val", "s_hits"]).to_pylist() if drivers is not None else None
+    w_norm_col = arr(reads, "w_norm"); null_col = arr(reads, "null_share")
+    kurt_col = arr(reads, "vocab_kurt"); skew_col = arr(reads, "vocab_skew")
 
     # ---------- layer statistics over all 24,576 poles
     stats = {"silent": float(silent.mean()), "detector": float((detector & ~silent).mean()),
@@ -326,12 +336,12 @@ for L in range(LAYERS):
             rd = []
             meas = measured_stems(i)
             twins_seen = {}
-            ordered = trusted + [c for c in READ_COLS if c not in trusted] + COMPARE_COLS
+            ordered = (ins[:2] + outs[:1]) if ALL else trusted + [c for c in READ_COLS if c not in trusted] + COMPARE_COLS
             for c in ordered:
                 trust = "primary" if c in (ins[0], outs[0]) else "trusted" if c in trusted else "compare" if c in COMPARE_COLS else "weak"
                 row = [int(t) for t in ids[c][i] if not hubs[c][t]]
                 twin = twins_seen.get(FAMILY[c]) if c not in COMPARE_COLS else None
-                limit = 64 if trust in ("primary", "trusted") else 24
+                limit = (16 if ALL else 64) if trust in ("primary", "trusted") else 24
                 toks, keys = merged(row, skip=frozenset(twin or ()), limit=limit)
                 if c not in COMPARE_COLS:
                     twins_seen.setdefault(FAMILY[c], set()).update(keys)
@@ -353,15 +363,15 @@ for L in range(LAYERS):
             outs_s = set().union(*[fam_tokens[FAMILY[c]] for c in outs if FAMILY[c] in fam_tokens])
             p = {"pole": pl, "reads": rd, "shared": sorted(shared)[:24], "inout": sorted((ins_s & outs_s) - {""})[:16],
                  "measuredAgree": sorted(meas & (ins_s | outs_s))[:16],
-                 "w_norm": round(float(reads.column("w_norm")[i].as_py()), 3), "null_share": round(float(reads.column("null_share")[i].as_py()), 4)}
+                 "w_norm": round(float(w_norm_col[i]), 3), "null_share": round(float(null_col[i]), 4)}
             if acts is not None and ai[i] >= 0:
-                a = acts.slice(int(ai[i]), 1).to_pylist()[0]
+                a = acts_rows[int(ai[i])]
                 p.update({"act_top": round(a["act_top"], 3), "act_max": round(a["act_max"], 3), "rate": a["rate"],
                           "slices": [a["rate_dclm"], a["rate_zh"], a["rate_code"], a["rate_chat"]],
                           "peaks": parse_peaks(a["peak_tokens"])[:6], "contexts": parse_contexts(a["contexts"])})
             p["silent"] = bool(silent[i])
             if drivers is not None and di[i] >= 0:
-                d = drivers.slice(int(di[i]), 1).to_pylist()[0]
+                d = drivers_rows[int(di[i])]
                 p["drivers"] = [[TOKS[t], round(v, 2)] for t, v in zip(d["drivers_ids"][:24], d["drivers_val"][:24])]
                 p["driversSum"] = [[TOKS[t], round(v, 2)] for t, v in zip(d["drivers_sum_ids"][:16], d["drivers_sum_val"][:16])]
                 p["s_hits"] = d["s_hits"]
@@ -369,13 +379,24 @@ for L in range(LAYERS):
             p["detector"] = "token" if cur_mode[i] >= 1 / 3 else "next" if next_mode[i] >= 1 / 3 else None
             p["modes"] = [round(float(np.nan_to_num(cur_mode[i])), 3), round(float(np.nan_to_num(next_mode[i])), 3)]
             if L >= 21:
-                kp = pct_of(kurt_sorted, float(reads.column("vocab_kurt")[i].as_py()))
-                skew = float(reads.column("vocab_skew")[i].as_py())
+                kp = pct_of(kurt_sorted, float(kurt_col[i]))
+                skew = float(skew_col[i])
                 p["shape"] = {"kurtPct": kp, "skew": round(skew, 3), "kind": ("predicts" if skew > 0 else "suppresses") if kp >= 90 else None}
             lab = labels.get((L, nrn, pl))
             if lab:
                 p["label"] = lab
-            p["score"] = round(float(score[i]), 2)
+            p["score"] = round(float(score[i]), 2) if score[i] > -1e8 else 0
+            if ALL:
+                for k in ("driversSum", "legible", "modes", "w_norm", "null_share", "s_hits"):
+                    p.pop(k, None)
+                for r_ in p["reads"]:
+                    r_.pop("hubs", None)
+                if "drivers" in p:
+                    p["drivers"] = p["drivers"][:12]
+                p["shared"] = p["shared"][:10]
+                p["measuredAgree"] = p["measuredAgree"][:10]
+                if "label" in p:
+                    p["label"] = {k: p["label"][k] for k in ("text", "confidence", "note") if k in p["label"]}
             entry["poles"].append(p)
         detail.append(entry)
 
@@ -408,12 +429,28 @@ for L in range(LAYERS):
                     words.append(s)
             titles.append(" · ".join(words[:3]))
         e["titles"] = titles
+        # A one-line overview for the clearer side: what triggers it and which outputs it steers.
+        best_pole = max(e["poles"], key=lambda p: p["score"])
+        def overview(side):
+            read = next((r for r in best_pole["reads"] if r["trust"] == "primary" and r["col"].startswith(side)), None)
+            words = []
+            for t in (read["tokens"] if read else []):
+                w = t[0].strip()
+                if w and not t[0].startswith("\u0001") and w not in words and not all(unicodedata.category(ch)[0] in "PSZC" for ch in w):
+                    words.append(w)
+                if len(words) >= 4:
+                    break
+            return " · ".join(words)
+        e["overview"] = [overview("read"), overview("write")]
+        if ALL:
+            continue
         best = max(e["poles"], key=lambda p: p["score"])
         ref = len(neurons_index)
         neurons_index.append([L, e["n"], titles[0], titles[1], round(max(p["score"] for p in e["poles"]), 2),
                               (1 if any(p.get("label") for p in e["poles"]) else 0) | (2 if any(p.get("detector") for p in e["poles"]) else 0)
                               | (4 if any((p.get("shape") or {}).get("kind") == "predicts" for p in e["poles"]) else 0)
-                              | (8 if any((p.get("shape") or {}).get("kind") == "suppresses" for p in e["poles"]) else 0)])
+                              | (8 if any((p.get("shape") or {}).get("kind") == "suppresses" for p in e["poles"]) else 0),
+                              e["overview"][0], e["overview"][1]])
         for side, p in enumerate(e["poles"]):
             weights = collections.Counter()
             for r in p["reads"]:
@@ -439,6 +476,32 @@ for L in range(LAYERS):
             for k, w in weights.most_common(40):
                 search[k].append([ref, side, w])
 
+    if ALL:
+        flags_of = lambda e: ((1 if any(p.get("label") for p in e["poles"]) else 0) | (2 if any(p.get("detector") for p in e["poles"]) else 0)
+                              | (4 if any((p.get("shape") or {}).get("kind") == "predicts" for p in e["poles"]) else 0)
+                              | (8 if any((p.get("shape") or {}).get("kind") == "suppresses" for p in e["poles"]) else 0))
+        d_out = f"{out}/all/L{L:02d}"
+        os.makedirs(d_out, exist_ok=True)
+        rows_all = [[e["n"], e["titles"][0], e["titles"][1], round(max(neuron_score.get(e["n"], 0), 0), 1), flags_of(e), e["overview"][0], e["overview"][1]] for e in detail]
+        json.dump({"layer": L, "neurons": rows_all}, open(f"{d_out}/index.json", "w"), ensure_ascii=False, separators=(",", ":"))
+        # The all-neurons view shows the lens reads only; titles above already used the measured fields.
+        keep = ("pole", "reads", "shared", "measuredAgree", "silent", "detector", "shape", "label", "score")
+        for e in detail:
+            e["poles"] = [{k: p[k] for k in keep if k in p} for p in e["poles"]]
+        for c0 in range(0, MLP, CHUNK):
+            json.dump({"layer": L, "neurons": detail[c0:c0 + CHUNK]}, open(f"{d_out}/c{c0 // CHUNK:02d}.json", "w"), ensure_ascii=False, separators=(",", ":"))
+        # One glossary for every Chinese token in the vocabulary serves all layers (written once).
+        if not os.path.exists(f"{out}/all/zh.json"):
+            vocab_zh = {}
+            for t in TOKS:
+                if not t.startswith("\u0001") and cedict_gloss.CJK.search(t) and CEDICT:
+                    g = cedict_gloss.gloss(t, CEDICT)
+                    if g:
+                        vocab_zh[t.strip()] = list(g)
+            json.dump(vocab_zh, open(f"{out}/all/zh.json", "w"), ensure_ascii=False, separators=(",", ":"))
+        print(f"L{L:02d}: all {len(detail)} neurons", flush=True)
+        continue
+
     layers_meta.append({"layer": L, "band": band(L), "ins": ins, "outs": outs, "stats": stats, "hubs": hub_list[:16],
                         "count": len(detail), "missing": False,
                         "partial": [k for k, t in (("acts", acts), ("drivers", drivers), ("legible", legible)) if t is None]})
@@ -452,6 +515,9 @@ for L in range(LAYERS):
     glossary.clear()
     json.dump({"layer": L, "neurons": detail}, open(f"{out}/L{L:02d}.json", "w"), ensure_ascii=False, separators=(",", ":"))
     print(f"L{L:02d}: kept {len(detail)}  silent {stats and round(stats['silent'],2)} dark {stats and round(stats['dark'],2)}", flush=True)
+
+if ALL:
+    sys.exit(0)
 
 # ---------- heads
 heads = {}
@@ -476,7 +542,7 @@ for m in layers_meta:
 
 json.dump({"model": "Qwen3-8B", "layers": LAYERS, "neuronsPerLayer": MLP, "total": LAYERS * MLP,
            "layerMeta": layers_meta, "neurons": neurons_index,
-           "columns": ["layer", "neuron", "titlePlus", "titleMinus", "score", "flags"]},
+           "columns": ["layer", "neuron", "titlePlus", "titleMinus", "score", "flags", "triggers", "steers"]},
           open(f"{out}/index.json", "w"), ensure_ascii=False, separators=(",", ":"))
 json.dump({"forms": {k: v for k, v in search.items()}, "display": {k: search_display.get(k, k) for k in search}},
           open(f"{out}/search.json", "w"), ensure_ascii=False, separators=(",", ":"))

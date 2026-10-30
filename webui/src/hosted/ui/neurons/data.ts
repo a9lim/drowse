@@ -31,8 +31,8 @@ export interface LayerMeta {
   heads?: Head[];
 }
 
-/** [layer, neuron, title of the + pole, title of the − pole, score, flags]. */
-export type IndexRow = [number, number, string, string, number, number];
+/** [layer, neuron, title of the + pole, title of the − pole, score, flags, triggered by, steers outputs]. */
+export type IndexRow = [number, number, string, string, number, number, string?, string?];
 export const FLAG_LABELLED = 1;
 export const FLAG_DETECTOR = 2;
 export const FLAG_PREDICTS = 4;
@@ -96,6 +96,8 @@ export interface Pole {
 export interface NeuronDetail {
   n: number;
   titles: [string, string];
+  /** The clearer side's top input and output words, for the one-line overview. */
+  overview?: [string, string];
   poles: [Pole, Pole];
 }
 
@@ -168,7 +170,7 @@ export const BANDS: Record<Band, BandInfo> = {
 };
 
 /** Shown beside layers 13–20, where every weight-only lens is at its weakest (findings §15). */
-export const MIDDLE_CAUTION = "Lens readings are least reliable at layers 13–20. The S-lens and R-lens read a neuron from its weights, but most neurons here respond to context built up over many tokens, not to one token or word. Trust the real-text examples first.";
+export const MIDDLE_CAUTION = "Lens readings are least reliable at layers 13–20. The lenses read a neuron from its weights. Most neurons here respond to context built up over many words rather than to one word. Trust the examples first.";
 
 export const BAND_ORDER: Band[] = ["embed", "early", "crossover", "concept", "dark", "predict", "suppress"];
 
@@ -187,14 +189,14 @@ export function bandOf(layer: number): Band {
 export interface LensInfo { short: string; name: string; side: "input" | "output"; lens: "S" | "R" | "J" | "logit"; z: boolean; describe: string }
 
 export const LENSES: Record<ReadColumn, LensInfo> = {
-  read_S: { short: "in·S", name: "Input tokens", side: "input", lens: "S", z: false, describe: "Input tokens, here or a few positions back, whose presence drives the neuron." },
-  read_S_z: { short: "in·S z", name: "Input tokens, specific", side: "input", lens: "S", z: true, describe: "The same, scored against the layer's other neurons so that common tokens drop out." },
-  read_R_dclm: { short: "in·R", name: "Input concept", side: "input", lens: "R", z: false, describe: "What the model is getting ready to say when this neuron is driven: the concept it responds to." },
-  read_R_dclm_z: { short: "in·R z", name: "Input concept, specific", side: "input", lens: "R", z: true, describe: "The same, scored against the layer's other neurons so that common tokens drop out." },
-  write_S: { short: "out·S", name: "Writes like these tokens", side: "output", lens: "S", z: false, describe: "Its push looks to later layers as if these input tokens were present." },
-  write_S_z: { short: "out·S z", name: "Writes like these tokens, specific", side: "output", lens: "S", z: true, describe: "The same, scored against the layer's other neurons." },
-  write_R_dclm: { short: "out·R", name: "Promotes", side: "output", lens: "R", z: false, describe: "What its push makes the model say." },
-  write_R_dclm_z: { short: "out·R z", name: "Promotes, specific", side: "output", lens: "R", z: true, describe: "What's specific to this neuron's push, with tokens every neuron promotes removed." },
+  read_S: { short: "in·S", name: "Words that trigger it", side: "input", lens: "S", z: false, describe: "Input tokens, here or a few positions back, whose presence drives the neuron." },
+  read_S_z: { short: "in·S z", name: "Distinctive words that trigger it", side: "input", lens: "S", z: true, describe: "The same, scored against the layer's other neurons so that common tokens drop out." },
+  read_R_dclm: { short: "in·R", name: "Ideas that trigger it", side: "input", lens: "R", z: false, describe: "What the model is getting ready to say when this neuron is driven: the concept it responds to." },
+  read_R_dclm_z: { short: "in·R z", name: "Distinctive ideas that trigger it", side: "input", lens: "R", z: true, describe: "The same, scored against the layer's other neurons so that common tokens drop out." },
+  write_S: { short: "out·S", name: "Words it acts like", side: "output", lens: "S", z: false, describe: "Its push looks to later layers as if these input tokens were present." },
+  write_S_z: { short: "out·S z", name: "Distinctive words it acts like", side: "output", lens: "S", z: true, describe: "The same, scored against the layer's other neurons." },
+  write_R_dclm: { short: "out·R", name: "Pushes the model to say", side: "output", lens: "R", z: false, describe: "What its push makes the model say." },
+  write_R_dclm_z: { short: "out·R z", name: "Distinctive words it pushes the model to say", side: "output", lens: "R", z: true, describe: "What's specific to this neuron's push, with tokens every neuron promotes removed." },
   write_J: { short: "out·J", name: "Jacobian lens", side: "output", lens: "J", z: false, describe: "Neuronpedia's Jacobian lens on the write, for comparison. It agrees with out·R from L22." },
   write_logit: { short: "logit", name: "Logit lens", side: "output", lens: "logit", z: false, describe: "The unembedding applied directly, for comparison. It is weak before L22." },
 };
@@ -279,3 +281,29 @@ export function planFor(layer: number): { ins: ReadColumn[]; outs: ReadColumn[] 
     : ["write_R_dclm", "write_R_dclm_z"];
   return { ins, outs };
 }
+
+// ---------- every neuron (the "All" toggle): one index per layer, details in 256-neuron chunks
+
+export const ALL_CHUNK = 256;
+/** [neuron, title of the + side, title of the − side, score, flags, triggered by, steers outputs]. */
+export type AllRow = [number, string, string, number, number, string?, string?];
+export interface AllLayerIndex { layer: number; neurons: AllRow[] }
+export interface AllChunk { layer: number; neurons: NeuronDetail[] }
+/** Per layer, a base64 string of 12,288 bytes: each neuron's readability, 0–255. */
+export interface AllScores { layers: string[] }
+
+const pad = (layer: number) => String(layer).padStart(2, "0");
+export const loadAllIndex = (layer: number) => load<AllLayerIndex>(`all/L${pad(layer)}/index.json`);
+export const loadAllChunk = (layer: number, chunk: number) => load<AllChunk>(`all/L${pad(layer)}/c${pad(chunk)}.json`);
+export const loadAllScores = () => load<AllScores>("all/scores.json");
+export const loadAllGlossary = () => load<Glossary>("all/zh.json");
+
+export function decodeScores(encoded: string): Uint8Array {
+  const binary = atob(encoded);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+/** An all-neurons row in the shape the curated index uses, so one strip renders both. */
+export const asIndexRow = (layer: number, row: AllRow): IndexRow => [layer, row[0], row[1], row[2], row[3], row[4], row[5], row[6]];
