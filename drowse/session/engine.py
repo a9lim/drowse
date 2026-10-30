@@ -9,8 +9,9 @@ result.  One generation runs in stages:
 1. :meth:`GenerationEngine.resolve_call` — the call's kwargs, the cast roster,
    a regen's recipe override and the same-role continuation rule fold into
    one frozen :class:`~drowse.generation.types.CallSpec`.
-2. :meth:`GenerationEngine._plan_consumers` — which per-token consumers this
-   generation feeds; the session's read plane turns that into a capture plan.
+2. ``_plan_consumers`` / ``_plan_reads`` — which per-token consumers this
+   generation feeds, folded into the session read plane's ``ReadDemand`` (and
+   the authored-prefill capture policy).
 3. :class:`TokenTap` — the decode loop's per-token callback: logprob rollup,
    the token's measurement payload, the loom token row, and one
    :class:`~drowse.generation.results.TokenEvent` (or the public six-argument
@@ -82,7 +83,11 @@ from drowse.steering.terms import Steering
 if TYPE_CHECKING:
     from drowse.generation.results import ProbeReading
     from drowse.readout.capture_buffer import HiddenCapture
-    from drowse.session.session import DrowseSession, _AuthoredPromptCapture
+    from drowse.session.session import (
+        DrowseSession,
+        ReadDemand,
+        _AuthoredPromptCapture,
+    )
     from drowse.steering.hooks import SteeringManager
 
 _log = logging.getLogger(__name__)
@@ -537,9 +542,8 @@ class GenerationEngine:
         self.state.request_stop()
 
     def close(self) -> None:
-        """Drop the prefix cache, the reusable StaticCache and the last result."""
+        """Drop the prefix cache and the last result."""
         self.prefix_cache.clear()
-        self.runtime.close()
         self.last_result = None
         self.last_per_token_scores = None
 
@@ -884,36 +888,12 @@ class GenerationEngine:
             self.state.reset()
             vector_snapshot = session._steering_composer.snapshot_steering_alphas()
 
-            session.lens.active_for_generation = plan.lens
-            session.sae.active_for_generation = plan.sae
             recipe_steering = self._recipe_steering(assistant_node_id)
-            monitor_active = bool(plan.live_scores_on and plan.has_monitor_probes)
-            authored = (
-                session._plan_authored_prompt_capture(
-                    spec,
-                    assistant_node_id=assistant_node_id,
-                    use_thinking=use_thinking,
-                    monitor_active=monitor_active,
-                    lens_active=plan.lens,
-                    sae_active=plan.sae,
-                    persist_per_layer_scores=plan.persists_layer_scores,
-                    steering=recipe_steering,
-                )
-                if monitor_active or plan.lens or plan.sae else None
-            )
-            demand = session._resolve_read_demand(
-                want_hidden=spec.want_hidden,
-                live_scores_on=plan.live_scores_on,
-                has_monitor_probes=plan.has_monitor_probes,
-                loom_attached=assistant_node_id is not None,
-                wants_live_token_scores=plan.wants_live_token_scores,
-                persists_layer_scores=plan.persists_layer_scores,
-                persists_probe_row=plan.persists_probe_row,
-                persists_subspace_coords=plan.persists_subspace_coords,
-                live_lens_active=plan.lens,
-                live_sae_active=plan.sae,
-                final_probe_aggregate=spec.return_probe_readings,
-                capture_prompt=authored is not None,
+            authored, demand = self._plan_reads(
+                spec, plan,
+                assistant_node_id=assistant_node_id,
+                use_thinking=use_thinking,
+                recipe_steering=recipe_steering,
             )
             session.events.emit(
                 GenerationStarted(input=input, stateless=spec.stateless),
@@ -984,6 +964,53 @@ class GenerationEngine:
             )
             session.events.emit(GenerationFinished(result=result))
             return result
+
+    def _plan_reads(
+        self,
+        spec: CallSpec,
+        plan: ConsumerPlan,
+        *,
+        assistant_node_id: str | None,
+        use_thinking: bool,
+        recipe_steering: str | None,
+    ) -> "tuple[_AuthoredPromptCapture | None, ReadDemand]":
+        """This generation's authored-prefill capture policy and read demand.
+
+        Authored prompt targets are only tokenized when some channel (monitor,
+        lens, SAE) would record them.
+        """
+        session = self._session
+        session.lens.active_for_generation = plan.lens
+        session.sae.active_for_generation = plan.sae
+        monitor_active = bool(plan.live_scores_on and plan.has_monitor_probes)
+        authored = (
+            session._plan_authored_prompt_capture(
+                spec,
+                assistant_node_id=assistant_node_id,
+                use_thinking=use_thinking,
+                monitor_active=monitor_active,
+                lens_active=plan.lens,
+                sae_active=plan.sae,
+                persist_per_layer_scores=plan.persists_layer_scores,
+                steering=recipe_steering,
+            )
+            if monitor_active or plan.lens or plan.sae else None
+        )
+        demand = session._resolve_read_demand(
+            want_hidden=spec.want_hidden,
+            live_scores_on=plan.live_scores_on,
+            has_monitor_probes=plan.has_monitor_probes,
+            loom_attached=assistant_node_id is not None,
+            wants_live_token_scores=plan.wants_live_token_scores,
+            persists_layer_scores=plan.persists_layer_scores,
+            persists_probe_row=plan.persists_probe_row,
+            persists_subspace_coords=plan.persists_subspace_coords,
+            live_lens_active=plan.lens,
+            live_sae_active=plan.sae,
+            final_probe_aggregate=spec.return_probe_readings,
+            capture_prompt=authored is not None,
+        )
+        return authored, demand
 
     def _recipe_steering(self, node_id: str | None) -> str | None:
         """The steering string recorded on the generating node's recipe."""

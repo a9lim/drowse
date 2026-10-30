@@ -8729,6 +8729,7 @@ class DrowseSession:
         # Hooks and device buffers.
         self._steering.clear_all()
         self._steering.detach_compiled_offsets()
+        self._runtime.close()
         self._engine.close()
         self._capture.detach()
         self._capture.clear()
