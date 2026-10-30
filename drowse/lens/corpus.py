@@ -3,8 +3,9 @@
 A corpus is the first N non-empty documents of a Hugging Face dataset's train
 split (:class:`HfLensCorpus`), or several interleaved by weight
 (:class:`LensCorpusMix`), pinned to a commit before it is read so the
-recorded ``corpus_spec`` is exact provenance.  Streaming always runs in an
-isolated spawned process (:func:`stream_lens_corpus`).  A local file corpus
+recorded ``corpus_spec`` is exact provenance.  Hub resolution and streaming
+always run in an isolated spawned process (:func:`pin_lens_corpus`,
+:func:`stream_lens_corpus`).  A local file corpus
 (:func:`read_corpus_file`) applies the same per-document slice.
 """
 
@@ -239,20 +240,40 @@ def _parse_source(raw: str) -> tuple[HfLensCorpus, int | None]:
 
 
 @overload
-def pin_lens_corpus(corpus: HfLensCorpus = ...) -> HfLensCorpus: ...
+def pin_lens_corpus(
+    corpus: HfLensCorpus = ..., *, cancel_event: threading.Event | None = ...,
+) -> HfLensCorpus: ...
 
 
 @overload
-def pin_lens_corpus(corpus: LensCorpusMix) -> LensCorpusMix: ...
+def pin_lens_corpus(
+    corpus: LensCorpusMix, *, cancel_event: threading.Event | None = ...,
+) -> LensCorpusMix: ...
 
 
-def pin_lens_corpus(corpus: LensCorpus = DEFAULT_LENS_CORPUS) -> LensCorpus:
+def pin_lens_corpus(
+    corpus: LensCorpus = DEFAULT_LENS_CORPUS,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> LensCorpus:
     """Fix ``corpus`` (each part of a mix) to a Hub commit and named config.
 
-    An already pinned source is returned as is, without a Hub call.  An
-    omitted config resolves to the dataset's default at that commit, which
-    needs the optional ``datasets`` dependency.
+    An already pinned corpus is returned as is, with no Hub call and no
+    worker.  Otherwise the resolution runs in the isolated corpus worker, like
+    :func:`stream_lens_corpus`: ``cancel_event`` abandons a blocked Hub call,
+    and the caller never imports ``datasets`` (an omitted config resolves to
+    the dataset's default at the pinned commit, which needs that optional
+    dependency).
     """
+    if corpus.pinned:
+        return corpus
+    return cast(LensCorpus, _run_in_corpus_worker(
+        _pin_in_process, corpus, cancel_event=cancel_event, activity="resolving",
+    ))
+
+
+def _pin_in_process(corpus: LensCorpus) -> LensCorpus:
+    """The Hub resolution behind :func:`pin_lens_corpus`; runs in the worker."""
     if isinstance(corpus, LensCorpusMix):
         return replace(
             corpus, parts=tuple(_pin_source(part) for part in corpus.parts),
@@ -308,13 +329,31 @@ def stream_lens_corpus(
     Returns ``(documents, corpus_spec)``.  Needs the optional ``datasets``
     dependency (``pip install 'drowse.ai[hf]'``); raises
     :class:`~drowse.lens.jlens.JacobianLensError` without it so both the CLI
-    and the fit route surface the same actionable message.  Hub resolution and
-    streaming always run in an isolated spawned process, which is terminated
-    once it has sent its result.  A cancellation event can therefore abandon a
-    blocked provider read without trapping the server in ``cancelling…``, and
-    no caller inherits the provider's threads: after a stream stops early,
-    pyarrow's I/O pool can block interpreter exit forever (every time on
-    ``HuggingFaceFW/dclm_100BT-shuffled``), even though the read returned.
+    and the fit route surface the same actionable message.  Like
+    :func:`pin_lens_corpus`, the read runs in the isolated corpus worker
+    (:func:`_run_in_corpus_worker`).
+    """
+    return cast(tuple[list[str], str], _run_in_corpus_worker(
+        _collect_lens_corpus, n, corpus,
+        cancel_event=cancel_event, activity="streaming",
+    ))
+
+
+def _run_in_corpus_worker(
+    job: Any,
+    *args: Any,
+    cancel_event: threading.Event | None,
+    activity: str,
+) -> object:
+    """``job(*args)`` in an isolated spawned process, terminated once it has
+    sent its result.
+
+    Hub resolution and streaming always run here.  A cancellation event can
+    therefore abandon a blocked provider read without trapping the server in
+    ``cancelling…``, and no caller inherits the provider's threads: after a
+    stream stops early, pyarrow's I/O pool can block interpreter exit forever
+    (every time on ``HuggingFaceFW/dclm_100BT-shuffled``), even though the
+    read returned.  ``activity`` names the phase in the cancellation message.
     """
     from drowse.lens.jlens import JacobianLensCancelled, JacobianLensError
 
@@ -326,12 +365,12 @@ def stream_lens_corpus(
             "Jacobian-lens fit cancelled while preparing its corpus"
         )
 
-    process, receiver = _start_lens_corpus_process(n, corpus)
+    process, receiver = _start_lens_corpus_process(job, *args)
     try:
         while True:
             if cancelled():
                 raise JacobianLensCancelled(
-                    "Jacobian-lens fit cancelled while streaming its corpus"
+                    f"Jacobian-lens fit cancelled while {activity} its corpus"
                 )
             ready = receiver.poll(0.1)
             # A click that lands while ``poll`` is waiting must win over a
@@ -339,13 +378,13 @@ def stream_lens_corpus(
             # not unexpectedly advance into the hours-long estimator phase.
             if cancelled():
                 raise JacobianLensCancelled(
-                    "Jacobian-lens fit cancelled while streaming its corpus"
+                    f"Jacobian-lens fit cancelled while {activity} its corpus"
                 )
             if ready:
                 payload = receiver.recv()
                 kind = payload[0]
                 if kind == "ok":
-                    return cast(tuple[list[str], str], payload[1])
+                    return payload[1]
                 if kind == "typed_error":
                     raise JacobianLensError(str(payload[1]))
                 raise RuntimeError(
@@ -378,7 +417,7 @@ def _collect_lens_corpus(
     except ImportError as e:
         raise JacobianLensError(_DATASETS_MISSING) from e
 
-    pinned = pin_lens_corpus(corpus)
+    pinned = _pin_in_process(corpus)
     return _document_stream(pinned).prefix(n), pinned.spec
 
 
@@ -569,12 +608,12 @@ def _read_lens_documents(
     return docs
 
 
-def _lens_corpus_process(n: int, corpus: LensCorpus, sender: Any) -> None:
+def _lens_corpus_process(job: Any, args: tuple[Any, ...], sender: Any) -> None:
     """Spawn target that transports only JSON/pickle-safe result payloads."""
     from drowse.lens.jlens import JacobianLensError
 
     try:
-        payload: tuple[str, object] = ("ok", _collect_lens_corpus(n, corpus))
+        payload: tuple[str, object] = ("ok", job(*args))
     except JacobianLensError as exc:
         payload = ("typed_error", str(exc))
     except BaseException as exc:  # noqa: BLE001 — preserve worker liveness
@@ -590,17 +629,17 @@ def _lens_corpus_process(n: int, corpus: LensCorpus, sender: Any) -> None:
         sender.close()
 
 
-def _start_lens_corpus_process(
-    n: int, corpus: LensCorpus,
-) -> tuple[Any, Any]:
-    """Start a spawn-only provider process, safe beside initialized MPS."""
+def _start_lens_corpus_process(job: Any, *args: Any) -> tuple[Any, Any]:
+    """Start a spawn-only provider process running ``job(*args)``, safe beside
+    initialized MPS.  ``job`` is a module-level function of this module, so
+    it pickles by reference."""
     import multiprocessing
 
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
         target=_lens_corpus_process,
-        args=(n, corpus, sender),
+        args=(job, args, sender),
         name="drowse-jlens-corpus",
     )
     process.start()

@@ -60,7 +60,7 @@ def test_default_corpus_cancel_does_not_wait_for_blocked_provider(
     monkeypatch.setattr(
         lens_io,
         "_start_lens_corpus_process",
-        lambda _n, _corpus: (process, receiver),
+        lambda _job, *_args: (process, receiver),
     )
 
     def request_cancel() -> None:
@@ -115,7 +115,7 @@ def test_default_corpus_cancel_wins_a_simultaneously_ready_result(
     monkeypatch.setattr(
         lens_io,
         "_start_lens_corpus_process",
-        lambda _n, _corpus: (FinishedProcess(), receiver),
+        lambda _job, *_args: (FinishedProcess(), receiver),
     )
 
     with pytest.raises(JacobianLensCancelled, match="streaming its corpus"):
@@ -383,10 +383,11 @@ def test_mix_read_interleaves_its_corpora_by_weight(
 def test_pin_resolves_revision_to_a_commit_and_names_the_default_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The resolution the corpus worker runs (in process here)."""
     import datasets
     import huggingface_hub
 
-    from drowse.lens.corpus import HfLensCorpus, pin_lens_corpus
+    from drowse.lens.corpus import HfLensCorpus, _pin_in_process
 
     asked: list[tuple[str, str | None]] = []
 
@@ -402,11 +403,11 @@ def test_pin_resolves_revision_to_a_commit_and_names_the_default_config(
 
     monkeypatch.setattr(huggingface_hub, "HfApi", FakeApi)
     monkeypatch.setattr(datasets, "load_dataset_builder", fake_builder)
-    pinned = pin_lens_corpus(HfLensCorpus("org/data", None, "main", "body"))
+    pinned = _pin_in_process(HfLensCorpus("org/data", None, "main", "body"))
     assert pinned == HfLensCorpus("org/data", "default", _SHA, "body")
     assert asked == [("org/data", "main")]
     # Pinning is idempotent and makes no further Hub call.
-    assert pin_lens_corpus(pinned) is pinned
+    assert _pin_in_process(pinned) is pinned
     assert asked == [("org/data", "main")]
 
 
@@ -506,16 +507,149 @@ def test_corpus_stream_terminates_a_worker_stuck_after_its_result(
             self.closed = True
 
     process, receiver = StuckProcess(), ResultReceiver()
-    started: list[tuple[int, HfLensCorpus]] = []
+    started: list[tuple[Any, tuple[Any, ...]]] = []
 
-    def start(n: int, started_corpus: HfLensCorpus) -> tuple[Any, Any]:
-        started.append((n, started_corpus))
+    def start(job: Any, *args: Any) -> tuple[Any, Any]:
+        started.append((job, args))
         return process, receiver
 
     monkeypatch.setattr(lens_io, "_start_lens_corpus_process", start)
     assert stream_lens_corpus(5, corpus) == (["doc"], corpus.spec)
-    assert started == [(5, corpus)]
+    assert started == [(lens_io._collect_lens_corpus, (5, corpus))]
     assert process.terminated and receiver.closed
+
+
+class _ResultWorker:
+    """A corpus worker process (and its pipe end) that already sent ``result``."""
+
+    closed = False
+
+    def __init__(self, result: Any) -> None:
+        self.result = result
+
+    def is_alive(self) -> bool:
+        return False
+
+    def join(self, timeout: float = 0) -> None:
+        del timeout
+
+    def poll(self, timeout: float) -> bool:
+        del timeout
+        return True
+
+    def recv(self) -> object:
+        return ("ok", self.result)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_pin_resolves_an_unpinned_corpus_in_the_corpus_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hub resolution never runs in the caller (the fit route's server
+    process): an unpinned corpus is pinned by the isolated worker."""
+    import drowse.base.hf as base_hf
+    import drowse.lens.corpus as lens_io
+    from drowse.lens.corpus import HfLensCorpus, LensCorpusMix, pin_lens_corpus
+
+    def in_process_hub(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("Hub resolution must run in the corpus worker")
+
+    corpus = LensCorpusMix((
+        HfLensCorpus("org/data", "cfg", "main"),
+        HfLensCorpus("org/zh", None, _SHA),
+    ), (2, 1))
+    pinned = LensCorpusMix((
+        HfLensCorpus("org/data", "cfg", _SHA),
+        HfLensCorpus("org/zh", "default", _SHA),
+    ), (2, 1))
+    started: list[tuple[Any, tuple[Any, ...]]] = []
+    worker = _ResultWorker(pinned)
+
+    def start(job: Any, *args: Any) -> tuple[Any, Any]:
+        started.append((job, args))
+        return worker, worker
+
+    monkeypatch.setattr(base_hf, "_hf_api", in_process_hub)
+    monkeypatch.setattr(lens_io, "_start_lens_corpus_process", start)
+    assert pin_lens_corpus(corpus) == pinned
+    assert started == [(lens_io._pin_in_process, (corpus,))]
+    assert worker.closed
+    # An already pinned corpus starts no worker.
+    started.clear()
+    assert pin_lens_corpus(pinned) is pinned
+    assert started == []
+
+
+def test_corpus_worker_target_runs_its_job_and_sends_a_picklable_result() -> None:
+    """The spawn target runs ``job(*args)`` and sends the result; both jobs
+    are module-level functions, so they cross the spawn boundary by name."""
+    import pickle
+
+    import drowse.lens.corpus as lens_io
+    from drowse.lens.corpus import HfLensCorpus
+
+    class Sender:
+        sent: list[object] = []
+        closed = False
+
+        def send(self, payload: object) -> None:
+            self.sent.append(payload)
+
+        def close(self) -> None:
+            self.closed = True
+
+    pinned = HfLensCorpus("org/data", "cfg", _SHA)
+    sender = Sender()
+    lens_io._lens_corpus_process(lens_io._pin_in_process, (pinned,), sender)
+    assert sender.sent == [("ok", pinned)] and sender.closed
+    for job in (lens_io._pin_in_process, lens_io._collect_lens_corpus):
+        assert pickle.loads(pickle.dumps(job)) is job
+
+
+def test_pin_cancel_abandons_a_blocked_hub_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import drowse.lens.corpus as lens_io
+    from drowse.lens.corpus import HfLensCorpus, pin_lens_corpus
+
+    cancelled = threading.Event()
+
+    class BlockedWorker:
+        alive = True
+        terminated = False
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.alive = False
+
+        def kill(self) -> None:
+            self.alive = False
+
+        def join(self, timeout: float = 0) -> None:
+            del timeout
+
+        def poll(self, timeout: float) -> bool:
+            cancelled.set()  # the click lands while the Hub call blocks
+            return False
+
+        def recv(self) -> object:
+            raise AssertionError("blocked resolution has no result")
+
+        def close(self) -> None:
+            pass
+
+    worker = BlockedWorker()
+    monkeypatch.setattr(
+        lens_io, "_start_lens_corpus_process", lambda _job, *_args: (worker, worker),
+    )
+    with pytest.raises(JacobianLensCancelled, match="resolving its corpus"):
+        pin_lens_corpus(HfLensCorpus("org/data", "cfg", "main"), cancel_event=cancelled)
+    assert worker.terminated
 
 
 def test_corpus_file_reads_text_lines_and_refuses_missing_or_empty_files(
