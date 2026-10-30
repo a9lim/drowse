@@ -26,6 +26,7 @@ from drowse.generation.decode import (
 from drowse.readout.types import ScalarReading
 from drowse.generation.results import GenerationResult, ProbeReading
 from drowse.generation.sampling import SamplingConfig
+from drowse.loom.recipe import ComposedCall
 from drowse.session.session import (
     CaptureMode,
     CaptureState,
@@ -1054,11 +1055,9 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
     session._gen_lock = threading.Lock()
     session._gen_phase = GenState.IDLE
     session._gen_state = GenerationState()
-    session._apply_cast_defaults = (
-        lambda steering, sampling, thinking, **_kwargs: (
-            steering,
-            sampling,
-            thinking,
+    session._compose_generation_call = (
+        lambda *, steering, sampling, thinking, system_prompt, **_kwargs: (
+            ComposedCall(steering, sampling, thinking, system_prompt)
         )
     )
     session._prepare_generation_call = lambda *_args: PreparedCall(

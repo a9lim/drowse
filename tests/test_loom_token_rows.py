@@ -45,9 +45,6 @@ def _stateful_tap_session(tree: LoomTree, node_id: str) -> Any:
     session._gen_lock = threading.Lock()
     session._gen_phase = GenState.IDLE
     session._gen_state = GenerationState()
-    session._apply_cast_defaults = (
-        lambda steering, sampling, thinking, **_kwargs: (steering, sampling, thinking)
-    )
     session._prepare_generation_call = lambda *_args: PreparedCall(
         steering_obj=None,
         use_thinking_req=False,

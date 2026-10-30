@@ -8332,72 +8332,56 @@ class DrowseSession:
             out.append(close)
         return out
 
-    def _apply_cast_defaults(
+    def _compose_generation_call(
         self,
-        steering: "str | Steering | None",
-        sampling: SamplingConfig | None,
-        thinking: bool | None,
         *,
-        raw: bool,
-        gen_seat: str,
-    ) -> tuple["str | Steering | None", SamplingConfig | None, bool | None]:
-        """Fill unset per-call kwargs from the gen label's cast recipe.
-
-        The cast roster is the *weakest* tier: the member's
-        recipe fills only fields the call left unset (``steering=None``
-        means "unset" here; pass ``""`` for an explicit unsteered
-        override), sampling merges field-wise with the call's
-        non-default fields winning, and the member's seed applies only
-        when the call's sampling doesn't pin one.  The label must ride
-        the call's sampling box (``user_role`` for a user-seat gen,
-        ``assistant_role`` otherwise) — a bare continuation of a cast
-        turn doesn't re-trigger the recipe.  Raw / flat mode renders no
-        labels, so the roster doesn't apply there.
-        """
-        cast_label: str | None = None
-        if not raw:
-            explicit_label = None
-            if sampling is not None:
-                explicit_label = (
-                    sampling.user_role if gen_seat == "user"
-                    else sampling.assistant_role
-                )
-            cast_label = explicit_label or gen_seat
-        member = self.tree.cast.get(cast_label) if cast_label else None
-        if member is None or member.recipe is None:
-            return steering, sampling, thinking
-        composed = compose_call(
-            steering=steering, sampling=sampling, thinking=thinking,
-            cast=member.recipe,
-        )
-        return composed.steering, composed.sampling, composed.thinking
-
-    def _resolve_recipe_override(
-        self,
-        recipe_override: "Recipe | str | None",
-        *,
-        parent_node_id: str | None,
         steering: "str | Steering | None",
         sampling: SamplingConfig | None,
         thinking: bool | None,
         system_prompt: str | None | InheritSystemPrompt,
+        raw: bool,
+        gen_seat: str,
+        parent_node_id: str | None,
+        recipe_override: "Recipe | str | None",
     ) -> ComposedCall:
-        """Compose a regen override onto the per-call kwargs.
+        """Compose a generation's effective kwargs in one :func:`compose_call`.
 
-        ``recipe_override`` is a :class:`Recipe` partial, a built-in mode
-        string, or a comma-separated partial-recipe string
-        (:meth:`Recipe.compose_modifier`).  It modifies the recipe of the
-        node the regen reproduces (:meth:`LoomTree.anchor_recipe`) and the
-        result layers over the call's kwargs by :func:`compose_call`'s one
-        rule.
+        Tiers, weakest first: the gen label's cast member, the call's own
+        kwargs, and for a regen the recipe of the node it reproduces
+        (:meth:`LoomTree.anchor_recipe`) plus the modifier
+        ``recipe_override`` derives from it — a :class:`Recipe` partial, a
+        built-in mode, or a comma-separated partial-recipe string
+        (:meth:`Recipe.compose_modifier`).  All four go through the one rule
+        together, so the seed order it documents (modifier > call > anchor >
+        cast) holds across them.
+
+        The cast label rides the call's sampling box (``user_role`` for a
+        user-seat gen, ``assistant_role`` otherwise), falling back to the
+        structural seat name, so a bare continuation of a cast turn doesn't
+        re-trigger the recipe.  Raw / flat mode renders no labels, so the
+        roster doesn't apply there.
         """
-        if recipe_override is None:
+        cast_recipe: Recipe | None = None
+        if not raw:
+            label = None
+            if sampling is not None:
+                label = (
+                    sampling.user_role if gen_seat == "user"
+                    else sampling.assistant_role
+                )
+            member = self.tree.cast.get(label or gen_seat)
+            cast_recipe = member.recipe if member is not None else None
+        anchor: Recipe | None = None
+        modifier: Recipe | None = None
+        if recipe_override is not None:
+            anchor = self.tree.anchor_recipe(parent_node_id)
+            modifier = (anchor or Recipe()).compose_modifier(recipe_override)
+        if cast_recipe is None and modifier is None:
             return ComposedCall(steering, sampling, thinking, system_prompt)
-        anchor = self.tree.anchor_recipe(parent_node_id)
-        modifier = (anchor or Recipe()).compose_modifier(recipe_override)
         return compose_call(
             steering=steering, sampling=sampling, thinking=thinking,
-            system_prompt=system_prompt, anchor=anchor, modifier=modifier,
+            system_prompt=system_prompt,
+            cast=cast_recipe, anchor=anchor, modifier=modifier,
         )
 
     def _effective_return_top_k(self, sampling: SamplingConfig | None) -> int:
@@ -8828,24 +8812,21 @@ class DrowseSession:
         """
         with self._generation_transaction() as txn:
 
-            # Cast roster: the gen label's standing recipe is
-            # the weakest tier; the regen override below still composes
-            # on top of the result.
-            steering, sampling, thinking = self._apply_cast_defaults(
-                steering, sampling, thinking, raw=raw, gen_seat=gen_seat,
-            )
-
-            # Apply recipe override (auto-regen / manual mode) before
-            # constructing the Steering object.
-            if recipe_override is not None:
-                steering, sampling, thinking, system_prompt = self._resolve_recipe_override(
-                    recipe_override,
-                    parent_node_id=parent_node_id,
+            # Cast roster (weakest), the call's kwargs, and a regen's
+            # anchor + modifier compose in one pass, before the Steering
+            # object is built.
+            steering, sampling, thinking, system_prompt = (
+                self._compose_generation_call(
                     steering=steering,
                     sampling=sampling,
                     thinking=thinking,
                     system_prompt=system_prompt,
+                    raw=raw,
+                    gen_seat=gen_seat,
+                    parent_node_id=parent_node_id,
+                    recipe_override=recipe_override,
                 )
+            )
             # ``""`` is the composition tiers' explicit "unsteered" (it stops
             # a cast default from filling the slot, and is what the
             # ``unsteered`` / ``inverted`` modifiers produce); once composed

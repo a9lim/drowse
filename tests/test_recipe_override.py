@@ -280,7 +280,7 @@ def test_compose_without_tiers_is_the_identity():
 
 
 # ---------------------------------------------------------------------------
-# Session hook: _resolve_recipe_override is a call into compose_call
+# Session hook: _compose_generation_call is one call into compose_call
 # ---------------------------------------------------------------------------
 
 
@@ -299,10 +299,13 @@ def _resolve(tree: LoomTree, mode: Any, **kwargs: Any):
     stub = cast(DrowseSession, SimpleNamespace(tree=tree))
     call: dict[str, Any] = {
         "steering": None, "sampling": None, "thinking": None,
-        "system_prompt": INHERIT_SYSTEM_PROMPT,
+        "system_prompt": INHERIT_SYSTEM_PROMPT, "raw": False,
+        "gen_seat": "assistant",
     }
     call.update(kwargs)
-    return DrowseSession._resolve_recipe_override(stub, mode, **call)
+    return DrowseSession._compose_generation_call(
+        stub, recipe_override=mode, **call,
+    )
 
 
 def test_resolve_override_composes_onto_the_anchor_once():
