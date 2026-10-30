@@ -110,6 +110,15 @@ def _mock_session() -> Any:
     return session
 
 
+def _wait_idle(client: Any, family: str, timeout: float = 2.0) -> None:
+    """Let a background preparation's worker finish."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if client.get(f"{_BASE}/{family}/preparations").json()["state"] != "running":
+            return
+        time.sleep(0.01)
+
+
 @pytest.fixture
 def session_and_client():
     from drowse.server import create_app
@@ -615,6 +624,74 @@ class TestPreparations:
                 break
             time.sleep(0.01)
         session.sae.load.assert_called_once_with("scope", layer=None)
+
+    @pytest.mark.parametrize(
+        ("source", "release"),
+        [("saelens:scope", "scope"), ("local:mine", "local:mine")],
+    )
+    def test_sae_fetch_parses_the_public_source_grammar(
+        self, session_and_client: Any, source: str, release: str,
+    ) -> None:
+        session, client = session_and_client
+        session.sae.load.return_value = {"layer": 14, "width": 4096}
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "fetch", "release": f"  {source} "},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "sae")
+        session.sae.load.assert_called_once_with(release, layer=None)
+
+    @pytest.mark.parametrize("source", ["scope", "saelens:", "local:Bad Name"])
+    def test_sae_fetch_rejects_a_malformed_source(
+        self, session_and_client: Any, source: str,
+    ) -> None:
+        """The public grammar is ``local:NAME`` / ``saelens:RELEASE``; the
+        route used to strip ``saelens:`` by hand and load anything else
+        verbatim."""
+        session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "fetch", "release": source},
+        )
+        assert resp.status_code == 400
+        assert "SAE source must be" in resp.json()["detail"]
+        session.sae.load.assert_not_called()
+
+    def test_sae_train_default_layer_matches_the_cli(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        """The default hook layer is ``select_runtime_layer`` over every
+        model layer, as ``drowse sae train`` picks it (a 31-layer model's
+        65% depth is the 19/20 tie, which the CLI breaks low)."""
+        from drowse.sae.backend import select_runtime_layer
+
+        session, client = session_and_client
+        session.layers = [MagicMock() for _ in range(31)]
+        session.sae.train.return_value = {
+            "runtime": {}, "metrics": {"tokens_trained": 1}, "source": "local:s",
+        }
+        monkeypatch.setattr(
+            "drowse.lens.corpus.stream_lens_corpus",
+            lambda _n, **_k: (["p"], "spec"),
+        )
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "train", "name": "mine", "tokens": 1000},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "sae")
+        layer = session.sae.train.call_args.kwargs["layer"]
+        assert layer == select_runtime_layer(frozenset(range(31)), 31) == 19
+
+        session.sae.train.reset_mock()
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "train", "name": "mine", "layer": 31},
+        )
+        assert resp.status_code == 400
+        assert "outside model layers 0..30" in resp.json()["detail"]
+        session.sae.train.assert_not_called()
 
     def test_sae_delete_unloads_when_no_train(
         self, session_and_client: Any,

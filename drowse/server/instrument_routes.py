@@ -428,11 +428,14 @@ def register_instrument_routes(app: FastAPI) -> None:
         )
 
     def start_sae_fetch(fields: dict[str, Any]) -> None:
+        from drowse.sae.sources import SAE_SOURCES, sae_release
+
         body = SaeFetchRequest(**fields)
         source = body.release.strip()
-        release = source.removeprefix("saelens:")
-        if not release:
-            raise HTTPException(400, "SAE source must not be empty")
+        try:
+            release = sae_release(SAE_SOURCES.parse(source))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         sae_fetch.start(
             lambda: sae_fetch_body(body, source, release),
             message=f"loading {source}", release=source, info=None,
@@ -458,11 +461,16 @@ def register_instrument_routes(app: FastAPI) -> None:
         await enable_live_after(sae_train, lambda: run_in_thread(session.sae.set_live, True))
 
     def start_sae_train(fields: dict[str, Any]) -> None:
+        from drowse.sae.backend import select_runtime_layer
+
         body = SaeTrainRequest(**fields)
         n_layers = len(session.layers)
-        layer = body.layer if body.layer is not None else round(0.65 * max(n_layers - 1, 0))
-        if not 0 <= layer < n_layers:
-            raise HTTPException(400, f"SAE layer {layer} is outside model layers 0..{n_layers - 1}")
+        try:
+            layer = select_runtime_layer(frozenset(range(n_layers)), n_layers, body.layer)
+        except ValueError:
+            raise HTTPException(
+                400, f"SAE layer {body.layer} is outside model layers 0..{n_layers - 1}",
+            ) from None
         sae_train.start(
             lambda: sae_train_body(body, layer),
             message="starting…", name=body.name, current=0, total=body.tokens, info=None,
