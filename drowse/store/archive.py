@@ -382,16 +382,18 @@ def _source_provenance(source: str) -> dict[str, str | None]:
 
 def _stream_entry(
     archive: zipfile.ZipFile, info: zipfile.ZipInfo, *, expected: dict[str, Any],
-    output: Path | None = None,
+    output: Path,
 ) -> None:
+    """Copy one entry to ``output``, hashing and size-checking while writing.
+
+    Durability is the promoting caller's single pass over the finished stage
+    (:func:`drowse.base.staging.promote`), not one fsync per entry.
+    """
     digest = hashlib.sha256()
     count = 0
-    handle = None
     try:
-        if output is not None:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            handle = open(output, "xb")
-        with archive.open(info, "r") as source:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(info, "r") as source, open(output, "xb") as handle:
             while chunk := source.read(1024 * 1024):
                 count += len(chunk)
                 if count > expected["size"] or count > DROWSE_ARCHIVE_MAX_FILE_BYTES:
@@ -399,8 +401,7 @@ def _stream_entry(
                         f"archive entry {info.filename!r} exceeds its declared size"
                     )
                 digest.update(chunk)
-                if handle is not None:
-                    handle.write(chunk)
+                handle.write(chunk)
         if count != expected["size"]:
             raise DrowseArchiveError(
                 f"archive entry {info.filename!r} has the wrong size"
@@ -409,16 +410,10 @@ def _stream_entry(
             raise DrowseArchiveError(
                 f"archive entry {info.filename!r} failed SHA-256 verification"
             )
-        if handle is not None:
-            handle.flush()
-            os.fsync(handle.fileno())
     except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
         raise DrowseArchiveError(
             f"could not read archive entry {info.filename!r} ({exc})"
         ) from exc
-    finally:
-        if handle is not None:
-            handle.close()
 
 
 def extract_drowse_archive(archive_path: Path, root: Path) -> ArchiveClosure:
