@@ -113,6 +113,8 @@ def web_client():
     ("/icons/tab-home.png", "image/png"),
     ("/icons/apple-touch-icon.png", "image/png"),
     ("/theme-init.js", "javascript"),
+    # Offline feature labels for local SAELens gemma-scope-2 releases.
+    ("/assets/gemma-3-1b-it.json", "json"),
 ])
 def test_dashboard_public_assets_are_served_as_files(
     web_client: Any, path: str, content_type: str,
