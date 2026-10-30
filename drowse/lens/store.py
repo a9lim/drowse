@@ -1399,18 +1399,14 @@ def remove_lens(model_id: str, name: str = "default") -> bool:
             except OSError as exc:
                 log.warning("could not remove J-lens tensor %s: %s", path, exc)
         fsync_directory(final_anchor.parent)
-        # Unpublish the selection when it named the lens just deleted, so it
-        # can never outlive what it points at.  The registry owns the payload
-        # shape.
-        from drowse.lens.sources import (
-            LENS_SOURCES, lens_root, load_active_lens_source,
-        )
+        # Unpublish the selection only when it named the lens just deleted,
+        # so it can never outlive what it points at — and never clears a
+        # different local lens that is still on disk.
+        from drowse.lens.sources import LENS_SOURCES, lens_root
 
-        active = load_active_lens_source(model_id)
-        if active is not None and active["kind"] == "local":
-            LENS_SOURCES.clear_if_active(
-                lens_root(model_id), model_id, "local", active["name"],
-            )
+        LENS_SOURCES.clear_if_active(
+            lens_root(model_id), model_id, "local", name,
+        )
         return removed
 
 

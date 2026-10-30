@@ -714,6 +714,28 @@ def test_remove_lens() -> None:
     assert remove_lens(_MODEL) is False
 
 
+def test_remove_lens_keeps_a_different_active_local_lens() -> None:
+    """Removing one local lens must not unpublish another that stays on disk."""
+    from drowse.lens.sources import load_active_lens_source
+
+    _save(_lens())
+    save_lens(
+        _lens(), _MODEL, name="relp", backward_rules="relp",
+        corpus_spec="test-corpus", corpus_sha256=_digest("abc123"),
+        seq_len=128, dim_batch=8, skip_first=16,
+    )
+    active = load_active_lens_source(_MODEL)
+    assert active is not None and active["name"] == "relp"
+
+    assert remove_lens(_MODEL, "default") is True
+    active = load_active_lens_source(_MODEL)
+    assert active is not None and active["name"] == "relp"
+    assert load_lens(_MODEL) is not None
+
+    assert remove_lens(_MODEL, "relp") is True
+    assert load_active_lens_source(_MODEL) is None
+
+
 def test_remove_lens_reaps_crash_left_streaming_temp() -> None:
     generation, _ = lens_paths(_MODEL)
     orphan = generation.parent / "jlens.layer-1.gen-deadbeef.safetensors.tmp"
