@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from drowse.generation.results import GenerationResult, ProbeReading
+from drowse.loom.tree import LoomTree
 from drowse.steering.composer import SteeringComposer
 
 if TYPE_CHECKING:
@@ -210,7 +211,7 @@ def _fast_batch_session():
     s._lens_instrument.probes = {}
     s._sae_instrument.probes = {}
     s._sae_layer = None
-    s._active_gen_reservation = None
+    s.tree = LoomTree()
     s._last_token_probe_payload = None
     s._capture_state = CaptureState()
     from drowse.readout.capture_buffer import HiddenCapture

@@ -543,6 +543,32 @@ class CastMember:
     recipe: Recipe | None = None
     notes: str = ""
 
+    @classmethod
+    def from_parts(
+        cls,
+        *,
+        steering: str | None = None,
+        sampling: SamplingConfig | None = None,
+        thinking: bool | None = None,
+        seed: int | None = None,
+        notes: str = "",
+    ) -> "CastMember":
+        """Build a member, validating its steering expression now.
+
+        A typo surfaces at authoring time (``SteeringExprError``) rather than
+        on the member's first generation.  A member whose fields are all
+        unset is a bare named label: legal, it contributes no defaults.
+        """
+        if steering:
+            from drowse.steering.grammar import parse_expr
+            parse_expr(steering)
+        recipe = None
+        if any(part is not None for part in (steering, sampling, thinking, seed)):
+            recipe = Recipe.from_parts(
+                steering=steering, sampling=sampling, thinking=thinking, seed=seed,
+            )
+        return cls(recipe=recipe, notes=notes)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "recipe": self.recipe.to_dict() if self.recipe is not None else None,

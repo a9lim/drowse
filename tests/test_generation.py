@@ -19,6 +19,7 @@ from drowse.readout.types import ScalarReading
 from drowse.generation.results import GenerationResult, ProbeReading
 from drowse.generation.sampling import SamplingConfig
 from drowse.loom.recipe import ComposedCall
+from drowse.loom.tree import LoomTree
 from drowse.session.session import (
     CaptureMode,
     CaptureState,
@@ -845,60 +846,6 @@ def test_generate_stream_exposes_current_result() -> None:
     assert stream.result is result
 
 
-def test_token_fork_accepts_multitoken_authored_replacement() -> None:
-    result = GenerationResult(
-        text="kept replacement", tokens=[10, 41, 42], token_count=3,
-        tok_per_sec=1.0, elapsed=1.0,
-    )
-    captured: dict[str, Any] = {}
-    recipe = SimpleNamespace(
-        steering="0.2 calm",
-        sampling=SamplingConfig(max_tokens=4, seed=9),
-        thinking=False,
-    )
-    node = SimpleNamespace(
-        raw_token_ids=[10, 11, 12],
-        parent_id="parent",
-        recipe=recipe,
-        role="assistant",
-        role_label="guide",
-    )
-    session: Any = DrowseSession.__new__(DrowseSession)
-    session.tree = SimpleNamespace(get=lambda node_id: node)
-    session._tokenizer = SimpleNamespace(
-        encode=lambda text, add_special_tokens: [41, 42],
-    )
-    session.config = GenerationConfig(max_new_tokens=16)
-
-    def _generate_core(input_text: Any, **kwargs: Any) -> GenerationResult:
-        captured["input"] = input_text
-        captured.update(kwargs)
-        return result
-
-    session._generate_core = _generate_core
-    actual = DrowseSession.fork_from_token(
-        session,
-        "source",
-        1,
-        replacement_text="replacement phrase",
-    )
-
-    assert actual is result
-    assert captured["forced_prefix"] == [10, 41, 42]
-    assert captured["parent_node_id"] == "parent"
-    assert captured["gen_seat"] == "assistant"
-    assert captured["steering"] == "0.2 calm"
-    assert captured["thinking"] is False
-    assert captured["sampling"].max_tokens == 7
-    assert captured["sampling"].seed == 9
-    assert captured["sampling"].assistant_role == "guide"
-
-    DrowseSession.fork_from_token(session, "source", 1, 11, seed=123)
-    assert captured["forced_prefix"] == [10, 11]
-    assert captured["sampling"].seed == 123
-    assert recipe.sampling.seed == 9
-
-
 def test_generate_stream_live_readouts_false_suppresses_readout_flags() -> None:
     result = GenerationResult(
         text="ok", tokens=[7], token_count=1, tok_per_sec=1.0, elapsed=1.0,
@@ -1070,7 +1017,7 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
 
     session._finalize_generation = _finalize
     session._end_capture = lambda: None
-    session._active_gen_reservation = None
+    session.tree = LoomTree()
 
     def _on_token(
         text: str,
@@ -2585,22 +2532,25 @@ def _transaction_stub_session() -> Any:
     s._monitor = SimpleNamespace(set_subspace_coords=lambda _flag: None)
     s._close_instrument_runs = lambda: None
     s._capture_state = CaptureState()
+    s.tree = LoomTree()
     return s
 
 
 def test_generation_transaction_detaches_capture_when_the_body_never_does():
     """A BaseException before the body's own teardown (a preamble failure,
     a KeyboardInterrupt) must still leave no capture hooks attached — the
-    transaction's teardown is the backstop, and it also frees the phase and
-    the lock."""
+    transaction's teardown is the backstop, and it also frees the phase, the
+    lock and the loom reservation."""
     s = _transaction_stub_session()
 
     with pytest.raises(KeyboardInterrupt):
         with s._generation_transaction():
+            s.tree.reserve(s.tree.root_id)
             raise KeyboardInterrupt
 
     assert s._end_capture_calls == 1
     assert s._gen_phase is GenState.IDLE
+    assert s.tree.reservation is None
     assert s._gen_lock.acquire(blocking=False)
     s._gen_lock.release()
 

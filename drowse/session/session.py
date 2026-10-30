@@ -51,11 +51,7 @@ from drowse.generation.token_callback import (
 from drowse.model.scene import TurnGrammar
 from drowse.generation.render import PromptRenderer
 from drowse.events import LoomMutated
-from drowse.loom.errors import (
-    InvalidNodeOperationError,
-    LoomTreeError,
-    MutationDuringGenerationError,
-)
+from drowse.loom.errors import InvalidNodeOperationError
 from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt
 from drowse.loom.recipe import (
     CastMember,
@@ -65,6 +61,13 @@ from drowse.loom.recipe import (
     derive_seed_schedule,
 )
 from drowse.loom.tree import LoomTree
+from drowse.loom.diff import node_diff
+from drowse.loom.ops import (
+    append_turn,
+    begin_generation_turn,
+    plan_fork,
+    plan_prefill,
+)
 from drowse.model.arch import get_layers, get_model_info, workspace_layer_indices
 from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.model.load import load_model
@@ -1199,7 +1202,6 @@ class DrowseSession:
         self.tree = LoomTree(
             events=self.events,
             model_id=self._model_info["model_id"],
-            conflict_check=self._loom_conflict_check,
         )
         self._joint_logprob_cache: dict[tuple[str, str], Any] = {}
 
@@ -1214,11 +1216,6 @@ class DrowseSession:
 
         self.events.subscribe(_invalidate_tree_analysis_caches)
 
-        # Subtree root reserved by an in-flight generation (the user-parent
-        # of the streaming assistant target).  None while idle; set by
-        # ``_generate_core`` before token streaming begins, cleared in the
-        # outermost ``finally``.  Consulted by :meth:`_loom_conflict_check`.
-        self._active_gen_reservation: str | None = None
         self._last_result: GenerationResult | None = None
         self._last_per_token_scores: dict[str, list[float]] | None = None
         self._last_token_probe_payload: dict[str, Any] | None = None
@@ -1640,13 +1637,6 @@ class DrowseSession:
     @joint_logprob_cache.setter
     def joint_logprob_cache(self, cache: dict[tuple[str, str], Any]) -> None:
         self._joint_logprob_cache = cache
-
-    @property
-    def loom_conflict_check(self) -> "Callable[[str, str], None]":
-        """The bound tree-mutation conflict checker, for handing to a freshly
-        loaded :class:`LoomTree` via ``set_conflict_check`` — raises
-        :class:`MutationDuringGenerationError` on a conflicting op."""
-        return self._loom_conflict_check
 
     def ensure_manifold_loaded(self, key: str) -> None:
         """Load the manifold artifact for registry key ``key`` if absent.
@@ -5628,7 +5618,7 @@ class DrowseSession:
                         # mutators (edit / delete on this subtree) need to be
                         # free again now that the streaming target is no
                         # longer live.
-                        self._active_gen_reservation = None
+                        self.tree.reserve(None)
                         self._last_token_probe_payload = None
                         self._last_token_payload = None
                     finally:
@@ -6584,19 +6574,10 @@ class DrowseSession:
                 out[name] = d
         return out
 
-    # -- Cross-branch diff --
+    # -- Conversation (loom) --
 
     def diff_nodes(self, a_id: str, b_id: str) -> Any:
-        """Return a :class:`drowse.loom.diff.NodeDiff` between two nodes.
-
-        Both nodes are looked up in :attr:`tree`; the diff bundles the
-        word-level text diff and the readings delta table.  ``parent_id``
-        on the returned diff is the shared parent when both nodes
-        share one (the common sibling-comparison case); ``None``
-        otherwise.
-        """
-        from drowse.loom.diff import node_diff
-
+        """Return a :class:`drowse.loom.diff.NodeDiff` between two nodes."""
         return node_diff(self.tree, a_id, b_id)
 
     def fork_from_token(
@@ -6611,98 +6592,17 @@ class DrowseSession:
     ) -> GenerationResult:
         """Regenerate ``node_id`` as a sibling with a replacement at one token.
 
-        Replays the assistant node's raw decode sequence up to
-        ``raw_index``, forces either ``alt_token_id`` or the tokenization of
-        ``replacement_text`` at that position, then samples the continuation
-        freely.  Authored text may span multiple model tokens.  The node's
-        steering, sampling, and thinking recipe is reused.  By default the
-        original seed is re-applied and the sampler still draws every forced
-        step, preserving the RNG stream through the fork point for a clean
-        counterfactual.  Passing ``seed`` instead requests a newly sampled
-        ending while keeping the forced prefix fixed.
-
-        Lands as a sibling under the same parent turn, occupying the same
-        seat as the source node (a user-seat generated node forks into
-        user-seat siblings — the cast model).  Raises
-        :class:`InvalidNodeOperationError` when the node has no
-        ``raw_token_ids`` capability (legacy or transcript-loaded node), or
-        when ``raw_index`` is out of range.
+        Forces ``alt_token_id`` (or the tokenization of ``replacement_text``)
+        at ``raw_index`` of the node's raw decode sequence and samples the
+        rest under the node's recipe; see :func:`drowse.loom.ops.plan_fork`.
         """
-        from dataclasses import replace as _replace
-
-        node = self.tree.get(node_id)
-        raw = node.raw_token_ids
-        if not raw:
-            raise InvalidNodeOperationError(
-                f"fork_from_token: {node_id!r} has no raw token record "
-                f"(transcript-loaded node — not forkable)"
-            )
-        if not 0 <= raw_index < len(raw):
-            raise InvalidNodeOperationError(
-                f"fork_from_token: raw_index {raw_index} out of range "
-                f"[0, {len(raw)}) for {node_id!r}"
-            )
-        if node.parent_id is None:
-            raise InvalidNodeOperationError(
-                f"fork_from_token: {node_id!r} has no parent to anchor "
-                f"the forked sibling under"
-            )
-        if (alt_token_id is None) == (replacement_text is None):
-            raise InvalidNodeOperationError(
-                "fork_from_token: provide exactly one alternative token id "
-                "or replacement text"
-            )
-        if replacement_text is not None:
-            replacement_ids = [
-                int(t) for t in self._tokenizer.encode(
-                    replacement_text, add_special_tokens=False,
-                )
-            ]
-            if not replacement_ids:
-                raise InvalidNodeOperationError(
-                    "fork_from_token: replacement text tokenized to an empty "
-                    "sequence"
-                )
-        else:
-            assert alt_token_id is not None
-            replacement_ids = [int(alt_token_id)]
-        forced_prefix = [int(t) for t in raw[:raw_index]] + replacement_ids
-
-        recipe = node.recipe
-        base_sampling = (
-            recipe.sampling
-            if (recipe is not None and recipe.sampling is not None)
-            else SamplingConfig()
+        turn = plan_fork(
+            self.tree, self._tokenizer, node_id, raw_index, alt_token_id,
+            replacement_text=replacement_text, seed=seed,
+            default_max_tokens=self.config.max_new_tokens,
         )
-        # The forced prefix burns ``len(forced_prefix)`` decode steps
-        # before the continuation starts — extend the token budget by
-        # that much so a deep fork keeps the original continuation
-        # headroom rather than stopping just past the fork point.
-        base_max = base_sampling.max_tokens or self.config.max_new_tokens
-        fork_sampling = _replace(
-            base_sampling, max_tokens=len(forced_prefix) + base_max,
-            **({"seed": seed} if seed is not None else {}),
-        )
-        # The sibling inherits the source node's label on its own seat —
-        # the tree's stamped label wins over whatever the recipe's
-        # sampling boxes held.
-        if node.role == "user":
-            fork_sampling = _replace(fork_sampling, user_role=node.role_label)
-        else:
-            fork_sampling = _replace(
-                fork_sampling, assistant_role=node.role_label,
-            )
-
         return self._generate_core(
-            None,
-            steering=recipe.steering if recipe is not None else None,
-            sampling=fork_sampling,
-            thinking=recipe.thinking if recipe is not None else None,
-            on_token=on_token,
-            parent_node_id=node.parent_id,
-            forced_prefix=forced_prefix,
-            gen_seat=node.role,
-            system_prompt=getattr(recipe, "system_prompt", INHERIT_SYSTEM_PROMPT),
+            turn.input, on_token=on_token, **turn.generate_kwargs(),
         )
 
     def prefill_assistant(
@@ -6714,138 +6614,18 @@ class DrowseSession:
         sampling: SamplingConfig | None = None,
         on_token: TokenCallback | None = None,
     ) -> GenerationResult:
-        """Answer-prefill — seed the assistant reply under a user node.
+        """Generate an assistant reply to user node ``node_id`` that opens with ``text``.
 
-        Generates an assistant child of the user node ``node_id`` whose
-        response *begins* with ``text``, then samples the continuation
-        freely.  ``text`` is tokenized and handed to the engine as a
-        ``forced_prefix`` — the same logit primitive :meth:`fork_from_token`
-        rides — so the first ``len(forced_prefix)`` decode steps emit
-        exactly those ids before free sampling takes over.  The result
-        lands as a sibling assistant node under ``node_id`` (the dedup
-        path :meth:`fork_from_token` uses: anchor at the user node's
-        parent so ``add_user_turn`` re-uses the existing user turn).
-
-        Prefill is an *answer* prefill: ``text`` is the start of the
-        response, so the thinking channel is skipped entirely
-        (``thinking=False``).  Unlike a fork there's no source recipe to
-        inherit — ``steering`` / ``sampling`` are honored exactly as a
-        normal :meth:`generate` call.  The token budget is bumped by
-        ``len(forced_prefix)`` so the continuation keeps full headroom
-        rather than stopping just past the seeded span.
-
-        Raises :class:`InvalidNodeOperationError` when ``node_id`` isn't a
-        user node, or when ``text`` tokenizes to an empty sequence.
+        See :func:`drowse.loom.ops.plan_prefill`.
         """
-        from dataclasses import replace as _replace
-
-        node = self.tree.get(node_id)
-        if node.role != "user":
-            raise InvalidNodeOperationError(
-                f"prefill_assistant: {node_id!r} is a {node.role} node, "
-                f"not a user node — prefill seeds the assistant reply "
-                f"that hangs off a user turn"
-            )
-        forced_prefix = list(
-            self._tokenizer.encode(text, add_special_tokens=False)
+        turn = plan_prefill(
+            self.tree, self._tokenizer, node_id, text,
+            steering=steering, sampling=sampling,
+            default_max_tokens=self.config.max_new_tokens,
         )
-        if not forced_prefix:
-            raise InvalidNodeOperationError(
-                f"prefill_assistant: {text!r} tokenized to an empty "
-                f"sequence — nothing to prefill"
-            )
-
-        base_sampling = sampling if sampling is not None else SamplingConfig()
-        base_max = base_sampling.max_tokens or self.config.max_new_tokens
-        prefill_sampling = _replace(
-            base_sampling, max_tokens=len(forced_prefix) + base_max,
-        )
-
         return self._generate_core(
-            node.text,
-            steering=steering,
-            sampling=prefill_sampling,
-            thinking=False,
-            on_token=on_token,
-            parent_node_id=node.parent_id,
-            forced_prefix=forced_prefix,
+            turn.input, on_token=on_token, **turn.generate_kwargs(),
         )
-
-    # -- Authored turns (no-generation commits) --
-
-    def _check_thinking_commit(self, thinking: str | None) -> None:
-        """Refuse a committed thinking block the renderer can't carry.
-
-        Committed thinking renders through the scene stitcher's family
-        think delimiters — a family without them (gemma), a channel-
-        thinking family (gpt-oss), or a template-fallback family (GLM)
-        would raise at the *next* render, long after the commit.  Fail
-        at commit time instead, with the same error the renderer uses.
-        """
-        if thinking is None:
-            return
-        from drowse.model.scene import SceneThinkingUnsupportedError
-
-        grammar = self.scene_grammar
-        if grammar is None or grammar.think_open is None:
-            raise SceneThinkingUnsupportedError(
-                "this model family has no scene-mode think delimiters — "
-                "a committed thinking block could not be rendered"
-            )
-
-    def append_user_turn(
-        self,
-        parent_node_id: str | None,
-        text: str,
-        *,
-        allow_any_parent: bool = False,
-        role_label: str | None = None,
-        thinking: str | None = None,
-    ) -> str:
-        """Append a user-seat span without generating.
-
-        If the selected parent already has the user structural role and the
-        same effective ``role_label``, ``text`` is concatenated exactly onto
-        that node. Otherwise a new user-role child is created. Legacy chat
-        templates reject the latter user-under-user shape; scene renderers
-        accept it.
-
-        ``allow_any_parent`` skips the user-under-user guard: in flat
-        (base-model) mode the role tag is authorship provenance, not a
-        turn-taking constraint, so an authored span may hang under a
-        node of any role.
-
-        ``text`` must be non-empty (whitespace-only is honored, but a
-        completely empty string raises) — empty appends should be
-        no-op'd at the surface, not sent over the wire.
-        """
-        if text == "":
-            raise InvalidNodeOperationError(
-                "append_user_turn: text must be non-empty"
-            )
-        if thinking is not None:
-            self._check_thinking_commit(thinking)
-        parent_id = parent_node_id or self.tree.active_node_id
-        parent = self.tree.get(parent_id)
-        if parent.role == "user" and parent.role_label == role_label:
-            combined = parent.text + text
-            raw_token_ids = list(
-                self._tokenizer.encode(combined, add_special_tokens=False)
-            )
-            return self.tree.append_authored(
-                parent_id,
-                text,
-                thinking_text=thinking,
-                raw_token_ids=raw_token_ids,
-            )
-
-        # A different role label is a genuinely new turn.  Scene mode lifts
-        # the legacy user-under-user guard for that shape.
-        if not allow_any_parent and self.scene_grammar is None:
-            self._check_user_send_target(parent_node_id)
-        return self.tree.add_user_turn(
-            text, parent_id=parent_node_id, role_label=role_label,
-            thinking_text=thinking)
 
     def append_turn(
         self,
@@ -6857,120 +6637,15 @@ class DrowseSession:
         role_label: str | None = None,
         thinking: str | None = None,
     ) -> str:
-        """Append one authored span in a structural chat-template role.
+        """Commit one authored span in seat ``role`` without generating.
 
-        This is the role-neutral append primitive. The specialized
-        :meth:`append_user_turn` and :meth:`append_assistant_turn` methods
-        retain their role-specific validation and concatenation behavior.
+        ``raw`` is flat (base-model) mode, where seating is free; see
+        :func:`drowse.loom.ops.append_turn`.
         """
-        if role == "user":
-            return self.append_user_turn(
-                parent_node_id,
-                text,
-                allow_any_parent=raw,
-                role_label=role_label,
-                thinking=thinking,
-            )
-        if role != "assistant":
-            raise ValueError(
-                f"role must be 'user' or 'assistant', got {role!r}"
-            )
-        parent = parent_node_id or self.tree.active_node_id
-        return self.append_assistant_turn(
-            parent,
-            text,
-            role_label=role_label,
-            thinking=thinking,
+        return append_turn(
+            self.tree, self._tokenizer, self.scene_grammar, parent_node_id,
+            text, seat=role, flat=raw, role_label=role_label, thinking=thinking,
         )
-
-    def append_assistant_turn(
-        self,
-        user_node_id: str,
-        text: str,
-        *,
-        role_label: str | None = None,
-        thinking: str | None = None,
-    ) -> str:
-        """Append an assistant-role span without generating.
-
-        If ``user_node_id`` is already an assistant structural role under the
-        same effective ``role_label``, ``text`` is concatenated exactly onto
-        that node. Otherwise an authored assistant child is created with no
-        sampling or steering. Authored messages keep ``recipe=None`` and carry
-        tokenized full text so they remain forkable.
-
-        Raises :class:`InvalidNodeOperationError` when ``user_node_id``
-        isn't a user node on a legacy-render family (scene mode frees
-        the seating — the parameter name is historic), when ``text`` is
-        empty, or when it tokenizes to an empty sequence.  Returns the
-        new assistant node id; the loom's active node advances to it.
-        """
-        if text == "":
-            raise InvalidNodeOperationError(
-                "append_assistant_turn: text must be non-empty"
-            )
-        if thinking is not None:
-            self._check_thinking_commit(thinking)
-        node = self.tree.get(user_node_id)
-        if node.role == "assistant" and node.role_label == role_label:
-            combined = node.text + text
-            raw_token_ids = list(
-                self._tokenizer.encode(combined, add_special_tokens=False)
-            )
-            if not raw_token_ids:
-                raise InvalidNodeOperationError(
-                    f"append_assistant_turn: {combined!r} tokenized to an "
-                    f"empty sequence — nothing to append"
-                )
-            return self.tree.append_authored(
-                user_node_id,
-                text,
-                thinking_text=thinking,
-                raw_token_ids=raw_token_ids,
-            )
-        # Scene mode lifts the user-parent requirement: the stitcher
-        # renders arbitrary seat sequences, so an authored assistant
-        # turn may hang under any node (a/a, assistant-first shapes).
-        # Legacy-render families keep the strict guard — their
-        # templates can't render the freed shapes.
-        if node.role != "user" and self.scene_grammar is None:
-            raise InvalidNodeOperationError(
-                f"append_assistant_turn: {user_node_id!r} is a "
-                f"{node.role} node, not a user node — an authored "
-                f"assistant turn hangs off a user turn (free seating "
-                f"requires scene mode)"
-            )
-        raw_token_ids = list(
-            self._tokenizer.encode(text, add_special_tokens=False)
-        )
-        if not raw_token_ids:
-            raise InvalidNodeOperationError(
-                f"append_assistant_turn: {text!r} tokenized to an "
-                f"empty sequence — nothing to append"
-            )
-
-        new_id = self.tree.begin_assistant(
-            user_node_id, recipe=None, role_label=role_label)
-        # Drop the empty token blobs ``begin_assistant`` seeded — an
-        # authored turn has no per-token scores; ``None`` matches the
-        # transcript-loaded shape so renderers/saves treat it the same.
-        try:
-            authored = self.tree.nodes[new_id]
-            authored.tokens = None
-            authored.thinking_tokens = None
-        except KeyError:  # pragma: no cover — begin_assistant just added it
-            pass
-        self.tree.finalize_assistant(
-            new_id,
-            text=text,
-            applied_steering=None,
-            finish_reason="stop",
-            raw_token_ids=raw_token_ids,
-            thinking_text=thinking,
-        )
-        return new_id
-
-    # -- Cast roster --
 
     def set_cast_member(
         self,
@@ -6981,31 +6656,12 @@ class DrowseSession:
         thinking: bool | None = None,
         seed: int | None = None,
         notes: str = "",
-    ) -> "CastMember":
-        """Create or replace the cast member under ``label``.
-
-        Convenience over :meth:`LoomTree.set_cast_member` that builds the
-        member's :class:`Recipe` from parts and validates the steering
-        expression *now* (``parse_expr``) so a typo surfaces at authoring
-        time, not on the member's first generation.  A member whose
-        fields are all unset is a bare named label — legal, it just
-        contributes no defaults.
-        """
-        if steering:
-            from drowse.steering.grammar import parse_expr
-            parse_expr(steering)  # raises SteeringExprError on bad syntax
-        recipe: Recipe | None = None
-        if (
-            steering is not None
-            or sampling is not None
-            or thinking is not None
-            or seed is not None
-        ):
-            recipe = Recipe.from_parts(
-                steering=steering, sampling=sampling, thinking=thinking,
-                seed=seed,
-            )
-        member = CastMember(recipe=recipe, notes=notes)
+    ) -> CastMember:
+        """Create or replace the cast member under ``label`` (steering validated now)."""
+        member = CastMember.from_parts(
+            steering=steering, sampling=sampling, thinking=thinking,
+            seed=seed, notes=notes,
+        )
         self.tree.set_cast_member(label, member)
         return member
 
@@ -7013,148 +6669,26 @@ class DrowseSession:
         """Drop the cast member under ``label`` (no-op when absent)."""
         self.tree.remove_cast_member(label)
 
-    @property
-    def cast(self) -> "dict[str, CastMember]":
-        """Read view of the tree's cast roster (label → member)."""
-        return dict(self.tree.cast)
-
-    # -- History / loom tree --
-
-    def _check_user_send_target(self, parent_node_id: str | None) -> None:
-        """Refuse sending a new user turn from a user-role node.
-
-        A fresh user turn is invalid when the resolved parent is itself a
-        user node: that node is already
-        waiting for an assistant.  Allowing it would corrupt the tree
-        shape (user-under-user) and break the v2 chat-message flatten.
-
-        Resolved parent = ``parent_node_id`` when passed, else the active
-        node.  Internal regen paths pass ``parent_node_id=<grandparent>``
-        explicitly so add_user_turn's dedup re-uses the existing user
-        sibling rather than triggering this reject.
-
-        Raises :class:`InvalidNodeOperationError` (HTTP 400) on violation.
-        """
-        target_parent_id = (
-            parent_node_id if parent_node_id is not None
-            else self.tree.active_node_id
-        )
-        parent_node = (
-            self.tree.nodes.get(target_parent_id)
-            if target_parent_id is not None else None
-        )
-        if parent_node is not None and parent_node.role == "user":
-            raise InvalidNodeOperationError(
-                f"cannot send a new user turn from a user node "
-                f"({target_parent_id}): the active turn is already "
-                f"waiting for an assistant.  Use /regen to redo the "
-                f"assistant, or navigate away first."
-            )
-
-    def _loom_conflict_check(self, node_id: str, op: str) -> None:
-        """Tree-mutation conflict checker — see :mod:`drowse.loom.tree`.
-
-        The :class:`LoomTree` calls this at the entry of every mutator;
-        we raise :class:`MutationDuringGenerationError` (HTTP 409) when
-        the requested op conflicts with an in-flight generation's
-        subtree reservation.
-
-        Rules:
-
-        - Decoration ops (``star``, ``note``) and ``branch`` never raise.
-        - ``add_user_turn`` / ``begin_assistant`` / ``finalize_assistant``
-          run from inside the gen path itself; never raise here.
-        - ``edit``, ``delete_subtree``, and ``reset`` raise when the
-          target intersects ``self._active_gen_reservation``.
-
-        ``self._active_gen_reservation`` is the user-parent of the
-        streaming assistant node; the subtree rooted at that node is
-        reserved.
-        """
-        reservation = self._active_gen_reservation
-        if reservation is None:
-            return  # idle — every op is free
-        if op in ("add_user_turn", "begin_assistant", "finalize_assistant",
-                  "branch", "star", "note", "navigate"):
-            return
-        # ``op`` is "edit", "delete_subtree", "reset", or some future
-        # mutator: refuse when ``node_id`` is the reservation root, a
-        # descendant of it, or — for "reset" — anything at all.
-        if op == "reset":
-            raise MutationDuringGenerationError(
-                "cannot reset tree while a generation is in flight"
-            )
-        if node_id == reservation or self.tree.is_ancestor_of(reservation, node_id) \
-                or self.tree.is_ancestor_of(node_id, reservation):
-            raise MutationDuringGenerationError(
-                f"cannot {op} on a node inside an in-flight generation's "
-                f"reservation (reservation root: {reservation})"
-            )
-
     def rewind(self) -> None:
-        """Walk the active node back one user→assistant pair.
-
-        Non-destructive: the rewound pair stays in the
-        tree as a dead branch, navigable back via the sidebar / loom
-        screen.  ``clear_history`` is the destructive verb.
-        """
+        """Walk the active node back one submission (non-destructive)."""
         self.tree.rewind()
 
     def clear_history(self) -> None:
-        """Reset the tree to a fresh root.
-
-        Destructive — drops every branch.  Matches user expectation
-        of ``/clear`` meaning wipe.  Use :meth:`rewind` for the
-        non-destructive step-back.
-        """
+        """Reset the tree to a fresh root (destructive; refused mid-generation)."""
         self.tree.reset()
 
     def restore_tree(self, data: dict[str, Any]) -> LoomTree:
         """Atomically replace the live conversation with a validated tree.
 
-        The caller must hold the server's async session lock (or otherwise
-        guarantee that no generation is in flight).  Imported files are
-        model-bound: recipes and token ids are not portable across models,
-        so a mismatch is rejected instead of producing a subtly corrupt
-        continuation.  Runtime session identity is retained while every
-        conversation-owned field (branches, recipes, cast, tokens, notes)
-        comes from the file.
+        The caller must guarantee no generation is in flight (the server
+        holds its session lock).  A tree saved under another model is
+        refused; see :meth:`LoomTree.replacing`.
         """
-        restored = LoomTree.from_dict(
-            data,
-            events=self.events,
-            conflict_check=self._loom_conflict_check,
-        )
-        if restored.model_id not in (None, self.model_id):
-            raise LoomTreeError(
-                f"tree model {restored.model_id!r} does not match loaded model "
-                f"{self.model_id!r}"
-            )
-
-        old_tree = self.tree
-        old_ids = set(old_tree.nodes)
-        restored.model_id = self.model_id
-        restored.session_id = old_tree.session_id
-        # A restore is a mutation of this live session even when the file was
-        # saved at a lower revision.  Preserve monotonic wire revisions so
-        # connected clients can apply the replacement without a special
-        # rollback rule.
-        restored.rev = max(old_tree.rev, restored.rev) + 1
+        previous = self.tree
+        restored = LoomTree.replacing(previous, data, model_id=self.model_id)
         self.tree = restored
         self._joint_logprob_cache.clear()
-
-        new_ids = set(restored.nodes)
-        # LoomTree deliberately accepts the session EventBus through a
-        # cycle-breaking duck-typed boundary; emit through that same typed
-        # adapter rather than widening the core lifecycle Event union here.
-        restored._emit(LoomMutated(  # pyright: ignore[reportPrivateUsage]
-            op="restore",
-            rev=restored.rev,
-            added=tuple(nid for nid in restored.nodes if nid not in old_ids),
-            removed=tuple(nid for nid in old_tree.nodes if nid not in new_ids),
-            updated=tuple(nid for nid in restored.nodes if nid in old_ids),
-            active_node_id=restored.active_node_id,
-        ))
+        restored.announce_replacement(previous)
         return restored
 
     # -- Prefix KV cache --
@@ -8010,67 +7544,28 @@ class DrowseSession:
         continuation_node_id: str | None = None,
         system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT,
     ) -> str | None:
-        """Create the loom nodes for a stateful generation.
+        """Open the loom node a stateful generation streams into.
 
-        ``gen_seat`` is the seat the generated node occupies (the cast
-        model: "generated" is provenance, not a seat).  An explicit
-        non-assistant seat implies scene mode, where seating is free — the
-        user-under-user guard is skipped. ``continuation_node_id`` reuses an
-        existing same-role message whose text the caller will replay as the
-        forced decode prefix.
+        Stamps the generation receipt (steering, sampling, thinking, the
+        resolved system prompt and the probe roster with its hashes) and
+        delegates the node rules to :func:`drowse.loom.ops.begin_generation_turn`.
         """
         if stateless:
             return None
-
-        # Per-message role labels (roleplay scaffold) ride this send's
-        # SamplingConfig and are stamped onto the nodes at creation — the
-        # turn keeps its role regardless of later box changes.  Raw / flat
-        # mode has no chat template, so role labels don't apply there.
-        user_role = sampling.user_role if sampling is not None and not raw else None
-        assistant_role = (
-            sampling.assistant_role if sampling is not None and not raw else None
-        )
-
-        if isinstance(input, str) and raw:
-            # Flat (base-model) path: no user/assistant turn pairing.  A
-            # non-empty ``input`` is a typed span recorded as its own
-            # node; an empty ``input`` is a bare continuation that just
-            # extends the active leaf.  ``_check_user_send_target`` is
-            # skipped — in flat mode the role tag is authorship
-            # provenance, not a turn-taking constraint, so a span may
-            # hang under a node of any role.
-            if input != "":
-                user_node_id = self.tree.add_user_turn(
-                    input, parent_id=parent_node_id)
-            else:
-                user_node_id = parent_node_id or self.tree.active_node_id
-        elif isinstance(input, str):
-            if gen_seat == "assistant":
-                self._check_user_send_target(parent_node_id)
-            user_node_id = self.tree.add_user_turn(
-                input, parent_id=parent_node_id, role_label=user_role)
-        else:
-            # ``input=None`` (generate — no new authored turn) or a raw
-            # messages list: anchor directly on the parent.
-            user_node_id = parent_node_id or self.tree.active_node_id
-
-        self._active_gen_reservation = user_node_id
         recipe = Recipe(
             steering=str(steering_obj) if steering_obj is not None else None,
             sampling=sampling,
             thinking=use_thinking_req,
-            system_prompt=None if raw else self._renderer.resolve_system_prompt(system_prompt),
+            system_prompt=(
+                None if raw else self._renderer.resolve_system_prompt(system_prompt)
+            ),
             probes=list(self._monitor.probe_names),
         ).with_probe_hashes(self._probe_hash)
-        # The generated node's label follows its seat (user-seat gens are
-        # labeled by the ``user_role`` box, assistant-seat by ``assistant_role``).
-        gen_label = user_role if gen_seat == "user" else assistant_role
-        if continuation_node_id is not None:
-            return self.tree.begin_continuation(
-                continuation_node_id, recipe=recipe,
-            )
-        return self.tree.begin_assistant(
-            user_node_id, recipe=recipe, role_label=gen_label, seat=gen_seat)
+        return begin_generation_turn(
+            self.tree, input, raw=raw, parent_node_id=parent_node_id,
+            sampling=sampling, recipe=recipe, gen_seat=gen_seat,
+            continuation_node_id=continuation_node_id,
+        )
 
     def _compiled_graph_thread_safe(self) -> bool:
         """Whether this thread owns PyTorch's warmed CUDA graph tree."""

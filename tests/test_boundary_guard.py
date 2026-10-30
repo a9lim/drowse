@@ -7,7 +7,7 @@ Reaching in couples a frontend to the engine's internal layout, so a private
 rename silently breaks it — exactly the migration this test guards against
 regressing.  Every former reach-in has a public accessor now (``monitor``,
 ``manifolds``, ``profiles``, ``model_info``, ``generation_state``,
-``gen_lock``, ``joint_logprob_cache``, ``loom_conflict_check``,
+``gen_lock``, ``joint_logprob_cache``,
 ``ensure_manifold_loaded``, ``ensure_profile_registered``); a fresh reach-in
 should use those instead of being added to the allowlist below.
 
@@ -134,7 +134,7 @@ def test_no_frontend_session_private_reach_ins() -> None:
             "frontend code reaches past the DrowseSession public API.\n"
             "Use the public accessor (monitor / manifolds / profiles / "
             "model_info / generation_state / gen_lock / "
-            "joint_logprob_cache / loom_conflict_check / "
+            "joint_logprob_cache / "
             "ensure_manifold_loaded / ensure_profile_registered, …) at the "
             "call site, or — only if genuinely unavoidable — add the site to "
             "ALLOWLIST with a justification.\n\n" + report

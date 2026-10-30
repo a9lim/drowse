@@ -7,10 +7,9 @@ navigation.
 
 This module owns the data model only.  Generation integration, the
 gen-lock, and HTTP/WS event delivery live in the session and server
-layers.  Mutators that can conflict with an in-flight generation consult
-the conflict checker the session installs (:meth:`LoomTree.set_conflict_check`)
-and raise :class:`MutationDuringGenerationError` on a conflict, because the
-gen-lock state lives on the session, not the tree.
+layers.  An in-flight generation reserves the subtree it streams into
+(:meth:`LoomTree.reserve`); mutators that would disturb that subtree raise
+:class:`MutationDuringGenerationError`.
 
 The primitives (edit, branch, navigate, delete_subtree, graft, plus
 ``regenerate`` exposed via ``session.generate(parent_node_id=..., n=...)``)
@@ -44,6 +43,7 @@ from drowse.events import EventBus, LoomMutated
 from drowse.loom.errors import (
     InvalidNodeOperationError,
     LoomTreeError,
+    MutationDuringGenerationError,
     UnknownNodeError,
     is_number,
     require_fields,
@@ -312,19 +312,6 @@ _TOKEN_SIDECAR_MAX_LOAD_BYTES = 256 * 1024 * 1024
 TOKEN_SIDECAR_FORMAT_VERSION = 2
 
 
-# Hook signature used by the session to enforce gen-lock conflicts.  The
-# tree calls this before any mutator; the session implementation maps
-# the (node_id, op) pair to either a no-op (free op) or a raise
-# (MutationDuringGenerationError).  Default is a no-op for unit-test
-# usage of the tree without a session.
-ConflictChecker = Callable[[str, str], None]
-
-
-def _noop_conflict_check(node_id: str, op: str) -> None:
-    del node_id, op  # signature is the protocol; no work to do here
-    return
-
-
 class LoomTree:
     """Mutation-safe tree of conversation nodes.
 
@@ -346,14 +333,13 @@ class LoomTree:
         model_id: str | None = None,
         session_id: str | None = None,
         name: str | None = None,
-        conflict_check: ConflictChecker | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._events: EventBus | None = events  # emits LoomMutated when set
         self.model_id: str | None = model_id
         self.session_id: str | None = session_id
         self.name: str | None = name
-        self._conflict_check: ConflictChecker = conflict_check or _noop_conflict_check
+        self._reservation: str | None = None
 
         self.nodes: dict[str, LoomNode] = {}
         self.children_of: dict[str, list[str]] = {}
@@ -373,16 +359,43 @@ class LoomTree:
         self.active_node_id: str = root.id
 
     # ------------------------------------------------------------------
-    # Conflict-check wiring
+    # In-flight generation reservation
     # ------------------------------------------------------------------
 
-    def set_conflict_check(self, fn: ConflictChecker | None) -> None:
-        """Install a conflict-check hook.
+    @property
+    def reservation(self) -> str | None:
+        """Root of the subtree an in-flight generation streams into, or None."""
+        return self._reservation
 
-        The session sets this in its ``__init__`` so all mutator paths
-        consult ``session._loom_conflict_check`` before proceeding.
+    def reserve(self, node_id: str | None) -> None:
+        """Reserve the subtree rooted at ``node_id`` for a generation.
+
+        The generation path reserves the parent of the node it streams into
+        before the first token and releases (``None``) when it ends.  While
+        reserved, ``edit``/``append_authored``/``delete_subtree`` refuse a
+        node that is the root, a descendant or an ancestor of the
+        reservation, and ``reset`` refuses outright.  Adding turns, branching,
+        navigation and decoration stay free.
         """
-        self._conflict_check = fn or _noop_conflict_check
+        self._reservation = node_id
+
+    def _refuse_if_reserved(self, node_id: str, op: str) -> None:
+        reservation = self._reservation
+        if reservation is None:
+            return
+        if op == "reset":
+            raise MutationDuringGenerationError(
+                "cannot reset tree while a generation is in flight"
+            )
+        if (
+            node_id == reservation
+            or self.is_ancestor_of(reservation, node_id)
+            or self.is_ancestor_of(node_id, reservation)
+        ):
+            raise MutationDuringGenerationError(
+                f"cannot {op} on a node inside an in-flight generation's "
+                f"reservation (reservation root: {reservation})"
+            )
 
     # ------------------------------------------------------------------
     # Read
@@ -582,7 +595,6 @@ class LoomTree:
             parent = parent_id if parent_id is not None else self.active_node_id
             if parent not in self.nodes:
                 raise UnknownNodeError(parent)
-            self._conflict_check(parent, "add_user_turn")
             if dedup_existing:
                 for cid in self.children_of.get(parent, []):
                     sib = self.nodes[cid]
@@ -640,7 +652,6 @@ class LoomTree:
         with self._lock:
             if parent_id not in self.nodes:
                 raise UnknownNodeError(parent_id)
-            self._conflict_check(parent_id, "begin_assistant")
             node = LoomNode(
                 id=_ulid(),
                 parent_id=parent_id,
@@ -658,6 +669,40 @@ class LoomTree:
                 added=(node.id,), active_node_id=node.id,
             ))
             return node.id
+
+    def add_assistant_turn(
+        self,
+        parent_id: str,
+        text: str,
+        *,
+        role_label: str | None = None,
+        thinking_text: str | None = None,
+        raw_token_ids: list[int],
+    ) -> str:
+        """Land a finished, authored assistant turn under ``parent_id``.
+
+        An authored turn has no generation receipt (``recipe=None``) and no
+        per-token rows (``tokens=None``, the transcript-loaded shape); it
+        carries ``raw_token_ids`` so it stays forkable.  Surfaces see the
+        same ``begin_assistant`` + ``finalize_assistant`` pair a generated
+        turn produces.
+        """
+        with self._lock:
+            node_id = self.begin_assistant(
+                parent_id, recipe=None, role_label=role_label,
+            )
+            node = self.nodes[node_id]
+            node.tokens = None
+            node.thinking_tokens = None
+            self.finalize_assistant(
+                node_id,
+                text=text,
+                applied_steering=None,
+                finish_reason="stop",
+                raw_token_ids=raw_token_ids,
+                thinking_text=thinking_text,
+            )
+            return node_id
 
     def begin_continuation(
         self,
@@ -680,7 +725,6 @@ class LoomTree:
                 raise InvalidNodeOperationError(
                     "cannot continue the synthetic root node"
                 )
-            self._conflict_check(node_id, "begin_assistant")
             node.text = ""
             node.thinking_text = None
             node.tokens = []
@@ -831,7 +875,7 @@ class LoomTree:
                 raise UnknownNodeError(node_id)
             if node_id == self.root_id:
                 raise InvalidNodeOperationError("cannot edit the root node")
-            self._conflict_check(node_id, "edit")
+            self._refuse_if_reserved(node_id, "edit")
             node.text = text
             node.edit_count += 1
             node.edited_at = time.time()
@@ -863,7 +907,7 @@ class LoomTree:
                 raise InvalidNodeOperationError(
                     "cannot append to the synthetic root node"
                 )
-            self._conflict_check(node_id, "edit")
+            self._refuse_if_reserved(node_id, "edit")
             node.text += text
             if thinking_text is not None:
                 node.thinking_text = (node.thinking_text or "") + thinking_text
@@ -1030,16 +1074,16 @@ class LoomTree:
         re-seated on the surviving parent — the nearest ancestor that
         isn't being removed.  If that parent is the root, the user
         lands on the empty root, which is the natural "fresh start"
-        state.  Refuses the root delete outright; refuses (via the
-        conflict checker) when the subtree intersects an in-flight
-        generation's reservation.  Returns the count of nodes removed.
+        state.  Refuses the root delete outright; refuses when the subtree
+        intersects an in-flight generation's reservation.  Returns the count
+        of nodes removed.
         """
         with self._lock:
             if node_id == self.root_id:
                 raise InvalidNodeOperationError("cannot delete the root")
             if node_id not in self.nodes:
                 raise UnknownNodeError(node_id)
-            self._conflict_check(node_id, "delete_subtree")
+            self._refuse_if_reserved(node_id, "delete_subtree")
 
             # Collect every node in the subtree (DFS) plus the root.
             to_remove: list[str] = [node_id]
@@ -1141,7 +1185,7 @@ class LoomTree:
     def reset(self) -> None:
         """Drop the entire tree.  Refused under in-flight generation."""
         with self._lock:
-            self._conflict_check(self.root_id, "reset")
+            self._refuse_if_reserved(self.root_id, "reset")
             # Every current id is removed — including the *old* root, which the
             # fresh ``_ulid()`` root below replaces.  Reporting the old root in
             # ``removed`` keeps the delta self-consistent for id-tracking
@@ -1238,7 +1282,6 @@ class LoomTree:
         data: dict[str, Any],
         *,
         events: EventBus | None = None,
-        conflict_check: ConflictChecker | None = None,
     ) -> "LoomTree":
         require_fields(
             data, _TREE_FIELDS, "loom tree", optional=frozenset({"token_sidecar"})
@@ -1252,7 +1295,7 @@ class LoomTree:
         tree = cls.__new__(cls)
         tree._lock = threading.RLock()
         tree._events = events
-        tree._conflict_check = conflict_check or _noop_conflict_check
+        tree._reservation = None
         if not isinstance(data["drowse_version"], str):
             raise LoomTreeError("loom tree field 'drowse_version' must be a string")
         for field_name in ("model_id", "session_id", "name"):
@@ -1312,6 +1355,47 @@ class LoomTree:
             tree.cast[label] = CastMember.from_dict(raw)
         tree._validate_structure()
         return tree
+
+    @classmethod
+    def replacing(
+        cls,
+        previous: "LoomTree",
+        data: dict[str, Any],
+        *,
+        model_id: str | None,
+    ) -> "LoomTree":
+        """Validate ``data`` as the successor of the live ``previous`` tree.
+
+        Saved trees are model-bound (recipes and token ids do not port
+        across models), so a tree saved under another model is refused.
+        The successor keeps ``previous``'s event bus and session identity,
+        and its ``rev`` continues past both so connected clients apply the
+        replacement as an ordinary forward mutation.  Nothing is emitted;
+        the owner installs the tree, then calls :meth:`announce_replacement`.
+        """
+        restored = cls.from_dict(data, events=previous._events)
+        if restored.model_id not in (None, model_id):
+            raise LoomTreeError(
+                f"tree model {restored.model_id!r} does not match loaded model "
+                f"{model_id!r}"
+            )
+        restored.model_id = model_id
+        restored.session_id = previous.session_id
+        restored.rev = max(previous.rev, restored.rev) + 1
+        return restored
+
+    def announce_replacement(self, previous: "LoomTree") -> None:
+        """Emit the ``restore`` delta that takes surfaces from ``previous`` here."""
+        with self._lock:
+            old_ids = set(previous.nodes)
+            self._emit(LoomMutated(
+                op="restore",
+                rev=self.rev,
+                added=tuple(nid for nid in self.nodes if nid not in old_ids),
+                removed=tuple(nid for nid in previous.nodes if nid not in self.nodes),
+                updated=tuple(nid for nid in self.nodes if nid in old_ids),
+                active_node_id=self.active_node_id,
+            ))
 
     def _validate_structure(self) -> None:
         node_ids = set(self.nodes)

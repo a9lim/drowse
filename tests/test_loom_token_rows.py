@@ -105,7 +105,6 @@ def _stateful_tap_session(tree: LoomTree, node_id: str) -> Any:
     session._sae_instrument.last_step_readings = None
     session._last_token_probe_payload = None
     session._end_capture = lambda: None
-    session._active_gen_reservation = None
     session._finalize_generation = lambda *_args, **_kwargs: GenerationResult(
         text="ab", tokens=[1], token_count=1, tok_per_sec=10.0, elapsed=0.1,
     )
