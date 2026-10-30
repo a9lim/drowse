@@ -233,16 +233,6 @@ def _site_tensor_paths(
     )
 
 
-def lens_tensor_paths(
-    model_id: str, sidecar: Mapping[str, Any], *, checkpoint: bool = False,
-    name: str, site: str = "out",
-) -> dict[int, Path]:
-    """Return every tensor generation one site of a validated sidecar names."""
-    del checkpoint  # both pointers share the artifact directory
-    directory = _local_dir(model_id, name)
-    return _site_tensor_paths(directory, sidecar, site, lens_layers(sidecar, site))
-
-
 def lens_artifact_size(
     model_id: str, *, name: str, checkpoint: bool = False,
 ) -> int:
@@ -266,13 +256,11 @@ def lens_artifact_size(
 
 
 def lens_payloads_match(
-    model_id: str, sidecar: Mapping[str, Any], *, checkpoint: bool = False,
-    name: str,
+    model_id: str, sidecar: Mapping[str, Any], *, name: str,
 ) -> bool:
     """Validate exact payload digests without materializing fp32 matrices."""
     from drowse.base.integrity import hash_file
 
-    del checkpoint
     directory = _local_dir(model_id, name)
     try:
         for site, entry in sidecar["sites"].items():
