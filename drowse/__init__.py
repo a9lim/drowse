@@ -93,6 +93,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "JacobianLensError": ("drowse.lens.jlens", "JacobianLensError"),
     "LensNotFittedError": ("drowse.lens.jlens", "LensNotFittedError"),
     "MultiTokenWordError": ("drowse.lens.jlens", "MultiTokenWordError"),
+    "InvalidTokenIdError": ("drowse.lens.jlens", "InvalidTokenIdError"),
     "RelpUnsupportedError": ("drowse.errors", "RelpUnsupportedError"),
 }
 
@@ -181,6 +182,7 @@ __all__ = [
     "JacobianLensError",
     "LensNotFittedError",
     "MultiTokenWordError",
+    "InvalidTokenIdError",
     "RelpUnsupportedError",
 ]
 
@@ -292,6 +294,7 @@ if TYPE_CHECKING:
         JacobianLensError as JacobianLensError,
         LensNotFittedError as LensNotFittedError,
         MultiTokenWordError as MultiTokenWordError,
+        InvalidTokenIdError as InvalidTokenIdError,
     )
     from drowse.lens.key import LensKey as LensKey
     from drowse.errors import (
