@@ -275,6 +275,49 @@ def test_every_public_exception_is_a_drowse_error() -> None:
     )
 
 
+def _stdlib_base_cases() -> list[tuple[type[BaseException], type[BaseException]]]:
+    from drowse.errors import (
+        AmbiguousVariantError,
+        ProfileError,
+        SaeBackendImportError,
+        SaeCoverageError,
+        SaeModelMismatchError,
+        SaeReleaseNotFoundError,
+        UnknownVariantError,
+    )
+    from drowse.model.role_templates import (
+        InvalidRoleError,
+        RoleSubstitutionUnsupportedError,
+        RoleTemplateDriftError,
+    )
+
+    return [
+        (ProfileError, ValueError),
+        (SaeBackendImportError, ImportError),
+        (SaeReleaseNotFoundError, ValueError),
+        (SaeModelMismatchError, ValueError),
+        (SaeCoverageError, ValueError),
+        (AmbiguousVariantError, ValueError),
+        (UnknownVariantError, KeyError),
+        (RoleSubstitutionUnsupportedError, ValueError),
+        (InvalidRoleError, ValueError),
+        (RoleTemplateDriftError, RuntimeError),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cls", "stdlib_base"), _stdlib_base_cases(), ids=lambda value: value.__name__,
+)
+def test_drowse_errors_keep_their_stdlib_base(
+    cls: type[BaseException], stdlib_base: type[BaseException],
+) -> None:
+    """Reparenting under ``DrowseError`` keeps the stdlib base, so existing
+    ``except ValueError`` (etc.) sites still catch it; the walker above
+    pins the ``DrowseError`` half for every public class."""
+    assert cls in _public_exception_classes()
+    assert issubclass(cls, stdlib_base)
+
+
 def test_cancellation_errors_agree_across_preparation_families() -> None:
     """A cooperative cancel reports 409 on both background-job families."""
     from drowse.lens.jlens import JacobianLensCancelled

@@ -8,18 +8,12 @@ import json
 import pytest
 import torch
 
-from drowse.errors import DrowseError
 from drowse.geometry.profile import Profile, ProfileError
 from drowse.base.integrity import PROFILE_FORMAT_VERSION
 
 
 def _mk(layers: Any = (0, 5, 10), dim: int = 8, dtype: Any = torch.float32) -> dict[int, torch.Tensor]:
     return {i: torch.randn(dim, dtype=dtype) for i in layers}
-
-
-def test_mro_profile_error_is_drowse_and_value_error():
-    assert issubclass(ProfileError, DrowseError)
-    assert issubclass(ProfileError, ValueError)
 
 
 def test_construct_and_dict_surface():
@@ -425,25 +419,3 @@ def test_merged_profile_saves(tmp_path: Path) -> None:
 # reparents to DrowseError while preserving its stdlib MRO.
 # ---------------------------------------------------------------------------
 
-def test_drowse_error_family_mro_contract():
-    """Every drowse-raised exception is a DrowseError AND its stdlib parent."""
-    from drowse.errors import (
-        AmbiguousVariantError,
-        SaeBackendImportError,
-        SaeCoverageError,
-        SaeModelMismatchError,
-        SaeReleaseNotFoundError,
-        UnknownVariantError,
-    )
-    cases: list[tuple[type[Exception], type[Exception]]] = [
-        (ProfileError, ValueError),
-        (SaeBackendImportError, ImportError),
-        (SaeReleaseNotFoundError, ValueError),
-        (SaeModelMismatchError, ValueError),
-        (SaeCoverageError, ValueError),
-        (AmbiguousVariantError, ValueError),
-        (UnknownVariantError, KeyError),
-    ]
-    for exc, stdlib_parent in cases:
-        assert issubclass(exc, DrowseError), exc
-        assert issubclass(exc, stdlib_parent), exc

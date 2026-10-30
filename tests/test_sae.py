@@ -6,44 +6,6 @@ from typing import Any
 import pytest
 
 
-def test_errors_subclass_drowse_error():
-    from drowse.errors import (
-        DrowseError,
-        SaeBackendImportError,
-        SaeReleaseNotFoundError,
-        SaeModelMismatchError,
-        SaeCoverageError,
-        AmbiguousVariantError,
-        UnknownVariantError,
-    )
-    for cls in (
-        SaeBackendImportError,
-        SaeReleaseNotFoundError,
-        SaeModelMismatchError,
-        SaeCoverageError,
-        AmbiguousVariantError,
-        UnknownVariantError,
-    ):
-        assert issubclass(cls, DrowseError)
-
-
-def test_errors_preserve_stdlib_mro():
-    from drowse.errors import (
-        SaeBackendImportError,
-        SaeReleaseNotFoundError,
-        SaeModelMismatchError,
-        SaeCoverageError,
-        AmbiguousVariantError,
-        UnknownVariantError,
-    )
-    assert issubclass(SaeBackendImportError, ImportError)
-    assert issubclass(SaeReleaseNotFoundError, ValueError)
-    assert issubclass(SaeModelMismatchError, ValueError)
-    assert issubclass(SaeCoverageError, ValueError)
-    assert issubclass(AmbiguousVariantError, ValueError)
-    assert issubclass(UnknownVariantError, KeyError)
-
-
 def test_sae_backend_protocol_shape():
     from drowse.sae.backend import SaeBackend
     from tests.support.sae import MockSaeBackend

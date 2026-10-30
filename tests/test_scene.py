@@ -103,12 +103,6 @@ def test_unknown_family_is_unsupported():
         extract_turn_grammar(tok, "wumpus")
 
 
-def test_scene_errors_are_drowse_errors():
-    assert issubclass(SceneGrammarError, DrowseError)
-    assert issubclass(SceneRenderError, DrowseError)
-    assert issubclass(SceneThinkingUnsupportedError, DrowseError)
-
-
 # ---------------------------------------------------------------------------
 # Arbitrary seat sequences — the point of the module
 # ---------------------------------------------------------------------------

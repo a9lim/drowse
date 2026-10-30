@@ -19,7 +19,6 @@ from typing import Any
 
 import pytest
 
-from drowse.errors import DrowseError
 from drowse.model.role_templates import (
     InvalidRoleError,
     SEAT_HEADERS,
@@ -528,20 +527,6 @@ def test_apply_with_role_tokenize_true_with_pt_tensors():
 # ---------------------------------------------------------------------------
 # Error hierarchy / family catch
 # ---------------------------------------------------------------------------
-
-
-def test_errors_subclass_drowse_error():
-    """All three error types catch under except DrowseError, matching project convention."""
-    for cls in (
-        RoleSubstitutionUnsupportedError,
-        RoleTemplateDriftError,
-        InvalidRoleError,
-    ):
-        assert issubclass(cls, DrowseError), cls
-    # And the stdlib parents are preserved per the errors.py contract.
-    assert issubclass(RoleSubstitutionUnsupportedError, ValueError)
-    assert issubclass(InvalidRoleError, ValueError)
-    assert issubclass(RoleTemplateDriftError, RuntimeError)
 
 
 def test_unsupported_error_caught_as_value_error():
