@@ -8,12 +8,12 @@ import pytest
 import torch
 from drowse.generation.results import (
     ProbeReadings,
-    ProbeReading,
     GenerationResult,
     RunSet,
     TokenEvent,
     ResultCollector,
 )
+from drowse.readout.types import ProbeReading
 
 
 class TestPublicAPI:

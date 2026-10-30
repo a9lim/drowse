@@ -27,10 +27,10 @@ from drowse.notebook import (  # noqa: E402
 from drowse.geometry.profile import Profile  # noqa: E402
 from drowse.generation.results import (  # noqa: E402
     GenerationResult,
-    ProbeReading,
     ProbeReadings,
     ResultCollector,
 )
+from drowse.readout.types import ProbeReading  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

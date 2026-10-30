@@ -277,9 +277,10 @@ Mahalanobis metric is mandatory: a missing or unusable target cache raises
 `WhitenerError` and the runner exits 1 with a regenerate-neutrals hint.
 
 **manifold compare** — `concepts` (1+), `-m` (required), `-v`, `-j`,
-`--ridge-scale FLOAT` (1.0). Loads `LayerWhitener.from_cache` up front and exits
-1 on a miss — compare is Mahalanobis-only, so a missing neutral cache surfaces
-directly instead of degrading. One arg ranks every installed fitted manifold
+`--ridge-scale FLOAT` (1.0). Loads the whitener up front
+(`store.neutral.load_neutral_whitener`) and exits 1 on a miss — compare is
+Mahalanobis-only, so a missing neutral cache surfaces directly instead of
+degrading. One arg ranks every installed fitted manifold
 against the target, two are pairwise, three or more produce an N×N matrix;
 bulk selectors (`tag:`/`namespace:`/`all`) expand to names and inherit any
 `:variant` suffix. Concepts fold from their 2-node manifolds.

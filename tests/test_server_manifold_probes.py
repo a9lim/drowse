@@ -31,10 +31,10 @@ from fastapi.testclient import TestClient
 
 from drowse.generation.results import (
     GenerationResult,
-    ProbeReading,
     RunSet,
     TokenEvent,
 )
+from drowse.readout.types import ProbeReading
 from tests._fakes import make_mock_session
 from tests._generation_stream import TestGenerationStream
 from tests.support.tokens import emit_token

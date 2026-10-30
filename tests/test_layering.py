@@ -43,16 +43,7 @@ TOP = len(LAYERS)
 #: Upward imports that cannot move yet: ``(importer, imported module) -> why``.
 #: Every entry must still occur (see ``test_allowlist_is_current``), so moving
 #: the code forces deleting its entry.
-ALLOWED: dict[tuple[str, str], str] = {
-    # finalize reads CaptureMode, the per-generation capture vocabulary that
-    # still lives with the fit capture code; the wave-2b read-plane lane moves
-    # the capture planner (and this enum) into readout.
-    ("drowse.generation.finalize", "drowse.fit.capture"): "read-plane lane",
-    # The lens token replay rebuilds a loom node's prompt; the wave-2b replay
-    # lane moves it onto the one shared replay workflow above loom.
-    ("drowse.lens.instrument", "drowse.loom.errors"): "replay lane",
-    ("drowse.lens.instrument", "drowse.generation.sampling"): "replay lane",
-}
+ALLOWED: dict[tuple[str, str], str] = {}
 
 
 def _module_name(path: Path, root: Path = ROOT) -> str:
