@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from drowse.readout.geometry import GeometryInstrument
 from drowse.lens.instrument import LensInstrument
 from drowse.sae.instrument import SaeInstrument
+from drowse.server.instrument_routes import instrument_families
 
 _SID = "default"
 _BASE = f"/drowse/v1/sessions/{_SID}/instruments"
@@ -103,7 +104,6 @@ def _mock_session() -> Any:
     session.sae = sae
     session.sae_info = None
 
-    session.lock = asyncio.Lock()
     return session
 
 
@@ -117,7 +117,7 @@ def session_and_client():
 
 
 # ---------------------------------------------------------------------------
-# GET /instruments — family enumeration
+# The per-family block ``session_info.instruments`` embeds
 # ---------------------------------------------------------------------------
 
 class TestListing:
@@ -130,9 +130,7 @@ class TestListing:
         session.lens.source = "local:default"
         session.lens.probes["jlens/fake"] = {"word": "fake"}
         session.sae.source = "saelens:scope"
-        resp = client.get(_BASE)
-        assert resp.status_code == 200
-        fams = {f["family"]: f for f in resp.json()["instruments"]}
+        fams = {f["family"]: f for f in instrument_families(session)}
         assert set(fams) == {"geometry", "lens", "sae"}
 
         geo = fams["geometry"]
@@ -178,7 +176,7 @@ class TestListing:
             "drowse.lens.sources.list_lens_sources", lambda _m: [],
         )
         session.lens.source = "local:default"
-        fams = {f["family"]: f for f in client.get(_BASE).json()["instruments"]}
+        fams = {f["family"]: f for f in instrument_families(session)}
         assert fams["lens"]["source"] == "local:default"
 
     def test_live_states_reflect_runtime(self, session_and_client: Any) -> None:
@@ -187,7 +185,7 @@ class TestListing:
         session.lens.enable_live(layers=[10, 14])
         session.sae.source = "saelens:x"
         session.sae.enable_live()
-        fams = {f["family"]: f for f in client.get(_BASE).json()["instruments"]}
+        fams = {f["family"]: f for f in instrument_families(session)}
         assert fams["geometry"]["live"] == {"enabled": False}
         assert fams["lens"]["live"] == {"enabled": True, "layers": [10, 14]}
         assert fams["sae"]["live"] == {

@@ -9,9 +9,7 @@ from typing import Any, cast
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
-from drowse.server.streaming import run_in_thread
-from drowse.server.app import acquire_session_lock
-from drowse.server.native_common import resolve_session_id
+from drowse.server.runtime import resolve_session_id, run_in_thread, session_lock
 from drowse.server.response_models import (
     ActivePathJSON,
     CastMemberResponse,
@@ -90,9 +88,7 @@ def register_tree_routes(app: FastAPI) -> None:
         token ids and stamped generation recipes are model-specific.
         """
         resolve_session_id(session_id)
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+        async with session_lock(app):
             session.restore_tree(req.tree)
         return {
             "rev": session.tree.rev,
@@ -253,9 +249,7 @@ def register_tree_routes(app: FastAPI) -> None:
         in the tree itself).
         """
         resolve_session_id(session_id)
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+        async with session_lock(app):
             session.clear_history()
         return Response(status_code=204)
 
@@ -322,9 +316,7 @@ def register_tree_routes(app: FastAPI) -> None:
         ) -> None:
             captured.append(str(message))
 
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+        async with session_lock(app):
             with warnings.catch_warnings():
                 warnings.showwarning = _on_warning
                 try:
@@ -512,9 +504,10 @@ def register_tree_routes(app: FastAPI) -> None:
         * Invalidated by tree edits/deletes/finalize events in
           ``DrowseSession``; navigate/star/note leave it intact.
 
-        Held under ``acquire_session_lock`` because the forward passes
+        Held under ``session_lock`` because the forward passes
         compete for the same model with any concurrent generation;
-        request queues FIFO at the lock rather than 409ing.
+        request queues FIFO at the lock rather than 409ing, and a lock
+        timeout is a 503 before any model work.
         """
         from drowse.generation.joint_logprobs import (
             compute_joint_logprobs,
@@ -535,7 +528,7 @@ def register_tree_routes(app: FastAPI) -> None:
         key = _cache_key(req.a_id, req.b_id)
         hit = _cached_joint_logprobs(cache, key)
         if hit is None:
-            async with acquire_session_lock(session):
+            async with session_lock(app):
                 # Double-check under lock — another request may have
                 # populated the cache while we waited.
                 hit = _cached_joint_logprobs(cache, key)

@@ -26,7 +26,8 @@ class MetadataTokenizer:
 
 
 def test_missing_token_logprob_stays_null_in_api_responses():
-    from drowse.server.app import _render_logprobs_chat, _render_logprobs_completions
+    from drowse.server.compat.openai import render_logprobs_chat as _render_logprobs_chat
+    from drowse.server.compat.openai import render_logprobs_completions as _render_logprobs_completions
 
     result = GenerationResult(text="02", tokens=[0, 2], token_count=2, tok_per_sec=1, elapsed=2,
         logprobs=[(0, -0.5, []), (2, None, [])])

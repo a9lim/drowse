@@ -8,14 +8,8 @@ from drowse.generation.decode import supports_thinking, thinking_is_optional
 from drowse.session.session import DrowseSession
 from drowse.steering.terms import Steering
 from drowse.server.instrument_routes import instrument_families
-from drowse.server.native_common import NativeRequest
+from drowse.server.runtime import NativeRequest
 from drowse.server.response_models import SamplingFields, SessionInfo
-
-
-class CreateSessionRequest(NativeRequest):
-    model: str | None = None
-    device: str | None = None
-    dtype: str | None = None
 
 
 class PatchSessionRequest(NativeRequest):
@@ -124,12 +118,8 @@ def session_info(
         "thinking_is_optional": thinks_optional,
         "is_base_model": is_base,
         "jlens_fitted": jlens_fitted,
-        # The read plane's ONE representation: the same per-family blocks
-        # ``GET .../instruments`` lists ({family, live, source, probes,
-        # capabilities}).  The pre-5.x flat keys that re-flattened this
-        # state in three divergent shapes (``live_lens_layers`` /
-        # ``live_sae`` / ``live_probe_scores`` / ``sae_loaded`` /
-        # ``sae_info``) are gone — clean break, no aliases.
+        # The read plane's one representation: a {family, live, source,
+        # probes, capabilities} block per instrument family.
         "instruments": instrument_families(session),
         "default_steering": default_expr,
         "role_substitution_supported": assistant_role_ok,

@@ -11,12 +11,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import FastAPI, HTTPException
-from starlette.requests import Request
 
 from drowse.model import loading as model_module
-from drowse.server.background_job import BackgroundJob
-from drowse.server.sse import sse_or_json
 
 
 @pytest.mark.parametrize("trusted", [False, True])
@@ -63,69 +59,6 @@ def test_tokenizer_code_trust_is_explicit_and_overrides_environment(tmp_path: Pa
     _, tokenizer = model_module.load_model(str(tmp_path), device="cpu", trust_remote_code=explicit)
     assert tokenizer.encode("hello") == [1]
     assert marker.exists() is trusted
-
-
-def test_cancelled_json_job_keeps_lock_until_worker_finishes() -> None:
-    async def scenario() -> None:
-        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-        session = SimpleNamespace(lock=asyncio.Lock())
-
-        def worker() -> dict[str, bool]:
-            entered.set()
-            release.wait(5)
-            finished.set()
-            return {"written": True}
-
-        async def job(progress: Any) -> dict[str, bool]:
-            return await asyncio.to_thread(worker)
-
-        request = Request({"type": "http", "headers": []})
-        task = asyncio.create_task(sse_or_json(request, session, job, error_message="failed", log_message="failed"))
-        try:
-            assert await asyncio.to_thread(entered.wait, 2)
-            task.cancel()
-            await asyncio.sleep(0.02)
-            assert session.lock.locked()
-            assert not task.done()
-        finally:
-            release.set()
-            with suppress(asyncio.CancelledError):
-                await task
-            assert await asyncio.to_thread(finished.wait, 2)
-    asyncio.run(scenario())
-
-
-def test_background_shutdown_does_not_mark_a_running_writer_idle() -> None:
-    async def scenario() -> None:
-        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-        lock = asyncio.Lock()
-        job = BackgroundJob(FastAPI(), "fetch", {"running": False}, busy_message="busy")
-
-        def worker() -> None:
-            entered.set()
-            release.wait(5)
-            finished.set()
-
-        async def body() -> None:
-            async with lock:
-                await asyncio.to_thread(worker)
-
-        job.start(message="fetching")
-        job.launch(body, lambda exc: None)
-        stopper = None
-        try:
-            assert await asyncio.to_thread(entered.wait, 2)
-            stopper = asyncio.create_task(job.stop())
-            await asyncio.sleep(0.02)
-            assert job.running
-            assert lock.locked()
-            assert not stopper.done()
-        finally:
-            release.set()
-            if stopper is not None:
-                await stopper
-            assert await asyncio.to_thread(finished.wait, 2)
-    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/completions", "/api/chat", "/api/generate"])
@@ -196,8 +129,10 @@ def test_queued_openai_stream_does_not_start_model_before_owning_lock() -> None:
         session: Any = _StubSession()
         starts: list[bool] = []
         session.generate_stream = lambda *args, **kwargs: starts.append(True)
-        await session.lock.acquire()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(create_app(session)), base_url="http://localhost") as client:
+        app = create_app(session)
+        lock = app.state.session_lock
+        await lock.acquire()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://localhost") as client:
             task = asyncio.create_task(client.post("/v1/chat/completions", json={
                 "model": session.model_id, "stream": True,
                 "messages": [{"role": "user", "content": "hi"}],
@@ -209,7 +144,7 @@ def test_queued_openai_stream_does_not_start_model_before_owning_lock() -> None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
-                session.lock.release()
+                lock.release()
     asyncio.run(scenario())
 
 
@@ -217,42 +152,6 @@ def test_queued_openai_stream_does_not_start_model_before_owning_lock() -> None:
 def test_model_code_trust_rejects_ambiguous_non_booleans(value: Any) -> None:
     with pytest.raises(ValueError, match="must be a boolean"):
         model_module.load_model("unused/model", trust_remote_code=value)
-
-
-@pytest.mark.parametrize("cancel_task", [False, True])
-def test_background_task_cancellation_preserves_writer_ownership(cancel_task: bool) -> None:
-    async def scenario() -> None:
-        entered, release = threading.Event(), threading.Event()
-        lock = asyncio.Lock()
-        job = BackgroundJob(FastAPI(), "fetch", {"running": False}, busy_message="busy")
-
-        def worker() -> None:
-            entered.set()
-            assert release.wait(3)
-
-        async def body() -> None:
-            async with lock:
-                await asyncio.to_thread(worker)
-
-        job.start(message="fetching")
-        task = job.launch(body, lambda exc: None)
-        try:
-            assert await asyncio.to_thread(entered.wait, 2)
-            if cancel_task:
-                task.cancel()
-                await asyncio.sleep(0)
-                task.cancel()
-            await asyncio.sleep(0.02)
-            assert job.running and lock.locked()
-            with pytest.raises(HTTPException) as error:
-                job.refuse_if_busy()
-            assert error.value.status_code == 409
-        finally:
-            release.set()
-            with suppress(asyncio.CancelledError):
-                await task
-        assert not job.running and not lock.locked()
-    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("path", ["/v1/chat/completions", "/api/chat"])
@@ -299,70 +198,13 @@ def test_http_send_failure_joins_stream_close_without_blocking_loop(path: str) -
         task = asyncio.create_task(app(scope, incoming.get, send))
         try:
             assert await asyncio.to_thread(entered.wait, 2)
-            assert session.lock.locked() and not task.done()
+            assert app.state.session_lock.locked() and not task.done()
             assert not closed.is_set()
         finally:
             release.set()
             with pytest.raises(ClientDisconnect):
                 await task
-        assert closed.is_set() and not session.lock.locked()
+        assert closed.is_set() and not app.state.session_lock.locked()
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("sse", [False, True])
-def test_progress_flood_retains_bounded_recent_history_and_final_result(sse: bool) -> None:
-    async def scenario() -> None:
-        session = SimpleNamespace(lock=asyncio.Lock())
-
-        async def job(progress: Any) -> Any:
-            for index in range(10_000):
-                progress(str(index))
-            return {"written": True}
-
-        request = Request({"type": "http", "headers": [(b"accept", b"text/event-stream")] if sse else []})
-        response = await sse_or_json(request, session, job, error_message="failed", log_message="failed", json_progress_key="progress")
-        if sse:
-            frames = [frame async for frame in response.body_iterator]
-            assert len(frames) <= 257
-            assert '"9999"' in frames[-2]
-            assert frames[-1] == 'event: done\ndata: {"written": true}\n\n'
-        else:
-            assert len(response["progress"]) <= 256
-            assert response["progress"][-1] == "9999"
-            assert response["written"] is True
-    asyncio.run(scenario())
-
-
-def test_progress_flood_after_disconnect_does_not_block_worker_completion() -> None:
-    from drowse.server.sse import progress_sse_response
-
-    async def scenario() -> None:
-        release = asyncio.Event()
-        lock = asyncio.Lock()
-        worker_task = None
-
-        async def job(progress: Any) -> Any:
-            nonlocal worker_task
-            worker_task = asyncio.current_task()
-            progress("started")
-            await release.wait()
-            for index in range(10_000):
-                progress(str(index))
-            return {"written": True}
-
-        response = progress_sse_response(lock, job, error_message="failed", log_message="failed")
-        iterator: Any = response.body_iterator
-        assert "started" in await anext(iterator)
-        closer = asyncio.create_task(iterator.aclose())
-        await asyncio.sleep(0)
-        release.set()
-        try:
-            await asyncio.wait_for(asyncio.shield(closer), 2)
-            assert not lock.locked()
-        finally:
-            # A broken completion queue must fail this test without hanging its teardown.
-            if worker_task is not None and not worker_task.done():
-                worker_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await closer
-    asyncio.run(scenario())

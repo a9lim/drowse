@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from drowse.geometry.profile import Profile
-from drowse.server.native_common import NativeRequest
+from drowse.server.runtime import NativeRequest
 from drowse.server.response_models import VectorInfo
 
 
@@ -25,13 +25,6 @@ class ExtractRequest(NativeRequest):
     role: str | None = None
     namespace: str | None = None
     force: bool = False
-
-
-class BakeProfileRequest(NativeRequest):
-    """Body for ``POST /drowse/v1/sessions/{id}/profiles/bake``."""
-
-    name: str
-    expression: str
 
 
 def profile_to_json(name: str, profile: Profile) -> VectorInfo:

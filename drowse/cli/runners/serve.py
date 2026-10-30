@@ -146,7 +146,7 @@ def _run_serve(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     _pkg._load_effective_config(args)
-    from drowse.server.app import is_loopback_host
+    from drowse.server.security import is_loopback_host
     api_key = getattr(args, "api_key", None)
     if api_key is None:
         api_key = os.environ.get("DROWSE_API_KEY")

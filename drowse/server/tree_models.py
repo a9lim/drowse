@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal, cast
 
 from drowse.session.session import DrowseSession
-from drowse.server.native_common import NativeRequest
+from drowse.server.runtime import NativeRequest
 from drowse.server.response_models import (
     ActivePathJSON,
     CastMemberJSON,

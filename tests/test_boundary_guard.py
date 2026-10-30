@@ -225,10 +225,10 @@ _SERVER_PRIVATE_IMPORT_RE = re.compile(
 def test_server_modules_do_not_import_each_others_privates() -> None:
     """A route module must not reach into a sibling's underscore helper.
 
-    Shared native-tree primitives belong in ``server/native_common.py``
-    (``resolve_session_id``, ``refuse_if_busy``) or the shared plumbing
-    modules (``sse`` / ``streaming`` / ``request_helpers`` /
-    ``background_job``).  Importing ``manifold_routes._refuse_if_busy`` from
+    Shared native-tree primitives belong in ``server/runtime.py``
+    (``resolve_session_id``, ``refuse_if_busy``, the session lock) or the
+    shared plumbing modules (``errors`` / ``operations`` /
+    ``request_helpers``).  Importing ``manifold_routes._refuse_if_busy`` from
     ``profile_routes`` — the pattern this guard retires — made a guard that is
     not manifold-specific look like manifold-route internals, and made either
     module's private rename break the other.
@@ -246,6 +246,6 @@ def test_server_modules_do_not_import_each_others_privates() -> None:
                 )
     assert not offenders, (
         "A server module imports a sibling module's private helper.\n"
-        "Promote the helper into server/native_common.py (or the relevant "
+        "Promote the helper into server/runtime.py (or the relevant "
         "shared plumbing module) instead.\n\n" + "\n".join(offenders)
     )

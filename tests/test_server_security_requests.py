@@ -111,8 +111,8 @@ def test_invalid_ollama_options_return_client_error(option: str, value: Any) -> 
 
 
 def test_sampling_validation_preserves_boundary_and_sentinel_meanings() -> None:
-    from drowse.server.app import ChatCompletionRequest
-    from drowse.server.ollama import _resolve_options
+    from drowse.server.compat.ollama import OllamaGenerateRequest, resolve_options
+    from drowse.server.compat.openai import ChatCompletionRequest
     from drowse.server.session_models import PatchSessionRequest
     from drowse.server.ws_models import WSSamplingParams, build_sampling_config
 
@@ -122,13 +122,14 @@ def test_sampling_validation_preserves_boundary_and_sentinel_meanings() -> None:
     config = build_sampling_config(WSSamplingParams(**sampling, top_k=0))
     assert config is not None and config.temperature == 0
     for count in [-2, -1, 0]:
-        options, _system = _resolve_options({"options": {
+        body = OllamaGenerateRequest(options={
             "temperature": -1, "top_p": 1, "top_k": -1, "num_predict": count, "seed": "42",
-        }}, None)
-        assert options["sampling"].max_tokens == count
-        assert options["sampling"].top_k is None
-        assert options["sampling"].temperature == -1
-        assert options["sampling"].seed == 42
+        })
+        gen = resolve_options(body, None, "test", raw=False)
+        assert gen.sampling.max_tokens == count
+        assert gen.sampling.top_k is None
+        assert gen.sampling.temperature == -1
+        assert gen.sampling.seed == 42
 
 
 @pytest.mark.parametrize("frame_type", ["generate", "submit"])
@@ -177,29 +178,38 @@ def test_bias_validation_preserves_valid_values() -> None:
     assert sampling.logit_bias is bias
 
 
+def _operation_app() -> FastAPI:
+    import asyncio
+
+    from drowse.server.errors import install_error_handlers
+    from drowse.server.operations import register_operation_routes
+
+    app = FastAPI()
+    app.state.session = SimpleNamespace(model_id="synthetic/model")
+    app.state.session_lock = asyncio.Lock()
+    install_error_handlers(app)
+    register_operation_routes(app)
+    return app
+
+
 @pytest.mark.parametrize("wrapped", [False, True])
 @pytest.mark.parametrize("accept", ["application/json", "text/event-stream"])
 def test_retained_typed_transport_errors_keep_safe_messages(wrapped: bool, accept: str) -> None:
-    import asyncio
-    from drowse.store.hub import HFError as ManifoldHFError
-    from drowse.server.operation_ledger import register_operation_routes
-    from drowse.server.sse import sse_or_json
+    from drowse.base.hf import HFError
+    from drowse.server.operations import run_operation
 
-    app = FastAPI()
-    register_operation_routes(app)
-    session = SimpleNamespace(lock=asyncio.Lock(), model_id="synthetic/model")
+    app = _operation_app()
 
     @app.post("/drowse/v1/test")
     async def fail(request: Request) -> Any:
         async def job(progress: Any) -> None:
-            error = ManifoldHFError("https://synthetic.example/download?token=secret-upstream-credential")
+            error = HFError("https://synthetic.example/download?token=secret-upstream-credential")
             error.__cause__ = RuntimeError("synthetic transport failure")
             if wrapped:
                 raise HTTPException(502, str(error)) from error
             raise error
 
-        return await sse_or_json(request, session, job, error_message="failed", log_message="test failure",
-                                 json_errors=((ManifoldHFError, 502),))
+        return await run_operation(request, job, failure="failed")
 
     with TestClient(app) as client:
         result = client.post("/drowse/v1/test", json={}, headers={
@@ -213,22 +223,17 @@ def test_retained_typed_transport_errors_keep_safe_messages(wrapped: bool, accep
 
 
 def test_retained_operation_keeps_typed_error_status() -> None:
-    import asyncio
     from drowse.errors import SteeringCompositionError
-    from drowse.server.operation_ledger import register_operation_routes
-    from drowse.server.sse import sse_or_json
+    from drowse.server.operations import run_operation
 
-    app = FastAPI()
-    register_operation_routes(app)
+    app = _operation_app()
 
     @app.post("/drowse/v1/test")
     async def fail(request: Request) -> Any:
         async def job(progress: Any) -> None:
             raise SteeringCompositionError("incompatible steering geometry")
 
-        return await sse_or_json(request, SimpleNamespace(lock=asyncio.Lock()), job,
-                                 error_message="failed", log_message="test failure",
-                                 json_errors=((ValueError, 400),))
+        return await run_operation(request, job, failure="failed")
 
     with TestClient(app) as client:
         result = client.post("/drowse/v1/test", json={}, headers={"X-Drowse-Request-ID": "typed-status"})

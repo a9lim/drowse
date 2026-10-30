@@ -13,21 +13,15 @@ artifact lazily on scope entry.
 """
 from __future__ import annotations
 
-import logging
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import ConfigDict, Field
 
 from drowse.geometry.manifold import domain_from_spec
 from drowse.session.session import DrowseSession
-from drowse.store.hub import (
-    HFError as ManifoldHFError,
-    ManifoldInstallConflict,
-    install_manifold,
-    search_manifolds,
-)
+from drowse.store.hub import install_manifold, search_manifolds
 from drowse.store.manifolds import (
     ManifoldFolder,
     ManifoldFormatError,
@@ -42,18 +36,11 @@ from drowse.store.manifolds import (
     min_nodes,
     plan_discover_generation,
     remove_manifold_folder,
-    update_manifold_folder,
 )
 from drowse.base.paths import manifold_dir
-from drowse.store.templates import AmbiguousTemplateError, TemplateNotFoundError
-from drowse.server.streaming import run_in_thread
-from drowse.server.app import acquire_session_lock
-from drowse.server.native_common import (
-    NativeRequest,
-    extraction_error_frame,
-    extraction_json_errors,
-    refuse_if_busy,
-)
+from drowse.server.errors import classify_extraction_error
+from drowse.server.operations import ProgressCallback, run_operation
+from drowse.server.runtime import NativeRequest, refuse_if_busy, run_in_thread, session_lock
 from drowse.server.response_models import (
     ManifoldDeleteResponse,
     ManifoldFitInfo,
@@ -62,9 +49,6 @@ from drowse.server.response_models import (
     ManifoldSearchResponse,
     RemoteManifoldInfo,
 )
-from drowse.server.sse import ProgressCallback, sse_or_json
-
-log = logging.getLogger("drowse.api")
 
 
 # ----------------------------------------------------------- request models ---
@@ -173,11 +157,6 @@ class GenerateManifoldRequest(NativeRequest):
     # manifold where the geometry captures persona-relative structure
     # in role-baselined activation space.
     role_per_node: bool = False
-
-
-class UpdateManifoldRequest(NativeRequest):
-    description: str | None = None
-    nodes: list[NodeSpec] | None = None
 
 
 class FitManifoldRequest(NativeRequest):
@@ -469,66 +448,24 @@ def _manifold_json(
 
 
 def _find_manifold(namespace: str, name: str) -> ManifoldFolder:
-    """Locate one manifold by namespace + name, or 404.
-
-    The folder carries its own path (and therefore its namespace), so the
-    caller reads identity off the returned object rather than threading the
-    request's namespace string alongside it.
-    """
+    """Load one manifold folder by namespace + name, or 404."""
     folder = manifold_dir(namespace, name)
     if not (folder / "manifold.json").exists():
         raise HTTPException(404, f"manifold {namespace}/{name} not found")
-    try:
-        return ManifoldFolder.load(folder, verify_manifest=False)
-    except ManifoldFormatError as e:
-        raise HTTPException(
-            400, f"manifold {namespace}/{name} is malformed: {e}",
-        ) from e
+    return ManifoldFolder.load(folder, verify_manifest=False)
 
 
 def _evict_manifold(session: DrowseSession, namespace: str, name: str) -> None:
-    """Drop any cached in-memory ``Manifold`` for this artifact.
+    """Drop every cached in-memory ``Manifold`` for this artifact.
 
-    The grammar key is ``[ns/]name[:variant]``; a bare name resolves
-    cross-namespace, so both forms can be cached.  Pop every match so a
-    delete / re-fit does not leave a stale tensor live.
+    The grammar key is ``[ns/]name[:variant]`` and a bare name resolves
+    cross-namespace, so both forms may be cached; a delete or re-fit must not
+    leave either live.
     """
     prefixes = (name, f"{namespace}/{name}")
     for key in list(session.manifolds):
-        head = key.rsplit(":", 1)[0] if ":" in key else key
-        if head in prefixes:
+        if key.rsplit(":", 1)[0] in prefixes:
             session.manifolds.pop(key, None)
-
-
-def _install_error_frame(exc: Exception) -> dict[str, Any] | None:
-    """SSE ``error``-frame body for a typed install failure.
-
-    The two ``DrowseError`` install failures carry their own safe messages
-    through ``user_message()``, and a ``ValueError`` here is always an
-    argument-shape rejection (the ``as_`` grammar / ``NAME_REGEX``), so both
-    surface verbatim — the same statuses and texts the JSON branch returns.
-    Everything else, ``FileNotFoundError`` above all (its message is a
-    filesystem path), routes to the shared catch-all scrubber.
-    """
-    if isinstance(exc, HTTPException):
-        # The only ``HTTPException`` the install job raises is
-        # ``refuse_if_busy``'s engine-busy 409, whose detail is a fixed
-        # retry-shortly string.
-        http_error = cast(HTTPException, exc)
-        return {"message": str(http_error.detail), "code": "Conflict"}
-    if isinstance(exc, (ManifoldInstallConflict, ManifoldHFError)):
-        if exc.__cause__ is not None:
-            log.error("manifold install failed", exc_info=exc)
-        _status, message = exc.user_message()
-        return {"message": message, "code": type(exc).__name__}
-    if isinstance(exc, ImportError):
-        return {
-            "message": "huggingface_hub is not installed",
-            "code": "ImportError",
-        }
-    if isinstance(exc, ValueError):
-        return {"message": str(exc), "code": type(exc).__name__}
-    return None
 
 
 # ------------------------------------------------------------------- routes ---
@@ -538,467 +475,202 @@ def register_manifold_routes(app: FastAPI) -> None:
 
     session: DrowseSession = app.state.session
 
+    def detail(namespace: str, name: str) -> ManifoldInfo:
+        return _manifold_json(_find_manifold(namespace, name), session, full=True)
+
     @app.get("/drowse/v1/manifolds")
     def list_manifolds() -> ManifoldListResponse:
         """List every installed manifold with per-session fit status."""
-        return {
-            "manifolds": [
-                _manifold_json(mf, session, full=False)
-                for _ns, mf in iter_manifold_folders()
-            ],
-        }
+        return {"manifolds": [
+            _manifold_json(mf, session, full=False) for _ns, mf in iter_manifold_folders()
+        ]}
 
     @app.get("/drowse/v1/manifolds/{namespace}/{name}")
     def get_manifold(namespace: str, name: str) -> ManifoldInfo:
         """One manifold: domain, nodes with statements, per-tensor fit detail."""
-        mf = _find_manifold(namespace, name)
-        return _manifold_json(mf, session, full=True)
+        return detail(namespace, name)
 
     @app.post("/drowse/v1/manifolds", status_code=201)
     def create_manifold(req: CreateManifoldRequest) -> ManifoldInfo:
-        """Author a fresh authored manifold artifact on disk.
+        """Author an authored-geometry manifold (``manifold.json`` + ``nodes/``).
 
-        Writes ``manifold.json`` + the ``nodes/`` corpus.  Returns the
-        manifold detail plus ``advisories`` — soft poisedness / flat-axis
-        warnings so the UI can flag a deficient node layout before a fit
-        is paid for.  For discover-mode authoring (no per-node coords),
-        ``POST /drowse/v1/manifolds/discover`` is the entry point.
+        The response adds ``advisories`` — soft poisedness / flat-axis
+        warnings, so a deficient layout surfaces before a fit is paid for.
         """
-        domain_spec = req.domain.model_dump(exclude_none=True)
-        nodes = [n.model_dump() for n in req.nodes]
-        try:
-            folder, advisories = create_manifold_folder(
-                req.namespace, req.name, req.description, domain_spec, nodes,
-            )
-        except FileExistsError as e:
-            raise HTTPException(409, str(e)) from e
-        except ManifoldFormatError as e:
-            raise HTTPException(400, str(e)) from e
-        mf = ManifoldFolder.load(folder)
-        body = _manifold_json(mf, session, full=True)
+        folder, advisories = create_manifold_folder(
+            req.namespace, req.name, req.description,
+            req.domain.model_dump(exclude_none=True), [n.model_dump() for n in req.nodes],
+        )
+        body = _manifold_json(ManifoldFolder.load(folder), session, full=True)
         body["advisories"] = advisories
         return body
 
     @app.post("/drowse/v1/manifolds/discover", status_code=201)
-    def create_discover_manifold(
-        req: CreateDiscoverManifoldRequest,
-    ) -> ManifoldInfo:
-        """Author a fresh discover-mode manifold from supplied per-concept corpora.
-
-        Nodes carry ``{label, statements}`` only — coords are derived
-        per-model at fit time.  Pair with ``POST /drowse/v1/manifolds/
-        {ns}/{name}/fit`` to run the discovery + fit.
-        """
-        node_corpora = {n.label: list(n.statements) for n in req.nodes}
-        # Roles ride per-node; ``None`` (default) on a NodeSpec maps to
-        # the standard assistant baseline.  An all-``None`` dict is
-        # equivalent to "no roles" and is byte-identical to the
-        # pre-A-phase manifest.
-        node_roles_map = {n.label: n.role for n in req.nodes}
-        try:
-            folder = create_discover_manifold_folder(
-                req.namespace, req.name, req.description,
-                fit_mode=req.fit_mode,
-                node_corpora=node_corpora,
-                hyperparams=req.hyperparams,
-                node_roles=node_roles_map,
-            )
-        except FileExistsError as e:
-            raise HTTPException(409, str(e)) from e
-        except ManifoldFormatError as e:
-            raise HTTPException(400, str(e)) from e
-        mf = ManifoldFolder.load(folder)
-        return _manifold_json(mf, session, full=True)
+    def create_discover_manifold(req: CreateDiscoverManifoldRequest) -> ManifoldInfo:
+        """Author a discover manifold from labeled corpora; coords derive at fit time."""
+        folder = create_discover_manifold_folder(
+            req.namespace, req.name, req.description,
+            fit_mode=req.fit_mode,
+            node_corpora={n.label: list(n.statements) for n in req.nodes},
+            hyperparams=req.hyperparams,
+            node_roles={n.label: n.role for n in req.nodes},
+        )
+        return _manifold_json(ManifoldFolder.load(folder), session, full=True)
 
     @app.post("/drowse/v1/manifolds/from-template", status_code=201)
-    def create_manifold_from_template_route(
-        req: CreateManifoldFromTemplateRequest,
-    ) -> ManifoldInfo:
+    def create_manifold_from_template_route(req: CreateManifoldFromTemplateRequest) -> ManifoldInfo:
         """Author a discover manifold from an existing template artifact."""
-        try:
-            folder = create_manifold_from_template(
-                req.namespace, req.name, req.description,
-                template_ref=req.template_ref,
-                fit_mode=req.fit_mode,
-                hyperparams=req.hyperparams or None,
-                force=req.force,
-            )
-        except FileExistsError as e:
-            raise HTTPException(409, str(e)) from e
-        except TemplateNotFoundError as e:
-            raise HTTPException(404, str(e)) from e
-        except AmbiguousTemplateError as e:
-            raise HTTPException(409, str(e)) from e
-        except ManifoldFormatError as e:
-            raise HTTPException(400, str(e)) from e
-        mf = ManifoldFolder.load(folder)
-        return _manifold_json(mf, session, full=True)
+        folder = create_manifold_from_template(
+            req.namespace, req.name, req.description,
+            template_ref=req.template_ref,
+            fit_mode=req.fit_mode,
+            hyperparams=req.hyperparams or None,
+            force=req.force,
+        )
+        return _manifold_json(ManifoldFolder.load(folder), session, full=True)
 
     @app.get("/drowse/v1/manifolds/search")
-    def search_remote_manifolds(
-        q: str = "", limit: int = 20,
-    ) -> ManifoldSearchResponse:
-        """Search HF for ``drowse-manifold``-tagged repos matching ``q``.
+    def search_remote_manifolds(q: str = "", limit: int = 20) -> ManifoldSearchResponse:
+        """Search the HF hub for ``drowse-manifold`` repos matching ``q``.
 
-        Delegates to :func:`drowse.store.hub.search_manifolds` and returns
-        the manifold-specific ``domain_label`` / ``node_count`` / ``fit_mode``
-        fields a frontend needs to render a search result without an extra
-        round-trip. Missing ``huggingface_hub`` → 503, HF transport error → 502.
+        A missing ``huggingface_hub`` is 503; an HF transport error is 502.
         """
-        try:
-            rows = search_manifolds(q or None)
-        except ImportError as e:
-            raise HTTPException(503, f"huggingface_hub not installed: {e}") from e
-        except ManifoldHFError as e:
-            raise HTTPException(502, str(e)) from e
-        # ``limit`` defaults to the search cap; callers can request
-        # fewer rows for narrow pickers but the server still respects
-        # the cap when ``limit`` is omitted or oversized.
-        if limit and limit > 0:
-            rows = rows[: int(limit)]
-        # The response echoes the query alongside the rows.
+        rows = search_manifolds(q or None)
+        if limit > 0:
+            rows = rows[:limit]
         return {"query": q, "results": cast(list[RemoteManifoldInfo], rows)}
 
     @app.post("/drowse/v1/manifolds/merge", status_code=201)
     async def merge_manifold(req: MergeManifoldRequest) -> ManifoldInfo:
-        """Union N discover-mode manifolds' nodes into a fresh discover folder.
+        """Pool N discover manifolds' node corpora into one unfitted discover folder.
 
-        Pools source node corpora into one unfitted discover folder. The next
-        ``POST .../fit`` derives coordinates from the combined heap.
-
-        Restricted to discover-mode sources by design — authored manifolds
-        carry user-declared geometry and aren't mergeable without a
-        shared coordinate system.  Label collisions across sources are
-        refused with a clear error (rename in source folders first).
-
-        Held under the session lock so a parallel fit on one of the
-        sources can't race the corpus read; ``refuse_if_busy`` guards
-        against an in-flight engine operation holding the gen-lock.
+        Discover sources only — authored geometry is not mergeable without a
+        shared coordinate system.  Held under the session lock, and refused
+        while an engine operation holds the gen-lock, so a fit cannot race the
+        corpus read.
         """
         if len(req.sources) < 2:
-            raise HTTPException(
-                400,
-                f"manifold merge: need >= 2 sources, got {len(req.sources)}",
-            )
-        source_tuples = [(s.namespace, s.name) for s in req.sources]
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+            raise HTTPException(400, f"manifold merge: need >= 2 sources, got {len(req.sources)}")
+        async with session_lock(app):
             refuse_if_busy(session)
-            try:
-                folder = await run_in_thread(
-                    merge_discover_manifolds,
-                    req.namespace,
-                    req.name,
-                    req.description,
-                    sources=source_tuples,
-                    fit_mode=req.fit_mode,
-                    hyperparams=req.hyperparams,
-                    force=req.force,
-                )
-            except FileExistsError as e:
-                raise HTTPException(409, str(e)) from e
-            except FileNotFoundError as e:
-                raise HTTPException(404, str(e)) from e
-            except ManifoldFormatError as e:
-                raise HTTPException(400, str(e)) from e
-            except ValueError as e:
-                raise HTTPException(400, str(e)) from e
-            # Evict any cached in-memory ``Manifold`` for the merged
-            # target — paranoia in case the user is merging-over an
-            # existing folder with the same name (force=True path).
+            folder = await run_in_thread(
+                merge_discover_manifolds,
+                req.namespace, req.name, req.description,
+                sources=[(s.namespace, s.name) for s in req.sources],
+                fit_mode=req.fit_mode, hyperparams=req.hyperparams, force=req.force,
+            )
             _evict_manifold(session, req.namespace, req.name)
-        mf = _find_manifold(folder.parent.name, folder.name)
-        return _manifold_json(mf, session, full=True)
+        return detail(folder.parent.name, folder.name)
 
-    @app.post(
-        "/drowse/v1/manifolds/install",
-        status_code=201,
-        response_model=ManifoldInfo,
-    )
+    @app.post("/drowse/v1/manifolds/install", status_code=201, response_model=ManifoldInfo)
     async def install_remote_manifold(req: InstallManifoldRequest, request: Request):
-        """Install a manifold from an HF coord or local folder.
+        """Install a manifold from an HF coord (``owner/name[@rev]``) or a local folder.
 
-        ``target`` is an HF coord (``owner/name[@revision]``) or a local
-        folder path; ``as_`` overrides the destination namespace+name
-        (must be fully qualified); ``force`` overwrites an existing
-        folder.  Held under the session lock so a parallel delete / fit
-        can't race the swap-into-place.  SSE progress when ``Accept:
-        text/event-stream``, JSON otherwise — a manifold repo carries a
-        per-model safetensors payload, so the download plus stage/verify/swap
-        tail is a long operation like ``generate`` / ``fit``.  Both branches
-        return the manifold-detail JSON shape ``GET
-        /drowse/v1/manifolds/{ns}/{name}`` ships.
+        ``as`` re-namespaces the destination; ``force`` overwrites.  An HF
+        pull carries a per-model payload, so this is a progress operation
+        (SSE or JSON) whose result is the installed manifold's detail.
         """
-        def _install(on_progress: Callable[[str], None]) -> ManifoldInfo:
-            folder = install_manifold(
-                req.target,
-                req.as_,
-                force=req.force,
-                on_progress=on_progress,
-            )
-            # The just-installed folder lives at ``manifolds/<ns>/<name>/`` —
-            # derive namespace/name from the resolved path so the response
-            # carries the destination identity even when ``as_`` re-routed it.
-            mf = _find_manifold(folder.parent.name, folder.name)
-            # No ``done`` marker: the SSE client keys off the frame's event
-            # name, and the plain JSON body stays exactly what non-streaming
-            # callers already parse.
-            return _manifold_json(mf, session, full=True)
+        def install(on_progress: ProgressCallback) -> ManifoldInfo:
+            folder = install_manifold(req.target, req.as_, force=req.force, on_progress=on_progress)
+            return detail(folder.parent.name, folder.name)
 
-        async def _job(on_progress: ProgressCallback) -> ManifoldInfo:
-            # Under the session lock in both branches; the gen-lock probe has
-            # to run before the worker thread starts writing the folder.
+        async def job(on_progress: ProgressCallback) -> ManifoldInfo:
             refuse_if_busy(session)
-            return await run_in_thread(_install, on_progress)
+            return await run_in_thread(install, on_progress)
 
-        return await sse_or_json(
-            request,
-            session,
-            _job,
-            error_message="install failed",
-            log_message="manifold install crashed",
-            error_formatter=_install_error_frame,
-            json_errors=(
-                (ManifoldInstallConflict, 409),
-                (FileNotFoundError, 404),
-                (ValueError, 400),
-                (ImportError, 503),
-                (ManifoldHFError, 502),
-            ),
-            logger=log,
-        )
+        return await run_operation(request, job, failure="Manifold install failed")
 
-    @app.post(
-        "/drowse/v1/manifolds/generate",
-        status_code=201,
-        response_model=ManifoldInfo,
-    )
+    @app.post("/drowse/v1/manifolds/generate", status_code=201, response_model=ManifoldInfo)
     async def generate_manifold(req: GenerateManifoldRequest, request: Request):
-        """LLM-author a discover-mode manifold from a flat concept list (A2).
+        """LLM-author a discover manifold: one in-character corpus per concept.
 
-        Runs :meth:`DrowseSession.generate_responses` under the session lock —
-        each concept answers the shared baseline prompts in character (concept
-        in the system prompt + a kind-derived elicitation role), one corpus per
-        node.  SSE progress when ``Accept: text/event-stream``, JSON otherwise.
-        Writes a fresh discover-mode manifold folder; pair with ``POST .../fit``
-        to derive coords + fit.
+        The default resumes — missing nodes fill and new concepts append;
+        ``force`` starts clean.  ``role_per_node`` makes each concept slug its
+        node's assistant-role substitution (a persona manifold).  Pair with
+        ``POST .../fit``.
         """
         if len(req.concepts) < 2:
             raise HTTPException(
-                400,
-                "manifold generate: need >= 2 concepts "
-                "(a discover manifold is meaningless with one node)",
+                400, "manifold generate: need >= 2 concepts (a discover manifold is meaningless with one node)",
             )
-        folder = manifold_dir(req.namespace, req.name)
-
-        # ``role_per_node`` mirrors the CLI ``--role-per-node`` flag — each
-        # concept slug doubles as that node's assistant-role substitution (a
-        # persona manifold, pooled in role-baselined space).  Otherwise the
-        # node's ``kind`` drives a generation-only elicitation role and capture
-        # stays standard (swap-back).
         if req.kind == "custom" and not req.custom_system:
             raise HTTPException(
-                400, "kind='custom' requires custom_system (a system template "
-                "with a {c} placeholder)",
+                400, "kind='custom' requires custom_system (a system template with a {c} placeholder)",
             )
-        node_roles_map: dict[str, str | None] | None = None
-        if req.role_per_node:
-            node_roles_map = {c: c for c in req.concepts}
-        node_kinds_map: dict[str, str | None] = {c: req.kind for c in req.concepts}
+        folder = manifold_dir(req.namespace, req.name)
+        node_roles = {c: c for c in req.concepts} if req.role_per_node else None
 
-        def _gen(on_progress: Callable[[str], None]) -> ManifoldInfo:
-            # ``force`` is a clean slate; the default *resumes* — fill missing
-            # nodes + append any concepts new to the roster.
-            try:
-                plan = plan_discover_generation(
-                    folder, req.name, req.description,
-                    fit_mode=req.fit_mode, labels=list(req.concepts),
-                    hyperparams=req.hyperparams, node_roles=node_roles_map,
-                    node_kinds=node_kinds_map,
-                    force=req.force,
-                )
-            except ManifoldFormatError as e:
-                raise HTTPException(400, str(e)) from e
+        def generate(on_progress: ProgressCallback) -> ManifoldInfo:
+            plan = plan_discover_generation(
+                folder, req.name, req.description,
+                fit_mode=req.fit_mode, labels=list(req.concepts),
+                hyperparams=req.hyperparams, node_roles=node_roles,
+                node_kinds={c: req.kind for c in req.concepts},
+                force=req.force,
+            )
             for concept in plan.pending:
-                gen_roles: dict[str, str | None] | None = (
-                    {concept: concept} if node_roles_map else None
-                )
                 corpora = session.generate_responses(
                     [concept], [req.kind],
-                    roles=gen_roles,
+                    roles={concept: concept} if node_roles else None,
                     custom_system=req.custom_system,
                     samples_per_prompt=req.samples_per_prompt,
                     on_progress=on_progress,
                 )
-                append_discover_manifold_node(
-                    folder, plan.index_of[concept], concept, corpora[concept],
-                )
+                append_discover_manifold_node(folder, plan.index_of[concept], concept, corpora[concept])
             _evict_manifold(session, req.namespace, req.name)
-            mf = _find_manifold(req.namespace, req.name)
-            body = _manifold_json(mf, session, full=True)
+            body = detail(req.namespace, req.name)
             body["done"] = True
             return body
 
-        async def _job(on_progress: ProgressCallback) -> ManifoldInfo:
-            return await run_in_thread(_gen, on_progress)
+        async def job(on_progress: ProgressCallback) -> ManifoldInfo:
+            return await run_in_thread(generate, on_progress)
 
-        def _format_error(e: Exception) -> dict[str, Any] | None:
-            if isinstance(e, HTTPException):
-                http_error = cast(HTTPException, e)
-                # The generate job only raises HTTPException to wrap a
-                # ManifoldFormatError, whose detail embeds the on-disk
-                # manifold path.  Log the detail server-side and surface a
-                # path-free frame (SSE info-disclosure discipline — see
-                # server/AGENTS.md).
-                log.warning("manifold generate: format error: %s", http_error.detail)
-                return {
-                    "message": "manifold has an unsupported on-disk format",
-                    "code": "ManifoldFormatError",
-                }
-            if isinstance(e, ValueError):
-                return {"message": str(e), "code": "ValueError"}
-            return None
-
-        return await sse_or_json(
-            request,
-            session,
-            _job,
-            error_message="generate failed",
-            log_message="manifold generate crashed",
-            error_formatter=_format_error,
-            json_errors=((ValueError, 400),),
-            logger=log,
-        )
-
-    @app.patch("/drowse/v1/manifolds/{namespace}/{name}")
-    async def update_manifold(
-        namespace: str, name: str, req: UpdateManifoldRequest,
-    ) -> ManifoldInfo:
-        """Re-author a manifold's description and/or node corpus.
-
-        Held under the session lock so a node-corpus rewrite cannot race
-        an in-flight fit reading the same ``nodes/`` directory.  Existing
-        fitted tensors are kept but become stale.
-        """
-        folder = manifold_dir(namespace, name)
-        if not (folder / "manifold.json").exists():
-            raise HTTPException(404, f"manifold {namespace}/{name} not found")
-        nodes = (
-            [n.model_dump() for n in req.nodes]
-            if req.nodes is not None else None
-        )
-        # Bounded via ``acquire_session_lock`` (300 s → 503) so a
-        # long-running fit doesn't pin the lock for this PATCH indefinitely.
-        # The ``_gen_lock`` probe additionally refuses while a fit thread is
-        # in flight (an SSE fit whose request was cancelled leaves the worker
-        # thread — and the lock — alive past the cancel) so a node-corpus
-        # rewrite can't race a fit reading ``nodes/``.
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
-            refuse_if_busy(session)
-            try:
-                await run_in_thread(
-                    update_manifold_folder,
-                    folder,
-                    description=req.description,
-                    nodes=nodes,
-                )
-            except ManifoldFormatError as e:
-                raise HTTPException(400, str(e)) from e
-            _evict_manifold(session, namespace, name)
-        mf = _find_manifold(namespace, name)
-        return _manifold_json(mf, session, full=True)
+        return await run_operation(request, job, failure="Manifold generate failed")
 
     @app.delete("/drowse/v1/manifolds/{namespace}/{name}")
-    async def delete_manifold(
-        namespace: str, name: str,
-    ) -> ManifoldDeleteResponse:
-        """Remove a manifold folder.
+    async def delete_manifold(namespace: str, name: str) -> ManifoldDeleteResponse:
+        """Remove a manifold folder (``remove_manifold_folder``, shared with ``pack rm``).
 
-        Delegates the actual removal to
-        :func:`drowse.store.manifolds.remove_manifold_folder` — the single
-        source of truth shared with the CLI ``manifold rm`` — so
-        bundled-respawn semantics stay in one place.  The response
-        carries that helper's ``{namespace, name, source, removed,
-        rematerializes_on_restart}`` (a superset of the historical
-        ``{namespace, name, removed}``; ``source == "bundled"`` /
-        ``default``-namespace flip ``rematerializes_on_restart`` so the
-        client can pick a friendlier toast, matching the pack DELETE
-        route).
-
-        Held under ``session.lock`` so it serializes against PATCH and
-        the JSON fit path; refuses (409) when a fit thread still holds
-        the engine gen-lock — deleting ``nodes/`` mid-fit would corrupt
-        the read.
+        Held under the session lock and refused while a fit thread holds the
+        gen-lock — deleting ``nodes/`` mid-fit would corrupt the read.
         """
-        folder = manifold_dir(namespace, name)
-        if not (folder / "manifold.json").exists():
+        if not (manifold_dir(namespace, name) / "manifold.json").exists():
             raise HTTPException(404, f"manifold {namespace}/{name} not found")
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+        async with session_lock(app):
             refuse_if_busy(session)
             _evict_manifold(session, namespace, name)
-            try:
-                return cast(
-                    ManifoldDeleteResponse,
-                    await run_in_thread(
-                        remove_manifold_folder, namespace, name,
-                    ),
-                )
-            except FileNotFoundError as e:
-                # Lost a race with another delete between the pre-lock
-                # existence check and acquiring the lock.
-                raise HTTPException(404, str(e)) from e
+            return cast(
+                ManifoldDeleteResponse,
+                await run_in_thread(remove_manifold_folder, namespace, name),
+            )
 
-    @app.post(
-        "/drowse/v1/manifolds/{namespace}/{name}/fit",
-        response_model=ManifoldInfo,
-    )
-    async def fit_manifold(
-        namespace: str, name: str, req: FitManifoldRequest, request: Request,
-    ):
-        """Fit the manifold for the loaded model.
+    @app.post("/drowse/v1/manifolds/{namespace}/{name}/fit", response_model=ManifoldInfo)
+    async def fit_manifold(namespace: str, name: str, req: FitManifoldRequest, request: Request):
+        """Fit the manifold for the loaded model (a progress operation, SSE or JSON).
 
-        Runs :meth:`DrowseSession.fit` under the session
-        lock.  SSE progress when ``Accept: text/event-stream``, JSON
-        otherwise.  Poisedness failures (a bare ``ValueError`` from the
-        RBF solve, not a ``DrowseError``) are caught explicitly and
-        surfaced as a clean error frame.
+        Discover folders accept ``fit_mode`` / ``hyperparams`` overrides that
+        the pipeline merges into ``manifold.json`` inside the transaction that
+        derives the cache key.
         """
         folder = manifold_dir(namespace, name)
         if not (folder / "manifold.json").exists():
             raise HTTPException(404, f"manifold {namespace}/{name} not found")
 
-        def _fit(on_progress: Callable[[str], None]) -> ManifoldInfo:
+        def fit(on_progress: ProgressCallback) -> ManifoldInfo:
             manifold = session.fit(
-                folder, sae=req.sae,
-                layers=req.layers,
-                fit_mode=req.fit_mode,
-                hyperparams=req.hyperparams,
-                force=req.force,
-                on_progress=on_progress,
+                folder, sae=req.sae, layers=req.layers, fit_mode=req.fit_mode,
+                hyperparams=req.hyperparams, force=req.force, on_progress=on_progress,
             )
             _evict_manifold(session, namespace, name)
-            mf = _find_manifold(namespace, name)
-            body = _manifold_json(mf, session, full=True)
+            body = detail(namespace, name)
             body["done"] = True
             body["layers_fitted"] = len(manifold.layers)
             body["feature_space"] = manifold.feature_space
             return body
 
-        async def _job(on_progress: ProgressCallback) -> ManifoldInfo:
-            return await run_in_thread(_fit, on_progress)
+        async def job(on_progress: ProgressCallback) -> ManifoldInfo:
+            return await run_in_thread(fit, on_progress)
 
-        return await sse_or_json(
-            request,
-            session,
-            _job,
-            error_message="fit failed",
-            log_message="manifold fit crashed",
-            error_formatter=extraction_error_frame,
-            json_errors=extraction_json_errors(),
-            logger=log,
+        return await run_operation(
+            request, job, failure="Manifold fit failed", classify=classify_extraction_error,
         )

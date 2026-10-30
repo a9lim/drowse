@@ -183,10 +183,6 @@ export interface InstrumentSourceJSON {
   [key: string]: unknown;
 }
 
-export interface InstrumentsResponse {
-  instruments: InstrumentFamilyBlock[];
-}
-
 export interface JointLogprobRowJSON {
   a_index: number;
   b_index: number;
@@ -496,11 +492,6 @@ export interface PreparationStatusJSON {
   release?: string | null;
   name?: string | null;
   info?: SaeRuntimeInfo | null;
-}
-
-/** ``GET .../probes/defaults`` — ``{tag: [manifold name]}``. */
-export interface ProbeDefaultsResponse {
-  defaults: Record<string, string[]>;
 }
 
 export interface ProbeGeometryResponse {

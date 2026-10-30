@@ -221,18 +221,6 @@ class TestWSGenerateSchemaValidation:
         ):
             assert self._errors(**kwargs)[0]["type"] == "fork_fields"
 
-    def test_prefill_requires_text(self) -> None:
-        for text in (None, ""):
-            errors = self._errors(prefill_node_id="n1", prefill_text=text)
-            assert errors[0]["type"] == "prefill_fields", text
-
-    def test_fork_and_prefill_are_exclusive(self) -> None:
-        errors = self._errors(
-            fork_node_id="n1", fork_raw_index=0, fork_alt_token_id=7,
-            prefill_node_id="n2", prefill_text="Sure",
-        )
-        assert errors[0]["type"] == "mode_conflict"
-
     def test_n_is_bounded_on_both_frames(self) -> None:
         import pydantic
 
@@ -253,9 +241,10 @@ class TestWSGenerateSchemaValidation:
             type="generate",
             fork_node_id="n1", fork_raw_index=0, fork_alt_token_id=7,
         ).fork_node_id == "n1"
-        assert WSGenerateMessage(
-            type="generate", prefill_node_id="n1", prefill_text="Sure",
-        ).prefill_text == "Sure"
+
+    def test_prefill_fields_are_not_part_of_the_frame(self) -> None:
+        errors = self._errors(prefill_node_id="n1", prefill_text="Sure")
+        assert {error["type"] for error in errors} == {"extra_forbidden"}
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience

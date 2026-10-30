@@ -438,12 +438,6 @@ class ProbeListResponse(TypedDict):
     probes: list[ProbeInfo]
 
 
-class ProbeDefaultsResponse(TypedDict):
-    """``GET .../probes/defaults`` — ``{tag: [manifold name]}``."""
-
-    defaults: dict[str, list[str]]
-
-
 class ProbeOverlay(TypedDict):
     """A curved fit's curve/surface overlay, sampled into the whitened frame."""
 
@@ -692,10 +686,6 @@ class ScoreTemplateResponse(TypedDict):
 
 
 # -------------------------------------------------------------- instruments --
-
-class InstrumentsResponse(TypedDict):
-    instruments: list[InstrumentFamilyBlock]
-
 
 class SaeDescriptionSourceJSON(TypedDict):
     model: str

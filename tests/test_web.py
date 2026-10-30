@@ -11,7 +11,6 @@ artifact under test.
 """
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -82,7 +81,6 @@ def _mock_session_with_vectors(vectors: dict[str, Profile]):
     session._gen_state = MagicMock()
     session._gen_state.finish_reason = "stop"
     session.whitener = _IdentityWhitener()
-    session.lock = asyncio.Lock()
 
     session.events = MagicMock()
     session.events.subscribe = lambda cb: (lambda: None)
@@ -196,6 +194,24 @@ class TestWebMount:
         assert r.status_code == 200
         assert b'id="app"' in r.content
 
+    def test_dashboard_shell_is_public_when_an_api_key_is_set(self) -> None:
+        """Regression: an app-level auth dependency 401'd the SPA shell itself,
+        so a key-protected (remote) server never loaded its dashboard.  Only
+        the API prefixes authenticate; the page and assets are public."""
+        from drowse.server import create_app
+
+        app = create_app(_mock_session_with_vectors({}), api_key="k", web=True)
+        with TestClient(app) as client:
+            root = client.get("/")
+            assert root.status_code == 200 and b'id="app"' in root.content
+            assert client.get("/chat").status_code == 200
+            for path in _index_asset_paths(root.content):
+                assert client.get(path).status_code == 200
+            profiles = "/drowse/v1/sessions/default/profiles"
+            assert client.get(profiles).status_code == 401
+            assert client.get("/v1/models").status_code == 401
+            assert client.get(profiles, headers={"Authorization": "Bearer k"}).status_code == 200
+
     def test_no_web_does_not_mount_root(self, api_only_client: Any) -> None:
         _session, client = api_only_client
         # ``--no-web`` (CLI) / ``web=False`` (library): GET / shouldn't
@@ -277,42 +293,6 @@ class TestRemovedDashboardSurfaces:
         assert r.status_code == 200
         data = r.json()
         assert set(data) == {"name", "layers", "metadata"}
-
-    def test_removed_native_and_styleguide_routes_are_not_spa_fallbacks(
-        self, web_client: Any,
-    ) -> None:
-        _session, client = web_client
-        for path in (
-            "/drowse/v1/sessions/default/profiles/honest/diagnostics",
-            "/drowse/v1/sessions/default/experiments/fan",
-            "/styleguide",
-            "/styleguide/anything",
-        ):
-            assert client.get(path).status_code == 404
-
-
-class TestRepeatMount:
-    """``register_web_routes`` is not idempotent — a second call appends a
-    duplicate mount and duplicate routes that the first ones shadow.  The
-    docstring says so; pin the behaviour it describes."""
-
-    def test_second_call_appends_shadowed_routes_and_still_serves(
-        self, web_client: Any,
-    ) -> None:
-        from drowse.web import register_web_routes
-
-        _session, client = web_client
-        app = client.app
-        before = len(app.routes)
-
-        register_web_routes(app)
-
-        assert len(app.routes) > before
-        # The first registration keeps winning: FastAPI matches in
-        # registration order, so the dashboard still serves normally.
-        assert client.get("/").status_code == 200
-        assert client.get("/styleguide").status_code == 404
-
 
 # ---------------------------------------------------------------------------
 # The un-aggregated per-layer heatmap view: the token payload's
