@@ -451,6 +451,76 @@ def test_progress_flood_after_disconnect_does_not_block_completion() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("request_id", [None, "kept"])
+def test_sse_client_leaving_while_queued_withdraws_only_an_unreceipted_job(request_id: str | None) -> None:
+    """Regression: the job task started at request time and waited for the
+    lock unbounded, so an extract/fit whose client had already left still ran
+    in full once the lock freed — with nobody observing and no receipt."""
+    async def scenario() -> None:
+        app = _app()
+        calls = 0
+
+        async def job(_progress: Any) -> dict[str, bool]:
+            nonlocal calls
+            calls += 1
+            return {"written": True}
+
+        await app.state.session_lock.acquire()
+        response = await run_operation(_request(app, sse=True, request_id=request_id), job, failure="failed")
+        (task,) = app.state.operation_tasks
+        await asyncio.sleep(0.01)
+        assert app.state.operation_tasks.queued(task)
+        # The client leaves while the stream waits for its first frame:
+        # Starlette's disconnect listener cancels the body iteration.
+        body: Any = response.body_iterator
+        waiting = asyncio.ensure_future(anext(body))
+        await asyncio.sleep(0.01)
+        waiting.cancel()
+        with suppress(asyncio.CancelledError):
+            await waiting
+        await body.aclose()
+        app.state.session_lock.release()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        if request_id is None:
+            assert task.cancelled() and calls == 0
+        else:
+            assert calls == 1
+            assert app.state.operations.receipt(request_id)["state"] == "completed"
+        assert not app.state.session_lock.locked()
+    asyncio.run(scenario())
+
+
+def test_shutdown_cancels_queued_operations_and_joins_started_ones() -> None:
+    async def scenario() -> None:
+        app = _app()
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls: list[str] = []
+
+        async def first(_progress: Any) -> dict[str, bool]:
+            calls.append("first")
+            entered.set()
+            await release.wait()
+            return {"first": True}
+
+        async def second(_progress: Any) -> dict[str, bool]:
+            calls.append("second")
+            return {"second": True}
+
+        await run_operation(_request(app, sse=True, request_id="started"), first, failure="failed")
+        await entered.wait()
+        await run_operation(_request(app, sse=True, request_id="queued"), second, failure="failed")
+        shutdown = asyncio.gather(*(hook() for hook in app.router.on_shutdown))
+        await asyncio.sleep(0.01)
+        assert not shutdown.done(), "a started job is joined, not abandoned"
+        release.set()
+        await asyncio.wait_for(shutdown, 2)
+        assert calls == ["first"]
+        assert app.state.operations.receipt("started")["state"] == "completed"
+        assert app.state.operations.receipt("queued")["state"] == "interrupted"
+    asyncio.run(scenario())
+
+
 def test_receipt_route_and_shutdown_join() -> None:
     async def scenario() -> None:
         app = _app()

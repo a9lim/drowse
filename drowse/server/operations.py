@@ -350,10 +350,66 @@ async def _unbounded_lock(app: FastAPI) -> AsyncIterator[None]:
         yield
 
 
-def _track(app: FastAPI, task: asyncio.Task[Any]) -> None:
-    tasks: set[asyncio.Task[Any]] = app.state.operation_tasks
-    tasks.add(task)
-    task.add_done_callback(tasks.discard)
+class OperationTasks:
+    """The server-owned operation tasks, each either queued or started.
+
+    A task is *queued* until it holds the session lock and its job begins.
+    Shutdown cancels the queued ones — nobody can still be waiting on an
+    operation the server will never answer — and joins the started ones, so a
+    worker is never abandoned mid-write.
+    """
+
+    def __init__(self) -> None:
+        self._started: dict[asyncio.Task[Any], bool] = {}
+
+    def add(self, task: asyncio.Task[Any], *, started: bool = True) -> None:
+        self._started[task] = started
+        task.add_done_callback(self.discard)
+
+    def discard(self, task: asyncio.Task[Any]) -> None:
+        self._started.pop(task, None)
+
+    def start(self, task: asyncio.Task[Any] | None) -> None:
+        if task is not None and task in self._started:
+            self._started[task] = True
+
+    def queued(self, task: asyncio.Task[Any]) -> bool:
+        return self._started.get(task) is False
+
+    def __iter__(self) -> Iterator[asyncio.Task[Any]]:
+        return iter(list(self._started))
+
+    def __len__(self) -> int:
+        return len(self._started)
+
+    async def join(self) -> None:
+        """Cancel queued tasks, then wait out every task's real lifetime."""
+        for task, started in list(self._started.items()):
+            if not started:
+                task.cancel()
+        tasks = list(self._started)
+        if tasks:
+            await finish_worker(asyncio.gather(*tasks, return_exceptions=True))
+
+
+async def _observe(
+    pump: ProgressPump, tasks: OperationTasks, task: asyncio.Task[Any], *, abandonable: bool,
+) -> AsyncIterator[str]:
+    """The SSE body over ``pump``; an abandoned stream withdraws a still-queued job.
+
+    Without a receipt, the stream is the job's only observer: a client that
+    leaves while the job waits for the lock cancels it, so the job never
+    writes artifacts nobody asked to keep.  Once the job has started — or
+    when a receipt can report the outcome — it runs to completion.
+    """
+    frames = pump.frames()
+    try:
+        async for frame in frames:
+            yield frame
+    finally:
+        await frames.aclose()
+        if abandonable and tasks.queued(task):
+            task.cancel()
 
 
 async def run_operation(
@@ -373,7 +429,8 @@ async def run_operation(
     progress lines under ``progress_key`` when set) or raises the classified
     failure.  Either way the job runs in a server-owned task, so a client
     disconnect never releases the lock while the worker still writes, and
-    shutdown joins it.
+    shutdown joins it.  An SSE client without a receipt that leaves before
+    the job starts withdraws it (see :func:`_observe`).
     """
     app = request.app
     streaming = "text/event-stream" in request.headers.get("accept", "")
@@ -398,10 +455,12 @@ async def run_operation(
             ledger.progress(request_id, message)
 
     pump = ProgressPump(asyncio.get_running_loop(), mirror)
+    tasks: OperationTasks = app.state.operation_tasks
 
     async def run() -> tuple[bool, Any]:
         try:
             async with (_unbounded_lock(app) if streaming else session_lock(app)):
+                tasks.start(asyncio.current_task())
                 if request_id:
                     ledger.running(request_id)
                 payload = await job(pump.report)
@@ -423,9 +482,11 @@ async def run_operation(
         return True, payload
 
     task = asyncio.create_task(run())
-    _track(app, task)
+    tasks.add(task, started=False)
     if streaming:
-        return ClosingStreamingResponse(pump.frames(), media_type="text/event-stream")
+        return ClosingStreamingResponse(
+            _observe(pump, tasks, task, abandonable=not request_id), media_type="text/event-stream",
+        )
     ok, outcome = await finish_worker(task)
     if not ok:
         raise HTTPException(outcome.status, outcome.message)
@@ -595,17 +656,15 @@ class PreparationGroup:
 
 
 def register_operation_routes(app: FastAPI) -> None:
-    """Install the ledger, task set, and receipt route; join live tasks at shutdown."""
+    """Install the ledger, task set, and receipt route; settle live tasks at shutdown."""
     app.state.operations = OperationLedger()
-    app.state.operation_tasks = set()
+    app.state.operation_tasks = OperationTasks()
 
     @app.get("/drowse/v1/operations/{request_id}")
     def operation_status(request_id: str) -> dict[str, Any]:
         return app.state.operations.receipt(request_id)
 
     async def finish_operations() -> None:
-        tasks = list(app.state.operation_tasks)
-        if tasks:
-            await finish_worker(asyncio.gather(*tasks, return_exceptions=True))
+        await app.state.operation_tasks.join()
 
     app.router.on_shutdown.append(finish_operations)
