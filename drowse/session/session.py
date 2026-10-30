@@ -181,7 +181,6 @@ PROBE_CATEGORIES = [
     "register",
     "cultural",
 ]
-MIN_ELAPSED_FOR_RATE = 0.1
 
 
 def _humanize_concept(name: str) -> str:
@@ -7524,7 +7523,6 @@ class DrowseSession:
             assistant_node_id=assistant_node_id,
             mean_logprob=mean_logprob,
             mean_surprise=mean_surprise,
-            min_elapsed_for_rate=MIN_ELAPSED_FOR_RATE,
             aggregates=aggregates,
         )
 

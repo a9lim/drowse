@@ -54,7 +54,6 @@ def finalize_generation(
     assistant_node_id: str | None = None,
     mean_logprob: float | None = None,
     mean_surprise: float | None = None,
-    min_elapsed_for_rate: float = 1e-9,
     aggregates: FamilyAggregates | None = None,
 ) -> GenerationResult:
     """Decode, score probes, update session side effects, and build a result.
@@ -63,7 +62,9 @@ def finalize_generation(
     capture-mode scoring is skipped and no per-token scores are kept.
     """
     token_count = len(generated_ids)
-    tok_per_sec = token_count / elapsed if elapsed > min_elapsed_for_rate else 0.0
+    tok_per_sec = (
+        token_count / elapsed if elapsed > MIN_ELAPSED_FOR_RATE else 0.0
+    )
     response_ids = generated_ids[session._gen_state.thinking_end_idx:]
     if (
         session._gen_state.finish_reason == "stop_sequence"
