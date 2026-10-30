@@ -1,21 +1,19 @@
 """Token-by-token generation loop with KV cache, steering hooks, and monitor integration."""
 
 import math
-import queue
-import inspect
-import logging
 import threading
 import warnings
-from enum import IntEnum
 from contextlib import contextmanager
+from dataclasses import dataclass
+from enum import IntEnum
 from typing import Any, Callable, cast
-from weakref import ReferenceType, WeakKeyDictionary, ref
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from drowse.generation.results import TokenAlt
 from drowse.generation.token_callback import StepTokenCallback
+from drowse.model.chat import ChatTraits, takes_enable_thinking
 from drowse.model.scene import (
     SceneRenderError,
     SceneTurn,
@@ -32,389 +30,6 @@ class _ThinkState(IntEnum):
     PREAMBLE = 1
     THINKING = 2
     RESPONSE_PREAMBLE = 3
-
-
-log = logging.getLogger(__name__)
-
-_EOT_TOKEN_NAMES = frozenset({
-    "<end_of_turn>",
-    "<|endoftext|>",
-    "<|end|>",
-    "<|eot_id|>",
-    "<turn|>",
-    "<|im_end|>",
-})
-
-def _tok_key(tokenizer: PreTrainedTokenizerBase) -> tuple[str, int]:
-    return (
-        getattr(tokenizer, "name_or_path", ""),
-        int(getattr(tokenizer, "vocab_size", 0) or 0),
-    )
-
-
-def _get_eos_ids(model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> set[int]:
-    """Return every EOS token ID declared by the model or tokenizer."""
-    eos_ids: set[int] = set()
-    if hasattr(model, "generation_config") and model.generation_config.eos_token_id is not None:
-        eid = model.generation_config.eos_token_id
-        if isinstance(eid, int):
-            eos_ids.add(eid)
-        else:
-            eos_ids.update(eid)
-    tokenizer_eos = getattr(tokenizer, "eos_token_id", None)
-    if tokenizer_eos is not None:
-        eos_ids.add(int(tokenizer_eos))  # pyright: ignore[reportArgumentType]  # transformers stub over-widens eos_token_id
-    # Pick up end-of-turn tokens that some models (Gemma 4, etc.) add as
-    # special tokens but don't list in generation_config.eos_token_id.
-    added = getattr(tokenizer, "added_tokens_encoder", {})
-    for tok_str, tok_id in added.items():
-        if tok_str in _EOT_TOKEN_NAMES:
-            eos_ids.add(tok_id)
-    return eos_ids
-
-
-_TOKEN_TABLE_CACHE_MAX = 2
-_generation_cache_lock = threading.RLock()
-_token_table_cache: dict[
-    tuple[Any, ...], tuple[ReferenceType[Any], list[str | None]]
-] = {}
-
-
-def _forget_tokenizer_cache(reference: ReferenceType[Any]) -> None:
-    with _generation_cache_lock:
-        for cache in (_token_table_cache, _chat_input_cache):
-            for key, entry in list(cache.items()):
-                if entry[0] is reference:
-                    del cache[key]
-
-
-def clear_generation_caches(tokenizer: PreTrainedTokenizerBase) -> None:
-    with _generation_cache_lock:
-        for cache in (_token_table_cache, _chat_input_cache):
-            for key, entry in list(cache.items()):
-                if entry[0]() is tokenizer:
-                    del cache[key]
-
-
-def _tokenizer_cache_ref(tokenizer: PreTrainedTokenizerBase) -> ReferenceType[Any] | None:
-    try:
-        return ref(tokenizer, _forget_tokenizer_cache)
-    except TypeError:
-        return None
-
-
-def _get_token_table(tokenizer: PreTrainedTokenizerBase, vocab_size: int) -> list[str | None]:
-    """Return cached token-id-to-string lookup table.
-
-    Replaces per-token ``convert_ids_to_tokens`` calls with a single
-    list index.  Built once per tokenizer, amortized across generations.
-    Entries are ``None`` for tokens that decode to partial UTF-8 sequences
-    (replacement char U+FFFD) — these must be buffered and decoded together
-    with subsequent tokens (e.g. multi-token emoji).
-    """
-    tok_key = (
-        *_tok_key(tokenizer), int(vocab_size), id(tokenizer),
-        len(getattr(tokenizer, "added_tokens_encoder", {})),
-    )
-    with _generation_cache_lock:
-        cached = _token_table_cache.pop(tok_key, None)
-        if cached is not None and cached[0]() is tokenizer:
-            _token_table_cache[tok_key] = cached
-            return cached[1]
-    # batch_decode is orders of magnitude faster than per-id decode()
-    # for large vocabs (150k+ tokens in modern models) — Rust-side loop
-    # instead of a Python round-trip per entry.  Chunked so that a single
-    # pathological token doesn't force the entire vocab onto the slow path.
-    _CHUNK = 8192
-    table: list[str | None] = [''] * vocab_size
-    for start in range(0, vocab_size, _CHUNK):
-        end = min(start + _CHUNK, vocab_size)
-        ids = [[i] for i in range(start, end)]
-        try:
-            decoded: list[str] | None = cast(list[str], tokenizer.batch_decode(ids))  # transformers stub widens batch_decode return
-        except Exception:
-            decoded = None
-        if decoded is not None and len(decoded) == (end - start):
-            for i, s in enumerate(decoded):
-                table[start + i] = s if '\ufffd' not in s else None
-        else:
-            for i in range(start, end):
-                try:
-                    s = cast(str, tokenizer.decode([i]))  # transformers stub widens decode return to str|list[str]
-                    table[i] = s if '\ufffd' not in s else None
-                except Exception:
-                    table[i] = ''
-    reference = _tokenizer_cache_ref(tokenizer)
-    if reference is not None:
-        with _generation_cache_lock:
-            _token_table_cache.pop(tok_key, None)
-            while len(_token_table_cache) >= _TOKEN_TABLE_CACHE_MAX:
-                _token_table_cache.pop(next(iter(_token_table_cache)))
-            _token_table_cache[tok_key] = (reference, table)
-    return table
-
-
-_think_delim_cache: WeakKeyDictionary[
-    Any, tuple[int | None, int | None, int | None, bool]
-] = WeakKeyDictionary()
-_none_result: tuple[int | None, int | None, int | None, bool] = (None, None, None, False)
-
-
-def _cached_think_delimiters(
-    tokenizer: PreTrainedTokenizerBase,
-) -> tuple[int | None, int | None, int | None, bool] | None:
-    try:
-        return _think_delim_cache.get(tokenizer)
-    except TypeError:
-        return None
-
-
-def _remember_think_delimiters(
-    tokenizer: PreTrainedTokenizerBase,
-    result: tuple[int | None, int | None, int | None, bool],
-) -> tuple[int | None, int | None, int | None, bool]:
-    try:
-        _think_delim_cache[tokenizer] = result
-    except TypeError:
-        pass
-    return result
-
-
-def _detect_bracket_delimiters(
-    tokenizer: PreTrainedTokenizerBase,
-) -> tuple[int | None, int | None, int | None, bool] | None:
-    """Detect bracket-pair thinking delimiters (Mistral-3 Reasoning style).
-
-    These models ship ``[THINK]`` / ``[/THINK]`` as added tokens and bake
-    the reasoning instruction into the chat template's default system
-    prompt, so the model emits ``[THINK]…[/THINK]…response`` regardless of
-    any ``enable_thinking`` flag (the template doesn't have one).  Without
-    engaging the state machine the thinking section + closing bracket
-    leak into the response.
-
-    Returns the delimiter tuple if the pair is present, ``None`` otherwise.
-    """
-    added = getattr(tokenizer, "added_tokens_encoder", {})
-    start_id = added.get("[THINK]")
-    end_id = added.get("[/THINK]")
-    if start_id is None or end_id is None:
-        return None
-    log.debug("bracket-style delimiters: [THINK]=%d [/THINK]=%d", start_id, end_id)
-    return (start_id, end_id, None, False)
-
-
-def _detect_channel_delimiters(
-    tokenizer: PreTrainedTokenizerBase,
-) -> tuple[int | None, int | None, int | None, bool] | None:
-    """Detect channel-based thinking for models that always use channels.
-
-    Models like gpt-oss generate ``<|channel|>analysis<|message|>`` for
-    thinking and ``<|channel|>response<|message|>`` for the reply without
-    an ``enable_thinking`` template parameter.  Returns the delimiter
-    tuple if both ``<|channel|>`` and ``<|message|>`` are added tokens,
-    ``None`` otherwise.
-    """
-    added = getattr(tokenizer, "added_tokens_encoder", {})
-    channel_id = added.get("<|channel|>")
-    message_id = added.get("<|message|>")
-    if channel_id is None or message_id is None:
-        return None
-    # Check whether the generation prompt already opens a channel
-    # (model starts in thinking) or the model must emit it explicitly.
-    try:
-        gen_prompt = cast(str, tokenizer.apply_chat_template(  # transformers stub doesn't narrow tokenize=False return
-            [{"role": "user", "content": "hi"}],
-            add_generation_prompt=True, tokenize=False,
-        ))
-    except Exception:
-        gen_prompt = ""
-    starts_in = "<|channel|>" in gen_prompt
-    log.debug(
-        "channel-based delimiters: channel=%d message=%d"
-        " starts_in_thinking=%s",
-        channel_id, message_id, starts_in,
-    )
-    return (
-        None if starts_in else channel_id,
-        channel_id,
-        message_id,
-        starts_in,
-    )
-
-
-def _detect_think_delimiters(
-    tokenizer: PreTrainedTokenizerBase,
-) -> tuple[int | None, int | None, int | None, bool]:
-    """Detect thinking start/end delimiter tokens from the chat template.
-
-    Returns ``(start_id, end_id, response_start_id, starts_in_thinking)``
-    where:
-
-    * **start_id** — token that opens a thinking section, or ``None`` if
-      the generation prompt itself puts us in thinking mode (e.g. Qwen
-      appends ``<think>`` to the prompt).
-    * **end_id** — token that closes a thinking section.
-    * **response_start_id** — token that marks the start of actual response
-      content after the thinking section ends, or ``None`` if the response
-      begins immediately after ``end_id``.  Used by channel-based formats
-      (e.g. gpt-oss ``<|channel|>…<|message|>``) where multiple tokens
-      separate thinking from response content.
-    * **starts_in_thinking** — ``True`` when the first generated token is
-      already thinking content (Qwen-style).  ``False`` when the model
-      must explicitly open a thinking channel (Gemma-style).
-
-    Detection works by rendering a round-trip assistant message through
-    the tokenizer's own chat template and inspecting the delimiters that
-    bracket the known thinking content.
-    """
-    cached = _cached_think_delimiters(tokenizer)
-    if cached is not None:
-        return cached
-
-    template = getattr(tokenizer, "chat_template", None) or ""
-    if "enable_thinking" not in template:
-        # Templates without an ``enable_thinking`` switch still need
-        # delimiter detection for two known styles:
-        #   * channel-based (gpt-oss) — ``<|channel|>analysis<|message|>``
-        #   * bracket-pair (Mistral-3 Reasoning) — ``[THINK]…[/THINK]``,
-        #     where the reasoning instruction is baked into the template's
-        #     default system prompt and the model emits the pair itself.
-        result = (
-            _detect_channel_delimiters(tokenizer)
-            or _detect_bracket_delimiters(tokenizer)
-        )
-        return _remember_think_delimiters(tokenizer, result or _none_result)
-
-    think_marker = "XTHINKCONTENTX"
-    response_marker = "XRESPONSECONTENTX"
-    _dummy_tc = [{"function": {"name": "x", "arguments": {}}}]
-
-    # Different model families represent thinking differently in assistant
-    # messages.  Gemma requires reasoning/reasoning_content + tool_calls,
-    # Qwen embeds <think>...</think> in content.  Try each schema until
-    # one produces both markers in the rendered output.
-    attempts = [
-        {"role": "assistant", "reasoning_content": think_marker, "content": response_marker,
-         "tool_calls": _dummy_tc},
-        {"role": "assistant", "reasoning": think_marker, "content": response_marker,
-         "tool_calls": _dummy_tc},
-        {"role": "assistant", "thought": think_marker, "content": response_marker,
-         "tool_calls": _dummy_tc},
-        {"role": "assistant", "thought": think_marker, "content": response_marker},
-        {"role": "assistant", "reasoning_content": think_marker, "content": response_marker},
-        {"role": "assistant", "content": f"<think>\n{think_marker}\n</think>\n{response_marker}"},
-    ]
-
-    added = getattr(tokenizer, "added_tokens_encoder", {})
-
-    for asst_msg in attempts:
-        try:
-            rendered = cast(str, tokenizer.apply_chat_template(  # transformers stub doesn't narrow tokenize=False return
-                [{"role": "user", "content": "hi"}, asst_msg],
-                tokenize=False, enable_thinking=True,
-            ))
-        except Exception:
-            continue
-
-        ti = rendered.find(think_marker)
-        ri = rendered.find(response_marker)
-        if ti < 0 or ri <= ti:
-            continue
-
-        # --- end delimiter: first special token between the two markers ---
-        # response_start_id is only relevant for channel-based models
-        # (detected via _detect_channel_delimiters).  For enable_thinking
-        # models the response follows the end delimiter directly.
-        between = rendered[ti + len(think_marker):ri]
-        end_pos, end_tok, end_id = len(between), None, None
-        for tok_str, tok_id in added.items():
-            pos = between.find(tok_str)
-            if 0 <= pos < end_pos:
-                end_pos, end_tok, end_id = pos, tok_str, tok_id
-        if end_id is None:
-            continue
-        rs_id = None
-
-        # --- start delimiter: closest special token before think_marker ---
-        start_pos, start_tok, start_id = -1, None, None
-        for tok_str, tok_id in added.items():
-            pos = rendered.rfind(tok_str, 0, ti)
-            if pos > start_pos:
-                start_pos, start_tok, start_id = pos, tok_str, tok_id
-
-        # If the start token already appears in the generation prompt the
-        # model starts in thinking mode from the first generated token
-        # (Qwen-style).  Otherwise the model must emit the start token
-        # explicitly (Gemma-style) and may skip thinking entirely.
-        starts_in_thinking = False
-        if start_id is not None and start_tok is not None:
-            try:
-                gen_prompt = cast(str, tokenizer.apply_chat_template(  # transformers stub doesn't narrow tokenize=False return
-                    [{"role": "user", "content": "hi"}],
-                    add_generation_prompt=True, tokenize=False,
-                    enable_thinking=True,
-                ))
-                if start_tok in gen_prompt:
-                    starts_in_thinking = True
-                    start_id = None  # nothing to detect at runtime
-            except Exception:
-                pass
-
-        result = (start_id, end_id, rs_id, starts_in_thinking)
-        log.debug(
-            "thinking delimiters: start=%r end=%r response_start=%r"
-            " starts_in_thinking=%s",
-            start_tok if start_id is not None else "(prompt)",
-            end_tok, None, starts_in_thinking,
-        )
-        return _remember_think_delimiters(tokenizer, result)
-
-    log.warning("thinking supported but could not detect delimiters")
-    return _remember_think_delimiters(tokenizer, _none_result)
-
-
-def supports_thinking(tokenizer: PreTrainedTokenizerBase) -> bool:
-    """Check if the tokenizer's chat template supports thinking mode."""
-    return _detect_think_delimiters(tokenizer) != _none_result
-
-
-def thinking_is_optional(tokenizer: PreTrainedTokenizerBase) -> bool:
-    """Return True iff the user can actually turn thinking off.
-
-    Templates carry an ``enable_thinking`` Jinja variable for the
-    toggleable case (Qwen3-30B-A3B-style — ``enable_thinking=False``
-    renders an empty closed thinking section so the model skips it).
-    Forced-thinking families have no such switch: gpt-oss always opens
-    a channel, Mistral-3-Reasoning bakes the reasoning instruction
-    into its default system prompt, Qwen3-Thinking hardcodes
-    ``<think>\\n`` in the generation prompt. For these, the
-    ``thinking`` flag is purely cosmetic at the prompt layer — the
-    state-machine still engages so the section is classified, but the
-    model thinks either way.
-
-    Returns False when ``supports_thinking`` is False (no machinery to
-    toggle).
-    """
-    if not supports_thinking(tokenizer):
-        return False
-    template = getattr(tokenizer, "chat_template", None) or ""
-    return "enable_thinking" in template
-
-
-def detect_base_model(tokenizer: PreTrainedTokenizerBase) -> bool:
-    """True when the tokenizer carries no chat template — a base model.
-
-    A base (completion) model has no ``chat_template``, so there are no
-    turns, roles, or system-prompt slots: input is raw text and output is
-    a continuation.  ``tokenizer.chat_template is None`` is the canonical
-    check used inline across the engine (``fit/capture.py``,
-    ``build_chat_input``); this names it so frontends can branch on a
-    single import and the session can expose it as a property.
-    """
-    return getattr(tokenizer, "chat_template", None) is None
-
-
-from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -594,57 +209,6 @@ def hf_generation_config(
     )
 
 
-# Modern HF ``CausalLM.forward`` accepts ``logits_to_keep`` (the current
-# name; ``num_logits_to_keep`` is the older one) — an int cap on how many
-# trailing positions get the LM head.  Passing ``1`` at prefill avoids
-# materializing a ``(1, T_prompt, V)`` logits tensor (hundreds of MB at a
-# 256k vocab) and the ~T× wasted head FLOPs when only the last row is used.
-# Some custom/older modeling files don't expose the kwarg, so we detect the
-# supported name once via signature inspection and cache it.
-_LOGITS_KEEP_CACHE_MISS = object()
-_logits_keep_kwarg_cache: WeakKeyDictionary[Any, str | None] = WeakKeyDictionary()
-
-
-def _logits_keep_kwarg(model: PreTrainedModel) -> str | None:
-    """Return the ``logits_to_keep``/``num_logits_to_keep`` kwarg this model's
-    ``forward`` accepts, or ``None`` if neither is in the signature.
-
-    Cached per ``forward`` callable.  A ``**kwargs``-only signature reports
-    ``None`` here (the name isn't explicit); the caller's first-forward
-    try/except still catches a model that silently mishandles the kwarg.
-    A model with no ``forward`` (a non-``nn.Module`` test double calling via
-    ``__call__``) reports ``None`` — inspecting ``__call__`` would only see
-    ``nn.Module``'s ``*args, **kwargs`` wrapper, never the real param.
-    """
-    fwd = getattr(model, "forward", None)
-    if fwd is None:
-        return None
-    key = getattr(fwd, "__func__", None)
-    if key is not None:
-        try:
-            cached = _logits_keep_kwarg_cache.get(key, _LOGITS_KEEP_CACHE_MISS)
-        except TypeError:
-            key = None
-        else:
-            if cached is not _LOGITS_KEEP_CACHE_MISS:
-                return cast("str | None", cached)
-    name: str | None = None
-    try:
-        params = inspect.signature(fwd).parameters
-    except (ValueError, TypeError):  # pragma: no cover — C/builtin forwards
-        params = {}
-    for cand in ("logits_to_keep", "num_logits_to_keep"):
-        if cand in params:
-            name = cand
-            break
-    if key is not None:
-        try:
-            _logits_keep_kwarg_cache[key] = name
-        except TypeError:
-            pass
-    return name
-
-
 def _advance_no_cache_input(
     next_token: torch.Tensor,
     *,
@@ -697,7 +261,6 @@ class GenerationState:
     def __init__(self):
         self.stop_requested = threading.Event()
         self._cancellation = threading.local()
-        self.token_queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
         self.thinking_end_idx: int = 0
         self.finish_reason: str = "stop"
         # For each on_token emission, the index in generated_ids of the
@@ -733,7 +296,6 @@ class GenerationState:
 
     def reset(self):
         self.stop_requested.clear()
-        self.token_queue = queue.SimpleQueue()
         self.thinking_end_idx = 0
         self.finish_reason = "stop"
         self.emit_map = []
@@ -778,43 +340,6 @@ class _PenaltyState:
         self.counts[pos].add_(1.0)
 
 
-# Bound both prompt text and tensors, and release them with their tokenizer.
-# Returned tensors are cloned so callers cannot mutate cached input ids.
-_CHAT_INPUT_CACHE_MAX = 128
-_CHAT_INPUT_CACHE_MAX_BYTES = 8 * 1024 * 1024
-_chat_input_cache: dict[
-    tuple[Any, ...], tuple[ReferenceType[Any], torch.Tensor, int]
-] = {}
-
-
-def _chat_cache_key_bytes(value: Any) -> int:
-    if isinstance(value, str):
-        return 64 + 4 * len(value)
-    if isinstance(value, tuple):
-        return 64 + 8 * len(value) + sum(_chat_cache_key_bytes(v) for v in value)
-    return 64
-
-
-def _remember_chat_input(
-    tokenizer: PreTrainedTokenizerBase, key: tuple[Any, ...], tensor: torch.Tensor,
-) -> None:
-    cost = _chat_cache_key_bytes(key) + tensor.numel() * tensor.element_size() + 128
-    if cost > _CHAT_INPUT_CACHE_MAX_BYTES:
-        return
-    reference = _tokenizer_cache_ref(tokenizer)
-    if reference is None:
-        return
-    with _generation_cache_lock:
-        _chat_input_cache.pop(key, None)
-        total = sum(entry[2] for entry in _chat_input_cache.values())
-        while _chat_input_cache and (
-            len(_chat_input_cache) >= _CHAT_INPUT_CACHE_MAX
-            or total + cost > _CHAT_INPUT_CACHE_MAX_BYTES
-        ):
-            total -= _chat_input_cache.pop(next(iter(_chat_input_cache)))[2]
-        _chat_input_cache[key] = (reference, tensor, cost)
-
-
 def _chat_input_cache_key(
     tokenizer: PreTrainedTokenizerBase,
     chat: list[dict[str, Any]],
@@ -830,7 +355,6 @@ def _chat_input_cache_key(
     if isinstance(template, dict):
         template = tuple(sorted(template.items()))
     return (
-        id(tokenizer),
         system_prompt,
         tuple(
             (m["role"], m["content"], m.get("label"), m.get("thinking"))
@@ -917,6 +441,7 @@ def build_chat_input(
     model_type: str | None = None,
     scene: "TurnGrammar | None" = None,
     gen_seat: str = "assistant",
+    traits: ChatTraits | None = None,
 ) -> torch.Tensor:
     """Render a chat history to ``input_ids``.
 
@@ -933,6 +458,9 @@ def build_chat_input(
     ``apply_chat_template`` pass-through when no label is present, else the
     render-then-splice path (``apply_with_per_turn_roles``, requiring
     ``model_type``).  A non-assistant ``gen_seat`` requires ``scene``.
+
+    ``traits`` (the session's :class:`~drowse.model.chat.ChatTraits`) supplies
+    the bounded render cache; without it every call renders.
     """
     chat: list[dict[str, Any]] = []
     if system_prompt:
@@ -940,16 +468,16 @@ def build_chat_input(
     chat.extend(messages)
     has_labels = gen_role is not None or any(m.get("label") for m in chat)
     if getattr(tokenizer, "chat_template", None) is not None:
-        key = _chat_input_cache_key(
-            tokenizer, chat, system_prompt, thinking,
-            add_generation_prompt, gen_role, gen_seat,
-            scene, model_type,
-        )
-        with _generation_cache_lock:
-            cached = _chat_input_cache.pop(key, None)
-            if cached is not None and cached[0]() is tokenizer:
-                _chat_input_cache[key] = cached
-                return cached[1].clone()
+        key: tuple[Any, ...] | None = None
+        if traits is not None:
+            key = _chat_input_cache_key(
+                tokenizer, chat, system_prompt, thinking,
+                add_generation_prompt, gen_role, gen_seat,
+                scene, model_type,
+            )
+            cached = traits.cached_render(key)
+            if cached is not None:
+                return cached
         scene_result = _try_scene_render(
             tokenizer, chat, scene,
             thinking=thinking,
@@ -958,15 +486,16 @@ def build_chat_input(
             gen_seat=gen_seat,
         )
         if scene_result is not None:
-            _remember_chat_input(tokenizer, key, scene_result)
-            return scene_result.clone()
+            if traits is not None and key is not None:
+                traits.remember_render(key, scene_result)
+            return scene_result
         if gen_seat != "assistant":
             raise SceneRenderError(
                 f"gen_seat={gen_seat!r} requires a validated scene grammar; "
                 f"the chat-template paths can only open the assistant seat"
             )
         kwargs: dict[str, Any] = {}
-        if "enable_thinking" in (getattr(tokenizer, "chat_template", "") or ""):
+        if takes_enable_thinking(tokenizer):
             kwargs["enable_thinking"] = thinking
         if not has_labels:
             # Strip any (None-valued) label keys so apply_chat_template sees
@@ -997,8 +526,9 @@ def build_chat_input(
             if isinstance(result, torch.Tensor)
             else cast(torch.Tensor, result["input_ids"])  # pyright: ignore[reportArgumentType, reportCallIssue]  # transformers BatchEncoding stub lacks str-key subscript
         )
-        _remember_chat_input(tokenizer, key, tensor)
-        return tensor.clone()
+        if traits is not None and key is not None:
+            traits.remember_render(key, tensor)
+        return tensor
     # Base model without chat template — the cast model's raw-marker
     # fallback (``render_scene_raw``): ``Label: text`` lines, seats free,
     # per-turn labels honored.  (The engine routes plain base-model
@@ -1049,7 +579,7 @@ def generate_steered(
     forced_prefix: list[int] | None = None,
     steering_active: bool = True,
     want_perplexity: bool = True,
-    cache_token_text: bool = True,
+    traits: ChatTraits | None = None,
 ) -> list[int]:
     """
     Runs in a worker thread (not the async event loop).
@@ -1121,9 +651,9 @@ def generate_steered(
     the thinking-state machine transitions identically.  ``None`` (the
     default) is the normal free-sampling path with zero added cost.
 
-    ``cache_token_text`` controls the eager token-id→text table used by
-    streaming/logprob renderers. Stop-sequence-only callers can turn it
-    off to avoid a full-vocab decode table for a bounded tail match.
+    ``traits`` is the session's :class:`~drowse.model.chat.ChatTraits` (stop
+    ids, thinking delimiters, the logits-cap kwarg, the lazy token-text
+    table); a caller without one gets traits built for this call.
 
     Returns list of generated token IDs.
     """
@@ -1132,8 +662,10 @@ def generate_steered(
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
+    if traits is None:
+        traits = ChatTraits(tokenizer, model)
     device = input_ids.device
-    eos_ids = _get_eos_ids(model, tokenizer)
+    eos_ids = traits.eos_ids
     # ``past_key_values`` is normally None (full prefill); a non-None value
     # means the caller pre-prefilled some prefix tokens through the model
     # and is handing us the resulting cache.  ``cache_position_offset`` is
@@ -1151,11 +683,6 @@ def generate_steered(
     _cfg = getattr(model.config, "text_config", model.config)
     _vocab = _cfg.vocab_size
     topk_k = _effective_topk(config, _vocab)
-    token_table = (
-        _get_token_table(tokenizer, _vocab)
-        if on_token is not None and cache_token_text
-        else None
-    )
     seq_len = input_ids.shape[1] + cache_position_offset
     attn_mask_buf = torch.ones(1, seq_len, device=device, dtype=torch.long)
     prefill = True
@@ -1169,7 +696,7 @@ def generate_steered(
     # no-KV-cache fallback that re-feeds the full sequence each step).
     # ``logits_keep_failed`` arms a one-shot retry-without-kwarg if a model
     # whose signature *looked* supportive rejects the value at runtime.
-    _lk_name = _logits_keep_kwarg(model)
+    _lk_name = traits.logits_keep_kwarg
     logits_keep_kwargs: dict[str, int] = {_lk_name: 1} if _lk_name is not None else {}
     logits_keep_failed = False
 
@@ -1267,7 +794,7 @@ def generate_steered(
     # — the actual runtime prompt under ``thinking=False`` wouldn't open
     # a thinking section, so we mustn't start the machine mid-thinking.
     think_start_id, think_end_id, response_start_id, starts_in_thinking = (
-        _detect_think_delimiters(tokenizer)
+        traits.think
     )
     # ``starts_in_thinking`` is forced off when ``thinking=False`` *only*
     # for templates the user can actually opt out of (``enable_thinking``
@@ -1276,7 +803,7 @@ def generate_steered(
     # mid-thinking). For forced-thinking models (gpt-oss / Mistral-3
     # Reasoning / Qwen3-Thinking) the runtime prompt is identical
     # regardless of the flag, so the detector's reading is authoritative.
-    if not thinking and thinking_is_optional(tokenizer):
+    if not thinking and traits.thinking_optional:
         starts_in_thinking = False
     # Hoisted: true iff channel-based format (gpt-oss) where EOS acts as
     # a channel separator inside thinking/preamble rather than terminating.
@@ -1304,11 +831,6 @@ def generate_steered(
     response_char_len = 0
     state.response_text = None
     state.response_aggregate_index = None
-    # Decode cache for the no-eager-table path: token id -> its own decoded
-    # text.  Never carries a "partial UTF-8" sentinel — ``_decode_piece``
-    # re-tests the decoded string, so an alt-token decode of the same id can't
-    # change what the emit path sees.
-    lazy_token_text: dict[int, str] = {}
 
     no_cache_buf: torch.Tensor | None = None
     no_cache_len = int(current_input.shape[1])
@@ -1359,38 +881,16 @@ def generate_steered(
                 return raw_index
         return None
 
-    def _decode_one(tid: int) -> str:
-        cached = lazy_token_text.get(tid)
-        if cached is not None:
-            return cached
-        s = cast(str, tokenizer.decode([tid]))  # transformers stub widens decode return to str|list[str]
-        lazy_token_text[tid] = s
-        return s
-
-    def _decode_alt(tid: int) -> str:
-        """Decode a single alt token id to text, preferring the cached
-        token_table (already built once for the chosen-token rendering
-        path) and falling back to ``tokenizer.decode`` for partial-UTF-8
-        ids whose table entry is None. Only fires K times per step when
-        top-K capture is live, so the slower fallback is in the noise."""
-        if token_table is not None and 0 <= tid < _vocab:
-            cached = token_table[tid]
-            if cached is not None:
-                return cached
-        return _decode_one(tid)
-
     def _decode_piece(tid: int) -> str | None:
         """Decode one emitted token, preserving partial-UTF-8 buffering.
 
         ``None`` marks a token that decodes to a replacement character on its
         own \u2014 a partial UTF-8 byte sequence the caller buffers until a
-        completing token arrives.  The test runs on the decoded string every
-        call rather than on a cached sentinel, so it stays correct whichever
-        surface (emit or top-K alternative) decoded the id first.
+        completing token arrives.  The test runs on the decoded string, never
+        on a cached sentinel, so it holds whichever surface (emit or top-K
+        alternative) decoded the id first.
         """
-        if token_table is not None and 0 <= tid < _vocab:
-            return token_table[tid]
-        s = _decode_one(tid)
+        s = traits.token_text(tid)
         return None if "\ufffd" in s else s
 
     # One reused forward-kwargs mapping.  The four per-step entries are
@@ -1623,7 +1123,7 @@ def generate_steered(
                         offset += 1
                         if logprobs > 0:
                             top_alts = [
-                                TokenAlt(id=int(i), text=_decode_alt(int(i)), logprob=float(v))
+                                TokenAlt(id=int(i), text=traits.token_text(int(i)), logprob=float(v))
                                 for i, v in zip(host_ids[1:], host_values[offset:], strict=True)
                                 if math.isfinite(v)
                             ]

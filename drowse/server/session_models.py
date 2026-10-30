@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pydantic import Field, FiniteFloat
 
-from drowse.generation.decode import supports_thinking, thinking_is_optional
 from drowse.session.session import DrowseSession
 from drowse.steering.terms import Steering
 from drowse.server.instrument_routes import instrument_families
@@ -100,8 +99,9 @@ def session_info(
     created_ts: int,
 ) -> SessionInfo:
     device, dtype = device_dtype(session)
-    thinks = bool(supports_thinking(session.tokenizer))
-    thinks_optional = bool(thinking_is_optional(session.tokenizer))
+    traits = session.chat_traits
+    thinks = traits.supports_thinking
+    thinks_optional = traits.thinking_optional
     is_base = bool(session.is_base_model)
     default_expr = str(default_steering) if default_steering is not None else None
     assistant_role_ok, user_role_ok = role_support(session)

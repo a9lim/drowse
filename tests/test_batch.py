@@ -371,9 +371,8 @@ class TestGenerateBatch:
         # alone misses e.g. Gemma's ``<end_of_turn>``, and the batch would
         # generate past it to the token cap.
         s, model = _fast_batch_session()
-        # A distinct tokenizer identity keyed away from the shared
-        # ``_get_eos_ids`` cache, carrying an added end-of-turn special
-        # beyond the plain eos.
+        # A tokenizer carrying an added end-of-turn special beyond the
+        # plain eos.
         tok = _BatchTokenizer()
         tok.name_or_path = "batch-test-tokenizer-eos-set"
         tok.added_tokens_encoder = {"<end_of_turn>": 42}

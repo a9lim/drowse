@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from drowse.errors import DrowseError
+from drowse.model.chat import takes_enable_thinking
 from drowse.model.role_templates import (
     RoleHeader,
     render_role_label,
@@ -329,8 +330,7 @@ def extract_turn_grammar(
     # When the template takes ``enable_thinking``, every probe renders with
     # it pinned False — matching ``build_chat_input``'s default path — and a
     # separate probe pair recovers the True-variant generation appendix.
-    template_str = getattr(tokenizer, "chat_template", "") or ""
-    takes_thinking_kwarg = "enable_thinking" in template_str
+    takes_thinking_kwarg = takes_enable_thinking(tokenizer)
     render_kwargs: dict[str, Any] = (
         {"enable_thinking": False} if takes_thinking_kwarg else {}
     )
@@ -769,8 +769,7 @@ def validate_turn_grammar(
             f"  {system}  ",
             None,
         ))
-    template_str = getattr(tokenizer, "chat_template", "") or ""
-    takes_thinking_kwarg = "enable_thinking" in template_str
+    takes_thinking_kwarg = takes_enable_thinking(tokenizer)
     render_kwargs: dict[str, Any] = (
         {"enable_thinking": False} if takes_thinking_kwarg else {}
     )

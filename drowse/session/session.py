@@ -34,14 +34,12 @@ from drowse.generation.prefix_cache import PrefixCacheEntry
 from drowse.generation.decode import (
     GenerationConfig,
     GenerationState,
-    _get_eos_ids,
     build_chat_input,
-    detect_base_model,
     generate_steered,
     hf_generation_config,
     hf_unneutralizable_processors,
-    supports_thinking,
 )
+from drowse.model.chat import ChatTraits
 from drowse.steering.hooks import HiddenCapture, SteeringManager
 from drowse.naming import BIPOLAR_SEP, _slug, canonical_concept_name
 from drowse.generation.token_callback import (
@@ -975,6 +973,11 @@ class DrowseSession:
     ):
         self._model = model
         self._tokenizer = tokenizer
+        # The tokenizer's chat facts, read once: stop ids (adopted as the
+        # model's generation default so HF ``generate`` stops where the decode
+        # loop does), thinking delimiters, the render cache.
+        self._chat = ChatTraits(tokenizer, model)
+        self._chat.adopt_eos(model)
         self._layers = get_layers(self._model)
         self._model_info = get_model_info(self._model, self._tokenizer)
 
@@ -1402,6 +1405,15 @@ class DrowseSession:
         return self._tokenizer
 
     @property
+    def chat_traits(self) -> ChatTraits:
+        """The tokenizer's chat facts (stop ids, thinking delimiters, renders)."""
+        try:
+            return self._chat
+        except AttributeError:  # a session assembled without ``__init__``
+            self._chat = ChatTraits(self._tokenizer, self._model)
+            return self._chat
+
+    @property
     def device(self) -> torch.device:
         """Model device.  Part of the :class:`~drowse.fit.pipeline.ModelHandle` protocol."""
         return self._device
@@ -1663,7 +1675,7 @@ class DrowseSession:
         Frontends branch on this to switch to a raw-completion UI — no
         roles, no chat bubbles, the whole buffer is a prefill.
         """
-        return detect_base_model(self._tokenizer)
+        return self.chat_traits.is_base
 
     # -- Neutral baseline (v2.1) --
 
@@ -3297,9 +3309,9 @@ class DrowseSession:
         with scope:
             thinking_req = recipe.thinking if recipe is not None else None
             use_thinking = (
-                supports_thinking(self._tokenizer)
+                self.chat_traits.supports_thinking
                 if thinking_req is None
-                else bool(thinking_req) and supports_thinking(self._tokenizer)
+                else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
                 prompt_ids = self._prepare_input(
@@ -4100,9 +4112,9 @@ class DrowseSession:
         with scope:
             thinking_req = recipe.thinking if recipe is not None else None
             use_thinking = (
-                supports_thinking(self._tokenizer)
+                self.chat_traits.supports_thinking
                 if thinking_req is None
-                else bool(thinking_req) and supports_thinking(self._tokenizer)
+                else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
                 prompt_ids = self._prepare_input(
@@ -4234,9 +4246,9 @@ class DrowseSession:
         with scope:
             thinking_req = recipe.thinking if recipe is not None else None
             use_thinking = (
-                supports_thinking(self._tokenizer)
+                self.chat_traits.supports_thinking
                 if thinking_req is None
-                else bool(thinking_req) and supports_thinking(self._tokenizer)
+                else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
                 prompt_ids = self._prepare_input(
@@ -4404,6 +4416,7 @@ class DrowseSession:
             thinking=False,
             gen_role=role, model_type=model_type_for_role,
             scene=self.scene_grammar,
+            traits=self.chat_traits,
         ).to(self._device)
         attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
@@ -4478,6 +4491,7 @@ class DrowseSession:
                 thinking=False,
                 gen_role=role, model_type=model_type_for_role,
                 scene=self.scene_grammar,
+                traits=self.chat_traits,
             )
             seqs.append(ids[0])
 
@@ -7506,6 +7520,7 @@ class DrowseSession:
                 thinking=False,
                 add_generation_prompt=False,
                 scene=self.scene_grammar,
+                traits=self.chat_traits,
             ).to(self._device)
 
         prefix_len = int(prefix_ids.shape[1])
@@ -7796,6 +7811,7 @@ class DrowseSession:
             gen_role=gen_role,
             model_type=model_type_for_role,
             scene=self.scene_grammar,
+            traits=self.chat_traits,
             gen_seat=gen_seat,
         )
         return ids.to(self._device) if to_device else ids
@@ -7873,7 +7889,7 @@ class DrowseSession:
         and the generation prompt under ``assistant_role`` (a role-bearing
         steering scope overrides the latter inside ``_prepare_input``).
         """
-        use_thinking = thinking and supports_thinking(self._tokenizer)
+        use_thinking = thinking and self.chat_traits.supports_thinking
         input_ids = self._prepare_input(
             input, raw=raw, thinking=use_thinking, stateless=stateless,
             parent_node_id=parent_node_id,
@@ -8459,7 +8475,7 @@ class DrowseSession:
             elif config_thinking is not None:
                 use_thinking_req = bool(config_thinking)
             else:
-                use_thinking_req = supports_thinking(self._tokenizer)
+                use_thinking_req = self.chat_traits.supports_thinking
         else:
             use_thinking_req = bool(thinking)
 
@@ -8632,7 +8648,6 @@ class DrowseSession:
         lp_count: int | None,
         forced_prefix: list[int] | None = None,
         want_perplexity: bool = True,
-        cache_token_text: bool = True,
         authored_capture: _AuthoredPromptCapture | None = None,
     ) -> tuple[list[int], float]:
         """Run the decode loop once capture and steering are installed."""
@@ -8815,7 +8830,7 @@ class DrowseSession:
                 self._steering.hooks or steering_uses_compiled_offsets
             ),
             want_perplexity=want_perplexity,
-            cache_token_text=cache_token_text,
+            traits=self.chat_traits,
         )
         elapsed = time.monotonic() - start
 
@@ -9238,11 +9253,6 @@ class DrowseSession:
                 and _callback_options.sae_readout
             )
             _effective_tap = _token_tap if _need_tap else None
-            _tap_has_text_consumer = bool(
-                on_token is not None
-                or (logprobs_list is not None and (lp_count or 0) > 0)
-                or _persists_probe_row
-            )
 
             # Compiled-clean eligibility for this gen, decided BEFORE the steering
             # context enters (``steering_cm.__enter__`` runs
@@ -9438,7 +9448,6 @@ class DrowseSession:
                             on_token is not None and _callback_options.perplexity
                         )
                     ),
-                    cache_token_text=_tap_has_text_consumer,
                     authored_capture=authored_capture,
                 )
             finally:
@@ -10273,7 +10282,7 @@ class DrowseSession:
             # token cap.  The explicit config pins the decode loop's sampler
             # so the checkpoint's own ``generation_config`` (Qwen's
             # ``top_k: 20`` / ``repetition_penalty: 1.1``) cannot leak in.
-            eos_ids = _get_eos_ids(model, self._tokenizer)
+            eos_ids = set(self.chat_traits.eos_ids)
             text_cfg = getattr(model.config, "text_config", model.config)
             hf_config = hf_generation_config(
                 gen_config,
@@ -10786,11 +10795,6 @@ class DrowseSession:
         alongside the transient steering hooks, releasing their
         ``2 x n_layers x hidden_size`` of device buffers with them.
         """
-        from drowse.generation.decode import clear_generation_caches
-
-        tokenizer = getattr(self, "_tokenizer", None)
-        if tokenizer is not None:
-            clear_generation_caches(tokenizer)
         self._steering.clear_all()
         self._steering.detach_compiled_offsets()
         self.detach_persistent_capture()

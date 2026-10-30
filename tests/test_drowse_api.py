@@ -3,6 +3,8 @@
 import json
 import time
 from typing import Any, cast
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,6 +66,9 @@ def _mock_session():
     monitor.attached_probes.return_value = {}
     session.monitor = monitor
     session.tokenizer = MagicMock()
+    session.chat_traits = SimpleNamespace(
+        supports_thinking=False, thinking_optional=False,
+    )
     session._layers = []
     session.last_per_token_scores = None
     session.last_result = None
@@ -115,7 +120,7 @@ def session_and_client():
 class TestSessions:
     def test_list(self, session_and_client: Any) -> None:
         _, client = session_and_client
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             resp = client.get("/drowse/v1/sessions")
         assert resp.status_code == 200
         data = resp.json()
@@ -128,7 +133,7 @@ class TestSessions:
 
     def test_create_idempotent(self, session_and_client: Any) -> None:
         _, client = session_and_client
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             resp = client.post("/drowse/v1/sessions", json={})
         assert resp.status_code == 200
         assert resp.json()["id"] == "default"
@@ -149,14 +154,14 @@ class TestSessions:
 
     def test_create_model_mismatch_logs_warning(self, session_and_client: Any, caplog: Any) -> None:
         _, client = session_and_client
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             resp = client.post("/drowse/v1/sessions", json={"model": "other/model"})
         assert resp.status_code == 200
         assert resp.json()["model_id"] == "test/model"
 
     def test_get_by_default(self, session_and_client: Any) -> None:
         _, client = session_and_client
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             resp = client.get("/drowse/v1/sessions/default")
         assert resp.status_code == 200
         data = resp.json()
@@ -166,7 +171,7 @@ class TestSessions:
         self, session_and_client: Any,
     ) -> None:
         _, client = session_and_client
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             resp = client.get("/drowse/v1/sessions/test__model")
         assert resp.status_code == 404
 
@@ -182,7 +187,7 @@ class TestSessions:
 
     def test_patch_updates_config(self, session_and_client: Any) -> None:
         session, client = session_and_client
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             resp = client.patch(
                 "/drowse/v1/sessions/default",
                 json={
@@ -205,7 +210,7 @@ class TestSessions:
 
         session, client = session_and_client
         session.config = replace(session.config, top_k=40)
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             preserved = client.patch(
                 "/drowse/v1/sessions/default", json={"temperature": 0.4},
             )
@@ -288,7 +293,7 @@ class TestSessions:
         """Per-message role boxes gate on these flags — keep them on the wire."""
         session, client = session_and_client
         self._set_family(session, "gemma2")
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             resp = client.get("/drowse/v1/sessions/default")
         assert resp.status_code == 200
         body = resp.json()
@@ -306,7 +311,7 @@ class TestSessions:
         gate on these three flags — keep them on the wire.  A stub
         session (no real scene grammar) reads as scene mode off."""
         session, client = session_and_client
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             resp = client.get("/drowse/v1/sessions/default")
         assert resp.status_code == 200
         body = resp.json()
@@ -329,7 +334,7 @@ class TestSessions:
             think_close="</think>",
             strips_history_thinking=True,
         )
-        with patch("drowse.server.session_models.supports_thinking", return_value=False):
+        with nullcontext():
             resp = client.get("/drowse/v1/sessions/default")
         body = resp.json()
         assert body["scene_mode"] is True

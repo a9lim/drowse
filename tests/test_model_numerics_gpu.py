@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from drowse.fit.capture import _capture_all_hidden_states
-from drowse.generation.decode import GenerationConfig, GenerationState, clear_generation_caches, generate_steered
+from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
 from drowse.lens.jlens import JacobianLens, lens_logits
 from drowse.model.arch import get_layers
 from drowse.model.load import load_model
@@ -30,7 +30,6 @@ def loaded():
     model_id = gpu_model_id()
     model, tokenizer = load_or_skip_inaccessible(lambda: load_model(model_id, device="auto", quantize=None), model_id)
     yield model, tokenizer
-    clear_generation_caches(tokenizer)
     del model, tokenizer
     gc.collect()
     if torch.backends.mps.is_available():
@@ -79,7 +78,7 @@ def test_native_decode_matches_direct_cached_reference(loaded: tuple[Any, Any]):
     generated = generate_steered(
         model, tokenizer, ids, GenerationConfig(max_new_tokens=4, temperature=1., top_k=1024, top_p=1.),
         GenerationState(), forced_prefix=forced, seed=18, logprobs=5,
-        cache_token_text=False, on_token=lambda *frame: frames.append(frame),
+        on_token=lambda *frame: frames.append(frame),
     )
     assert generated == forced
     for frame in frames:
