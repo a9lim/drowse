@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
 import torch
 
-from drowse.errors import RoleBaselineMismatchWarning
+from drowse.errors import GenerationRequestError, RoleBaselineMismatchWarning
 from drowse.generation.decode import build_chat_input
 from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt
 from drowse.model.scene import (
@@ -173,7 +173,10 @@ class PromptRenderer:
         elif isinstance(input, list):
             messages = list(input)
         else:
-            raise TypeError(f"Unsupported input type: {type(input)}")
+            raise GenerationRequestError(
+                f"unsupported input type {type(input).__name__} "
+                "(want a string, None, or a list of message dicts)"
+            )
         gen_role = self._generation_label(
             gen_seat, user_role, assistant_role, warn=add_generation_prompt,
         )

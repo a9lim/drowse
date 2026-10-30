@@ -36,6 +36,14 @@ class InvalidNodeOperationError(ValueError, LoomTreeError):
         return (400, str(self) or self.__class__.__name__)
 
 
+class RecipeOverrideError(ValueError, DrowseError):
+    """Raised when a ``recipe_override`` string is not a mode or a valid partial
+    recipe (unknown field, duplicate, malformed or out-of-range value)."""
+
+    def user_message(self) -> tuple[int, str]:
+        return (400, str(self) or self.__class__.__name__)
+
+
 class MutationDuringGenerationError(RuntimeError, LoomTreeError):
     """Raised when a tree mutation conflicts with an in-flight generation.
 
@@ -74,5 +82,6 @@ __all__ = [
     "InvalidNodeOperationError",
     "LoomTreeError",
     "MutationDuringGenerationError",
+    "RecipeOverrideError",
     "UnknownNodeError",
 ]

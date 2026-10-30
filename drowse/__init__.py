@@ -42,6 +42,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "UnknownNodeError": ("drowse.loom.errors", "UnknownNodeError"),
     "InvalidNodeOperationError": ("drowse.loom.errors", "InvalidNodeOperationError"),
     "MutationDuringGenerationError": ("drowse.loom.errors", "MutationDuringGenerationError"),
+    "RecipeOverrideError": ("drowse.loom.errors", "RecipeOverrideError"),
     "derive_seed_schedule": ("drowse.loom.recipe", "derive_seed_schedule"),
     "FilterClause": ("drowse.loom.filter", "FilterClause"),
     "FilterParseError": ("drowse.loom.filter", "FilterParseError"),
@@ -132,6 +133,7 @@ __all__ = [
     "UnknownNodeError",
     "InvalidNodeOperationError",
     "MutationDuringGenerationError",
+    "RecipeOverrideError",
     "derive_seed_schedule",
     "FilterClause",
     "FilterParseError",
@@ -220,6 +222,7 @@ if TYPE_CHECKING:
         InvalidNodeOperationError as InvalidNodeOperationError,
         LoomTreeError as LoomTreeError,
         MutationDuringGenerationError as MutationDuringGenerationError,
+        RecipeOverrideError as RecipeOverrideError,
         UnknownNodeError as UnknownNodeError,
     )
     from drowse.loom.recipe import (

@@ -34,6 +34,7 @@ from drowse.store.install import ManifoldInstallConflict
 from drowse.geometry.gguf import GGUFNotInstalled
 from drowse.base.hf import HFError
 from drowse.errors import MergeError
+from drowse.loom.errors import RecipeOverrideError
 
 
 def test_base_default_status_and_message():
@@ -81,8 +82,10 @@ _OVERRIDES: list[tuple[type[DrowseError], int]] = [
     (ManifoldInstallConflict, 409),
     # geometry/gguf.py
     (GGUFNotInstalled, 400),
-    # fit/bake.py
+    # errors.py (offline merge / bake)
     (MergeError, 400),
+    # loom/errors.py
+    (RecipeOverrideError, 400),
 ]
 
 

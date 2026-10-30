@@ -503,8 +503,30 @@ def test_compose_hot():
 
 
 def test_compose_unknown_raises():
-    with pytest.raises(ValueError, match="unknown recipe-override mode"):
+    from drowse.loom.errors import RecipeOverrideError
+
+    with pytest.raises(RecipeOverrideError, match="unknown recipe-override mode") as error:
         Recipe().compose_modifier("foo")
+    assert error.value.user_message() == (400, str(error.value))
+
+
+@pytest.mark.parametrize(("override", "message"), [
+    ("colour=3", "unknown custom recipe field"),
+    ("seed=1, seed=2", "duplicate custom recipe field"),
+    ("temperature=", "requires a value"),
+    ("thinking=maybe", "must be true or false"),
+    ("temperature=warm", "must be a number"),
+    ("temperature=inf", "must be finite"),
+    ("seed=1.5", "must be an integer"),
+    ("top_p=2", "between 0 and 1"),
+])
+def test_custom_override_errors_are_typed_400s(override: str, message: str):
+    """Every partial-recipe parse failure is a ``RecipeOverrideError`` (400)."""
+    from drowse.loom.errors import RecipeOverrideError
+
+    with pytest.raises(RecipeOverrideError, match=message) as error:
+        Recipe().compose_modifier(override)
+    assert error.value.user_message()[0] == 400
 
 
 def test_compose_custom_string_recipe():
