@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import Any
 
 import pytest
 import torch
@@ -34,11 +33,6 @@ from drowse.errors import (
     SteeringCompositionError,
 )
 from drowse.steering.triggers import Trigger, TriggerContext
-
-
-def fit_layer_subspace_only(*args: Any, **kwargs: Any) -> Any:
-    """The fitted curved ``LayerSubspace`` alone."""
-    return fit_curved_subspace(*args, **kwargs).subspace
 
 
 def _perp(h: torch.Tensor, mean: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
@@ -83,7 +77,7 @@ def _manifold(layers: Sequence[int] = (0, 1)) -> Manifold:
         node_labels=[f"n{i}" for i in range(6)],
         node_coords=node_coords,
         layers={
-            L: fit_layer_subspace_only(_circle(6, _DIM, 1.0 + 0.2 * L), node_params)
+            L: fit_curved_subspace(_circle(6, _DIM, 1.0 + 0.2 * L), node_params).subspace
             for L in layers
         },
         feature_space="raw",
@@ -107,7 +101,7 @@ def _manifold_open(layers: Sequence[int] = (0, 1)) -> Manifold:
         node_labels=[f"n{i}" for i in range(6)],
         node_coords=node_coords,
         layers={
-            L: fit_layer_subspace_only(_circle(6, _DIM, 1.0 + 0.2 * L), node_params)
+            L: fit_curved_subspace(_circle(6, _DIM, 1.0 + 0.2 * L), node_params).subspace
             for L in layers
         },
         feature_space="raw",
@@ -132,7 +126,7 @@ def _manifold2d(layers: Sequence[int] = (0,)) -> Manifold:
         node_labels=[f"n{i}" for i in range(9)],
         node_coords=coords,
         layers={
-            L: fit_layer_subspace_only(20.0 + torch.randn(9, _DIM), node_params)
+            L: fit_curved_subspace(20.0 + torch.randn(9, _DIM), node_params).subspace
             for L in layers
         },
         feature_space="raw",
@@ -484,8 +478,8 @@ def test_manager_share_weighting_weights_by_centroid_spread():
         node_labels=[f"n{i}" for i in range(6)],
         node_coords=node_coords,
         layers={
-            0: fit_layer_subspace_only(_circle(6, _DIM, scale=1.0), node_params),
-            1: fit_layer_subspace_only(_circle(6, _DIM, scale=2.0), node_params),
+            0: fit_curved_subspace(_circle(6, _DIM, scale=1.0), node_params).subspace,
+            1: fit_curved_subspace(_circle(6, _DIM, scale=2.0), node_params).subspace,
         },
         feature_space="raw",
     ))

@@ -30,12 +30,6 @@ from drowse.readout.monitor import (
 from drowse.generation.results import ProbeReading
 
 
-def fit_layer_subspace(*args: Any, **kwargs: Any) -> Any:
-    """Test helper: drop the EV ratio for callers that don't care."""
-    sub = fit_curved_subspace(*args, **kwargs).subspace
-    return sub
-
-
 def _iso_monitor(m: "Manifold", *, n_layers: int | None = None) -> Monitor:
     """A ``Monitor`` wired with an isotropic whitener over ``m``'s
     fit layers.
@@ -164,7 +158,7 @@ def test_periodic_aggregate_and_gate_follow_the_short_arc(offset: float):
     domain = BoxDomain([BoxAxis("phase", periodic=True, period=1.0)])
     coords = torch.arange(8, dtype=torch.float32).reshape(-1, 1) / 8
     points = domain.embed(coords)
-    sub = fit_layer_subspace(points, points)
+    sub = fit_curved_subspace(points, points).subspace
     sub.sigma_rbf_weights = torch.zeros(8, 1)
     sub.sigma_poly_coeffs = torch.zeros(3, 1)
     manifold = Manifold(

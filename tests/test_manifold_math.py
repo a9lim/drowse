@@ -44,9 +44,6 @@ from drowse.fit.node_stats import (
 
 # ------------------------------------------------------------------ domains ---
 
-def fit_layer_subspace(*args: Any, **kwargs: Any) -> Any:
-    """The fitted curved ``LayerSubspace`` alone (most tests ignore the rest)."""
-    return fit_curved_subspace(*args, **kwargs).subspace
 
 
 def _perp(h: torch.Tensor, mean: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
@@ -418,7 +415,7 @@ def test_eval_rbf_jet_matches_separate_evaluations():
     )
 
 
-# --------------------------------------------------------- fit_layer_subspace ---
+# -------------------------------------------------------- fit_curved_subspace ---
 
 def _circle(k: int, dim: int) -> tuple[torch.Tensor, BoxDomain, torch.Tensor]:
     """K activation centroids on a planar circle + a 1-D periodic domain."""
@@ -444,15 +441,15 @@ def _grid2d(steps: tuple[float, ...] = (0.0, 0.5, 1.0)) -> tuple[BoxDomain, torc
     return domain, coords
 
 
-def test_fit_layer_subspace_circle_spans_curve_plane():
+def test_fit_curved_subspace_circle_spans_curve_plane():
     centroids, _domain, node_params = _circle(8, dim=16)
-    sub = fit_layer_subspace(centroids, node_params)
+    sub = fit_curved_subspace(centroids, node_params).subspace
     assert sub.rank == 2  # a planar circle has rank 2
 
 
-def test_fit_layer_subspace_eval_at_nodes():
+def test_fit_curved_subspace_eval_at_nodes():
     centroids, domain, node_params = _circle(6, dim=12)
-    sub = fit_layer_subspace(centroids, node_params)
+    sub = fit_curved_subspace(centroids, node_params).subspace
     man = Manifold(
         name="c", domain=domain, node_labels=[f"n{i}" for i in range(6)],
         node_coords=torch.tensor([[i / 6] for i in range(6)]),
@@ -466,11 +463,11 @@ def test_fit_layer_subspace_eval_at_nodes():
     assert torch.allclose(p0, p_basis, atol=1e-3)
 
 
-def test_fit_layer_subspace_n2_box():
+def test_fit_curved_subspace_n2_box():
     domain, coords = _grid2d()
     torch.manual_seed(3)
     centroids = torch.randn(9, 24)
-    sub = fit_layer_subspace(centroids, domain.embed(coords))
+    sub = fit_curved_subspace(centroids, domain.embed(coords)).subspace
     man = Manifold(
         name="g", domain=domain,
         node_labels=[f"n{i}" for i in range(9)],
@@ -486,14 +483,14 @@ def test_fit_layer_subspace_n2_box():
     )
 
 
-def test_fit_layer_subspace_neutral_anchored():
+def test_fit_curved_subspace_neutral_anchored():
     """A neutral baseline anchors the curved frame: ``mean = P_basis(ν)`` and
     the neutral lands at reduced-coord 0 (§5).  The basis is unchanged — it
     stays μ-centered regardless of the anchor (the basis caveat)."""
     centroids, _domain, node_params = _circle(6, dim=12)
     nu = 3.0 + torch.randn(12)
-    sub_n = fit_layer_subspace(centroids, node_params, neutral_mean=nu)
-    sub_mu = fit_layer_subspace(centroids, node_params)  # no neutral
+    sub_n = fit_curved_subspace(centroids, node_params, neutral_mean=nu).subspace
+    sub_mu = fit_curved_subspace(centroids, node_params).subspace  # no neutral
     # Basis identical (μ-centered regardless of anchor); only mean/coords move.
     assert torch.allclose(sub_n.basis, sub_mu.basis, atol=1e-5)
     # mean = projection of neutral into the span.
@@ -557,12 +554,12 @@ def test_fit_affine_subspace_reuses_precomputed_whitened_gram():
     assert fit.explained_variance == pytest.approx(ref.explained_variance, abs=1e-6)
 
 
-def test_fit_layer_subspace_rejects_too_few_nodes():
+def test_fit_curved_subspace_rejects_too_few_nodes():
     with pytest.raises(ValueError):
-        fit_layer_subspace(torch.randn(2, 8), torch.rand(2, 1))
+        fit_curved_subspace(torch.randn(2, 8), torch.rand(2, 1)).subspace
 
 
-def test_fit_layer_subspace_returns_reusable_mu_centered_coords():
+def test_fit_curved_subspace_returns_reusable_mu_centered_coords():
     generator = torch.Generator().manual_seed(91)
     centroids = 100_000.0 + torch.randn(7, 12, generator=generator)
     neutral = -70_000.0 + torch.randn(12, generator=generator)
@@ -589,7 +586,7 @@ def test_fit_layer_subspace_returns_reusable_mu_centered_coords():
     )
 
 
-def test_fit_layer_subspace_returns_ev_ratio():
+def test_fit_curved_subspace_returns_ev_ratio():
     """The fit carries an explained-variance ratio alongside the
     LayerSubspace.  EV ∈ [0, 1]: when the chosen R
     captures all of the centered centroid variance EV ≈ 1.0; when R
@@ -635,7 +632,7 @@ def test_fit_layer_subspace_returns_ev_ratio():
 def test_invert_parameterization_recovers_known_position():
     domain, coords = _grid2d()
     torch.manual_seed(5)
-    sub = fit_layer_subspace(torch.randn(9, 16), domain.embed(coords))
+    sub = fit_curved_subspace(torch.randn(9, 16), domain.embed(coords)).subspace
     target_pos = torch.tensor([0.4, 0.65])
     embedded = domain.embed(target_pos)
     query = eval_rbf(
@@ -645,8 +642,6 @@ def test_invert_parameterization_recovers_known_position():
     pos, dist = invert_parameterization(sub, domain, query.unsqueeze(0), coords)
     assert torch.allclose(pos[0], target_pos, atol=5e-2)
     assert dist.item() < 1e-2
-
-
 
 
 # ----------------------------------------------------------------- save/load ---
@@ -661,8 +656,8 @@ def test_save_load_manifold_round_trip(tmp_path: Path, monkeypatch: pytest.Monke
         node_labels=[f"n{i}" for i in range(7)],
         node_coords=torch.tensor([[i / 7] for i in range(7)]),
         layers={
-            4: fit_layer_subspace(ca, node_params),
-            9: fit_layer_subspace(cb, node_params),
+            4: fit_curved_subspace(ca, node_params).subspace,
+            9: fit_curved_subspace(cb, node_params).subspace,
         },
         feature_space="raw",
         mahalanobis_share={4: 1.5, 9: 2.0},
@@ -720,7 +715,7 @@ def test_save_rejects_manifold_with_empty_share_fields(
         domain=domain,
         node_labels=[f"n{i}" for i in range(7)],
         node_coords=torch.tensor([[i / 7] for i in range(7)]),
-        layers={3: fit_layer_subspace(ca, node_params)},
+        layers={3: fit_curved_subspace(ca, node_params).subspace},
         feature_space="raw",
     )  # no mahalanobis_share
     path = tmp_path / "mood" / "model.safetensors"
@@ -731,7 +726,7 @@ def test_save_rejects_manifold_with_empty_share_fields(
 
 def test_layer_subspace_to_device_dtype():
     centroids, _domain, node_params = _circle(5, dim=10)
-    sub = fit_layer_subspace(centroids, node_params)
+    sub = fit_curved_subspace(centroids, node_params).subspace
     moved = sub.to(device=torch.device("cpu"), dtype=torch.float64)
     assert moved.basis.dtype == torch.float64
     assert moved.mean.dtype == torch.float64
@@ -829,7 +824,7 @@ def _grid_manifold(dim: int = 16, seed: int = 0):
     w_lin = torch.randn(2, dim)
     w_quad = torch.randn(2, dim)
     centroids = 20.0 + coords @ w_lin + (coords ** 2) @ w_quad + 0.05 * torch.randn(9, dim)
-    sub = fit_layer_subspace(centroids, domain.embed(coords))
+    sub = fit_curved_subspace(centroids, domain.embed(coords)).subspace
     return sub, domain
 
 

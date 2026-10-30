@@ -834,13 +834,7 @@ def subspace_inject(
     if onto_zero:
         Hn_final = Hn_trans
     else:
-        sw, sp = subspace.sigma_rbf_weights, subspace.sigma_poly_coeffs
-        if sw is None or sp is None:
-            sigma = torch.zeros(emb_new.shape[:-1], device=h_f32.device)
-        else:
-            sigma = torch.exp(eval_rbf(
-                np_, sw.to(torch.float32), sp.to(torch.float32), emb_new,
-            )).squeeze(-1)                                    # (..,) σ(z)
+        sigma = subspace.sigma_at(emb_new, normalized=True)  # (..,) σ(z)
         hn_norm = torch.linalg.vector_norm(Hn_trans, dim=-1)  # (..,)
         shrink = torch.clamp(
             1.0 - sigma / hn_norm.clamp(min=1e-6), min=0.0,

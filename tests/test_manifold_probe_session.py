@@ -42,11 +42,6 @@ from drowse.session.session import (
 )
 
 
-def fit_layer_subspace(*args: Any, **kwargs: Any) -> Any:
-    sub = fit_curved_subspace(*args, **kwargs).subspace
-    return sub
-
-
 def _toy_manifold(*, dim: int = 8, n_layers: int = 2) -> Manifold:
     """1-D BoxDomain manifold with 3 nodes — same shape as the
     test_manifold_monitor helper, copied to keep test files independent."""

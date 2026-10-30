@@ -341,28 +341,33 @@ class LayerSubspace:
         reduced = eval_rbf(*self.rbf_params(), self._normalize(embedded))
         return reduced @ self.basis + self.mean
 
-    def sigma_at(self, embedded: torch.Tensor) -> torch.Tensor:
+    def sigma_at(
+        self, embedded: torch.Tensor, *, normalized: bool = False,
+    ) -> torch.Tensor:
         """Within-node off-surface spread ``σ`` at embedded coords ``(.., m)``.
 
         Interpolates the per-node ``log σ`` field through the σ-RBF over the
         same normalized ``node_params``, then exponentiates — so the result is
         a positive ``(..,)`` thickness in the layer's reduced-coordinate units
         (the same units ``H_n`` is measured in, since the basis is
-        orthonormal).  Returns an all-zeros ``(..,)`` when the subspace carries
-        no σ-field (:attr:`has_sigma` false): affine and SAE-curved fits.
-        Hot-path safe (one extra ``eval_rbf``, no ``.item()`` / host sync).
+        orthonormal).  ``normalized=True`` takes coords already mapped through
+        :meth:`_normalize` (the injection kernel has them in hand).  Returns
+        an all-zeros ``(..,)`` when the subspace carries no σ-field
+        (:attr:`has_sigma` false): affine and SAE-curved fits.  Hot-path safe
+        (one extra ``eval_rbf``, no ``.item()`` / host sync).
         """
         lead = embedded.shape[:-1]
         sw, sp, np_ = self.sigma_rbf_weights, self.sigma_poly_coeffs, self.node_params
         if sw is None or sp is None or np_ is None:
             return torch.zeros(lead, device=embedded.device, dtype=embedded.dtype)
         dev, dt = embedded.device, embedded.dtype
-        norm = (embedded - self.coord_offset.to(dev, dt)) / self.coord_scale.to(dev, dt)
+        norm = embedded if normalized else (
+            (embedded - self.coord_offset.to(dev, dt)) / self.coord_scale.to(dev, dt)
+        )
         log_sigma = eval_rbf(
             np_.to(dev, dt), sw.to(dev, dt), sp.to(dev, dt), norm,
         )  # (.., 1)
         return torch.exp(log_sigma).squeeze(-1)  # (..,)
-
 
 
 def pca_basis(

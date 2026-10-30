@@ -35,7 +35,6 @@ from drowse.fit.capture import (
 )
 from drowse.geometry.domains import ManifoldDomain, domain_from_spec
 from drowse.geometry.invert import invert_parameterization
-from drowse.geometry.rbf import eval_rbf
 from drowse.geometry.subspace import (
     DEFAULT_N_COMPONENTS,
     LayerSubspace,
@@ -114,11 +113,7 @@ def trajectory_naturalness(
     h = to_hellinger(traj_dists)  # (T, V)
     coords = (h - behavior.mean) @ behavior.basis.T  # (T, R)
     pos, _ = invert_parameterization(behavior, domain, coords, node_coords)
-    embedded = domain.embed(pos)  # (T, m)
-    curve_coords = eval_rbf(
-        *behavior.rbf_params(), behavior._normalize(embedded),
-    )  # (T, R)
-    curve_h = curve_coords @ behavior.basis + behavior.mean  # (T, V)
+    curve_h = behavior.eval_at(domain.embed(pos))  # (T, V)
     # In Hellinger space ||h_a - h_b||^2 = 2 - 2*BC, so the Bhattacharyya
     # coefficient is BC = 1 - d^2/2 and the distance is -ln(BC).
     d2 = ((h - curve_h) ** 2).sum(dim=-1)
