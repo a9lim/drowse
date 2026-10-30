@@ -16,7 +16,7 @@ from safetensors.torch import load_file, save_file
 import torch
 
 from drowse.base.atomic import artifact_lock, fsync_directory, write_json_atomic
-from drowse.base.integrity import hash_file, verify_integrity
+from drowse.base.integrity import hash_file, is_sha256_digest, verify_integrity
 from drowse.base.source_registry import LOCAL, SourceRef
 from drowse.sae.sources import SAE_SOURCES, sae_release
 
@@ -98,8 +98,7 @@ def _validate_manifest(
         or not tensor_file.endswith(".safetensors")
     ):
         raise ValueError("local SAE manifest has invalid tensor_file")
-    digest = payload.get("tensor_sha256")
-    if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+    if not is_sha256_digest(payload.get("tensor_sha256")):
         raise ValueError("local SAE manifest has invalid tensor digest")
     return payload
 
