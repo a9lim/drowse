@@ -518,19 +518,31 @@ def register_manifold_routes(app: FastAPI) -> None:
         return _manifold_json(ManifoldFolder.load(folder), session, full=True)
 
     @app.post("/drowse/v1/manifolds/from-template", status_code=201)
-    def create_manifold_from_template_route(req: CreateManifoldFromTemplateRequest) -> ManifoldInfo:
-        """Author a discover manifold from an existing template artifact."""
-        folder = create_manifold_from_template(
-            req.namespace, req.name, req.description,
-            template_ref=req.template_ref,
-            fit_mode=req.fit_mode,
-            hyperparams=req.hyperparams or None,
-            force=req.force,
-        )
-        if req.force:
-            # An overwrite replaces the folder under every in-memory consumer.
-            session.evict_artifact(req.namespace, req.name)
-        return _manifold_json(ManifoldFolder.load(folder), session, full=True)
+    async def create_manifold_from_template_route(req: CreateManifoldFromTemplateRequest) -> ManifoldInfo:
+        """Author a discover manifold from an existing template artifact.
+
+        ``force`` replaces an existing folder, so it runs like ``merge``: under
+        the session lock and refused while the engine is busy, which keeps a
+        generation from starting between the overwrite and the eviction of
+        every in-memory consumer of the old folder.
+        """
+        def create() -> ManifoldInfo:
+            folder = create_manifold_from_template(
+                req.namespace, req.name, req.description,
+                template_ref=req.template_ref,
+                fit_mode=req.fit_mode,
+                hyperparams=req.hyperparams or None,
+                force=req.force,
+            )
+            if req.force:
+                session.evict_artifact(req.namespace, req.name)
+            return _manifold_json(ManifoldFolder.load(folder), session, full=True)
+
+        if not req.force:
+            return await run_in_thread(create)
+        async with session_lock(app):
+            refuse_if_busy(session)
+            return await run_in_thread(create)
 
     @app.get("/drowse/v1/manifolds/search")
     def search_remote_manifolds(q: str = "", limit: int = 20) -> ManifoldSearchResponse:
@@ -582,6 +594,8 @@ def register_manifold_routes(app: FastAPI) -> None:
             return detail(folder.parent.name, folder.name)
 
         async def job(on_progress: ProgressCallback) -> ManifoldInfo:
+            # ``run_operation`` holds the session lock for the whole job, so
+            # no generation starts between this check and the eviction.
             refuse_if_busy(session)
             return await run_in_thread(install, on_progress)
 

@@ -151,3 +151,69 @@ def test_fit_route_refolds_probes_folded_from_the_profile(
     basis = after["local/mood"].layers[probe_layer].basis.reshape(-1)
     direction = refit[probe_layer].to(basis).reshape(-1)
     assert torch.allclose(basis, direction / direction.norm(), atol=1e-5)
+
+
+def _assert_evicted(session: Any) -> None:
+    assert "local/mood" not in session.profiles
+    assert "local/mood" not in session.manifolds
+    assert "local/mood" not in session.monitor.probe_names
+
+
+def test_forced_install_evicts_the_replaced_folder(
+    fitted: Any, app_client: Any, tmp_path: Any,
+) -> None:
+    import shutil
+
+    source = tmp_path / "src" / "mood"
+    shutil.copytree(manifold_dir("local", "mood"), source)
+    client = app_client(fitted)
+    response = client.post("/drowse/v1/manifolds/install", json={
+        "target": str(source), "as": "local/mood", "force": True,
+    })
+    assert response.status_code == 201, response.text
+    _assert_evicted(fitted)
+
+
+_WEEKDAY = {
+    "name": "weekday",
+    "slot": "[DAY]",
+    "values": ["Monday", "Tuesday"],
+    "contexts": [{
+        "turns": [{"role": "user", "content": "which day?"}],
+        "assistant": "today is [DAY]",
+    }],
+}
+
+
+def test_forced_from_template_evicts_the_replaced_folder(
+    fitted: Any, app_client: Any,
+) -> None:
+    client = app_client(fitted)
+    assert client.post("/drowse/v1/templates", json=_WEEKDAY).status_code == 201
+    response = client.post("/drowse/v1/manifolds/from-template", json={
+        "name": "mood", "template_ref": "local/weekday", "force": True,
+    })
+    assert response.status_code == 201, response.text
+    _assert_evicted(fitted)
+
+
+def test_forced_from_template_refuses_before_writing_while_busy(
+    fitted: Any, app_client: Any,
+) -> None:
+    """The overwrite used to land first and the eviction then fail on the busy
+    engine, leaving every in-memory consumer on a folder that no longer
+    exists."""
+    client = app_client(fitted)
+    assert client.post("/drowse/v1/templates", json=_WEEKDAY).status_code == 201
+    manifest = manifold_dir("local", "mood") / "manifold.json"
+    before = manifest.read_bytes()
+    assert fitted.gen_lock.acquire(blocking=False)
+    try:
+        response = client.post("/drowse/v1/manifolds/from-template", json={
+            "name": "mood", "template_ref": "local/weekday", "force": True,
+        })
+    finally:
+        fitted.gen_lock.release()
+    assert response.status_code == 409, response.text
+    assert manifest.read_bytes() == before
+    assert "local/mood" in fitted.manifolds
