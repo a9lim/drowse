@@ -653,3 +653,56 @@ def test_replay_regenerates_each_generated_turn_under_its_history():
     (delta,) = step.diff.readings
     assert delta.name == "angry.calm"
     assert delta.delta == pytest.approx(0.1 - (-0.12))
+    assert out.failures == []
+
+
+def _two_turn_transcript() -> Transcript:
+    sampling = SamplingConfig(seed=1)
+    return Transcript(
+        model_id="m1", system_prompt=None, probes=[],
+        turns=[
+            TranscriptTurn(role="user", text="Weather?"),
+            TranscriptTurn(role="assistant", text="Sunshine.",
+                           recipe=Recipe(steering="0.3 gone", sampling=sampling)),
+            TranscriptTurn(role="user", text="Tomorrow?"),
+            TranscriptTurn(role="assistant", text="Clouds.", recipe=Recipe(sampling=sampling)),
+        ],
+    )
+
+
+class _FailingReplaySession(_ReplaySession):
+    """Refuses any turn whose steering names the uninstalled ``gone`` vector."""
+
+    def generate(self, input, **kwargs):
+        from drowse.steering.grammar import SteeringExprError
+
+        if "gone" in (kwargs.get("steering") or ""):
+            raise SteeringExprError("unknown steering term 'gone'")
+        return super().generate(input, **kwargs)
+
+
+def test_replay_is_fail_fast_by_default():
+    from drowse.steering.grammar import SteeringExprError
+
+    with pytest.raises(SteeringExprError):
+        _two_turn_transcript().replay(_FailingReplaySession())
+
+
+def test_isolated_replay_records_a_failed_turn_and_keeps_going():
+    sess = _FailingReplaySession()
+    out = _two_turn_transcript().replay(sess, isolate=True)
+    recorded = [n for n in sess.tree.path_to(out.leaf_id) if n.recipe is not None]
+    (failure,) = out.failures
+    assert failure.recorded_id == recorded[0].id
+    assert "gone" in str(failure.error)
+    assert [step.recorded_id for step in out.steps] == [recorded[1].id]
+    assert sess.tree.get(out.steps[0].replay_id).text == "Rain today."
+
+
+def test_isolated_replay_still_propagates_non_drowse_errors():
+    class _Broken(_ReplaySession):
+        def generate(self, input, **kwargs):
+            raise RuntimeError("bug, not a user error")
+
+    with pytest.raises(RuntimeError, match="bug"):
+        _two_turn_transcript().replay(_Broken(), isolate=True)

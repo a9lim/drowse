@@ -429,6 +429,40 @@ def test_invert_manifold_term():
     assert term.onto == pytest.approx(0.3)
 
 
+def test_inverted_regen_of_a_curved_term_is_refused_at_composition():
+    """The ``inverted`` modifier negates a ``%`` term's ``along``; on a
+    curved fit that has no opposite, so composing the inverted recipe raises
+    (422) instead of silently clamping to a no-op.  The loom can't know the
+    curvature (it is per-model), so the refusal is the composer's: pin the
+    hand-off between the two."""
+    from drowse.errors import SteeringCompositionError
+    from drowse.geometry.domains import BoxAxis, BoxDomain
+    from drowse.geometry.manifold import Manifold
+    from drowse.steering.hooks import SteeringPlan
+
+    anchor = Recipe(steering="0.5 months%january + 0.3 calm")
+    inverted = anchor.compose_modifier("inverted")
+    assert inverted.steering is not None
+    terms = parse_expr(inverted.steering).alphas
+    (term,) = [t for t in terms.values() if isinstance(t, ManifoldTerm)]
+    assert term.along == pytest.approx(-0.5)
+
+    loop = Manifold(
+        name="months",
+        domain=BoxDomain([BoxAxis("t", periodic=True, period=12.0)]),
+        node_labels=["january", "february", "march"],
+        node_coords=torch.tensor([[0.0], [1.0], [2.0]]),
+        layers={},
+        feature_space="raw",
+    )
+    plan = SteeringPlan()
+    with pytest.raises(SteeringCompositionError, match="cannot be negated or inverted"):
+        plan.add_manifold(
+            "months", loop, term.position, along=term.along, onto=term.onto,
+        )
+    assert not plan
+
+
 # ---------------------------------------------------------------------------
 # Recipe.compose_modifier
 # ---------------------------------------------------------------------------

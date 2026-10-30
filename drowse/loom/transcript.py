@@ -243,11 +243,24 @@ class ReplayStep:
 
 
 @dataclass(frozen=True)
+class ReplayFailure:
+    """A generated turn whose regeneration raised (``isolate=True`` replays)."""
+
+    recorded_id: str
+    error: DrowseError
+
+
+@dataclass(frozen=True)
 class TranscriptReplay:
-    """The imported branch's leaf plus one :class:`ReplayStep` per generated turn."""
+    """The imported branch's leaf plus one :class:`ReplayStep` per generated turn.
+
+    ``failures`` lists the turns an isolated replay could not regenerate;
+    it is always empty for a fail-fast replay.
+    """
 
     leaf_id: str
     steps: list[ReplayStep]
+    failures: list[ReplayFailure] = field(default_factory=list)
 
 
 @dataclass
@@ -482,6 +495,7 @@ class Transcript:
         *,
         mode: ImportMode = "default",
         strict: bool = False,
+        isolate: bool = False,
     ) -> TranscriptReplay:
         """Import, then regenerate every generated turn under its recipe.
 
@@ -492,26 +506,38 @@ class Transcript:
         default creeps in), sampling (seed included), thinking mode and
         system prompt, in the recorded seat.  Each step diffs the recorded
         node against its regeneration (text and aggregate readings).
+
+        The replay is fail-fast.  ``isolate=True`` instead records a turn
+        whose regeneration raises a :class:`DrowseError` (a steering term
+        this session cannot resolve, say) in ``failures`` and moves on;
+        any other exception still propagates.
         """
         attach_parent, leaf_id = self._import(session, mode=mode, strict=strict)
         tree: LoomTree = session.tree
         path = tree.path_to(leaf_id)
         start = next(i for i, node in enumerate(path) if node.id == attach_parent) + 1
         steps: list[ReplayStep] = []
+        failures: list[ReplayFailure] = []
         for node in path[start:]:
             recipe = node.recipe
             if recipe is None or node.parent_id is None:
                 continue
-            run = session.generate(
-                None,
-                steering=recipe.steering if recipe.steering is not None else "",
-                sampling=recipe.sampling,
-                thinking=recipe.thinking,
-                parent_node_id=node.parent_id,
-                gen_seat=node.role,
-                append_same_role=False,
-                system_prompt=recipe.system_prompt,
-            )
+            try:
+                run = session.generate(
+                    None,
+                    steering=recipe.steering if recipe.steering is not None else "",
+                    sampling=recipe.sampling,
+                    thinking=recipe.thinking,
+                    parent_node_id=node.parent_id,
+                    gen_seat=node.role,
+                    append_same_role=False,
+                    system_prompt=recipe.system_prompt,
+                )
+            except DrowseError as exc:
+                if not isolate:
+                    raise
+                failures.append(ReplayFailure(recorded_id=node.id, error=exc))
+                continue
             replay_id = run.node_ids[0]
             if replay_id is None:  # pragma: no cover - stateful generate always lands a node
                 raise TranscriptError(f"replay of {node.id} produced no loom node")
@@ -520,7 +546,7 @@ class Transcript:
                 replay_id=replay_id,
                 diff=node_diff(tree, node.id, replay_id),
             ))
-        return TranscriptReplay(leaf_id=leaf_id, steps=steps)
+        return TranscriptReplay(leaf_id=leaf_id, steps=steps, failures=failures)
 
     # ------------------------------------------------------------------
     # Guard checks
@@ -685,6 +711,7 @@ __all__ = [
     "ImportMode",
     "ProbeRef",
     "DROWSE_TRANSCRIPT_VERSION",
+    "ReplayFailure",
     "ReplayStep",
     "Transcript",
     "TranscriptError",
