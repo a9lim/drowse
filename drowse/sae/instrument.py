@@ -13,10 +13,10 @@ Owns everything SAE-shaped on a session (``session.sae``):
   loom-anchored token replay.
 
 Dependencies are explicit constructor arguments: the read plane's capture
-(the per-step reads take its latest slices), the runtime, the session's
-replay primitive, and three registry callbacks for the ``sae/<id>`` steering
-directions and the probe-hash cache.  The finalize aggregate takes the read
-plane's pooled slice.
+(the per-step reads take its latest slices), the runtime, the loom token
+replay, and three registry callbacks for the ``sae/<id>`` steering directions
+and the probe-hash cache.  The finalize aggregate takes the read plane's
+pooled slice.
 
 **An SAE probe emits exactly one channel**: ``<name>`` / ``<name>[0]``, the
 normalized strength.  There is no ``:fraction`` or ``:membership`` — a
@@ -35,6 +35,7 @@ from typing import Any, Mapping, TYPE_CHECKING
 import torch
 
 from drowse.base.lru import BoundedLRU
+from drowse.readout.replay import TokenReplay
 from drowse.readout.types import (
     Axis,
     DepthSummary,
@@ -143,7 +144,7 @@ class SaeInstrument:
         capture: "LatestSlices",
         runtime: "SaeRuntime",
         *,
-        replay: Callable[..., tuple[Any, Any]],
+        replay: TokenReplay,
         put_direction: Callable[[str, dict[int, torch.Tensor]], None],
         evict_directions: Callable[[], object],
         forget_probe_hashes: Callable[[Sequence[str]], None],
@@ -156,8 +157,8 @@ class SaeInstrument:
         ] = BoundedLRU(_SELECTOR_CACHE_MAX)
         #: The resident dictionary and its lifecycle.
         self.runtime = runtime
-        # ``replay_token``-shaped: rebuilds a loom token's forward and runs a
-        # read inside the exclusive section.
+        # The loom-anchored token replay (the producing forward's capture);
+        # this family supplies the feature read.
         self._replay = replay
         # Registry effects of a residency change: ``sae/<id>`` directions are
         # registry profiles, and probe digests live in the probe roster.
@@ -881,7 +882,7 @@ class SaeInstrument:
         token, top = self._replay(
             node_id, raw_index, layers=[layer], read=read,
             apply_steering=apply_steering, raw=raw,
-            label="sae token_readout",
+            label="session.sae.token_readout",
         )
         measurements = build_measurements(
             scope="replay",
@@ -892,7 +893,7 @@ class SaeInstrument:
             ],
             sae_source=self.active_source,
             sae_layer=layer,
-            steering=token.steering if apply_steering else None,
+            steering=token.steering,
         )
         return {"measurements": measurements}
 

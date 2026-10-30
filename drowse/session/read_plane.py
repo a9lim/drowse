@@ -44,6 +44,7 @@ from drowse.readout.planner import (
     plan_capture,
     resolve_read_demand,
 )
+from drowse.readout.measurements import live_sources
 from drowse.readout.types import AGG_TAIL_DEPTH, InstrumentPlan, ReadRequest
 
 if TYPE_CHECKING:
@@ -667,25 +668,15 @@ class ReadPlane:
         hidden_states: dict[int, torch.Tensor] | None,
     ) -> FinalReads:
         """Package the reads with the live sources the envelope reports."""
-        live_lens = self._lens.live
-        live_sae = self._sae.live
         return FinalReads(
             geometry=geometry,
             lens=lens,
             sae=sae,
             per_token=per_token,
             hidden_states=hidden_states,
-            lens_source=(
-                live_lens.get("source")
-                if lens and isinstance(live_lens, dict) else None
-            ),
-            sae_source=(
-                live_sae.get("source")
-                if sae and isinstance(live_sae, dict) else None
-            ),
-            sae_layer=(
-                live_sae.get("layer")
-                if sae and isinstance(live_sae, dict) else None
+            **live_sources(
+                self._lens.live, self._sae.live,
+                lens=bool(lens), sae=bool(sae),
             ),
         )
 

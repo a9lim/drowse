@@ -22,6 +22,7 @@ from typing import Any, TYPE_CHECKING
 
 import torch
 
+from drowse.readout.replay import TokenReplay
 from drowse.readout.types import (
     GateRef,
     GeometryLiveState,
@@ -104,8 +105,11 @@ class GeometryInstrument:
     # reject.  The lens/SAE families carry one because their single strength
     # axis genuinely cannot answer a geometry channel.
 
-    def __init__(self, session: "DrowseSession") -> None:
+    def __init__(self, session: "DrowseSession", *, replay: TokenReplay) -> None:
         self._session = session
+        # The loom-anchored token replay (the producing forward's capture);
+        # this family supplies the whitened read.
+        self._replay = replay
         # The CAA live toggle — whether per-token monitor scoring feeds live
         # consumers.  Owned here (not on the session) so the three families
         # answer ``live_state``/``set_live`` from one place.
@@ -453,14 +457,27 @@ class GeometryInstrument:
         apply_steering: bool = True,
         raw: bool = False,
     ) -> dict[str, Any]:
-        """The Monitor-roster replay, as the finished ``scope="replay"``
-        measurement envelope.
+        """Whitened probe readings at the forward that produced a loom token,
+        as the finished ``scope="replay"`` measurement envelope.
+
+        The replay captures the attached roster's layer union and scores the
+        full roster at the producing position through
+        :meth:`Monitor.score_single_token`, so a reading has the shape of the
+        live per-token read there (coords / fraction / nearest / residual /
+        assignment / membership and the per-layer traces).  It reads
+        generations that ran aggregate-only and probes attached after the
+        fact; ``apply_steering=False`` reads the unsteered counterfactual.
+        Curved probes score with a cold foot solve: warm-start is the
+        sequential live path's optimization, and a foot left over from a
+        prior generation must not seed a one-shot read.
 
         ``top_k`` and ``layers`` are **rejected**, not ignored: the roster's
         own fitted layers drive the capture and a whitened reading has no
         top-k width, so a caller passing either is asking for something this
-        family cannot do.  (The route used to drop both silently, which is
-        how a client learns the wrong thing about what it asked for.)
+        family cannot do.  Raises ``ValueError`` with no geometry probe
+        attached, ``UnknownNodeError`` / ``InvalidNodeOperationError`` on a
+        bad anchor, and ``WhitenerError`` when the whitener doesn't cover the
+        probed layers.
         """
         from drowse.readout.measurements import build_measurements
 
@@ -474,18 +491,41 @@ class GeometryInstrument:
                 "geometry token-readout takes no layers (the attached "
                 "roster's own fitted layers drive the capture)"
             )
-        out = self._session.geometry_token_readout(
-            node_id, raw_index, apply_steering=apply_steering, raw=raw,
+        monitor = self._session._monitor
+        no_probes = (
+            "session.geometry.token_readout: no geometry probes attached — "
+            "attach one with session.add_probe(selector) first"
+        )
+        if not self.names:
+            raise ValueError(no_probes)
+
+        def roster_layers() -> list[int]:
+            # Resolved inside the exclusive section, where roster mutation
+            # is excluded: a detach that won the gap since the entry check
+            # surfaces as the caller-facing error, not as a capture over
+            # layers the read can no longer score.
+            if not monitor.probe_names:
+                raise ValueError(no_probes)
+            return sorted(monitor.probe_layers())
+
+        def read(hidden: dict[int, torch.Tensor]) -> dict[str, Any]:
+            monitor.enable_curved_warm(False)
+            return monitor.score_single_token(hidden)
+
+        token, readings = self._replay(
+            node_id, raw_index, layers=roster_layers, read=read,
+            apply_steering=apply_steering, raw=raw,
+            label="session.geometry.token_readout",
         )
         measurements = build_measurements(
             scope="replay",
             provenance="replayed",
-            geometry_readings=out.get("readings"),
+            geometry_readings=readings,
             # The shared binding wire shape carries both keys; geometry has
             # no source lifecycle, so source is always null.
             geometry_binding={
                 "source": self.active_source,
-                "steering": (out.get("steering") if apply_steering else None),
+                "steering": token.steering,
             },
         )
         return {"measurements": measurements}

@@ -68,6 +68,7 @@ from drowse.generation.token_callback import (
     consumer_options,
 )
 from drowse.generation.token_payloads import TokenProbePayload
+from drowse.readout.measurements import live_sources
 from drowse.generation.types import (
     CallSpec,
     GenerationStream,
@@ -194,9 +195,7 @@ class TokenTap:
         self._lens_step = lens.live_readout_step if plan.lens else None
         self._sae_step = sae.live_readout_step if plan.sae else None
         self._readout_top_k = readout_top_k
-        self._lens_source = lens.live.get("source") if lens.live is not None else None
-        self._sae_source = sae.live.get("source") if sae.live is not None else None
-        self._sae_layer = int(sae.live["layer"]) if sae.live is not None else None
+        self._sources = live_sources(lens.live, sae.live)
         self._recipe_steering = recipe_steering
 
     def mean_logprob(self) -> tuple[float | None, float | None]:
@@ -286,10 +285,8 @@ class TokenTap:
                     lens_step[2]
                     if lens_step is not None and len(lens_step) > 2 else None
                 ),
-                lens_source=self._lens_source,
                 sae=sae_step,
-                sae_source=self._sae_source,
-                sae_layer=self._sae_layer,
+                **self._sources,
                 steering=self._recipe_steering,
             ).get("measurements")
 

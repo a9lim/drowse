@@ -10,6 +10,9 @@ grammar on top of it:
 - the seating checks a legacy (non-scene) chat template imposes
   (:func:`check_user_send_target`) and the committed-thinking check
   (:func:`check_thinking_commit`);
+- the loom token anchor (:func:`resolve_token_anchor`): one validation of a
+  ``(node_id, raw_index)`` address, shared by a token fork and the token
+  replays;
 - the forced-prefix plans behind a token fork and an answer prefill
   (:func:`plan_fork`, :func:`plan_prefill`), which the session executes;
 - opening the turn a stateful generation streams into
@@ -28,7 +31,7 @@ from drowse.generation.sampling import (
 )
 from drowse.loom.errors import InvalidNodeOperationError
 from drowse.loom.recipe import Recipe
-from drowse.loom.tree import LoomTree
+from drowse.loom.tree import LoomNode, LoomTree
 
 if TYPE_CHECKING:
     from drowse.model.scene import TurnGrammar
@@ -165,6 +168,65 @@ def append_turn(
 
 
 @dataclass(frozen=True)
+class TokenAnchor:
+    """One decoded token of a loom turn: the node and its raw decode index.
+
+    ``raw_ids`` is the node's raw decode record as it stood when the anchor
+    was resolved, so a later edit of the node cannot shift what the anchor
+    addresses.
+    """
+
+    node: LoomNode
+    raw_index: int
+    raw_ids: tuple[int, ...]
+
+    @property
+    def token_id(self) -> int:
+        """The token the decode step at ``raw_index`` produced."""
+        return self.raw_ids[self.raw_index]
+
+    @property
+    def prefix(self) -> list[int]:
+        """The decoded tokens before it (what the producing forward saw)."""
+        return list(self.raw_ids[: self.raw_index])
+
+
+def resolve_token_anchor(
+    tree: LoomTree, node_id: str, raw_index: int, *, label: str,
+) -> TokenAnchor:
+    """Validate a ``(node_id, raw_index)`` token address.
+
+    The node must be a turn (user or assistant seat) with a raw decode
+    record, and ``raw_index`` must index into it.  Raises
+    :class:`~drowse.loom.errors.UnknownNodeError` for an unknown node and
+    :class:`InvalidNodeOperationError` otherwise; ``label`` names the caller
+    in the message.
+    """
+    node = tree.get(node_id)
+    if node.role not in _SEATS:
+        raise InvalidNodeOperationError(
+            f"{label}: {node_id!r} is a {node.role} node — only a turn "
+            f"with a decode record has tokens to address"
+        )
+    raw_ids = node.raw_token_ids
+    if not raw_ids:
+        raise InvalidNodeOperationError(
+            f"{label}: {node_id!r} has no raw token record "
+            f"(transcript-loaded node)"
+        )
+    if not 0 <= raw_index < len(raw_ids):
+        raise InvalidNodeOperationError(
+            f"{label}: raw_index {raw_index} out of range "
+            f"[0, {len(raw_ids)}) for {node_id!r}"
+        )
+    return TokenAnchor(
+        node=node,
+        raw_index=int(raw_index),
+        raw_ids=tuple(int(token) for token in raw_ids),
+    )
+
+
+@dataclass(frozen=True)
 class ForcedTurn:
     """A generation whose first decode steps replay ``forced_prefix``.
 
@@ -218,22 +280,12 @@ def plan_fork(
     for a new ending instead.  The sibling lands under the same parent, in
     the same seat and under the same cast label as the source node.
 
-    Raises :class:`InvalidNodeOperationError` when the node has no raw token
-    record (a transcript-loaded node), ``raw_index`` is out of range, the
-    node has no parent, or not exactly one replacement is given.
+    Raises :class:`InvalidNodeOperationError` when the address is not a
+    token (see :func:`resolve_token_anchor`), the node has no parent, or not
+    exactly one replacement is given.
     """
-    node = tree.get(node_id)
-    raw = node.raw_token_ids
-    if not raw:
-        raise InvalidNodeOperationError(
-            f"fork_from_token: {node_id!r} has no raw token record "
-            f"(transcript-loaded node — not forkable)"
-        )
-    if not 0 <= raw_index < len(raw):
-        raise InvalidNodeOperationError(
-            f"fork_from_token: raw_index {raw_index} out of range "
-            f"[0, {len(raw)}) for {node_id!r}"
-        )
+    anchor = resolve_token_anchor(tree, node_id, raw_index, label="fork_from_token")
+    node = anchor.node
     if node.parent_id is None:
         raise InvalidNodeOperationError(
             f"fork_from_token: {node_id!r} has no parent to anchor "
@@ -258,7 +310,7 @@ def plan_fork(
     else:
         assert alt_token_id is not None
         replacement_ids = [int(alt_token_id)]
-    forced_prefix = [int(t) for t in raw[:raw_index]] + replacement_ids
+    forced_prefix = anchor.prefix + replacement_ids
 
     recipe = node.recipe
     base = (
@@ -396,10 +448,12 @@ def begin_generation_turn(
 
 __all__ = [
     "ForcedTurn",
+    "TokenAnchor",
     "append_turn",
     "begin_generation_turn",
     "check_thinking_commit",
     "check_user_send_target",
     "plan_fork",
     "plan_prefill",
+    "resolve_token_anchor",
 ]

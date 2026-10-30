@@ -9,9 +9,8 @@ tiny real session (``tiny_session`` / ``make_tiny_session``).
 from __future__ import annotations
 
 import json
+import math
 import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -32,15 +31,14 @@ from drowse.lens.runtime import (
     select_rows,
 )
 from drowse.lens.store import lens_manifest_path, remove_lens
-from drowse.loom.errors import InvalidNodeOperationError, UnknownNodeError
+from drowse.loom.errors import InvalidNodeOperationError
 from drowse.loom.recipe import Recipe
-from drowse.loom.tree import LoomTree
-from drowse.model.chat import ChatTraits
 from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.readout.planner import ReadDemand
 from tests.support.lens import LENS_PROMPTS as _PROMPTS
 from tests.support.lens import TOY_MODEL_ID as _MODEL_ID
 from tests.support.lens import FakeCapture, LensHarness
+from tests.support.replay import ReplayRig
 
 pytestmark = pytest.mark.usefixtures("isolated_home")
 
@@ -1255,209 +1253,97 @@ def test_live_lens_readout_step_none_when_off() -> None:
 # --------------------------------------------------- token readout (loom) ----
 
 
-_PROMPT_RENDER = "the prompt render, chat shaped."
-
-
-class TreeLensHarness(LensHarness):
-    """A harness whose replay host is itself: a real loom tree plus a
-    recorded prompt render and steering scopes."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.chat_traits = ChatTraits(self.tokenizer)
-        self.tree = LoomTree(model_id=_MODEL_ID)
-        self.prepare_calls: list[dict[str, Any]] = []
-        self.steering_scopes: list[Any] = []
-
-    @property
-    def renderer(self) -> Any:
-        """The prompt renderer the replay rebuilds through: this stub."""
-        return self
-
-    def prepare_input(
-        self,
-        input: Any,
-        raw: bool = False,
-        thinking: bool = False,
-        stateless: bool = False,
-        parent_node_id: str | None = None,
-        user_role: str | None = None,
-        assistant_role: str | None = None,
-        to_device: bool = True,
-        gen_seat: str = "assistant",
-        system_prompt: Any = None,
-    ) -> torch.Tensor:
-        self.prepare_calls.append({
-            "input": input, "raw": raw, "thinking": thinking, "system_prompt": system_prompt,
-            "parent_node_id": parent_node_id,
-            "user_role": user_role, "assistant_role": assistant_role,
-            "gen_seat": gen_seat,
-        })
-        return torch.tensor(
-            [self.tokenizer.encode(_PROMPT_RENDER)], dtype=torch.long,
-        )
-
-    @contextmanager
-    def steering(self, value: Any) -> Iterator[None]:
-        self.steering_scopes.append(value)
-        yield
-
-
-def _tree_with_assistant(
-    s: TreeLensHarness,
-    raw_ids: list[int] | None,
-    recipe: Recipe | None = None,
-) -> str:
-    user_id = s.tree.add_user_turn("a user turn")
-    node_id = s.tree.begin_assistant(user_id, recipe=recipe)
-    s.tree.finalize_assistant(
-        node_id, text="an assistant turn", finish_reason="stop",
-        raw_token_ids=raw_ids,
+def _replay_lens() -> tuple[LensHarness, ReplayRig]:
+    """A lens harness whose token replay is a real replayer over its toy."""
+    rig = ReplayRig()
+    harness = LensHarness(
+        model=rig.model, tokenizer=rig.tokenizer, layers=rig.layers,
+        replay=rig.replay,
     )
-    return node_id
+    return harness, rig
 
 
-def test_jlens_token_readout_shape_and_position() -> None:
-    s = TreeLensHarness()
+def _lens_block(out: dict[str, Any]) -> dict[str, Any]:
+    measurements = out["measurements"]
+    assert measurements["scope"] == "replay"
+    assert measurements["provenance"] == "replayed"
+    return measurements["instruments"]["lens"]
+
+
+def test_lens_token_readout_reads_every_fitted_layer() -> None:
+    s, rig = _replay_lens()
     s.lens.fit(_PROMPTS)
-    raw_ids = s.tokenizer.encode("abcdefg")
-    node_id = _tree_with_assistant(s, raw_ids, Recipe(system_prompt="Saved pirate instruction"))
+    node_id = rig.turn(
+        rig.tokenizer.encode("abcdefg"),
+        Recipe(system_prompt="Saved pirate instruction"),
+    )
 
-    seen_lens: list[tuple[int, int | None]] = []
-    import drowse.fit.capture as _vectors
+    block = _lens_block(s.lens.token_readout(node_id, 3, top_k=4))
 
-    real_capture = _vectors._capture_all_hidden_states
-
-    def _spy(model: Any, layers: Any, ids: torch.Tensor, **kw: Any) -> Any:
-        pool = kw.get("pool_index")
-        seen_lens.append((int(ids.shape[1]), int(pool) if pool is not None else None))
-        return real_capture(model, layers, ids, **kw)
-
-    _vectors._capture_all_hidden_states = _spy
-    try:
-        out = s.lens._replay_readout(node_id, 3, top_k=4)
-    finally:
-        _vectors._capture_all_hidden_states = real_capture
-
-    prompt_len = len(s.tokenizer.encode(_PROMPT_RENDER))
-    # readout position: the forward that PRODUCED the clicked token —
-    # prompt + raw[:3], never including the clicked token itself.
-    assert seen_lens == [(prompt_len + 3, prompt_len + 2)]
-    assert out["node_id"] == node_id
-    assert out["raw_index"] == 3
-    assert out["token_id"] == raw_ids[3]
-    assert out["token_text"] == s.tokenizer.decode([raw_ids[3]])
-    assert out["steering"] is None
-    assert set(out["readout"]) == {0, 1}  # fitted sources of the 3-layer toy
-    for rows in out["readout"].values():
-        assert len(rows) == 4
+    # One capture forward at the producing position over the fitted layers.
+    assert rig.captures == [(rig.prompt_len + 3, rig.prompt_len + 2, (0, 1))]
+    assert block["binding"] == {"source": s.lens.active_source, "steering": None}
+    layers = block["readout"]["layers"]
+    assert [row["layer"] for row in layers] == [0, 1]  # fitted sources of the toy
+    for row in layers:
+        assert len(row["tokens"]) == 4
         # Per-layer rows and the aggregate share one unit: the readout
         # probability, so ``strength`` is literally the mean of these.
-        tok, p_l, tid = rows[0]
-        assert isinstance(tok, str) and 0.0 <= p_l <= 1.0
-        assert isinstance(tid, int)
+        for token in row["tokens"]:
+            assert isinstance(token["token"], str)
+            assert isinstance(token["id"], int)
+            assert 0.0 < math.exp(token["logprob"]) <= 1.0
     # The aggregate block rides the same logits across both fitted layers.
-    assert len(out["aggregate"]) == 4
-    for tok, strength, com, spread in out["aggregate"]:
-        assert isinstance(tok, str)
-        assert 0.0 <= strength <= 1.0
-        assert 0.0 < com < 1 / (3 - 1)
-        assert spread > 0.0
-    # Continue-mode rebuild (cast model): no text resend — the history walk
-    # to the node's parent carries the user turn; the gen header opens the
-    # node's own seat.
-    assert s.prepare_calls[0]["input"] is None
-    assert s.prepare_calls[0]["raw"] is False
-    assert s.prepare_calls[0]["gen_seat"] == "assistant"
-    assert s.prepare_calls[0]["system_prompt"] == "Saved pirate instruction"
-    node = s.tree.get(node_id)
-    assert s.prepare_calls[0]["parent_node_id"] == node.parent_id
+    aggregate = block["readout"]["aggregate"]
+    assert len(aggregate) == 4
+    for chip in aggregate:
+        assert isinstance(chip["token"], str)
+        assert 0.0 <= chip["strength"] <= 1.0
+        assert 0.0 < chip["com"] < 1 / (3 - 1)
+        assert chip["spread"] > 0.0
+    assert rig.exclusive_messages[0][0] == (
+        "session.lens.token_readout called while another model use is in flight"
+    )
 
 
-def test_jlens_token_readout_index_zero_reads_prompt_only() -> None:
-    s = TreeLensHarness()
+def test_lens_token_readout_selects_layers_and_binds_steering() -> None:
+    s, rig = _replay_lens()
     s.lens.fit(_PROMPTS)
-    node_id = _tree_with_assistant(s, s.tokenizer.encode("abc"))
+    node_id = rig.turn(
+        rig.tokenizer.encode("abcd"),
+        Recipe(steering="0.3 formal.casual", thinking=False),
+    )
 
-    seen_lens: list[tuple[int, int | None]] = []
-    import drowse.fit.capture as _vectors
+    block = _lens_block(s.lens.token_readout(node_id, 2, top_k=2, layers=[1]))
+    assert rig.captures[-1][2] == (1,)
+    assert [row["layer"] for row in block["readout"]["layers"]] == [1]
+    assert block["binding"]["steering"] == "0.3 formal.casual"
+    assert rig.steering_scopes == ["0.3 formal.casual"]
 
-    real_capture = _vectors._capture_all_hidden_states
-
-    def _spy(model: Any, layers: Any, ids: torch.Tensor, **kw: Any) -> Any:
-        pool = kw.get("pool_index")
-        seen_lens.append((int(ids.shape[1]), int(pool) if pool is not None else None))
-        return real_capture(model, layers, ids, **kw)
-
-    _vectors._capture_all_hidden_states = _spy
-    try:
-        s.lens._replay_readout(node_id, 0, top_k=2)
-    finally:
-        _vectors._capture_all_hidden_states = real_capture
-    prompt_len = len(s.tokenizer.encode(_PROMPT_RENDER))
-    assert seen_lens == [(prompt_len, prompt_len - 1)]
+    block = _lens_block(
+        s.lens.token_readout(node_id, 2, top_k=2, apply_steering=False),
+    )
+    assert block["binding"]["steering"] is None
+    assert rig.steering_scopes == ["0.3 formal.casual"]
 
 
-def test_jlens_token_readout_steering_scope() -> None:
-    s = TreeLensHarness()
-    s.lens.fit(_PROMPTS)
-    recipe = Recipe(steering="0.3 formal.casual", thinking=False)
-    node_id = _tree_with_assistant(s, s.tokenizer.encode("abcd"), recipe)
+def test_lens_token_readout_errors() -> None:
+    s, rig = _replay_lens()
+    node_id = rig.turn(rig.tokenizer.encode("abc"))
 
-    out = s.lens._replay_readout(node_id, 2, top_k=2)
-    assert s.steering_scopes == ["0.3 formal.casual"]
-    assert out["steering"] == "0.3 formal.casual"
-
-    s.steering_scopes.clear()
-    out = s.lens._replay_readout(node_id, 2, top_k=2, apply_steering=False)
-    assert s.steering_scopes == []
-    assert out["steering"] is None
-
-
-def test_jlens_token_readout_raw_mode_render() -> None:
-    s = TreeLensHarness()
-    s.lens.fit(_PROMPTS)
-    node_id = _tree_with_assistant(s, s.tokenizer.encode("abcd"))
-
-    s.lens._replay_readout(node_id, 1, top_k=2, raw=True)
-    call = s.prepare_calls[0]
-    assert call["raw"] is True and call["input"] == ""
-    # raw render anchors at the assistant node's parent (the flat prefix)
-    assert call["parent_node_id"] == s.tree.get(node_id).parent_id
-
-
-def test_jlens_token_readout_errors() -> None:
-    s = TreeLensHarness()
-    node_id = _tree_with_assistant(s, s.tokenizer.encode("abc"))
-
+    # No lens, and the knobs are checked before any replay work.
     with pytest.raises(LensNotFittedError):
-        s.lens._replay_readout(node_id, 0)
-
+        s.lens.token_readout(node_id, 0)
     s.lens.fit(_PROMPTS)
-    user_id = s.tree.get(node_id).parent_id
-    assert user_id is not None
-    with pytest.raises(UnknownNodeError):
-        s.lens._replay_readout("nope", 0)
-    # A committed user turn is a valid *shape* under the cast model (user-
-    # seat generated nodes are forkable/readable) — but this one has no
-    # decode record, so it fails on that instead of its role.
-    with pytest.raises(InvalidNodeOperationError, match="no raw token record"):
-        s.lens._replay_readout(user_id, 0)
-    # The system root stays out of bounds — not a turn at all.
-    assert s.tree.root_id is not None
-    with pytest.raises(InvalidNodeOperationError, match="only a turn"):
-        s.lens._replay_readout(s.tree.root_id, 0)
-    with pytest.raises(InvalidNodeOperationError, match="out of range"):
-        s.lens._replay_readout(node_id, 3)
-    with pytest.raises(InvalidNodeOperationError, match="out of range"):
-        s.lens._replay_readout(node_id, -1)
     with pytest.raises(ValueError, match="not in the fitted lens"):
-        s.lens._replay_readout(node_id, 0, layers=[9])
-
-    bare = s.tree.begin_assistant(user_id)
-    s.tree.finalize_assistant(bare, text="no raw record", finish_reason="stop")
-    with pytest.raises(InvalidNodeOperationError, match="no raw token record"):
-        s.lens._replay_readout(bare, 0)
+        s.lens.token_readout(node_id, 0, layers=[9])
+    for width in (0, 257):
+        with pytest.raises(ValueError, match="top_k"):
+            s.lens.token_readout(node_id, 0, top_k=width)
+    assert rig.captures == []
+    # A bad anchor fails through the shared replay, under the lens label.
+    with pytest.raises(InvalidNodeOperationError, match="session.lens.token_readout"):
+        s.lens.token_readout(node_id, 3)
 
 
 def test_score_probes_entries_are_disjoint_and_guarded() -> None:

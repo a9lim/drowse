@@ -113,6 +113,7 @@ def stub_sae_instrument(
     """
     from drowse.sae.instrument import SaeInstrument
     from drowse.sae.runtime import SaeRuntime
+    from tests.support.replay import unwired_replay
     from tests.support.stubs import StubCapture
 
     effects: dict[str, Any] = {"directions": {}, "evictions": 0, "forgotten": []}
@@ -133,9 +134,6 @@ def stub_sae_instrument(
         if (reg := registry()) is not None:
             reg.evict_prefix("sae/")
 
-    def no_replay(*_args: Any, **_kwargs: Any) -> tuple[Any, Any]:
-        raise AssertionError("stub_sae_instrument: no replay wired")
-
     instrument = (cls or SaeInstrument)(
         cast(Any, StubCapture(session)),
         SaeRuntime(
@@ -143,7 +141,7 @@ def stub_sae_instrument(
             exclusive=lambda *_a, **_k: nullcontext(),
             assert_unsteered=lambda: None,
         ),
-        replay=replay or no_replay,
+        replay=replay or unwired_replay,
         put_direction=put,
         evict_directions=evict,
         forget_probe_hashes=effects["forgotten"].extend,
