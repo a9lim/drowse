@@ -30,9 +30,7 @@ def preflight_steering(session: Any, expression: str, model_id: str) -> Any:
     what a request would do — without authoring anything.  Returns the parsed
     :class:`~drowse.steering.terms.Steering` for ``create_app``.
     """
-    from drowse.session.session import (
-        ManifoldNotRegisteredError, ProfileNotRegisteredError,
-    )
+    from drowse.errors import ManifoldNotRegisteredError, ProfileNotRegisteredError
     from drowse.steering.grammar import parse_expr
 
     steering = parse_expr(expression)

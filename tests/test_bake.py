@@ -12,7 +12,7 @@ from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_schema import ManifoldSidecar
 from drowse.store.manifold_tensors import load_manifold
-from drowse.fit.capture import fold_directions_to_subspace, folded_directions
+from drowse.geometry.fold import fold_directions_to_subspace, folded_directions
 from drowse.base.paths import encode_release_id, model_dir, safe_model_id, tensor_filename
 from tests._whitener import isotropic_whitener
 

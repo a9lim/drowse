@@ -1,16 +1,15 @@
-"""Cold runtime loading for integrity- and identity-bound manifold artifacts."""
+"""Cold registry loading for integrity- and identity-bound manifold artifacts."""
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import torch
 
 from drowse.model.fingerprint import loaded_model_fingerprint
-from drowse.steering.composer import SteeringComposer
-from drowse.fit.capture import fold_directions_to_subspace
+from drowse.session.registry import ArtifactRegistry, ModelBinding
+from drowse.geometry.fold import fold_directions_to_subspace
 from drowse.store.manifold_schema import ManifoldFormatError
 from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
 from drowse.store.manifold_lifecycle import transfer_manifold
@@ -28,11 +27,11 @@ def _publish(manifold: Any, model_id: str, fingerprint: str) -> Path:
     )
 
 
-def _runtime(model_id: str, model: torch.nn.Module) -> Any:
-    return SimpleNamespace(
-        model_id=model_id, _model=model, _device=torch.device("cpu"),
-        _manifolds={}, _profiles={},
-    )
+def _registry(model_id: str, model: torch.nn.Module) -> ArtifactRegistry:
+    return ArtifactRegistry(ModelBinding(
+        model=model, tokenizer=None, model_id=model_id,
+        device=torch.device("cpu"), dtype=torch.float32,
+    ))
 
 
 def _fold(name: str, directions: dict[int, torch.Tensor], *, label: str) -> Any:
@@ -57,9 +56,9 @@ def test_baked_manifold_cold_loads_with_proven_fingerprint(
     )
     _publish(manifold, model_id, fingerprint)
 
-    runtime = _runtime(model_id, model)
-    SteeringComposer(runtime).ensure_manifold_loaded("local/merged")
-    assert "local/merged" in runtime._manifolds
+    registry = _registry(model_id, model)
+    loaded = registry.ensure_manifold_loaded("local/merged")
+    assert registry.manifolds["local/merged"] is loaded
 
 
 def test_cold_load_rejects_finite_tensor_corruption(
@@ -77,7 +76,7 @@ def test_cold_load_rejects_finite_tensor_corruption(
     tensor.write_bytes(payload)
 
     with pytest.raises(ManifoldFormatError, match="integrity"):
-        SteeringComposer(_runtime(model_id, model)).ensure_manifold_loaded(
+        _registry(model_id, model).ensure_manifold_loaded(
             "local/merged",
         )
 
@@ -99,7 +98,7 @@ def test_cold_load_rejects_untracked_fitted_pair(
     manifest_path.write_text(json.dumps(manifest))
 
     with pytest.raises(ManifoldFormatError, match="no proof"):
-        SteeringComposer(_runtime(model_id, model)).ensure_manifold_loaded(
+        _registry(model_id, model).ensure_manifold_loaded(
             "local/merged",
         )
 
@@ -134,6 +133,6 @@ def test_transfer_variant_cold_loads_for_target_identity(
     )
 
     key = f"local/merged:from-{encode_release_id(source_id)}"
-    runtime = _runtime(target_id, target_model)
-    SteeringComposer(runtime).ensure_manifold_loaded(key)
-    assert key in runtime._manifolds
+    registry = _registry(target_id, target_model)
+    registry.ensure_manifold_loaded(key)
+    assert key in registry.manifolds

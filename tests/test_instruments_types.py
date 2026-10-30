@@ -17,6 +17,7 @@ from drowse.readout.types import (
     validate_gate_channels,
 )
 from drowse.generation.results import ProbeReading
+from tests.support.stubs import attach_stub_instruments
 
 
 # --------------------------------------------------------------------------
@@ -199,7 +200,8 @@ def test_session_facades_are_the_instruments() -> None:
     from drowse import GeometryInstrument, LensInstrument, SaeInstrument
     from drowse.session.session import DrowseSession
 
-    session = DrowseSession.__new__(DrowseSession)  # lazy instruments self-heal
+    session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     inst = session.instruments
     assert set(inst) == {"geometry", "lens", "sae"}
     assert isinstance(inst["geometry"], GeometryInstrument)
@@ -225,6 +227,7 @@ def test_every_family_carries_the_uniform_instrument_surface() -> None:
     from drowse.session.session import DrowseSession
 
     session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     for family, instrument in session.instruments.items():
         assert instrument.family == family
         for name in _INSTRUMENT_SURFACE:
@@ -251,6 +254,7 @@ def test_gate_validation_is_only_where_a_channel_can_be_refused() -> None:
     from drowse.session.session import DrowseSession
 
     session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     ref = parse_gate_ref("probe:membership")
     for family in ("lens", "sae"):
         with pytest.raises(UnsupportedProbeChannelError):

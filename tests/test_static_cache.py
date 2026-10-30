@@ -23,6 +23,7 @@ import pytest
 import torch
 
 from drowse.generation import static_cache as cg
+from tests.support.stubs import attach_stub_instruments
 @pytest.fixture(autouse=True)
 def _isolate_cg_module_caches():
     """Clear the module-level support/warn caches around every test.
@@ -327,6 +328,7 @@ def test_session_reuses_and_resets_generation_static_cache(
         _make_static_cache,
     )
     session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     session._device = torch.device("cpu")
     session._generation_static_cache = None
     session._generation_static_cache_len = 0

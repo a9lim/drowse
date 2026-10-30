@@ -247,7 +247,7 @@ class _SteeringSession:
     def steering(self, steering: Any) -> Any:
         from contextlib import contextmanager
 
-        from drowse.session.session import ProfileNotRegisteredError
+        from drowse.errors import ProfileNotRegisteredError
 
         @contextmanager
         def scope() -> Any:

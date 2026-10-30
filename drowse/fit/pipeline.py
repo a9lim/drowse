@@ -1286,7 +1286,7 @@ class ManifoldExtractionPipeline:
         DLS, no synthetic second node.  ``concept − ν`` cancels common-mode
         like DiM, so the raw δ̂ basis is appropriate.
         """
-        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.geometry.fold import fold_directions_to_subspace
 
         mf = inputs.manifold
         backend = inputs.sae_backend

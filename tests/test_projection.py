@@ -17,16 +17,13 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.events import EventBus
 from drowse.errors import WhitenerError
-from drowse.session.session import (
-    DrowseSession, ProfileNotRegisteredError,
-)
-from drowse.steering.composer import SteeringComposer
+from drowse.errors import ProfileNotRegisteredError
 from drowse.steering.grammar import parse_expr
 from drowse.steering.triggers import Trigger
-from drowse.fit.capture import project_profile
+from drowse.geometry.fold import project_profile
 from tests._whitener import synthetic_whitener
+from tests.support.stubs import wire_stub_steering
 
 
 def _whit(layers: Any, dim: int):
@@ -178,48 +175,48 @@ class TestProjectProfile:
 
 # ---------------------------------------------- session-level integration ---
 
-class _Stub(DrowseSession):
-    """DrowseSession without real model/tokenizer.
+class _Stub:
+    """A steering composer over in-memory profiles (no model).
 
-    Projection materialization is Mahalanobis-only, so the stub exposes a real
-    covering whitener over the registered profiles' layer/dim (no model load).
+    Projection materialization is Mahalanobis-only, so the stub carries a real
+    covering whitener over the registered profiles' layer/dim.  Each rebuild
+    composes the flattened head (so projection errors surface on enter) and
+    records it instead of installing hooks.
     """
+
     def __init__(self, profiles: dict[str, Any]) -> None:
-        import threading
-        self._profiles = dict(profiles)
-        self._manifolds = {}
-        self._model_info = {"model_id": "stub/model"}
-        # v2.2: _push_steering / _pop_steering acquire _gen_lock and
-        # consult _gen_phase + _internal_steering_pop.
-        self._gen_lock = threading.RLock()
-        from drowse.session.session import GenState
-        self._gen_phase = GenState.IDLE
-        self._internal_steering_pop = False
-        self._layer_means = {}
-        self.events = EventBus()
-        self._rebuild_calls: list[dict[str, Any]] = []
-        self._rebuild_entries: list[dict[str, Any]] = []
-        self._steering_composer = SteeringComposer(self)
-        # Build a covering whitener over the union of profile layers/dim so
-        # the projection materializer → ``project_profile`` has its mandatory
-        # whitener.  ``None`` when there are no profiles (degenerate stub).
         layers: set[int] = set()
         dim = 0
         for prof in profiles.values():
             for L, t in prof.items():
                 layers.add(L)
                 dim = t.shape[-1]
-        self._stub_whitener = _whit(sorted(layers), dim) if layers else None
+        self.whitener = _whit(sorted(layers), dim) if layers else None
+        self._model_info = {"model_id": "stub/model"}
+        self._rebuild_calls: list[dict[str, Any]] = []
+        self._rebuild_entries: list[dict[str, Any]] = []
+        self.composer = wire_stub_steering(
+            self, profiles=profiles,
+            layer_means={L: torch.zeros(dim) for L in layers},
+            whitener=self.whitener,
+        )
+        self.composer.rebuild_hooks = self._rebuild  # type: ignore[method-assign]
 
-    @property
-    def whitener(self) -> Any:
-        return self._stub_whitener
+    def drop_whitener(self) -> None:
+        means = dict(self._neutral.means)
+        self._neutral.adopt(means, None)
+        self._neutral.ensure = lambda **_kw: None  # type: ignore[method-assign]
 
-    def _rebuild_steering_hooks(self) -> None:
-        flat = self._steering_composer.flatten_stack()
-        for name in flat:
-            if name not in self._profiles:
-                raise ProfileNotRegisteredError(f"No profile registered for '{name}'")
+    def steering(self, value: Any) -> Any:
+        return self.composer.open_scope(value)
+
+    def projection(self, key: str) -> Any:
+        return self.composer.projection(key)
+
+    def _rebuild(self) -> None:
+        flat = self.composer.flatten_stack()
+        if flat:
+            self.composer.compose(flat)
         self._rebuild_entries.append(dict(flat))
         flat_any: dict[str, Any] = flat
         self._rebuild_calls.append(
@@ -238,13 +235,14 @@ def _profile_b():
 
 
 class TestSessionProjection:
-    def test_parses_and_registers_synthetic_key(self):
+    def test_projection_composes_without_registering(self):
         s = _Stub({"a": _profile_a(), "b": _profile_b()})
         steering = parse_expr("0.5 a|b")
         with s.steering(steering):
-            assert "a|b" in s._profiles
+            # The projection never enters the artifact registry.
+            assert "a|b" not in s._registry.profiles
             # LEACE ``|`` erases b under the session's M-metric.
-            proj = s._profiles["a|b"][0]
+            proj = s.projection("a|b")[0]
             assert _m_dot(s.whitener, 0, proj, _profile_b()[0]) == pytest.approx(
                 0.0, abs=1e-4,
             )
@@ -254,9 +252,9 @@ class TestSessionProjection:
         s = _Stub({"a": _profile_a(), "b": _profile_b()})
         steering = parse_expr("0.5 a~b")
         with s.steering(steering):
-            assert "a~b" in s._profiles
+            assert "a~b" not in s._registry.profiles
             # ``~`` keeps the b-component: result ∥ b (b = e0, so only x ≠ 0).
-            proj = s._profiles["a~b"][0]
+            proj = s.projection("a~b")[0]
             assert proj[1].abs() < 1e-5
 
     def test_mixed_plain_and_projection(self):
@@ -289,11 +287,11 @@ class TestSessionProjection:
                 pass
 
     def test_base_direction_differs_from_orthogonal(self):
-        # Sanity: steering "a" and steering "a|b" should register
-        # measurably different tensors in _profiles.
+        # Sanity: steering "a" and steering "a|b" should compose
+        # measurably different directions.
         s = _Stub({"a": _profile_a(), "b": _profile_b()})
         with s.steering(parse_expr("1.0 a|b")):
-            projected = s._profiles["a|b"][0].clone()
+            projected = s.projection("a|b")[0].clone()
         # The orthogonalized direction differs from the raw "a".
         assert not torch.allclose(projected, _profile_a()[0], atol=1e-3)
         # And it is M-orthogonal to b.
@@ -316,7 +314,7 @@ class TestSessionProjection:
         """A stub with no covering whitener can't materialize a ``~``/``|``
         term — Mahalanobis is mandatory (no Euclidean fallback)."""
         s = _Stub({"a": _profile_a(), "b": _profile_b()})
-        s._stub_whitener = None  # drop the whitener
+        s.drop_whitener()
         with pytest.raises(WhitenerError, match="whitener"):
             with s.steering(parse_expr("0.5 a|b")):
                 pass
@@ -324,92 +322,97 @@ class TestSessionProjection:
 
 # ----------------------------------- v2.1 layer_means lazy-load fix-up ---
 
-class TestLayerMeansLazy:
-    """The ``session.layer_means`` property lazy-builds when
-    ``probes=[]`` left ``self._layer_means`` empty.
+class TestNeutralBaselineLazy:
+    """``NeutralBaseline`` builds the means and the whitener lazily, from one
+    neutral-activation load.
 
     Closes the v2.1 footgun where ``probes=[]`` sessions hit
     ``compute_dls_axes`` with an empty dict, every layer fell into
     the conservative-keep branch, and DLS silently disabled itself.
     """
 
-    def test_property_returns_existing_means_without_rebuild(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Non-empty ``self._layer_means`` short-circuits the property
-        — no bootstrap call.  Sanity check that the lazy path is
-        only triggered on miss."""
-        s = _Stub({"a": _profile_a()})
-        s._layer_means = {0: torch.tensor([1.0, 2.0])}
+    @staticmethod
+    def _baseline(monkeypatch: pytest.MonkeyPatch, acts: Any, calls: list[str]) -> Any:
+        from contextlib import nullcontext
 
-        called: list[Any] = []
-
-        def _fail_bootstrap(*args: Any, **kwargs: Any) -> Any:
-            called.append(args)
-            return {99: torch.tensor([0.0])}
-
-        from drowse.session import session as session_mod
-        monkeypatch.setattr(session_mod, "bootstrap_layer_means", _fail_bootstrap)
-        result = s.layer_means
-        assert set(result.keys()) == {0}
-        assert torch.equal(result[0], torch.tensor([1.0, 2.0]))
-        assert called == [], "bootstrap_layer_means should not run on hit"
-
-    def test_property_lazy_builds_when_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Empty ``self._layer_means`` triggers ``bootstrap_layer_means``
-        on first access; result is cached on subsequent calls."""
-        s = _Stub({"a": _profile_a()})
-        from drowse.session.session import DrowseSession
-        built = {3: torch.tensor([5.0, 6.0]), 4: torch.tensor([7.0, 8.0])}
-        calls: list[Any] = []
-
-        def _spy(*args: Any, **kwargs: Any) -> Any:
-            calls.append(args)
-            return built
-
-        from drowse.session import session as session_mod
-        # Give the stub the minimal handle attributes the bootstrap call
-        # looks at, so the try-block actually runs.
-        s._model = object()  # pyright: ignore[reportAttributeAccessIssue]  # injecting minimal stub handle; real type is PreTrainedModel
-        s._tokenizer = object()  # pyright: ignore[reportAttributeAccessIssue]  # injecting minimal stub handle; real type is PreTrainedTokenizerBase
-        s._layers = []  # pyright: ignore[reportAttributeAccessIssue]  # injecting minimal stub handle; real type is ModuleList
-        s._model_info = {}
-        monkeypatch.setattr(session_mod, "bootstrap_layer_means", _spy)
-
-        # First access — triggers build.
-        out = DrowseSession.layer_means.fget(s)  # pyright: ignore[reportOptionalCall]  # fget present on real property
-        assert out is built
-        assert len(calls) == 1
-        # Second access — caches; no second call.
-        out2 = DrowseSession.layer_means.fget(s)  # pyright: ignore[reportOptionalCall]  # same as above
-        assert out2 is built
-        assert len(calls) == 1
-
-    def test_whitener_derives_means_from_single_neutral_load(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Whitener bootstrap shares one neutral-cache read with mean derivation."""
-        from drowse.session.session import DrowseSession
-        from drowse.store import neutral as alignment_mod
-        s = _Stub({"a": _profile_a()})
-        s._model = object()  # pyright: ignore[reportAttributeAccessIssue]
-        s._tokenizer = object()  # pyright: ignore[reportAttributeAccessIssue]
-        s._layers = []  # pyright: ignore[reportAttributeAccessIssue]
-        s._model_info = {"model_id": "test/model"}
-        s._layer_means = {}
-        calls: list[str] = []
-        acts = {0: torch.tensor([[1.0, 2.0], [3.0, 6.0], [5.0, 10.0]])}
+        from drowse.session.neutral import NeutralBaseline
+        from drowse.store import neutral as neutral_store
 
         def _load(*args: Any, **kwargs: Any) -> dict[int, torch.Tensor]:
             calls.append(kwargs["model_id"])
             return acts
 
-        monkeypatch.setattr(
-            alignment_mod, "load_or_compute_neutral_activations", _load,
+        monkeypatch.setattr(neutral_store, "load_or_compute_neutral_activations", _load)
+        return NeutralBaseline(
+            model=object(), tokenizer=object(), layers=[], model_id="test/model",
+            exclusive=lambda *_a, **_kw: nullcontext(), steered=lambda: False,
         )
-        whitener = DrowseSession._build_whitener_from_cache_or_compute(s)
 
-        assert whitener is not None
+    def test_resident_means_short_circuit_the_load(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[str] = []
+        baseline = self._baseline(monkeypatch, {}, calls)
+        baseline.adopt({0: torch.tensor([1.0, 2.0])}, None)
+        result = baseline.layer_means()
+        assert set(result.keys()) == {0}
+        assert torch.equal(result[0], torch.tensor([1.0, 2.0]))
+        assert calls == [], "a resident baseline must not reload"
+
+    def test_means_build_lazily_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[str] = []
+        acts = {3: torch.tensor([[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]])}
+        baseline = self._baseline(monkeypatch, acts, calls)
+        out = baseline.layer_means()
+        assert torch.equal(out[3], acts[3].mean(dim=0))
+        assert baseline.layer_means() is out
         assert calls == ["test/model"]
-        assert torch.equal(s._layer_means[0], acts[0].mean(dim=0))
+
+    def test_one_neutral_load_builds_means_and_whitener(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """P3: the means and the whitener come from a single neutral read."""
+        calls: list[str] = []
+        acts = {0: torch.tensor([[1.0, 2.0], [3.0, 6.0], [5.0, 10.0]])}
+        baseline = self._baseline(monkeypatch, acts, calls)
+        whitener = baseline.whitener()
+        assert whitener is not None
+        assert torch.equal(baseline.layer_means()[0], acts[0].mean(dim=0))
+        assert calls == ["test/model"]
+
+    def test_failed_load_raises_for_means_and_softens_whitener(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from drowse.errors import DrowseError
+        from drowse.store import neutral as neutral_store
+
+        calls: list[str] = []
+        baseline = self._baseline(monkeypatch, {}, calls)
+
+        def _boom(*_args: Any, **_kwargs: Any) -> Any:
+            raise OSError("neutral cache unreadable")
+
+        monkeypatch.setattr(neutral_store, "load_or_compute_neutral_activations", _boom)
+        assert baseline.whitener() is None
+        with pytest.raises(DrowseError, match="neutral layer means") as info:
+            baseline.layer_means()
+        assert isinstance(info.value.__cause__, OSError)
+
+    def test_build_refuses_under_installed_steering(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from contextlib import nullcontext
+
+        from drowse.errors import ConcurrentExtractionError
+        from drowse.session.neutral import NeutralBaseline
+
+        calls: list[str] = []
+        self._baseline(monkeypatch, {0: torch.ones(3, 2)}, calls)
+        baseline = NeutralBaseline(
+            model=object(), tokenizer=object(), layers=[], model_id="test/model",
+            exclusive=lambda *_a, **_kw: nullcontext(), steered=lambda: True,
+        )
+        with pytest.raises(ConcurrentExtractionError, match="steering scope"):
+            baseline.ensure()
+        assert calls == []
 
 
 class TestComputeDlsAxesBipolarGuard:
@@ -562,58 +565,31 @@ class TestComputeDlsAxes:
 # ------------------------------- v2.1 nested projection scope restore ---
 
 class TestNestedProjectionScopeLeak:
-    """Inner scope's projection should not leak back to outer scope.
+    """Projections never touch the artifact registry, so nested scopes
+    cannot leak a synthetic ``a|b`` binding into each other or past exit."""
 
-    ``SteeringComposer.materialize_projections`` writes synthetic keys (``a|b``) into
-    the global ``self._profiles`` registry.  Without snapshot+restore
-    on the ``_SteeringContext`` exit path, an inner scope materializing
-    the same synthetic key under a different ``projection_metric`` (or
-    different base/onto pair) leaves the inner tensor bound when the
-    outer scope's hooks re-build, silently using the inner's projection.
-    """
-
-    def test_inner_overwrite_restored_on_exit(self):
+    def test_nested_scopes_share_one_projection(self):
         s = _Stub({"a": _profile_a(), "b": _profile_b()})
-        outer_steering = parse_expr("0.5 a|b")
-        inner_steering = parse_expr("0.7 a|b")
-        with s.steering(outer_steering):
-            outer_tensor = s._profiles["a|b"][0].clone()
-            with s.steering(inner_steering):
-                inner_tensor = s._profiles["a|b"][0].clone()
-            # After inner exits, outer's binding must be restored.
-            restored = s._profiles["a|b"][0]
-            assert torch.equal(restored, outer_tensor), (
-                "outer scope's projected tensor must be restored when "
-                "inner scope exits"
-            )
-            # Sanity: inner did write a value (test would be vacuous
-            # if the inner write was identical).  The values are equal
-            # in practice because the projection is deterministic from
-            # base/onto, but the key point is the registry binding got
-            # restored to a snapshot regardless of value equality.
-            _ = inner_tensor
-
-    def test_outer_binding_absent_pre_scope_removed_after_pop(self):
-        # Synthetic key ``a|b`` doesn't exist before any scope opens.
-        # Entering a scope materializes it; exiting must remove it
-        # rather than leaving a stale binding behind.
-        s = _Stub({"a": _profile_a(), "b": _profile_b()})
-        assert "a|b" not in s._profiles
         with s.steering(parse_expr("0.5 a|b")):
-            assert "a|b" in s._profiles
-        assert "a|b" not in s._profiles, (
-            "synthetic key materialized inside a scope must be removed "
-            "from the registry on exit when no outer binding existed"
-        )
+            outer = s.projection("a|b")
+            with s.steering(parse_expr("0.7 a|b")):
+                assert s.projection("a|b") is outer
+            assert s.projection("a|b") is outer
+        assert "a|b" not in s._registry.profiles
 
-    def test_outer_pre_existing_binding_survives_inner_overwrite(self):
-        # Pre-bind ``a|b`` with a sentinel tensor, enter a scope that
-        # overwrites it, exit, and assert the sentinel is restored.
+    def test_scope_never_registers_the_synthetic_key(self):
+        s = _Stub({"a": _profile_a(), "b": _profile_b()})
+        before = dict(s._registry.profiles)
+        with s.steering(parse_expr("0.5 a|b")):
+            assert "a|b" not in s._registry.profiles
+        assert dict(s._registry.profiles) == before
+
+    def test_registered_profile_named_like_a_projection_is_untouched(self):
         s = _Stub({"a": _profile_a(), "b": _profile_b()})
         sentinel = {0: torch.tensor([99.0, 99.0])}
-        s._profiles["a|b"] = sentinel
+        s._registry.put_profile("a|b", sentinel)
+        stored = s._registry.profiles["a|b"]
         with s.steering(parse_expr("0.5 a|b")):
-            assert s._profiles["a|b"] is not sentinel
-        assert s._profiles["a|b"] is sentinel, (
-            "pre-scope binding for a|b must be restored on scope exit"
-        )
+            assert s._registry.profiles["a|b"] is stored
+            assert not torch.equal(s.projection("a|b")[0], sentinel[0])
+        assert s._registry.profiles["a|b"] is stored

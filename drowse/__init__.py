@@ -71,8 +71,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "AblationTerm": ("drowse.steering.grammar", "AblationTerm"),
     "SelectorError": ("drowse.store.selectors", "SelectorError"),
     "AmbiguousSelectorError": ("drowse.store.selectors", "AmbiguousSelectorError"),
-    "ManifoldNotRegisteredError": ("drowse.session.session", "ManifoldNotRegisteredError"),
-    "ProfileNotRegisteredError": ("drowse.session.session", "ProfileNotRegisteredError"),
+    "ManifoldNotRegisteredError": ("drowse.errors", "ManifoldNotRegisteredError"),
+    "ProfileNotRegisteredError": ("drowse.errors", "ProfileNotRegisteredError"),
     # Read-side instrument facades: the contract, the three families, and
     # the per-family live-state records ``set_live``/``live_state`` return.
     "Instrument": ("drowse.readout.protocol", "Instrument"),
@@ -282,7 +282,7 @@ if TYPE_CHECKING:
         AmbiguousSelectorError as AmbiguousSelectorError,
         SelectorError as SelectorError,
     )
-    from drowse.session.session import (
+    from drowse.errors import (
         ManifoldNotRegisteredError as ManifoldNotRegisteredError,
         ProfileNotRegisteredError as ProfileNotRegisteredError,
     )

@@ -36,7 +36,6 @@ from drowse.session.session import (
     _JLENS_DEVICE_STACK_CACHE_MAX,
     _JLENS_SELECTOR_CACHE_MAX,
 )
-from drowse.steering.composer import SteeringComposer
 from drowse.lens.store import (
     LensProvenance,
     lens_manifest_path,
@@ -46,6 +45,7 @@ from drowse.lens.store import (
     save_lens_checkpoint,
 )
 from tests._jlens_toys import CharTokenizer, frozen_toy
+from tests.support.stubs import wire_stub_steering
 
 _MODEL_ID = "toy/jlens-model"
 
@@ -126,7 +126,6 @@ class _StubSession:
         self._tokenizer = CharTokenizer()
         self._layers = model.model.layers
         self._device = torch.device("cpu")
-        self._profiles: dict[str, Any] = {}
         self._jlens: Any = None
         self._jlens_identity: Any = None
         self._capture: Any = None
@@ -142,7 +141,7 @@ class _StubSession:
         self._readout_long_tensor_cache: dict[Any, torch.Tensor] = {}
         self._monitor: Any = None
         self.model_id = _MODEL_ID
-        self._steering_composer = SteeringComposer(self)  # type: ignore[arg-type]
+        wire_stub_steering(self)
 
     @contextmanager
     def _model_exclusive(self, msg: str, *, phase_msg: str | None = None):
@@ -150,9 +149,6 @@ class _StubSession:
         yield
 
     def _invalidate_prefix_cache(self) -> None:
-        pass
-
-    def _invalidate_analytics_cache(self) -> None:
         pass
 
 
@@ -284,7 +280,7 @@ def test_refit_rebuilds_live_lens_probes_and_evicts_directions() -> None:
     live = s._lens_instrument.live
     assert live is not None
     old_stack = live["J_stack"]
-    s._profiles["jlens/a"] = {0: torch.ones(4)}
+    s._registry.put_profile("jlens/a", {0: torch.ones(4)})
     s._lens_instrument.probes["jlens/a"] = {
         "word": "a", "token_id": 1, "layers": [0],
     }
@@ -298,7 +294,7 @@ def test_refit_rebuilds_live_lens_probes_and_evicts_directions() -> None:
     assert live["uses_all_layers"] is True
     assert live["J_stack"] is not old_stack
     assert s._lens_instrument.probes["jlens/a"]["layers"] == [1]
-    assert "jlens/a" not in s._profiles
+    assert "jlens/a" not in s._registry.profiles
 
 
 def test_jlens_property_rejects_legacy_sidecar_without_weight_identity() -> None:
@@ -532,7 +528,7 @@ def test_jlens_property_refreshes_and_evicts_after_external_lifecycle() -> None:
     corpus_b = [f"replacement property prompt {i} with enough content" for i in range(4)]
     session_a = _StubSession()
     resident_a = session_a.fit_jlens(_PROMPTS, force=True)
-    session_a._profiles["jlens/example"] = {0: torch.ones(6)}
+    session_a._registry.put_profile("jlens/example", {0: torch.ones(6)})
     session_a._lens_instrument.probes["jlens/example"] = {
         "word": "example", "token_id": 1, "layers": [0, 1],
     }
@@ -554,7 +550,7 @@ def test_jlens_property_refreshes_and_evicts_after_external_lifecycle() -> None:
     assert remove_lens(_MODEL_ID, "j")
     assert not session_a.has_compatible_jlens()
     assert session_a.jlens is None
-    assert "jlens/example" not in session_a._profiles
+    assert "jlens/example" not in session_a._registry.profiles
     assert session_a._lens_instrument.probes["jlens/example"]["layers"] == []
     assert session_a._lens_instrument.live is None
 
@@ -2064,7 +2060,7 @@ def test_register_jlens_direction_registers_profile() -> None:
     name = s.register_jlens_direction("g")  # 'g' round-trips in the toy vocab
     assert name == "jlens/g"
     assert seen_layers == [[0, 1]]
-    dirs = s._profiles[name]
+    dirs = s._registry.profiles[name]
     assert set(dirs) == {0, 1}
     expected = lens.token_direction(
         s._tokenizer.encode("g")[0], s._model.lm_head.weight,

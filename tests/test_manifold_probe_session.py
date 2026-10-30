@@ -40,6 +40,7 @@ from drowse.session.session import (
     ReadDemand,
     DrowseSession,
 )
+from tests.support.stubs import wire_stub_steering
 
 
 def _toy_manifold(*, dim: int = 8, n_layers: int = 2) -> Manifold:
@@ -99,16 +100,10 @@ def _stub_session() -> DrowseSession:
 
     session = MagicMock(spec=DrowseSession)
     session._monitor = Monitor(whitener=_whit)
-    session._manifolds = {}
-    session._profiles = {}
     session._probe_hash_cache = {}
     # ``add_probe`` holds the exclusive-GPU lock (``_gen_lock``) around its
     # device-touching factor build and clears the read-side analytics cache.
     session._gen_lock = threading.RLock()
-    session._analytics_cpu_cache = {}
-    session._invalidate_analytics_cache = types.MethodType(
-        DrowseSession._invalidate_analytics_cache, session,
-    )
     # Capture has a single ``_per_layer`` dict we read for streaming.
     session._capture = types.SimpleNamespace(
         _per_layer={},
@@ -117,12 +112,6 @@ def _stub_session() -> DrowseSession:
     session._capture_state = CaptureState()
     session._jlens = None
     session._jlens_identity = None
-    session._lens_instrument.generation_lens = None
-    session._lens_instrument.generation_lens_active = False
-    session._lens_instrument.live = None
-    session._lens_instrument.probes = {}
-    session._sae_instrument.live = None
-    session._sae_instrument.probes = {}
     # All three families route through real instruments now: geometry for
     # the add_probe flow (exclusive section + whitener touch + resolve +
     # monitor.add_probe), lens/SAE because ``_begin_capture`` consumes
@@ -135,6 +124,12 @@ def _stub_session() -> DrowseSession:
     session._geometry_instrument = GeometryInstrument(session)
     session._lens_instrument = LensInstrument(session)
     session._sae_instrument = SaeInstrument(session)
+    session._lens_instrument.generation_lens = None
+    session._lens_instrument.generation_lens_active = False
+    session._lens_instrument.live = None
+    session._lens_instrument.probes = {}
+    session._sae_instrument.live = None
+    session._sae_instrument.probes = {}
     # ``_begin_capture`` runs the close → prepare → plan → bind ritual
     # through this helper; the MagicMock default would hand it an empty
     # iterable instead of the three real plans.
@@ -155,19 +150,29 @@ def _stub_session() -> DrowseSession:
     session._invalidate_prefix_cache = _invalidate
 
     # Bind the real unified-probe methods we want to exercise.  ``add_probe``
-    # rides ``_resolve_probe_manifold`` (which consults ``_profiles`` then
-    # ``ensure_manifold_loaded`` → ``_manifolds``), so bind that too; tests
-    # stub the public loader to populate ``_manifolds`` in place.
+    # rides ``_resolve_probe_manifold`` (which consults the registry's
+    # profiles, then its manifold loader), so bind that too; tests serve
+    # toy manifolds through the registry loader (``_serve``).
     session.add_probe = types.MethodType(DrowseSession.add_probe, session)
     session.remove_probe = types.MethodType(DrowseSession.remove_probe, session)
     session._resolve_probe_manifold = types.MethodType(
         DrowseSession._resolve_probe_manifold, session,
     )
-    # The steering collaborator owns the gating-score-callback builder; wire a
-    # real one explicitly.
-    from drowse.steering.composer import SteeringComposer
-    session._steering_composer = SteeringComposer(session)
+    # The registry + steering collaborators are real; the composer owns the
+    # gating-score-callback builder.
+    session._steering = None
+    session._device = torch.device("cpu")
+    session._dtype = torch.float32
+    session._model_info = {"model_id": "stub/model"}
+    wire_stub_steering(session)
     return session
+
+
+def _serve(session: Any, manifolds: Any) -> None:
+    """Serve toy manifolds through the registry loader (no disk)."""
+    session._registry.ensure_manifold_loaded = (
+        lambda key: manifolds[key] if isinstance(manifolds, dict) else manifolds
+    )
 
 
 # ==================================================== add / remove probe ===
@@ -180,9 +185,7 @@ def test_add_probe_registers_via_ensure_loaded():
 
     # ``ensure_manifold_loaded`` is the resolution path; stub it to
     # populate ``_manifolds`` instead of hitting disk.
-    def _fake_ensure(key: str):
-        session._manifolds[key] = m
-    session.ensure_manifold_loaded = _fake_ensure
+    _serve(session, m)
 
     name = session.add_probe("toy")
     assert name == "toy"
@@ -192,9 +195,7 @@ def test_add_probe_registers_via_ensure_loaded():
 def test_add_probe_as_name_override():
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
 
     name = session.add_probe("toy", as_name="affect")
     assert name == "affect"
@@ -204,9 +205,7 @@ def test_add_probe_as_name_override():
 def test_remove_probe():
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
 
     session.add_probe("toy")
     session.remove_probe("toy")
@@ -216,9 +215,7 @@ def test_remove_probe():
 def test_add_probe_invalidates_prefix_cache():
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session._prefix_cache = ("dummy",)  # pyright: ignore[reportAttributeAccessIssue]  # test stub: wrong-shaped sentinel to verify invalidation
     session.add_probe("toy")
     assert session._prefix_cache is None
@@ -231,9 +228,7 @@ def test_begin_capture_widens_to_manifold_layers():
     of every attached probe's fit layers."""
     session = _stub_session()
     m = _toy_manifold(n_layers=3)
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
 
     # Track what layers _capture.attach was called with.
@@ -338,7 +333,7 @@ def test_geometry_detach_rejects_while_generation_holds_the_lock():
     the same exclusive section ``attach`` takes."""
     import threading as _threading
 
-    from drowse.session.session import ConcurrentExtractionError
+    from drowse.errors import ConcurrentExtractionError
 
     session = _stub_session()
     # The MagicMock default no-ops the exclusive section; this test is
@@ -348,9 +343,7 @@ def test_geometry_detach_rejects_while_generation_holds_the_lock():
         DrowseSession._model_exclusive, session,
     )
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m}
-    )
+    _serve(session, m)
     session.add_probe("toy")
     assert "toy" in session._monitor.probe_names
 
@@ -390,9 +383,7 @@ def test_geometry_state_lock_serializes_detach_and_reads():
     iteration or tear it."""
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
     inst = session._geometry_instrument
 
@@ -435,9 +426,7 @@ def test_geometry_idle_run_reads_hold_the_state_lock():
     reject contract, not by this lock)."""
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
     inst = session._geometry_instrument
     assert inst.current_run.bound is False
@@ -478,10 +467,7 @@ def test_geometry_roster_reads_do_not_tear_under_concurrent_detach():
     session = _stub_session()
     manifolds = {f"toy{i}": _toy_manifold() for i in range(6)}
 
-    def _load(key: str) -> None:
-        session._manifolds.update({key: manifolds[key]})
-
-    session.ensure_manifold_loaded = _load
+    _serve(session, manifolds)
     for name in manifolds:
         session.add_probe(name)
     inst = session._geometry_instrument
@@ -566,26 +552,25 @@ def _record_roster_mutations(
 
 
 def test_manifold_promotion_walk_holds_geometry_state_lock():
-    """``_adopt_fitted_manifold``'s probe-promotion walk mutates the
-    Monitor roster outside the instrument's attach/detach — the
+    """A fit's probe-promotion walk (the registry's swap listener) mutates
+    the Monitor roster outside the instrument's attach/detach — the
     remove+add pair must land under the geometry-state lock so a
     coherent reader can't observe a half-applied promotion."""
     session = _stub_session()
     m_old = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m_old},
-    )
+    _serve(session, m_old)
     session.add_probe("toy")
-    session._manifolds = {"toy": m_old}
-    session._device = torch.device("cpu")
-    session._profiles = {}
+    session._registry.put_manifold("toy", m_old)
+    session._registry.on_swap(
+        types.MethodType(DrowseSession._refresh_swapped_probes, session),
+    )
     inst = session._geometry_instrument
     shim = _RecordingLock()
     inst.state_lock = shim  # type: ignore[assignment]
     held_at_call = _record_roster_mutations(session, shim)
 
     m_new = _toy_manifold()
-    DrowseSession._adopt_fitted_manifold(session, "default/toy", m_new)
+    session._registry.adopt_fitted("default/toy", m_new)
 
     assert ("remove", True) in held_at_call
     assert ("add", True) in held_at_call
@@ -593,25 +578,22 @@ def test_manifold_promotion_walk_holds_geometry_state_lock():
 
 
 def test_failed_override_eviction_holds_geometry_state_lock():
-    """``_evict_failed_manifold_override``'s probe eviction is the same
-    out-of-instrument roster mutation — it must hold the geometry-state
-    lock too."""
+    """An artifact eviction's probe removal is the same out-of-instrument
+    roster mutation — it must hold the geometry-state lock too."""
     session = _stub_session()
     m_old = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m_old},
-    )
+    _serve(session, m_old)
     session.add_probe("toy")
-    session._manifolds = {"toy": m_old}
-    session._profiles = {}
+    session._registry.put_manifold("toy", m_old)
+    session._registry.on_swap(
+        types.MethodType(DrowseSession._refresh_swapped_probes, session),
+    )
     inst = session._geometry_instrument
     shim = _RecordingLock()
     inst.state_lock = shim  # type: ignore[assignment]
     held_at_call = _record_roster_mutations(session, shim)
 
-    DrowseSession._evict_failed_manifold_override(
-        session, "default/toy", sae=None,
-    )
+    session._registry.evict_artifact("default", "toy", feature="raw")
 
     assert ("remove", True) in held_at_call
     assert "toy" not in session._monitor.probe_names
@@ -648,9 +630,7 @@ def test_gate_callback_reuses_the_full_incremental_sink_row():
     no rescore (the monitor is poisoned after the sink to prove it)."""
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
     holder = _wire_begin_capture(session)
     ok = DrowseSession._begin_capture(
@@ -684,9 +664,7 @@ def test_token_payload_reuses_the_full_incremental_sink_row():
 
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
     holder = _wire_begin_capture(session)
     ok = DrowseSession._begin_capture(
@@ -726,9 +704,7 @@ def test_batch_geometry_aggregate_routes_through_the_run():
     bypass, so a run spy pins the route."""
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
     session._empty_readings = types.MethodType(
         DrowseSession._empty_readings, session,
@@ -760,9 +736,7 @@ def test_geometry_run_observe_aggregate_matches_live_read():
     foot-solve path, the hard case)."""
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
     pooled = {
         layer_idx: sub.mean + sub.basis[0]
@@ -833,9 +807,7 @@ def test_gating_callback_emits_probe_scalars():
     virtual neutral candidate included) and coordinate axis 0."""
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
     _latest_on_subspace(session, m)
     _gated(
@@ -861,9 +833,7 @@ def test_gate_on_unattached_probe_scores_nothing():
     callback must not fall back to scoring the whole roster every token."""
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
     _latest_on_subspace(session, m)
     _gated(session, "0.3 a@when:ghost>0.1")
@@ -880,9 +850,7 @@ def test_gate_on_unattached_probe_scores_nothing():
 def test_gating_callback_empty_capture_returns_empty():
     session = _stub_session()
     m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
+    _serve(session, m)
     session.add_probe("toy")
     session._capture.latest_per_layer = lambda: {}
 

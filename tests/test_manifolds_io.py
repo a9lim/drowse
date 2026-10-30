@@ -3712,7 +3712,7 @@ def test_bundled_manifold_names_skips_incomplete_package_data(
 
 def _baked_manifold(name: str = "merged", n_layers: int = 3):
     """Build an affine R=1 Manifold (the merge/import shape) via the fold."""
-    from drowse.fit.capture import fold_directions_to_subspace
+    from drowse.geometry.fold import fold_directions_to_subspace
 
     directions = {i: torch.randn(8) for i in range(n_layers)}
     whitener = _target_whitener(dim=8, layers=tuple(range(n_layers)))
@@ -3744,7 +3744,7 @@ def _publish_baked(manifold: Any, *, model_id: str = "test/model", force: bool =
 def test_baked_manifold_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     from drowse.store.manifold_tensors import load_manifold
-    from drowse.fit.capture import folded_directions
+    from drowse.geometry.fold import folded_directions
 
     manifold, directions = _baked_manifold("merged")
     folder = _publish_baked(manifold)

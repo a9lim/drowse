@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from drowse import GenState, SamplingConfig
-from drowse.session.session import ConcurrentGenerationError, ProfileNotRegisteredError
+from drowse.errors import ConcurrentGenerationError, ProfileNotRegisteredError
 from tests.support.sessions import TinySessionFactory
 
 _FOUR_TOKENS = SamplingConfig(max_tokens=4, seed=0)

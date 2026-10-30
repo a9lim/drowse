@@ -1,65 +1,107 @@
-"""SteeringComposer — the steering stack, resolution, and plan composition.
+"""SteeringComposer — steering scopes, the steering stack, and plan composition.
 
 Holds the LIFO steering stack and everything that runs at steering push/pop
-frequency: resolving a parsed :class:`~drowse.steering.terms.Steering` to
-registry keys and loaded artifacts (:meth:`SteeringComposer.resolve`, once per
-scope), composing the flattened stack head into a
-:class:`~drowse.steering.hooks.SteeringPlan` (cached by stack head), installing
-it on the :class:`~drowse.steering.hooks.SteeringManager`, and the probe-gate
-plumbing.  It reaches the owning session through ``self._session`` at push/pop
-frequency only; the one per-token path is the closure
-:meth:`build_gating_score_callback` returns.
+frequency: opening a scope from a parsed :class:`~drowse.steering.terms.Steering`
+(:meth:`SteeringComposer.open_scope` — resolution to registry keys plus the
+scope's assistant-role policy), composing the flattened stack head into a
+:class:`~drowse.steering.hooks.SteeringPlan` (cached by stack head),
+installing it on the :class:`~drowse.steering.hooks.SteeringManager`, and the
+probe-gate plumbing.
+
+Its dependencies are explicit: the artifact registry it resolves through, the
+neutral baseline it composes against, the steering manager it installs on, the
+exclusive model lock, the event bus, and the read-plane sources the per-token
+gate callback scores from (:class:`GateSources`).
 """
 from __future__ import annotations
 
+import warnings
 from collections import OrderedDict
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Callable, cast
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import torch
 
-from drowse.events import SteeringApplied, SteeringCleared
-from drowse.session.session import (
+from drowse.errors import (
     ConcurrentGenerationError,
-    GenState,
-    ManifoldNotRegisteredError,
+    ManifoldArityError,
+    RoleBaselineMismatchWarning,
+    SteeringExprError,
+)
+from drowse.events import EventBus, SteeringApplied, SteeringCleared
+from drowse.geometry.fold import fold_directions_to_subspace, project_profile
+from drowse.geometry.inject import synthesize_subspace
+from drowse.steering.grammar import AblationTerm, ManifoldTerm, ProjectedTerm
+from drowse.steering.hooks import SteeringManager, SteeringPlan
+from drowse.steering.terms import (
+    Steering,
     SteeringStackEntry,
-    Trigger,
-    ProfileNotRegisteredError,
-    _PROFILE_ABSENT,
-    _affine_manifold_push,
+    entry_coeff,
+    entry_trigger,
+    term_entry,
 )
-from drowse.steering.hooks import SteeringPlan
-from drowse.steering.terms import entry_coeff, entry_trigger, term_entry
-from drowse.steering.grammar import (
-    RESERVED_NAMESPACES,
-    AblationTerm,
-    ManifoldTerm,
-    ProjectedTerm,
-)
+from drowse.steering.triggers import Trigger
 
 if TYPE_CHECKING:
+    from drowse.geometry.manifold import Manifold
     from drowse.readout.types import GateRef, InstrumentFamily
-    from drowse.session.session import DrowseSession
-    from drowse.steering.terms import Steering
 
-
-# Variants that name a family of fitted tensors rather than one tensor; they
-# concretize against the files on disk for the loaded model.
-_BARE_VARIANTS = frozenset({"sae", "from", "role"})
 
 # Plans retained by stack head.  A ``generate(steering=…)`` composes twice
 # (push, and pop back to the outer scope), so a small LRU covers the repeats.
 _PLAN_CACHE_SIZE = 16
 
 
-def _split_key(key: str) -> tuple[str | None, str, str]:
-    """``[ns/]name[:variant]`` → ``(ns, name, variant)`` (variant ``raw`` if absent)."""
-    name_part, variant = key.rsplit(":", 1) if ":" in key else (key, "raw")
-    if "/" in name_part:
-        ns, name = name_part.split("/", 1)
-        return ns, name, variant
-    return None, name_part, variant
+class ArtifactSource(Protocol):
+    """The registry surface steering resolves through."""
+
+    @property
+    def profiles(self) -> Mapping[str, dict[int, torch.Tensor]]: ...
+
+    @property
+    def manifolds(self) -> "Mapping[str, Manifold]": ...
+
+    def concretize_key(self, key: str) -> str: ...
+
+    def ensure_profile_registered(
+        self, name: str, *, role: str = "vector",
+    ) -> dict[int, torch.Tensor]: ...
+
+    def ensure_manifold_loaded(self, key: str) -> "Manifold": ...
+
+
+class NeutralSource(Protocol):
+    """The neutral baseline steering composes against."""
+
+    @property
+    def means(self) -> dict[int, torch.Tensor]: ...
+
+    @property
+    def resident_whitener(self) -> Any: ...
+
+    def ensure(self) -> None: ...
+
+    def require_means(self) -> dict[int, torch.Tensor]: ...
+
+
+@dataclass(frozen=True)
+class GateSources:
+    """Read-plane state the per-token probe-gate callback scores from.
+
+    Getters, not values: the session replaces its capture state wholesale per
+    generation, and the callback must read the current one on every step.
+    """
+
+    monitor: Callable[[], Any]
+    capture: Callable[[], Any]
+    capture_state: Callable[[], Any]
+    incremental_readings: Callable[[], list[Any]]
+    incremental_gate_scores: Callable[[], list[dict[str, float]]]
+    instruments: Callable[[], Mapping[str, Any]]
+    lens_gate_scalars: Callable[..., dict[str, float]]
+    sae_gate_scalars: Callable[..., dict[str, float]]
 
 
 def _fires_in_prefill(trigger: Trigger) -> bool:
@@ -72,13 +114,248 @@ def _fires_in_prefill(trigger: Trigger) -> bool:
     return trigger.prompt and trigger.gate is None
 
 
+def affine_manifold_push(
+    manifold: "Manifold", position: "tuple[float, ...] | str",
+) -> "tuple[dict[int, torch.Tensor], dict[int, torch.Tensor]]":
+    """An affine ``%`` term → a rank-R push fragment per layer.
+
+    Both position forms are supported and **equivalent at the nodes**:
+
+    - **Label form** (``position`` a ``str``): the node's per-layer real coords
+      (``LayerSubspace.node_coords[idx]``) are the push target on that layer's
+      basis — a direct table lookup, no interpolation.
+    - **Coord form** (``position`` a coord tuple): the free authoring
+      coordinate is mapped into each layer's reduced frame by cardinal RBF
+      interpolation over the node layout (:func:`rbf_cardinal_weights` on the
+      shared ``Manifold.node_coords``), so the per-layer target is the layout
+      blend ``node_coords_L.T @ w``.  The weights are solved once in authoring
+      space (layer-agnostic) and are exact at the nodes (``w = e_idx`` at node
+      ``idx``), so placing a coord-form term at a node's coords reproduces the
+      label-form push toward that node, and interpolates the per-layer target
+      between nodes off-node — the flat-subspace analogue of a curved ``%``
+      following its RBF surface instead of a straight chord.
+
+    The affine fit's domain is the identity carrier (authoring == embedded), so
+    the weights are built directly in authoring-coordinate space.  Arity
+    (coord form) is validated against the domain's intrinsic dim, matching the
+    curved :meth:`SteeringPlan.add_manifold` path; a non-poised layout (no
+    interpolant) raises ``SteeringExprError`` advising the user to steer by
+    node label instead.
+    """
+    from drowse.geometry.rbf import rbf_cardinal_weights
+
+    weights: "torch.Tensor | None" = None
+    idx = 0
+    if isinstance(position, str):
+        idx = manifold.nearest_node_index(position)
+    else:
+        n = manifold.domain.intrinsic_dim
+        pos = tuple(float(c) for c in position)
+        if len(pos) != n:
+            raise ManifoldArityError(
+                f"manifold {manifold.name!r} has a {n}-dimensional domain but "
+                f"the steering position has {len(pos)} coordinate(s)"
+            )
+        query = torch.tensor(pos, dtype=torch.float32)
+        try:
+            weights = rbf_cardinal_weights(manifold.node_coords, query)
+        except ValueError as exc:
+            raise SteeringExprError(
+                f"manifold {manifold.name!r}: cannot place free coord-form "
+                f"position {pos!r} — {exc}; steer by node label instead "
+                f"(e.g. '{manifold.name}%<label>')"
+            ) from exc
+
+    basis_dirs: dict[int, torch.Tensor] = {}
+    coord_dirs: dict[int, torch.Tensor] = {}
+    for L, sub in manifold.layers.items():
+        if sub.node_coords is None:
+            raise SteeringExprError(
+                f"affine manifold {manifold.name!r} layer {L} carries no "
+                f"per-layer node_coords; re-fit to steer it by node label"
+            )
+        basis_dirs[L] = sub.basis
+        if weights is None:
+            coord_dirs[L] = sub.node_coords[idx]
+        else:
+            w = weights.to(device=sub.node_coords.device, dtype=sub.node_coords.dtype)
+            coord_dirs[L] = sub.node_coords.transpose(0, 1) @ w   # (R,)
+    return basis_dirs, coord_dirs
+
+
+def resolve_scope_role(
+    entries: Mapping[str, SteeringStackEntry],
+    manifolds: "Mapping[str, Manifold]",
+) -> tuple[str | None, list[str]]:
+    """The assistant-role label a scope's resolved entries imply.
+
+    Two tiers.  Explicit ``:role-<id>`` variants on additive terms must agree
+    (mixing roles in one scope has no defined semantics, so a conflict raises
+    :class:`SteeringExprError`); a plain term mixed in is allowed but warned
+    about, since its extraction baseline was the standard assistant role.
+    Each manifold term implies a role through its nearest node; distinct
+    implied roles resolve to the highest ``|coeff|`` with a warning.  An
+    explicit role wins over a manifold-implied one, again with a warning when
+    they disagree.  Nodes that opt out of role substitution abstain.
+
+    Returns ``(role, warning_messages)``.
+    """
+    role_variants: set[str] = set()
+    any_plain_term = False
+    for key, entry in entries.items():
+        if not isinstance(entry, tuple):
+            continue
+        if ":" not in key:
+            any_plain_term = True
+            continue
+        variant = key.rsplit(":", 1)[1]
+        if variant.startswith("role-"):
+            role_variants.add(variant[len("role-"):])
+        else:
+            # Non-role variants (sae, sae-<rel>) share the standard assistant
+            # baseline — plain for baseline-mismatch tracking.
+            any_plain_term = True
+    if len(role_variants) > 1:
+        raise SteeringExprError(
+            f"conflicting roles in expression: {sorted(role_variants)}; "
+            f"all role-augmented terms must agree on role"
+        )
+    notes: list[str] = []
+    active_role: str | None = next(iter(role_variants), None)
+    if active_role is not None and any_plain_term:
+        notes.append(
+            f"steering scope mixes plain terms with role-augmented "
+            f"terms (role={active_role!r}); the plain term's "
+            f"extraction baseline was the standard assistant role, "
+            f"not {active_role!r}"
+        )
+
+    manifold_role: str | None = None
+    manifold_role_coeff = -1.0
+    disagreement = False
+    for entry in entries.values():
+        if not isinstance(entry, ManifoldTerm):
+            continue
+        manifold = manifolds.get(entry.manifold)
+        if manifold is None:
+            continue
+        try:
+            implied = manifold.nearest_node_role(entry.position)
+        except ValueError:
+            implied = None
+        if implied is None:
+            continue
+        abs_c = abs(entry.coeff)
+        if manifold_role is None:
+            manifold_role, manifold_role_coeff = implied, abs_c
+        elif implied == manifold_role:
+            manifold_role_coeff = max(manifold_role_coeff, abs_c)
+        else:
+            disagreement = True
+            if abs_c > manifold_role_coeff:
+                manifold_role, manifold_role_coeff = implied, abs_c
+    if disagreement:
+        notes.append(
+            f"steering scope has manifold terms implying distinct "
+            f"per-node roles; highest-coefficient term wins "
+            f"(role={manifold_role!r}, |coeff|={manifold_role_coeff:.3f}). "
+            f"Compose with a single manifold term or align the active "
+            f"nodes if you want a different role."
+        )
+
+    if active_role is None:
+        active_role = manifold_role
+    elif manifold_role is not None and manifold_role != active_role:
+        notes.append(
+            f"steering scope has an explicit role={active_role!r} "
+            f"and a manifold term implying role={manifold_role!r}; "
+            f"explicit role wins, manifold-implied role ignored. "
+            f"Use the same role on both, or drop the explicit "
+            f":role-{active_role} variant to let the manifold drive."
+        )
+    return active_role, notes
+
+
+class SteeringScope:
+    """One resolved steering scope (``with session.steering(...)``).
+
+    Entering pushes the resolved entries — and the scope's assistant role —
+    onto the composer stack; exiting pops them.  Nested scopes flatten (inner
+    entries overwrite outer ones for the inner block) and the innermost scope
+    that names a role wins.  The role rides the stack frame, so a failed exit
+    cannot leave it bound.
+    """
+
+    __slots__ = ("_composer", "_entered", "_entries", "_role")
+
+    def __init__(
+        self,
+        composer: "SteeringComposer",
+        entries: dict[str, SteeringStackEntry],
+        role: str | None,
+    ) -> None:
+        self._composer = composer
+        self._entries = entries
+        self._role = role
+        self._entered = False
+
+    @property
+    def entries(self) -> dict[str, SteeringStackEntry]:
+        return dict(self._entries)
+
+    @property
+    def role(self) -> str | None:
+        """The assistant-role label this scope selects (``None`` inherits)."""
+        return self._role
+
+    def __enter__(self) -> "SteeringScope":
+        self._composer.push(self._entries, role=self._role)
+        self._entered = True
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self, *, internal: bool = False, swallow: bool = False) -> None:
+        """Pop this scope if it is entered (idempotent).
+
+        ``internal`` is the generation's own teardown of the scope it opened:
+        it passes the mid-generation phase guard that rejects callback
+        re-entry.  ``swallow`` drops an ``Exception`` from the pop, for a
+        caller already propagating another failure; a ``BaseException``
+        always propagates.
+        """
+        if not self._entered:
+            return
+        self._entered = False
+        try:
+            self._composer.pop(internal=internal)
+        except Exception:
+            if not swallow:
+                raise
+
+
+@dataclass(frozen=True)
+class _ProjectionSpec:
+    """A resolved ``~``/``|`` term: concrete operand keys and the operator."""
+
+    base: str
+    onto: str
+    operator: str
+
+
 @dataclass
 class _CachedPlan:
     """A composed plan plus the registry objects it was composed from.
 
     The plan is reusable exactly while every dependency still resolves to the
     same object (registries replace values rather than mutating them), so a
-    re-extract, ``unsteer``, whitener rebuild, or neutral refresh misses.
+    re-extract, an eviction, a whitener rebuild, or a neutral refresh misses.
     """
 
     plan: SteeringPlan
@@ -89,453 +366,244 @@ class _CachedPlan:
 
 
 class SteeringComposer:
-    """Owns the steering stack + steering resolution/composition for a session.
+    """Owns the steering stack and steering resolution/composition for a session."""
 
-    Instantiated once per :class:`~drowse.session.session.DrowseSession` and
-    held as ``_steering_composer``; the stack has one owner, this object.
-    """
-
-    def __init__(self, session: "DrowseSession") -> None:
-        self._session = session
+    def __init__(
+        self,
+        *,
+        artifacts: ArtifactSource,
+        neutral: NeutralSource,
+        manager: SteeringManager,
+        layers: Any,
+        device: torch.device,
+        dtype: torch.dtype,
+        lock: Any,
+        events: EventBus,
+        generation_phase: Callable[[], str | None],
+        on_prefill_steering_change: Callable[[], None],
+        gates: GateSources,
+    ) -> None:
+        """
+        ``generation_phase`` returns the phase name while a generation is
+        mid-step (``RUNNING`` / ``FINALIZING``) and ``None`` otherwise; a
+        stack mutation then is callback re-entry and is refused.
+        ``on_prefill_steering_change`` runs when a push or pop leaves the
+        prompt prefill steered (the cached prefix is unsteered).
+        """
+        self._artifacts = artifacts
+        self._neutral = neutral
+        self._manager = manager
+        self._layers = layers
+        self._device = device
+        self._dtype = dtype
+        self._lock = lock
+        self._events = events
+        self._generation_phase = generation_phase
+        self._on_prefill_steering_change = on_prefill_steering_change
+        self._gates = gates
         # LIFO stack of resolved per-scope entries; the flattened head (later
         # scopes overwrite earlier keys) is what gets installed.
         self._stack: list[dict[str, SteeringStackEntry]] = []
+        # ``(stack depth, role)`` for each frame that names a role.
+        self._roles: list[tuple[int, str]] = []
         self._plans: OrderedDict[tuple[Any, ...], _CachedPlan] = OrderedDict()
-        # Projection memo: syn_key → (base, onto, whitener, projected).  Keeps
-        # the registered derived profile's identity stable across scopes so
-        # plans that use it stay cached.
-        self._projections: dict[str, tuple[object, object, object, object]] = {}
+        # Projection operands by synthetic key, and the projected profile
+        # memoized on the identities of its inputs (base, onto, whitener) so
+        # plans that use it stay cached.  Projections never enter the registry.
+        self._projection_specs: dict[str, _ProjectionSpec] = {}
+        self._projections: dict[str, tuple[object, object, object, dict[int, torch.Tensor]]] = {}
 
-    # ---------------------------------------------------------- resolution
+    # ------------------------------------------------------------- scopes
 
-    def resolve(
-        self, steering: "Steering",
-    ) -> tuple[dict[str, SteeringStackEntry], dict[str, object]]:
+    @property
+    def active(self) -> bool:
+        """True while any steering scope is pushed."""
+        return bool(self._stack)
+
+    @property
+    def active_role(self) -> str | None:
+        """The assistant-role label of the innermost scope that names one."""
+        return self._roles[-1][1] if self._roles else None
+
+    def open_scope(
+        self, value: "str | Steering", *, stacklevel: int = 1,
+    ) -> SteeringScope:
+        """Resolve ``value`` into an un-entered :class:`SteeringScope`.
+
+        ``value`` is a steering expression string or a pre-built
+        :class:`Steering`.  Every artifact loads here, so an unknown name
+        raises before the scope is entered.  Role-policy warnings are issued
+        ``stacklevel`` frames above this call.
+        """
+        steering = Steering.from_value(
+            value, profile_names=set(self._artifacts.profiles),
+        )
+        if steering is None:
+            raise TypeError(
+                "session.steering() requires a non-None expression string "
+                "or Steering instance"
+            )
+        entries = self.resolve(steering)
+        role, notes = resolve_scope_role(entries, self._artifacts.manifolds)
+        for note in notes:
+            warnings.warn(
+                note, RoleBaselineMismatchWarning, stacklevel=stacklevel + 1,
+            )
+        return SteeringScope(self, entries, role)
+
+    def resolve(self, steering: Steering) -> dict[str, SteeringStackEntry]:
         """Resolve a parsed steering value to stack entries, loading artifacts.
 
         The one resolution pass after parsing: every vector / ablation target
         concretizes to its registry key (bare ``:sae`` / ``:role`` / ``:from``
-        variants pick the unique fitted tensor for this model) and loads, every
-        manifold term loads its artifact, and ``~``/``|`` projections
-        materialize under their synthetic key.  Failures raise here — an
-        unknown name is :class:`ProfileNotRegisteredError` — so composition
-        only ever looks loaded artifacts up.
-
-        Returns ``(entries, snapshots)``; ``snapshots`` are the projection
-        bindings this call replaced, for the scope to restore on exit.
+        variants pick the unique fitted tensor for this model) and loads,
+        every manifold term loads its artifact, and every ``~``/``|`` term
+        records its concrete operands (the projection itself is computed at
+        composition, against the composed whitener).  Failures raise here —
+        an unknown name is :class:`~drowse.errors.ProfileNotRegisteredError` —
+        so composition only ever looks loaded artifacts up.
         """
-        snapshots = self.materialize_projections(steering)
-        profiles = self._session._profiles
+        artifacts = self._artifacts
         entries: dict[str, SteeringStackEntry] = {}
         for name, val in steering.alphas.items():
             if isinstance(val, AblationTerm):
-                target = self.concretize_key(val.target)
-                self.ensure_profile_registered(target, role="ablation target")
+                target = artifacts.concretize_key(val.target)
+                artifacts.ensure_profile_registered(target, role="ablation target")
                 entries[f"!{target}"] = (
                     val if target == val.target else replace(val, target=target)
                 )
                 continue
             if isinstance(val, ManifoldTerm):
-                manifold_key = self.concretize_key(val.manifold)
-                self.ensure_manifold_loaded(manifold_key)
+                manifold_key = artifacts.concretize_key(val.manifold)
+                artifacts.ensure_manifold_loaded(manifold_key)
                 entries[name] = (
                     val if manifold_key == val.manifold
                     else replace(val, manifold=manifold_key)
                 )
                 continue
+            if isinstance(val, ProjectedTerm):
+                spec = _ProjectionSpec(
+                    base=artifacts.concretize_key(val.base),
+                    onto=artifacts.concretize_key(val.onto),
+                    operator=val.operator,
+                )
+                artifacts.ensure_profile_registered(spec.base, role="projection base")
+                artifacts.ensure_profile_registered(spec.onto, role="projection onto")
+                if self._projection_specs.get(name) != spec:
+                    self._projection_specs[name] = spec
+                entries[name] = (float(val.coeff), val.trigger)
+                continue
             alpha, trig = term_entry(val, steering.trigger)
-            key = name if name in profiles else self.concretize_key(name)
-            self.ensure_profile_registered(key)
+            key = name if name in artifacts.profiles else artifacts.concretize_key(name)
+            artifacts.ensure_profile_registered(key)
             prev = entries.get(key)
             if isinstance(prev, tuple):
                 alpha += prev[0]
             entries[key] = (alpha, trig)
-        return entries, snapshots
+        return entries
 
-    def concretize_key(self, key: str) -> str:
-        """Pin a bare ``:sae`` / ``:role`` / ``:from`` variant to its fitted tensor.
+    def projection(self, key: str) -> dict[int, torch.Tensor] | None:
+        """The projected profile the ``~``/``|`` term ``key`` composed with.
 
-        Any other key is returned unchanged.  Raises
-        :class:`~drowse.errors.UnknownVariantError` when no fitted variant
-        exists for the loaded model and
-        :class:`~drowse.errors.AmbiguousVariantError` when several do.
+        ``None`` until a plan using it has been composed.  Projections live
+        here, never in the artifact registry.
         """
-        ns, name, variant = _split_key(key)
-        if variant not in _BARE_VARIANTS:
-            return key
-        import json
-
-        from drowse.base.paths import (
-            manifold_dir, manifolds_dir, parse_tensor_filename, safe_model_id,
-        )
-        from drowse.errors import AmbiguousVariantError, UnknownVariantError
-
-        if ns is not None:
-            roots = [manifold_dir(ns, name)]
-        elif manifolds_dir().exists():
-            roots = [
-                entry / name for entry in manifolds_dir().iterdir()
-                if entry.is_dir()
-            ]
-        else:
-            roots = []
-        concrete: set[str] = set()
-        safe_model = safe_model_id(self._session.model_id)
-        for folder in roots:
-            if variant == "role":
-                sidecar_path = folder / f"{safe_model}.json"
-                if not sidecar_path.exists():
-                    continue
-                with open(sidecar_path) as handle:
-                    raw_sidecar = json.load(handle)
-                roles = raw_sidecar.get("node_roles") or [
-                    None
-                ] * int(raw_sidecar.get("node_count", 0))
-                if roles and roles[0] is not None and all(
-                    role == roles[0] for role in roles
-                ):
-                    concrete.add(f"role-{roles[0]}")
-                continue
-            for tensor_path in folder.glob(f"{safe_model}_*.safetensors"):
-                parsed = parse_tensor_filename(tensor_path.name)
-                if parsed is None or parsed[1] is None:
-                    continue
-                if parsed[1].startswith(f"{variant}-"):
-                    concrete.add(parsed[1])
-        qualified = name if ns is None else f"{ns}/{name}"
-        if len(concrete) != 1:
-            error = UnknownVariantError if not concrete else AmbiguousVariantError
-            raise error(
-                f"manifold '{qualified}:{variant}' resolves to "
-                f"{sorted(concrete) or 'no fitted variants'}"
-            )
-        return f"{qualified}:{next(iter(concrete))}"
-
-    def materialize_projections(self, steering: "Steering") -> dict[str, object]:
-        """Register the derived profile of every ``~``/``|`` term in ``steering``.
-
-        Loads ``base`` and ``onto``, projects with the closed-form LEACE
-        projector against the session whitener (Mahalanobis-only:
-        ``project_profile`` raises ``WhitenerError`` without a covering
-        whitener), and registers the result under the synthetic key
-        ``"<base><op><onto>"``.  The projection is memoized on the identities
-        of its inputs, so re-entering the same scope reuses one profile.
-
-        Returns ``{syn_key: prior binding or _PROFILE_ABSENT}`` for the bindings
-        this call replaced, so the scope can restore them on exit (the
-        registry is shared across nested scopes).
-        """
-        from drowse.fit.capture import project_profile
-
-        profiles = self._session._profiles
-        snapshots: dict[str, object] = {}
-        whitener = None
-        for syn_key, val in steering.alphas.items():
-            if not isinstance(val, ProjectedTerm):
-                continue
-            # Only an actual projection wakes the lazy whitener.
-            if whitener is None:
-                whitener = self._session.whitener
-            base_key = self.concretize_key(val.base)
-            onto_key = self.concretize_key(val.onto)
-            base = self.ensure_profile_registered(base_key, role="projection base")
-            onto = self.ensure_profile_registered(onto_key, role="projection onto")
-            memo = self._projections.get(syn_key)
-            if memo is not None and memo[0] is base and memo[1] is onto and memo[2] is whitener:
-                projected = memo[3]
-            else:
-                projected = project_profile(
-                    base, onto, val.operator, whitener=whitener,
-                )
-                self._projections[syn_key] = (base, onto, whitener, projected)
-            if syn_key not in snapshots:
-                snapshots[syn_key] = profiles.get(syn_key, _PROFILE_ABSENT)
-            profiles[syn_key] = projected  # pyright: ignore[reportArgumentType]  # memo stores the projected profile dict
-        return snapshots
-
-    def ensure_manifold_loaded(self, key: str) -> None:
-        """Load the fitted manifold for registry key ``[ns/]name[:variant]``.
-
-        ``raw`` selects the residual-stream tensor, ``sae-<release>`` the SAE
-        fit, ``from-<src>`` a cross-model transfer, and ``role-<id>`` the
-        canonical tensor with its role baseline checked.  A bare name searches
-        every namespace (and refuses a collision).  The loaded manifold is
-        validated against the live weights and capture inputs, then promoted
-        onto the session device in fp32.  Raises
-        :class:`ManifoldNotRegisteredError` on a miss or a stale fit.
-        """
-        manifolds = self._session._manifolds
-        if key in manifolds:
-            return
-        from drowse.base.paths import (
-            encode_release_id, manifold_dir, manifolds_dir,
-            tensor_filename_for_variant,
-        )
-        from drowse.model.fingerprint import loaded_model_fingerprint
-        from drowse.store.manifold_schema import sidecar_is_current
-        from drowse.store.manifold_tensors import load_manifold
-
-        model_id = self._session.model_id
-        ns, name, variant = _split_key(key)
-        if ns is not None:
-            search_ns = [ns]
-        else:
-            root = manifolds_dir()
-            search_ns = (
-                sorted(d.name for d in root.iterdir() if d.is_dir())
-                if root.exists() else []
-            )
-        requested_role = (
-            variant[len("role-"):] if variant.startswith("role-") else None
-        )
-        transferred_from = (
-            variant[len("from-"):] if variant.startswith("from-") else None
-        )
-        fname = tensor_filename_for_variant(model_id, variant)
-        if fname is None:
-            raise ManifoldNotRegisteredError(
-                f"manifold '{key}': unsupported variant '{variant}'"
-            )
-        # An older artifact format is a miss (refit), not a corrupt artifact.
-        matches = [
-            (candidate_ns, path)
-            for candidate_ns, path in (
-                (candidate_ns, manifold_dir(candidate_ns, name) / fname)
-                for candidate_ns in search_ns
-            )
-            if path.exists()
-            and sidecar_is_current(path.with_suffix(".json"))
-        ]
-        if not matches:
-            raise ManifoldNotRegisteredError(
-                f"manifold '{key}' has no fitted tensor for {model_id}; "
-                f"run `drowse manifold fit` first"
-            )
-        if len(matches) > 1:
-            from drowse.store.selectors import AmbiguousSelectorError
-            qualified = ", ".join(f"{m_ns}/{name}" for m_ns, _ in matches)
-            raise AmbiguousSelectorError(
-                f"ambiguous manifold '{name}': matches {qualified}. "
-                f"Qualify it with a namespace."
-            )
-        tensor_path = matches[0][1]
-        manifold = load_manifold(tensor_path)
-        metadata = manifold.metadata
-        live_fingerprint = loaded_model_fingerprint(self._session._model, model_id)
-        if transferred_from is not None:
-            source_id = metadata.get("source_model_id")
-            if (
-                not isinstance(source_id, str)
-                or encode_release_id(source_id) != transferred_from
-            ):
-                raise ManifoldNotRegisteredError(
-                    f"manifold '{key}' transfer provenance does not match "
-                    f"source {transferred_from!r}; recompute the transfer"
-                )
-        raw_roles = metadata.get("node_roles")
-        roles = (
-            list(raw_roles)
-            if isinstance(raw_roles, list)
-            else [None] * len(manifold.node_labels)
-        )
-        if requested_role is not None and (
-            not roles or not all(role == requested_role for role in roles)
-        ):
-            raise ManifoldNotRegisteredError(
-                f"manifold '{key}' was not fitted uniformly with role "
-                f"{requested_role!r}; refit it with that role"
-            )
-        if variant == "raw" and any(role is not None for role in roles):
-            raise ManifoldNotRegisteredError(
-                f"manifold '{key}' was fitted with role baseline "
-                f"{roles!r}; steer it as :role-<name> or refit raw"
-            )
-        if metadata.get("model_fingerprint") != live_fingerprint:
-            raise ManifoldNotRegisteredError(
-                f"manifold '{key}' was fitted for different loaded weights "
-                f"under {model_id}; run `drowse manifold fit` again"
-            )
-        if metadata.get("fit_mode", "authored") != "baked":
-            from drowse.fit.pipeline import prepare_manifold_capture_identity
-            from drowse.store.manifold_folder import ManifoldFolder
-
-            folder_mf = ManifoldFolder.load(
-                tensor_path.parent, verify_manifest=False,
-            )
-            expected_capture = prepare_manifold_capture_identity(
-                self._session, folder_mf, live_fingerprint,
-            ).capture_sha256
-            if metadata.get("capture_sha256") != expected_capture:
-                raise ManifoldNotRegisteredError(
-                    f"manifold '{key}' capture inputs changed (tokenizer, chat "
-                    "template, role framing, or baseline prompts); refit it"
-                )
-        manifolds[key] = manifold.to(
-            device=self._session._device, dtype=torch.float32,
-        )
-
-    def ensure_profile_registered(
-        self, name: str, *, role: str = "vector",
-    ) -> dict[int, torch.Tensor]:
-        """Direction profile for registry key ``name``, loading it if absent.
-
-        In order: an in-memory profile already registered (extracts, clones,
-        merges, projection derivations); a reserved instrument atom
-        (``jlens/<word|#id>`` through the fitted Jacobian lens, ``sae/<id>``
-        through the resident SAE decoder); a fitted 2-node ``pca`` manifold
-        folded to its per-layer direction.  Raises
-        :class:`ProfileNotRegisteredError` when nothing resolves.
-        """
-        profiles = self._session._profiles
-        if name in profiles:
-            return profiles[name]
-        ns, atom, variant = _split_key(name)
-        if ns in RESERVED_NAMESPACES and variant == "raw":
-            if ns == "jlens":
-                return profiles[self._session.register_jlens_direction(atom)]
-            if ns == "sae":
-                return profiles[self._session.register_sae_direction(atom)]
-            raise ProfileNotRegisteredError(
-                f"'{ns}/' atoms are reserved and not steerable yet ({name!r})"
-            )
-        folded = self.try_fold_manifold(name, role=role)
-        profiles[name] = folded
-        return folded
-
-    def try_fold_manifold(
-        self, name: str, *, role: str = "vector",
-    ) -> dict[int, torch.Tensor]:
-        """Load the fitted manifold ``name`` and fold it to a direction profile.
-
-        A manifold miss becomes :class:`ProfileNotRegisteredError` (chained to
-        the miss); any other load failure (ambiguity, corrupt artifact)
-        propagates as itself.  A manifold that loads but isn't a 2-node affine
-        subspace is a usage error.
-        """
-        try:
-            self.ensure_manifold_loaded(name)
-        except ManifoldNotRegisteredError as miss:
-            raise ProfileNotRegisteredError(
-                f"No profile registered for {role} '{name}' "
-                f"({miss.args[0] if miss.args else miss})"
-            ) from miss
-        from drowse.fit.capture import folded_directions
-        try:
-            return folded_directions(self._session._manifolds[name])
-        except Exception as e:
-            raise ProfileNotRegisteredError(
-                f"'{name}' is a manifold that does not fold to a single "
-                f"steering direction (not a 2-node affine subspace): {e}"
-            ) from e
+        memo = self._projections.get(key)
+        return None if memo is None else memo[3]
 
     # -------------------------------------------------------- stack push / pop
 
     def push(
         self,
         entries: dict[str, SteeringStackEntry],
+        *,
+        role: str | None = None,
     ) -> None:
-        """Push an entries dict onto the steering stack and install the new head.
+        """Push an entries dict (and its role) and install the new head.
 
         Transactional: the rebuild composes and lowers before it touches the
         installed plan, so if it raises (a composition error, an overlapping
         manifold) the entry is popped and the outer scope stays installed.
 
-        Thread-safety: acquires :attr:`_gen_lock` (blocking), which in-flight
-        generations hold for their whole loop, so a push from another thread
-        waits instead of mutating hook tensors mid-step.  Phase guard: a push
-        from the generation thread while ``RUNNING`` / ``FINALIZING`` is an
-        ``on_token`` callback re-entering the API and raises (the RLock alone
-        would let it through).  Legitimate callers push during ``PREAMBLE``
-        (``_generate_core``'s own scope) or ``IDLE``.
+        Thread-safety: acquires the exclusive model lock (blocking), which
+        in-flight generations hold for their whole loop, so a push from
+        another thread waits instead of mutating hook tensors mid-step.  A
+        push from the generation thread while it is mid-step is an
+        ``on_token`` callback re-entering the API and raises (the re-entrant
+        lock alone would let it through).
         """
-        session = self._session
-        # ``_generate_core``'s internal ``steering_cm.__enter__()`` runs
-        # during ``PREAMBLE`` (before the ``RUNNING`` flip), so push
-        # never needs the ``_internal_steering_pop`` bypass — only the
-        # exit path fires under ``RUNNING``/``FINALIZING``.  The check
-        # here catches genuine callback reentry where ``on_token`` /
-        # ``score_callback`` calls back into ``session.steering(...)``
-        # mid-step.
-        if session._gen_phase in (GenState.RUNNING, GenState.FINALIZING):
+        phase = self._generation_phase()
+        if phase is not None:
             raise ConcurrentGenerationError(
                 "cannot enter session.steering() from inside a generation "
                 "callback (e.g. on_token) — the steering stack mutation "
-                f"would clobber hook tensors mid-step (gen_phase="
-                f"{session._gen_phase.name})"
+                f"would clobber hook tensors mid-step (gen_phase={phase})"
             )
-        with session._gen_lock:
+        with self._lock:
             self._stack.append(dict(entries))
+            if role is not None:
+                self._roles.append((len(self._stack), role))
             try:
-                # Rebuild through the session boundary after the stack mutation.
-                session._rebuild_steering_hooks()
+                self.rebuild_hooks()
             except BaseException:
                 self._stack.pop()
+                self._drop_orphan_roles()
                 raise
-            # Steering hooks just changed.  A cached prefix is *unsteered*
-            # (``cache_prefix`` refuses to run inside a steering scope), so it
-            # only stops representing the current pre-attention residual stream
-            # when the new stack actually steers the prefill.  A prefill-
-            # inactive scope (``@response`` / ``@generated`` / probe-gated)
-            # leaves the prompt region untouched, so the unsteered prefix stays
-            # valid and we keep it — this is what lets ``generate_batch`` reuse
-            # one prefill across a steered batch.  Drop it only when prefill is
-            # genuinely steered.
+            # A cached prefix is *unsteered* (``cache_prefix`` refuses to run
+            # inside a steering scope), so it only stops matching the
+            # pre-attention residual stream when the new head steers the
+            # prefill.  A prefill-inactive scope (``@response`` /
+            # ``@generated`` / probe-gated) keeps it — which is what lets
+            # ``generate_batch`` reuse one prefill across a steered batch.
             if self.steering_active_in_prefill():
-                session._invalidate_prefix_cache()
+                self._on_prefill_steering_change()
         self.emit_steering_applied()
 
-    def pop(self) -> None:
+    def pop(self, *, internal: bool = False) -> None:
         """Pop the top of the steering stack and rebuild hooks.
 
-        Mirrors :meth:`push` for thread-safety and phase
-        guarding: acquires :attr:`_gen_lock` so the rebuild can't fire
-        mid-step in another thread's generation, and rejects same-
-        thread callback reentry during ``RUNNING`` / ``FINALIZING``.
+        Mirrors :meth:`push` for thread-safety and the mid-generation guard;
+        ``internal`` marks the generation's own teardown of its scope, which
+        legitimately runs while the phase is still ``RUNNING`` /
+        ``FINALIZING``.
 
         Unlike :meth:`push`, a failed rebuild cannot keep the previous plan:
-        that plan belongs to the scope being exited.  The stack still pops and
-        all steering is uninstalled before the error propagates.
+        that plan belongs to the scope being exited.  The frame and its role
+        still pop and all steering is uninstalled before the error propagates.
         """
-        session = self._session
         if not self._stack:
             return
-        # Same internal-vs-callback distinction as ``push``.
-        # ``_generate_core``'s finally block sets the flag around the
-        # ``steering_cm.__exit__()`` it owns, so its own scope cleanup
-        # passes through; callback reentry (on_token, score_callback)
-        # from inside the running loop hits the reject path.
-        if (
-            not session._internal_steering_pop
-            and session._gen_phase in (GenState.RUNNING, GenState.FINALIZING)
-        ):
+        phase = None if internal else self._generation_phase()
+        if phase is not None:
             raise ConcurrentGenerationError(
                 "cannot exit session.steering() from inside a generation "
                 "callback — the steering stack mutation would clobber "
-                f"hook tensors mid-step (gen_phase={session._gen_phase.name})"
+                f"hook tensors mid-step (gen_phase={phase})"
             )
-        with session._gen_lock:
+        with self._lock:
             self._stack.pop()
-            # Rebuild through the session boundary after the stack mutation.
+            self._drop_orphan_roles()
             # Fail closed: when the outer head no longer composes (a profile
             # it named was unregistered inside the inner scope), the exited
             # inner plan must not stay installed, so steering goes off and the
             # error propagates.  The next push or pop re-installs from the
             # stack.
             try:
-                session._rebuild_steering_hooks()
+                self.rebuild_hooks()
             except BaseException:
-                session._steering.clear_all()
+                self._manager.clear_all()
                 raise
-            # Symmetric with ``push``: the cached prefix is unsteered,
-            # so only invalidate when what remains on the stack still steers the
-            # prefill.  Popping back to a prefill-inactive (or empty) stack keeps
-            # the unsteered prefix valid for the next reuse.
             if self.steering_active_in_prefill():
-                session._invalidate_prefix_cache()
+                self._on_prefill_steering_change()
         if not self._stack:
-            session.events.emit(SteeringCleared())
+            self._events.emit(SteeringCleared())
         else:
             self.emit_steering_applied()
+
+    def _drop_orphan_roles(self) -> None:
+        depth = len(self._stack)
+        while self._roles and self._roles[-1][0] > depth:
+            self._roles.pop()
 
     def emit_steering_applied(self) -> None:
         """Emit SteeringApplied with alphas-only + full entries.
@@ -552,7 +620,7 @@ class SteeringComposer:
             coeff = entry_coeff(entry)
             alphas_only[name] = coeff
             entries_out[name] = (coeff, entry_trigger(entry))
-        self._session.events.emit(
+        self._events.emit(
             SteeringApplied(alphas=alphas_only, entries=entries_out)
         )
 
@@ -563,15 +631,14 @@ class SteeringComposer:
             flat.update(entry)
         return flat
 
+    # -------------------------------------------------------------- gates
+
     def steering_needs_probe_gating(self) -> bool:
         """Return True iff any active steering trigger carries a
         :class:`~drowse.steering.triggers.ProbeGate`.
 
-        Walks the flattened steering stack head through
-        :func:`~drowse.steering.terms.entry_trigger`, so every entry shape is
-        inspected the same way.  Cheap pre-flight check that lets
-        ``_generate_core`` decide whether to wire the per-step score callback
-        at all.
+        Cheap pre-flight check that lets generation decide whether to wire
+        the per-step score callback at all.
         """
         return any(
             entry_trigger(entry).gate is not None
@@ -581,12 +648,7 @@ class SteeringComposer:
     def _gated_refs(self) -> "list[tuple[str, GateRef]]":
         """Every active probe-gate reference, parsed once into its
         structured form (:func:`parse_gate_ref` — the ONE place the
-        scalar-key discrimination lives).  Walks the flattened steering
-        stack exactly like the historical per-family key walks, which this
-        replaces.  Note the structured parse also fixes the old
-        ``re.split("[\\[:@~]")`` truncation of variant-suffixed probe names
-        (``pirate:role-x`` no longer truncates at ``:role-x``).
-        """
+        scalar-key discrimination lives)."""
         from drowse.readout.types import parse_gate_ref
 
         refs = []
@@ -602,11 +664,10 @@ class SteeringComposer:
 
         Only names that are actually attached probes are kept, so a stale /
         non-probe gate key doesn't shrink an otherwise-empty subset to
-        "score nothing".  Used by ``_begin_capture`` to scope the per-token
-        step sink to just the gated probes when gating is the sole
-        per-token consumer (FIX #4).
+        "score nothing".  Scopes the per-token step sink to just the gated
+        probes when gating is the sole per-token consumer.
         """
-        attached = set(self._session._monitor.probe_names)
+        attached = set(self._gates.monitor().probe_names)
         return {
             ref.probe for _key, ref in self._gated_refs()
             if ref.probe in attached
@@ -614,7 +675,7 @@ class SteeringComposer:
 
     def gated_probe_keys(self) -> set[str]:
         """Exact monitor scalar keys referenced by active probe gates."""
-        attached = set(self._session._monitor.probe_names)
+        attached = set(self._gates.monitor().probe_names)
         return {
             key for key, ref in self._gated_refs()
             if ref.probe in attached
@@ -623,21 +684,13 @@ class SteeringComposer:
     def gated_family_probe_keys(self, family: "InstrumentFamily") -> set[str]:
         """Exact gate scalar keys referencing one read family's probes.
 
-        Driven by ``session.instruments`` — the registry IS the family
-        enumeration, so this is one loop rather than a per-family copy.
-        Lens and SAE probes live in their instruments' own registries (the
-        readout channels), not the Monitor, so :meth:`gated_probe_keys`'
-        attachment test doesn't see them.
-
         A key whose base name is attached to the family is also
-        **channel-validated** here (``Instrument.validate_gate``): the
-        single-axis families produce only the strength channel, so
-        ``@when:jlens/word:membership`` raises
-        ``UnsupportedProbeChannelError`` at generation preflight rather than
-        sitting silently inactive.  Geometry accepts every channel, so the
-        same call is a no-op there.
+        **channel-validated** (``Instrument.validate_gate``): the single-axis
+        families produce only the strength channel, so
+        ``@when:jlens/word:membership`` raises ``UnsupportedProbeChannelError``
+        at generation preflight rather than sitting silently inactive.
         """
-        instrument = self._session.instruments[family]
+        instrument = self._gates.instruments()[family]
         attached = set(instrument.names)
         if not attached:
             return set()
@@ -659,15 +712,9 @@ class SteeringComposer:
     def steering_active_in_prefill(self) -> bool:
         """Return True iff any active steering term fires during prompt prefill.
 
-        A term touches the prefill residual stream iff its trigger has
-        ``prompt=True`` and carries no probe gate (probe gates report
-        inactive during prefill — there's no post-forward score yet; see
-        :meth:`~drowse.steering.triggers.Trigger.active`).  When this is False the
-        prefill is numerically identical to the *unsteered* prefill, so a
-        cached unsteered prefix KV (the only kind :meth:`cache_prefix` builds)
-        stays valid for reuse.  This is the gate the prefix-cache consume path
-        keys on, and the condition under which steering push/pop preserves the
-        cache.  Mirrors :meth:`steering_needs_probe_gating`'s stack walk.
+        When this is False the prefill is numerically identical to the
+        *unsteered* prefill, so a cached unsteered prefix KV stays valid for
+        reuse; it is the gate the prefix-cache consume path keys on.
         """
         return any(
             _fires_in_prefill(entry_trigger(entry))
@@ -680,19 +727,14 @@ class SteeringComposer:
         """Return True iff steering ``value`` would not touch the prompt prefill.
 
         Pre-flight form of :meth:`steering_active_in_prefill` over an
-        *incoming* steering value (before any scope push) — used by
-        :meth:`generate_batch` to decide whether a shared-prefix KV cache is
-        reusable across the batch.  ``None`` (no steering) is trivially
-        prefill-inactive; otherwise a term is prefill-active iff its trigger
-        has ``prompt=True`` and no probe gate.  A malformed expression (raises
-        on parse) is conservatively reported active so the caller skips
-        caching and lets the normal path surface the error.
+        *incoming* steering value (before any scope push).  ``None`` is
+        trivially prefill-inactive; a malformed expression is conservatively
+        reported active so the caller skips caching and lets the normal path
+        surface the error.
         """
-        from drowse.steering.terms import Steering
-
         try:
             s = Steering.from_value(
-                value, profile_names=set(self._session._profiles),
+                value, profile_names=set(self._artifacts.profiles),
             )
         except Exception:
             return False
@@ -705,30 +747,19 @@ class SteeringComposer:
         ``dict[str, float]`` for ``generate_steered``'s ``score_callback``.
 
         Geometry gate keys read the capture sink's row for this forward when
-        one exists, else score exactly the planned keys from
-        ``session._capture.latest_per_layer()``
-        (:meth:`Monitor.score_planned_gate_scalars`).  Keys naming no attached
-        probe score nothing.  Returns an empty dict when the capture is empty
-        (e.g. before the first forward) so probe gates report inactive instead
-        of seeing stale values from a previous gen.
+        one exists, else score exactly the planned keys from the capture's
+        latest per-layer rows (:meth:`Monitor.score_planned_gate_scalars`).
+        Keys naming no attached probe score nothing.  Returns an empty dict
+        when the capture is empty (e.g. before the first forward) so probe
+        gates report inactive instead of seeing stale values.
 
-        Caller-side guard: only invoked when
-        :meth:`steering_needs_probe_gating` is True, so the no-gate
-        path stays at zero overhead.
-
-        Hot path: the returned closure runs per token under an active gate.  It
-        binds ``capture``/``monitor`` to locals before the inner ``def`` and
-        reads the session's capture state (``_capture_state`` /
-        ``_incremental_readings`` / ``_incremental_gate_scores``) through one
-        plain ``self._session.`` hop, exactly as the unextracted body did — no
-        new per-token indirection.
+        Hot path: the returned closure runs per token under an active gate; it
+        binds the capture and monitor once and reads the per-generation
+        capture state through the :class:`GateSources` getters.
         """
-        session = self._session
-        capture = session._capture
-        monitor = session._monitor
-        # J-lens token probes referenced by active gates score on the lens
-        # path (readout-channel strength), not through the Monitor —
-        # detected once per generation here, merged into every return below.
+        gates = self._gates
+        capture = gates.capture()
+        monitor = gates.monitor()
         monitor_gate_keys = self.gated_probe_keys()
         lens_gate_keys = self.gated_lens_probe_keys()
         sae_gate_keys = self.gated_sae_probe_keys()
@@ -767,14 +798,13 @@ class SteeringComposer:
             )
 
         def _monitor_scalars() -> dict[str, float]:
-            incremental_readings = session._incremental_readings
-            incremental_gate_scores = session._incremental_gate_scores
-            state = session._capture_state
+            incremental_readings = gates.incremental_readings()
+            incremental_gate_scores = gates.incremental_gate_scores()
+            state = gates.capture_state()
             gating_subset = state.gating_subset
             gate_keys = state.gating_keys or monitor_gate_keys
             if not gate_keys:
-                # No gate names an attached geometry probe — readout-family
-                # gates, or a gate on a probe nothing attached.  Nothing the
+                # No gate names an attached geometry probe — nothing the
                 # monitor could score would ever fire, so score nothing.
                 return {}
             # The step sink already scored this token — reuse its row.  In
@@ -808,16 +838,15 @@ class SteeringComposer:
         def _score(step_id: int) -> dict[str, float]:
             out = _monitor_scalars()
             if has_lens_gates:
-                # Once per forward: band lens logits → strength
-                # scalars (also stashed step-keyed for the display step to
-                # reuse — step identity replaced the freshness handshake).
-                lens_scalars = session._score_lens_gate_scalars(
+                # Once per forward: band lens logits → strength scalars (also
+                # stashed step-keyed for the display step to reuse).
+                lens_scalars = gates.lens_gate_scalars(
                     lens_gate_keys, step_id=step_id,
                 )
                 if lens_scalars:
                     out = {**out, **lens_scalars}
             if has_sae_gates:
-                sae_scalars = session._score_sae_gate_scalars(
+                sae_scalars = gates.sae_gate_scalars(
                     sae_gate_keys, step_id=step_id,
                 )
                 if sae_scalars:
@@ -848,23 +877,37 @@ class SteeringComposer:
         one-pole ray and pushed label-form, exactly like an affine ``%`` term.
         Ablations slide their axis to the neutral-anchored origin.  ``deps``
         (when given) collects every registry object read, for the plan cache.
-        """
-        from drowse.fit.capture import fold_directions_to_subspace
-        from drowse.geometry.inject import synthesize_subspace
 
-        session = self._session
+        The neutral baseline is built here if absent: composition runs under
+        the push's exclusive lock, so it goes through the unguarded
+        ``ensure`` rather than the public getters.
+        """
         record = deps.append if deps is not None else (lambda _dep: None)
-        profiles = session._profiles
-        manifolds = session._manifolds
-        neutral_means = session.layer_means
-        whitener = session.whitener
-        record((lambda: session.layer_means, neutral_means))
-        record((lambda: session.whitener, whitener))
+        artifacts = self._artifacts
+        neutral = self._neutral
+        neutral.ensure()
+        neutral_means = neutral.require_means()
+        whitener = neutral.resident_whitener
+        record((lambda: neutral.means, neutral_means))
+        record((lambda: neutral.resident_whitener, whitener))
 
         def _profile(name: str, role: str) -> dict[int, torch.Tensor]:
-            prof = self.ensure_profile_registered(name, role=role)
-            record((lambda: profiles.get(name), prof))
+            prof = artifacts.ensure_profile_registered(name, role=role)
+            record((lambda: artifacts.profiles.get(name), prof))
             return prof
+
+        def _projected(name: str, spec: _ProjectionSpec) -> dict[int, torch.Tensor]:
+            base = _profile(spec.base, "projection base")
+            onto = _profile(spec.onto, "projection onto")
+            memo = self._projections.get(name)
+            if (
+                memo is not None and memo[0] is base and memo[1] is onto
+                and memo[2] is whitener
+            ):
+                return memo[3]
+            projected = project_profile(base, onto, spec.operator, whitener=whitener)
+            self._projections[name] = (base, onto, whitener, projected)
+            return projected
 
         plan = SteeringPlan()
         # trigger -> push [(basis_dirs, coord_dirs, coeff)] / ablate [(dirs, coeff)]
@@ -883,16 +926,12 @@ class SteeringComposer:
                 )
                 continue
             if isinstance(entry, ManifoldTerm):
-                manifold = manifolds.get(entry.manifold)
-                if manifold is None:
-                    raise ManifoldNotRegisteredError(
-                        f"No manifold registered for '{entry.manifold}'"
-                    )
-                record((lambda key=entry.manifold: manifolds.get(key), manifold))
+                manifold = artifacts.ensure_manifold_loaded(entry.manifold)
+                record((lambda key=entry.manifold: artifacts.manifolds.get(key), manifold))
                 if manifold.is_affine:
                     # Affine ``%`` joins the merged subspace as a rank-R push
                     # toward the position's per-layer coords.
-                    basis_dirs, coord_dirs = _affine_manifold_push(
+                    basis_dirs, coord_dirs = affine_manifold_push(
                         manifold, entry.position,
                     )
                     grouped.setdefault(entry.trigger, ([], []))[0].append(
@@ -907,12 +946,17 @@ class SteeringComposer:
                     )
                 continue
             alpha, trigger = entry
+            spec = self._projection_specs.get(name)
+            directions = (
+                _projected(name, spec) if spec is not None
+                else _profile(name, "vector")
+            )
             folded = fold_directions_to_subspace(
-                name, _profile(name, "vector"), neutral_means, whitener=whitener,
+                name, directions, neutral_means, whitener=whitener,
             )
             if not folded.layers:
                 continue
-            basis_dirs, coord_dirs = _affine_manifold_push(
+            basis_dirs, coord_dirs = affine_manifold_push(
                 folded, folded.node_labels[0],
             )
             grouped.setdefault(trigger, ([], []))[0].append(
@@ -941,6 +985,10 @@ class SteeringComposer:
             self._plans.move_to_end(key)
             return cached.plan
         deps: list[tuple[Callable[[], object], object]] = []
+        for name in entries:
+            spec = self._projection_specs.get(name)
+            if spec is not None:
+                deps.append((lambda n=name: self._projection_specs.get(n), spec))
         plan = self.compose(entries, deps)
         self._plans[key] = _CachedPlan(plan, deps)
         self._plans.move_to_end(key)
@@ -956,14 +1004,12 @@ class SteeringComposer:
         installs its composed plan.  Composition and lowering run before the
         manager changes, so a failure leaves the previous plan installed.
         """
-        session = self._session
-        manager = session._steering
         flat = self.flatten_stack()
         if not flat:
-            manager.clear_all()
+            self._manager.clear_all()
             return
         plan = self.plan_for(flat)
-        manager.install(plan, session._layers, session._device, session._dtype)
+        self._manager.install(plan, self._layers, self._device, self._dtype)
 
     def snapshot_steering_alphas(self) -> dict[str, float]:
         """Flatten the active steering stack for result steering receipts.

@@ -24,7 +24,6 @@ from torch import nn
 from drowse.errors import SteeringCompositionError
 from drowse.events import EventBus
 from drowse.session.session import DrowseSession, GenState
-from drowse.steering.composer import SteeringComposer
 from drowse.steering.grammar import ManifoldTerm
 from drowse.steering.hooks import SteeringManager, install_persistent_offset_hooks
 from drowse.steering.terms import Steering
@@ -32,6 +31,7 @@ from drowse.steering.triggers import Trigger
 from drowse.store import selectors as _sel
 from tests._whitener import isotropic_whitener
 from tests.test_manifold_steering import _manifold
+from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
 _D = 8
 _N_LAYERS = 3
@@ -53,6 +53,7 @@ def _unit(i: int) -> torch.Tensor:
 
 def _session(*, compiled: bool = True) -> tuple[DrowseSession, dict[int, torch.Tensor]]:
     session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     s = cast(Any, session)
     s._model = None
     s._tokenizer = None
@@ -60,10 +61,6 @@ def _session(*, compiled: bool = True) -> tuple[DrowseSession, dict[int, torch.T
     s._layers = nn.ModuleList([nn.Identity() for _ in range(_N_LAYERS)])
     s._device = torch.device("cpu")
     s._dtype = torch.float32
-    s._profiles = {"a": {1: _unit(0)}, "b": {1: _unit(1)}}
-    s._manifolds = {}
-    s._layer_means = {1: torch.zeros(_D)}
-    s._whitener = isotropic_whitener([1], _D)
     s._steering = SteeringManager()
     buffers: dict[int, torch.Tensor] = {}
     if compiled:
@@ -71,18 +68,21 @@ def _session(*, compiled: bool = True) -> tuple[DrowseSession, dict[int, torch.T
             s._layers, _D, torch.device("cpu"), torch.float32,
         )
         s._steering.adopt_compiled_offsets(buffers, handles)
-    s._steering_composer = SteeringComposer(session)
     s._gen_lock = threading.RLock()
     s._gen_phase = GenState.IDLE
-    s._internal_steering_pop = False
     s._compiled = compiled
     s._compiled_clean_eligible = False
     s._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _on: None)
     s._end_capture = lambda: None
     s._close_instrument_runs = lambda: None
     s._prefix_cache = None
-    s._active_role = None
     s.events = EventBus()
+    wire_stub_steering(
+        session,
+        profiles={"a": {1: _unit(0)}, "b": {1: _unit(1)}},
+        layer_means={1: torch.zeros(_D)},
+        whitener=isotropic_whitener([1], _D),
+    )
     return session, buffers
 
 
@@ -145,7 +145,7 @@ def test_failed_push_keeps_the_outer_scope_installed() -> None:
     the outer entries on the stack with nothing installed.
     """
     session, _buffers = _session(compiled=False)
-    session._manifolds["mood"] = _manifold(layers=(2,))
+    session._registry.put_manifold("mood", _manifold(layers=(2,)))
     manager = session._steering
     bad = Steering(alphas={
         "mood%0.5": ManifoldTerm(
@@ -176,15 +176,15 @@ def test_inverted_regen_flips_affine_manifold_terms_and_refuses_curved() -> None
     to clamp silently to a no-op, so "inverted" regenerated unsteered text).
     """
     from drowse import Recipe
-    from drowse.fit.capture import fold_directions_to_subspace
+    from drowse.geometry.fold import fold_directions_to_subspace
 
     session, _buffers = _session(compiled=False)
     ray = fold_directions_to_subspace(
-        "ray", {1: _unit(0)}, session._layer_means,
-        whitener=session._whitener, label="pole",
+        "ray", {1: _unit(0)}, session._neutral.means,
+        whitener=session._neutral.resident_whitener, label="pole",
     )
-    session._manifolds["ray"] = ray
-    session._manifolds["mood"] = _manifold(layers=(2,))
+    session._registry.put_manifold("ray", ray)
+    session._registry.put_manifold("mood", _manifold(layers=(2,)))
     manager = session._steering
 
     def pushed(expr: str) -> torch.Tensor:
@@ -216,7 +216,7 @@ def test_failed_pop_rebuild_uninstalls_the_exited_scope(compiled: bool) -> None:
     plan used to stay installed (offsets live, flag set) under a stack that
     said it was gone.
     """
-    from drowse.session.session import ProfileNotRegisteredError
+    from drowse.errors import ProfileNotRegisteredError
 
     session, buffers = _session(compiled=compiled)
     manager = session._steering
@@ -225,7 +225,7 @@ def test_failed_pop_rebuild_uninstalls_the_exited_scope(compiled: bool) -> None:
     outer.__enter__()
     inner = session.steering("0.3 b")
     inner.__enter__()
-    del session._profiles["a"]
+    session._registry.pop_profile("a")
     with pytest.raises(ProfileNotRegisteredError):
         inner.__exit__(None, None, None)
     assert [list(entry) for entry in composer._stack] == [["a"]]
@@ -238,7 +238,7 @@ def test_failed_pop_rebuild_uninstalls_the_exited_scope(compiled: bool) -> None:
         hidden = layer(hidden)
     assert not bool(hidden.any())
     # Restoring the profile lets the outer scope exit cleanly.
-    session._profiles["a"] = {1: _unit(0)}
+    session._registry.put_profile("a", {1: _unit(0)})
     outer.__exit__(None, None, None)
     assert composer._stack == []
 
@@ -262,7 +262,7 @@ def test_repeated_push_reuses_the_composed_plan(monkeypatch: pytest.MonkeyPatch)
         assert session._steering.plan is plan
 
     # Re-registering the profile invalidates the cached plan.
-    session._profiles["a"] = {1: 2.0 * _unit(0)}
+    session._registry.put_profile("a", {1: 2.0 * _unit(0)})
     with session.steering("0.5 a"):
         assert session._steering.plan is not plan
     assert calls == [("a",), ("a",)]
@@ -276,13 +276,14 @@ def test_bare_variant_manifold_term_concretizes_before_loading(
 
     session, _buffers = _session(compiled=False)
     composer = session._steering_composer
+    registry = session._registry
     monkeypatch.setattr(
-        composer, "concretize_key",
+        registry, "concretize_key",
         lambda key: key.replace(":role", ":role-pirate"),
     )
     loaded: list[str] = []
-    monkeypatch.setattr(composer, "ensure_manifold_loaded", loaded.append)
-    entries, _snapshots = composer.resolve(parse_expr("0.5 emotions:role%pirate"))
+    monkeypatch.setattr(registry, "ensure_manifold_loaded", loaded.append)
+    entries = composer.resolve(parse_expr("0.5 emotions:role%pirate"))
     (term,) = entries.values()
     assert isinstance(term, ManifoldTerm)
     assert term.manifold == "emotions:role-pirate"
@@ -290,7 +291,7 @@ def test_bare_variant_manifold_term_concretizes_before_loading(
 
 
 def test_unknown_vector_raises_before_the_scope_is_entered() -> None:
-    from drowse.session.session import ProfileNotRegisteredError
+    from drowse.errors import ProfileNotRegisteredError
 
     session, _buffers = _session(compiled=False)
     with pytest.raises(ProfileNotRegisteredError):

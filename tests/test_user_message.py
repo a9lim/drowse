@@ -26,10 +26,7 @@ from drowse.errors import (
     UnknownVariantError,
     WhitenerError,
 )
-from drowse.session.session import (
-    ConcurrentGenerationError,
-    ProfileNotRegisteredError,
-)
+from drowse.errors import ConcurrentGenerationError, ProfileNotRegisteredError
 from drowse.steering.grammar import SteeringExprError
 from drowse.store.install import ManifoldInstallConflict
 from drowse.store.gguf import GGUFNotInstalled

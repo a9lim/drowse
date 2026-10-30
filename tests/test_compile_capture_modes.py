@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 import torch
+from tests.support.stubs import attach_stub_instruments
 
 
 class _FakeModel:
@@ -105,6 +106,7 @@ def test_cuda_graph_compile_owner_is_thread_local() -> None:
     from drowse.session.session import DrowseSession
 
     session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     session._cuda_graphs_active = True
     session._compile_owner_thread = threading.get_ident()
     assert session._compiled_graph_thread_safe() is True

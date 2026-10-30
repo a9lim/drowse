@@ -30,6 +30,7 @@ from drowse.session.session import (
 from drowse.steering.terms import Steering
 from drowse.generation.token_payloads import TokenProbePayload
 from tests.conftest import FakeLogitsModel
+from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
 
 class _StopTokenizer:
@@ -116,6 +117,7 @@ class _CurrentSessionStub(DrowseSession):
 
     def __new__(cls) -> "_CurrentSessionStub":
         instance = super().__new__(cls)
+        attach_stub_instruments(instance)
         instance._lens_instrument.probes = {}
         instance._sae_instrument.probes = {}
         instance._lens_instrument.live = None
@@ -333,7 +335,7 @@ def test_persist_authored_prompt_capture_writes_all_measurement_channels() -> No
 
 def test_prepare_generation_uses_session_thinking_default(monkeypatch: pytest.MonkeyPatch) -> None:
     session: Any = _CurrentSessionStub.__new__(_CurrentSessionStub)
-    session._profiles = {}
+    wire_stub_steering(session)
     session._tokenizer = object()
     session._default_return_top_k = 0
     session.config = GenerationConfig(thinking=False)
@@ -907,6 +909,7 @@ def test_token_fork_accepts_multitoken_authored_replacement() -> None:
         role_label="guide",
     )
     session: Any = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     session.tree = SimpleNamespace(get=lambda node_id: node)
     session._tokenizer = SimpleNamespace(
         encode=lambda text, add_special_tokens: [41, 42],
@@ -1028,7 +1031,6 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
         frequency_penalty=0.0,
         logprobs_list=[] if capture_logprobs else None,
     )
-    session._whitener = None
     session._seat_stop_augmentation = lambda stop_list, **_kwargs: stop_list
     session._monitor = SimpleNamespace(
         probe_names=[],
@@ -1039,6 +1041,7 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
     session._geometry_instrument._live = True
     composer = SimpleNamespace(
         _stack=[],
+        active=False,
         steering_needs_probe_gating=lambda: False,
         gated_probe_keys=lambda: set(),
         gated_lens_probe_keys=lambda: set(),
@@ -1464,7 +1467,6 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
     """Full per-token readings can truncate label channels; gates still need the
     exact requested scalar keys."""
 
-    from drowse.steering.composer import SteeringComposer
 
     class Capture:
         def latest_per_layer(self) -> dict[int, torch.Tensor]:
@@ -1519,7 +1521,6 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
         ),
         _incremental_readings=[{"toy": object()}],
         _incremental_gate_scores=[],
-        _profiles={},
         # A memo-less run: the incremental branch's ``observe`` read falls
         # back to the sink's appended row, which is what this test pins.
         _geometry_instrument=SimpleNamespace(
@@ -1528,7 +1529,7 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
         instruments=_stub_instruments(),
     )
 
-    callback = SteeringComposer(session).build_gating_score_callback()
+    callback = wire_stub_steering(session).build_gating_score_callback()
     scores = callback(0)
     scores_again = callback(1)
 
@@ -1564,7 +1565,6 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
     score_attr: str,
     expected: dict[str, float],
 ) -> None:
-    from drowse.steering.composer import SteeringComposer
     from drowse.steering.grammar import parse_expr
 
     class Capture:
@@ -1606,14 +1606,13 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
         else "_score_lens_gate_scalars"
     )
     setattr(session, other_score_attr, lambda _keys, *, step_id=-1: {})
-    composer = SteeringComposer(session)
+    composer = wire_stub_steering(session)
     composer._stack.append(cast(Any, dict(parse_expr(expr).alphas)))
 
     assert composer.build_gating_score_callback()(0) == expected
 
 
 def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
-    from drowse.steering.composer import SteeringComposer
     from drowse.steering.grammar import parse_expr
 
     class Capture:
@@ -1663,7 +1662,7 @@ def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
             current_run=SimpleNamespace(observe=lambda _step, _hidden: {}),
         ),
     )
-    composer = SteeringComposer(session)
+    composer = wire_stub_steering(session)
     steering = parse_expr(
         "0.3 toy@when:toy>0.1 + 0.2 jlens/g@when:jlens/g>0.4",
     )
@@ -2569,6 +2568,7 @@ def _stub_session_with_lock() -> Any:
     import threading
 
     s: Any = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(s)
     s._gen_phase = GenState.IDLE
     s._gen_lock = threading.Lock()
     return s
@@ -2578,7 +2578,7 @@ def test_extract_acquires_gen_lock_against_concurrent_generation():
     """If ``_gen_lock`` is already held (generation in flight), extract
     must raise ``ConcurrentExtractionError`` rather than reading
     ``_gen_phase`` and racing the generation that's about to flip it."""
-    from drowse.session.session import ConcurrentExtractionError
+    from drowse.errors import ConcurrentExtractionError
 
     s = _stub_session_with_lock()
     # Simulate "generation just acquired the lock" — phase still IDLE
@@ -2597,9 +2597,10 @@ def test_extract_releases_lock_on_path_through_phase_gate():
     can proceed once the phase clears."""
     import threading
 
-    from drowse.session.session import ConcurrentExtractionError
+    from drowse.errors import ConcurrentExtractionError
 
     s: Any = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(s)
     s._gen_phase = GenState.RUNNING
     s._gen_lock = threading.Lock()
     s._extraction = SimpleNamespace(extract=lambda *a, **kw: ("x", None))
@@ -2617,6 +2618,7 @@ def _transaction_stub_session() -> Any:
     import threading
 
     s: Any = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(s)
     s._gen_phase = GenState.IDLE
     s._gen_lock = threading.Lock()
     s._end_capture_calls = 0
@@ -2648,19 +2650,27 @@ def test_generation_transaction_detaches_capture_when_the_body_never_does():
     s._gen_lock.release()
 
 
+class _RecordingScope:
+    """A steering scope stand-in recording each teardown's ``swallow`` flag."""
+
+    def __init__(self, exits: list[bool]) -> None:
+        self._exits = exits
+
+    def close(self, *, internal: bool = False, swallow: bool = False) -> None:
+        assert internal
+        self._exits.append(swallow)
+
+
 def test_generation_transaction_pops_a_scope_the_body_left_open():
     """The body assigns ``txn.steering_cm`` before entering the scope; if it
     throws before popping it, the transaction pops it — swallowing a teardown
     failure so it can't mask the error already propagating."""
     exits: list[bool] = []
     s = _transaction_stub_session()
-    s._exit_internal_steering = (
-        lambda _cm, *, swallow: exits.append(swallow)
-    )
 
     with pytest.raises(RuntimeError):
         with s._generation_transaction() as txn:
-            txn.steering_cm = object()
+            txn.steering_cm = _RecordingScope(exits)
             raise RuntimeError("preamble blew up")
 
     assert exits == [True]
@@ -2671,12 +2681,9 @@ def test_generation_transaction_leaves_a_popped_scope_alone():
     slot; the transaction must not pop it a second time."""
     exits: list[bool] = []
     s = _transaction_stub_session()
-    s._exit_internal_steering = (
-        lambda _cm, *, swallow: exits.append(swallow)
-    )
 
     with s._generation_transaction() as txn:
-        txn.steering_cm = object()
+        txn.steering_cm = _RecordingScope(exits)
         txn.steering_cm = None
 
     assert exits == []
@@ -2684,7 +2691,7 @@ def test_generation_transaction_leaves_a_popped_scope_alone():
 
 
 def test_generation_transaction_rejects_a_reentrant_generation():
-    from drowse.session.session import ConcurrentGenerationError
+    from drowse.errors import ConcurrentGenerationError
 
     s = _transaction_stub_session()
     with s._generation_transaction():

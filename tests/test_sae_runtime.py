@@ -11,7 +11,7 @@ import torch
 
 from drowse.sae.backend import MockSaeBackend, sae_device_str, select_runtime_layer
 from drowse.session.session import DrowseSession
-from drowse.steering.composer import SteeringComposer
+from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 from drowse.steering.grammar import parse_expr
 from drowse.steering.grammar import format_expr
 
@@ -36,6 +36,7 @@ class _Capture:
 
 def _session() -> DrowseSession:
     session: Any = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     session._layers = [object(), object(), object(), object()]
     session._device = torch.device("cpu")
     session._dtype = torch.float32
@@ -51,14 +52,12 @@ def _session() -> DrowseSession:
     session._sae_instrument.probes = {}
     session._sae_instrument.step_stash = None
     session._sae_instrument.last_step_readings = None
-    session._profiles = {}
     session._probe_hash_cache = {}
-    session._analytics_cpu_cache = {}
     session._readout_long_tensor_cache = {}
     session._capture = _Capture(torch.tensor([0.2, 3.0, 5.0, 1.0]))
     session._sae_instrument.active_for_generation = True
     session._invalidate_prefix_cache = lambda: None  # type: ignore[method-assign]
-    session._invalidate_analytics_cache = lambda: None  # type: ignore[method-assign]
+    wire_stub_steering(session)
     return cast(DrowseSession, session)
 
 
@@ -85,6 +84,7 @@ def test_failed_provider_binding_does_not_half_adopt_runtime(
     from drowse.sae import backend as sae_module
     from drowse.sae import sources as sae_io
     session: Any = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     previous = MockSaeBackend(
         layers=frozenset({0}), d_model=4, release="previous",
     )
@@ -133,7 +133,7 @@ def test_sae_feature_validation_and_decoder_row_registration() -> None:
     }
     name = session.register_sae_direction(2)
     assert name == "sae/2"
-    assert torch.equal(session._profiles[name][1], torch.tensor([0.0, 0.0, 1.0, 0.0]))
+    assert torch.equal(session._registry.profiles[name][1], torch.tensor([0.0, 0.0, 1.0, 0.0]))
     with pytest.raises(ValueError, match="out of range"):
         session.validate_sae_feature(9)
 
@@ -338,7 +338,7 @@ def test_composer_detects_attached_sae_gate() -> None:
         },
         _monitor=SimpleNamespace(probe_names=()),
     )
-    composer = SteeringComposer(stub)  # type: ignore[arg-type]
+    composer = wire_stub_steering(stub)
     steering = parse_expr("0.3 sae/2@when:sae/2>3")
     composer._stack.append(dict(steering.alphas))  # type: ignore[arg-type]
     assert composer.gated_sae_probe_keys() == {"sae/2"}
@@ -360,7 +360,7 @@ def test_unsupported_sae_gate_channel_raises_at_preflight() -> None:
         "lens": SimpleNamespace(names=[], validate_gate=lambda _r: None),
         "sae": instrument,
     }
-    composer = SteeringComposer(stub)  # type: ignore[arg-type]
+    composer = wire_stub_steering(stub)
     steering = parse_expr("0.3 sae/2@when:sae/2:membership>0.5")
     composer._stack.append(dict(steering.alphas))  # type: ignore[arg-type]
     with pytest.raises(UnsupportedProbeChannelError) as exc_info:
@@ -869,6 +869,7 @@ def test_offline_provider_restore_loads_the_binding_commit(
     })
     calls: list[dict[str, Any]] = []
     session: Any = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     session._model_info = {"model_id": "org/model"}
     session.load_sae = lambda release, **kwargs: calls.append(
         {"release": release, **kwargs},

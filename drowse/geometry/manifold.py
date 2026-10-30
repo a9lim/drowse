@@ -342,7 +342,7 @@ class Manifold:
         """Role of the node nearest ``position`` — or ``None``.
 
         Returns ``None`` when the nearest node opts out of role substitution. The
-        return value rides through to ``session._active_role`` so the
+        return value becomes the steering scope's assistant role so the
         generation prefill re-applies the substitution at decode time,
         producing role-paired manifold steering. The role roster is
         exact and aligned with :attr:`node_labels`.

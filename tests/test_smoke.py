@@ -78,7 +78,7 @@ def _extract_profile(model: Any, tokenizer: Any, concept: str, layers: Any) -> A
     (``folded_directions``).  Same centroid-difference direction the old
     DiM extractor produced, through the surviving fold primitive.
     """
-    from drowse.fit.capture import fold_directions_to_subspace, folded_directions
+    from drowse.geometry.fold import fold_directions_to_subspace, folded_directions
 
     device = next(model.parameters()).device
     prompt = "Describe your current state."
@@ -278,7 +278,7 @@ class TestMonitor:
     def test_monitor_records_history(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any, layer_means: Any) -> None:
         from drowse.steering.hooks import SteeringManager
         from drowse.readout.monitor import Monitor
-        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.geometry.fold import fold_directions_to_subspace
         from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
         from tests._whitener import isotropic_whitener
 
@@ -628,7 +628,7 @@ class TestDiscoverManifoldEndToEnd:
                 )
 
             # ---- 4. steered generation at one node vs another ----
-            # The manifold loads into session._manifolds lazily on
+            # The manifold loads into the session registry lazily on
             # scope entry; ManifoldTerm carries the authoring position.
             label_a = manifold.node_labels[0]  # pirate
             label_b = manifold.node_labels[2]  # robot

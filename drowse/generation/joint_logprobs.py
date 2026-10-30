@@ -592,7 +592,7 @@ def _replay_branch_logprobs(
                 model, full, len(branch.prompt_ids) + len(branch.thinking_ids) - 1,
                 adjust=adjust, config=config,
             )
-        elif session._steering_needs_probe_gating():
+        elif session._steering_composer.steering_needs_probe_gating():
             gate_only = session._resolve_read_demand(
                 want_hidden=False, live_scores_on=False,
                 has_monitor_probes=False, loom_attached=False,
@@ -609,7 +609,9 @@ def _replay_branch_logprobs(
                 pools = _stepwise_pools(
                     session, model, full, branch,
                     adjust=adjust, config=config,
-                    gating_callback=session._build_gating_score_callback(),
+                    gating_callback=(
+                        session._steering_composer.build_gating_score_callback()
+                    ),
                 )
             finally:
                 # A bound run must not leak past the request (a stale lens

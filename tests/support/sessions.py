@@ -86,7 +86,7 @@ def register_vectors(session: Any, *names: str) -> dict[str, Any]:
             direction = torch.randn(hidden, generator=generator)
             tensors[layer] = direction / direction.norm()
         profiles[name] = Profile(tensors)
-        session.steer(name, profiles[name])
+        session.registry.put_profile(name, profiles[name])
     return profiles
 
 

@@ -493,7 +493,7 @@ def test_scoring_forwards_hold_the_model_and_steer_outside_it():
 
 
 def test_scoring_refuses_while_another_model_use_holds_the_lock():
-    from drowse.session.session import ConcurrentExtractionError
+    from drowse.errors import ConcurrentExtractionError
 
     events: list[str] = []
     session = _locking_session(_const_logits_fn({}), events)

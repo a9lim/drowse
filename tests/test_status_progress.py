@@ -18,7 +18,6 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.session.session import DrowseSession
 
 
 class _Sink:
@@ -127,13 +126,10 @@ def test_whitener_build_forwards_on_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``__init__``'s eager whitener build hands the callback down."""
+    from contextlib import nullcontext
+
+    from drowse.session.neutral import NeutralBaseline
     from drowse.store import neutral as alignment_mod
-    class _Session:
-        _model = object()
-        _tokenizer = object()
-        _layers: list[Any] = []
-        _model_info = {"model_id": "test/model"}
-        _layer_means: dict[int, torch.Tensor] = {}
 
     seen: dict[str, Any] = {}
 
@@ -145,34 +141,42 @@ def test_whitener_build_forwards_on_progress(
         alignment_mod, "load_or_compute_neutral_activations", _load,
     )
     sink = _Sink()
-    whitener = DrowseSession._build_whitener_from_cache_or_compute(
-        _Session(), sink,  # pyright: ignore[reportArgumentType]
+    baseline = NeutralBaseline(
+        model=object(), tokenizer=object(), layers=[], model_id="test/model",
+        exclusive=lambda *_a, **_kw: nullcontext(), steered=lambda: False,
     )
-    assert whitener is not None
+    baseline.ensure(on_progress=sink)
+    assert baseline.resident_whitener is not None
     assert seen["on_progress"] is sink
 
 
 # ------------------------------------------------------ the probe-roster leg --
 
 class _BootstrapSession:
-    """The exact ``_bootstrap_manifold_probes`` collaborators, nothing else."""
+    """The exact ``bootstrap_probe_roster`` collaborators, nothing else."""
 
     def __init__(self, fitted: set[str]) -> None:
-        self.model_id = "test/model"
         self._fitted = fitted
-        self._manifolds: dict[str, object] = {}
         self.fit_calls: list[tuple[Any, Any]] = []
 
-    def ensure_manifold_loaded(self, key: str) -> None:
-        from drowse.session.session import ManifoldNotRegisteredError
+    def load(self, key: str) -> object:
+        from drowse.errors import ManifoldNotRegisteredError
 
         if key not in self._fitted:
             raise ManifoldNotRegisteredError(key)
-        self._manifolds[key] = object()
+        return object()
 
-    def fit(self, folder: Any, *, on_progress: Any = None, **_kw: Any) -> None:
+    def fit(self, folder: Any, on_progress: Any) -> None:
         self.fit_calls.append((folder, on_progress))
         self._fitted.add(f"default/{Path(folder).name}")
+
+    def bootstrap(self, categories: list[str], on_progress: Any = None) -> Any:
+        from drowse.store.bundled_probes import bootstrap_probe_roster
+
+        return bootstrap_probe_roster(
+            categories, model_id="test/model", load=self.load, fit=self.fit,
+            on_progress=on_progress,
+        )
 
 
 def _patch_roster(
@@ -191,10 +195,7 @@ def test_bootstrap_probes_announces_roster_then_each_fit(
     session = _BootstrapSession(fitted=set())
     sink = _Sink()
 
-    DrowseSession._bootstrap_manifold_probes(
-        session,  # pyright: ignore[reportArgumentType]
-        ["epistemic"], on_progress=sink,
-    )
+    session.bootstrap(["epistemic"], on_progress=sink)
 
     assert sink.lines[0] == "Fitting default probe roster (2 concepts)..."
     assert "Fitting probe 'confident.uncertain'..." in sink.lines
@@ -212,10 +213,7 @@ def test_bootstrap_probes_counts_the_roster_once_across_categories(
     session = _BootstrapSession(fitted=set())
     lines: list[str] = []
 
-    DrowseSession._bootstrap_manifold_probes(
-        session,  # pyright: ignore[reportArgumentType]
-        ["a", "b"], on_progress=lines.append,
-    )
+    session.bootstrap(["a", "b"], on_progress=lines.append)
 
     assert lines[0] == "Fitting default probe roster (1 concepts)..."
     assert len(session.fit_calls) == 1
@@ -228,10 +226,7 @@ def test_bootstrap_probes_is_silent_without_a_callback(
     _patch_roster(monkeypatch, {"epistemic": ["confident.uncertain"]})
     session = _BootstrapSession(fitted=set())
 
-    DrowseSession._bootstrap_manifold_probes(
-        session,  # pyright: ignore[reportArgumentType]
-        ["epistemic"],
-    )
+    session.bootstrap(["epistemic"])
     assert capsys.readouterr().out == ""
     assert session.fit_calls[0][1] is None
 
@@ -244,10 +239,7 @@ def test_bootstrap_probes_already_fitted_roster_says_nothing_per_concept(
     session = _BootstrapSession(fitted={"default/confident.uncertain"})
     lines: list[str] = []
 
-    DrowseSession._bootstrap_manifold_probes(
-        session,  # pyright: ignore[reportArgumentType]
-        ["epistemic"], on_progress=lines.append,
-    )
+    session.bootstrap(["epistemic"], on_progress=lines.append)
 
     assert lines == ["Fitting default probe roster (1 concepts)..."]
     assert session.fit_calls == []

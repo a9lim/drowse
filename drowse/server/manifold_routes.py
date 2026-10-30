@@ -466,19 +466,6 @@ def _find_manifold(namespace: str, name: str) -> ManifoldFolder:
     return ManifoldFolder.load(folder, verify_manifest=False)
 
 
-def _evict_manifold(session: DrowseSession, namespace: str, name: str) -> None:
-    """Drop every cached in-memory ``Manifold`` for this artifact.
-
-    The grammar key is ``[ns/]name[:variant]`` and a bare name resolves
-    cross-namespace, so both forms may be cached; a delete or re-fit must not
-    leave either live.
-    """
-    prefixes = (name, f"{namespace}/{name}")
-    for key in list(session.manifolds):
-        if key.rsplit(":", 1)[0] in prefixes:
-            session.manifolds.pop(key, None)
-
-
 # ------------------------------------------------------------------- routes ---
 
 def register_manifold_routes(app: FastAPI) -> None:
@@ -531,16 +518,31 @@ def register_manifold_routes(app: FastAPI) -> None:
         return _manifold_json(ManifoldFolder.load(folder), session, full=True)
 
     @app.post("/drowse/v1/manifolds/from-template", status_code=201)
-    def create_manifold_from_template_route(req: CreateManifoldFromTemplateRequest) -> ManifoldInfo:
-        """Author a discover manifold from an existing template artifact."""
-        folder = create_manifold_from_template(
-            req.namespace, req.name, req.description,
-            template_ref=req.template_ref,
-            fit_mode=req.fit_mode,
-            hyperparams=req.hyperparams or None,
-            force=req.force,
-        )
-        return _manifold_json(ManifoldFolder.load(folder), session, full=True)
+    async def create_manifold_from_template_route(req: CreateManifoldFromTemplateRequest) -> ManifoldInfo:
+        """Author a discover manifold from an existing template artifact.
+
+        ``force`` replaces an existing folder, so it runs like ``merge``: under
+        the session lock and refused while the engine is busy, which keeps a
+        generation from starting between the overwrite and the eviction of
+        every in-memory consumer of the old folder.
+        """
+        def create() -> ManifoldInfo:
+            folder = create_manifold_from_template(
+                req.namespace, req.name, req.description,
+                template_ref=req.template_ref,
+                fit_mode=req.fit_mode,
+                hyperparams=req.hyperparams or None,
+                force=req.force,
+            )
+            if req.force:
+                session.evict_artifact(req.namespace, req.name)
+            return _manifold_json(ManifoldFolder.load(folder), session, full=True)
+
+        if not req.force:
+            return await run_in_thread(create)
+        async with session_lock(app):
+            refuse_if_busy(session)
+            return await run_in_thread(create)
 
     @app.get("/drowse/v1/manifolds/search")
     def search_remote_manifolds(q: str = "", limit: int = 20) -> ManifoldSearchResponse:
@@ -572,7 +574,7 @@ def register_manifold_routes(app: FastAPI) -> None:
                 sources=[(s.namespace, s.name) for s in req.sources],
                 fit_mode=req.fit_mode, hyperparams=req.hyperparams, force=req.force,
             )
-            _evict_manifold(session, req.namespace, req.name)
+            session.evict_artifact(req.namespace, req.name)
         return detail(folder.parent.name, folder.name)
 
     @app.post("/drowse/v1/manifolds/install", status_code=201, response_model=ManifoldInfo)
@@ -585,9 +587,15 @@ def register_manifold_routes(app: FastAPI) -> None:
         """
         def install(on_progress: ProgressCallback) -> ManifoldInfo:
             folder = install_manifold(req.target, req.as_, force=req.force, on_progress=on_progress)
+            if req.force:
+                # A forced install replaces the folder under every in-memory
+                # consumer of the previous one.
+                session.evict_artifact(folder.parent.name, folder.name)
             return detail(folder.parent.name, folder.name)
 
         async def job(on_progress: ProgressCallback) -> ManifoldInfo:
+            # ``run_operation`` holds the session lock for the whole job, so
+            # no generation starts between this check and the eviction.
             refuse_if_busy(session)
             return await run_in_thread(install, on_progress)
 
@@ -630,7 +638,7 @@ def register_manifold_routes(app: FastAPI) -> None:
                     on_progress=on_progress,
                 )
                 append_discover_manifold_node(folder, plan.index_of[concept], concept, corpora[concept])
-            _evict_manifold(session, req.namespace, req.name)
+            session.evict_artifact(req.namespace, req.name)
             body = detail(req.namespace, req.name)
             body["done"] = True
             return body
@@ -651,7 +659,7 @@ def register_manifold_routes(app: FastAPI) -> None:
             raise HTTPException(404, f"manifold {namespace}/{name} not found")
         async with session_lock(app):
             refuse_if_busy(session)
-            _evict_manifold(session, namespace, name)
+            session.evict_artifact(namespace, name)
             return cast(
                 ManifoldDeleteResponse,
                 await run_in_thread(remove_manifold_folder, namespace, name),
@@ -674,7 +682,8 @@ def register_manifold_routes(app: FastAPI) -> None:
                 folder, sae=req.sae, layers=req.layers, fit_mode=req.fit_mode,
                 hyperparams=req.hyperparams, force=req.force, on_progress=on_progress,
             )
-            _evict_manifold(session, namespace, name)
+            # ``session.fit`` already moved every in-memory consumer to the
+            # new fit (loaded manifolds, folded profiles, attached probes).
             body = detail(namespace, name)
             body["done"] = True
             body["layers_fitted"] = len(manifold.layers)

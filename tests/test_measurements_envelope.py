@@ -23,6 +23,7 @@ import pytest
 from drowse.readout.types import DepthSummary, ScalarReading
 from drowse.readout.measurements import MEASUREMENTS_VERSION, build_measurements
 from drowse.generation.results import ProbeReading
+from tests.support.stubs import attach_stub_instruments
 
 # The eight fields a synthesized ``ProbeReading`` used to ship for every
 # lens/SAE probe on every token — constants masquerading as measurements.
@@ -379,6 +380,7 @@ def test_payload_family_slots_match_the_registry() -> None:
     from drowse.generation.token_payloads import _FAMILY_SLOTS
 
     session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     assert set(_FAMILY_SLOTS) == set(session.instruments)
 
 
@@ -387,6 +389,7 @@ def test_capability_table_covers_every_family() -> None:
     from drowse.server.instrument_routes import CAPABILITIES
 
     session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     assert set(CAPABILITIES) == set(session.instruments)
 
 

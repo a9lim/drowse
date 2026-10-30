@@ -58,7 +58,7 @@ class TestMergeVector:
         # on disk so the route's ``load_manifold`` + fold has a valid target
         # via the mocked ``merge_into_manifold`` output.
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        from drowse.fit.capture import (
+        from drowse.geometry.fold import (
             fold_directions_to_subspace, folded_directions,
         )
         from drowse.store.manifold_tensors import load_manifold
@@ -110,21 +110,21 @@ class TestMergeVector:
             name, profile = session.bake("noble", "0.3 default/honest + 0.4 default/warm")
         assert name == "noble"
         assert profile.layers == [0, 5]
-        # Confirm we forwarded model + expression + force=True, and that the
-        # loaded-weight fingerprint guard rides along.
+        # Confirm we forwarded model + expression, the non-destructive
+        # ``force=False`` default, and the loaded-weight fingerprint guard.
         kwargs = m.call_args.kwargs
         args = m.call_args.args
         assert args[0] == "noble"
         assert args[1] == "0.3 default/honest + 0.4 default/warm"
         assert args[2] == "test/model"
-        assert kwargs["force"] is True
+        assert kwargs["force"] is False
         assert kwargs["expected_model_fingerprint"] == loaded_model_fingerprint(
             session._model, session.model_id,
         )
         # Auto-register on the session with the folded merged direction.
-        steer_mock = cast(MagicMock, session.steer)
-        steer_mock.assert_called_once()
-        call_name, call_profile = steer_mock.call_args.args
+        register = cast(MagicMock, session._registry.put_profile)
+        register.assert_called_once()
+        call_name, call_profile = register.call_args.args
         assert call_name == "noble"
         assert call_profile.layers == [0, 5]
         assert torch.allclose(call_profile[0].float(), expected[0].float(), atol=1e-5)
@@ -185,3 +185,21 @@ class TestMergeVector:
         ):
             with pytest.raises(MergeError, match="produced no tensor"):
                 session.bake("x", "0.3 default/a")
+
+    def test_replacing_an_existing_bake_needs_explicit_force(self, session: Any):
+        """C6: ``bake`` used to default to ``force=True`` and silently replace
+        an existing ``local/<name>`` manifold (authored corpora included)."""
+        from drowse.fit.bake import MergeError
+
+        seen: list[Any] = []
+
+        def _merge(*_args: Any, **kwargs: Any) -> Path:
+            seen.append(kwargs["force"])
+            raise MergeError("stop after the forwarded flags")
+
+        with patch("drowse.fit.bake.merge_into_manifold", side_effect=_merge):
+            with pytest.raises(MergeError):
+                session.bake("x", "0.3 default/a")
+            with pytest.raises(MergeError):
+                session.bake("x", "0.3 default/a", force=True)
+        assert seen == [False, True]

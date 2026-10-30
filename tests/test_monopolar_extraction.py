@@ -22,7 +22,7 @@ from drowse.fit import capture as V
 from drowse.events import EventBus
 from drowse.fit.pipeline import ManifoldExtractionPipeline
 from drowse.sae.backend import MockSaeBackend
-from drowse.fit.capture import folded_directions
+from drowse.geometry.fold import folded_directions
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_authoring import create_discover_manifold_folder
 from drowse.base.paths import manifold_dir

@@ -408,15 +408,14 @@ def evaluate(
 
     scores = [_score("manifold", steering, steering)]
     if linear_term is not None:
-        session.ensure_manifold_loaded(linear_term.manifold)
-        act = session.manifolds[linear_term.manifold]
+        act = session.ensure_manifold_loaded(linear_term.manifold)
         position = act.resolve_position(linear_term.position)
         start = act.node_coords[0]
         chord = {
             L: act.manifold_point(L, position) - act.manifold_point(L, start)
             for L in act.layer_indices
         }
-        session.steer("__manifold_linear_baseline__", Profile(chord))
+        session.registry.put_profile("__manifold_linear_baseline__", Profile(chord))
         shown = (
             linear_term.position if isinstance(linear_term.position, str)
             else ",".join(f"{c:g}" for c in position)
