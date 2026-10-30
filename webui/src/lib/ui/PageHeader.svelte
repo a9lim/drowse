@@ -146,7 +146,7 @@
   }
   .page-brand { justify-self: start; }
   .page-leading { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
-  @media (max-width: 760px) {
+  @media (max-width: 800px) {
     .page-header {
       column-gap: var(--space-2);
       padding-top: max(var(--surface-padding), env(safe-area-inset-top));
@@ -177,14 +177,19 @@
     .page-header:not(.workbench) nav { justify-content: space-between; gap: 0; overscroll-behavior-inline: contain; }
     nav a { font-size: var(--text-sm); padding-inline: calc(var(--space-xs) / 2); }
   }
-  /* Phones: the four public links move under the wordmark and the Open Drowse
-     button, so the home link and every destination stay visible. */
+  /* Narrow pages give navigation its own wrapping row. The wordmark and
+     actions can also wrap when text is enlarged, keeping every control in view. */
   @media (max-width: 640px) {
-    .page-header.site {
-      grid-template-columns: minmax(0, 1fr) auto;
-      grid-template-areas: "leading end" "nav nav";
+    .page-header:not(.workbench) {
+      display: flex;
+      flex-wrap: wrap;
       row-gap: 0;
       min-height: 0;
+    }
+    .page-header:not(.workbench) .page-leading { flex: 1 0 auto; }
+    .page-header:not(.workbench) .header-end { flex-wrap: wrap; min-width: 0; max-width: 100%; margin-inline-start: auto; }
+    .page-header:not(.workbench) nav { flex: 1 1 100%; order: 1; flex-wrap: wrap; justify-content: space-between; overflow: visible; }
+    .page-header.site {
       padding-top: max(var(--space-xs), env(safe-area-inset-top));
       padding-bottom: 0;
     }
