@@ -799,3 +799,79 @@ def test_sae_feature_meta_rejects_noncanonical_id(
         save_sae_feature_meta("org/model", "release", {
             feature_id: {"label": "feature", "max_act": 1.0},
         })
+
+
+def test_offline_provider_restore_loads_the_binding_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Startup restore reloads a fetched provider SAE at its pinned commit.
+
+    Offline (every Hub metadata call fails) the recorded full commit still
+    pins the load, so a cached SAE restores instead of failing to resolve an
+    immutable revision; online it can never drift to upstream HEAD.
+    """
+    import sys
+    import types
+
+    import drowse.base.hf as hf
+    from drowse.sae.backend import load_sae_backend
+    from drowse.sae.sources import save_sae_metadata
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    commit = "b" * 40
+    seen: list[str | None] = []
+    fake_sae_lens = types.ModuleType("sae_lens")
+
+    class FakeSAE:
+        def __init__(self) -> None:
+            self.cfg = types.SimpleNamespace(
+                d_in=4, d_sae=8, model_name="org/model", hook_layer=1,
+                metadata={"hook_name": "blocks.1.hook_resid_post"},
+            )
+            self.W_dec = torch.zeros(8, 4)
+
+        @classmethod
+        def from_pretrained(
+            cls, release: Any, sae_id: Any, device: Any = None,
+            revision: str | None = None,
+        ) -> Any:
+            del release, sae_id, device
+            seen.append(revision)
+            return cls(), {"hook_layer": 1}, None
+
+        def to(self, **_kwargs: Any) -> "FakeSAE":
+            return self
+
+    fake_sae_lens.SAE = FakeSAE  # type: ignore[attr-defined]
+    fake_sae_lens.get_pretrained_saes_directory = lambda: {  # type: ignore[attr-defined]
+        "prov": {
+            "saes_map": {"layer_1": 1}, "model": "org/model",
+            "repo_id": "org/saes",
+        },
+    }
+    monkeypatch.setitem(sys.modules, "sae_lens", fake_sae_lens)
+
+    def offline() -> Any:
+        raise OSError("offline: no Hub metadata")
+
+    monkeypatch.setattr(hf, "_hf_api", offline)
+
+    backend = load_sae_backend(
+        "prov", revision=commit, model_id="org/model", device="cpu",
+    )
+    assert backend.revision == commit and backend.fingerprint is not None
+    assert backend.feature_count(1) == 8
+    assert seen == [commit]
+
+    save_sae_metadata("org/model", "prov", {
+        "layer": 1, "width": 8, "revision": commit, "fingerprint": "fp",
+        "sae_id": "layer_1", "repo_id": "org/saes", "neuronpedia_id": None,
+    })
+    calls: list[dict[str, Any]] = []
+    session: Any = DrowseSession.__new__(DrowseSession)
+    session._model_info = {"model_id": "org/model"}
+    session.load_sae = lambda release, **kwargs: calls.append(
+        {"release": release, **kwargs},
+    )
+    DrowseSession._restore_active_sae(session)
+    assert calls == [{"release": "prov", "layer": 1, "revision": commit}]

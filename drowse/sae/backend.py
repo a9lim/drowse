@@ -370,23 +370,16 @@ def list_sae_releases(model_id: str) -> list[dict[str, Any]]:
     """
     from drowse.errors import SaeBackendImportError
 
-    from drowse.sae.store import list_local_saes
-
-    rows: list[dict[str, Any]] = [
-        {
-            "release": row["source"],
-            "model": model_id,
-            "layers": [row["layer"]],
-            "repo_id": None,
-            "neuronpedia": False,
-            "source": "local",
-        }
-        for row in list_local_saes(model_id)
-    ]
+    rows: list[dict[str, Any]] = []
     try:
         import sae_lens
     except ImportError as exc:
-        if rows:
+        from drowse.sae.store import list_local_saes
+
+        # Local artifacts are prepared sources (``list_sae_sources``), not
+        # provider candidates; with some on disk the SAE runtime is usable
+        # without SAELens, so discovery just has nothing to offer.
+        if list_local_saes(model_id):
             return rows
         raise SaeBackendImportError(
             "SAE release discovery requires `sae_lens`: pip install 'drowse.ai[sae]'"
@@ -633,26 +626,25 @@ def load_sae_backend(
             neuronpedia_by_layer[str(layer_idx)] = neuronpedia_raw
     resolved_commit: str | None = None
     if isinstance(repo_id, str) and repo_id:
-        try:
-            from huggingface_hub import HfApi
-
-            resolved_commit = HfApi().model_info(
-                repo_id, revision=revision, timeout=3,
-            ).sha
-        except Exception:
-            # Without an immutable Hub identity, SAE feature transforms are
-            # not provably reusable. The backend remains usable, but fitted
-            # tensor cache hits are disabled by ``fingerprint=None``.
-            resolved_commit = None
-        if (
-            resolved_commit is None
-            and isinstance(revision, str)
-            and len(revision) == 40
-            and all(char in "0123456789abcdefABCDEF" for char in revision)
-        ):
-            # A caller-supplied full commit is already immutable even if the
-            # metadata lookup is offline.
+        if _is_full_commit(revision):
+            # A caller-supplied full commit — a restored binding's pin — is
+            # already immutable, so it needs no Hub round trip and resolves
+            # offline exactly as it does online.
+            assert revision is not None
             resolved_commit = revision.lower()
+        else:
+            from drowse.base.hf import _hf_api
+
+            try:
+                resolved_commit = _hf_api().model_info(
+                    repo_id, revision=revision, timeout=3,
+                ).sha
+            except Exception:
+                # Without an immutable Hub identity, SAE feature transforms
+                # are not provably reusable. The backend remains usable, but
+                # fitted tensor cache hits are disabled by
+                # ``fingerprint=None``.
+                resolved_commit = None
     elif not repo_id:
         # A registry map names transforms but does not prove their bytes. Local
         # and private converters may resolve the same ids to mutable files, so
@@ -779,6 +771,15 @@ def load_sae_backend(
             next(iter(neuronpedia_by_layer.values()), None)
         ),
         neuronpedia_ids_by_layer=neuronpedia_by_layer,
+    )
+
+
+def _is_full_commit(revision: str | None) -> bool:
+    """Whether ``revision`` is a full 40-hex Hub commit (an immutable pin)."""
+    return bool(
+        isinstance(revision, str)
+        and len(revision) == 40
+        and all(char in "0123456789abcdefABCDEF" for char in revision)
     )
 
 

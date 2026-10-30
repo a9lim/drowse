@@ -16,7 +16,7 @@ from safetensors.torch import load_file, save_file
 import torch
 
 from drowse.base.atomic import artifact_lock, fsync_directory, write_json_atomic
-from drowse.base.integrity import NAME_REGEX, hash_file
+from drowse.base.integrity import NAME_REGEX, hash_file, verify_integrity
 from drowse.base.paths import ensure_within, model_dir
 from drowse.sae.sources import (
     LOCAL_SOURCE_PREFIX,
@@ -138,13 +138,21 @@ def _validate_manifest(
 
 
 def load_local_sae_manifest(model_id: str, name: str) -> dict[str, Any] | None:
+    """The validated manifest of a trained SAE, or ``None``.
+
+    Metadata-only: the schema and the payload's safetensors header (keys,
+    shapes, dtype) are checked, but the multi-GB payload is not hashed —
+    listing and selection run on every dashboard refresh.  The digest is
+    verified where the bytes are actually used, in
+    :func:`load_local_sae_tensors`.
+    """
     path = local_sae_manifest_path(model_id, name)
     if not path.exists():
         return None
     try:
         payload = _validate_manifest(json.loads(path.read_text()), model_id, name)
         tensor_path = path.parent / payload["tensor_file"]
-        if not tensor_path.exists() or hash_file(tensor_path) != payload["tensor_sha256"]:
+        if not tensor_path.exists():
             return None
         expected = {
             "W_enc": (payload["d_model"], payload["d_sae"]),
@@ -168,10 +176,21 @@ def load_local_sae_tensors(
     model_id: str,
     name: str,
 ) -> tuple[dict[str, torch.Tensor], dict[str, Any]] | None:
+    """Load a trained SAE's weights after verifying their recorded digest.
+
+    The digest check rides :func:`verify_integrity`'s stat-identity cache,
+    so a warm reload of an unchanged payload does not re-hash it.
+    """
     manifest = load_local_sae_manifest(model_id, name)
     if manifest is None:
         return None
-    tensors = load_file(str(local_sae_dir(model_id, name) / manifest["tensor_file"]))
+    root = local_sae_dir(model_id, name)
+    ok, _bad = verify_integrity(
+        root, {manifest["tensor_file"]: manifest["tensor_sha256"]},
+    )
+    if not ok:
+        return None
+    tensors = load_file(str(root / manifest["tensor_file"]))
     if any(not torch.isfinite(value).all() for value in tensors.values()):
         return None
     return tensors, manifest

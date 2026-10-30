@@ -109,7 +109,10 @@ def _enable_serve_live_sae_if_available(session: Any) -> bool:
                     continue
                 release = source.removeprefix("saelens:")
                 try:
-                    info = session.load_sae(release)
+                    info = session.load_sae(
+                        release, layer=row.get("layer"),
+                        revision=row.get("revision"),
+                    )
                 except Exception:  # noqa: BLE001 — try the next cached source
                     continue
                 break

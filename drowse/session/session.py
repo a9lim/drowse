@@ -1473,29 +1473,35 @@ class DrowseSession:
         # profile mutation.
         self._prefix_cache: _PrefixCacheEntry | None = None
 
-        # An explicit ``sae use`` selection persists across sessions. Provider
-        # payloads are expected to be present in their own cache already;
-        # failure is non-fatal so an offline cache eviction cannot prevent the
-        # model itself from starting.
+        self._restore_active_sae()
+
+    def _restore_active_sae(self) -> None:
+        """Make an explicit ``sae use`` selection resident again at startup.
+
+        ``load_active_sae`` owns the source grammar and reads the provider
+        binding only when there is one.  A provider binding pins the commit
+        it was fetched at and the last explicitly selected hook layer, so the
+        restore lands exactly that measurement surface — offline from the
+        provider cache, and never silently moved to upstream HEAD.  Failure
+        is non-fatal so a cache eviction cannot keep the model from starting.
+        """
         from drowse.sae.sources import load_active_sae
 
-        # ``load_active_sae`` owns the source grammar: it renders the
-        # selection into the public ``local:<name>`` / bare-release form and
-        # reads the provider binding only when there is one.  Provider
-        # bindings remember the last explicitly selected hook layer, so the
-        # restore lands that exact measurement surface rather than silently
-        # returning to the release's automatic default.
         active_sae = load_active_sae(self.model_id)
-        if active_sae is not None:
-            release, metadata = active_sae
-            layer = metadata.get("layer") if metadata is not None else None
-            try:
-                self.load_sae(release, layer=layer)
-            except Exception as exc:
-                _log.warning(
-                    "could not restore active SAE %s for %s: %s",
-                    release, self.model_id, exc,
-                )
+        if active_sae is None:
+            return
+        release, metadata = active_sae
+        try:
+            self.load_sae(
+                release,
+                layer=None if metadata is None else metadata["layer"],
+                revision=None if metadata is None else metadata["revision"],
+            )
+        except Exception as exc:
+            _log.warning(
+                "could not restore active SAE %s for %s: %s",
+                release, self.model_id, exc,
+            )
 
     # -- ModelHandle protocol surface (consumed by ManifoldExtractionPipeline) --
 
@@ -3743,13 +3749,18 @@ class DrowseSession:
             "runtime": runtime,
         }
 
-    def load_sae(self, release: str, *, layer: int | None = None) -> dict[str, Any]:
+    def load_sae(
+        self, release: str, *, layer: int | None = None,
+        revision: str | None = None,
+    ) -> dict[str, Any]:
         """Load one local or SAELens source as the session's resident SAE.
 
         Provider registry resolution stays eager while the selected layer's
         weights are made resident here; local artifacts resolve directly from
         Drowse storage. The deterministic default is the covered layer nearest
-        65% model depth, preferring the workspace band.
+        65% model depth, preferring the workspace band.  ``revision`` pins a
+        provider release (a binding's recorded commit); ``None`` resolves the
+        release's current Hub head.
         """
         from drowse.sae.backend import (
             LocalSaeBackend,
@@ -3771,8 +3782,8 @@ class DrowseSession:
             "load_sae called while another model operation is in flight; retry shortly"
         ):
             backend = load_sae_backend(
-                release, model_id=self.model_id, device=self._device,
-                dtype=self._dtype, warn_on_multiple=False,
+                release, revision=revision, model_id=self.model_id,
+                device=self._device, dtype=self._dtype, warn_on_multiple=False,
             )
             if (
                 isinstance(backend, LocalSaeBackend)

@@ -179,3 +179,52 @@ def test_native_sae_trainer_cancels_before_next_batch() -> None:
             d_sae=7,
             cancel_event=cancel,
         )
+
+
+def _save_mine() -> Path:
+    from drowse.sae.store import save_local_sae
+
+    return save_local_sae(
+        "org/model", "mine", _weights(),
+        model_fingerprint="model-fp", model_source_fingerprint="source-fp",
+        layer=2, corpus_spec="test", corpus_sha256="a" * 64,
+        tokens_trained=100, seq_len=16, batch_size=2, learning_rate=1e-3,
+        l1_coefficient=1e-3, dead_feature_threshold=1e-6,
+    )
+
+
+def test_sae_source_listing_never_hashes_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dashboard sources refresh must not re-hash multi-GB SAE payloads.
+
+    Listing and selection read the manifest and the safetensors header only;
+    the digest is verified when the weights load.
+    """
+    import drowse.base.integrity as integrity
+    from drowse.sae.sources import list_sae_sources, use_sae_source
+
+    _save_mine()
+    calls: list[Path] = []
+    real_hash = integrity.hash_file
+    monkeypatch.setattr(
+        integrity, "hash_file",
+        lambda path: calls.append(Path(path)) or real_hash(path),
+    )
+    assert [row["source"] for row in list_sae_sources("org/model")] == ["local:mine"]
+    use_sae_source("org/model", "local:mine")
+    assert calls == []
+
+
+def test_local_sae_tensors_reject_a_tampered_payload() -> None:
+    from drowse.sae.store import load_local_sae_manifest, load_local_sae_tensors
+
+    manifest_path = _save_mine()
+    assert load_local_sae_tensors("org/model", "mine") is not None
+    manifest = load_local_sae_manifest("org/model", "mine")
+    assert manifest is not None
+    payload = manifest_path.parent / manifest["tensor_file"]
+    data = bytearray(payload.read_bytes())
+    data[-1] ^= 0xFF  # same size, same header: only the digest can tell
+    payload.write_bytes(bytes(data))
+    assert load_local_sae_tensors("org/model", "mine") is None

@@ -377,6 +377,7 @@ def list_sae_sources(model_id: str) -> list[dict[str, Any]]:
             "path": str(path),
             "layer": metadata["layer"],
             "features": metadata["width"],
+            "revision": metadata["revision"],
             "description_source": description_source,
         })
     return rows
