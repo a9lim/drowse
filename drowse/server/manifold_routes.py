@@ -445,7 +445,9 @@ def _manifold_json(
         for stem in fitted_models:
             try:
                 sc = mf.sidecar(stem)
-            except KeyError:
+            except (KeyError, ManifoldFormatError):
+                # No pair for this stem, or a stale / malformed sidecar:
+                # sidecars load lazily, so a bad fit is skipped, not a 500.
                 continue
             entry: ManifoldFitInfo = {
                 "stem": stem,

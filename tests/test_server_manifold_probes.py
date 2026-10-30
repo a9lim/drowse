@@ -1121,6 +1121,22 @@ class TestManifoldSharedSerializer:
         assert "nodes" in body
         assert [n["label"] for n in body["nodes"]] == summary["node_labels"]
 
+    def test_get_one_skips_a_malformed_fit(self, home_and_client: Any) -> None:
+        """A bad fitted sidecar hides that fit, not the manifold (no 500)."""
+        import json
+
+        from drowse.base.paths import tensor_filename
+
+        home, _session, client = home_and_client
+        folder = _author_manifold_on_disk(home, namespace="local", name="mood")
+        tensor = folder / tensor_filename("other/model")
+        tensor.write_bytes(b"x")
+        tensor.with_suffix(".json").write_text(json.dumps({"format_version": 10}))
+
+        resp = client.get("/drowse/v1/manifolds/local/mood")
+        assert resp.status_code == 200
+        assert resp.json()["fitted"] == []
+
     def test_list_shares_summary_keys(self, home_and_client: Any) -> None:
         """The list route builds the same shared keys from the summary."""
         from drowse.store.manifold_lifecycle import manifold_summary
