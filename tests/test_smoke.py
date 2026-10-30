@@ -551,7 +551,7 @@ class TestDiscoverManifoldEndToEnd:
     def test_discover_pipeline(self, model_and_tokenizer: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from drowse.geometry.manifold import CustomDomain
         from drowse.session.session import DrowseSession
-        from drowse.store.manifolds import create_discover_manifold_folder
+        from drowse.store.manifold_authoring import create_discover_manifold_folder
 
         # Pin DROWSE_HOME to a per-test temp dir so the manifold folder
         # lands somewhere disposable; bundled neutrals still copy in

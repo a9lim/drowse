@@ -119,7 +119,7 @@ def ensure_within(root: Path, *parts: str) -> Path:
     Normalizes the joined path (collapsing ``..`` segments) and rejects a
     result that does not stay under ``root`` — the normalize-then-prefix-check
     idiom. Returns the normalized in-bounds path; raises :class:`ValueError`
-    otherwise. ``NAME_REGEX`` / ``_LABEL_REGEX`` already reject traversal
+    otherwise. ``NAME_REGEX`` / ``LABEL_REGEX`` already reject traversal
     syntax upstream, but this is the defense-in-depth barrier at the boundary
     where the string actually becomes a path.
     """
@@ -229,23 +229,29 @@ def tensor_filename(
     return f"{target}.safetensors"
 
 
-def sidecar_filename(
-    model_id: str,
-    *,
-    release: str | None = None,
-    transferred_from: str | None = None,
-) -> str:
-    """Sidecar JSON partner for a tensor filename."""
-    if release and transferred_from:
-        raise ValueError(
-            "sidecar_filename: release and transferred_from are mutually exclusive"
+def tensor_filename_for_variant(
+    model_id: str, variant: str | None, *, model_id_is_safe: bool = False,
+) -> str | None:
+    """Tensor filename a selector ``:<variant>`` addresses, or ``None``.
+
+    ``raw`` / ``None`` and ``role-<name>`` (a role variant validates the
+    canonical tensor's recorded baseline) address the canonical tensor;
+    ``sae-<release>`` the SAE variant; ``from-<encoded>`` the transfer
+    variant whose source id is already the encoded filename component.
+    Returns ``None`` for any other variant.
+    """
+    if variant in (None, "raw") or variant.startswith("role-"):
+        return tensor_filename(model_id, model_id_is_safe=model_id_is_safe)
+    if variant.startswith("sae-"):
+        return tensor_filename(
+            model_id, release=variant[len("sae-"):], model_id_is_safe=model_id_is_safe,
         )
-    target = _encode_tensor_component(safe_model_id(model_id))
-    if release:
-        return f"{target}{safe_sae_suffix(release)}.json"
-    if transferred_from:
-        return f"{target}{safe_from_suffix(transferred_from)}.json"
-    return f"{target}.json"
+    if variant.startswith("from-"):
+        return tensor_filename(
+            model_id, transferred_from=variant[len("from-"):],
+            model_id_is_safe=model_id_is_safe, transferred_from_is_encoded=True,
+        )
+    return None
 
 
 def parse_tensor_filename(

@@ -41,7 +41,7 @@ from drowse.steering.grammar import (
 
 def _author_role_folder(root: Path, *, with_roles: bool = True) -> Path:
     """Hand-author a discover-mode persona manifold under ``root``."""
-    from drowse.store.manifolds import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 
     folder = root / "persona"
     (folder / "nodes").mkdir(parents=True)
@@ -72,7 +72,7 @@ def _author_role_folder(root: Path, *, with_roles: bool = True) -> Path:
 
 
 def test_per_node_role_round_trip(tmp_path: Path):
-    from drowse.store.manifolds import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
 
     folder = _author_role_folder(tmp_path)
     mf = ManifoldFolder.load(folder)
@@ -85,7 +85,7 @@ def test_per_node_role_round_trip(tmp_path: Path):
 
 def test_explicit_null_roles_load_as_all_none(tmp_path: Path):
     """Explicit null roles produce the standard-assistant role roster."""
-    from drowse.store.manifolds import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
 
     folder = _author_role_folder(tmp_path, with_roles=False)
     mf = ManifoldFolder.load(folder)
@@ -94,7 +94,7 @@ def test_explicit_null_roles_load_as_all_none(tmp_path: Path):
 
 
 def test_role_field_invalidates_nodes_sha256(tmp_path: Path):
-    from drowse.store.manifolds import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
 
     folder_legacy = _author_role_folder(tmp_path / "a", with_roles=False)
     folder_role = _author_role_folder(tmp_path / "b", with_roles=True)
@@ -105,7 +105,8 @@ def test_role_field_invalidates_nodes_sha256(tmp_path: Path):
 
 
 def test_invalid_role_slug_rejected(tmp_path: Path):
-    from drowse.store.manifolds import ManifoldFolder, ManifoldFormatError
+    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.manifold_schema import ManifoldFormatError
 
     folder = tmp_path / "persona"
     (folder / "nodes").mkdir(parents=True)
@@ -114,7 +115,7 @@ def test_invalid_role_slug_rejected(tmp_path: Path):
         (folder / "nodes" / f"{idx:02d}_{label}.json").write_text(
             json.dumps(["x"])
         )
-    from drowse.store.manifolds import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 
     nodes = [{"label": label, "role": None, "kind": None} for label in labels]
     # Uppercase fails the slug regex.
@@ -138,9 +139,8 @@ def test_invalid_role_slug_rejected(tmp_path: Path):
 
 
 def test_create_discover_folder_with_roles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from drowse.store.manifolds import (
-        ManifoldFolder, create_discover_manifold_folder,
-    )
+    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
 
     # Redirect DROWSE_HOME so the folder lands inside tmp_path.
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
@@ -263,7 +263,7 @@ def test_grammar_label_form_rejects_projection():
 # -- selector resolution + cross-tier ambiguity ----------------------------
 
 def test_resolve_manifold_label_unique_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     from drowse.store.selectors import resolve_manifold_label
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
@@ -292,7 +292,7 @@ def test_resolve_manifold_label_miss_returns_none(tmp_path: Path, monkeypatch: p
 
 
 def test_resolve_manifold_label_ambiguous_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     from drowse.store.selectors import (
         AmbiguousSelectorError,
         resolve_manifold_label,
@@ -322,7 +322,7 @@ def test_resolve_manifold_label_ambiguous_raises(tmp_path: Path, monkeypatch: py
 
 
 def test_bare_name_resolves_to_manifold_term(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
@@ -353,7 +353,7 @@ def test_parse_bare_name_resolves_on_manifold_tier_only(
     (Pre-4.0 this raised ``AmbiguousSelectorError`` because ``pirate`` was both
     a bipolar pole of ``civilian.pirate`` and a node of ``persona``.)
     """
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     from drowse.store.selectors import AmbiguousSelectorError, invalidate
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
@@ -385,7 +385,7 @@ def test_parse_bare_name_resolves_on_manifold_tier_only(
 
 
 def test_namespace_qualified_bare_name_still_resolves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(
@@ -414,7 +414,7 @@ def test_vector_authoring_rejects_role_cache_alias(
     from types import SimpleNamespace
 
     from drowse.session.session import DrowseSession
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     create_discover_manifold_folder(

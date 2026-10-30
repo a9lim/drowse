@@ -52,8 +52,9 @@ def _try_manifold_fit_noop_preflight(
     the folder's roles as given (a persona manifold is authored with them), so
     it leaves ``enforce_role`` off.
     """
-    from drowse.store.manifold_folder import ManifoldFolder, ManifoldFormatError
-    from drowse.store.manifolds import preflight_manifold_fit_noop
+    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.manifold_schema import ManifoldFormatError
+    from drowse.store.manifold_lifecycle import preflight_manifold_fit_noop
 
     if not (folder / "manifold.json").exists():
         return None
@@ -61,7 +62,7 @@ def _try_manifold_fit_noop_preflight(
         try:
             roles = ManifoldFolder.load(
                 folder, verify_manifest=False,
-            )._roles_padded()
+            ).roles
         except (ManifoldFormatError, OSError, ValueError):
             return None
         if not roles or not all(role == expected_role for role in roles):
@@ -610,9 +611,8 @@ def _run_manifold_fit(args: argparse.Namespace) -> None:
     the same lock used to derive the cache key. Supplying overrides against an
     authored folder is an error (mirrors the server's 400).
     """
-    from drowse.store.manifolds import (
-        ManifoldFolder, ManifoldFormatError, domain_label,
-    )
+    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.manifold_schema import ManifoldFormatError, domain_label
 
     _require_model(args)
 
@@ -766,8 +766,8 @@ def _run_manifold_generate(args: argparse.Namespace) -> None:
     generation leaves inspectable corpora) and lets the user review before
     paying for the fit.
     """
-    from drowse.store.manifolds import (
-        ManifoldFormatError,
+    from drowse.store.manifold_schema import ManifoldFormatError
+    from drowse.store.manifold_authoring import (
         append_discover_manifold_node,
         plan_discover_generation,
     )
@@ -873,7 +873,8 @@ def _run_manifold_from_template(args: argparse.Namespace) -> None:
     stores the corpus + ``template_ref``. Fit it next with
     ``drowse manifold fit <name> -m MODEL``.
     """
-    from drowse.store.manifolds import ManifoldFormatError, create_manifold_from_template
+    from drowse.store.manifold_schema import ManifoldFormatError
+    from drowse.store.manifold_authoring import create_manifold_from_template
     from drowse.store.templates import (
         AmbiguousTemplateError, TemplateNotFoundError, resolve_template,
     )
@@ -920,9 +921,8 @@ def _run_manifold_from_template(args: argparse.Namespace) -> None:
 
 
 def _run_manifold_merge(args: argparse.Namespace) -> None:
-    from drowse.store.manifolds import (
-        ManifoldFormatError, merge_discover_manifolds,
-    )
+    from drowse.store.manifold_schema import ManifoldFormatError
+    from drowse.store.manifold_authoring import merge_discover_manifolds
 
     target_ns, target_name = _split_manifold_ns_name(args.name)
     sources = [_split_manifold_ns_name(s) for s in args.sources]
@@ -970,14 +970,16 @@ def _run_manifold_transfer(args: argparse.Namespace) -> None:
     Resolve the manifold folder, fit (or load) the per-layer Procrustes
     alignment between the source and target models' cached neutral activations
     — the part that needs both models loaded — then hand the prebuilt alignment
-    dict to :func:`drowse.store.manifolds.transfer_manifold`, which is pure-io and
+    dict to :func:`drowse.store.manifold_lifecycle.transfer_manifold`, which is pure-io and
     only *applies* the map.  Steering vectors transfer the same way (a vector is
     the K=2 case of a flat ``pca`` manifold).
     """
     import json as _json
 
-    from drowse.store.manifolds import (
-        ManifoldFormatError, preflight_transfer_manifold, transfer_manifold,
+    from drowse.store.manifold_schema import ManifoldFormatError
+    from drowse.store.manifold_lifecycle import (
+        preflight_transfer_manifold,
+        transfer_manifold,
     )
     from drowse.base.paths import encode_release_id, manifold_dir
 

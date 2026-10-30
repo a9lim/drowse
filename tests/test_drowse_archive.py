@@ -24,7 +24,8 @@ from drowse.store.manifold_authoring import (
     iter_manifold_folders,
 )
 from drowse.store.manifold_tensors import save_manifold
-from drowse.store.manifolds import ManifoldFolder, ManifoldFormatError
+from drowse.store.manifold_folder import ManifoldFolder
+from drowse.store.manifold_schema import ManifoldFormatError
 from drowse.base.paths import manifold_dir, drowse_home, tensor_filename
 from drowse.store.archive import (
     DROWSE_ARCHIVE_FORMAT_VERSION,
@@ -1137,7 +1138,8 @@ def test_recovery_sweeps_legacy_stage_before_discovery() -> None:
     token = "e" * 32
     legacy = source.with_name(f"demo.drowse-stage-{token}")
     shutil.copytree(source, legacy)
-    assert len(list(iter_manifold_folders())) == 2
+    # Discovery never counts a folder not named after its manifest.
+    assert len(list(iter_manifold_folders())) == 1
 
     recover_drowse_archive_transactions()
 

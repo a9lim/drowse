@@ -9,10 +9,10 @@ Kinds:
 
 Special alias: "default" -> namespace/default.
 
-This module lives under ``drowse.io`` because both the io lifecycle layer and
-``session.session`` need the grammar; importing from ``cli`` would invert the
-layer dependency. CLI runners parse argv with :func:`parse` and pass the
-resulting :class:`Selector` instances down.
+This module lives in ``store`` because both the lifecycle layer and the
+session need the grammar; importing it from ``cli`` would invert the layer
+dependency.  CLI runners parse argv with :func:`parse` and pass the resulting
+:class:`Selector` instances down.
 """
 from __future__ import annotations
 
@@ -25,8 +25,6 @@ from drowse.naming import canonical_concept_name
 from drowse.base.integrity import NAME_REGEX
 from drowse.base.paths import VARIANT_SUFFIX_RE, manifolds_dir
 
-# Single source of truth lives in ``base.paths`` (owns the variant scheme).
-_VARIANT_REGEX = VARIANT_SUFFIX_RE
 
 
 class SelectorError(ValueError, DrowseError):
@@ -85,7 +83,7 @@ def parse(raw: str) -> Selector:
                 raise SelectorError(f"empty value after '{prefix}:' in '{raw}'")
             return Selector(kind=prefix, value=rest)
         # Otherwise it's a name-with-variant; validate the variant and strip it.
-        if not _VARIANT_REGEX.match(rest):
+        if not VARIANT_SUFFIX_RE.match(rest):
             raise SelectorError(f"unknown variant '{rest}' in '{raw}'")
         # Fall through to name validation with the variant stripped.
         raw = prefix
@@ -117,11 +115,10 @@ class _ManifoldIndex:
     names: list["ResolvedManifoldName"]
 
 
-# One memoized walk keyed by the manifolds root. Walking the tree opens and
-# parses every ``manifold.json`` under ``manifolds_dir()``, and a single
-# compound steering expression hits all three views — so the walk runs once and
-# the views are built from it in memory rather than each re-walking. Cleared by
-# ``invalidate()``, which every io mutator calls for itself.
+# One memoized walk keyed by the manifolds root.  Walking opens and parses
+# every ``manifold.json``, and a single compound steering expression hits all
+# three views, so the walk runs once and the views are projected from it.
+# Cleared by ``invalidate()``, which every store mutator calls for itself.
 _index_cache: dict[Path, _ManifoldIndex] = {}
 
 
@@ -131,16 +128,11 @@ def _manifold_index() -> _ManifoldIndex:
     cached = _index_cache.get(root)
     if cached is not None:
         return cached
-    # Lazy import — selectors.py lives under io/ and shouldn't import at
-    # module-load time from a peer that may import it back.
-    from drowse.store.manifolds import ManifoldFormatError, iter_manifold_folders
+    # ``manifold_authoring`` calls :func:`invalidate` from its mutators, so the
+    # walk is imported at call time.
+    from drowse.store.manifold_authoring import iter_manifold_folders
 
-    try:
-        folders = list(iter_manifold_folders())
-    except ManifoldFormatError:
-        # A single malformed folder shouldn't poison the whole resolve;
-        # ``iter_manifold_folders`` already skips them, but defensive.
-        folders = []
+    folders = list(iter_manifold_folders())
 
     concepts: list[ResolvedConcept] = []
     labels: list[ResolvedManifoldLabel] = []
@@ -182,7 +174,7 @@ def all_concepts() -> list[ResolvedConcept]:
 
     Concepts and steering manifolds are the same artifact now, so this reads
     the memoized ``manifolds_dir()`` walk (:func:`_manifold_index`, which goes
-    through :func:`~drowse.store.manifolds.iter_manifold_folders` and already
+    through :func:`~drowse.store.manifold_authoring.iter_manifold_folders` and already
     skips malformed folders).
     """
     return _manifold_index().concepts
@@ -251,12 +243,12 @@ def canonicalize_atom(raw: str) -> tuple[str, str]:
 
     Raises:
         SelectorError: when the ``:variant`` suffix doesn't match
-            ``_VARIANT_REGEX``.
+            ``VARIANT_SUFFIX_RE``.
     """
     variant = "raw"
     if ":" in raw:
         name_part, maybe_variant = raw.rsplit(":", 1)
-        if _VARIANT_REGEX.match(maybe_variant):
+        if VARIANT_SUFFIX_RE.match(maybe_variant):
             variant = maybe_variant
             raw = name_part
         else:
@@ -433,9 +425,10 @@ def resolve_bare_atom(
 
     ``namespace`` is the default (expression-level) namespace scope;
     ``typed_namespace`` is the namespace the user explicitly typed on the atom
-    (``None`` for a bare reference).  A non-``AmbiguousSelectorError`` failure
-    from a manifold tier falls through to the pole canonicalization, where a
-    genuine error re-surfaces with the canonical message.
+    (``None`` for a bare reference).  The manifold tiers read the memoized
+    index, which already skips malformed folders, so any other failure there
+    is a real fault and propagates rather than silently demoting a label to
+    the pole tier.
 
     Raises:
         AmbiguousSelectorError: a cross-namespace / cross-manifold collision in
@@ -450,12 +443,7 @@ def resolve_bare_atom(
         and typed_namespace is None
         and "." not in concept
     ):
-        try:
-            label_hit = resolve_manifold_label(concept, namespace=namespace)
-        except AmbiguousSelectorError:
-            raise
-        except Exception:
-            label_hit = None
+        label_hit = resolve_manifold_label(concept, namespace=namespace)
         if label_hit is not None:
             return ResolvedBareAtom(kind="label", manifold=label_hit)
 
@@ -463,41 +451,10 @@ def resolve_bare_atom(
     # ``formal.casual`` skips tier 1 on the ``.`` and lands here.
     if variant == "raw":
         ns_scope = typed_namespace or namespace
-        try:
-            name_hit = resolve_manifold_name(concept, namespace=ns_scope)
-        except AmbiguousSelectorError:
-            raise
-        except Exception:
-            name_hit = None
+        name_hit = resolve_manifold_name(concept, namespace=ns_scope)
         if name_hit is not None:
             return ResolvedBareAtom(kind="name", manifold_name=name_hit)
 
     # Tier 3 — plain vector concept: peel + canonicalize.
     raw = concept if variant == "raw" else f"{concept}:{variant}"
     return ResolvedBareAtom(kind="pole", pole=canonicalize_atom(raw))
-
-
-def parse_args(tokens: list[str]) -> tuple[Selector, Optional[str]]:
-    """Parse a list of selector tokens into (concept selector, optional model scope).
-
-    Rules:
-      - at most one concept selector (name|tag|namespace|all)
-      - at most one model: scope
-    """
-    concept: Optional[Selector] = None
-    model: Optional[str] = None
-
-    for tok in tokens:
-        s = parse(tok)
-        if s.kind == "model":
-            if model is not None:
-                raise SelectorError("only one model: scope allowed per invocation")
-            model = s.value
-        else:
-            if concept is not None:
-                raise SelectorError("only one concept selector allowed per invocation")
-            concept = s
-
-    if concept is None:
-        concept = Selector(kind="all", value=None)
-    return concept, model

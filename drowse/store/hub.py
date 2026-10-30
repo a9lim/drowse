@@ -8,7 +8,7 @@ frontmatter gives reverse-link discoverability.  The tagging convention
 uses the ``drowse-manifold`` tag so the search query is unambiguous.
 
 This module owns the pure-IO HF surface (pull + search + fetch_info).
-The folder format itself lives in :mod:`drowse.store.manifolds`; the
+The folder format itself lives in :mod:`drowse.store.manifold_folder`; the
 server route layer composes them with ``manifolds_dir`` /
 ``ManifoldFolder.load`` for the install path.
 """
@@ -29,11 +29,8 @@ from drowse.base.hf import (
     _hf_snapshot_download,
     split_revision,
 )
-from drowse.store.manifolds import (
-    MANIFOLD_FORMAT_VERSION,
-    ManifoldFolder,
-    ManifoldFormatError,
-)
+from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION, ManifoldFormatError
+from drowse.store.manifold_folder import ManifoldFolder
 from drowse.base.integrity import NAME_REGEX
 from drowse.base.staging import recover_backup, stage_verify_swap, staging_paths
 
@@ -233,9 +230,7 @@ def _pull_manifold_locked(
         )
 
     if force and target_folder.exists():
-        from drowse.store.manifold_folder import (
-            destructive_manifold_folder_transaction,
-        )
+        from drowse.store.manifold_folder import destructive_manifold_folder_transaction
 
         with destructive_manifold_folder_transaction(target_folder):
             return _swap()
@@ -323,7 +318,7 @@ def _render_manifold_card(
         fm.append("base_model_relation: adapter")
     fm.append("---")
 
-    from drowse.store.manifolds import domain_label
+    from drowse.store.manifold_schema import domain_label
 
     dom_lbl = domain_label(mf.domain) if mf.fit_mode == "authored" and mf.domain else f"discover-{mf.fit_mode}"
 
@@ -414,9 +409,8 @@ def push_manifold(
     from contextlib import ExitStack
     import tempfile
 
-    from drowse.store.manifolds import (
-        ManifoldFolder, ManifoldFormatError, hash_manifold_files,
-    )
+    from drowse.store.manifold_folder import ManifoldFolder, hash_manifold_files
+    from drowse.store.manifold_schema import ManifoldFormatError
     from drowse.base.paths import parse_tensor_filename, safe_model_id as _safe_id
     from drowse.store.manifold_folder import (
         _locked_manifest,

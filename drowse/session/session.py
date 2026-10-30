@@ -4920,7 +4920,7 @@ class DrowseSession:
 
                 existing = ManifoldFolder.load(
                     folder, verify_manifest=False,
-                )._roles_padded()
+                ).roles
                 if not existing or not all(value == role for value in existing):
                     raise ValueError(
                         f"manifold {ns}/{name} already carries role baseline "
@@ -5024,7 +5024,7 @@ class DrowseSession:
         :meth:`_fit_concept_manifold`.  Runs with ``_gen_lock`` already held by
         the caller.
         """
-        from drowse.store.manifolds import create_discover_manifold_folder
+        from drowse.store.manifold_authoring import create_discover_manifold_folder
         from drowse.store.manifold_folder import ManifoldFolder
         from drowse.base.paths import manifold_dir
 
@@ -5041,7 +5041,7 @@ class DrowseSession:
             if manifest.exists() and not force:
                 existing = ManifoldFolder.load(
                     folder, verify_manifest=False,
-                )._roles_padded()
+                ).roles
                 if not existing or not all(value == role for value in existing):
                     raise ValueError(
                         f"manifold {ns}/{name} already carries role baseline "
@@ -5659,11 +5659,9 @@ class DrowseSession:
         # Attach-only sweep: every fitted bundled multi-node manifold that the
         # tagged tier didn't already pick up (personas / emotions carry no
         # category tag, so they fall through to here).
-        from drowse.store.manifolds import (
-            ManifoldFolder,
-            ManifoldFormatError,
-            bundled_manifold_names,
-        )
+        from drowse.store.manifold_folder import ManifoldFolder
+        from drowse.store.manifold_schema import ManifoldFormatError
+        from drowse.store.bundled import bundled_manifold_names
 
         stem = safe_model_id(self.model_id)
         for name in bundled_manifold_names():

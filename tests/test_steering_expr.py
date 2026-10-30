@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from drowse.store import selectors as sel
-from drowse.store.manifolds import create_discover_manifold_folder
+from drowse.store.manifold_authoring import create_discover_manifold_folder
 from drowse.steering.terms import Steering
 from drowse.steering.grammar import (
     ProjectedTerm,

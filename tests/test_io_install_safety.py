@@ -8,7 +8,8 @@ import pytest
 from drowse.base.staging import staging_paths
 
 from drowse.store import hub as hfm
-from drowse.store.manifolds import ManifoldFolder, create_discover_manifold_folder
+from drowse.store.manifold_folder import ManifoldFolder
+from drowse.store.manifold_authoring import create_discover_manifold_folder
 
 
 @pytest.fixture

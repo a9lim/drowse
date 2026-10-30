@@ -1011,7 +1011,7 @@ class TestWebSocketProbeReadings:
 # These exercise the *real* ``_manifold_json`` against an on-disk authored
 # manifold (the route tests above monkeypatch ``_manifold_json``, so they
 # don't cover the refactor).  Pin two contracts:
-#  (a) the keys the GET route shares with ``store.manifolds.manifold_summary``
+#  (a) the keys the GET route shares with ``store.manifold_lifecycle.manifold_summary``
 #      carry identical names + values — both consume the same serializer,
 #      so CLI ``manifold show -j`` and the server stay in lockstep;
 #  (b) the DELETE route routes its removal through the shared
@@ -1037,7 +1037,7 @@ def _author_manifold_on_disk(
     import json as _json
     from pathlib import Path
 
-    from drowse.store.manifolds import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 
     labels = labels or ["calm", "uneasy", "afraid", "frantic"]
     k = len(labels)
@@ -1093,7 +1093,7 @@ class TestManifoldSharedSerializer:
     def test_get_one_shares_summary_keys(self, home_and_client: Any) -> None:
         """Every key the GET-one route shares with ``manifold_summary``
         carries an identical value — the refactor's core guarantee."""
-        from drowse.store.manifolds import manifold_summary
+        from drowse.store.manifold_lifecycle import manifold_summary
 
         home, _session, client = home_and_client
         folder = _author_manifold_on_disk(home, namespace="local", name="mood")
@@ -1123,7 +1123,7 @@ class TestManifoldSharedSerializer:
 
     def test_list_shares_summary_keys(self, home_and_client: Any) -> None:
         """The list route builds the same shared keys from the summary."""
-        from drowse.store.manifolds import manifold_summary
+        from drowse.store.manifold_lifecycle import manifold_summary
 
         home, _session, client = home_and_client
         folder = _author_manifold_on_disk(home, namespace="local", name="mood")
@@ -1202,10 +1202,8 @@ def _fitted_discover_manifold(model_id: str, name: str = "heap") -> Any:
     from drowse.fit.capture import fold_directions_to_subspace
     from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION
     from drowse.store.manifold_tensors import save_manifold
-    from drowse.store.manifolds import (
-        ManifoldFolder,
-        create_discover_manifold_folder,
-    )
+    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     from drowse.base.paths import tensor_filename
     from tests._whitener import isotropic_whitener
 

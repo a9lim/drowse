@@ -1,8 +1,7 @@
 """Bundled-template materialization infra — CPU-only, content-independent.
 
-Tests the ``materialize_bundled_templates`` / ``bundled_template_names`` mechanics
-(the reusable mirror of the manifold materializer) against a synthetic fixture
-template injected via ``_resources``, so coverage doesn't depend on whatever
+Tests the bundled-template half of :mod:`drowse.store.bundled` against a
+synthetic fixture template injected via ``_resources``, so coverage doesn't depend on whatever
 template-derived manifold happens to ship.  No template-derived bundled manifold
 currently ships (colors was the first candidate, pulled after it resolved to a
 flat lexical scatter rather than a hue ring); the end-to-end ``template_ref``
@@ -15,14 +14,14 @@ from pathlib import Path
 
 import pytest
 
-import drowse.store.templates as templates_mod
+import drowse.store.bundled as bundled
 from drowse.base.paths import templates_dir
-from drowse.store.templates import (
-    TemplateFolder,
-    bundled_template_names,
-    materialize_bundled_templates,
-    resolve_template,
-)
+from drowse.store.bundled import bundled_template_names
+from drowse.store.templates import TemplateFolder, resolve_template
+
+
+def materialize_bundled_templates() -> None:
+    bundled._materialize_templates()
 
 _DEMO = {
     "format_version": 2,
@@ -43,8 +42,12 @@ class _FakeResources:
 
     def __init__(self, root: Path) -> None:
         self._root = root
+        self._manifolds = root.parent / "no-manifolds"
+        self._manifolds.mkdir(parents=True, exist_ok=True)
 
     def files(self, pkg: str) -> Path:
+        if pkg == "drowse.data.manifolds":
+            return self._manifolds
         assert pkg == "drowse.data.templates"
         return self._root
 
@@ -60,8 +63,8 @@ def _write_template(
 def _wire(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pkg_root: Path) -> None:
     pkg_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(templates_mod, "_resources", _FakeResources(pkg_root))
-    monkeypatch.setattr(templates_mod, "_templates_materialized_home", None)
+    monkeypatch.setattr(bundled, "_resources", _FakeResources(pkg_root))
+    bundled.reset_bundled_state()
 
 
 # --------------------------------------------------------------------------- #
@@ -114,10 +117,10 @@ def test_process_scope_no_op(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pkg = tmp_path / "pkg"
     _wire(monkeypatch, tmp_path, pkg)
     _write_template(pkg, _DEMO)
-    materialize_bundled_templates()
+    bundled.materialize_bundled_artifacts()
     manifest = templates_dir() / "default" / "demo" / "template.json"
     manifest.unlink()
-    materialize_bundled_templates()  # flag set → no-op, no re-copy
+    bundled.materialize_bundled_artifacts()  # guard set for this home → no re-copy
     assert not manifest.exists()
 
 
@@ -127,11 +130,11 @@ def test_process_scope_guard_is_per_home(
     pkg = tmp_path / "pkg"
     _wire(monkeypatch, tmp_path, pkg)
     _write_template(pkg, _DEMO)
-    materialize_bundled_templates()
+    bundled.materialize_bundled_artifacts()
     assert (templates_dir() / "default" / "demo" / "template.json").exists()
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "second-home"))
-    materialize_bundled_templates()
+    bundled.materialize_bundled_artifacts()
     assert (templates_dir() / "default" / "demo" / "template.json").exists()
 
 
@@ -147,7 +150,7 @@ def test_bundle_update_recopies_and_backs_up(
     (target / "template.json").write_text(json.dumps({
         **_DEMO, "values": ["gamma", "delta", "epsilon"],
     }))
-    with pytest.warns(UserWarning, match="refreshed default/demo"):
+    with pytest.warns(UserWarning, match="refreshed bundled template default/demo"):
         materialize_bundled_templates()
     refreshed = TemplateFolder.load(target)
     assert list(refreshed.values) == ["alpha", "beta"]   # bundled content won
@@ -160,50 +163,19 @@ def test_bundle_update_recopies_and_backs_up(
 
 
 def test_bootstrap_entry_point_runs_templates_before_manifolds(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """The order is load-bearing, so exactly one function may own it.
-
-    A bundled manifold may ``template_ref`` a bundled ``default/<name>``
-    template; its fit resolves that ref and raises ``TemplateNotFoundError``
-    if the template hasn't materialized yet.  Five bootstrap sites used to
-    each re-derive this from a copied comment, so a sixth would silently
-    violate it.
-    """
-    from drowse.store import bundled as bootstrap
-    from drowse.store import manifolds as manifolds_mod
-    from drowse.store import templates as templates_mod
+    """The order is load-bearing: a bundled manifold may ``template_ref`` a
+    bundled template, and its fit raises ``TemplateNotFoundError`` if the
+    template has not materialized yet."""
     order: list[str] = []
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    bundled.reset_bundled_state()
+    monkeypatch.setattr(bundled, "_materialize_templates", lambda: order.append("templates"))
+    monkeypatch.setattr(bundled, "bundled_manifold_names", lambda: ["probe"])
     monkeypatch.setattr(
-        templates_mod, "materialize_bundled_templates",
-        lambda: order.append("templates"),
+        bundled, "_materialize_manifold",
+        lambda _dir, name, *, force: order.append(f"manifold:{name}"),
     )
-    monkeypatch.setattr(
-        manifolds_mod, "materialize_bundled_manifolds",
-        lambda: order.append("manifolds"),
-    )
-    bootstrap.materialize_bundled_artifacts()
-    assert order == ["templates", "manifolds"]
-
-
-def test_every_bootstrap_site_uses_the_entry_point() -> None:
-    """No site may call the two materializers directly and re-derive the order."""
-    import pathlib
-
-    root = pathlib.Path(__file__).resolve().parent.parent / "drowse"
-    owners = {
-        root / "store" / "bundled.py",
-        root / "store" / "manifolds.py",
-        root / "store" / "templates.py",
-        # ``refresh_manifold``'s bundled tier re-materializes one artifact
-        # kind on purpose; it is not a bootstrap.
-        root / "store" / "manifold_lifecycle.py",
-    }
-    offenders = [
-        str(path.relative_to(root.parent))
-        for path in root.rglob("*.py")
-        if path not in owners
-        and "materialize_bundled_templates(" in path.read_text()
-    ]
-    assert offenders == []
-
+    bundled.materialize_bundled_artifacts()
+    assert order == ["templates", "manifold:probe"]

@@ -1516,7 +1516,10 @@ def test_save_load_affine_manifold_round_trip(
     )
     path = tmp_path / "folded" / "model.safetensors"
     save_manifold(manifold, path, {
-        "method": "folded_vector", "fit_mode": "baked",
+        "method": "merge", "fit_mode": "baked", "bake_policy": "additive_union_v1",
+        "components": {"0:default/x": {
+            "selector": "default/x", "alpha": 1.0, "tensor_sha256": "0" * 64,
+        }},
         "share_metric": "mahalanobis",
     })
 

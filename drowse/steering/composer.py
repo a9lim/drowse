@@ -166,7 +166,7 @@ class SteeringComposer:
         if key in manifolds:
             return
         from drowse.store.manifold_tensors import load_manifold
-        from drowse.base.paths import manifold_dir, manifolds_dir, tensor_filename
+        from drowse.base.paths import manifold_dir, manifolds_dir, tensor_filename_for_variant
 
         model_id = self._session.model_id
 
@@ -183,33 +183,24 @@ class SteeringComposer:
                 sorted(d.name for d in root.iterdir() if d.is_dir())
                 if root.exists() else []
             )
-        transferred_from: str | None = None
-        requested_role: str | None = None
-        if variant == "raw":
-            release: str | None = None
-        elif variant.startswith("sae-"):
-            release = variant[len("sae-"):]
-        elif variant.startswith("from-"):
-            release = None
-            transferred_from = variant[len("from-"):]
-        elif variant.startswith("role-"):
-            release = None
-            requested_role = variant[len("role-"):]
-        else:
+        requested_role = (
+            variant[len("role-"):] if variant.startswith("role-") else None
+        )
+        transferred_from = (
+            variant[len("from-"):] if variant.startswith("from-") else None
+        )
+        fname = tensor_filename_for_variant(model_id, variant)
+        if fname is None:
             raise ManifoldNotRegisteredError(
                 f"manifold '{key}': unsupported variant '{variant}'"
             )
-        fname = tensor_filename(
-            model_id, release=release, transferred_from=transferred_from,
-            transferred_from_is_encoded=transferred_from is not None,
-        )
 
         # A fit from an older artifact format is a *miss*, not a corrupt
         # artifact: the corpus is intact, so the answer is "refit", which is
         # exactly what the no-tensor branch below already says. Screening it
         # here keeps a format bump from raising a raw codec error out of every
         # steering resolution and probe bootstrap on the way to that refit.
-        from drowse.store.manifold_folder import fitted_sidecar_is_current
+        from drowse.store.manifold_schema import sidecar_is_current
 
         matches = [
             (ns, path)
@@ -217,7 +208,7 @@ class SteeringComposer:
                 (ns, manifold_dir(ns, name) / fname) for ns in search_ns
             )
             if path.exists()
-            and fitted_sidecar_is_current(path.with_suffix(".json"))
+            and sidecar_is_current(path.with_suffix(".json"))
         ]
         if not matches:
             raise ManifoldNotRegisteredError(

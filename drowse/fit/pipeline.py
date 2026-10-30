@@ -80,7 +80,8 @@ def _apply_fit_overrides_locked(
         return
 
     from drowse.base.atomic import write_json_atomic
-    from drowse.store.manifolds import ManifoldFolder, sanitize_hyperparams
+    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.manifold_schema import sanitize_hyperparams
 
     mf = ManifoldFolder.load(folder, verify_manifest=False)
     if not mf.is_discover:
@@ -985,7 +986,7 @@ def offline_fit_identity(
     identity is precisely what would serve a stale fit after a corpus or
     baseline-prompt edit.
     """
-    node_roles = mf._roles_padded()
+    node_roles = mf.roles
     if any(role is not None for role in node_roles) and model_type is None:
         return None
     template_sha: str | None = None
@@ -1061,8 +1062,8 @@ def prepare_manifold_capture_identity(
         [(label, list(rows)) for label, rows in node_groups_snapshot]
         if node_groups_snapshot is not None else mf.node_groups()
     )
-    node_roles = mf._roles_padded()
-    node_kinds = mf._kinds_padded()
+    node_roles = mf.roles
+    node_kinds = mf.kinds
     model_type = getattr(getattr(model, "config", None), "model_type", None)
     if any(role is not None for role in node_roles) and model_type is None:
         raise ValueError(
@@ -1136,7 +1137,7 @@ def _authoring_snapshot_locked(
 ]:
     """Materialize template inputs and snapshot one exact authoring revision."""
 
-    from drowse.store.manifolds import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
 
     manifest_path = folder / "manifold.json"
     with open(manifest_path) as handle:
@@ -1166,20 +1167,14 @@ def _authoring_snapshot_locked(
     mf = ManifoldFolder.load(folder, verify_manifest=False)
     template_sha: str | None = None
     if mf.template_ref is not None:
-        from drowse.store.manifold_authoring import _write_node_corpus
+        from drowse.store.manifold_folder import write_node_corpus
         from drowse.store.templates import resolve_template
 
         tmpl = resolve_template(mf.template_ref)
         template_sha = tmpl.sha256()
         expected_corpora = tmpl.node_corpora()
         if dict(mf.node_groups()) != expected_corpora:
-            _write_node_corpus(
-                folder,
-                [
-                    {"label": label, "statements": statements}
-                    for label, statements in expected_corpora.items()
-                ],
-            )
+            write_node_corpus(folder, list(expected_corpora.items()))
             mf.node_labels = list(expected_corpora)
             mf.node_roles = [None] * len(mf.node_labels)
             mf.node_kinds = [None] * len(mf.node_labels)
@@ -1425,7 +1420,7 @@ def _resolve_fit_geometry(
         DEFAULT_N_COMPONENTS, CustomDomain, domain_from_spec,
     )
     from drowse.geometry.topology import discover_coords, select_topology
-    from drowse.store.manifolds import min_nodes, sanitize_hyperparams
+    from drowse.store.manifold_schema import min_nodes, sanitize_hyperparams
 
     discover_metadata: dict[str, Any] = {}
     # ``max_subspace_dim`` caps the per-layer PCA subspace in the
@@ -1538,7 +1533,7 @@ def _resolve_fit_geometry(
         # wrapped in a ``CustomDomain(k)`` with identity embed so the
         # existing fit machinery handles them unchanged.
         # Sanitize against the per-mode whitelist (single source of truth
-        # in ``store.manifolds``) so a stale on-disk ``manifold.json`` carrying
+        # in ``store.manifold_schema``) so a stale on-disk ``manifold.json`` carrying
         # a since-removed key (e.g. the old ``anchor_origin``) can't reach
         # ``discover_coords`` as an unexpected kwarg.  Author/CLI paths
         # already sanitize; this guards legacy + hand-edited folders.
@@ -1835,7 +1830,8 @@ class ManifoldExtractionPipeline:
         )
         from drowse.geometry.topology import neutral_layout_coord
         from drowse.fit.capture import compute_dls_axes
-        from drowse.store.manifolds import ManifoldFolder, ManifoldSidecar
+        from drowse.store.manifold_folder import ManifoldFolder
+        from drowse.store.manifold_schema import ManifoldSidecar
         from drowse.errors import SaeCoverageError
         from drowse.geometry.whitener import WhitenerError
 

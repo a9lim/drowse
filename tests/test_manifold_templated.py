@@ -16,10 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from drowse.store.manifolds import (
-    MANIFOLD_FORMAT_VERSION,
-    ManifoldFolder,
-    ManifoldFormatError,
+from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION, ManifoldFormatError
+from drowse.store.manifold_folder import ManifoldFolder
+from drowse.store.manifold_authoring import (
     create_discover_manifold_folder,
     create_manifold_from_template,
 )

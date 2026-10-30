@@ -11,10 +11,21 @@ import torch
 from drowse.model.loading import loaded_model_fingerprint
 from drowse.steering.composer import SteeringComposer
 from drowse.fit.capture import fold_directions_to_subspace
-from drowse.store.manifold_folder import ManifoldFormatError
-from drowse.store.manifolds import create_baked_manifold_folder, transfer_manifold
+from drowse.store.manifold_schema import ManifoldFormatError
+from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
+from drowse.store.manifold_lifecycle import transfer_manifold
 from drowse.base.paths import encode_release_id
 from tests._whitener import synthetic_means, synthetic_whitener
+
+_COMPONENTS = {"0:default/x": {"selector": "default/x", "alpha": 1.0, "tensor_sha256": "0" * 64}}
+
+
+def _publish(manifold: Any, model_id: str, fingerprint: str) -> Path:
+    return publish_baked_manifold(
+        "local", "merged", "",
+        [BakedTensor(model_id, manifold, fingerprint, components=_COMPONENTS)],
+        method="merge",
+    )
 
 
 def _runtime(model_id: str, model: torch.nn.Module) -> Any:
@@ -44,10 +55,7 @@ def test_baked_manifold_cold_loads_with_proven_fingerprint(
     manifold = _fold(
         "merged", {0: torch.tensor([1.0, 0.0, 0.0, 0.0])}, label="merged",
     )
-    create_baked_manifold_folder(
-        "local", "merged", "", manifold, model_id, method="folded_vector",
-        model_fingerprint=fingerprint,
-    )
+    _publish(manifold, model_id, fingerprint)
 
     runtime = _runtime(model_id, model)
     SteeringComposer(runtime).ensure_manifold_loaded("local/merged")
@@ -62,10 +70,7 @@ def test_cold_load_rejects_finite_tensor_corruption(
     model_id = "test/model"
     fingerprint = loaded_model_fingerprint(model, model_id)
     manifold = _fold("merged", {0: torch.ones(4)}, label="merged")
-    folder, _ = create_baked_manifold_folder(
-        "local", "merged", "", manifold, model_id, method="folded_vector",
-        model_fingerprint=fingerprint,
-    )
+    folder = _publish(manifold, model_id, fingerprint)
     tensor = next(folder.glob("*.safetensors"))
     payload = bytearray(tensor.read_bytes())
     payload[-1] ^= 1
@@ -85,10 +90,7 @@ def test_cold_load_rejects_untracked_fitted_pair(
     model_id = "test/model"
     fingerprint = loaded_model_fingerprint(model, model_id)
     manifold = _fold("merged", {0: torch.ones(4)}, label="merged")
-    folder, _ = create_baked_manifold_folder(
-        "local", "merged", "", manifold, model_id, method="folded_vector",
-        model_fingerprint=fingerprint,
-    )
+    folder = _publish(manifold, model_id, fingerprint)
     manifest_path = folder / "manifold.json"
     import json
 
@@ -114,10 +116,7 @@ def test_transfer_variant_cold_loads_for_target_identity(
     manifold = _fold(
         "merged", {0: torch.tensor([1.0, 0.0, 0.0, 0.0])}, label="merged",
     )
-    folder, _ = create_baked_manifold_folder(
-        "local", "merged", "", manifold, source_id, method="folded_vector",
-        model_fingerprint=source_fp,
-    )
+    folder = _publish(manifold, source_id, source_fp)
     from drowse.geometry.whitener import LayerWhitener
     from drowse.store.alignment import LayerAlignment
 

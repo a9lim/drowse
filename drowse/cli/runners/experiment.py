@@ -44,7 +44,7 @@ def _run_experiment_naturalness(args: argparse.Namespace) -> None:
     from drowse.geometry.profile import Profile
     from drowse.generation.sampling import SamplingConfig
     from drowse.steering.grammar import ManifoldTerm, parse_expr
-    from drowse.store.manifolds import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
 
     _pkg._load_effective_config(args, default_max_tokens=128)
     mfolder = Path(args.manifold)

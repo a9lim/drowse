@@ -7,7 +7,7 @@ loaded model — it runs ``session.fit`` under the session
 lock and streams progress like ``/extract`` does.
 
 Authoring (create / update) writes ``manifold.json`` + ``nodes/*.json``
-through :mod:`drowse.store.manifolds`; steering a fitted manifold needs no
+through :mod:`drowse.store.manifold_folder`; steering a fitted manifold needs no
 route — a ``%`` term in any steering expression already loads the
 artifact lazily on scope entry.
 """
@@ -28,22 +28,19 @@ from drowse.store.hub import (
     install_manifold,
     search_manifolds,
 )
-from drowse.store.manifolds import (
-    ManifoldFolder,
-    ManifoldFormatError,
+from drowse.store.manifold_folder import ManifoldFolder
+from drowse.store.manifold_schema import ManifoldFormatError, domain_label, min_nodes
+from drowse.store.manifold_authoring import (
     append_discover_manifold_node,
     create_discover_manifold_folder,
     create_manifold_folder,
     create_manifold_from_template,
-    domain_label,
     iter_manifold_folders,
-    manifold_summary,
     merge_discover_manifolds,
-    min_nodes,
     plan_discover_generation,
-    remove_manifold_folder,
     update_manifold_folder,
 )
+from drowse.store.manifold_lifecycle import manifold_summary, remove_manifold_folder
 from drowse.base.paths import manifold_dir
 from drowse.store.templates import AmbiguousTemplateError, TemplateNotFoundError
 from drowse.server.streaming import run_in_thread
@@ -224,7 +221,7 @@ class MergeManifoldRequest(NativeRequest):
     """Body for ``POST /manifolds/merge``.
 
     Restricted to discover-mode (autofitted) sources by design — see
-    :func:`drowse.store.manifolds.merge_discover_manifolds`.  Pools the
+    :func:`drowse.store.manifold_authoring.merge_discover_manifolds`.  Pools the
     sources' node corpora + roles into one heap, writes a fresh
     discover folder; the next ``POST .../fit`` derives coords from the
     combined heap.
@@ -315,7 +312,7 @@ def _manifold_json(
     """Serialize a :class:`ManifoldFolder` for the wire.
 
     The session-independent fields come straight from
-    :func:`drowse.store.manifolds.manifold_summary` so this route and the
+    :func:`drowse.store.manifold_lifecycle.manifold_summary` so this route and the
     CLI ``manifold show -j`` emit byte-identical values for every
     key they share (``namespace`` / ``name`` / ``description`` /
     ``source`` / ``fit_mode`` / ``is_discover`` / ``node_count`` /
@@ -918,7 +915,7 @@ def register_manifold_routes(app: FastAPI) -> None:
         """Remove a manifold folder.
 
         Delegates the actual removal to
-        :func:`drowse.store.manifolds.remove_manifold_folder` — the single
+        :func:`drowse.store.manifold_lifecycle.remove_manifold_folder` — the single
         source of truth shared with the CLI ``manifold rm`` — so
         bundled-respawn semantics stay in one place.  The response
         carries that helper's ``{namespace, name, source, removed,

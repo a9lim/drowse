@@ -765,7 +765,7 @@ def test_config_vectors_register_on_a_model_backed_surface(
     # 4.0: a concept is a 2-node ``pca`` manifold — author ``default/happy.sad``
     # so the config reference resolves (and ``ensure_vectors_installed`` sees it
     # as already installed).
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     create_discover_manifold_folder(
         "default", "happy.sad", "x", fit_mode="pca",
         node_corpora={"happy": ["a statement."], "sad": ["b statement."]},
@@ -1260,7 +1260,7 @@ def test_config_bare_pole_resolves_canonical(monkeypatch: pytest.MonkeyPatch, tm
     label-form ``ManifoldTerm`` at the ``wolf`` node (``default/deer.wolf%wolf``).
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     create_discover_manifold_folder(
         "default", "deer.wolf", "x", fit_mode="pca",
         node_corpora={"deer": ["a statement."], "wolf": ["b statement."]},

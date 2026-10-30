@@ -28,7 +28,7 @@ import pytest
 
 from drowse.store import hub as hfm
 from drowse.base.hf import HFError
-from drowse.store.manifolds import MANIFOLD_FORMAT_VERSION
+from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 
 
 # --------------------------------------------------------------------------- #
@@ -496,7 +496,7 @@ def test_install_local_manifold_bad_as_rejected(
 ):
     """``_install_local_manifold`` rejects a slash-free ``as_`` before copying."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    from drowse.store.manifolds import create_manifold_folder
+    from drowse.store.manifold_authoring import create_manifold_folder
 
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}

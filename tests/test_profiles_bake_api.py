@@ -68,7 +68,7 @@ class TestMergeVector:
             fold_directions_to_subspace, folded_directions,
         )
         from drowse.store.manifold_tensors import load_manifold
-        from drowse.store.manifolds import create_baked_manifold_folder
+        from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
         from drowse.base.paths import tensor_filename
 
         dirs = {0: torch.tensor([1.0, 0.0, 0.0, 0.0]), 5: torch.tensor([0.0, 2.0, 0.0, 0.0])}
@@ -84,9 +84,14 @@ class TestMergeVector:
         warm_source = tmp_path / "warm-source.safetensors"
         honest_source.write_bytes(b"manifest-proven honest source")
         warm_source.write_bytes(b"manifest-proven warm source")
-        merged_folder, _ = create_baked_manifold_folder(
-            "local", "noble", "merged", manifold, session.model_id, method="merge",
-            components={
+        merged_folder = publish_baked_manifold(
+            "local", "noble", "merged",
+            [BakedTensor(
+                model_id=session.model_id, manifold=manifold,
+                model_fingerprint=loaded_model_fingerprint(
+                    session._model, session.model_id,
+                ),
+                components={
                 "0": {
                     "selector": "default/honest",
                     "alpha": 0.3,
@@ -98,9 +103,8 @@ class TestMergeVector:
                     "tensor_sha256": hash_file(warm_source),
                 },
             },
-            model_fingerprint=loaded_model_fingerprint(
-                session._model, session.model_id,
-            ),
+            )],
+            method="merge",
         )
         tensor_path = merged_folder / tensor_filename(session.model_id)
         expected = folded_directions(load_manifold(tensor_path))

@@ -29,8 +29,9 @@ from drowse.fit.pipeline import ManifoldExtractionPipeline
 from drowse.model.loading import loaded_model_fingerprint
 from drowse.store import alignment as alignment_mod
 from drowse.store.manifold_authoring import create_discover_manifold_folder
-from drowse.store.manifold_folder import ManifoldFolder, ManifoldSidecar
-from drowse.store.manifolds import preflight_manifold_fit_noop
+from drowse.store.manifold_folder import ManifoldFolder
+from drowse.store.manifold_schema import ManifoldSidecar
+from drowse.store.manifold_lifecycle import preflight_manifold_fit_noop
 from drowse.base.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
 from tests.test_manifold_extraction import (
@@ -206,7 +207,7 @@ def test_preflight_refuses_on_a_layer_set_change(fitted: Any) -> None:
 
 
 def test_preflight_refuses_an_old_format_sidecar(fitted: Any) -> None:
-    from drowse.store.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
     assert _preflight(fitted) is None
@@ -322,7 +323,7 @@ def test_old_format_sidecar_reads_as_a_cache_miss_not_an_error(
     untouched — and simply report no fit for that model, which is what makes
     the next fit a plain overwrite rather than a repair.
     """
-    from drowse.store.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
 
@@ -334,7 +335,7 @@ def test_old_format_sidecar_reads_as_a_cache_miss_not_an_error(
 def test_stale_fit_is_overwritten_by_the_next_fit(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.store.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _stub_encoder_batch)
@@ -359,7 +360,7 @@ def test_stale_fit_resolves_as_a_miss_not_a_codec_error(
     """
     from drowse import ManifoldNotRegisteredError
     from drowse.steering.composer import SteeringComposer
-    from drowse.store.manifold_folder import MANIFOLD_FORMAT_VERSION
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
 
@@ -374,14 +375,20 @@ def test_stale_fit_resolves_as_a_miss_not_a_codec_error(
 
 def test_corrupt_sidecar_still_raises(fitted: Any) -> None:
     """Staleness is forgiven; corruption is not."""
-    from drowse.store.manifold_folder import ManifoldFormatError
+    from drowse.store.manifold_schema import ManifoldFormatError
 
     sidecar_path = fitted.tensor.with_suffix(".json")
     payload = json.loads(sidecar_path.read_text())
     payload["node_labels"] = ["only-one"]
     sidecar_path.write_text(json.dumps(payload))
+    # Discovery stays up — one bad fit must not hide the manifold — but the
+    # fit is unavailable and the strict read refuses it.
+    mf = ManifoldFolder.load(fitted.folder, verify_manifest=False)
+    assert mf.tensor_models() == []
     with pytest.raises(ManifoldFormatError):
-        ManifoldFolder.load(fitted.folder, verify_manifest=False)
+        mf.sidecar(fitted.tensor.stem)
+    with pytest.raises(ManifoldFormatError):
+        ManifoldFolder.load(fitted.folder)
 
 
 # ---- CLI adoption ----------------------------------------------------------
