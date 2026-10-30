@@ -1,25 +1,13 @@
-"""Server ↔ engine boundary guard.
+"""Server import-surface guards.
 
-The HTTP server is a frontend over :class:`DrowseSession`; it must talk to the
-engine through its public API, never reach past it into a
-``DrowseSession`` private (``session._monitor``, ``session._profiles``, …).
-Reaching in couples a frontend to the engine's internal layout, so a private
-rename silently breaks it — exactly the migration this test guards against
-regressing.  Every former reach-in has a public accessor now (``monitor``,
-``manifolds``, ``profiles``, ``model_info``, ``generation_state``,
-``gen_lock``, ``joint_logprob_cache``,
-``ensure_manifold_loaded``, ``ensure_profile_registered``); a fresh reach-in
-should use those instead of being added to the allowlist below.
-
-The grep is **session-scoped**, not "any ``self._x``": a widget or route
-controller is free to keep its own privates.  Only attribute access whose
-*receiver* is a session-object expression counts — the session is bound to a
-bare ``session`` / ``sess`` local or reached through ``self._session``,
-``self.session``, or ``.session``.
+Source-grep checks over the frontend packages: no import of a promoted name by
+its old underscore form, and no server module importing a sibling's private
+helper.  (Session-private attribute reaches are an AST invariant over the whole
+package in ``tests/test_layering.py``.)
 
 Comments and string literals are stripped via :mod:`tokenize` before the
-match, so a historical note (``# v2.2 had self._messages = session._history``)
-or a docstring example doesn't trip the guard — only live code does.
+match, so a historical note or a docstring example doesn't trip a guard —
+only live code does.
 
 CPU-only: pure source-grep, no model load.
 """
@@ -29,37 +17,6 @@ import io
 import re
 import tokenize
 from pathlib import Path
-
-# Genuinely-unavoidable session-private reach-ins, each as
-# "<relpath-from-drowse>:<receiver>._<attr>" with a comment justifying it.
-# Do NOT add a site here to silence a fixable reach-in — only one with no
-# public accessor belongs.
-ALLOWLIST: list[str] = [
-    # Empty, and meant to stay that way.  The last entry was the active
-    # J-lens source resolver, which the routes reached for privately; it is
-    # now the public ``session.lens.active_source`` on the instrument
-    # interface, so the reach-in no longer exists to excuse.
-]
-
-_FRONTEND_DIRS = ("server",)
-
-# Receiver expressions that denote the DrowseSession object, each matched
-# right before ``._<attr>``.  Two left-boundary regimes, so the dotted and the
-# bare forms can't bleed into each other:
-#   * a *dotted* receiver (``self._session`` / ``self.session`` / any
-#     ``…​.session``) is anchored on the leading ``.``/``self`` — so
-#     ``app.state.session._gen_lock`` matches via the ``.session`` arm;
-#   * a *bare* ``session`` / ``sess`` local must NOT be preceded by ``.`` or a
-#     word char, so ``my_session`` / ``subsession`` / ``x.session`` don't slip
-#     through the bare arm (``x.session`` is still caught by the dotted arm).
-_SESSION_PRIVATE_RE = re.compile(
-    r"(?:"
-    r"(?:self|[\w\]\)])\.session"  # self.session / app.state.session / …
-    r"|self\._session"             # an explicit private session binding
-    r"|(?<![\w.])(?:session|sess)"  # a bare session/sess local
-    r")"
-    r"\._[A-Za-z]\w*"
-)
 
 
 def _drowse_root() -> Path:
@@ -95,65 +52,6 @@ def _strip_comments_and_strings(source: str) -> str:
         # which is a louder failure than a silent miss).
         return source
     return "\n".join("".join(line) for line in grid)
-
-
-def _iter_frontend_files() -> list[Path]:
-    root = _drowse_root()
-    files: list[Path] = []
-    for sub in _FRONTEND_DIRS:
-        files.extend(sorted((root / sub).rglob("*.py")))
-    assert files, "no frontend python files found — path drift?"
-    return files
-
-
-def _find_reach_ins() -> dict[str, list[str]]:
-    """Map ``<relpath>:<receiver>._<attr>`` -> list of human-readable hits."""
-    root = _drowse_root()
-    hits: dict[str, list[str]] = {}
-    for path in _iter_frontend_files():
-        rel = path.relative_to(root).as_posix()
-        code = _strip_comments_and_strings(path.read_text(encoding="utf-8"))
-        for lineno, line in enumerate(code.splitlines(), start=1):
-            for match in _SESSION_PRIVATE_RE.finditer(line):
-                token = match.group(0)
-                key = f"{rel}:{token}"
-                hits.setdefault(key, []).append(f"{rel}:{lineno}: {token}")
-    return hits
-
-
-def test_no_frontend_session_private_reach_ins() -> None:
-    """No ``drowse/server`` code reaches a DrowseSession private."""
-    hits = _find_reach_ins()
-    allow = set(ALLOWLIST)
-    offenders = {key: lines for key, lines in hits.items() if key not in allow}
-    if offenders:
-        report = "\n".join(
-            line for lines in offenders.values() for line in lines
-        )
-        raise AssertionError(
-            "frontend code reaches past the DrowseSession public API.\n"
-            "Use the public accessor (monitor / manifolds / profiles / "
-            "model_info / generation_state / gen_lock / "
-            "joint_logprob_cache / "
-            "ensure_manifold_loaded / ensure_profile_registered, …) at the "
-            "call site, or — only if genuinely unavoidable — add the site to "
-            "ALLOWLIST with a justification.\n\n" + report
-        )
-
-
-def test_allowlist_entries_are_still_present() -> None:
-    """An ALLOWLIST entry whose reach-in is gone is stale — drop it.
-
-    Keeps the allowlist honest: a fixed reach-in shouldn't leave a dead
-    exemption behind that would silently re-admit a future regression at the
-    same key.
-    """
-    hits = _find_reach_ins()
-    stale = [key for key in ALLOWLIST if key not in hits]
-    assert not stale, (
-        "ALLOWLIST has entries with no matching reach-in (remove them): "
-        + ", ".join(stale)
-    )
 
 
 # ---------------------------------------------------------------------------

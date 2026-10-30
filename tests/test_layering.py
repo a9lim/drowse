@@ -9,9 +9,9 @@ lower layer instead).
 Lower layers come first; a module may import its own layer or any lower one.
 
 A second walk keeps the session's collaborators honest: outside
-``drowse/session/`` no code reaches a session private (``session._x``,
-``<x>.session._x``, ``self._session._x``); collaborators take explicit
-dependencies instead.
+``drowse/session/`` no code reaches a session private (``session._x`` /
+``sess._x``, ``<x>.session._x``, ``self._session._x``); collaborators and
+frontends take explicit dependencies or the public API instead.
 """
 from __future__ import annotations
 
@@ -105,14 +105,14 @@ def _is_private(attr: str) -> bool:
 
 
 def _session_private_reaches(path: Path) -> list[tuple[int, str]]:
-    """``(line, source)`` for every ``session._x`` / ``<x>.session._x`` /
-    ``self._session._x`` attribute access in ``path``."""
+    """``(line, source)`` for every ``session._x`` / ``sess._x`` /
+    ``<x>.session._x`` / ``self._session._x`` attribute access in ``path``."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
         if not (isinstance(node, ast.Attribute) and _is_private(node.attr)):
             continue
         owner = node.value
-        if (isinstance(owner, ast.Name) and owner.id == "session") or (
+        if (isinstance(owner, ast.Name) and owner.id in ("session", "sess")) or (
             isinstance(owner, ast.Attribute) and owner.attr in ("session", "_session")
         ):
             found.append((node.lineno, ast.unparse(node)))
@@ -203,6 +203,9 @@ def test_no_session_private_reaches_outside_the_session_package() -> None:
     ("session._monitor.add(x)\n", [(1, "session._monitor")]),
     ("self._session._engine\n", [(1, "self._session._engine")]),
     ("app.state.session._read_plane\n", [(1, "app.state.session._read_plane")]),
+    ("sess._gen_lock.acquire()\n", [(1, "sess._gen_lock")]),
+    ("# session._monitor\nx = 'session._monitor'\n", []),
+    ("my_session._monitor\n", []),
     ("self._session.monitor\n", []),
     ("session.__class__\n", []),
     ("other._monitor\n", []),
