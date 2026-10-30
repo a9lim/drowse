@@ -373,6 +373,38 @@ def test_force_install_waits_for_a_held_pair_lock(
 # --------------------------------------------------------------------- hf --
 
 
+@pytest.mark.parametrize("kind", SOURCES)
+def test_templated_manifold_installs_with_its_template_closure(
+    kind: str, homes: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: an HF pull copied only the manifold folder, leaving a
+    dangling ``template_ref`` whose every fit then read as stale."""
+    from drowse.store.manifold_authoring import create_manifold_from_template
+    from drowse.store.templates import create_template_folder, resolve_template
+
+    create_template_folder(
+        "local", "weekday", slot="[DAY]", values=["Monday", "Tuesday"],
+        contexts=[{
+            "turns": [{"role": "user", "content": "what day is it?"}],
+            "assistant": "today is [DAY]",
+        }],
+    )
+    folder = create_manifold_from_template(
+        "local", "days", "days", template_ref="local/weekday", fit_mode="pca",
+    )
+    target, _ = stage_source(kind, folder, homes, monkeypatch)
+    if kind == "local":
+        # A bare folder carries no template: it must already be installed.
+        from drowse.store.templates import TemplateNotFoundError
+
+        with pytest.raises(TemplateNotFoundError):
+            install_manifold(target)
+        return
+    installed = install_manifold(target)
+    assert ManifoldFolder.load(installed).template_ref == "local/weekday"
+    assert resolve_template("local/weekday").node_labels() == ["monday", "tuesday"]
+
+
 def test_hf_install_pins_the_commit_and_exports_back(
     homes: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
