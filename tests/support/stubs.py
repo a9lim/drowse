@@ -50,14 +50,13 @@ def attach_stub_instruments(stub: Any) -> Any:
     construction (see :func:`tests.support.lens.stub_lens_kwargs`), so set
     ``_model`` / ``_tokenizer`` / ``_layers`` first when a test needs them.
     """
-    from drowse.readout.geometry import GeometryInstrument
+    from tests.support.geometry import stub_geometry_instrument
     from tests.support.lens import stub_lens_instrument
-    from tests.support.replay import unwired_replay
     from tests.support.sae import stub_sae_instrument
 
     d = stub.__dict__
     if "_geometry_instrument" not in d:
-        stub._geometry_instrument = GeometryInstrument(stub, replay=unwired_replay)
+        stub._geometry_instrument = stub_geometry_instrument(stub)
     if "_lens_instrument" not in d:
         stub._lens_instrument = stub_lens_instrument(stub)
     if "_sae_instrument" not in d:

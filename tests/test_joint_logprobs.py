@@ -39,7 +39,6 @@ from drowse.server.tree_routes import (
 from drowse.steering.triggers import TriggerContext
 from tests.conftest import FakeLogitsModel
 from tests.support.lens import stub_lens_instrument
-from tests.support.replay import unwired_replay
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +414,7 @@ class _MockSession:
     def __init__(self):
         from types import SimpleNamespace
 
-        from drowse.readout.geometry import GeometryInstrument
+        from tests.support.geometry import stub_geometry_instrument
         from tests.support.read_plane import make_read_plane
         from tests.support.sae import stub_sae_instrument
         from drowse.readout.types import ReadRequest
@@ -441,9 +440,7 @@ class _MockSession:
             },
         )()
         self._engine = SimpleNamespace(gen_config=lambda _sampling: self.config)
-        self._geometry_instrument = GeometryInstrument(  # type: ignore[arg-type]
-            self, replay=unwired_replay,
-        )
+        self._geometry_instrument = stub_geometry_instrument(self)
         self._lens_instrument = stub_lens_instrument(self)
         self._sae_instrument = stub_sae_instrument(self)
 

@@ -354,7 +354,6 @@ class DrowseSession:
             model_id=self.model_id, exclusive=self._model_exclusive,
             steered=lambda: self._steering.plan is not None,
         )
-        self._neutral.on_whitener(self._adopt_whitener)
         # Corpus generation and the extract/fit/bake glue.  Wired before the
         # probe bootstrap below, which fits stale bundled axes through ``fit``;
         # ``dls`` gates every flat fit's straddle-pruning.
@@ -396,8 +395,14 @@ class DrowseSession:
             capture=partial(_capture_all_hidden_states, self._model, self._layers),
         )
         self._geometry_instrument = GeometryInstrument(
-            self, replay=self._token_replay,
+            monitor=self._monitor,
+            exclusive=self._model_exclusive,
+            resolve_manifold=self._resolve_probe_manifold,
+            ensure_whitener=self._neutral.whitener,
+            replay=self._token_replay,
         )
+        # A freshly built whitener re-points the Monitor's read metric.
+        self._neutral.on_whitener(self._geometry_instrument.adopt_whitener)
         # The J-lens family: resident lens, fit lifecycle, probes, live
         # readout and token replay, over explicit dependencies.
         self._lens_instrument = LensInstrument(
@@ -780,12 +785,6 @@ class DrowseSession:
         :class:`ConcurrentExtractionError` when a build is needed while a model
         op, a generation, or a steering scope is active."""
         return self._neutral.whitener()
-
-    def _adopt_whitener(self, whitener: Any) -> None:
-        """Keep the Monitor's read metric in lock-step with a freshly built
-        whitener (a roster mutation, so under the geometry-state boundary)."""
-        with self._geometry_instrument.state_lock:
-            self._monitor.set_whitener(whitener)
 
     def _mid_generation_phase(self) -> str | None:
         """The phase name while a generation is mid-step, else ``None``."""
@@ -1754,9 +1753,7 @@ class DrowseSession:
         self._sae_instrument.probes.clear()
         self._sae_instrument.live = None
         self._sae_instrument.runtime.close()
-        for name in list(self._monitor.probe_names):
-            self._monitor.remove_probe(name)
-        self._monitor.set_whitener(None)
+        self._geometry_instrument.clear()
 
         # The artifact registry, its derived caches, the neutral baseline.
         self._registry.clear()

@@ -22,6 +22,7 @@ from drowse.readout.types import ProbeReading
 from drowse.loom.errors import UnknownNodeError
 from drowse.loom.recipe import Recipe
 from drowse.readout.geometry import GeometryInstrument
+from tests.support.geometry import stub_geometry_instrument
 from tests.support.replay import ReplayRig
 
 
@@ -57,7 +58,7 @@ class _StubMonitor:
 
 def _geometry(rig: ReplayRig) -> tuple[GeometryInstrument, Any]:
     session = SimpleNamespace(_monitor=_StubMonitor(["formal.casual"], {0, 1}))
-    return GeometryInstrument(session, replay=rig.replay), session  # type: ignore[arg-type]
+    return stub_geometry_instrument(session, replay=rig.replay), session
 
 
 def _geometry_block(out: dict[str, Any]) -> dict[str, Any]:
