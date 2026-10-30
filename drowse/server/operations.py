@@ -30,7 +30,7 @@ import re
 import threading
 import time
 from collections import OrderedDict, deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
@@ -331,7 +331,7 @@ class ProgressPump:
         self._flush()
         self._put((kind, payload))
 
-    async def frames(self) -> AsyncIterator[str]:
+    async def frames(self) -> AsyncGenerator[str, None]:
         """SSE frames until the terminal ``done``/``error``, with idle heartbeats."""
         while True:
             try:
@@ -394,7 +394,7 @@ class OperationTasks:
 
 async def _observe(
     pump: ProgressPump, tasks: OperationTasks, task: asyncio.Task[Any], *, abandonable: bool,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """The SSE body over ``pump``; an abandoned stream withdraws a still-queued job.
 
     Without a receipt, the stream is the job's only observer: a client that
