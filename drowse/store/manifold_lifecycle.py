@@ -476,8 +476,9 @@ def _refresh_manifold_locked(
       package data; returns ``"bundled"``.  Delegates to
       :func:`materialize_bundled_manifolds`, which is process-scoped, so
       a fresh process re-copy is the practical path.
-    - ``hf://<owner>/<name>[@rev]`` — re-pulled into the same folder via
-      :func:`drowse.store.hub.pull_manifold`; returns ``"hf"``.
+    - ``hf://<owner>/<name>@<sha>`` — the repo's current revision re-pulled
+      into the same folder via :func:`drowse.store.hub.pull_manifold`;
+      returns ``"hf"``.
 
     When ``model_scope`` (a raw model id) is given the source tier is
     *bypassed*: delete just that model's fitted tensor pair (via
@@ -515,9 +516,11 @@ def _refresh_manifold_locked(
         from drowse.base.hf import split_revision
         from drowse.store.hub import pull_manifold
 
-        coord, revision = split_revision(source[len("hf://"):])
-        with _locked_manifold_pairs(_manifold_tensor_files(folder)):
-            pull_manifold(coord, target_folder=folder, force=force, revision=revision)
+        # The install pins ``hf://<repo>@<sha>``; refresh re-pulls the repo's
+        # current default revision.  The install pipeline takes the manifest,
+        # template, and pair locks itself in the global order.
+        coord, _pinned = split_revision(source[len("hf://"):])
+        pull_manifold(coord, as_=f"{namespace}/{name}", force=force)
         return "hf"
 
     # local (or anything without an upstream): nothing to do.

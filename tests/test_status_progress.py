@@ -395,7 +395,7 @@ def test_pack_install_runner_narrates(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """``pack install`` prints each stage the io layer reports."""
-    import drowse.store.hub as hfm
+    import drowse.store.install as install_mod
     from drowse.cli.runners.pack import _run_pack_install
 
     def _install(
@@ -407,7 +407,7 @@ def test_pack_install_runner_narrates(
         on_progress("Validating staged alice/mood...")
         return Path("/home/.drowse/manifolds/local/mood")
 
-    monkeypatch.setattr(hfm, "install_manifold", _install)
+    monkeypatch.setattr(install_mod, "install_manifold", _install)
     _run_pack_install(argparse.Namespace(
         target="alice/mood", as_target=None, force=False,
     ))
@@ -423,21 +423,21 @@ def test_install_manifold_reports_every_stage(
 ) -> None:
     """The io entry point narrates resolve → download for an HF coord."""
     import drowse.store.hub as hfm
+    from drowse.store.install import install_manifold
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
 
     def _fake_pull(
-        coord: str, target_folder: Path, *, force: bool, revision: Any,
+        coord: str, *, revision: Any, as_: Any, force: bool,
         on_progress: Any = None,
     ) -> Path:
         assert on_progress is not None
         on_progress(f"Downloading {coord} from Hugging Face...")
-        target_folder.mkdir(parents=True, exist_ok=True)
-        return target_folder
+        return tmp_path / "home" / "manifolds" / "local" / "mood"
 
     monkeypatch.setattr(hfm, "pull_manifold", _fake_pull)
     lines: list[str] = []
-    hfm.install_manifold("alice/mood", on_progress=lines.append)
+    install_manifold("alice/mood", on_progress=lines.append)
 
     assert lines[0] == "Resolving alice/mood..."
     assert "Downloading alice/mood from Hugging Face..." in lines

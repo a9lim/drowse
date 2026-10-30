@@ -64,10 +64,8 @@ def materialize_bundled_artifacts() -> None:
     Both materializers are per-home process-scoped no-ops after their first
     call, so repeated bootstrap is cheap.
     """
-    from drowse.store.archive import recover_drowse_archive_transactions
     from drowse.store.manifolds import materialize_bundled_manifolds
     from drowse.store.templates import materialize_bundled_templates
 
-    recover_drowse_archive_transactions()
     materialize_bundled_templates()
     materialize_bundled_manifolds()

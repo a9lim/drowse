@@ -1,4 +1,19 @@
-"""Secure ``.drowse`` manifold transport archives."""
+"""The ``.drowse`` manifold transport archive: codec, validation, and export.
+
+A ``.drowse`` file is a stored ZIP whose ``pack.json`` (format v1) names one
+primary manifold closure (``manifolds/<ns>/<name>/``: ``manifold.json``, the
+node corpora, and every manifested fitted tensor/sidecar pair) plus, for a
+templated manifold, its exact template closure
+(``templates/<ns>/<name>/template.json``), with a size and sha256 per entry.
+The same wire format is read and written by the drowse.ai browser edition.
+
+:func:`extract_drowse_archive` validates the ZIP (path canonicality, entry
+kinds, size/ratio/count bounds, duplicate-key JSON) and streams every entry
+once — hashing while writing — into a caller-owned staging directory.
+:func:`validate_closure` proves an on-disk closure exact, and
+:func:`validate_fitted_pair` proves one fitted pair; the install pipeline
+(:mod:`drowse.store.install`) runs them on everything it publishes.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +24,9 @@ import re
 import shutil
 import stat
 import tempfile
-import uuid
 import zipfile
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator
 
@@ -19,17 +34,18 @@ import torch
 from safetensors import SafetensorError, safe_open
 
 from drowse.errors import DrowseError
-from drowse.base.atomic import artifact_lock, fsync_directory, write_json_atomic
+from drowse.base.atomic import fsync_directory
 from drowse.base.integrity import NAME_REGEX, hash_file
 from drowse.store.manifold_folder import (
     ManifoldFolder,
     ManifoldFormatError,
+    _locked_manifest,
     load_manifold_sidecar_data,
     manifold_folder_tensor_paths,
     manifold_pair_lock,
 )
-from drowse.base.paths import manifold_dir, drowse_home
-from drowse.store.templates import TemplateFolder, template_dir
+from drowse.base.paths import manifold_dir
+from drowse.store.templates import TemplateFolder, template_dir, template_lock
 
 
 DROWSE_ARCHIVE_FORMAT_VERSION = 1
@@ -47,13 +63,11 @@ _TENSOR_MAX_ELEMENTS = DROWSE_ARCHIVE_MAX_FILE_BYTES // 4
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _HF_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
-_TRANSACTION_FORMAT_VERSION = 1
-_LEGACY_TRANSACTION_RE = re.compile(
-    r"^(?P<name>[a-z][a-z0-9._-]{0,63})\.drowse-"
-    r"(?P<kind>stage|bak)-(?P<token>[0-9a-f]{32})$"
-)
 
-ProgressCallback = Callable[[str], None]
+#: ``manifold.json`` keys that identify one *installed* folder generation
+#: (fit transactions), never a transported artifact.  Export drops them and
+#: install strips them from whatever an archive carries.
+LOCAL_ONLY_MANIFOLD_KEYS = ("artifact_id", "fit_epochs")
 
 
 class DrowseArchiveError(ValueError, DrowseError):
@@ -63,9 +77,28 @@ class DrowseArchiveError(ValueError, DrowseError):
         return (400, str(self) or self.__class__.__name__)
 
 
-def _report(on_progress: ProgressCallback | None, message: str) -> None:
-    if on_progress is not None:
-        on_progress(message)
+@dataclass(frozen=True)
+class ArchiveClosure:
+    """A validated manifold closure laid out under a staging directory.
+
+    ``manifold`` / ``template`` are the closure directories; ``identity`` is
+    the archive-declared ``(namespace, name)`` of the primary manifold and
+    ``template_identity`` that of its template.
+    """
+
+    manifold: Path
+    folder: ManifoldFolder
+    identity: tuple[str, str]
+    template: Path | None = None
+    template_folder: TemplateFolder | None = None
+    template_identity: tuple[str, str] | None = None
+
+    @property
+    def template_sha256(self) -> str | None:
+        return (
+            self.template_folder.sha256()
+            if self.template_folder is not None else None
+        )
 
 
 def _load_exact_json(raw: bytes, *, label: str) -> Any:
@@ -329,6 +362,24 @@ def _validate_source_provenance(value: Any) -> dict[str, str | None]:
     return {"uri": uri, "repository": repository, "revision": revision}
 
 
+def _source_provenance(source: str) -> dict[str, str | None]:
+    repository = None
+    revision = None
+    if source.startswith("hf://"):
+        from drowse.base.hf import split_revision
+
+        repository, revision = split_revision(source[len("hf://"):])
+        if revision is None:
+            raise DrowseArchiveError(
+                "Hugging Face manifold source must be pinned to a revision"
+            )
+    return _validate_source_provenance({
+        "uri": source,
+        "repository": repository,
+        "revision": revision,
+    })
+
+
 def _stream_entry(
     archive: zipfile.ZipFile, info: zipfile.ZipInfo, *, expected: dict[str, Any],
     output: Path | None = None,
@@ -368,6 +419,163 @@ def _stream_entry(
     finally:
         if handle is not None:
             handle.close()
+
+
+def extract_drowse_archive(archive_path: Path, root: Path) -> ArchiveClosure:
+    """Validate a ``.drowse`` and extract its closure under ``root``.
+
+    Each entry is streamed exactly once: hashed and size-checked while it is
+    written, so a bad entry aborts mid-copy and the caller discards ``root``.
+    The extracted manifold directory doubles as the install stage.
+    """
+    source = Path(archive_path).expanduser()
+    if not source.is_file():
+        raise FileNotFoundError(f"Drowse archive not found: {source}")
+    if source.suffix.lower() != ".drowse":
+        raise DrowseArchiveError("archive path must end in .drowse")
+    try:
+        archive = zipfile.ZipFile(source, "r")
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise DrowseArchiveError(f"could not open {source} ({exc})") from exc
+    with archive:
+        infos = _validate_zip_infos(archive.infolist())
+        pack_info = infos.get("pack.json")
+        if pack_info is None:
+            raise DrowseArchiveError("archive has no pack.json")
+        if pack_info.file_size > _PACK_MANIFEST_MAX_BYTES:
+            raise DrowseArchiveError("pack.json is larger than 1 MiB")
+        try:
+            raw_pack = archive.read(pack_info)
+        except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+            raise DrowseArchiveError(f"could not read pack.json ({exc})") from exc
+        data = _load_pack_json(raw_pack)
+        primary, identity, template, template_identity, files = (
+            _validate_pack_manifest(data, infos)
+        )
+        for name, record in files.items():
+            output = root.joinpath(*PurePosixPath(name).parts)
+            _stream_entry(archive, infos[name], expected=record, output=output)
+    manifold_path = root.joinpath(*PurePosixPath(primary).parts)
+    template_path = (
+        root.joinpath(*PurePosixPath(template).parts)
+        if template is not None else None
+    )
+    folder, loaded_template = validate_closure(
+        manifold_path,
+        expected_name=identity[1],
+        template_path=template_path,
+        template_identity=template_identity,
+    )
+    if data["source"] != _source_provenance(folder.source or "local"):
+        raise DrowseArchiveError(
+            "pack.json source provenance does not match manifold.json"
+        )
+    return ArchiveClosure(
+        manifold=manifold_path,
+        folder=folder,
+        identity=identity,
+        template=template_path,
+        template_folder=loaded_template,
+        template_identity=template_identity,
+    )
+
+
+def validate_closure(
+    manifold_path: Path,
+    *,
+    expected_name: str,
+    template_path: Path | None,
+    template_identity: tuple[str, str] | None,
+) -> tuple[ManifoldFolder, TemplateFolder | None]:
+    """Prove an on-disk manifold (+ template) closure exact and self-consistent.
+
+    Duplicate-key-free bounded JSON, the folder's integrity manifest, the
+    identity, the template binding and corpus agreement, and an exact file set
+    (no file outside ``manifold.json`` + node corpora + manifested pairs).
+    Fitted pairs are proven separately by :func:`validate_fitted_pair`.
+    """
+    _preflight_manifold_codec_sizes(manifold_path)
+    try:
+        folder = ManifoldFolder.load(manifold_path)
+    except (ManifoldFormatError, OSError, ValueError) as exc:
+        raise DrowseArchiveError(f"manifold closure failed validation ({exc})") from exc
+    if folder.name != expected_name:
+        raise DrowseArchiveError(
+            f"manifold closure {expected_name!r} contains manifold identity "
+            f"{folder.name!r}"
+        )
+    loaded_template: TemplateFolder | None = None
+    if folder.template_ref is None:
+        if template_path is not None:
+            raise DrowseArchiveError(
+                "closure declares a template for a manifold without template_ref"
+            )
+    else:
+        if template_path is None or template_identity is None:
+            raise DrowseArchiveError(
+                "templated manifold is missing its template closure"
+            )
+        expected_ref = "/".join(template_identity)
+        if folder.template_ref != expected_ref:
+            raise DrowseArchiveError(
+                f"manifold template_ref {folder.template_ref!r} does not match "
+                f"closure {expected_ref!r}"
+            )
+        template_entries = sorted(path.name for path in template_path.iterdir())
+        if template_entries != ["template.json"]:
+            raise DrowseArchiveError(
+                f"template closure {template_path} is not exactly template.json"
+            )
+        raw_template = _read_limited(
+            template_path / "template.json",
+            maximum=_METADATA_JSON_MAX_BYTES,
+            label="closure template.json",
+        )
+        _load_exact_json(raw_template, label="closure template.json")
+        try:
+            loaded_template = TemplateFolder.load(template_path)
+        except (OSError, ValueError) as exc:
+            raise DrowseArchiveError(
+                f"closure template failed validation ({exc})"
+            ) from exc
+        if loaded_template.name != template_identity[1]:
+            raise DrowseArchiveError(
+                f"template closure {expected_ref!r} contains identity "
+                f"{loaded_template.name!r}"
+            )
+        try:
+            node_groups = dict(folder.node_groups())
+        except (OSError, ValueError) as exc:
+            raise DrowseArchiveError(
+                f"closure node corpus failed validation ({exc})"
+            ) from exc
+        if (
+            folder.node_labels != loaded_template.node_labels()
+            or node_groups != loaded_template.node_corpora()
+        ):
+            raise DrowseArchiveError(
+                "templated manifold corpus does not match its template closure"
+            )
+    expected_files = {
+        path.relative_to(manifold_path).as_posix()
+        for path in _payload_paths(folder)
+    }
+    actual_files: set[str] = set()
+    for path in manifold_path.rglob("*"):
+        if path.is_symlink() or not (path.is_dir() or path.is_file()):
+            raise DrowseArchiveError(
+                f"closure path {path} is not a regular file or directory"
+            )
+        if path.is_file():
+            actual_files.add(path.relative_to(manifold_path).as_posix())
+    if actual_files != expected_files:
+        extras = sorted(actual_files - expected_files)
+        missing = sorted(expected_files - actual_files)
+        raise DrowseArchiveError(
+            "manifold closure is not exact "
+            f"(extra={extras}, missing={missing})"
+        )
+    return folder, loaded_template
 
 
 def _validate_safetensors_header(path: Path) -> None:
@@ -467,12 +675,19 @@ def _tensor_shapes_and_finiteness(path: Path) -> dict[str, tuple[int, ...]]:
     return shapes
 
 
-def _validate_fitted_tensor(
+def validate_fitted_pair(
     path: Path,
     folder: ManifoldFolder,
     *,
-    resolved_template_sha256: str | None = None,
+    template_sha256: str | None = None,
 ) -> None:
+    """Validate one fitted tensor/sidecar pair against its manifold closure.
+
+    Header bounds, fp32 dtype, per-field shapes, finiteness, the layer roster,
+    sidecar identity against ``manifold.json``, the corpus/template hash, and
+    the filename-variant provenance.  Every install and export path runs it
+    on every pair it publishes.
+    """
     from drowse.geometry.manifold import domain_from_spec
     from drowse.base.paths import decode_release_id, parse_tensor_filename
 
@@ -531,12 +746,12 @@ def _validate_fitted_tensor(
         raise DrowseArchiveError(
             f"fitted tensor {path.name} domain does not match manifold.json"
         )
-    if folder.template_ref is not None and resolved_template_sha256 is None:
+    if folder.template_ref is not None and template_sha256 is None:
         raise DrowseArchiveError(
             f"fitted tensor {path.name} needs its template closure to be validated"
         )
     expected_nodes_sha256 = folder.nodes_sha256(
-        resolved_template_sha256=resolved_template_sha256,
+        resolved_template_sha256=template_sha256,
     )
     if sidecar["nodes_sha256"] != expected_nodes_sha256:
         raise DrowseArchiveError(
@@ -696,127 +911,6 @@ def _preflight_manifold_codec_sizes(folder: Path) -> None:
         _load_exact_json(raw, label=f"manifold JSON {relative}")
 
 
-def _validate_extracted_closure(
-    root: Path,
-    primary: str,
-    source_identity: tuple[str, str],
-    template: str | None,
-    template_identity: tuple[str, str] | None,
-    source_provenance: dict[str, Any],
-) -> tuple[ManifoldFolder, TemplateFolder | None]:
-    manifold_path = root.joinpath(*PurePosixPath(primary).parts)
-    _preflight_manifold_codec_sizes(manifold_path)
-    try:
-        folder = ManifoldFolder.load(manifold_path)
-    except (ManifoldFormatError, OSError, ValueError) as exc:
-        raise DrowseArchiveError(f"archive manifold failed validation ({exc})") from exc
-    if folder.name != source_identity[1]:
-        raise DrowseArchiveError(
-            f"archive primary {primary!r} contains manifold identity "
-            f"{folder.name!r}"
-        )
-    expected_source = _source_provenance(folder.source or "local")
-    if source_provenance != expected_source:
-        raise DrowseArchiveError(
-            "pack.json source provenance does not match manifold.json"
-        )
-    loaded_template: TemplateFolder | None = None
-    if folder.template_ref is None:
-        if template is not None:
-            raise DrowseArchiveError(
-                "archive declares a template for a manifold without template_ref"
-            )
-    else:
-        if template is None or template_identity is None:
-            raise DrowseArchiveError(
-                "templated manifold is missing its template closure"
-            )
-        expected_ref = "/".join(template_identity)
-        if folder.template_ref != expected_ref:
-            raise DrowseArchiveError(
-                f"manifold template_ref {folder.template_ref!r} does not match "
-                f"closure {expected_ref!r}"
-            )
-        template_path = root.joinpath(*PurePosixPath(template).parts)
-        raw_template = _read_limited(
-            template_path / "template.json",
-            maximum=_METADATA_JSON_MAX_BYTES,
-            label="archive template.json",
-        )
-        _load_exact_json(raw_template, label="archive template.json")
-        try:
-            loaded_template = TemplateFolder.load(template_path)
-        except (OSError, ValueError) as exc:
-            raise DrowseArchiveError(
-                f"archive template failed validation ({exc})"
-            ) from exc
-        if loaded_template.name != template_identity[1]:
-            raise DrowseArchiveError(
-                f"archive template path {template!r} contains identity "
-                f"{loaded_template.name!r}"
-            )
-        try:
-            node_groups = dict(folder.node_groups())
-        except (OSError, ValueError) as exc:
-            raise DrowseArchiveError(
-                f"archive node corpus failed validation ({exc})"
-            ) from exc
-        if (
-            folder.node_labels != loaded_template.node_labels()
-            or node_groups != loaded_template.node_corpora()
-        ):
-            raise DrowseArchiveError(
-                "templated manifold corpus does not match its template closure"
-            )
-    expected_files = {
-        path.relative_to(manifold_path).as_posix()
-        for path in _payload_paths(folder)
-    }
-    actual_files: set[str] = set()
-    for path in manifold_path.rglob("*"):
-        if path.is_symlink() or not (path.is_dir() or path.is_file()):
-            raise DrowseArchiveError(
-                f"archive manifold path {path} is not a regular file or directory"
-            )
-        if path.is_file():
-            actual_files.add(path.relative_to(manifold_path).as_posix())
-    if actual_files != expected_files:
-        extras = sorted(actual_files - expected_files)
-        missing = sorted(expected_files - actual_files)
-        raise DrowseArchiveError(
-            "archive manifold closure is not exact "
-            f"(extra={extras}, missing={missing})"
-        )
-    template_sha256 = (
-        loaded_template.sha256() if loaded_template is not None else None
-    )
-    for tensor in _fitted_tensor_paths(folder):
-        _validate_fitted_tensor(
-            tensor,
-            folder,
-            resolved_template_sha256=template_sha256,
-        )
-    return folder, loaded_template
-
-
-def _source_provenance(source: str) -> dict[str, str | None]:
-    repository = None
-    revision = None
-    if source.startswith("hf://"):
-        from drowse.base.hf import split_revision
-
-        repository, revision = split_revision(source[len("hf://"):])
-        if revision is None:
-            raise DrowseArchiveError(
-                "Hugging Face manifold source must be pinned to a revision"
-            )
-    return _validate_source_provenance({
-        "uri": source,
-        "repository": repository,
-        "revision": revision,
-    })
-
-
 def _fitted_tensor_paths(folder: ManifoldFolder) -> list[Path]:
     from drowse.base.paths import parse_tensor_filename
 
@@ -914,23 +1008,6 @@ def _payload_paths(folder: ManifoldFolder) -> list[Path]:
     return paths
 
 
-@contextmanager
-def _closure_locks(
-    manifold_path: Path, template_path: Path | None,
-) -> Iterator[None]:
-    lock_paths = [
-        manifold_path.parent / f"{manifold_path.name}.manifest",
-    ]
-    if template_path is not None:
-        lock_paths.append(template_path.parent / f"{template_path.name}.template")
-    with ExitStack() as stack:
-        for lock_path in sorted(lock_paths, key=lambda path: str(path.resolve(strict=False))):
-            stack.enter_context(artifact_lock(lock_path))
-        for tensor in manifold_folder_tensor_paths(manifold_path):
-            stack.enter_context(manifold_pair_lock(tensor))
-        yield
-
-
 def _zip_info(name: str) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_STORED
@@ -985,17 +1062,68 @@ def _resolve_transport_template(folder: ManifoldFolder) -> TemplateFolder | None
     return loaded
 
 
+@contextmanager
+def _source_closure_locks(folder_path: Path) -> Iterator[None]:
+    """Freeze one installed manifold (+ its template) for a consistent read.
+
+    Global order: manifest lock, then the template lock, then every fitted
+    pair lock.  The template is computable from the locked manifest because
+    transportable ``template_ref`` values are namespace-qualified.
+    """
+    with ExitStack() as stack:
+        stack.enter_context(_locked_manifest(folder_path))
+        ref = ManifoldFolder.load(folder_path, verify_manifest=False).template_ref
+        if ref is not None:
+            parts = ref.split("/")
+            if len(parts) != 2 or any(
+                not NAME_REGEX.fullmatch(component) for component in parts
+            ):
+                raise DrowseArchiveError(
+                    "Drowse archive requires a namespace-qualified template_ref"
+                )
+            stack.enter_context(template_lock(template_dir(*parts)))
+        for tensor in manifold_folder_tensor_paths(folder_path):
+            stack.enter_context(manifold_pair_lock(tensor))
+        yield
+
+
+def _transport_manifest_bytes(
+    folder: ManifoldFolder, kept_files: set[str],
+) -> bytes:
+    """``manifold.json`` as transported: local-only keys dropped, ``files``
+    narrowed to the exported pairs."""
+    raw = _read_limited(
+        folder.folder / "manifold.json",
+        maximum=_METADATA_JSON_MAX_BYTES,
+        label="manifold.json",
+    )
+    payload = _load_exact_json(raw, label="manifold.json")
+    for key in LOCAL_ONLY_MANIFOLD_KEYS:
+        payload.pop(key, None)
+    payload["files"] = {
+        name: digest for name, digest in payload["files"].items()
+        if name in kept_files
+    }
+    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
 def export_drowse_archive(
     namespace: str,
     name: str,
     *,
     output: str | Path | None = None,
+    include_tensor: Callable[[str], bool] | None = None,
 ) -> Path:
-    """Export one manifold and its exact referenced-template closure."""
+    """Export one installed manifold and its exact template closure.
+
+    ``output`` is a ``.drowse`` path or a directory (default: the working
+    directory), receiving ``<name>.drowse``.  ``include_tensor`` narrows the
+    exported fitted pairs by tensor filename (``drowse pack push``'s model /
+    variant filter); the transported ``manifold.json`` is narrowed to match.
+    """
     from drowse import __version__
-    from drowse.store.bundled import materialize_bundled_artifacts
+
     _validate_manifold_identity(namespace, name)
-    materialize_bundled_artifacts()
     folder_path = manifold_dir(namespace, name)
     if not (folder_path / "manifold.json").is_file():
         raise FileNotFoundError(f"manifold {namespace}/{name} not found at {folder_path}")
@@ -1014,814 +1142,142 @@ def export_drowse_archive(
             "Drowse archive export path must be outside its manifold closure"
         )
 
-    for _attempt in range(8):
+    with _source_closure_locks(folder_path):
         _preflight_manifold_codec_sizes(folder_path)
-        initial = ManifoldFolder.load(folder_path, verify_manifest=False)
-        initial_template = _resolve_transport_template(initial)
-        initial_template_path = (
-            initial_template.path if initial_template is not None else None
-        )
-        with _closure_locks(folder_path, initial_template_path):
-            _preflight_manifold_codec_sizes(folder_path)
-            folder = ManifoldFolder.load(folder_path)
-            if folder.name != name:
-                raise DrowseArchiveError(
-                    f"manifold path {namespace}/{name} contains identity "
-                    f"{folder.name!r}"
-                )
-            template_folder = _resolve_transport_template(folder)
-            template_path = (
-                template_folder.path if template_folder is not None else None
-            )
-            if template_path != initial_template_path:
-                continue
-            if template_path is not None and destination.resolve(
-                strict=False,
-            ).is_relative_to(template_path.resolve(strict=False)):
-                raise DrowseArchiveError(
-                    "Drowse archive export path must be outside its template closure"
-                )
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if template_folder is not None and (
-                folder.node_labels != template_folder.node_labels()
-                or dict(folder.node_groups()) != template_folder.node_corpora()
-            ):
-                raise DrowseArchiveError(
-                    "templated manifold corpus does not match its template"
-                )
-            template_sha256 = (
-                template_folder.sha256() if template_folder is not None else None
-            )
-            closure_paths = _payload_paths(folder)
-            for tensor in _fitted_tensor_paths(folder):
-                _validate_fitted_tensor(
-                    tensor,
-                    folder,
-                    resolved_template_sha256=template_sha256,
-                )
-            primary = f"manifolds/{namespace}/{name}"
-            payloads: list[tuple[str, Path]] = [
-                (
-                    f"{primary}/{path.relative_to(folder.folder).as_posix()}",
-                    path,
-                )
-                for path in closure_paths
-            ]
-            template_key = None
-            if template_folder is not None and template_path is not None:
-                template_ns = template_path.parent.name
-                template_key = f"templates/{template_ns}/{template_folder.name}"
-                template_file = template_path / "template.json"
-                if template_file.is_symlink() or not template_file.is_file():
-                    raise DrowseArchiveError(
-                        "referenced template.json is not a regular file"
-                    )
-                _read_limited(
-                    template_file,
-                    maximum=_METADATA_JSON_MAX_BYTES,
-                    label="referenced template.json",
-                )
-                payloads.append((f"{template_key}/template.json", template_file))
-            if len(payloads) + 1 > DROWSE_ARCHIVE_MAX_ENTRIES:
-                raise DrowseArchiveError(
-                    f"Drowse archive would exceed {DROWSE_ARCHIVE_MAX_ENTRIES} entries"
-                )
-            payload_bytes = 0
-            for archive_path, path in payloads:
-                _validate_member_path(archive_path)
-                size = path.stat().st_size
-                if size > DROWSE_ARCHIVE_MAX_FILE_BYTES:
-                    raise DrowseArchiveError(
-                        f"archive payload {archive_path!r} is larger than 512 MiB"
-                    )
-                payload_bytes += size
-            files = {
-                archive_path: {
-                    "size": path.stat().st_size,
-                    "sha256": hash_file(path),
-                }
-                for archive_path, path in payloads
-            }
-            manifest = {
-                "format_version": DROWSE_ARCHIVE_FORMAT_VERSION,
-                "kind": "drowse-manifold",
-                "producer": {"name": "drowse", "version": __version__},
-                "primary": primary,
-                "template": template_key,
-                "source": _source_provenance(folder.source or "local"),
-                "files": files,
-            }
-            raw_manifest = (
-                json.dumps(manifest, sort_keys=True, indent=2) + "\n"
-            ).encode()
-            if len(raw_manifest) > _PACK_MANIFEST_MAX_BYTES:
-                raise DrowseArchiveError("pack.json would be larger than 1 MiB")
-            if payload_bytes + len(raw_manifest) > DROWSE_ARCHIVE_MAX_TOTAL_BYTES:
-                raise DrowseArchiveError("Drowse archive would expand beyond 2 GiB")
-            fd, temp_name = tempfile.mkstemp(
-                prefix=f".{destination.name}.",
-                suffix=".tmp",
-                dir=destination.parent,
-            )
-            os.close(fd)
-            temp_path = Path(temp_name)
-            try:
-                with zipfile.ZipFile(temp_path, "w", allowZip64=True) as archive:
-                    archive.writestr(_zip_info("pack.json"), raw_manifest)
-                    for archive_path, path in sorted(payloads):
-                        _write_zip_path(archive, archive_path, path)
-                with open(temp_path, "rb") as handle:
-                    os.fsync(handle.fileno())
-                os.replace(temp_path, destination)
-                fsync_directory(destination.parent)
-            finally:
-                temp_path.unlink(missing_ok=True)
-            return destination
-    raise DrowseArchiveError("referenced template changed repeatedly during export")
-
-
-def _copy_tree(source: Path, destination: Path) -> None:
-    if destination.exists():
-        shutil.rmtree(destination)
-    shutil.copytree(source, destination)
-    files = [path for path in destination.rglob("*") if path.is_file()]
-    for path in files:
-        with open(path, "rb") as handle:
-            os.fsync(handle.fileno())
-    directories = [
-        path for path in destination.rglob("*") if path.is_dir()
-    ]
-    for path in sorted(directories, key=lambda item: len(item.parts), reverse=True):
-        fsync_directory(path)
-    fsync_directory(destination)
-    fsync_directory(destination.parent)
-
-
-def _same_template(source: Path, destination: Path) -> bool:
-    try:
-        entries = list(destination.iterdir())
-    except OSError as exc:
-        raise DrowseArchiveError(
-            f"template target {destination} is unreadable ({exc})"
-        ) from exc
-    if len(entries) != 1 or entries[0].name != "template.json":
-        raise DrowseArchiveError(
-            f"template target {destination} is not an exact template closure"
-        )
-    target = entries[0]
-    if target.is_symlink() or not target.is_file():
-        raise DrowseArchiveError(
-            f"template target {target} is not a regular file"
-        )
-    return hash_file(source / "template.json") == hash_file(target)
-
-
-def _other_template_dependents(
-    root: Path,
-    template_ref: str,
-    *,
-    excluding: Path,
-) -> list[str]:
-    manifold_root = root / "manifolds"
-    if not manifold_root.exists():
-        return []
-    if manifold_root.is_symlink() or not manifold_root.is_dir():
-        raise DrowseArchiveError(
-            f"Drowse archive manifold root {manifold_root} is not a regular directory"
-        )
-    excluded = excluding.resolve(strict=False)
-    dependents: list[str] = []
-    for namespace in sorted(manifold_root.iterdir()):
-        if not NAME_REGEX.fullmatch(namespace.name):
-            continue
-        if namespace.is_symlink() or not namespace.is_dir():
+        folder = ManifoldFolder.load(folder_path)
+        if folder.name != name:
             raise DrowseArchiveError(
-                f"Drowse archive manifold namespace {namespace} is not a regular directory"
+                f"manifold path {namespace}/{name} contains identity "
+                f"{folder.name!r}"
             )
-        for candidate in sorted(namespace.iterdir()):
-            if not NAME_REGEX.fullmatch(candidate.name):
-                continue
-            if candidate.resolve(strict=False) == excluded:
-                continue
-            if candidate.is_symlink() or not candidate.is_dir():
-                raise DrowseArchiveError(
-                    f"Drowse archive manifold path {candidate} is not a regular directory"
-                )
-            manifest = candidate / "manifold.json"
-            if not manifest.exists():
-                continue
-            if manifest.is_symlink() or not manifest.is_file():
-                raise DrowseArchiveError(
-                    f"Drowse archive manifold metadata {manifest} is not a regular file"
-                )
-            try:
-                payload = json.loads(_read_limited(
-                    manifest,
-                    maximum=_METADATA_JSON_MAX_BYTES,
-                    label=f"manifold metadata {manifest}",
-                ))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise DrowseArchiveError(
-                    f"manifold metadata {manifest} is invalid ({exc})"
-                ) from exc
-            if not isinstance(payload, dict):
-                raise DrowseArchiveError(
-                    f"manifold metadata {manifest} must be an object"
-                )
-            if payload.get("template_ref") == template_ref:
-                dependents.append(f"{namespace.name}/{candidate.name}")
-    return dependents
-
-
-def _reset_installed_manifold_transaction_state(folder: Path) -> None:
-    manifest_path = folder / "manifold.json"
-    try:
-        payload = json.loads(_read_limited(
-            manifest_path,
-            maximum=_METADATA_JSON_MAX_BYTES,
-            label=f"staged manifold metadata {manifest_path}",
-        ))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DrowseArchiveError(
-            f"staged manifold metadata {manifest_path} is invalid ({exc})"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise DrowseArchiveError(
-            f"staged manifold metadata {manifest_path} must be an object"
+        template_folder = _resolve_transport_template(folder)
+        template_path = (
+            template_folder.path if template_folder is not None else None
         )
-    payload.pop("artifact_id", None)
-    payload.pop("fit_epochs", None)
-    write_json_atomic(manifest_path, payload)
-
-
-def _transaction_dir(root: Path) -> Path:
-    return root / ".drowse-transactions"
-
-
-def _validate_transaction_roots(root: Path) -> None:
-    for path, label in (
-        (_transaction_dir(root), "transaction directory"),
-        (root / "manifolds", "manifold root"),
-        (root / "templates", "template root"),
-    ):
-        if path.is_symlink():
-            raise DrowseArchiveError(f"Drowse archive {label} {path} is a symbolic link")
-        if path.exists() and not path.is_dir():
-            raise DrowseArchiveError(f"Drowse archive {label} {path} is not a directory")
-
-
-def _transaction_stage_path(root: Path, token: str, kind: str) -> Path:
-    return _transaction_dir(root) / f"{token}.{kind}.stage"
-
-
-def _transaction_backup_path(root: Path, token: str, kind: str) -> Path:
-    return _transaction_dir(root) / f"{token}.{kind}.backup"
-
-
-def _relative_transaction_path(root: Path, path: Path) -> str:
-    root = root.resolve(strict=False)
-    path = path.resolve(strict=False)
-    try:
-        relative = path.relative_to(root).as_posix()
-    except ValueError as exc:
-        raise DrowseArchiveError(f"transaction path {path} escapes {root}") from exc
-    _validate_member_path(relative)
-    return relative
-
-
-def _resolve_transaction_path(root: Path, value: Any) -> Path:
-    if not isinstance(value, str):
-        raise DrowseArchiveError("transaction journal path must be a string")
-    _validate_member_path(value)
-    path = root.joinpath(*PurePosixPath(value).parts).resolve(strict=False)
-    try:
-        path.relative_to(root.resolve(strict=False))
-    except ValueError as exc:
-        raise DrowseArchiveError(f"transaction journal path {value!r} escapes root") from exc
-    return path
-
-
-def _write_transaction_journal(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(path, payload)
-    fsync_directory(path.parent)
-
-
-def _load_transaction_journal(
-    root: Path, path: Path,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    data = _load_pack_json(_read_limited(
-        path,
-        maximum=_METADATA_JSON_MAX_BYTES,
-        label=f"transaction journal {path}",
-    ))
-    if set(data) != {"format_version", "token", "phase", "items"}:
-        raise DrowseArchiveError(f"transaction journal {path} has an invalid schema")
-    if data["format_version"] != _TRANSACTION_FORMAT_VERSION:
-        raise DrowseArchiveError(f"transaction journal {path} has an invalid version")
-    if (
-        not isinstance(data["token"], str)
-        or not re.fullmatch(r"[0-9a-f]{32}", data["token"])
-        or path.stem != data["token"]
-        or data["phase"] not in {
-            "staging", "prepared", "backed_up", "committed",
+        if template_path is not None and destination.resolve(
+            strict=False,
+        ).is_relative_to(template_path.resolve(strict=False)):
+            raise DrowseArchiveError(
+                "Drowse archive export path must be outside its template closure"
+            )
+        if template_folder is not None and (
+            folder.node_labels != template_folder.node_labels()
+            or dict(folder.node_groups()) != template_folder.node_corpora()
+        ):
+            raise DrowseArchiveError(
+                "templated manifold corpus does not match its template"
+            )
+        template_sha256 = (
+            template_folder.sha256() if template_folder is not None else None
+        )
+        tensors = [
+            tensor for tensor in _fitted_tensor_paths(folder)
+            if include_tensor is None or include_tensor(tensor.name)
+        ]
+        for tensor in tensors:
+            validate_fitted_pair(tensor, folder, template_sha256=template_sha256)
+        kept = {
+            item.name for tensor in tensors
+            for item in (tensor, tensor.with_suffix(".json"))
         }
-        or not isinstance(data["items"], list)
-        or not 1 <= len(data["items"]) <= 2
-    ):
-        raise DrowseArchiveError(f"transaction journal {path} has invalid values")
-    items: list[dict[str, Any]] = []
-    for index, raw in enumerate(data["items"]):
-        if not isinstance(raw, dict) or set(raw) != {
-            "kind", "stage", "target", "backup", "had_existing",
-        }:
-            raise DrowseArchiveError(f"transaction journal {path} has an invalid item")
-        expected_kind = "manifold" if index == 0 else "template"
-        if raw["kind"] != expected_kind or not isinstance(raw["had_existing"], bool):
-            raise DrowseArchiveError(f"transaction journal {path} has an invalid item")
-        target = _resolve_transaction_path(root, raw["target"])
-        expected_root = "manifolds" if expected_kind == "manifold" else "templates"
-        relative_target = target.relative_to(root.resolve(strict=False))
-        if (
-            len(relative_target.parts) != 3
-            or relative_target.parts[0] != expected_root
-            or any(
-                not NAME_REGEX.fullmatch(component)
-                for component in relative_target.parts[1:]
+        manifest_path = folder.folder / "manifold.json"
+        closure_paths = [
+            path for path in _payload_paths(folder)
+            if path.parent != folder.folder
+            or path == manifest_path or path.name in kept
+        ]
+        primary = f"manifolds/{namespace}/{name}"
+        payloads: list[tuple[str, Path | bytes]] = [
+            (
+                f"{primary}/{path.relative_to(folder.folder).as_posix()}",
+                _transport_manifest_bytes(folder, kept)
+                if path == manifest_path else path,
             )
-        ):
-            raise DrowseArchiveError(f"transaction journal {path} has an invalid target")
-        stage = _resolve_transaction_path(root, raw["stage"])
-        backup = _resolve_transaction_path(root, raw["backup"])
-        if (
-            stage != _transaction_stage_path(root, data["token"], expected_kind)
-            or backup
-            != _transaction_backup_path(root, data["token"], expected_kind)
-        ):
-            raise DrowseArchiveError(f"transaction journal {path} has invalid staging paths")
-        items.append({
-            "kind": expected_kind,
-            "stage": stage,
-            "target": target,
-            "backup": backup,
-            "had_existing": raw["had_existing"],
-        })
-    return data, items
-
-
-def _remove_transaction_tree(path: Path) -> None:
-    if path.is_symlink():
-        raise DrowseArchiveError(f"transaction path {path} is a symbolic link")
-    if path.exists():
-        if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path)
-        else:
-            raise DrowseArchiveError(f"transaction path {path} is not a directory")
-
-
-def _recover_transaction_journal(root: Path, journal: Path) -> None:
-    data, items = _load_transaction_journal(root, journal)
-    manifold_target = items[0]["target"]
-    template_target = items[1]["target"] if len(items) == 2 else None
-    with _closure_locks(manifold_target, template_target):
-        committed = data["phase"] == "committed" and all(
-            item["target"].is_dir() and not item["target"].is_symlink()
-            for item in items
-        )
-        if committed:
-            for item in items:
-                _remove_transaction_tree(item["stage"])
-                _remove_transaction_tree(item["backup"])
-        else:
-            for item in reversed(items):
-                target = item["target"]
-                backup = item["backup"]
-                if backup.exists():
-                    _remove_transaction_tree(target)
-                    backup.rename(target)
-                    fsync_directory(target.parent)
-                    fsync_directory(backup.parent)
-                elif data["phase"] in {"backed_up", "committed"}:
-                    if item["had_existing"]:
-                        raise DrowseArchiveError(
-                            f"transaction {data['token']} lost backup for {target}"
-                        )
-                    _remove_transaction_tree(target)
-                _remove_transaction_tree(item["stage"])
-        journal.unlink(missing_ok=True)
-        fsync_directory(journal.parent)
-
-
-def _recover_legacy_transaction_orphans(root: Path) -> None:
-    for artifact_root, metadata_name in (
-        (root / "manifolds", "manifold.json"),
-        (root / "templates", "template.json"),
-    ):
-        if not artifact_root.exists():
-            continue
-        if artifact_root.is_symlink() or not artifact_root.is_dir():
-            raise DrowseArchiveError(
-                f"Drowse archive artifact root {artifact_root} is not a regular directory"
-            )
-        for namespace in sorted(artifact_root.iterdir()):
-            if not namespace.is_dir() or namespace.is_symlink():
-                continue
-            for candidate in sorted(namespace.iterdir()):
-                match = _LEGACY_TRANSACTION_RE.fullmatch(candidate.name)
-                if match is None:
-                    continue
-                if candidate.is_symlink() or not candidate.is_dir():
-                    raise DrowseArchiveError(
-                        f"legacy transaction path {candidate} is not a directory"
-                    )
-                metadata = candidate / metadata_name
-                if not metadata.is_file() or metadata.is_symlink():
-                    continue
-                try:
-                    payload = json.loads(_read_limited(
-                        metadata,
-                        maximum=_METADATA_JSON_MAX_BYTES,
-                        label=f"legacy transaction metadata {metadata}",
-                    ))
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict) or payload.get("name") != match["name"]:
-                    continue
-                target = candidate.with_name(match["name"])
-                lock_suffix = (
-                    "manifest" if metadata_name == "manifold.json" else "template"
-                )
-                with artifact_lock(target.parent / f"{target.name}.{lock_suffix}"):
-                    if match["kind"] == "bak" and not target.exists():
-                        candidate.rename(target)
-                        fsync_directory(target.parent)
-                    else:
-                        _remove_transaction_tree(candidate)
-                        fsync_directory(candidate.parent)
-
-
-def _recover_transaction_orphans(root: Path) -> None:
-    directory = _transaction_dir(root)
-    if directory.exists():
-        stage_pattern = re.compile(
-            r"^[0-9a-f]{32}\.(?:manifold|template)\.stage$"
-        )
-        backup_pattern = re.compile(
-            r"^[0-9a-f]{32}\.(?:manifold|template)\.backup$"
-        )
-        for path in sorted(directory.iterdir()):
-            if stage_pattern.fullmatch(path.name):
-                _remove_transaction_tree(path)
-            elif backup_pattern.fullmatch(path.name):
+            for path in closure_paths
+        ]
+        template_key = None
+        if template_folder is not None and template_path is not None:
+            template_key = f"templates/{template_path.parent.name}/{template_folder.name}"
+            template_file = template_path / "template.json"
+            if template_file.is_symlink() or not template_file.is_file():
                 raise DrowseArchiveError(
-                    f"orphaned transaction backup {path} has no recovery journal"
+                    "referenced template.json is not a regular file"
                 )
-            elif re.fullmatch(r"[0-9a-f]{32}\.json\.tmp", path.name):
-                if path.is_dir() or path.is_symlink():
-                    raise DrowseArchiveError(
-                        f"transaction temporary path {path} is not a regular file"
-                    )
-                path.unlink(missing_ok=True)
-        fsync_directory(directory)
-    _recover_legacy_transaction_orphans(root)
+            _read_limited(
+                template_file,
+                maximum=_METADATA_JSON_MAX_BYTES,
+                label="referenced template.json",
+            )
+            payloads.append((f"{template_key}/template.json", template_file))
+        _write_archive(
+            destination,
+            payloads,
+            primary=primary,
+            template=template_key,
+            source=_source_provenance(folder.source or "local"),
+            producer_version=__version__,
+        )
+    return destination
 
 
-def _recover_transactions_locked(root: Path) -> None:
-    directory = _transaction_dir(root)
-    if directory.exists():
-        for journal in sorted(directory.glob("*.json")):
-            _recover_transaction_journal(root, journal)
-    _recover_transaction_orphans(root)
-
-
-@contextmanager
-def _transaction_guard(root: Path) -> Iterator[None]:
-    root = root.resolve(strict=False)
-    root.mkdir(parents=True, exist_ok=True)
-    _validate_transaction_roots(root)
-    with artifact_lock(root / ".drowse-transactions"):
-        _validate_transaction_roots(root)
-        _recover_transactions_locked(root)
-        yield
-
-
-def recover_drowse_archive_transactions(root: Path | None = None) -> None:
-    """Recover crash-left multi-artifact install journals under ``root``."""
-    with _transaction_guard(Path(root) if root is not None else drowse_home()):
-        pass
-
-
-def _transaction_items(
-    root: Path,
-    staged: list[tuple[Path, Path]],
+def _write_archive(
+    destination: Path,
+    payloads: list[tuple[str, Path | bytes]],
     *,
-    token: str,
-) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for index, (stage, target) in enumerate(staged):
-        kind = "manifold" if index == 0 else "template"
-        if target.is_symlink() or target.exists() and not target.is_dir():
-            raise DrowseArchiveError(
-                f"Drowse archive {kind} target {target} is not a regular directory"
-            )
-        expected_stage = _transaction_stage_path(root, token, kind)
-        if stage.resolve(strict=False) != expected_stage.resolve(strict=False):
-            raise DrowseArchiveError(
-                f"Drowse archive {kind} stage must be outside live artifact namespaces"
-            )
-        backup = _transaction_backup_path(root, token, kind)
-        items.append({
-            "kind": kind,
-            "stage": _relative_transaction_path(root, stage),
-            "target": _relative_transaction_path(root, target),
-            "backup": _relative_transaction_path(root, backup),
-            "had_existing": target.exists(),
-        })
-    return items
-
-
-def _begin_transaction(
-    staged: list[tuple[Path, Path]], *, token: str, root: Path,
-) -> Path:
-    items = _transaction_items(root, staged, token=token)
-    journal = _transaction_dir(root) / f"{token}.json"
-    if journal.exists():
-        raise DrowseArchiveError(f"Drowse archive transaction {token} already exists")
-    for item in items:
-        _remove_transaction_tree(_resolve_transaction_path(root, item["stage"]))
-        _remove_transaction_tree(_resolve_transaction_path(root, item["backup"]))
-    _write_transaction_journal(journal, {
-        "format_version": _TRANSACTION_FORMAT_VERSION,
-        "token": token,
-        "phase": "staging",
-        "items": items,
-    })
-    return journal
-
-
-def _promote_transaction(
-    staged: list[tuple[Path, Path]], *, token: str,
-    journal_root: Path | None = None, transaction_locked: bool = False,
+    primary: str,
+    template: str | None,
+    source: dict[str, str | None],
+    producer_version: str,
 ) -> None:
-    if not staged or len(staged) > 2:
-        raise DrowseArchiveError("Drowse archive transaction needs one or two targets")
-    if not re.fullmatch(r"[0-9a-f]{32}", token):
-        raise DrowseArchiveError("Drowse archive transaction token is invalid")
-    if journal_root is None:
-        roots: set[Path] = set()
-        for _stage, target in staged:
-            resolved_target = target.resolve(strict=False)
-            if len(resolved_target.parents) < 3:
-                raise DrowseArchiveError("Drowse archive transaction target is too shallow")
-            roots.add(resolved_target.parents[2])
-        if len(roots) != 1:
-            raise DrowseArchiveError("Drowse archive transaction targets have different roots")
-        journal_root = roots.pop()
-    root = journal_root.resolve(strict=False)
-    if not transaction_locked:
-        with _transaction_guard(root):
-            _promote_transaction(
-                staged, token=token, journal_root=root, transaction_locked=True,
+    if len(payloads) + 1 > DROWSE_ARCHIVE_MAX_ENTRIES:
+        raise DrowseArchiveError(
+            f"Drowse archive would exceed {DROWSE_ARCHIVE_MAX_ENTRIES} entries"
+        )
+    files: dict[str, dict[str, Any]] = {}
+    payload_bytes = 0
+    for archive_path, item in payloads:
+        _validate_member_path(archive_path)
+        if isinstance(item, bytes):
+            size, digest = len(item), hashlib.sha256(item).hexdigest()
+        else:
+            size, digest = item.stat().st_size, hash_file(item)
+        if size > DROWSE_ARCHIVE_MAX_FILE_BYTES:
+            raise DrowseArchiveError(
+                f"archive payload {archive_path!r} is larger than 512 MiB"
             )
-        return
-    journal = _transaction_dir(root) / f"{token}.json"
-    if not journal.exists():
-        raise DrowseArchiveError(
-            f"Drowse archive transaction {token} has no durable staging journal"
-        )
-    payload, loaded_items = _load_transaction_journal(root, journal)
-    expected_items = _transaction_items(root, staged, token=token)
-    comparable = [
-        {
-            "kind": item["kind"],
-            "stage": _relative_transaction_path(root, item["stage"]),
-            "target": _relative_transaction_path(root, item["target"]),
-            "backup": _relative_transaction_path(root, item["backup"]),
-            "had_existing": item["had_existing"],
-        }
-        for item in loaded_items
-    ]
-    if payload["phase"] != "staging" or comparable != expected_items:
-        raise DrowseArchiveError(
-            f"Drowse archive transaction {token} does not match its journal"
-        )
-    items = expected_items
-    if any(
-        (
-            _resolve_transaction_path(root, item["stage"]).is_symlink()
-            or not _resolve_transaction_path(root, item["stage"]).is_dir()
-        )
-        for item in items
-    ):
-        raise DrowseArchiveError("Drowse archive transaction has an incomplete stage")
-    payload["phase"] = "prepared"
-    _write_transaction_journal(journal, payload)
-    try:
-        for item in items:
-            target = _resolve_transaction_path(root, item["target"])
-            backup = _resolve_transaction_path(root, item["backup"])
-            if item["had_existing"]:
-                _remove_transaction_tree(backup)
-                target.rename(backup)
-                fsync_directory(target.parent)
-                fsync_directory(backup.parent)
-        payload["phase"] = "backed_up"
-        _write_transaction_journal(journal, payload)
-        for stage, target in staged:
-            stage.rename(target)
-            fsync_directory(target.parent)
-            fsync_directory(stage.parent)
-        payload["phase"] = "committed"
-        _write_transaction_journal(journal, payload)
-    except BaseException as exc:
-        try:
-            _recover_transaction_journal(root, journal)
-        except BaseException as recovery_exc:
-            raise DrowseArchiveError(
-                f"Drowse archive promotion failed and recovery was incomplete "
-                f"({recovery_exc})"
-            ) from recovery_exc
-        if isinstance(exc, OSError):
-            raise DrowseArchiveError(
-                f"could not promote Drowse archive transaction ({exc})"
-            ) from exc
-        raise
-    _recover_transaction_journal(root, journal)
-
-
-def install_drowse_archive(
-    archive_path: str | Path,
-    as_: str | None = None,
-    *,
-    force: bool = False,
-    on_progress: ProgressCallback | None = None,
-) -> Path:
-    """Verify, stage, and transactionally install a local ``.drowse``."""
-    from drowse.store.hub import (
-        ManifoldInstallConflict,
-        _rewrite_staged_manifold_name,
+        payload_bytes += size
+        files[archive_path] = {"size": size, "sha256": digest}
+    manifest = {
+        "format_version": DROWSE_ARCHIVE_FORMAT_VERSION,
+        "kind": "drowse-manifold",
+        "producer": {"name": "drowse", "version": producer_version},
+        "primary": primary,
+        "template": template,
+        "source": source,
+        "files": files,
+    }
+    raw_manifest = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    if len(raw_manifest) > _PACK_MANIFEST_MAX_BYTES:
+        raise DrowseArchiveError("pack.json would be larger than 1 MiB")
+    if payload_bytes + len(raw_manifest) > DROWSE_ARCHIVE_MAX_TOTAL_BYTES:
+        raise DrowseArchiveError("Drowse archive would expand beyond 2 GiB")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent,
     )
-    from drowse.store.selectors import invalidate as invalidate_selector_index
-
-    source_archive = Path(archive_path).expanduser()
-    if not source_archive.is_file():
-        raise FileNotFoundError(f"Drowse archive not found: {source_archive}")
-    if source_archive.suffix.lower() not in {".drowse"}:
-        raise DrowseArchiveError("archive path must end in .drowse")
-    _report(on_progress, f"Validating {source_archive.name}...")
-    root = drowse_home()
-    root.mkdir(parents=True, exist_ok=True)
+    os.close(fd)
+    temp_path = Path(temp_name)
     try:
-        archive = zipfile.ZipFile(source_archive, "r")
-    except (OSError, zipfile.BadZipFile) as exc:
-        raise DrowseArchiveError(f"could not open {source_archive} ({exc})") from exc
-    with archive:
-        infos = _validate_zip_infos(archive.infolist())
-        pack_info = infos.get("pack.json")
-        if pack_info is None:
-            raise DrowseArchiveError("archive has no pack.json")
-        if pack_info.file_size > _PACK_MANIFEST_MAX_BYTES:
-            raise DrowseArchiveError("pack.json is larger than 1 MiB")
-        try:
-            raw_pack = archive.read(pack_info)
-        except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
-            raise DrowseArchiveError(f"could not read pack.json ({exc})") from exc
-        data = _load_pack_json(raw_pack)
-        primary, source_identity, template, template_identity, files = (
-            _validate_pack_manifest(data, infos)
-        )
-        for name, record in files.items():
-            _stream_entry(archive, infos[name], expected=record)
-        with tempfile.TemporaryDirectory(prefix=".drowse-", dir=root) as temp:
-            extracted = Path(temp)
-            for name, record in files.items():
-                output = extracted.joinpath(*PurePosixPath(name).parts)
-                _stream_entry(archive, infos[name], expected=record, output=output)
-            folder, loaded_template = _validate_extracted_closure(
-                extracted,
-                primary,
-                source_identity,
-                template,
-                template_identity,
-                data["source"],
-            )
-
-            src_ns, src_name = source_identity
-            if as_ is None:
-                dst_ns, dst_name = src_ns, src_name
-            else:
-                parts = as_.split("/")
-                if len(parts) != 2 or any(
-                    not NAME_REGEX.fullmatch(component) for component in parts
-                ):
-                    raise DrowseArchiveError(
-                        f"as_ must be '<namespace>/<name>' with both components "
-                        f"matching {NAME_REGEX.pattern}"
-                    )
-                dst_ns, dst_name = parts
-                _validate_manifold_identity(dst_ns, dst_name)
-            dst = manifold_dir(dst_ns, dst_name)
-            tmpl_dst = (
-                template_dir(*template_identity)
-                if template_identity is not None else None
-            )
-            token = uuid.uuid4().hex
-            manifold_stage = _transaction_stage_path(root, token, "manifold")
-            template_stage = (
-                _transaction_stage_path(root, token, "template")
-                if tmpl_dst is not None else None
-            )
-            with _transaction_guard(root):
-                with _closure_locks(dst, tmpl_dst):
-                    if dst.exists() and not force:
-                        raise ManifoldInstallConflict(
-                            f"{dst} already exists; pass force=True or "
-                            "as_=<ns>/<name>"
-                        )
-                    install_template = False
-                    if tmpl_dst is not None and loaded_template is not None:
-                        if tmpl_dst.is_symlink() or (
-                            tmpl_dst.exists() and not tmpl_dst.is_dir()
-                        ):
-                            raise DrowseArchiveError(
-                                f"template target {tmpl_dst} is not a regular directory"
-                            )
-                        source_template = loaded_template.path
-                        assert source_template is not None
-                        if tmpl_dst.exists() and _same_template(
-                            source_template, tmpl_dst,
-                        ):
-                            install_template = False
-                        elif tmpl_dst.exists() and not force:
-                            raise ManifoldInstallConflict(
-                                f"{tmpl_dst} already contains a different "
-                                "referenced template; pass force=True to "
-                                "replace the closure"
-                            )
-                        else:
-                            if tmpl_dst.exists():
-                                assert template_identity is not None
-                                template_ref = "/".join(template_identity)
-                                dependents = _other_template_dependents(
-                                    root,
-                                    template_ref,
-                                    excluding=dst,
-                                )
-                                if dependents:
-                                    joined = ", ".join(dependents)
-                                    raise ManifoldInstallConflict(
-                                        f"cannot replace shared template "
-                                        f"{template_ref}; referenced by {joined}"
-                                    )
-                            install_template = True
-                    staged: list[tuple[Path, Path]] = [(manifold_stage, dst)]
-                    if install_template:
-                        assert template_stage is not None
-                        assert tmpl_dst is not None
-                        staged.append((template_stage, tmpl_dst))
-                    journal = _begin_transaction(staged, token=token, root=root)
-                    try:
-                        _report(on_progress, f"Staging {src_ns}/{src_name}...")
-                        _copy_tree(folder.folder, manifold_stage)
-                        _reset_installed_manifold_transaction_state(manifold_stage)
-                        staged_folder = ManifoldFolder.load(manifold_stage)
-                        if as_ is not None:
-                            rewritten_files = _rewrite_staged_manifold_name(
-                                staged_folder, dst_name,
-                            )
-                            staged_folder.write_metadata(files=rewritten_files)
-                            staged_folder = ManifoldFolder.load(manifold_stage)
-                        template_sha256 = (
-                            loaded_template.sha256()
-                            if loaded_template is not None else None
-                        )
-                        for tensor in _fitted_tensor_paths(staged_folder):
-                            _validate_fitted_tensor(
-                                tensor,
-                                staged_folder,
-                                resolved_template_sha256=template_sha256,
-                            )
-                        if install_template:
-                            assert template_stage is not None
-                            assert loaded_template is not None
-                            assert loaded_template.path is not None
-                            _copy_tree(loaded_template.path, template_stage)
-                            staged_template = TemplateFolder.load(template_stage)
-                            assert template_identity is not None
-                            if staged_template.name != template_identity[1]:
-                                raise DrowseArchiveError(
-                                    "staged template identity changed during copy"
-                                )
-                        _report(on_progress, f"Installing {src_ns}/{src_name}...")
-                        _promote_transaction(
-                            staged,
-                            token=token,
-                            journal_root=root,
-                            transaction_locked=True,
-                        )
-                    except BaseException:
-                        if journal.exists():
-                            _recover_transaction_journal(root, journal)
-                        raise
-    invalidate_selector_index()
-    return dst
+        with zipfile.ZipFile(temp_path, "w", allowZip64=True) as archive:
+            archive.writestr(_zip_info("pack.json"), raw_manifest)
+            for archive_path, item in sorted(payloads, key=lambda pair: pair[0]):
+                if isinstance(item, bytes):
+                    archive.writestr(_zip_info(archive_path), item)
+                else:
+                    _write_zip_path(archive, archive_path, item)
+        with open(temp_path, "rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temp_path, destination)
+        fsync_directory(destination.parent)
+    finally:
+        temp_path.unlink(missing_ok=True)

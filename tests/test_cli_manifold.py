@@ -403,7 +403,7 @@ def test_run_manifold_install_calls_backend(monkeypatch: pytest.MonkeyPatch, cap
         calls.append((target, as_, force))
         return Path("/home/.drowse/manifolds/local/circumplex")
 
-    monkeypatch.setattr("drowse.store.hub.install_manifold", fake_install)
+    monkeypatch.setattr("drowse.store.install.install_manifold", fake_install)
     cli.main(["pack", "install", "alice/circumplex", "-a", "local/mood", "-f"])
     assert calls == [("alice/circumplex", "local/mood", True)]
     out = capsys.readouterr().out

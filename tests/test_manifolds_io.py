@@ -1973,16 +1973,15 @@ def test_refresh_manifold_hf_repulls(tmp_path: Path, monkeypatch: pytest.MonkeyP
     captured: dict[str, Any] = {}
     import drowse.store.hub as hfm
 
-    def fake_pull(coord: str, *, target_folder: Path, force: bool, revision: str | None = None) -> Path:
-        captured.update(coord=coord, target=target_folder,
-                        force=force, revision=revision)
-        return target_folder
+    def fake_pull(coord: str, *, as_: str, force: bool) -> Path:
+        captured.update(coord=coord, as_=as_, force=force)
+        return folder
 
     monkeypatch.setattr(hfm, "pull_manifold", fake_pull)
     assert refresh_manifold("alice", "mood") == "hf"
-    assert captured["coord"] == "alice/mood"
-    assert captured["revision"] == "v1"
-    assert captured["target"] == folder
+    # Refresh re-pulls the repo's current revision into the same folder; the
+    # installed ``@v1`` pin is provenance, not a refresh target.
+    assert captured == {"coord": "alice/mood", "as_": "alice/mood", "force": True}
 
 
 def test_refresh_manifold_model_scope_clears_fit_no_repull(
@@ -2043,7 +2042,7 @@ def test_manifold_pair_lock_identity_is_external_stable_and_bounded(
     assert len(before.name) < 100
 
 
-@pytest.mark.parametrize("operation", ["clear", "rm", "refresh"])
+@pytest.mark.parametrize("operation", ["clear", "rm"])
 def test_lifecycle_mutations_wait_for_stable_pair_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2054,22 +2053,11 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
-    namespace = "alice" if operation == "refresh" else "local"
+    namespace = "local"
     folder, _ = create_manifold_folder(
         namespace, "mood", "", domain, _author_nodes(["a", "b", "c"]),
     )
     fitted = _fake_fit_tensor(folder, "google/gemma-3-4b-it")
-    if operation == "refresh":
-        mf = ManifoldFolder.load(folder)
-        mf.source = "hf://alice/mood@v1"
-        mf.write_metadata()
-        import drowse.store.hub as hfm
-
-        monkeypatch.setattr(
-            hfm,
-            "pull_manifold",
-            lambda coord, *, target_folder, force, revision=None: target_folder,
-        )
 
     started = threading.Event()
     done = threading.Event()
@@ -2080,10 +2068,8 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
         try:
             if operation == "clear":
                 clear_manifold_tensors(namespace, "mood")
-            elif operation == "rm":
-                remove_manifold_folder(namespace, "mood")
             else:
-                refresh_manifold(namespace, "mood")
+                remove_manifold_folder(namespace, "mood")
         except BaseException as exc:  # pragma: no cover - asserted below
             errors.append(exc)
         finally:

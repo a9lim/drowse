@@ -555,7 +555,7 @@ class TestManifoldCrudRoutes:
         self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A conflict surfaces its own safe message, not the generic scrub."""
-        from drowse.store.hub import ManifoldInstallConflict
+        from drowse.store.install import ManifoldInstallConflict
 
         _session, client = session_and_client
 
@@ -579,7 +579,7 @@ class TestManifoldCrudRoutes:
         self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The non-streaming branch keeps its typed status table."""
-        from drowse.store.hub import ManifoldInstallConflict
+        from drowse.store.install import ManifoldInstallConflict
 
         _session, client = session_and_client
 

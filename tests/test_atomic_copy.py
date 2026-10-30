@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 
 from drowse.base import atomic
-from drowse.store import hub as hfm
 def test_copy_file_atomic_is_bounded_exact_and_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     source = tmp_path / "source.bin"
     payload = bytes(range(256)) * (1024 * 12 + 17)
@@ -61,21 +60,3 @@ def test_copy_file_atomic_failure_preserves_destination(tmp_path: Path, monkeypa
         atomic.copy_file_atomic(source, destination)
     assert destination.read_bytes() == b"original"
     assert set(tmp_path.iterdir()) == {source, destination}
-
-
-def test_hf_snapshot_copy_never_materializes_complete_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    source = tmp_path / "snapshot"
-    source.mkdir()
-    (source / "manifold.json").write_bytes(b"{}")
-    (source / "large.safetensors").write_bytes(b"tensor bytes")
-    (source / "nodes").mkdir()
-    (source / "nodes" / "00_node.json").write_bytes(b'["text"]')
-    destination = tmp_path / "staging"
-
-    def reject_whole_read(*args: Any, **kwargs: Any):
-        pytest.fail("whole-file buffering is forbidden during artifact copy")
-
-    monkeypatch.setattr(Path, "read_bytes", reject_whole_read)
-    hfm._install_manifold(source, destination, "owner/model")
-    assert (destination / "large.safetensors").read_text() == "tensor bytes"
-    assert (destination / "nodes" / "00_node.json").read_text() == '["text"]'

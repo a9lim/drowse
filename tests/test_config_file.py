@@ -158,7 +158,7 @@ def test_ensure_vectors_installed_missing_hf(monkeypatch: pytest.MonkeyPatch, tm
 
     # 4.0: HF auto-install of a referenced concept routes through the manifold
     # install path, not the retired pack one.
-    monkeypatch.setattr("drowse.store.hub.install_manifold", fake_install)
+    monkeypatch.setattr("drowse.store.install.install_manifold", fake_install)
     c = cfg.ConfigFile(vectors="0.5 user/happy")
     missing = cfg.ensure_vectors_installed(c, strict=False)
     assert installed["target"] == "user/happy"
