@@ -131,19 +131,55 @@ function defaultSubspaceEntry(
   };
 }
 
-/** Reassign a subspace-mode (flat) entry through ``fn``; no-op if the entry is
- *  absent or is a manifold (curved) term. */
-function mutateSubspace(
-  name: string,
-  fn: (e: SubspaceSteerEntry) => SubspaceSteerEntry,
-): void {
-  const e = steerRack.entries.get(name);
-  if (e && e.mode === "subspace") steerRack.entries.set(name, fn(e));
+// SvelteMap tracks .set/.delete, not mutations of stored objects, so every
+// rack edit reassigns its entry with a fresh spread through ``patchSteerEntry``.
+
+type EntryOf<M extends SteerEntry["mode"]> = Extract<SteerEntry, { mode: M }>;
+type SteerPatch = { [K in keyof SteerEntry]?: SteerEntry[K] }
+  & Partial<Pick<SubspaceSteerEntry, "ablate" | "coords" | "label">>
+  & Partial<Pick<ManifoldSteerEntry, "blend" | "onto">>
+  & Partial<Pick<AtomSteerEntry, "alpha">>;
+
+/** Describe a rack edit for the pending-queue bubble. */
+function describePatch(name: string, patch: SteerPatch): string {
+  if (patch.enabled !== undefined) return `${patch.enabled ? "enable" : "disable"} ${name}`;
+  if (patch.ablate !== undefined) return `${patch.ablate ? "ablate" : "push"} ${name}`;
+  const [field, value] = Object.entries(patch)[0] ?? ["edit", ""];
+  return `${field} ${name}${typeof value === "number" ? ` ${value.toFixed(3)}` : typeof value === "string" ? ` ${value}` : ""}`;
 }
 
-// SvelteMap tracks .set/.delete; mutations on stored objects are NOT tracked,
-// so each setter reassigns the entry via .set with a fresh spread.  This
-// pattern is uniform across every rack mutator.
+/** Apply ``patch`` to one rack entry (queued behind a running generation).
+ *  ``modes`` restricts it to entries of those modes; an absent entry or one
+ *  of another mode is left alone. */
+export function patchSteerEntry<M extends SteerEntry["mode"]>(
+  name: string,
+  patch: Partial<EntryOf<M>> & SteerPatch,
+  modes?: readonly M[],
+): void {
+  enqueueOrApply(describePatch(name, patch), () => {
+    const entry = steerRack.entries.get(name);
+    if (!entry || (modes && !modes.includes(entry.mode as M))) return;
+    steerRack.entries.set(name, { ...entry, ...patch } as SteerEntry);
+  });
+}
+
+/** Move a geometric (subspace or manifold) term to free authoring coords —
+ *  an XYPad or slider drag — dropping any node-label binding so it
+ *  serializes as a coord list. */
+export function setSteerCoords(name: string, coords: number[]): void {
+  patchSteerEntry(name, { coords: [...coords], label: null }, ["subspace", "manifold"]);
+}
+
+/** Bind a geometric term to a node label (``<name>%<label>``), mirroring the
+ *  node's coords so the XYPad still renders the position; ``null`` reverts
+ *  to coord form.  Without catalog metadata the label is kept as-is and
+ *  resolves server-side. */
+export function setSteerLabel(name: string, label: string | null): void {
+  const info = label === null ? null : manifoldByName(name);
+  const index = info ? info.node_labels.indexOf(label!) : -1;
+  const coords = index >= 0 && info!.node_coords[index] ? [...info!.node_coords[index]] : undefined;
+  patchSteerEntry(name, coords ? { label, coords } : { label }, ["subspace", "manifold"]);
+}
 
 /** The shared "subspace along" master — one slide magnitude for every
  *  subspace (flat) term (the merged affine subspace slides once).  Adjusting
@@ -151,57 +187,6 @@ function mutateSubspace(
 export function setSubspaceAlong(along: number): void {
   enqueueOrApply(`subspace along ${along.toFixed(3)}`, () => {
     steerRack.subspaceAlong = along;
-  });
-}
-
-/** Set a subspace term's free authoring coords (XYPad / slider drag) — clears
- *  the label-form binding so it serializes as a coord list. */
-export function setSubspaceCoords(name: string, coords: number[]): void {
-  enqueueOrApply(`subspace coords ${name}`, () => {
-    mutateSubspace(name, (e) => ({ ...e, coords: [...coords], label: null }));
-  });
-}
-
-/** Switch a subspace term to label-form (``<name>%<label>``).  ``label=null``
- *  reverts to coord-form; a non-null label mirrors the node's coords onto the
- *  entry so the XYPad still renders the position. */
-export function setSubspaceLabel(name: string, label: string | null): void {
-  enqueueOrApply(`subspace label ${name} ${label ?? "<null>"}`, () => {
-    if (label === null) {
-      mutateSubspace(name, (e) => ({ ...e, label: null }));
-      return;
-    }
-    const info = manifoldByName(name);
-    mutateSubspace(name, (e) => {
-      if (!info) return { ...e, label };
-      const idx = info.node_labels.indexOf(label);
-      const coords = idx >= 0 && info.node_coords[idx] ? [...info.node_coords[idx]] : e.coords;
-      return { ...e, label, coords };
-    });
-  });
-}
-
-export function setSubspaceVariant(name: string, variant: Variant): void {
-  enqueueOrApply(`subspace variant ${name} ${variant}`, () => {
-    mutateSubspace(name, (e) => ({ ...e, variant }));
-  });
-}
-
-export function setSubspaceTrigger(name: string, trigger: Trigger): void {
-  enqueueOrApply(`subspace trigger ${name} ${trigger}`, () => {
-    mutateSubspace(name, (e) => ({ ...e, trigger }));
-  });
-}
-
-export function setSubspaceEnabled(name: string, enabled: boolean): void {
-  enqueueOrApply(`${enabled ? "enable" : "disable"} ${name}`, () => {
-    mutateSubspace(name, (e) => ({ ...e, enabled }));
-  });
-}
-
-export function setSubspaceAblate(name: string, ablate: boolean): void {
-  enqueueOrApply(`${ablate ? "ablate" : "push"} ${name}`, () => {
-    mutateSubspace(name, (e) => ({ ...e, ablate }));
   });
 }
 
@@ -227,7 +212,8 @@ export function addSubspaceToRack(name: string, variant: Variant = "raw"): void 
   steerRack.entries.set(name, defaultSubspaceEntry(coords, label, variant));
 }
 
-export function removeSubspaceFromRack(name: string): void {
+/** Take any term off the rack.  Never deletes the server-side artifact. */
+export function removeSteerEntry(name: string): void {
   steerRack.entries.delete(name);
 }
 
@@ -289,16 +275,6 @@ export function manifoldCentroid(m: ManifoldInfo): number[] {
 
 // -------------------------------------------- manifold-mode mutators -
 
-/** Reassign a manifold-mode (curved) entry through ``fn``; no-op if the entry
- *  is absent or is a subspace (flat) term. */
-function mutateManifold(
-  name: string,
-  fn: (e: ManifoldSteerEntry) => ManifoldSteerEntry,
-): void {
-  const e = steerRack.entries.get(name);
-  if (e && e.mode === "manifold") steerRack.entries.set(name, fn(e));
-}
-
 /** Add a curved manifold to the rack at its domain centroid, along 0.5. */
 export function addManifoldToRack(name: string, variant: Variant = "raw"): void {
   if (steerRack.entries.has(name)) return;
@@ -317,16 +293,12 @@ export function addManifoldToRack(name: string, variant: Variant = "raw"): void 
   });
 }
 
-export function removeManifoldFromRack(name: string): void {
-  steerRack.entries.delete(name);
-}
-
 // ------------------------------------------------------ atom mutators
 //
 // The two single-direction atom families (``jlens/<word>``, ``sae/<id>``)
-// rack identically — one α, one trigger, one enable, no geometry — so they
-// share one mutator set parameterised by ``AtomMode``.  Only the two adds
-// stay family-specific: they differ in key construction and validation.
+// rack identically — one α, one trigger, one enable, no geometry — and are
+// edited through ``patchSteerEntry`` like every other term.  Only the two
+// adds stay family-specific: they differ in key construction and validation.
 
 /** Default α for a fresh atom chip.  Atoms run hotter than concept vectors
  *  (a single sharp direction, not a distributed contrast): ≈0.3 is the
@@ -339,64 +311,6 @@ export const ATOM_PREFIX: Record<AtomMode, string> = {
   jlens: "jlens/",
   sae: "sae/",
 };
-
-/** The rack mutations one atom card drives. */
-export interface AtomRackActions {
-  remove(name: string): void;
-  setAlpha(name: string, alpha: number): void;
-  setAblate(name: string, ablate: boolean): void;
-  setEnabled(name: string, enabled: boolean): void;
-  setTrigger(name: string, trigger: Trigger): void;
-}
-
-/** Build the mutator set for one atom family.  ``label`` is the word the
- *  pending-queue bubble shows. */
-function buildAtomActions(mode: AtomMode, label: string): AtomRackActions {
-  /** Reassign an entry of this family through ``fn``; no-op on an absent
-   *  key or an entry of another mode. */
-  const mutate = (
-    name: string,
-    fn: (e: AtomSteerEntry) => AtomSteerEntry,
-  ): void => {
-    const e = steerRack.entries.get(name);
-    if (e && e.mode === mode) steerRack.entries.set(name, fn(e));
-  };
-  return {
-    remove(name) {
-      steerRack.entries.delete(name);
-    },
-    setAlpha(name, alpha) {
-      enqueueOrApply(`${label} alpha ${name} ${alpha.toFixed(3)}`, () => {
-        mutate(name, (e) => ({ ...e, alpha }));
-      });
-    },
-    setAblate(name, ablate) {
-      enqueueOrApply(`${ablate ? "ablate" : "push"} ${name}`, () => {
-        mutate(name, (e) => ({ ...e, ablate }));
-      });
-    },
-    setEnabled(name, enabled) {
-      enqueueOrApply(`${enabled ? "enable" : "disable"} ${name}`, () => {
-        mutate(name, (e) => ({ ...e, enabled }));
-      });
-    },
-    setTrigger(name, trigger) {
-      enqueueOrApply(`${label} trigger ${name} ${trigger}`, () => {
-        mutate(name, (e) => ({ ...e, trigger }));
-      });
-    },
-  };
-}
-
-const ATOM_ACTIONS: Record<AtomMode, AtomRackActions> = {
-  jlens: buildAtomActions("jlens", "jlens"),
-  sae: buildAtomActions("sae", "SAE"),
-};
-
-/** The rack mutators for one atom family. */
-export function atomActions(mode: AtomMode): AtomRackActions {
-  return ATOM_ACTIONS[mode];
-}
 
 function addAtomToRack(mode: AtomMode, id: string): void {
   const name = `${ATOM_PREFIX[mode]}${id}`;
@@ -425,67 +339,4 @@ export function addJLensToRack(word: string): void {
 /** Add a resident-SAE decoder-row steering chip (``α sae/<id>``). */
 export function addSaeToRack(featureId: number): void {
   addAtomToRack("sae", String(featureId));
-}
-
-export function setManifoldBlend(name: string, blend: number): void {
-  enqueueOrApply(`manifold blend ${name} ${blend.toFixed(3)}`, () => {
-    mutateManifold(name, (e) => ({ ...e, blend }));
-  });
-}
-
-/** Set the curved-manifold ``onto`` collapse fraction (the second
- *  coefficient). */
-export function setManifoldOnto(name: string, onto: number): void {
-  enqueueOrApply(`manifold onto ${name} ${onto.toFixed(3)}`, () => {
-    mutateManifold(name, (e) => ({ ...e, onto }));
-  });
-}
-
-export function setManifoldCoords(name: string, coords: number[]): void {
-  // Pulling on the XYPad authors a free-form position; the term drops
-  // its label-form binding (if any) so the canonical expression
-  // serializes as a coord list and the snap-to-node dropdown shows
-  // "(free position)" until the user picks one.
-  enqueueOrApply(`manifold coords ${name}`, () => {
-    mutateManifold(name, (e) => ({ ...e, coords: [...coords], label: null }));
-  });
-}
-
-/** Switch the term to label-form (``<name>%<label>``).  ``label=null``
- *  clears the binding and reverts to coord-form on the next
- *  serialization.  When ``label`` is non-null the matching node's
- *  coords are mirrored onto ``coords`` so the XYPad still renders the
- *  position correctly. */
-export function setManifoldLabel(name: string, label: string | null): void {
-  enqueueOrApply(`manifold label ${name} ${label ?? "<null>"}`, () => {
-    if (label === null) {
-      mutateManifold(name, (e) => ({ ...e, label: null }));
-      return;
-    }
-    const info = manifoldByName(name);
-    mutateManifold(name, (e) => {
-      if (!info) {
-        // No catalog metadata — accept the label without mirroring
-        // coords; downstream resolution happens server-side.
-        return { ...e, label };
-      }
-      const idx = info.node_labels.indexOf(label);
-      const coords = (idx >= 0 && info.node_coords[idx])
-        ? [...info.node_coords[idx]]
-        : e.coords;
-      return { ...e, label, coords };
-    });
-  });
-}
-
-export function setManifoldTrigger(name: string, trigger: Trigger): void {
-  enqueueOrApply(`manifold trigger ${name} ${trigger}`, () => {
-    mutateManifold(name, (e) => ({ ...e, trigger }));
-  });
-}
-
-export function setManifoldEnabled(name: string, enabled: boolean): void {
-  enqueueOrApply(`manifold ${enabled ? "enable" : "disable"} ${name}`, () => {
-    mutateManifold(name, (e) => ({ ...e, enabled }));
-  });
 }

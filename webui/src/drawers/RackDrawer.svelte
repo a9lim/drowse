@@ -46,8 +46,7 @@
     refreshManifoldList,
     refreshProbeList,
     refreshVectorList,
-    setManifoldLabel,
-    setSubspaceLabel,
+    setSteerLabel,
   } from "../lib/stores.svelte";
   import {
     pushToast,
@@ -354,13 +353,9 @@
       return;
     }
     const key = rowKey(m);
-    if (family === "subspace") {
-      addSubspaceToRack(key, choice.variant);
-      setSubspaceLabel(key, label);
-    } else {
-      addManifoldToRack(key, choice.variant);
-      setManifoldLabel(key, label);
-    }
+    if (family === "subspace") addSubspaceToRack(key, choice.variant);
+    else addManifoldToRack(key, choice.variant);
+    setSteerLabel(key, label);
     closeDrawer();
   }
 

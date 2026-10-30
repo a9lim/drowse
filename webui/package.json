@@ -14,7 +14,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json && node ./scripts/check-theme.mjs && node ./scripts/check-runtime-boundary.mjs && npm run test:interface && npm run test:state && npm run test:lifecycles && npm run test:webmcp && node ./scripts/check-test-coverage.mjs",
     "check:theme": "node ./scripts/check-theme.mjs",
     "test:interface": "node ./scripts/chart-ui.test.mjs && node ./scripts/bottom-sheet.test.mjs && node ./scripts/surface-geometry.test.mjs && node ./scripts/manifold-routing.test.mjs && node ./scripts/security-boundaries.test.mjs",
-    "test:state": "node ./scripts/loom-store.test.mjs && node ./scripts/loom-layout.test.mjs && node ./scripts/sampling-store.test.mjs && node ./scripts/conversation-snapshot.test.mjs && node ./scripts/conversation-library.test.mjs && node ./scripts/chat-backup.test.mjs && node ./scripts/faithful-readouts.test.mjs",
+    "test:state": "node ./scripts/loom-store.test.mjs && node ./scripts/loom-layout.test.mjs && node ./scripts/sampling-store.test.mjs && node ./scripts/steering-rack.test.mjs && node ./scripts/conversation-snapshot.test.mjs && node ./scripts/conversation-library.test.mjs && node ./scripts/chat-backup.test.mjs && node ./scripts/faithful-readouts.test.mjs",
     "test:lifecycles": "node ./scripts/frame-queue.test.mjs && node ./scripts/probe-lifecycle.test.mjs && node ./scripts/readout-lifecycle.test.mjs && node ./scripts/manifold-progress.test.mjs && node ./scripts/appearance-lifecycle.test.mjs && node ./scripts/http-runtime-lifecycle.test.mjs",
     "test:webmcp": "node ./scripts/webmcp-adapter.test.mjs && node ./scripts/webmcp-files.test.mjs && node ./scripts/webmcp-home.test.mjs"
   },
