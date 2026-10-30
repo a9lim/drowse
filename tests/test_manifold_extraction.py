@@ -2350,10 +2350,14 @@ def test_session_fit_forwards_its_dls_setting(
     construction, and this is the hop that has to carry it into the fit that
     consumes it.
     """
+    from types import SimpleNamespace
+
     import drowse.session.extraction as extraction_mod
 
     fit_kwargs: dict[str, Any] = {}
-    fitted = object()
+    # The session adopts the fit into its registry, which reads the tensor
+    # family; nothing is loaded under ``folder``, so nothing is swapped.
+    fitted = SimpleNamespace(feature_space="raw")
 
     class _FakePipeline:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
