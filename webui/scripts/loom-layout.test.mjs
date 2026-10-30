@@ -38,6 +38,18 @@ try {
   assert.equal(loomLiveNode(pending, { ...stream, tokens: [stream.tokens[0], { ...stream.tokens[1], rawIndex: 3 }] }).raw_token_ids, null,
     "hidden control-token gaps must not invent raw token identities");
 
+  // Loom dialog helpers: fan-out strengths and go-to-turn id prefixes.
+  const { parseStrengthList, resolveNodeIdPrefix } = await server.ssrLoadModule("/src/panels/loom/loomCommands.ts");
+  assert.deepEqual(parseStrengthList("0, 0.3, -1"), [0, 0.3, -1]);
+  assert.deepEqual(parseStrengthList("linspace(-1, 1, 5)"), [-1, -0.5, 0, 0.5, 1]);
+  assert.deepEqual(parseStrengthList("0:1:0.25"), [0, 0.25, 0.5, 0.75, 1]);
+  for (const bad of ["", "0, x", "linspace(0, 1, 0)", "1:0:0.5", "0:1:0"]) assert.deepEqual(parseStrengthList(bad), [], bad);
+  const ids = ["01ABC", "01ABD", "02XYZ"];
+  assert.deepEqual(resolveNodeIdPrefix("02", ids, "01ABC"), { id: "02XYZ", matches: ["02XYZ"] });
+  assert.deepEqual(resolveNodeIdPrefix("01AB", ids, "01ABC"), { id: null, matches: ["01ABC", "01ABD"] });
+  assert.equal(resolveNodeIdPrefix("01ABC", ["01ABC", "01ABCD"], null).id, "01ABC", "an exact id wins over longer prefixes");
+  assert.equal(resolveNodeIdPrefix("root", ids, "01ABC").id, "01ABC");
+
   // Streaming is incremental: each frame converts only the new tokens, the
   // rows already converted keep their identity, and a gap that later fills
   // restores the exact raw ids.

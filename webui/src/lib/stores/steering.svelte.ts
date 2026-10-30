@@ -22,7 +22,6 @@ import type {
   ManifoldSteerEntry,
   SteerEntry,
   SubspaceSteerEntry,
-  Trigger,
   Variant,
 } from "../types";
 import { serializeExpression } from "../expression";

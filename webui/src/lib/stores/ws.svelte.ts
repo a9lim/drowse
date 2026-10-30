@@ -43,7 +43,6 @@ import {
   lensState,
   mergedReadings,
   recordSaeReadoutFrame,
-  saeState,
 } from "./instruments.svelte";
 import {
   applyTreeDelta,

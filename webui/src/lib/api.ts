@@ -25,11 +25,9 @@ import type {
   FitManifoldRequest,
   GenerateManifoldRequest,
   InstallManifoldRequest,
-  JointLogprobRowJSON,
   JointLogprobsJSON,
   InstrumentFamily,
   InstrumentLiveState,
-  InstrumentSourceJSON,
   LensTokenValidationJSON,
   LoomNodeJSON,
   LoomTreeJSON,
@@ -55,8 +53,6 @@ import type {
   TemplateSummary,
   TranscriptLoadResponseJSON,
   VectorInfo,
-  WSClientMessage,
-  WSServerMessage,
 } from "./types";
 import { ApiError } from "./runtime/errors";
 import type { RuntimeOperationReceipt } from "./runtime/contracts";
