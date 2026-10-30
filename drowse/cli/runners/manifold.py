@@ -44,7 +44,7 @@ def _try_manifold_fit_noop_preflight(
     """Prove this fit target is already exact before any model load.
 
     The ``lens fit`` no-op shape for manifolds.  Everything decisive lives in
-    ``io.preflight_manifold_fit_noop``; this wrapper only supplies the CLI's
+    ``store.manifold_preflight.preflight_manifold_fit_noop``; this wrapper only supplies the CLI's
     request shape and applies the one check that is an *authoring* concern
     rather than a fit-identity one — ``extract --role`` refuses to reuse a
     folder whose corpus carries a different role baseline, and that refusal is
@@ -54,7 +54,7 @@ def _try_manifold_fit_noop_preflight(
     """
     from drowse.store.manifold_folder import ManifoldFolder
     from drowse.store.manifold_schema import ManifoldFormatError
-    from drowse.store.manifold_lifecycle import preflight_manifold_fit_noop
+    from drowse.store.manifold_preflight import preflight_manifold_fit_noop
 
     if not (folder / "manifold.json").exists():
         return None
