@@ -84,8 +84,9 @@ async def session_lock(app: FastAPI) -> AsyncIterator[None]:
     try:
         async with asyncio.timeout(SESSION_LOCK_TIMEOUT_SECONDS):
             await lock.acquire()
-    except TimeoutError as exc:
-        raise SessionLockTimeout() from exc
+    except TimeoutError:
+        # An expected 503, not a failure: no chained traceback to log.
+        raise SessionLockTimeout() from None
     try:
         yield
     finally:

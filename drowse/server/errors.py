@@ -14,11 +14,13 @@ same everywhere and no surface leaks a raw exception string:
   user-facing contract);
 - ``HTTPException`` keeps its status and flattened detail — or, when it wraps
   a typed or filesystem failure, that failure's safe text;
-- a plain ``ValueError`` is a rejected request (400, verbatim);
+- a plain ``ValueError`` is a rejected request (400, verbatim; its trace is
+  logged at debug);
 - filesystem errors keep a status but get a fixed message (their text is a
   path);
-- a missing optional dependency is 503;
-- anything else is logged with its traceback and scrubbed to a generic 500.
+- a missing third-party module (an optional extra) is a logged 503;
+- anything else — including a failed import of drowse's own modules — is
+  logged with its traceback and scrubbed to a generic 500.
 """
 
 from __future__ import annotations
@@ -119,6 +121,20 @@ def _drowse_status(exc: DrowseError) -> tuple[int, str]:
     return status, message
 
 
+def _missing_extra(exc: ImportError) -> str | None:
+    """The third-party module a failed import names, else ``None``.
+
+    A re-raised install hint (``raise ImportError(...) from e``) carries no
+    ``name`` of its own, so the chained import failure is consulted too.  A
+    failed import of drowse's own modules is never a missing extra.
+    """
+    cause = exc.__cause__
+    name = exc.name or (cause.name if isinstance(cause, ImportError) else None)
+    if not name or name.partition(".")[0] == "drowse":
+        return None
+    return name
+
+
 def _filesystem_message(status: int) -> str:
     return _FILESYSTEM_MESSAGES.get(status, "Filesystem operation failed. Check the server log for details.")
 
@@ -155,10 +171,15 @@ def describe_error(exc: BaseException, *, failure: str = "Request failed") -> Er
         status = 404 if isinstance(exc, FileNotFoundError) else 409 if isinstance(exc, FileExistsError) else 500
         return ErrorInfo(status, _filesystem_message(status), code)
     if isinstance(exc, ValueError):
+        # Usually a rejected argument, occasionally an engine bug: keep the
+        # trace reachable without blaming the client in the error log.
+        log.debug("%s: rejected as a bad request", failure, exc_info=exc)
         return ErrorInfo(400, str(exc) or code, code)
-    if isinstance(exc, ImportError):
-        missing = exc.name or "a dependency"
+    if isinstance(exc, ImportError) and (missing := _missing_extra(exc)) is not None:
+        log.error("%s", failure, exc_info=exc)
         return ErrorInfo(503, f"optional dependency not installed: {missing}", code)
+    # Includes an ImportError of drowse's own modules: a packaging bug, not
+    # a missing extra.
     log.error("%s", failure, exc_info=exc)
     return ErrorInfo(500, f"{failure}. Check the server log for details.", code)
 

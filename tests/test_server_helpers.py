@@ -247,5 +247,84 @@ class TestWSGenerateSchemaValidation:
         assert {error["type"] for error in errors} == {"extra_forbidden"}
 
 
+class TestDescribeError:
+    """The one classifier: which failures are a client's, an extra's, or a bug."""
+
+    def test_missing_third_party_module_is_a_logged_503(self, caplog: pytest.LogCaptureFixture) -> None:
+        from drowse.server.errors import describe_error
+
+        exc = ModuleNotFoundError("No module named 'sae_lens'", name="sae_lens")
+        with caplog.at_level("ERROR", logger="drowse.api"):
+            info = describe_error(exc)
+        assert (info.status, info.message) == (503, "optional dependency not installed: sae_lens")
+        assert caplog.records and caplog.records[0].exc_info is not None
+
+    def test_install_hint_reraise_names_the_chained_module(self) -> None:
+        from drowse.server.errors import describe_error
+
+        try:
+            try:
+                raise ModuleNotFoundError("No module named 'pandas'", name="pandas")
+            except ImportError as inner:
+                raise ImportError("pandas is required: pip install pandas") from inner
+        except ImportError as exc:
+            info = describe_error(exc)
+        assert (info.status, info.message) == (503, "optional dependency not installed: pandas")
+
+    @pytest.mark.parametrize("exc", [
+        ImportError("cannot import name 'gone' from 'drowse.lens.sources'", name="drowse.lens.sources"),
+        ModuleNotFoundError("No module named 'drowse.moved'", name="drowse.moved"),
+        ImportError("no name at all"),
+    ])
+    def test_internal_import_failure_is_a_logged_500(
+        self, exc: ImportError, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Regression: every bare ImportError read as a missing extra (503,
+        unlogged), so a moved drowse module blamed the user's install and left
+        no traceback anywhere."""
+        from drowse.server.errors import describe_error
+
+        with caplog.at_level("ERROR", logger="drowse.api"):
+            info = describe_error(exc, failure="Lens fetch failed")
+        assert info.status == 500
+        assert info.message == "Lens fetch failed. Check the server log for details."
+        assert caplog.records and caplog.records[0].exc_info is not None
+
+    def test_value_error_is_a_400_with_a_debug_trace(self, caplog: pytest.LogCaptureFixture) -> None:
+        from drowse.server.errors import describe_error
+
+        with caplog.at_level("DEBUG", logger="drowse.api"):
+            info = describe_error(ValueError("n must be >= 1"), failure="Generation failed")
+        assert (info.status, info.message) == (400, "n must be >= 1")
+        [record] = caplog.records
+        assert record.levelname == "DEBUG" and record.exc_info is not None
+
+    def test_lock_timeout_is_a_503_without_an_error_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Regression: the timeout chained its ``TimeoutError``, and a chained
+        DrowseError logs a traceback, so every expected 503 wrote an ERROR."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from drowse.server.errors import describe_error
+        from drowse.server.runtime import SessionLockTimeout, session_lock
+
+        async def contend() -> BaseException:
+            lock = asyncio.Lock()
+            await lock.acquire()
+            app: Any = SimpleNamespace(state=SimpleNamespace(session_lock=lock))
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr("drowse.server.runtime.SESSION_LOCK_TIMEOUT_SECONDS", 0.01)
+                with pytest.raises(SessionLockTimeout) as caught:
+                    async with session_lock(app):
+                        pass
+            return caught.value
+
+        exc = asyncio.run(contend())
+        assert exc.__cause__ is None
+        with caplog.at_level("ERROR", logger="drowse.api"):
+            assert describe_error(exc).status == 503
+        assert not caplog.records
+
+
 if __name__ == "__main__":  # pragma: no cover - convenience
     raise SystemExit(pytest.main([__file__]))
