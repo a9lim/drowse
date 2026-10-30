@@ -333,6 +333,32 @@ def pack_readout_rows_to_host(*rows: torch.Tensor) -> torch.Tensor:
     return torch.cat([row.float() for row in rows], dim=0).detach().cpu()
 
 
+def _check_rows(values: torch.Tensor, depths: "Sequence[float]", what: str) -> None:
+    """A readout matrix is ``[layers, columns]`` with one depth per layer."""
+    if values.ndim != 2 or values.shape[0] == 0:
+        raise ValueError(
+            f"{what} expects a [layers, columns] matrix, got shape "
+            f"{tuple(values.shape)}"
+        )
+    if len(depths) != values.shape[0]:
+        raise ValueError(
+            f"{what}: {values.shape[0]} rows but {len(depths)} depths"
+        )
+
+
+def _depth_moments(
+    p: torch.Tensor, d: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Probability-weighted depth center of mass and spread per column.
+
+    ``p`` is ``[L, K]`` per-layer probability, ``d`` the ``[L, 1]`` depths.
+    """
+    mass = p.sum(dim=0).clamp_min(1e-12)                        # [K]
+    com = (p * d).sum(dim=0) / mass                             # [K]
+    var = (p * (d - com.unsqueeze(0)) ** 2).sum(dim=0) / mass
+    return com, var.clamp_min(0.0).sqrt()
+
+
 def aggregate_readout_from_probabilities(
     probabilities: torch.Tensor,
     depths: "Sequence[float]",
@@ -347,16 +373,6 @@ def aggregate_readout_from_probabilities(
     columns first preserves the exact statistic while avoiding full-vocabulary
     depth tensors.
     """
-    if probabilities.ndim != 2 or probabilities.shape[0] == 0:
-        raise ValueError(
-            "aggregate_readout_from_probabilities expects [layers, vocab] "
-            f"probabilities, got shape {tuple(probabilities.shape)}"
-        )
-    if len(depths) != probabilities.shape[0]:
-        raise ValueError(
-            "aggregate_readout_from_probabilities: "
-            f"{probabilities.shape[0]} probability rows but {len(depths)} depths"
-        )
     idxs, stats = aggregate_readout_tensors_from_probabilities(
         probabilities,
         depths,
@@ -390,16 +406,7 @@ def aggregate_readout_tensors_from_probabilities(
     per-layer and aggregate payloads into one GPU-to-host synchronization per
     token.
     """
-    if probabilities.ndim != 2 or probabilities.shape[0] == 0:
-        raise ValueError(
-            "aggregate_readout_tensors_from_probabilities expects "
-            f"[layers, vocab] probabilities, got shape {tuple(probabilities.shape)}"
-        )
-    if len(depths) != probabilities.shape[0]:
-        raise ValueError(
-            "aggregate_readout_tensors_from_probabilities: "
-            f"{probabilities.shape[0]} probability rows but {len(depths)} depths"
-        )
+    _check_rows(probabilities, depths, "aggregate readout")
     strength = probabilities.mean(dim=0)                       # [V]
     k = min(max(int(top_k), 0), int(strength.shape[-1]))
     vals, idxs = strength.topk(k)
@@ -410,10 +417,7 @@ def aggregate_readout_tensors_from_probabilities(
         rows=int(probabilities.shape[0]),
         depth_tensor=depth_tensor,
     )                                                           # [L, 1]
-    mass = p.sum(dim=0).clamp_min(1e-12)                        # [K]
-    com = (p * d).sum(dim=0) / mass                             # [K]
-    var = (p * (d - com.unsqueeze(0)) ** 2).sum(dim=0) / mass
-    spread = var.clamp_min(0.0).sqrt()
+    com, spread = _depth_moments(p, d)
     return idxs, torch.stack([vals, com, spread])
 
 
@@ -455,16 +459,7 @@ def aggregate_readout(
     per-layer top-k union would miss a token that ranks mid-pack at every
     layer but top at none.
     """
-    if logits.ndim != 2 or logits.shape[0] == 0:
-        raise ValueError(
-            f"aggregate_readout expects [layers, vocab] logits, got shape "
-            f"{tuple(logits.shape)}"
-        )
-    if len(depths) != logits.shape[0]:
-        raise ValueError(
-            f"aggregate_readout: {logits.shape[0]} logit rows but "
-            f"{len(depths)} depths"
-        )
+    _check_rows(logits, depths, "aggregate readout")
     return aggregate_readout_from_probabilities(
         readout_probabilities(logits),
         depths,
@@ -482,16 +477,7 @@ def token_readout_stats_from_probabilities(
     depth_tensor: torch.Tensor | None = None,
 ) -> list[tuple[float, float, float, list[float]]]:
     """Per-token statistics from already-calibrated readout probabilities."""
-    if probabilities.ndim != 2 or probabilities.shape[0] == 0:
-        raise ValueError(
-            "token_readout_stats_from_probabilities expects [layers, vocab] "
-            f"probabilities, got shape {tuple(probabilities.shape)}"
-        )
-    if len(depths) != probabilities.shape[0]:
-        raise ValueError(
-            "token_readout_stats_from_probabilities: "
-            f"{probabilities.shape[0]} probability rows but {len(depths)} depths"
-        )
+    _check_rows(probabilities, depths, "token readout stats")
     if not token_ids:
         return []
     ids = _token_id_tensor(
@@ -585,16 +571,7 @@ def _token_readout_stats_from_probability_columns(
     depth_tensor: torch.Tensor | None = None,
 ) -> list[tuple[float, float, float, list[float]]]:
     """Shared stats body for selected token probability columns ``[L, K]``."""
-    if p.ndim != 2 or p.shape[0] == 0:
-        raise ValueError(
-            "token readout stats expect [layers, tokens] probabilities, "
-            f"got shape {tuple(p.shape)}"
-        )
-    if len(depths) != p.shape[0]:
-        raise ValueError(
-            f"token readout stats: {p.shape[0]} probability rows but "
-            f"{len(depths)} depths"
-        )
+    _check_rows(p, depths, "token readout stats")
     if p.shape[1] == 0:
         return []
     strength = p.mean(dim=0)                                    # [K]
@@ -604,10 +581,7 @@ def _token_readout_stats_from_probability_columns(
         rows=int(p.shape[0]),
         depth_tensor=depth_tensor,
     )                                                           # [L, 1]
-    mass = p.sum(dim=0).clamp_min(1e-12)                        # [K]
-    com = (p * d).sum(dim=0) / mass                             # [K]
-    var = (p * (d - com.unsqueeze(0)) ** 2).sum(dim=0) / mass
-    spread = var.clamp_min(0.0).sqrt()
+    com, spread = _depth_moments(p, d)
     # one batched host transfer: 3 aggregate rows + the per-layer block
     host = torch.cat(
         [torch.stack([strength, com, spread]), p], dim=0,
@@ -654,16 +628,7 @@ def token_readout_stats(
     Returns one ``(strength, com, spread, per_layer)`` tuple per requested
     id, with a single batched host transfer.
     """
-    if logits.ndim != 2 or logits.shape[0] == 0:
-        raise ValueError(
-            f"token_readout_stats expects [layers, vocab] logits, got shape "
-            f"{tuple(logits.shape)}"
-        )
-    if len(depths) != logits.shape[0]:
-        raise ValueError(
-            f"token_readout_stats: {logits.shape[0]} logit rows but "
-            f"{len(depths)} depths"
-        )
+    _check_rows(logits, depths, "token readout stats")
     if not token_ids:
         return []
     return _token_readout_stats_from_probability_columns(
