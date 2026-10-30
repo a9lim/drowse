@@ -1332,22 +1332,6 @@ def generate_steered(
             for _ in range(config.max_new_tokens):
                 if state.is_stop_requested():
                     state.finish_reason = "stop"
-                    # Stop fired while still inside a thinking phase:
-                    # anchor ``thinking_end_idx`` at the current position
-                    # so :meth:`DrowseSession._finalize_generation` doesn't
-                    # decode the unfinished thoughts as the response text.
-                    # Without this, ``response_ids = generated_ids[0:]``
-                    # would land the entire thinking dump on the loom
-                    # node's ``text`` field. A live stream can hide the bug by
-                    # building the response from ``on_token`` directly, but the
-                    # web UI re-renders ``node.text``
-                    # after ``tree_mutated finalize_assistant`` arrives.
-                    if tstate in (
-                        _ThinkState.PREAMBLE,
-                        _ThinkState.THINKING,
-                        _ThinkState.RESPONSE_PREAMBLE,
-                    ):
-                        state.thinking_end_idx = len(generated_ids)
                     break
 
                 # The loop-owned forward index: the raw token position the
@@ -1712,6 +1696,13 @@ def generate_steered(
                         _emit_token(emit_text, emit_thinking, emit_id,
                                     chosen_logprob, top_alts,
                                     current_perplexity, forward_step)
+
+        # Every exit that leaves the machine mid-thought — a stop request,
+        # EOS on a non-channel model, or the max-token budget — never reached
+        # the end delimiter.  Anchor the response at the end so the finalizer
+        # decodes an empty response instead of the unfinished thoughts.
+        if tstate is not _ThinkState.IDLE:
+            state.thinking_end_idx = len(generated_ids)
 
         # Flush any remaining buffered partial tokens.  No fresh forward
         # pass has run since the last loop iteration, so reuse that
