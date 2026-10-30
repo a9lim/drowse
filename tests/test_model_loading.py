@@ -1,4 +1,4 @@
-"""Tests for `drowse.model.loading.load_model` attention-implementation selection.
+"""Tests for the ``drowse.model`` loader: plan, fallbacks, extraction, identity.
 
 These tests do not load real models — they intercept the AutoConfig and
 AutoModelForCausalLM calls (and the Hub commit lookup) and inspect the
@@ -17,15 +17,19 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from drowse.model import loading as model_mod
-_resolve_model_revision = model_mod.resolve_model_revision
+from drowse.model import arch as arch_mod
+from drowse.model import checkpoint as ckpt_mod
+from drowse.model import compile as compile_mod
+from drowse.model import fingerprint as fp_mod
+from drowse.model import load as model_mod
+_resolve_model_revision = fp_mod.resolve_model_revision
 _COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
 @pytest.fixture(autouse=True)
 def _offline_hub_commit(monkeypatch: pytest.MonkeyPatch) -> None:
     """The config stack is mocked here; keep the commit lookup offline too."""
-    monkeypatch.setattr(model_mod, "resolve_model_revision", lambda _model_id: None)
+    monkeypatch.setattr(fp_mod, "resolve_model_revision", lambda _model_id: None)
 
 
 def test_resolve_model_revision_returns_the_commit_not_the_ref(
@@ -71,20 +75,20 @@ def test_hub_source_fingerprint_pins_the_resolved_commit(
         reads.append(kwargs)
         return cfg
 
-    monkeypatch.setattr(model_mod, "resolve_model_revision", lambda _m: "commit-a")
-    with patch.object(model_mod, "AutoConfig") as mock_cfg:
+    monkeypatch.setattr(fp_mod, "resolve_model_revision", lambda _m: "commit-a")
+    with patch.object(fp_mod, "AutoConfig") as mock_cfg:
         mock_cfg.from_pretrained.side_effect = _read
-        preflight = model_mod.model_source_fingerprint(
+        preflight = fp_mod.model_source_fingerprint(
             "org/model", device="cpu", parameter_dtype=torch.float32,
         )
     assert preflight is not None
     assert reads == [{"trust_remote_code": False, "revision": "commit-a"}]
-    stamp = model_mod.model_source_fingerprint(
+    stamp = fp_mod.model_source_fingerprint(
         "org/model", device="cpu", config=cfg, revision="commit-a",
         parameter_dtype=torch.float32,
     )
     assert stamp == preflight
-    assert model_mod.model_source_fingerprint(
+    assert fp_mod.model_source_fingerprint(
         "org/model", device="cpu", config=cfg, revision="commit-b",
         parameter_dtype=torch.float32,
     ) != preflight
@@ -127,19 +131,19 @@ def test_non_mps_loading_keeps_async_setting(monkeypatch: pytest.MonkeyPatch, de
 def test_local_model_file_hash_cache_is_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    model_mod._MODEL_FILE_HASH_CACHE.clear()
-    monkeypatch.setattr(model_mod, "_MODEL_FILE_HASH_CACHE_MAX", 2)
+    fp_mod._MODEL_FILE_HASH_CACHE.clear()
+    monkeypatch.setattr(fp_mod, "_MODEL_FILE_HASH_CACHE_MAX", 2)
     for index in range(3):
         (tmp_path / f"file-{index}.json").write_text(str(index))
 
-    rows = model_mod._local_model_files(tmp_path)
+    rows = fp_mod._local_model_files(tmp_path)
 
     assert len(rows) == 3
-    assert len(model_mod._MODEL_FILE_HASH_CACHE) == 2
+    assert len(fp_mod._MODEL_FILE_HASH_CACHE) == 2
     assert str((tmp_path / "file-0.json").resolve()) not in (
-        model_mod._MODEL_FILE_HASH_CACHE
+        fp_mod._MODEL_FILE_HASH_CACHE
     )
-    model_mod._MODEL_FILE_HASH_CACHE.clear()
+    fp_mod._MODEL_FILE_HASH_CACHE.clear()
 
 
 def test_empty_config_path_never_fingerprints_the_working_directory(
@@ -147,12 +151,11 @@ def test_empty_config_path_never_fingerprints_the_working_directory(
 ) -> None:
     scanned: list[Path] = []
     monkeypatch.setattr(
-        model_mod,
-        "_local_model_files",
+        fp_mod, "_local_model_files",
         lambda path: scanned.append(path) or [],
     )
 
-    assert model_mod.model_source_fingerprint(
+    assert fp_mod.model_source_fingerprint(
         "remote/model",
         device="cpu",
         config=_FakeConfig("qwen3"),
@@ -260,11 +263,11 @@ def test_mla_in_text_config_also_triggers():
         mock_model.from_pretrained.side_effect = _fake_from_pretrained
         # The text_config carries deepseek_v2 — model_type is the wrapper.
         # extract_text_model takes the multimodal-wrapping branch whenever
-        # the text_config's model_type is in _LAYER_ACCESSORS, so load_model
+        # the text_config's model_type is a causal-LM type, so load_model
         # would route through _load_text_from_multimodal.  Stub it out — we
         # only care that attn_impl was already flipped to eager *before*
         # dispatch.
-        with patch.object(model_mod, "_load_text_from_multimodal") as mlm:
+        with patch.object(model_mod, "load_text_from_multimodal") as mlm:
             mlm.return_value = _FakeModel("eager")
             model_mod.load_model("fake/repo", device="mps")
 
@@ -334,186 +337,74 @@ def test_mistral_regex_fix_skipped_for_non_mistral():
 
 
 # ---------------------------------------------------------------------------
-# torch.compile opt-in.  The compile path is wired in ``load_model``:
-# when ``compile=True`` (off by default — torch 2.12 inductor bugs on
-# newer archs make compile a sometimes-trap) and ``device == "cuda"``,
-# the loaded model is wrapped with ``torch.compile``; on MPS/CPU compile
-# is silently skipped.  Tests mock ``torch.compile`` so we never actually
-# compile (which would take seconds); we only verify it was *invoked*
-# with the right args.
+# ``compile_with_probe`` — the session's one compile path.  Tests mock
+# ``torch.compile`` so nothing actually compiles; they verify the wrapper is
+# returned, the mode passes through, and a failing probe falls back to eager.
 # ---------------------------------------------------------------------------
 
 
-def _run_load_with_compile(
-    *, device: str, compile: bool = True, compile_mode: str = "default",
-    model_type: str = "qwen3", patch_precision: bool = True,
-):
-    """Run load_model with mocked transformers + ``torch.compile``.
+class _FakeCompiled:
+    """Callable sentinel accepting the probe's prefill call shape."""
 
-    Returns ``(compile_called, compile_kwargs, returned_model)``.
-    """
-    cfg = _FakeConfig(model_type)
-    compile_invocations: list[dict[str, Any]] = []
-    base_model = _FakeModel("sdpa")
+    _compiled_marker = True
 
-    class _FakeCompiled:
-        """Callable sentinel — ``_compile_with_probe`` runs a probe forward
-        after wrapping, so the result must accept the prefill / decode call
-        shape and return an object with ``.logits``."""
-        _compiled_marker = True
+    def __init__(self, model: Any) -> None:
+        self._orig_mod = model
 
-        def __init__(self, model: Any) -> None:
-            self._orig_mod = model
+    def __call__(self, **fwd: Any) -> SimpleNamespace:
+        n = fwd["input_ids"].shape[1]
+        return SimpleNamespace(logits=torch.zeros(1, n, 1))
 
-        def __call__(self, **fwd: Any) -> SimpleNamespace:
-            n = fwd["input_ids"].shape[1]
-            return SimpleNamespace(logits=torch.zeros(1, n, 1))
+
+def _compile(*, device: str = "cpu", mode: str = "default", patch_precision: bool = True):
+    invocations: list[dict[str, Any]] = []
 
     def _fake_compile(model: Any, **kwargs: Any) -> _FakeCompiled:
-        compile_invocations.append({"model": model, **kwargs})
+        invocations.append(kwargs)
         return _FakeCompiled(model)
 
     precision_context = (
         patch.object(torch, "set_float32_matmul_precision")
-        if patch_precision
-        else nullcontext()
+        if patch_precision else nullcontext()
     )
     with (
-        patch.object(model_mod, "AutoTokenizer") as mock_tok,
-        patch.object(model_mod, "AutoConfig") as mock_cfg,
-        patch.object(model_mod, "AutoModelForCausalLM") as mock_model,
-        patch.object(torch, "compile", side_effect=_fake_compile) as mock_compile,
-        # The probe forwards allocate `torch.full(..., device="cuda", ...)`,
-        # which raises on a no-CUDA CI host before the fake compiled wrapper
-        # is ever called.  We're not exercising the probe here — only that
-        # ``torch.compile`` fired with the right args — so stub it out.
-        patch.object(model_mod, "_run_compile_probes", return_value=None),
+        patch.object(torch, "compile", side_effect=_fake_compile),
+        patch.object(compile_mod, "run_compile_probes", return_value=None),
         precision_context,
     ):
-        mock_tok.from_pretrained.return_value = SimpleNamespace()
-        mock_cfg.from_pretrained.return_value = cfg
-        mock_model.from_pretrained.return_value = base_model, {"missing_keys": []}
-        ret_model, _tok = model_mod.load_model(
-            "fake/repo", device=device, compile=compile,
-            compile_mode=compile_mode,
+        model = compile_mod.compile_with_probe(
+            _FakeModel("sdpa"), SimpleNamespace(), device, mode=mode,
         )
+    return invocations, model
 
-    return (mock_compile.called, compile_invocations, ret_model)
 
-
-def test_compile_opts_in_on_cuda():
-    """Explicit ``compile=True`` on CUDA wraps the model with torch.compile."""
-    called, invocations, model = _run_load_with_compile(device="cuda")
-    assert called, "torch.compile should fire on CUDA when compile=True"
-    assert len(invocations) == 1
-    inv = invocations[0]
-    assert inv["mode"] == "default", (
-        f"expected mode='default' (Phase A — kernel fusion without graph "
-        f"capture), got {inv.get('mode')!r}"
-    )
-    # The returned model is the compile wrapper, not the original.
+def test_compile_with_probe_returns_the_compiled_wrapper():
+    invocations, model = _compile(mode="reduce-overhead")
+    assert [inv["mode"] for inv in invocations] == ["reduce-overhead"]
     assert getattr(model, "_compiled_marker", False) is True
 
 
-def test_compile_off_by_default():
-    """``load_model`` defaults to ``compile=False`` — torch 2.12 inductor
-    bugs on newer architectures make compile a sometimes-trap, and the
-    upfront cost rarely amortizes on interactive workloads."""
-    cfg = _FakeConfig("qwen3")
-    base_model = _FakeModel("sdpa")
-
-    with (
-        patch.object(model_mod, "AutoTokenizer") as mock_tok,
-        patch.object(model_mod, "AutoConfig") as mock_cfg,
-        patch.object(model_mod, "AutoModelForCausalLM") as mock_model,
-        patch.object(torch, "compile") as mock_compile,
-    ):
-        mock_tok.from_pretrained.return_value = SimpleNamespace()
-        mock_cfg.from_pretrained.return_value = cfg
-        mock_model.from_pretrained.return_value = base_model, {"missing_keys": []}
-        model_mod.load_model("fake/repo", device="cuda")
-
-    assert not mock_compile.called, (
-        "load_model default must not fire torch.compile — opt-in required"
-    )
-
-
-def test_compile_skipped_on_mps():
-    """MPS path: compile is silently skipped (compile is CUDA-tuned)."""
-    called, invocations, model = _run_load_with_compile(device="mps")
-    assert not called, "torch.compile must not fire on MPS"
-    assert invocations == []
-    # Original model returned unwrapped.
-    assert not hasattr(model, "_compiled_marker")
-
-
-def test_compile_skipped_on_cpu():
-    called, invocations, _ = _run_load_with_compile(device="cpu")
-    assert not called, "torch.compile must not fire on CPU"
-
-
-def test_compile_explicit_opt_out_on_cuda():
-    """compile=False is the documented escape hatch — even on CUDA, no
-    wrapping should occur.  Lets users debug architecture-specific
-    compile breakage without having to flip device flags."""
-    called, invocations, model = _run_load_with_compile(
-        device="cuda", compile=False,
-    )
-    assert not called, "compile=False must override the CUDA auto-enable"
-    assert not hasattr(model, "_compiled_marker")
-
-
 def test_compile_probe_failure_falls_back_to_eager():
-    """If the compiled artifact raises during the warmup probe (e.g.
-    Gemma-4 + torch 2.12 inductor codegen bug), ``_compile_with_probe``
-    warns and returns the un-compiled model so generation still works."""
+    """A compiled artifact that raises in the warmup probe (e.g. an inductor
+    codegen bug) warns and returns the un-compiled model."""
     import warnings as _w
 
-    cfg = _FakeConfig("qwen3")
-    base_model = _FakeModel("sdpa")
-
-    class _BrokenCompiled:
-        _compiled_marker = True
-
-        def __init__(self, model: Any) -> None:
-            self._orig_mod = model
-
-        def __call__(self, **fwd: Any) -> None:
+    class _BrokenCompiled(_FakeCompiled):
+        def __call__(self, **fwd: Any) -> SimpleNamespace:
             raise RuntimeError("inductor codegen produced an invalid kernel")
 
+    base = _FakeModel("sdpa")
     precision_before = torch.get_float32_matmul_precision()
     with (
-        patch.object(model_mod, "AutoTokenizer") as mock_tok,
-        patch.object(model_mod, "AutoConfig") as mock_cfg,
-        patch.object(model_mod, "AutoModelForCausalLM") as mock_model,
         patch.object(torch, "compile", side_effect=lambda m, **k: _BrokenCompiled(m)),
         _w.catch_warnings(record=True) as caught,
     ):
         _w.simplefilter("always")
-        mock_tok.from_pretrained.return_value = SimpleNamespace()
-        mock_cfg.from_pretrained.return_value = cfg
-        mock_model.from_pretrained.return_value = base_model, {"missing_keys": []}
-        ret_model, _tok = model_mod.load_model(
-            "fake/repo", device="cuda", compile=True,
-        )
+        ret = compile_mod.compile_with_probe(base, SimpleNamespace(), "cpu")
 
-    assert not hasattr(ret_model, "_compiled_marker"), (
-        "broken compile must fall back to the un-compiled model"
-    )
-    assert any(
-        "torch.compile probe failed" in str(w.message) for w in caught
-    ), f"expected a fallback UserWarning, got: {[str(w.message) for w in caught]}"
+    assert ret is base
+    assert any("torch.compile probe failed" in str(w.message) for w in caught)
     assert torch.get_float32_matmul_precision() == precision_before
-
-
-def test_compile_mode_propagates():
-    """compile_mode kwarg flows through to torch.compile unchanged.
-    Phase B (CUDA graphs via StaticCache) will pair with
-    ``compile_mode='reduce-overhead'``; this test guards the plumbing."""
-    _called, invocations, _ = _run_load_with_compile(
-        device="cuda", compile_mode="reduce-overhead",
-    )
-    assert invocations[0]["mode"] == "reduce-overhead"
 
 
 def test_cuda_compile_enables_high_float32_matmul_precision(
@@ -521,13 +412,7 @@ def test_cuda_compile_enables_high_float32_matmul_precision(
 ) -> None:
     precision: list[str] = []
     monkeypatch.setattr(torch, "set_float32_matmul_precision", precision.append)
-
-    _run_load_with_compile(
-        device="cuda",
-        compile_mode="reduce-overhead",
-        patch_precision=False,
-    )
-
+    _compile(device="cuda", patch_precision=False)
     assert precision == ["high"]
 
 
@@ -544,7 +429,7 @@ def test_get_memory_gb_returns_zero_when_mps_backend_unavailable(monkeypatch: py
     def _raise():
         raise RuntimeError("Cannot execute getCurrentAllocatedMemory() without MPS backend.")
     monkeypatch.setattr(torch.mps, "current_allocated_memory", _raise)
-    assert model_mod._get_memory_gb("mps") == 0.0
+    assert model_mod.memory_gb("mps") == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +518,7 @@ def test_load_text_from_multimodal_round_trips(tmp_path: Path, monkeypatch: pyte
     text_cfg, ref = _write_synthetic_vlm(
         tmp_path, monkeypatch, layout=layout, tie=tie,
     )
-    loaded = model_mod._load_text_from_multimodal(
+    loaded = ckpt_mod.load_text_from_multimodal(
         "fake/vlm", text_cfg, torch.float32, "cpu",
     )
 
@@ -652,7 +537,7 @@ def test_load_text_from_multimodal_round_trips(tmp_path: Path, monkeypatch: pyte
         "vision-tower weights leaked into the text model"
     )
     # And the extracted model is a usable causal LM.
-    assert len(model_mod.get_layers(loaded)) == text_cfg.num_hidden_layers
+    assert len(arch_mod.get_layers(loaded)) == text_cfg.num_hidden_layers
 
 
 def test_load_text_from_multimodal_raises_when_no_text_weights(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -673,8 +558,8 @@ def test_load_text_from_multimodal_raises_when_no_text_weights(tmp_path: Path, m
 
     monkeypatch.setattr("transformers.utils.hub.cached_file", _fake_cached_file)
 
-    with pytest.raises(model_mod._NoTextWeightsExtracted):
-        model_mod._load_text_from_multimodal(
+    with pytest.raises(ckpt_mod.NoTextWeightsExtracted):
+        ckpt_mod.load_text_from_multimodal(
             "fake/vlm", text_cfg, torch.float32, "cpu",
         )
 
@@ -717,7 +602,7 @@ def test_source_fingerprint_recompute_matches_stamp_text_only(tmp_path: Path):
     ckpt = tmp_path / "text-only"
     _AM.from_config(text_cfg).save_pretrained(ckpt)
 
-    pre = model_mod.model_source_fingerprint(str(ckpt), device="cpu")
+    pre = fp_mod.model_source_fingerprint(str(ckpt), device="cpu")
     assert pre is not None
     model = _load_stamped(ckpt, "text-only-stub")
     assert getattr(model, "_drowse_source_fingerprint", None) == pre
@@ -738,7 +623,7 @@ def test_source_fingerprint_recompute_matches_stamp_multimodal(tmp_path: Path):
         str(ckpt / "model.safetensors"),
     )
 
-    pre = model_mod.model_source_fingerprint(str(ckpt), device="cpu")
+    pre = fp_mod.model_source_fingerprint(str(ckpt), device="cpu")
     assert pre is not None
     model = _load_stamped(ckpt, "vlm-stub")
     # The extraction path must actually have fired (and with it the in-place
@@ -766,14 +651,14 @@ def _routing_calls(
 
     def _fake_extractor(*args: Any, **kwargs: Any) -> _FakeModel:
         if extractor_raises:
-            raise model_mod._NoTextWeightsExtracted("synthetic miss")
+            raise ckpt_mod.NoTextWeightsExtracted("synthetic miss")
         return _FakeModel("sdpa")
 
     with (
         patch.object(model_mod, "AutoTokenizer") as mock_tok,
         patch.object(model_mod, "AutoConfig") as mock_cfg,
         patch.object(model_mod, "AutoModelForCausalLM") as mock_model,
-        patch.object(model_mod, "_load_text_from_multimodal",
+        patch.object(model_mod, "load_text_from_multimodal",
                      side_effect=_fake_extractor) as mock_extract,
     ):
         mock_tok.from_pretrained.return_value = SimpleNamespace()
@@ -785,7 +670,7 @@ def _routing_calls(
 
 
 def test_multimodal_routes_to_text_extraction_even_when_outer_accessible():
-    """A gemma-style wrapper (outer ``gemma4`` *is* in _LAYER_ACCESSORS,
+    """A gemma-style wrapper (outer ``gemma4`` *is* itself loadable,
     text ``gemma4_text`` also is) must still prefer text-only extraction —
     otherwise the standard load pulls the whole multimodal model into
     memory and double-buffers it on unified memory."""
@@ -808,14 +693,14 @@ def test_text_extraction_preserves_the_pinned_hub_revision(
     """
     cfg = _FakeConfig(model_type="gemma3", text_model_type="gemma3_text")
     monkeypatch.setattr(
-        model_mod, "resolve_model_revision", lambda _m: "immutable-model-commit",
+        fp_mod, "resolve_model_revision", lambda _m: "immutable-model-commit",
     )
 
     with (
         patch.object(model_mod, "AutoTokenizer") as mock_tok,
         patch.object(model_mod, "AutoConfig") as mock_cfg,
         patch.object(model_mod, "AutoModelForCausalLM"),
-        patch.object(model_mod, "_load_text_from_multimodal") as mock_extract,
+        patch.object(model_mod, "load_text_from_multimodal") as mock_extract,
     ):
         mock_tok.from_pretrained.return_value = SimpleNamespace()
         mock_cfg.from_pretrained.return_value = cfg
@@ -867,7 +752,7 @@ def test_quantized_multimodal_without_standard_route_raises_actionable():
         patch.object(model_mod, "AutoTokenizer") as mock_tok,
         patch.object(model_mod, "AutoConfig") as mock_cfg,
         patch.object(model_mod, "AutoModelForCausalLM") as mock_model,
-        patch.object(model_mod, "_load_text_from_multimodal") as mock_extract,
+        patch.object(model_mod, "load_text_from_multimodal") as mock_extract,
     ):
         mock_tok.from_pretrained.return_value = SimpleNamespace()
         mock_cfg.from_pretrained.return_value = cfg
@@ -977,7 +862,7 @@ def test_plan_pins_every_read_to_the_resolved_revision(
 ) -> None:
     # Transformers >=5.18 configs carry no ``_commit_hash``: the pin comes
     # from the Hub lookup alone, and the probe config read is pinned too.
-    monkeypatch.setattr(model_mod, "resolve_model_revision", lambda _m: "deadbeef")
+    monkeypatch.setattr(fp_mod, "resolve_model_revision", lambda _m: "deadbeef")
     with patch.object(model_mod, "AutoConfig") as mock_cfg:
         mock_cfg.from_pretrained.return_value = _FakeConfig("qwen3")
         plan = model_mod._resolve_load_plan(
@@ -996,7 +881,7 @@ def test_plan_fails_open_when_the_commit_cannot_be_resolved(
     def _unreachable(_model_id: str) -> str:
         raise RuntimeError("Hub unreachable and nothing cached")
 
-    monkeypatch.setattr(model_mod, "resolve_model_revision", _unreachable)
+    monkeypatch.setattr(fp_mod, "resolve_model_revision", _unreachable)
     plan = _plan(_FakeConfig("qwen3"))
     assert plan.revision is None
     assert plan.pin_kwargs == {}
@@ -1007,7 +892,7 @@ def test_standard_load_stamps_the_resolved_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The live config's ``_commit_hash`` slot is Drowse's stamp, not HF's."""
-    monkeypatch.setattr(model_mod, "resolve_model_revision", lambda _m: _COMMIT)
+    monkeypatch.setattr(fp_mod, "resolve_model_revision", lambda _m: _COMMIT)
     with (
         patch.object(model_mod, "AutoTokenizer") as mock_tok,
         patch.object(model_mod, "AutoConfig") as mock_cfg,

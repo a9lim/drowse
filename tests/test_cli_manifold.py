@@ -35,7 +35,7 @@ def _cross_process_alignment_worker(
 
     import torch
 
-    import drowse.model.loading as model_mod
+    from drowse.model import fingerprint as fp_mod
     import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
@@ -104,7 +104,7 @@ def _cross_process_alignment_worker(
         capture,
     )
     patch.setattr(
-        model_mod, "model_source_fingerprint",
+        fp_mod, "model_source_fingerprint",
         lambda model_id: f"source:{model_id}",
     )
     patch.setattr(alignment_mod, "_loaded_model", lambda model_id, **_kwargs: Session(model_id))
@@ -728,7 +728,7 @@ def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
     """Cold transfer neither revalidates identities nor reloads target rows."""
     import torch
 
-    import drowse.model.loading as model_mod
+    from drowse.model import fingerprint as fp_mod
     import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
@@ -783,7 +783,7 @@ def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
             FileNotFoundError("cold cache")
         ),
     )
-    monkeypatch.setattr(model_mod, "model_source_fingerprint", lambda *_args: None)
+    monkeypatch.setattr(fp_mod, "model_source_fingerprint", lambda *_args: None)
     monkeypatch.setattr(
         alignment_mod, "fit_alignment",
         lambda _src, _tgt, **_kwargs: {0: torch.eye(2)},
@@ -817,7 +817,7 @@ def test_cold_narrow_alignment_releases_full_seed_rosters_before_fit(
 
     import torch
 
-    import drowse.model.loading as model_mod
+    from drowse.model import fingerprint as fp_mod
     import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
@@ -835,7 +835,7 @@ def test_cold_narrow_alignment_releases_full_seed_rosters_before_fit(
             return None
 
     monkeypatch.setattr(alignment_mod, "_loaded_model", lambda model_id, **_kwargs: _SessionContext(model_id))
-    monkeypatch.setattr(model_mod, "model_source_fingerprint", lambda *_args: None)
+    monkeypatch.setattr(fp_mod, "model_source_fingerprint", lambda *_args: None)
     monkeypatch.setattr(
         alignment_mod, "validate_neutral_cache_metadata",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -919,7 +919,7 @@ def test_cached_alignment_keeps_model_free_offline_whitener_path(
     """A cached repeat loads target rows once and never loads model weights."""
     import torch
 
-    import drowse.model.loading as model_mod
+    from drowse.model import fingerprint as fp_mod
     import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
@@ -959,7 +959,7 @@ def test_cached_alignment_keeps_model_free_offline_whitener_path(
         alignment_mod, "load_validated_neutral_cache", load_validated,
     )
     monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
+        fp_mod, "model_source_fingerprint",
         lambda model_id: f"source:{model_id}",
     )
     monkeypatch.setattr(
@@ -987,7 +987,7 @@ def test_missing_cached_alignment_fits_offline_from_proven_neutral_rows(
     """A map miss reuses both neutral caches and never loads either model."""
     import torch
 
-    import drowse.model.loading as model_mod
+    from drowse.model import fingerprint as fp_mod
     import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
@@ -1033,7 +1033,7 @@ def test_missing_cached_alignment_fits_offline_from_proven_neutral_rows(
         alignment_mod, "load_validated_neutral_cache", load_validated,
     )
     monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
+        fp_mod, "model_source_fingerprint",
         lambda model_id: f"source:{model_id}",
     )
     monkeypatch.setattr(
@@ -1087,7 +1087,7 @@ def test_force_refits_only_requested_layer_without_loading_models(
 ) -> None:
     import torch
 
-    import drowse.model.loading as model_mod
+    from drowse.model import fingerprint as fp_mod
     import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
@@ -1136,7 +1136,7 @@ def test_force_refits_only_requested_layer_without_loading_models(
     )
     monkeypatch.setattr(alignment_mod, "load_validated_neutral_cache", load_rows)
     monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
+        fp_mod, "model_source_fingerprint",
         lambda model_id: f"source:{model_id}",
     )
     requested_map_layers: list[set[int]] = []
@@ -1183,7 +1183,7 @@ def test_target_neutral_generation_race_replans_cached_alignment(
 ) -> None:
     import torch
 
-    import drowse.model.loading as model_mod
+    from drowse.model import fingerprint as fp_mod
     import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
@@ -1221,7 +1221,7 @@ def test_target_neutral_generation_race_replans_cached_alignment(
     )
     monkeypatch.setattr(alignment_mod, "load_validated_neutral_cache", load_rows)
     monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
+        fp_mod, "model_source_fingerprint",
         lambda model_id: f"source:{model_id}",
     )
     map_generations: list[str] = []
@@ -1256,7 +1256,7 @@ def test_concurrent_distinct_alignments_single_flight_shared_model_load(
 ) -> None:
     import torch
 
-    import drowse.model.loading as model_mod
+    from drowse.model import fingerprint as fp_mod
     import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
@@ -1322,7 +1322,7 @@ def test_concurrent_distinct_alignments_single_flight_shared_model_load(
         capture,
     )
     monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
+        fp_mod, "model_source_fingerprint",
         lambda model_id: f"source:{model_id}",
     )
     monkeypatch.setattr(alignment_mod, "_loaded_model", lambda model_id, **_kwargs: Session(model_id))

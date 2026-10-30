@@ -3,7 +3,7 @@
 The toy is HF-shaped just enough for the accessors and the fit: a frozen
 ``model.model.layers`` block stack with causal mixing, ``model.model.norm``,
 ``lm_head``/``get_output_embeddings``, and a ``config.model_type`` that
-resolves through ``_LAYER_ACCESSORS``.
+resolves through structural layer discovery.
 """
 
 from __future__ import annotations

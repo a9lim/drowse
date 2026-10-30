@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, Protocol, cast
 
 import torch
 
@@ -166,16 +166,21 @@ def _per_layer_axis0(
     return by_layer or None
 
 
+class _GeometryRun(Protocol):
+    def observe(
+        self, step_id: int, hidden: dict[int, torch.Tensor],
+    ) -> dict[str, ProbeReading]: ...
+
+
 def build_token_probe_payload(
     *,
-    monitor: Any,
     capture: Any,
     capture_state: Any,
     incremental_readings: list[dict[str, ProbeReading]],
     needs_scores: bool,
     persists_layer_scores: bool,
     assistant_node_id: str | None,
-    geometry_run: Any = None,
+    geometry_run: _GeometryRun,
     step_id: int = -1,
 ) -> TokenProbePayload:
     """Score and shape probe payloads for one generated token.
@@ -185,8 +190,7 @@ def build_token_probe_payload(
     the most recent incremental reading, or score the latest captured hidden
     states through the geometry run's step-keyed ``observe`` (FULL-retention
     mode — a gate callback that already full-roster-scored this forward primed
-    the memo, so the tap hits it instead of rescoring; ``monitor`` remains the
-    fallback for callers without a run).
+    the memo, so the tap hits it instead of rescoring).
     The monitor readings land in the ``geometry`` family slot.
     """
     if not needs_scores:
@@ -206,7 +210,7 @@ def build_token_probe_payload(
 
     readings: dict[str, ProbeReading] | None = None
     if has_incremental_reading:
-        if capture_state.lean or geometry_run is None:
+        if capture_state.lean:
             # LEAN rows are deliberately partial (``coords_only``) and are
             # never primed into the observe memo — read the sink's row
             # directly (routing through ``observe`` would either rescore
@@ -224,11 +228,7 @@ def build_token_probe_payload(
                 or None
             )
     elif latest_hidden_for_token:
-        readings = (
-            geometry_run.observe(step_id, latest_hidden_for_token)
-            if geometry_run is not None
-            else monitor.score_single_token(latest_hidden_for_token)
-        ) or None
+        readings = geometry_run.observe(step_id, latest_hidden_for_token) or None
 
     if not readings:
         return TokenProbePayload()

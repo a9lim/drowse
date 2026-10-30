@@ -322,7 +322,7 @@ def _load_or_compute_neutral_activations_with_metadata_locked(
     ``λ`` / ``K``); fp32 has the range and, unlike the former bf16 store, no
     input-precision loss, at the cost of ~2× disk on this one cache.
     """
-    from drowse.model.loading import loaded_model_fingerprint
+    from drowse.model.fingerprint import loaded_model_fingerprint
     from drowse.fit.capture import (
         _neutral_pairs,
         _prepare_capture_batch,

@@ -90,10 +90,10 @@ def _model_shape_from_config(model_id: str) -> tuple[int, int]:
     """``(n_layers, hidden_dim)`` for ``model_id`` without loading weights.
 
     The CLI-local name kept as this module's monkeypatch seam; the shape rule
-    itself lives once in :func:`drowse.model.loading.config_model_shape`, shared
+    itself lives once in :func:`drowse.model.arch.config_model_shape`, shared
     with the manifold fit's weight-free no-op preflight.
     """
-    from drowse.model.loading import config_model_shape
+    from drowse.model.arch import config_model_shape
 
     return config_model_shape(model_id)
 

@@ -14,7 +14,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
-from drowse.model import loading as model_module
+from drowse.model import load as model_module
 from drowse.server.background_job import BackgroundJob
 from drowse.server.sse import sse_or_json
 

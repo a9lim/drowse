@@ -24,8 +24,9 @@ alternating conversations and byte-compare against the template's own render.
 A family that passes gets scene mode — and, because extraction renders
 exactly such alternating conversations, routing extraction through the
 stitcher is bit-identical to ``apply_chat_template`` (the baseline-match
-contract holds with no manifold re-fit).  A family that fails falls back to
-raw-marker rendering (``render_scene_raw``) with a drift warning.
+contract holds with no manifold re-fit).  A family that fails keeps the
+chat-template and per-turn splice renders (``build_chat_input``) with a
+one-time warning; ``render_scene_raw`` serves only template-less base models.
 
 Thinking is a per-turn optional input on any seat (a9 convention, 2026-07-10):
 rendered through the family think delimiters when supplied.  History policy
@@ -40,11 +41,11 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from drowse.errors import DrowseError
+from drowse.model.chat import takes_enable_thinking
 from drowse.model.role_templates import (
-    ROLE_HEADERS,
-    USER_ROLE_HEADERS,
     RoleHeader,
     render_role_label,
+    resolve_seat_headers,
     validate_role,
 )
 
@@ -313,8 +314,9 @@ def extract_turn_grammar(
     policy follows it (a9 convention 3); a template that chokes on the
     embedded markers degrades to ``None`` rather than losing scene mode.
     """
-    asst_header = ROLE_HEADERS.get(model_type)
-    user_header = USER_ROLE_HEADERS.get(model_type)
+    seats = resolve_seat_headers(tokenizer, model_type)
+    asst_header = seats.assistant if seats is not None else None
+    user_header = seats.user if seats is not None else None
     if asst_header is None or user_header is None:
         raise SceneGrammarError(
             f"scene mode is not supported for model_type {model_type!r}: "
@@ -329,8 +331,7 @@ def extract_turn_grammar(
     # When the template takes ``enable_thinking``, every probe renders with
     # it pinned False — matching ``build_chat_input``'s default path — and a
     # separate probe pair recovers the True-variant generation appendix.
-    template_str = getattr(tokenizer, "chat_template", "") or ""
-    takes_thinking_kwarg = "enable_thinking" in template_str
+    takes_thinking_kwarg = takes_enable_thinking(tokenizer)
     render_kwargs: dict[str, Any] = (
         {"enable_thinking": False} if takes_thinking_kwarg else {}
     )
@@ -715,8 +716,8 @@ def validate_turn_grammar(
     :class:`SceneGrammarError` at the first divergence.  This is the
     load-bearing gate: a passing family's extraction renders are bit-identical
     through the stitcher (the baseline-match contract), and a template
-    revision flips the family to the raw fallback instead of corrupting
-    silently.
+    revision flips the family to the chat-template renders instead of
+    corrupting silently.
     """
     messages = [
         {"role": "user", "content": "alpha beta"},
@@ -769,8 +770,7 @@ def validate_turn_grammar(
             f"  {system}  ",
             None,
         ))
-    template_str = getattr(tokenizer, "chat_template", "") or ""
-    takes_thinking_kwarg = "enable_thinking" in template_str
+    takes_thinking_kwarg = takes_enable_thinking(tokenizer)
     render_kwargs: dict[str, Any] = (
         {"enable_thinking": False} if takes_thinking_kwarg else {}
     )

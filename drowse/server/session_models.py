@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pydantic import Field, FiniteFloat
 
-from drowse.generation.decode import supports_thinking, thinking_is_optional
 from drowse.session.session import DrowseSession
 from drowse.steering.terms import Steering
 from drowse.server.instrument_routes import instrument_families
@@ -53,28 +52,26 @@ def session_model_type(session: DrowseSession) -> str | None:
 
 def role_support(session: DrowseSession) -> tuple[bool, bool]:
     """``(assistant_supported, user_supported)`` for the loaded model family."""
-    from drowse.model.role_templates import ROLE_HEADERS, USER_ROLE_HEADERS
+    from drowse.model.role_templates import resolve_seat_headers
 
     mt = session_model_type(session)
-    if mt is None:
+    seats = resolve_seat_headers(session.tokenizer, mt) if mt is not None else None
+    if seats is None:
         return (False, False)
-    return (
-        ROLE_HEADERS.get(mt) is not None,
-        USER_ROLE_HEADERS.get(mt) is not None,
-    )
+    return (seats.assistant is not None, seats.user is not None)
 
 
 def default_role_labels(
     session: DrowseSession,
 ) -> tuple[str | None, str | None]:
     """The family-standard assistant/user role labels, if substitutable."""
-    from drowse.model.role_templates import ROLE_HEADERS, USER_ROLE_HEADERS
+    from drowse.model.role_templates import resolve_seat_headers
 
     mt = session_model_type(session)
-    if mt is None:
+    seats = resolve_seat_headers(session.tokenizer, mt) if mt is not None else None
+    if seats is None:
         return (None, None)
-    asst = ROLE_HEADERS.get(mt)
-    usr = USER_ROLE_HEADERS.get(mt)
+    asst, usr = seats.assistant, seats.user
     return (
         asst.label if asst is not None else None,
         usr.label if usr is not None else None,
@@ -102,8 +99,9 @@ def session_info(
     created_ts: int,
 ) -> SessionInfo:
     device, dtype = device_dtype(session)
-    thinks = bool(supports_thinking(session.tokenizer))
-    thinks_optional = bool(thinking_is_optional(session.tokenizer))
+    traits = session.chat_traits
+    thinks = traits.supports_thinking
+    thinks_optional = traits.thinking_optional
     is_base = bool(session.is_base_model)
     default_expr = str(default_steering) if default_steering is not None else None
     assistant_role_ok, user_role_ok = role_support(session)

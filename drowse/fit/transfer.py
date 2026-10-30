@@ -75,7 +75,8 @@ def _loaded_model(model_id: str) -> Iterator[tuple[Any, Any, Any]]:
     tokenizer, and layer stack, and the loader stamps the source fingerprint
     the neutral cache binds.
     """
-    from drowse.model.loading import get_layers, load_model
+    from drowse.model.arch import get_layers
+    from drowse.model.load import load_model
 
     model, tokenizer = load_model(model_id, device="auto")
     try:
@@ -86,7 +87,7 @@ def _loaded_model(model_id: str) -> Iterator[tuple[Any, Any, Any]]:
 
 def _proven_sidecar(model_id: str) -> dict[str, Any] | None:
     """Prove cache/source identity without hashing any tensor payload."""
-    from drowse.model.loading import model_source_fingerprint
+    from drowse.model.fingerprint import model_source_fingerprint
 
     try:
         source = model_source_fingerprint(model_id)

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from drowse.model.chat import takes_enable_thinking
+
 if TYPE_CHECKING:
     from drowse.geometry.manifold import Manifold
 
@@ -638,7 +640,7 @@ def _render_capture_text(
     )
     if getattr(tokenizer, "chat_template", None) is not None:
         kwargs: dict[str, Any] = {}
-        if "enable_thinking" in (getattr(tokenizer, "chat_template", "") or ""):
+        if takes_enable_thinking(tokenizer):
             kwargs["enable_thinking"] = False
         messages = []
         if system_msg:

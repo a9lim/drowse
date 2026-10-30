@@ -58,7 +58,7 @@ from drowse.lens.jlens import (
     token_readout_stats,
     token_readout_stats_from_probabilities,
 )
-from drowse.model.loading import get_unembedding
+from drowse.model.readout import get_unembedding
 
 if TYPE_CHECKING:
     from drowse.session.session import DrowseSession
@@ -912,7 +912,7 @@ class LensInstrument:
         latest-slice buffers post-forward), so steering fast-path /
         compile eligibility is untouched.  Returns the resolved layer list.
         """
-        from drowse.model.loading import LogitReadout
+        from drowse.model.readout import LogitReadout
 
         session = self._session
         if session._device.type == "cuda":

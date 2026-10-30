@@ -634,7 +634,7 @@ def _resolve_model_for_fetch(model_id: str) -> tuple[str, int, int]:
     """
     from transformers import AutoConfig
 
-    from drowse.model.loading import resolve_model_revision
+    from drowse.model.fingerprint import resolve_model_revision
 
     model_revision = resolve_model_revision(model_id)
     if model_revision is None:

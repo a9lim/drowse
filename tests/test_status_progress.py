@@ -265,7 +265,7 @@ def test_load_model_reports_device_and_memory(
     weights / memory lines are invisible by default; the sink is how the CLI
     sees them.
     """
-    import drowse.model.loading as model_mod
+    from drowse.model import load as model_mod
 
     plan = argparse.Namespace(
         model_id="test/model", device="cpu", dtype=torch.float32,
@@ -282,7 +282,7 @@ def test_load_model_reports_device_and_memory(
     monkeypatch.setattr(model_mod, "_materialize_model", lambda _plan: object())
     monkeypatch.setattr(
         model_mod, "_finalize_model",
-        lambda model, _tok, _plan, *, compile, compile_mode, on_progress=None: (
+        lambda model, _tok, _plan, *, on_progress=None: (
             on_progress("Memory used: 1.50 GB") or model
             if on_progress is not None else model
         ),

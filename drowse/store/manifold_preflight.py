@@ -91,7 +91,8 @@ def preflight_manifold_fit_noop(
         resolve_fit_layer_indices,
     )
     from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION
-    from drowse.model.loading import config_model_shape, model_source_fingerprint
+    from drowse.model.arch import config_model_shape
+    from drowse.model.fingerprint import model_source_fingerprint
 
     if sae is not None or fit_mode is not None or hyperparams:
         return None

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import gc
 from types import SimpleNamespace
 from typing import Any, Callable, cast
-import weakref
 
 import pytest
 import torch
@@ -14,15 +12,9 @@ from drowse.generation.decode import (
     GenerationConfig,
     GenerationState,
     _PenaltyState,
-    _TOKEN_TABLE_CACHE_MAX,
-    _detect_think_delimiters,
-    _get_eos_ids,
-    _get_token_table,
-    _logits_keep_kwarg,
-    _think_delim_cache,
-    _token_table_cache,
     generate_steered,
 )
+from drowse.model.chat import chat_eos_ids, logits_keep_kwarg
 from drowse.readout.types import ScalarReading
 from drowse.generation.results import GenerationResult, ProbeReading
 from drowse.generation.sampling import SamplingConfig
@@ -65,24 +57,6 @@ class _StopTokenizer:
         return "".join(pieces)
 
 
-def test_token_tables_are_shape_keyed_and_lru_bounded() -> None:
-    _token_table_cache.clear()
-    try:
-        tokenizer = _StopTokenizer()
-        assert len(_get_token_table(cast(Any, tokenizer), 4)) == 4
-        assert len(_get_token_table(cast(Any, tokenizer), 5)) == 5
-        tokenizers = []
-        for index in range(_TOKEN_TABLE_CACHE_MAX + 1):
-            other = _StopTokenizer()
-            tokenizers.append(other)
-            other.name_or_path = f"tokenizer-{index}"
-            _get_token_table(cast(Any, other), 4)
-        assert len(_token_table_cache) == _TOKEN_TABLE_CACHE_MAX
-        assert all(key[0] != "tokenizer-0" for key in _token_table_cache)
-    finally:
-        _token_table_cache.clear()
-
-
 def test_logits_keep_detection_is_keyed_by_forward_implementation() -> None:
     class CurrentModel:
         def forward(self, input_ids: Any, logits_to_keep: int | None = None) -> Any:
@@ -92,8 +66,8 @@ def test_logits_keep_detection_is_keyed_by_forward_implementation() -> None:
         def forward(self, input_ids: Any, num_logits_to_keep: int | None = None) -> Any:
             del input_ids, num_logits_to_keep
 
-    assert _logits_keep_kwarg(cast(Any, CurrentModel())) == "logits_to_keep"
-    assert _logits_keep_kwarg(cast(Any, LegacyModel())) == "num_logits_to_keep"
+    assert logits_keep_kwarg(CurrentModel()) == "logits_to_keep"
+    assert logits_keep_kwarg(LegacyModel()) == "num_logits_to_keep"
 
 
 def test_eos_ids_are_not_shared_between_models_with_the_same_tokenizer() -> None:
@@ -101,22 +75,8 @@ def test_eos_ids_are_not_shared_between_models_with_the_same_tokenizer() -> None
     first = SimpleNamespace(generation_config=SimpleNamespace(eos_token_id=1))
     second = SimpleNamespace(generation_config=SimpleNamespace(eos_token_id=2))
 
-    assert _get_eos_ids(cast(Any, first), cast(Any, tokenizer)) == {1, 3}
-    assert _get_eos_ids(cast(Any, second), cast(Any, tokenizer)) == {2, 3}
-
-
-def test_thinking_delimiter_cache_releases_collected_tokenizers() -> None:
-    _think_delim_cache.clear()
-    tokenizer = _StopTokenizer()
-    cast(Any, tokenizer).chat_template = None
-    _detect_think_delimiters(cast(Any, tokenizer))
-    ref = weakref.ref(tokenizer)
-
-    del tokenizer
-    gc.collect()
-
-    assert ref() is None
-    assert len(_think_delim_cache) == 0
+    assert chat_eos_ids(first, tokenizer) == {1, 3}
+    assert chat_eos_ids(second, tokenizer) == {2, 3}
 
 
 def _stub_instruments(
@@ -374,7 +334,7 @@ def test_prepare_generation_uses_session_thinking_default(monkeypatch: pytest.Mo
     session._tokenizer = object()
     session._default_return_top_k = 0
     session.config = GenerationConfig(thinking=False)
-    monkeypatch.setattr("drowse.session.session.supports_thinking", lambda _tok: True)
+    session._chat = SimpleNamespace(supports_thinking=True)
 
     assert DrowseSession._prepare_generation_call(
         session, None, None, None,
@@ -627,7 +587,6 @@ def test_buffered_utf8_group_emits_carry_the_flush_forwards_step():
         on_token=lambda text, _th, _tid, _lp, _alts, _ppl, step: (
             emits.append((text, step))
         ),
-        cache_token_text=False,
     )
 
     assert generated_ids == [0, 1, 2, 3]
@@ -653,7 +612,6 @@ def test_post_loop_utf8_flush_uses_the_last_forwards_step():
         on_token=lambda text, _th, _tid, _lp, _alts, _ppl, step: (
             emits.append((text, step))
         ),
-        cache_token_text=False,
     )
 
     assert generated_ids == [0, 1]
@@ -684,7 +642,6 @@ def test_alt_token_decode_does_not_break_partial_utf8_buffering():
             emits.append((text, step))
         ),
         logprobs=1,
-        cache_token_text=False,
     )
 
     assert generated_ids == [0, 1, 2, 3]
@@ -831,7 +788,6 @@ def test_stop_sequence_only_tap_can_skip_full_token_table():
         state,
         on_token=lambda text, *_args: emitted.append(text),
         stop=[" STOP"],
-        cache_token_text=False,
     )
 
     assert tokenizer.batch_decode_calls == 0

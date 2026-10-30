@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from drowse.session.session import DrowseSession
 
 from drowse.errors import DrowseError
-from drowse.model.loading import get_unembedding
+from drowse.model.readout import get_unembedding
 from drowse.generation.results import TokenEvent
 from drowse.generation.sampling import SamplingConfig
 from drowse.steering.terms import Steering

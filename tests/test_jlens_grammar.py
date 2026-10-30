@@ -440,7 +440,7 @@ def test_lens_noop_preflight_requires_exact_model_source(
         lambda _model, _name="default": sidecar,
     )
     monkeypatch.setattr(
-        "drowse.model.loading.model_source_fingerprint",
+        "drowse.model.fingerprint.model_source_fingerprint",
         lambda *_args, **_kwargs: "source-a",
     )
     args = argparse.Namespace(
@@ -485,7 +485,7 @@ def test_lens_noop_preflight_rejects_changed_dataset_revision(
         lambda _model, _name="default": sidecar,
     )
     monkeypatch.setattr(
-        "drowse.model.loading.model_source_fingerprint",
+        "drowse.model.fingerprint.model_source_fingerprint",
         lambda *_args, **_kwargs: "source-a",
     )
     args = argparse.Namespace(

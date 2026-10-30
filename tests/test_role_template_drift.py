@@ -1,4 +1,4 @@
-"""Real-tokenizer drift tests for :data:`drowse.model.role_templates.ROLE_HEADERS`.
+"""Real-tokenizer drift tests for :data:`drowse.model.role_templates.SEAT_HEADERS`.
 
 Complement to ``test_role_templates.py``.  That file uses synthetic Jinja
 templates that mirror the *registered* per-family chat-template shapes,
@@ -25,13 +25,13 @@ import os
 
 import pytest
 
-from drowse.model.role_templates import ROLE_HEADERS
+from drowse.model.role_templates import SEAT_HEADERS, resolve_seat_headers
 
 # Representative tokenizer per family.  Picked smallest available so the
 # download is cheap.  Public/no-auth where possible; the gated ones
 # (gemma, llama) skip per-family on download failure.
 #
-# When a new family is added to ROLE_HEADERS, add an entry here too.
+# When a new family is added to SEAT_HEADERS, add an entry here too.
 # A family with a registered RoleHeader but no entry in this table
 # is treated as untested and flagged by ``test_every_supported_family_is_tested``.
 _REPRESENTATIVE_TOKENIZERS: dict[str, str] = {
@@ -61,7 +61,7 @@ _REPRESENTATIVE_TOKENIZERS: dict[str, str] = {
 
 def _supported_families() -> list[str]:
     """Families with a non-None RoleHeader in the registry."""
-    return [k for k, v in ROLE_HEADERS.items() if v is not None]
+    return [k for k, v in SEAT_HEADERS.items() if v.assistant is not None]
 
 
 def test_every_supported_family_is_tested():
@@ -119,14 +119,15 @@ def test_role_header_matches_live_template(family: str):
         tokenize=False,
     )
 
-    header = ROLE_HEADERS[family]
-    assert header is not None  # _supported_families guarantees this
+    seats = resolve_seat_headers(tok, family)
+    assert seats is not None and seats.assistant is not None
+    header = seats.assistant
     splice_key = f"{header.before}{header.label}{header.after}"
 
     assert splice_key in rendered, (
         f"{family} ({model_id}): registered splice key {splice_key!r} "
         f"not found in rendered chat template. The chat template likely "
-        f"changed upstream — update ROLE_HEADERS[{family!r}] in "
+        f"changed upstream — update SEAT_HEADERS[{family!r}] in "
         f"drowse/model/role_templates.py to match. Rendered template "
         f"sample:\n{rendered[:300]!r}"
     )

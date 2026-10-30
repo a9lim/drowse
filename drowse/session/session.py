@@ -30,15 +30,16 @@ from drowse.events import (
     ManifoldExtracted,
     ProbeScored,
 )
+from drowse.generation.prefix_cache import PrefixCacheEntry
 from drowse.generation.decode import (
     GenerationConfig,
     GenerationState,
-    _get_eos_ids,
     build_chat_input,
-    detect_base_model,
     generate_steered,
-    supports_thinking,
+    hf_generation_config,
+    hf_unneutralizable_processors,
 )
+from drowse.model.chat import ChatTraits
 from drowse.readout.capture_buffer import HiddenCapture
 from drowse.steering.hooks import SteeringManager
 from drowse.naming import BIPOLAR_SEP, _slug, canonical_concept_name
@@ -67,13 +68,9 @@ from drowse.loom.tree import (
     Recipe,
     derive_seed_schedule,
 )
-from drowse.model.loading import (
-    get_layers,
-    get_model_info,
-    load_model,
-    loaded_model_fingerprint,
-    workspace_layer_indices,
-)
+from drowse.model.arch import get_layers, get_model_info, workspace_layer_indices
+from drowse.model.fingerprint import loaded_model_fingerprint
+from drowse.model.load import load_model
 from drowse.readout.types import (
     AGG_TAIL_DEPTH,
     InstrumentFamily,
@@ -130,102 +127,6 @@ class GenerationStream(Protocol):
     @property
     def result(self) -> GenerationResult | None: ...
 
-# Hybrid linear-attention models (qwen3.6-27b, lfm2, etc.) carry a
-# recurrent state (``conv_states`` + ``recurrent_states``) per LA layer
-# alongside the dynamic K/V cache.  ``DynamicLayer.crop`` truncates K/V
-# but transformers' ``LinearAttentionLayer.crop`` is a documented no-op
-# — there is no sequence dimension to truncate on a recurrent state.
-# That breaks ``cache_prefix`` correctness on hybrid models: after a
-# generate, the LA state has been advanced through both prefix AND
-# suffix tokens; the next reuse of the cached prefix would resume from
-# a polluted state, silently producing wrong outputs.
-#
-# Fix: on prefix install, snapshot each LA layer's ``conv_states`` /
-# ``recurrent_states`` (cheap — bounded-size tensors, kernel-sized conv
-# state and ``(num_heads, head_dim, head_dim)`` recurrent state).  On
-# ``crop``, restore from the snapshot in-place (preserving the
-# cudagraph-static address ``lazy_initialization`` set up).
-#
-# Patch is installed at module import; idempotent.  No-op when
-# transformers doesn't expose the LA cache classes (older versions).
-def _install_la_cache_patch() -> bool:
-    try:
-        from transformers.cache_utils import (
-            LinearAttentionLayer,
-            LinearAttentionAndFullAttentionLayer,
-            DynamicLayer,
-        )
-    except ImportError:
-        return False
-
-    if getattr(LinearAttentionLayer, "_drowse_crop_patched", False):
-        return False
-
-    def _save_la_snapshot(layer: Any) -> None:
-        snap: dict[str, Any] = {}
-        if getattr(layer, "is_conv_states_initialized", False):
-            snap["conv"] = layer.conv_states.detach().clone()
-        if getattr(layer, "is_recurrent_states_initialized", False):
-            snap["recurrent"] = layer.recurrent_states.detach().clone()
-        layer._drowse_la_snapshot = snap or None
-
-    def _la_crop_with_restore(self: Any, tokens_to_remove: int) -> None:
-        # Upstream crop only rolls conv states back when past recording is on
-        # and never restores recurrent state; the prefill snapshot restores both.
-        snap = getattr(self, "_drowse_la_snapshot", None)
-        if not snap:
-            return
-        # ``conv_states`` / ``recurrent_states`` were created during the
-        # prefill forward, which runs inside ``torch.inference_mode()``,
-        # so the underlying tensors are inference tensors.  In-place
-        # ``.copy_(...)`` from outside inference_mode raises
-        # ``RuntimeError: Inplace update to inference tensor outside
-        # InferenceMode is not allowed``.  Wrap the restore so the
-        # in-place mutation is legal regardless of caller context.
-        with torch.inference_mode():
-            if "conv" in snap and getattr(self, "is_conv_states_initialized", False):
-                self.conv_states.copy_(snap["conv"])
-            if "recurrent" in snap and getattr(self, "is_recurrent_states_initialized", False):
-                self.recurrent_states.copy_(snap["recurrent"])
-
-    def _hybrid_crop(self: Any, tokens_to_remove: int) -> None:
-        DynamicLayer.crop(self, tokens_to_remove)
-        _la_crop_with_restore(self, tokens_to_remove)
-
-    linear_attention_layer: Any = LinearAttentionLayer
-    hybrid_attention_layer: Any = LinearAttentionAndFullAttentionLayer
-    linear_attention_layer.crop = _la_crop_with_restore
-    hybrid_attention_layer.crop = _hybrid_crop
-    linear_attention_layer._drowse_save_snapshot = _save_la_snapshot
-    linear_attention_layer._drowse_crop_patched = True
-    return True
-
-
-_install_la_cache_patch()
-
-
-def _snapshot_la_layers(cache: Any) -> None:
-    """Walk a Cache's layers and snapshot any linear-attention state.
-
-    Called from :meth:`DrowseSession.cache_prefix` right after the
-    prefill forward, before the cache is stored.  No-op for caches with
-    no LA layers (standard transformer models).
-    """
-    layers = getattr(cache, "layers", None)
-    if not layers:
-        return
-    for layer in layers:
-        save = getattr(layer, "_drowse_save_snapshot", None)
-        if save is not None:
-            # ``_drowse_save_snapshot`` is ``setattr``-ed on the
-            # ``LinearAttentionLayer`` class, so attribute lookup on an
-            # instance returns a bound method — ``self`` (the layer) is
-            # already passed automatically. Calling ``save(layer)`` here
-            # would hand layer through *twice*, raising
-            # ``TypeError: takes 1 positional argument but 2 were given``.
-            save()
-
-
 _RESPONSE_MAX_TOKENS = 256  # per in-character response (4.0 / A2 elicitation)
 # Chunk size for batched corpus generation (``_run_generator_batch``, the
 # generation half of ``generate_responses`` / ``generate_neutral_responses``).
@@ -251,15 +152,6 @@ _AGG_TAIL_DEPTH = AGG_TAIL_DEPTH
 # (``_try_prefix_cache_hit`` requires it), so the cached length is capped at
 # ``min_row_len - 1``.
 _PREFIX_CACHE_MIN_TOKENS = 16
-
-
-@dataclass(slots=True)
-class _PrefixCacheEntry:
-    prefix_ids_cpu: torch.Tensor
-    past_key_values: object
-    prefix_len: int
-    static: bool = False
-    max_cache_len: int | None = None
 
 
 @dataclass(slots=True)
@@ -937,7 +829,6 @@ class DrowseSession:
             quantize=quantize,
             device=device,
             dtype=dtype,
-            compile=False,
             trust_remote_code=trust_remote_code,
             on_progress=on_progress,
         )
@@ -966,7 +857,7 @@ class DrowseSession:
             )
 
         # Apply compile manually with the resolved mode.  Routes through
-        # ``_compile_with_probe`` so an architecture-specific inductor /
+        # ``compile_with_probe`` so an architecture-specific inductor /
         # Triton bug surfaces at load time as a caught warning + eager
         # fallback, rather than as a segfault on the user's first token.
         #
@@ -986,7 +877,7 @@ class DrowseSession:
                 install_persistent_capture_hooks,
             )
             from drowse.steering.hooks import install_persistent_offset_hooks
-            from drowse.model.loading import _compile_with_probe, get_layers
+            from drowse.model.compile import compile_with_probe
             # Attach the persistent branchless steering hooks BEFORE
             # compile so they ride inside the captured graph (post-compile hook
             # changes are not retraced — ``skip_nnmodule_hook_guards``).  The
@@ -1019,7 +910,7 @@ class DrowseSession:
                     f"Compiling model with torch.compile"
                     f"(mode={effective_compile_mode!r})..."
                 )
-            model = _compile_with_probe(
+            model = compile_with_probe(
                 model, tokenizer, device_obj,
                 mode=effective_compile_mode,
             )
@@ -1083,6 +974,11 @@ class DrowseSession:
     ):
         self._model = model
         self._tokenizer = tokenizer
+        # The tokenizer's chat facts, read once: stop ids (adopted as the
+        # model's generation default so HF ``generate`` stops where the decode
+        # loop does), thinking delimiters, the render cache.
+        self._chat = ChatTraits(tokenizer, model)
+        self._chat.adopt_eos(model)
         self._layers = get_layers(self._model)
         self._model_info = get_model_info(self._model, self._tokenizer)
 
@@ -1457,16 +1353,15 @@ class DrowseSession:
         # Prefix KV cache (opt-in, off by default).  Populated by
         # :meth:`cache_prefix`; consumed by :meth:`_generate_core` when the
         # incoming ``input_ids`` start with the cached prefix.  Shape:
-        # ``_PrefixCacheEntry(prefix_token_ids_cpu, past_key_values,
-        # prefix_len, static, max_cache_len)``.  ``past_key_values`` is the
-        # live HF cache returned/mutated by the prefix-prefill forward pass.
-        # Dynamic entries crop back to ``prefix_len`` after reuse; StaticCache
-        # entries additionally carry capacity so oversized generations miss
-        # safely instead of writing past the preallocated buffers.  Invalidated
+        # :class:`~drowse.generation.prefix_cache.PrefixCacheEntry`, which owns
+        # the live HF cache the prefix-prefill forward produced and rewinds it
+        # to ``prefix_len`` after each reuse; StaticCache entries additionally
+        # carry capacity so oversized generations miss safely instead of
+        # writing past the preallocated buffers.  Invalidated
         # on any state change that would alter the cached prefix's hidden-state
         # semantics: steering push/pop/steer/unsteer, probe install/remove,
         # profile mutation.
-        self._prefix_cache: _PrefixCacheEntry | None = None
+        self._prefix_cache: PrefixCacheEntry | None = None
 
         # An explicit ``sae use`` selection persists across sessions. Provider
         # payloads are expected to be present in their own cache already;
@@ -1503,6 +1398,15 @@ class DrowseSession:
     def tokenizer(self):
         """Live HF tokenizer.  Part of the :class:`~drowse.fit.pipeline.ModelHandle` protocol."""
         return self._tokenizer
+
+    @property
+    def chat_traits(self) -> ChatTraits:
+        """The tokenizer's chat facts (stop ids, thinking delimiters, renders)."""
+        try:
+            return self._chat
+        except AttributeError:  # a session assembled without ``__init__``
+            self._chat = ChatTraits(self._tokenizer, self._model)
+            return self._chat
 
     @property
     def device(self) -> torch.device:
@@ -1766,7 +1670,7 @@ class DrowseSession:
         Frontends branch on this to switch to a raw-completion UI — no
         roles, no chat bubbles, the whole buffer is a prefill.
         """
-        return detect_base_model(self._tokenizer)
+        return self.chat_traits.is_base
 
     # -- Neutral baseline (v2.1) --
 
@@ -2994,7 +2898,7 @@ class DrowseSession:
         cached = self._jlens_readout_module_cache
         if cached is not None:
             return cached
-        from drowse.model.loading import LogitReadout, get_unembedding
+        from drowse.model.readout import LogitReadout, get_unembedding
 
         modules = (get_unembedding(self._model), LogitReadout(self._model))
         self._jlens_readout_module_cache = modules
@@ -3400,9 +3304,9 @@ class DrowseSession:
         with scope:
             thinking_req = recipe.thinking if recipe is not None else None
             use_thinking = (
-                supports_thinking(self._tokenizer)
+                self.chat_traits.supports_thinking
                 if thinking_req is None
-                else bool(thinking_req) and supports_thinking(self._tokenizer)
+                else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
                 prompt_ids = self._prepare_input(
@@ -3485,7 +3389,7 @@ class DrowseSession:
         an explicit source-layer subset.
         """
         from drowse.lens.jlens import resolve_token_atom
-        from drowse.model.loading import get_output_projection, get_unembedding
+        from drowse.model.readout import get_output_projection, get_unembedding
 
         name = f"jlens/{word}"
         if name in self._profiles:
@@ -4206,9 +4110,9 @@ class DrowseSession:
         with scope:
             thinking_req = recipe.thinking if recipe is not None else None
             use_thinking = (
-                supports_thinking(self._tokenizer)
+                self.chat_traits.supports_thinking
                 if thinking_req is None
-                else bool(thinking_req) and supports_thinking(self._tokenizer)
+                else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
                 prompt_ids = self._prepare_input(
@@ -4340,9 +4244,9 @@ class DrowseSession:
         with scope:
             thinking_req = recipe.thinking if recipe is not None else None
             use_thinking = (
-                supports_thinking(self._tokenizer)
+                self.chat_traits.supports_thinking
                 if thinking_req is None
-                else bool(thinking_req) and supports_thinking(self._tokenizer)
+                else bool(thinking_req) and self.chat_traits.supports_thinking
             )
             if raw:
                 prompt_ids = self._prepare_input(
@@ -4424,7 +4328,7 @@ class DrowseSession:
         the workspace).
         """
         from drowse.lens.jlens import sparse_nonneg_decompose
-        from drowse.model.loading import get_output_projection, get_unembedding
+        from drowse.model.readout import get_output_projection, get_unembedding
 
         lens = self._require_jlens()
         directions = self.ensure_profile_registered(selector)
@@ -4510,6 +4414,7 @@ class DrowseSession:
             thinking=False,
             gen_role=role, model_type=model_type_for_role,
             scene=self.scene_grammar,
+            traits=self.chat_traits,
         ).to(self._device)
         attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
@@ -4584,6 +4489,7 @@ class DrowseSession:
                 thinking=False,
                 gen_role=role, model_type=model_type_for_role,
                 scene=self.scene_grammar,
+                traits=self.chat_traits,
             )
             seqs.append(ids[0])
 
@@ -5346,7 +5252,7 @@ class DrowseSession:
         from drowse.fit.bake import MergeError, merge_into_manifold
         from drowse.base.paths import tensor_filename
         from drowse.store.manifold_tensors import load_manifold
-        from drowse.model.loading import loaded_model_fingerprint
+        from drowse.model.fingerprint import loaded_model_fingerprint
         from drowse.fit.capture import folded_directions
 
         live_fingerprint = loaded_model_fingerprint(self._model, self.model_id)
@@ -7572,6 +7478,7 @@ class DrowseSession:
                 thinking=False,
                 add_generation_prompt=False,
                 scene=self.scene_grammar,
+                traits=self.chat_traits,
             ).to(self._device)
 
         prefix_len = int(prefix_ids.shape[1])
@@ -7671,18 +7578,9 @@ class DrowseSession:
             # use_cache).  Nothing to cache; drop the prefix.
             return 0
 
-        # Snapshot any linear-attention recurrent state so the patched
-        # ``crop`` can restore it on prefix reuse.  No-op for standard
-        # transformer caches (no LA layers).
-        _snapshot_la_layers(past_key_values)
-
-        # Store on CPU so we can ``.equal`` against fresh device tensors
-        # without round-trip cost; the cache itself stays on device.
-        prefix_ids_cpu = prefix_ids[0].detach().to("cpu")
-        self._prefix_cache = _PrefixCacheEntry(
-            prefix_ids_cpu=prefix_ids_cpu,
-            past_key_values=past_key_values,
-            prefix_len=prefix_len,
+        self._prefix_cache = PrefixCacheEntry.from_prefill(
+            prefix_ids,
+            past_key_values,
             static=use_static,
             max_cache_len=static_max_cache_len,
         )
@@ -7706,47 +7604,21 @@ class DrowseSession:
         static_eligible: bool = False,
         required_max_new_tokens: int | None = None,
     ) -> tuple[torch.Tensor, object, int, bool] | None:
-        """Return (suffix_ids, past_key_values, prefix_len, static) on hit.
+        """``(suffix_ids, past_key_values, prefix_len, static)`` on a hit.
 
-        Cache-hit precondition: the cached prefix tokens match
-        ``input_ids[0, :prefix_len]`` byte-for-byte AND the suffix is
-        non-empty (a zero-length suffix has no last-token logit to
-        sample from on the first iteration; we'd need a different
-        codepath to handle it — for now, fall through to no-cache).
-
-        StaticCache entries additionally require the current generation to be
-        StaticCache-eligible and to fit inside the entry's preallocated
-        ``max_cache_len``. Oversized static entries miss safely; the caller can
-        then do a regular full-prefill with a freshly sized StaticCache.
+        The hit rules live in :meth:`PrefixCacheEntry.suffix_for`.
         """
         entry = self._prefix_cache
         if entry is None:
             return None
-        # Tolerate stale test sentinels or pre-dataclass tuples by treating
-        # anything unexpected as a miss. Real cache entries are always
-        # ``_PrefixCacheEntry``.
-        if not isinstance(entry, _PrefixCacheEntry):  # pyright: ignore[reportUnnecessaryIsInstance]  # stale/test sentinels can violate annotation
+        suffix_ids = entry.suffix_for(
+            input_ids,
+            static_eligible=static_eligible,
+            required_max_new_tokens=required_max_new_tokens,
+        )
+        if suffix_ids is None:
             return None
-        prefix_ids_cpu = entry.prefix_ids_cpu
-        prefix_len = entry.prefix_len
-        if input_ids.shape[1] <= prefix_len:
-            return None
-        head = input_ids[0, :prefix_len].detach().to("cpu")
-        if not torch.equal(head, prefix_ids_cpu):
-            return None
-        suffix_ids = input_ids[:, prefix_len:].contiguous()
-        if entry.static:
-            if not static_eligible:
-                return None
-            if entry.max_cache_len is not None:
-                required = (
-                    prefix_len
-                    + int(suffix_ids.shape[1])
-                    + max(int(required_max_new_tokens or 0), 1)
-                )
-                if required > entry.max_cache_len:
-                    return None
-        return suffix_ids, entry.past_key_values, prefix_len, entry.static
+        return suffix_ids, entry.past_key_values, entry.prefix_len, entry.static
 
     # -- Generation helpers --
 
@@ -7897,6 +7769,7 @@ class DrowseSession:
             gen_role=gen_role,
             model_type=model_type_for_role,
             scene=self.scene_grammar,
+            traits=self.chat_traits,
             gen_seat=gen_seat,
         )
         return ids.to(self._device) if to_device else ids
@@ -7974,7 +7847,7 @@ class DrowseSession:
         and the generation prompt under ``assistant_role`` (a role-bearing
         steering scope overrides the latter inside ``_prepare_input``).
         """
-        use_thinking = thinking and supports_thinking(self._tokenizer)
+        use_thinking = thinking and self.chat_traits.supports_thinking
         input_ids = self._prepare_input(
             input, raw=raw, thinking=use_thinking, stateless=stateless,
             parent_node_id=parent_node_id,
@@ -8560,7 +8433,7 @@ class DrowseSession:
             elif config_thinking is not None:
                 use_thinking_req = bool(config_thinking)
             else:
-                use_thinking_req = supports_thinking(self._tokenizer)
+                use_thinking_req = self.chat_traits.supports_thinking
         else:
             use_thinking_req = bool(thinking)
 
@@ -8733,7 +8606,6 @@ class DrowseSession:
         lp_count: int | None,
         forced_prefix: list[int] | None = None,
         want_perplexity: bool = True,
-        cache_token_text: bool = True,
         authored_capture: _AuthoredPromptCapture | None = None,
     ) -> tuple[list[int], float]:
         """Run the decode loop once capture and steering are installed."""
@@ -8916,17 +8788,18 @@ class DrowseSession:
                 self._steering.hooks or steering_uses_compiled_offsets
             ),
             want_perplexity=want_perplexity,
-            cache_token_text=cache_token_text,
+            traits=self.chat_traits,
         )
         elapsed = time.monotonic() - start
 
-        if cached_pkv is not None and self._prefix_cache is not None:
-            try:
-                extra = cached_pkv.get_seq_length() - cache_position_offset  # pyright: ignore[reportAttributeAccessIssue]
-                if extra > 0:
-                    cached_pkv.crop(-extra)  # pyright: ignore[reportAttributeAccessIssue]  # HF cache: crop(-n) drops the last n tokens
-            except (AttributeError, TypeError, ValueError, RuntimeError):
-                self._invalidate_prefix_cache()
+        entry = self._prefix_cache
+        if (
+            cached_pkv is not None
+            and entry is not None
+            and entry.past_key_values is cached_pkv
+            and not entry.rollback()
+        ):
+            self._invalidate_prefix_cache()
         return generated_ids, elapsed
 
     def _generate_core(
@@ -9147,7 +9020,6 @@ class DrowseSession:
                 )
                 payload = (
                     build_token_probe_payload(
-                        monitor=self._monitor,
                         capture=self._capture,
                         capture_state=self._capture_state,
                         incremental_readings=self._incremental_readings,
@@ -9338,11 +9210,6 @@ class DrowseSession:
                 and _callback_options.sae_readout
             )
             _effective_tap = _token_tap if _need_tap else None
-            _tap_has_text_consumer = bool(
-                on_token is not None
-                or (logprobs_list is not None and (lp_count or 0) > 0)
-                or _persists_probe_row
-            )
 
             # Compiled-clean eligibility for this gen: the compiled CUDA/MPS
             # graph + static cache are live, the persistent capture buffers were
@@ -9534,7 +9401,6 @@ class DrowseSession:
                             on_token is not None and _callback_options.perplexity
                         )
                     ),
-                    cache_token_text=_tap_has_text_consumer,
                     authored_capture=authored_capture,
                 )
             finally:
@@ -10008,7 +9874,7 @@ class DrowseSession:
             return None
 
         model = self._batch_generate_model()
-        if model is None:
+        if model is None or hf_unneutralizable_processors(model):
             return None
 
         return self._run_generate_batch_fast(
@@ -10362,34 +10228,35 @@ class DrowseSession:
             for prompt in prompts:
                 self.events.emit(GenerationStarted(input=prompt, stateless=stateless))
 
-            generate_kwargs: dict[str, Any] = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "max_new_tokens": int(gen_config.max_new_tokens),
-                "pad_token_id": pad_id,
-                "stopping_criteria": StoppingCriteriaList([
-                    _SessionStopCriteria(self._gen_state),
-                ]),
-            }
             # The full EOS set (generation_config + tokenizer + added
             # end-of-turn specials), matching the ordinary decode loop —
             # the tokenizer's single ``eos_token_id`` alone misses e.g.
             # Gemma's ``<end_of_turn>`` and would generate past it to the
-            # token cap.
-            eos_ids = _get_eos_ids(model, self._tokenizer)
-            if eos_ids:
-                generate_kwargs["eos_token_id"] = sorted(eos_ids)
-            do_sample = gen_config.temperature > 0
-            generate_kwargs["do_sample"] = do_sample
-            if do_sample:
-                generate_kwargs["temperature"] = float(gen_config.temperature)
-                generate_kwargs["top_p"] = float(gen_config.top_p)
-                if gen_config.top_k is not None:
-                    generate_kwargs["top_k"] = int(gen_config.top_k)
+            # token cap.  The explicit config pins the decode loop's sampler
+            # so the checkpoint's own ``generation_config`` (Qwen's
+            # ``top_k: 20`` / ``repetition_penalty: 1.1``) cannot leak in.
+            eos_ids = set(self.chat_traits.eos_ids)
+            text_cfg = getattr(model.config, "text_config", model.config)
+            hf_config = hf_generation_config(
+                gen_config,
+                vocab=int(text_cfg.vocab_size),
+                eos_ids=sorted(eos_ids),
+                pad_id=pad_id,
+                steering_active=bool(
+                    self._steering.hooks or self._steering_uses_compiled_offsets
+                ),
+            )
 
             start = time.monotonic()
             with torch.inference_mode():
-                generated = model.generate(**generate_kwargs)
+                generated = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    generation_config=hf_config,
+                    stopping_criteria=StoppingCriteriaList([
+                        _SessionStopCriteria(self._gen_state),
+                    ]),
+                )
             elapsed = time.monotonic() - start
             if capture_probe_aggregates:
                 self._end_capture()
@@ -10881,11 +10748,6 @@ class DrowseSession:
         alongside the transient steering hooks, releasing their
         ``2 x n_layers x hidden_size`` of device buffers with them.
         """
-        from drowse.generation.decode import clear_generation_caches
-
-        tokenizer = getattr(self, "_tokenizer", None)
-        if tokenizer is not None:
-            clear_generation_caches(tokenizer)
         self._steering.clear_all()
         self._steering.detach_compiled_offsets()
         self.detach_persistent_capture()

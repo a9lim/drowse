@@ -23,10 +23,12 @@ import torch
 
 import drowse.cli.runners as cli_runners
 from drowse.fit import capture as V
-from drowse.model import loading as model_mod
+from drowse.model import arch as arch_mod
+from drowse.model import fingerprint as fp_mod
+from drowse.model import load as model_mod
 from drowse.events import EventBus
 from drowse.fit.pipeline import ManifoldExtractionPipeline
-from drowse.model.loading import loaded_model_fingerprint
+from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.store import neutral as alignment_mod
 from drowse.store.manifold_authoring import create_discover_manifold_folder
 from drowse.store.manifold_folder import ManifoldFolder
@@ -96,11 +98,11 @@ def fitted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
 
     # The four model touchpoints, each stubbed where the preflight imports it.
     monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
+        fp_mod, "model_source_fingerprint",
         lambda *_a, **_k: _SOURCE_FP,
     )
     monkeypatch.setattr(
-        model_mod, "config_model_shape", lambda _m: (_N_LAYERS, _DIM),
+        arch_mod, "config_model_shape", lambda _m: (_N_LAYERS, _DIM),
     )
     monkeypatch.setattr(
         alignment_mod, "validate_neutral_cache_metadata",
@@ -220,7 +222,7 @@ def test_preflight_refuses_when_the_checkpoint_source_is_unprovable(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        model_mod, "model_source_fingerprint", lambda *_a, **_k: None,
+        fp_mod, "model_source_fingerprint", lambda *_a, **_k: None,
     )
     assert _preflight(fitted) is None
 
@@ -229,7 +231,7 @@ def test_preflight_refuses_when_the_source_no_longer_matches(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        model_mod, "model_source_fingerprint", lambda *_a, **_k: "ab" * 32,
+        fp_mod, "model_source_fingerprint", lambda *_a, **_k: "ab" * 32,
     )
     assert _preflight(fitted) is None
 
@@ -446,7 +448,7 @@ def test_cli_fit_falls_through_when_a_component_is_unproven(
     import drowse.cli as cli
 
     monkeypatch.setattr(
-        model_mod, "model_source_fingerprint", lambda *_a, **_k: None,
+        fp_mod, "model_source_fingerprint", lambda *_a, **_k: None,
     )
     calls: list[str] = []
 

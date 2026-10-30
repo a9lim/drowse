@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 import torch
 
+from drowse.model.chat import ChatTraits
+
 from drowse.generation.decode import GenerationConfig
 from drowse.generation.joint_logprobs import (
     JointLogprobRow,
@@ -391,6 +393,7 @@ class _MockSession:
             self.tokenizer._intern(word)
         self._model = _MockModel(vocab=len(self.tokenizer._vocab) + 16)
         self.model = self._model
+        self.chat_traits = ChatTraits(self.tokenizer, self._model)
         self.tree = _MockTree()
         self.config = GenerationConfig()
         self.profiles: dict[str, Any] = {}

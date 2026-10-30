@@ -41,7 +41,6 @@ from drowse.generation.decode import (
     _effective_topk,
     _sampler_logprob_vector,
     build_chat_input,
-    supports_thinking,
 )
 from drowse.loom.diff import per_token_diff
 from drowse.generation.sampling import SamplingConfig
@@ -336,13 +335,6 @@ def _sampling_from_recipe(recipe: "Recipe | None") -> SamplingConfig:
     return sampling
 
 
-def _supports_thinking_safe(tokenizer: Any) -> bool:
-    try:
-        return bool(supports_thinking(tokenizer))
-    except Exception:
-        return False
-
-
 def _compose_replay_config(
     session: "DrowseSession",
     sampling: SamplingConfig,
@@ -366,7 +358,7 @@ def _branch_inputs(session: "DrowseSession", node_id: str) -> _ReplayBranch:
         if steering is not None and steering.thinking is not None:
             thinking = bool(steering.thinking)
         else:
-            thinking = _supports_thinking_safe(tokenizer)
+            thinking = session.chat_traits.supports_thinking
     else:
         thinking = bool(stamped_thinking)
 

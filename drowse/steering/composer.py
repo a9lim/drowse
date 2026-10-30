@@ -271,7 +271,7 @@ class SteeringComposer:
             encode_release_id, manifold_dir, manifolds_dir,
             tensor_filename_for_variant,
         )
-        from drowse.model.loading import loaded_model_fingerprint
+        from drowse.model.fingerprint import loaded_model_fingerprint
         from drowse.store.manifold_schema import sidecar_is_current
         from drowse.store.manifold_tensors import load_manifold
 

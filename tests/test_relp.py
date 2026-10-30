@@ -523,7 +523,7 @@ def test_cli_preflight_reports_finished_relp_fit(
         checkpoint_every=len(_PROMPTS),
     )
     monkeypatch.setattr(
-        "drowse.model.loading.model_source_fingerprint",
+        "drowse.model.fingerprint.model_source_fingerprint",
         lambda *_args, **_kwargs: "source-a",
     )
     args = argparse.Namespace(

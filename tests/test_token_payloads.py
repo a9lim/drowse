@@ -20,16 +20,14 @@ def test_build_token_probe_payload_scores_once_and_shapes_channels() -> None:
         coords=(0.25,),
         coords_per_layer={3: (0.25,)},
     )
-    monitor = SimpleNamespace(
-        score_single_token=lambda hidden: {"toy": reading},
-    )
+    run = SimpleNamespace(observe=lambda _step, _hidden: {"toy": reading})
     capture = SimpleNamespace(
         per_layer_buckets=lambda: {3: [torch.ones(2)]},
     )
     capture_state = SimpleNamespace(incremental=False, lean=False)
 
     payload = build_token_probe_payload(
-        monitor=monitor,
+        geometry_run=run,
         capture=capture,
         capture_state=capture_state,
         incremental_readings=[],
@@ -66,8 +64,8 @@ def test_token_payload_builds_measurement_envelope() -> None:
         coords_per_layer={3: (0.25,)},
     )
     payload = build_token_probe_payload(
-        monitor=SimpleNamespace(
-            score_single_token=lambda _hidden: {"toy": reading},
+        geometry_run=SimpleNamespace(
+            observe=lambda _step, _hidden: {"toy": reading},
         ),
         capture=SimpleNamespace(
             per_layer_buckets=lambda: {3: [torch.ones(2)]},
@@ -164,11 +162,12 @@ def test_build_token_probe_payload_reuses_incremental_reading() -> None:
         coords=(0.75,),
     )
 
-    def _should_not_score(_hidden: Any) -> dict[str, ProbeReading]:
-        raise AssertionError("incremental reading should avoid rescoring")
+    def _memo_only(_step: int, hidden: Any) -> dict[str, ProbeReading]:
+        assert hidden == {}, "incremental reading should avoid rescoring"
+        return {}
 
     payload = build_token_probe_payload(
-        monitor=SimpleNamespace(score_single_token=_should_not_score),
+        geometry_run=SimpleNamespace(observe=_memo_only),
         capture=SimpleNamespace(per_layer_buckets=lambda: {3: [torch.ones(2)]}),
         capture_state=SimpleNamespace(incremental=True, lean=False),
         incremental_readings=[{"toy": reading}],
