@@ -29,6 +29,7 @@ from drowse.steering.hooks import (
     install_persistent_offset_hooks,
 )
 from drowse.session.session import DrowseSession
+from tests.support.sae import make_resident
 
 _D = 8
 _LAYERS = [0, 1, 2]
@@ -290,10 +291,9 @@ def test_session_close_removes_both_persistent_hook_families():
     session.events.subscribe(lambda _event: None)
     cast(Any, session)._jlens_device_cache = {("lens",): torch.ones(2)}
     session._jlens_decode_cache = {1: "one"}
-    session._sae_feature_meta = {"1": {"label": "feature"}}
     cast(Any, session)._prefix_cache = object()
     session._jlens = object()
-    session._sae_backend = object()
+    make_resident(session.sae.runtime, layer=0)
 
     session.close()
 
@@ -304,10 +304,9 @@ def test_session_close_removes_both_persistent_hook_families():
     assert session._capture._per_layer == {}
     assert session._jlens_device_cache == {}
     assert session._jlens_decode_cache == {}
-    assert session._sae_feature_meta == {}
     assert session._prefix_cache is None
     assert session._jlens is None
-    assert session._sae_backend is None
+    assert session.sae.runtime.resident is None
     assert session.events._subs == []
 
     # Idempotent: a second close (or an explicit re-detach) must not raise.

@@ -394,7 +394,7 @@ class SteeringComposer:
             if ns == "jlens":
                 return profiles[self._session.register_jlens_direction(atom)]
             if ns == "sae":
-                return profiles[self._session.register_sae_direction(atom)]
+                return profiles[self._session.sae.register_direction(atom)]
             raise ProfileNotRegisteredError(
                 f"'{ns}/' atoms are reserved and not steerable yet ({name!r})"
             )
@@ -817,8 +817,8 @@ class SteeringComposer:
                 if lens_scalars:
                     out = {**out, **lens_scalars}
             if has_sae_gates:
-                sae_scalars = session._score_sae_gate_scalars(
-                    sae_gate_keys, step_id=step_id,
+                sae_scalars = session.sae.current_run.gate_scalars(
+                    step_id, None, sae_gate_keys,
                 )
                 if sae_scalars:
                     out = {**out, **sae_scalars}

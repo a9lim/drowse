@@ -114,13 +114,13 @@ class _StubSession:
     def __init__(self, *, n_layers: int = 3) -> None:
         from drowse.readout.geometry import GeometryInstrument
         from drowse.lens.instrument import LensInstrument
-        from drowse.sae.instrument import SaeInstrument
+        from tests.support.sae import stub_sae_instrument
 
         self._lens_instrument = LensInstrument(self)  # type: ignore[arg-type]
         # ``_begin_capture`` consumes every family's ``plan()`` demand, so
         # the stub carries all three real instruments like the session.
         self._geometry_instrument = GeometryInstrument(self)  # type: ignore[arg-type]
-        self._sae_instrument = SaeInstrument(self)  # type: ignore[arg-type]
+        self._sae_instrument = stub_sae_instrument(self)
         model = frozen_toy(n_layers=n_layers)
         self._model = model
         self._tokenizer = CharTokenizer()

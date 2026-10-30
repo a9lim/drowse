@@ -1295,22 +1295,8 @@ class DrowseSession:
         # ``__init__`` self-heal.  Touch it here so the real construction
         # path is eager and deterministic.
         _ = self._lens_instrument
-        # Live sparse-autoencoder runtime. One source + one hook layer is
-        # resident in v1; provider weights stay in SAELens/HF caches while
-        # Drowse-trained weights live under DROWSE_HOME. Readout probes are
-        # session-local siblings of the J-lens probe registry.
-        self._sae_backend: Any = None
-        self._sae_layer: int | None = None
-        self._sae_width: int | None = None
-        # Per-feature Neuronpedia metadata: ``{str(id): {label, max_act}}``.
-        # ``max_act`` (maxActApprox — the corpus-max activation) normalizes the
-        # readout channel to a 0..1 strength; entries are lazily fetched.
-        self._sae_feature_meta: dict[str, dict[str, Any]] = {}
-        # The SAE read family's probe/live state lives on its instrument
-        # (lazy property, like the lens family); backend residency
-        # (`_sae_backend`/`_sae_layer`/`_sae_width`) and the Neuronpedia
-        # metadata cache stay session-side (shared with steering atoms and
-        # the offline token replay).
+        # The SAE family (resident dictionary, feature metadata, probes, live
+        # discovery) lives on its instrument and that instrument's runtime.
         _ = self._sae_instrument
         # The CAA live toggle lives on the geometry instrument (touch it
         # here so the lazy construction happens under __init__ like its
@@ -1376,35 +1362,7 @@ class DrowseSession:
         # profile mutation.
         self._prefix_cache: PrefixCacheEntry | None = None
 
-        self._restore_active_sae()
-
-    def _restore_active_sae(self) -> None:
-        """Make an explicit ``sae use`` selection resident again at startup.
-
-        ``load_active_sae`` owns the source grammar and reads the provider
-        binding only when there is one.  A provider binding pins the commit
-        it was fetched at and the last explicitly selected hook layer, so the
-        restore lands exactly that measurement surface — offline from the
-        provider cache, and never silently moved to upstream HEAD.  Failure
-        is non-fatal so a cache eviction cannot keep the model from starting.
-        """
-        from drowse.sae.sources import load_active_sae
-
-        active_sae = load_active_sae(self.model_id)
-        if active_sae is None:
-            return
-        release, metadata = active_sae
-        try:
-            self.load_sae(
-                release,
-                layer=None if metadata is None else metadata["layer"],
-                revision=None if metadata is None else metadata["revision"],
-            )
-        except Exception as exc:
-            _log.warning(
-                "could not restore active SAE %s for %s: %s",
-                release, self.model_id, exc,
-            )
+        self._sae_instrument.restore_active()
 
     # -- ModelHandle protocol surface (consumed by ManifoldExtractionPipeline) --
 
@@ -3375,14 +3333,49 @@ class DrowseSession:
     @property
     def _sae_instrument(self) -> "SaeInstrument":
         """The SAE instrument, created lazily on first touch (stub-safe,
-        like ``_lens_instrument``)."""
+        like ``_lens_instrument``) with its runtime and explicit wiring."""
         inst = self.__dict__.get("_sae_instrument")
         if inst is None:
-            from drowse.sae.instrument import SaeInstrument
+            from functools import partial
 
-            inst = SaeInstrument(self)
+            from drowse.sae.instrument import SaeInstrument
+            from drowse.sae.runtime import SaeRuntime
+            from drowse.session.replay import replay_token
+
+            inst = SaeInstrument(
+                self,
+                SaeRuntime(
+                    self,
+                    exclusive=self._model_exclusive,
+                    assert_unsteered=self._assert_unsteered_artifact_operation,
+                ),
+                replay=partial(replay_token, self),
+                put_direction=self._put_instrument_profile,
+                evict_directions=partial(self._evict_instrument_profiles, "sae/"),
+                forget_probe_hashes=self._forget_probe_hashes,
+            )
             self.__dict__["_sae_instrument"] = inst
         return inst
+
+    def _put_instrument_profile(
+        self, name: str, tensors: dict[int, torch.Tensor],
+    ) -> None:
+        """Register an instrument atom's direction (``sae/<id>``) as a
+        steering profile."""
+        self._profiles[name] = tensors
+        self._invalidate_prefix_cache()
+        self._invalidate_analytics_cache()
+
+    def _evict_instrument_profiles(self, prefix: str) -> None:
+        """Drop every instrument-atom profile under ``prefix`` (``sae/``)."""
+        for name in [key for key in self._profiles if key.startswith(prefix)]:
+            del self._profiles[name]
+        self._invalidate_prefix_cache()
+        self._invalidate_analytics_cache()
+
+    def _forget_probe_hashes(self, names: "Sequence[str]") -> None:
+        for name in names:
+            self._probe_hash_cache.pop(name, None)
 
     @property
     def _geometry_instrument(self) -> "GeometryInstrument":
@@ -3442,10 +3435,11 @@ class DrowseSession:
 
     @property
     def sae(self) -> "SaeInstrument":
-        """The SAE instrument — the typed public face of the SAE read
-        family (``session.instruments["sae"]``).  Backend lifecycle
-        (``train_sae`` / ``load_sae`` / ``unload_sae`` / ``sae_info``)
-        stays on the session."""
+        """The SAE instrument — the public face of the SAE family
+        (``session.instruments["sae"]``): the resident dictionary's lifecycle
+        (``load`` / ``unload`` / ``train`` / ``info``), feature validation and
+        Neuronpedia metadata, ``sae/<id>`` directions, probes, live discovery
+        and token replay."""
         return self._sae_instrument
 
     @property
@@ -3484,614 +3478,6 @@ class DrowseSession:
         return self._lens_instrument.live_readout_step(
             top_k=top_k, step_id=step_id,
         )
-
-    # -- Sparse-autoencoder runtime -------------------------------------
-
-    def train_sae(
-        self,
-        name: str,
-        documents: "Sequence[str]",
-        *,
-        layer: int,
-        corpus_spec: str = "user",
-        tokens: int = 1_000_000,
-        seq_len: int = 128,
-        batch_size: int = 8,
-        d_sae: int | None = None,
-        expansion: int = 8,
-        learning_rate: float = 3e-4,
-        l1_coefficient: float = 1e-3,
-        dead_feature_threshold: float = 1e-6,
-        seed: int = 0,
-        force: bool = False,
-        on_progress: "Callable[[str], None] | None" = None,
-        cancel_event: "threading.Event | None" = None,
-    ) -> dict[str, Any]:
-        """Train and persist a Drowse-owned residual-post SAE."""
-        import hashlib
-
-        from drowse.base.source_registry import LOCAL, SourceRef
-        from drowse.sae.sources import SAE_SOURCES, sae_release
-        from drowse.sae.training import train_residual_sae
-        from drowse.sae.store import save_local_sae
-
-        local_name = name.strip()
-        SAE_SOURCES.local_dir(self.model_id, local_name)  # validates the name
-        release = sae_release(SourceRef(LOCAL, local_name))
-        docs = list(documents)
-        if not docs:
-            raise ValueError("SAE training needs at least one corpus document")
-        corpus_sha = hashlib.sha256(repr(docs).encode("utf-8")).hexdigest()
-        with self._model_exclusive(
-            "session.train_sae called while another model use is in flight",
-            phase_msg="session.train_sae called while a generation is in flight",
-        ):
-            DrowseSession._assert_unsteered_artifact_operation(self)
-            fit_model = getattr(self._model, "_orig_mod", self._model)
-            tensors, metrics = train_residual_sae(
-                fit_model,
-                self._tokenizer,
-                list(get_layers(fit_model)),
-                docs,
-                layer=layer,
-                tokens=tokens,
-                seq_len=seq_len,
-                batch_size=batch_size,
-                d_sae=d_sae,
-                expansion=expansion,
-                learning_rate=learning_rate,
-                l1_coefficient=l1_coefficient,
-                dead_feature_threshold=dead_feature_threshold,
-                seed=seed,
-                on_progress=on_progress,
-                cancel_event=cancel_event,
-            )
-            manifest = save_local_sae(
-                self.model_id,
-                local_name,
-                tensors,
-                model_fingerprint=loaded_model_fingerprint(
-                    fit_model, self.model_id,
-                ),
-                model_source_fingerprint=getattr(
-                    fit_model, "_drowse_source_fingerprint", None,
-                ),
-                layer=layer,
-                corpus_spec=corpus_spec,
-                corpus_sha256=corpus_sha,
-                tokens_trained=int(metrics["tokens_trained"]),
-                seq_len=seq_len,
-                batch_size=batch_size,
-                learning_rate=learning_rate,
-                l1_coefficient=l1_coefficient,
-                dead_feature_threshold=dead_feature_threshold,
-                force=force,
-            )
-        runtime = self.load_sae(release, layer=layer)
-        return {
-            "source": release,
-            "artifact": str(manifest),
-            "metrics": metrics,
-            "runtime": runtime,
-        }
-
-    def load_sae(
-        self, release: str, *, layer: int | None = None,
-        revision: str | None = None,
-    ) -> dict[str, Any]:
-        """Load one local or SAELens source as the session's resident SAE.
-
-        Provider registry resolution stays eager while the selected layer's
-        weights are made resident here; local artifacts resolve directly from
-        Drowse storage. The deterministic default is the covered layer nearest
-        65% model depth, preferring the workspace band.  ``revision`` pins a
-        provider release (a binding's recorded commit); ``None`` resolves the
-        release's current Hub head.
-        """
-        from drowse.sae.backend import (
-            LocalSaeBackend,
-            load_sae_backend,
-            sae_binding,
-            select_runtime_layer,
-            validate_residual_width,
-        )
-        from drowse.sae.sources import (
-            SAE_SOURCES,
-            load_sae_feature_meta,
-            parse_sae_release,
-            save_sae_metadata,
-        )
-
-        release = release.strip()
-        if not release:
-            raise ValueError("SAE release must not be empty")
-        with self._model_exclusive(
-            "load_sae called while another model operation is in flight; retry shortly"
-        ):
-            backend = load_sae_backend(
-                release, revision=revision, model_id=self.model_id,
-                device=self._device, dtype=self._dtype, warn_on_multiple=False,
-            )
-            if (
-                isinstance(backend, LocalSaeBackend)
-                and backend.model_fingerprint is not None
-                and backend.model_fingerprint
-                != loaded_model_fingerprint(self._model, self.model_id)
-            ):
-                raise ValueError(
-                    f"local SAE {release!r} was trained against different "
-                    "loaded model weights"
-                )
-            covered = frozenset(
-                idx for idx in backend.layers if 0 <= idx < len(self._layers)
-            )
-            selected = select_runtime_layer(covered, len(self._layers), layer)
-            width = int(backend.feature_count(selected))  # materialize weights
-            if width <= 0:
-                raise ValueError(f"SAE release {release!r} has no features")
-            validate_residual_width(
-                backend, selected, int(self._model_info["hidden_dim"]),
-            )
-            source_info = sae_binding(backend, selected, width)
-            feature_meta = (
-                {} if isinstance(backend, LocalSaeBackend)
-                else load_sae_feature_meta(self.model_id, release, source=source_info)
-            )
-            # Publish/validate the source binding before replacing the
-            # session's resident runtime.  A metadata failure must leave the
-            # previous source intact; the old order reported "load failed"
-            # while ``sae_loaded`` was nevertheless true for the half-adopted
-            # provider backend.
-            if isinstance(backend, LocalSaeBackend):
-                SAE_SOURCES.select(self.model_id, parse_sae_release(release))
-            else:
-                save_sae_metadata(self.model_id, release, source_info)
-            # Feature ids belong to the resident release; changing it evicts
-            # stale directions and pinned probes rather than silently reusing ids.
-            for name in [key for key in self._profiles if key.startswith("sae/")]:
-                del self._profiles[name]
-            with self._sae_instrument.state_lock:
-                self._sae_backend = backend
-                self._sae_layer = selected
-                self._sae_width = width
-                self._sae_feature_meta = feature_meta
-                self._sae_instrument.live = None
-                self._sae_instrument.step_stash = None
-                self._sae_instrument.last_step_readings = None
-                for name in list(self._sae_instrument.probes):
-                    self._probe_hash_cache.pop(name, None)
-                self._sae_instrument.probes.clear()
-        self._invalidate_prefix_cache()
-        self._invalidate_analytics_cache()
-        return self.sae_info or {}
-
-    def unload_sae(self) -> None:
-        """Release the resident SAE and every session-local feature handle."""
-        with self._model_exclusive(
-            "unload_sae called while another model operation is in flight; retry shortly"
-        ):
-            for name in [key for key in self._profiles if key.startswith("sae/")]:
-                del self._profiles[name]
-            with self._sae_instrument.state_lock:
-                self._sae_backend = None
-                self._sae_layer = None
-                self._sae_width = None
-                self._sae_feature_meta = {}
-                self._sae_instrument.live = None
-                self._sae_instrument.step_stash = None
-                self._sae_instrument.last_step_readings = None
-                for name in list(self._sae_instrument.probes):
-                    self._probe_hash_cache.pop(name, None)
-                self._sae_instrument.probes.clear()
-        self._invalidate_prefix_cache()
-        self._invalidate_analytics_cache()
-
-    @property
-    def sae_info(self) -> dict[str, Any] | None:
-        backend = self._sae_backend
-        layer = self._sae_layer
-        width = self._sae_width
-        if backend is None or layer is None or width is None:
-            return None
-        from drowse.sae.backend import sae_binding
-
-        return {"release": backend.release, **sae_binding(backend, layer, width)}
-
-    def _require_sae(self) -> tuple[Any, int, int]:
-        from drowse.errors import SaeNotLoadedError
-
-        backend = self._sae_backend
-        layer = self._sae_layer
-        width = self._sae_width
-        if backend is None or layer is None or width is None:
-            raise SaeNotLoadedError(
-                "no SAE loaded for this session — select one with "
-                "`drowse sae use MODEL SOURCE` "
-                "or POST /drowse/v1/sessions/default/sae/load"
-            )
-        return backend, int(layer), int(width)
-
-    def validate_sae_feature(self, feature_id: int | str) -> dict[str, Any]:
-        from drowse.errors import SaeFeatureError
-
-        try:
-            idx = int(feature_id)
-        except (TypeError, ValueError) as exc:
-            raise SaeFeatureError(f"SAE feature id must be an integer: {feature_id!r}") from exc
-        with self._sae_instrument.state_lock:
-            backend, layer, width = self._require_sae()
-            meta = self._sae_feature_meta.get(str(idx))
-        if not 0 <= idx < width:
-            raise SaeFeatureError(
-                f"SAE feature {idx} out of range [0, {width}) for layer {layer}"
-            )
-        if meta is None or (
-            (meta.get("max_act") is None or not meta.get("label")) and not meta.get("checked")
-        ):
-            meta = self._fetch_sae_feature_meta(idx) or meta or {}
-        with self._sae_instrument.state_lock:
-            if self._sae_backend is not backend or self._sae_layer != layer:
-                raise SaeFeatureError("SAE source changed while loading feature metadata; try again")
-            return {"id": idx, "label": meta.get("label"), "layer": layer, "max_act": meta.get("max_act")}
-
-    def _sae_label(self, feature_id: int) -> str | None:
-        entry = self._sae_feature_meta.get(str(feature_id))
-        label = entry.get("label") if entry else None
-        return label if isinstance(label, str) and label else None
-
-    def _sae_max_act(self, feature_id: int) -> float | None:
-        """The feature's Neuronpedia ``maxActApprox`` — the strength unit.
-
-        ``None`` when metadata is missing (offline / not on Neuronpedia), in
-        which case every readout surface for the feature stays raw.
-        """
-        entry = self._sae_feature_meta.get(str(feature_id))
-        max_act = entry.get("max_act") if entry else None
-        if isinstance(max_act, (int, float)) and float(max_act) > 0:
-            return float(max_act)
-        return None
-
-    def _fetch_neuronpedia_feature(self, feature_id: int) -> dict[str, Any] | None:
-        """One raw Neuronpedia feature fetch → ``{label, max_act, checked}``.
-
-        ``None`` on any transport failure (retry next time); a successful
-        response always yields an entry — ``checked`` marks "we asked", so a
-        feature with no Neuronpedia data isn't re-fetched on every validate.
-        """
-        with self._sae_instrument.state_lock:
-            info = self.sae_info or {}
-        neuronpedia_id = info.get("neuronpedia_id")
-        if not isinstance(neuronpedia_id, str) or "/" not in neuronpedia_id:
-            return None
-        import json
-        import math
-        from urllib.parse import quote
-        from huggingface_hub import get_session
-
-        model, source = neuronpedia_id.split("/", 1)
-        url = (
-            "https://www.neuronpedia.org/api/feature/"
-            f"{quote(model, safe='')}/{quote(source, safe='')}/{feature_id}"
-        )
-        try:
-            response = get_session().get(
-                url,
-                timeout=10.0,
-                headers={"User-Agent": "drowse-sae-meta/1"},
-            )
-            response.raise_for_status()
-            payload = json.loads(response.content)
-        except Exception:
-            return None
-        if (
-            not isinstance(payload, dict)
-            or payload.get("modelId") != model
-            or payload.get("layer") != source
-            or str(payload.get("index")) != str(feature_id)
-            or not isinstance(payload.get("explanations"), list)
-        ):
-            return None
-        dictionary = payload.get("source")
-        if not isinstance(dictionary, dict) or any(
-            info.get(expected) is not None and dictionary.get(actual) != info[expected]
-            for expected, actual in (("repo_id", "hfRepoId"), ("sae_id", "saelensSaeId"))
-        ):
-            return None
-        label = None
-        for row in payload.get("explanations", []) or []:
-            if not isinstance(row, dict):
-                continue
-            description = row.get("description")
-            if isinstance(description, str) and description.strip():
-                label = description.strip()
-                break
-        max_act = payload.get("maxActApprox")
-        if not (
-            isinstance(max_act, (int, float)) and not isinstance(max_act, bool)
-            and math.isfinite(max_act) and float(max_act) > 0
-        ):
-            max_act = None
-        return {
-            "label": label,
-            "max_act": float(max_act) if max_act else None,
-            "checked": True,
-        }
-
-    def _fetch_sae_feature_meta(self, feature_id: int) -> dict[str, Any] | None:
-        """Best-effort lazy Neuronpedia metadata lookup for an explicit id.
-
-        Fetches the display label and ``maxActApprox`` together. Live/top-k
-        readout never calls this method; discovery remains entirely local and
-        renders raw activations until metadata is cached (the dashboard
-        backfills via :meth:`fetch_sae_feature_meta` between generations).
-        """
-        with self._sae_instrument.state_lock:
-            backend, layer, _width = self._require_sae()
-            metadata = self._sae_feature_meta
-            source = self.sae_info
-        entry = self._fetch_neuronpedia_feature(feature_id)
-        if entry is None:
-            return None
-        from drowse.sae.sources import save_sae_feature_meta
-
-        with self._sae_instrument.state_lock:
-            if self._sae_backend is not backend or self._sae_layer != layer or self._sae_feature_meta is not metadata:
-                return None
-            metadata[str(feature_id)] = entry
-            save_sae_feature_meta(self.model_id, backend.release, metadata, source=source)
-        return entry
-
-    def fetch_sae_feature_meta(
-        self, feature_ids: "Sequence[int]",
-    ) -> dict[str, dict[str, Any]]:
-        """Fetch-and-cache Neuronpedia metadata for a set of feature ids.
-
-        The dashboard's discovery backfill: called between generations with
-        the ids the live top-k surfaced, never from the decode loop. Cached
-        ids skip the network; misses fetch on a small thread pool with the
-        single-id path's timeout. Returns ``{str(id): {label, max_act}}`` for
-        every requested id with metadata afterwards (out-of-range ids are
-        silently dropped — the top-k can't produce one, so there is nothing
-        to report).
-        """
-        with self._sae_instrument.state_lock:
-            backend, layer, width = self._require_sae()
-            metadata = self._sae_feature_meta
-            source = self.sae_info
-        seen: set[int] = set()
-        wanted: list[int] = []
-        for raw in feature_ids:
-            idx = int(raw)
-            if not 0 <= idx < width or idx in seen:
-                continue
-            seen.add(idx)
-            entry = metadata.get(str(idx))
-            if entry is None or (
-                (entry.get("max_act") is None or not entry.get("label"))
-                and not entry.get("checked")
-            ):
-                wanted.append(idx)
-        if wanted:
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=min(8, len(wanted))) as pool:
-                rows = list(pool.map(self._fetch_neuronpedia_feature, wanted))
-            fetched = {
-                str(idx): entry
-                for idx, entry in zip(wanted, rows)
-                if entry is not None
-            }
-            if fetched:
-                from drowse.sae.sources import save_sae_feature_meta
-
-                with self._sae_instrument.state_lock:
-                    if self._sae_backend is not backend or self._sae_layer != layer or self._sae_feature_meta is not metadata:
-                        return {}
-                    metadata.update(fetched)
-                    save_sae_feature_meta(self.model_id, backend.release, metadata, source=source)
-                    self._refresh_sae_probe_meta(fetched)
-        with self._sae_instrument.state_lock:
-            if self._sae_backend is not backend or self._sae_layer != layer or self._sae_feature_meta is not metadata:
-                return {}
-            return {
-                str(idx): {"label": entry.get("label"), "max_act": entry.get("max_act")}
-                for idx in sorted(seen)
-                if (entry := metadata.get(str(idx))) is not None
-            }
-
-    def _refresh_sae_probe_meta(self, fetched: dict[str, dict[str, Any]]) -> None:
-        """Reflect newly fetched metadata onto attached feature probes.
-
-        A pinned probe's spec carries label/max_act for the probe listing, and
-        ``max_act`` is part of the readout-channel identity (it sets the
-        strength unit), so the probe-hash cache entry is invalidated too.
-        """
-        with self._sae_instrument.state_lock:
-            for name, spec in list(self._sae_instrument.probes.items()):
-                entry = fetched.get(str(spec.get("feature_id")))
-                if entry is None:
-                    continue
-                # Whole-dict replacement (one atomic store): idle readers
-                # hold per-call spec snapshots or shared references — a
-                # field-level mutation could hand them a half-updated
-                # unit (round-6).
-                self._sae_instrument.probes[name] = {
-                    **spec,
-                    "label": entry.get("label"),
-                    "max_act": entry.get("max_act"),
-                }
-                self._probe_hash_cache.pop(name, None)
-
-    def register_sae_direction(self, feature_id: int | str) -> str:
-        """Register ``W_dec[id]`` at the resident hook layer as a profile."""
-        validated = self.validate_sae_feature(feature_id)
-        idx = int(validated["id"])
-        name = f"sae/{idx}"
-        if name in self._profiles:
-            return name
-        backend, layer, _width = self._require_sae()
-        direction = backend.feature_direction(layer, idx)
-        self._profiles[name] = {
-            layer: direction.detach().to(self._device, self._dtype)
-        }
-        self._invalidate_prefix_cache()
-        self._invalidate_analytics_cache()
-        return name
-
-    def _encode_sae_hidden(self, hidden: torch.Tensor) -> torch.Tensor:
-        backend, layer, width = self._require_sae()
-        row = hidden
-        if row.ndim == 1:
-            row = row.unsqueeze(0)
-        acts = backend.encode_layer(layer, row)
-        if acts.ndim == 2 and acts.shape[0] == 1:
-            acts = acts[0]
-        acts = acts.reshape(-1)
-        if int(acts.numel()) != width:
-            raise ValueError(
-                f"SAE encoder returned {acts.numel()} features; expected {width}"
-            )
-        # SAE reads are diagnostics, probes, and steering metadata; none is a
-        # training surface.  Some third-party backends return grad-tracked
-        # activations even during an otherwise inference-only session, which
-        # retains an unnecessary graph and warns when probe values are scalarized.
-        return acts.detach()
-
-    def _score_sae_gate_scalars(
-        self, gate_keys: "set[str] | None" = None, *, step_id: int = -1,
-    ) -> dict[str, float]:
-        """Per-forward SAE gate scalars — through the run protocol face
-        (:meth:`SaeRun.gate_scalars` → the instrument worker; emits only
-        the real strength channel — the historical fake
-        ``:fraction``/``:membership`` constants are gone).  ``step_id``
-        keys the encode stash so the display step reuses this forward's
-        activations."""
-        return self._sae_instrument.current_run.gate_scalars(
-            step_id, None, gate_keys,
-        )
-
-    def _live_sae_readout_step(
-        self, *, top_k: int = _DEFAULT_READOUT_TOP_K, step_id: int = -1,
-    ) -> list[tuple[int, float, str | None, float | None]] | None:
-        """One decode step's live SAE top-k (delegates to
-        :meth:`SaeInstrument.live_readout_step`; step-keyed stash reuse)."""
-        return self._sae_instrument.live_readout_step(
-            top_k=top_k, step_id=step_id,
-        )
-
-    def _score_sae_probes_aggregate(
-        self,
-        generated_ids: list[int],
-        *,
-        pooled: dict[int, torch.Tensor] | None = None,
-    ) -> dict[str, ScalarReading]:
-        """End-of-gen SAE-probe aggregate (delegates to
-        :meth:`SaeInstrument.score_aggregate`) — the family's native
-        one-channel readings."""
-        return self._sae_instrument.score_aggregate(
-            generated_ids, pooled=pooled,
-        )
-
-    def sae_token_readout(
-        self,
-        node_id: str,
-        raw_index: int,
-        *,
-        top_k: int = 8,
-        apply_steering: bool = True,
-        raw: bool = False,
-    ) -> dict[str, Any]:
-        """SAE feature readout at the forward that produced a loom token."""
-        from drowse.fit.capture import _capture_all_hidden_states
-
-        _backend, layer, width = self._require_sae()
-        if not 1 <= top_k <= min(width, 256):
-            raise ValueError(f"top_k must be in [1, {min(width, 256)}]")
-        node = self.tree.get(node_id)
-        if node.role not in ("assistant", "user"):
-            raise InvalidNodeOperationError(
-                f"sae_token_readout: {node_id!r} is a {node.role} node — "
-                f"only a turn with a decode record can be read out"
-            )
-        raw_ids = node.raw_token_ids
-        if not raw_ids:
-            raise InvalidNodeOperationError(
-                f"sae_token_readout: {node_id!r} has no raw token record"
-            )
-        if not 0 <= raw_index < len(raw_ids):
-            raise InvalidNodeOperationError(
-                f"sae_token_readout: raw_index {raw_index} out of range "
-                f"[0, {len(raw_ids)})"
-            )
-        recipe = node.recipe
-        steering_expr = (
-            recipe.steering if (apply_steering and recipe is not None) else None
-        )
-        scope = self.steering(steering_expr) if steering_expr else nullcontext()
-        with scope:
-            thinking_req = recipe.thinking if recipe is not None else None
-            use_thinking = (
-                self.chat_traits.supports_thinking
-                if thinking_req is None
-                else bool(thinking_req) and self.chat_traits.supports_thinking
-            )
-            if raw:
-                prompt_ids = self._prepare_input(
-                    "", raw=True, parent_node_id=node.parent_id,
-                )
-            else:
-                # Continue-mode rebuild — seat-general, mirrors
-                # ``jlens_token_readout``.
-                prompt_ids = self._prepare_input(
-                    None,
-                    thinking=use_thinking,
-                    parent_node_id=node.parent_id,
-                    system_prompt=recipe.system_prompt if recipe is not None else INHERIT_SYSTEM_PROMPT,
-                    user_role=(
-                        node.role_label if node.role == "user" else None
-                    ),
-                    assistant_role=(
-                        node.role_label if node.role == "assistant" else None
-                    ),
-                    gen_seat=node.role,
-                )
-            if raw_index > 0:
-                prefix = torch.tensor(
-                    [[int(token) for token in raw_ids[:raw_index]]],
-                    dtype=prompt_ids.dtype,
-                    device=prompt_ids.device,
-                )
-                ids = torch.cat([prompt_ids, prefix], dim=1)
-            else:
-                ids = prompt_ids
-            with self._model_exclusive(
-                "session.sae_token_readout called while another model use is in flight",
-                phase_msg="session.sae_token_readout called while a generation is in flight",
-            ):
-                hidden = _capture_all_hidden_states(
-                    self._model, self._layers, ids,
-                    layer_indices=[layer], pool_index=ids.shape[1] - 1,
-                )
-                acts = self._encode_sae_hidden(hidden[layer])
-                values, indices = torch.topk(acts, k=top_k)
-                features = [
-                    {
-                        "id": int(idx),
-                        "activation": float(value),
-                        "label": self._sae_label(int(idx)),
-                        "max_act": self._sae_max_act(int(idx)),
-                    }
-                    for value, idx in zip(values.cpu(), indices.cpu())
-                ]
-        return {
-            "node_id": node_id,
-            "raw_index": int(raw_index),
-            "token_id": int(raw_ids[raw_index]),
-            "token_text": str(self._tokenizer.decode([int(raw_ids[raw_index])])),
-            "steering": steering_expr,
-            "layer": layer,
-            "features": features,
-        }
 
     def geometry_token_readout(
         self,
@@ -6402,13 +5788,14 @@ class DrowseSession:
         if selector.startswith("jlens/"):
             return self._add_lens_probe(selector, as_name=as_name)
         if selector.startswith("sae/"):
-            return self._add_sae_probe(selector, as_name=as_name)
-        # Geometry (Monitor) probes attach through their instrument like the
-        # other families; the whitener build + manifold resolution + monitor
-        # registration run under the exclusive-GPU section inside it.
-        name = self._geometry_instrument.attach(
-            selector, as_name=as_name, top_n=top_n,
-        )
+            name = self._sae_instrument.attach(selector, as_name=as_name)
+        else:
+            # Geometry (Monitor) probes attach through their instrument like
+            # the other families; the whitener build + manifold resolution +
+            # monitor registration run under the exclusive-GPU section.
+            name = self._geometry_instrument.attach(
+                selector, as_name=as_name, top_n=top_n,
+            )
         # New probe → _begin_capture attaches a different layer set than was
         # live when the prefix was prefilled; drop the cache so the next gen
         # re-prefills with the fresh capture-attach layout in place.
@@ -6428,16 +5815,6 @@ class DrowseSession:
         the probe hash / analytics caches key on the roster).
         """
         name = self._lens_instrument.attach(selector, as_name=as_name)
-        self._invalidate_prefix_cache()
-        self._probe_hash_cache.pop(name, None)
-        self._invalidate_analytics_cache()
-        return name
-
-    def _add_sae_probe(self, selector: str, *, as_name: str | None) -> str:
-        """Attach a resident SAE feature as a one-channel readout probe
-        (delegates to :meth:`SaeInstrument.attach`; the session owns the
-        cache invalidation at this boundary)."""
-        name = self._sae_instrument.attach(selector, as_name=as_name)
         self._invalidate_prefix_cache()
         self._probe_hash_cache.pop(name, None)
         self._invalidate_analytics_cache()
@@ -8737,7 +8114,7 @@ class DrowseSession:
                     else None
                 )
                 sae_step = (
-                    self._live_sae_readout_step(
+                    self._sae_instrument.live_readout_step(
                         top_k=readout_top_k, step_id=step_id,
                     )
                     if _has_sae_consumer
@@ -9552,7 +8929,7 @@ class DrowseSession:
             sampling is None or sampling.return_probe_readings
         )
         has_sae_probes = bool(return_probe_readings and self._sae_instrument.probes)
-        if has_sae_probes and self._sae_layer is None:
+        if has_sae_probes and self._sae_instrument.runtime.layer is None:
             return None
 
         prepared = self._prepare_generation_call(steering, sampling, thinking)
@@ -10491,7 +9868,6 @@ class DrowseSession:
             "_jlens_depth_tensor_cache",
             "_readout_long_tensor_cache",
             "_jlens_decode_cache",
-            "_sae_feature_meta",
             "_layer_means",
             "_incremental_readings",
             "_incremental_gate_scores",
@@ -10506,9 +9882,9 @@ class DrowseSession:
         self._jlens = None
         self._jlens_identity = None
         self._jlens_readout_module_cache = None
-        self._sae_backend = None
-        self._sae_layer = None
-        self._sae_width = None
+        sae_instrument = self.__dict__.get("_sae_instrument")
+        if sae_instrument is not None:
+            sae_instrument.runtime.close()
         self._last_result = None
         self._last_per_token_scores = None
         self._last_token_probe_payload = None

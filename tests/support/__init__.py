@@ -11,6 +11,8 @@ helpers they are built from, importable by any test module:
   (real ``DrowseSession.from_pretrained`` on the tiny checkpoint, CPU, with the
   neutral baseline seeded so the whitener resolves from cache) and the
   ``drowse_home`` context manager.
+- :mod:`tests.support.sae` — :class:`~tests.support.sae.MockSaeBackend` (an
+  in-memory SAE backend) and stub-session wiring for the SAE instrument.
 
 Test modules must not import helpers from other test modules; shared fakes
 belong here.

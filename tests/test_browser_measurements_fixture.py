@@ -4,11 +4,9 @@ import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 
 import torch
 
-from drowse.sae.instrument import SaeInstrument
 from drowse.readout.types import DepthSummary, ScalarReading
 from drowse.lens.jlens import (
     aggregate_readout_from_probabilities,
@@ -17,7 +15,7 @@ from drowse.lens.jlens import (
 from drowse.readout.measurements import build_measurements
 from drowse.readout.monitor import _depth_stats
 from drowse.generation.results import ProbeReading
-from drowse.session.session import DrowseSession
+from tests.support.sae import make_resident, stub_sae_instrument
 
 
 FIXTURE = (
@@ -140,14 +138,17 @@ def test_browser_measurement_fixture_matches_python_source_of_truth() -> None:
 
     sae = fixture["sae"]
     sae_session = SimpleNamespace(
-        _layers=[object() for _ in range(model_layer_count)],
-        _require_sae=lambda: (None, sae["layer"], sae["featureCount"]),
-        _sae_max_act=lambda _feature_id: sae["maxAct"],
-        _readout_long_tensor=lambda ids, device: torch.tensor(
-            ids, dtype=torch.long, device=device,
-        ),
+        layers=[object() for _ in range(model_layer_count)],
     )
-    sae_instrument = SaeInstrument(cast(DrowseSession, sae_session))
+    sae_instrument = stub_sae_instrument(sae_session)
+    make_resident(
+        sae_instrument.runtime,
+        layer=sae["layer"],
+        width=sae["featureCount"],
+        feature_meta={
+            str(sae["featureId"]): {"label": sae["label"], "max_act": sae["maxAct"]},
+        },
+    )
     sae_instrument.probes[sae["name"]] = {
         "feature_id": sae["featureId"],
         "layer": sae["layer"],

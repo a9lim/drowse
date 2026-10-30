@@ -48,7 +48,7 @@ def run_train(args: argparse.Namespace) -> None:
     with open_session(args) as session:
         n_layers = len(session.layers)
         layer = select_runtime_layer(frozenset(range(n_layers)), n_layers, args.layer)
-        result = session.train_sae(
+        result = session.sae.train(
             args.name, docs, layer=layer, corpus_spec=spec,
             tokens=args.tokens, seq_len=args.seq_len, batch_size=args.batch_size,
             d_sae=args.width, expansion=args.expansion,

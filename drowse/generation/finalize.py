@@ -172,7 +172,7 @@ def finalize_generation(
         and generated_ids
         and session.sae.names
     ):
-        sae_aggregates = session._score_sae_probes_aggregate(
+        sae_aggregates = session.sae.score_aggregate(
             generated_ids, pooled=_aggregate_pooled_slice(),
         )
 

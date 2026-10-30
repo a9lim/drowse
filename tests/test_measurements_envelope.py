@@ -304,7 +304,7 @@ class TestReplayEnvelopes:
         from all three families, so the route dispatches without a branch."""
         from drowse.readout.geometry import GeometryInstrument
         from drowse.lens.instrument import LensInstrument
-        from drowse.sae.instrument import SaeInstrument
+        from tests.support.sae import make_resident, stub_sae_instrument
 
         native = {
             "steering": "0.3 formal.casual",
@@ -316,14 +316,20 @@ class TestReplayEnvelopes:
         }
         session = SimpleNamespace(
             model_id="test/model",
-            sae_info=None,
             geometry_token_readout=lambda *a, **k: native,
             jlens_token_readout=lambda *a, **k: native,
-            sae_token_readout=lambda *a, **k: native,
         )
-        for cls in (GeometryInstrument, LensInstrument, SaeInstrument):
-            instrument = cls(session)  # type: ignore[arg-type]
-            out = _token_readout(instrument, cls.family)
+        sae = stub_sae_instrument(
+            session,
+            replay=lambda *a, **k: (SimpleNamespace(steering=None), [(3, 1.5)]),
+        )
+        make_resident(sae.runtime, layer=14)
+        for instrument in (
+            GeometryInstrument(session),  # type: ignore[arg-type]
+            LensInstrument(session),  # type: ignore[arg-type]
+            sae,
+        ):
+            out = _token_readout(instrument, instrument.family)
             assert set(out) == {"measurements"}
 
 
@@ -344,16 +350,15 @@ class TestRejectedKnobs:
     @staticmethod
     def _instrument(family: str) -> Any:
         from drowse.readout.geometry import GeometryInstrument
-        from drowse.sae.instrument import SaeInstrument
+        from tests.support.sae import stub_sae_instrument
 
         session = SimpleNamespace(
             model_id="test/model",
-            sae_info=None,
             geometry_token_readout=lambda *a, **k: {"readings": {}},
-            sae_token_readout=lambda *a, **k: {"features": [], "layer": 1},
         )
-        cls = GeometryInstrument if family == "geometry" else SaeInstrument
-        return cls(session)  # type: ignore[arg-type]
+        if family == "geometry":
+            return GeometryInstrument(session)  # type: ignore[arg-type]
+        return stub_sae_instrument(session)
 
     def test_geometry_rejects_top_k(self) -> None:
         with pytest.raises(ValueError, match="no top_k"):

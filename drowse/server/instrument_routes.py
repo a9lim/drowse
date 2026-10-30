@@ -420,7 +420,7 @@ def register_instrument_routes(app: FastAPI) -> None:
 
     async def sae_fetch_body(body: SaeFetchRequest, source: str, release: str) -> None:
         async with session_lock(app):
-            info = await run_in_thread(session.load_sae, release, layer=body.layer)
+            info = await run_in_thread(session.sae.load, release, layer=body.layer)
             await run_in_thread(session.sae.set_live, True)
         sae_fetch.state["info"] = info
         sae_fetch.report(
@@ -445,7 +445,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         sae_train.report(f"streaming {n_docs:,} corpus documents…")
         docs, spec = await run_in_thread(stream_lens_corpus, n_docs)
         result = await run_in_thread(
-            session.train_sae, body.name, docs,
+            session.sae.train, body.name, docs,
             layer=layer, corpus_spec=spec, tokens=body.tokens, seq_len=body.seq_len,
             batch_size=body.batch_size, d_sae=body.width, expansion=body.expansion,
             learning_rate=body.learning_rate, l1_coefficient=body.l1,
@@ -507,7 +507,7 @@ def register_instrument_routes(app: FastAPI) -> None:
             sae_train.request_cancel()
         else:
             async with session_lock(app):
-                session.unload_sae()
+                session.sae.unload()
         return cast(PreparationStatusJSON, group.status())
 
     # -- token readout ----------------------------------------------------------
@@ -546,7 +546,7 @@ def register_instrument_routes(app: FastAPI) -> None:
 
     @router.post("/instruments/sae/features/validate")
     def sae_feature_validate(body: SaeFeatureRequest) -> SaeFeatureValidationJSON:
-        return session.validate_sae_feature(body.id)
+        return session.sae.validate_feature(body.id)
 
     @router.post("/instruments/sae/features/metadata")
     async def sae_features_metadata(body: SaeFeatureMetaRequest) -> SaeFeatureMetaResponse:
@@ -554,6 +554,6 @@ def register_instrument_routes(app: FastAPI) -> None:
         cache only, so it takes no session lock."""
         if any(feature_id < 0 for feature_id in body.ids):
             raise HTTPException(400, "feature ids must be non-negative")
-        return {"features": await run_in_thread(session.fetch_sae_feature_meta, body.ids)}
+        return {"features": await run_in_thread(session.sae.fetch_meta, body.ids)}
 
     app.include_router(router)

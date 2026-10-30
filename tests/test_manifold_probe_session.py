@@ -131,10 +131,10 @@ def _stub_session() -> DrowseSession:
     # the instruments; tests set ``session._lens_instrument.live`` etc.
     from drowse.readout.geometry import GeometryInstrument
     from drowse.lens.instrument import LensInstrument
-    from drowse.sae.instrument import SaeInstrument
+    from tests.support.sae import stub_sae_instrument
     session._geometry_instrument = GeometryInstrument(session)
     session._lens_instrument = LensInstrument(session)
-    session._sae_instrument = SaeInstrument(session)
+    session._sae_instrument = stub_sae_instrument(session)
     # ``_begin_capture`` runs the close → prepare → plan → bind ritual
     # through this helper; the MagicMock default would hand it an empty
     # iterable instead of the three real plans.

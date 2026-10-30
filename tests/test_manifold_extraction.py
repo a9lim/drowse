@@ -21,7 +21,7 @@ import torch
 from drowse.fit import capture as V
 from drowse.events import EventBus, ManifoldExtracted
 from drowse.fit.pipeline import ManifoldExtractionPipeline
-from drowse.sae.backend import MockSaeBackend
+from tests.support.sae import MockSaeBackend
 from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.base.paths import tensor_filename
