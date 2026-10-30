@@ -23,7 +23,11 @@ import pytest
 from tests.support.lens import stub_lens_kwargs
 
 from drowse.readout.types import DepthSummary, ScalarReading
-from drowse.readout.measurements import MEASUREMENTS_VERSION, build_measurements
+from drowse.readout.measurements import (
+    MEASUREMENTS_VERSION,
+    build_measurements,
+    live_sources,
+)
 from drowse.generation.results import ProbeReading
 
 # The eight fields a synthesized ``ProbeReading`` used to ship for every
@@ -388,6 +392,48 @@ class TestRejectedKnobs:
     def test_sae_rejects_layers(self) -> None:
         with pytest.raises(ValueError, match="no layers"):
             self._instrument("sae").token_readout("n1", 0, layers=[1])
+
+
+# ---------------------------------------------------------------------------
+# The live source binding is one expression
+# ---------------------------------------------------------------------------
+
+class TestLiveSources:
+    """``live_sources`` is the one reading of the live lens / SAE configs into
+    the envelope's source fields (token rows, authored rows, aggregates)."""
+
+    _LENS = {"source": "local:j", "layers": [0, 1]}
+    _SAE = {"source": "saelens:scope", "layer": 14}
+
+    def test_binds_both_live_readouts(self) -> None:
+        assert live_sources(self._LENS, self._SAE) == {
+            "lens_source": "local:j", "sae_source": "saelens:scope", "sae_layer": 14,
+        }
+
+    def test_an_inactive_readout_binds_nothing(self) -> None:
+        assert live_sources(None, None) == {
+            "lens_source": None, "sae_source": None, "sae_layer": None,
+        }
+
+    def test_gates_each_family(self) -> None:
+        assert live_sources(self._LENS, self._SAE, lens=False) == {
+            "lens_source": None, "sae_source": "saelens:scope", "sae_layer": 14,
+        }
+        assert live_sources(self._LENS, self._SAE, sae=False) == {
+            "lens_source": "local:j", "sae_source": None, "sae_layer": None,
+        }
+
+    def test_feeds_the_envelope_binding(self) -> None:
+        env = build_measurements(
+            scope="token",
+            lens_readout={0: [("a", 0.5)]},
+            sae_features=[(3, 1.5, None, None)],
+            **live_sources(self._LENS, self._SAE),
+        )
+        assert env is not None
+        assert env["instruments"]["lens"]["binding"]["source"] == "local:j"
+        sae = env["instruments"]["sae"]["binding"]
+        assert (sae["source"], sae["layer"]) == ("saelens:scope", 14)
 
 
 # ---------------------------------------------------------------------------

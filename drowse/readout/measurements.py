@@ -352,6 +352,40 @@ def build_measurements(
     return envelope
 
 
+class LiveSources(TypedDict):
+    """The source fields a live lens / SAE readout binds into an envelope:
+    :func:`build_measurements`' ``lens_source`` / ``sae_source`` /
+    ``sae_layer`` keywords."""
+
+    lens_source: str | None
+    sae_source: str | None
+    sae_layer: int | None
+
+
+def live_sources(
+    lens_live: Mapping[str, Any] | None,
+    sae_live: Mapping[str, Any] | None,
+    *,
+    lens: bool = True,
+    sae: bool = True,
+) -> LiveSources:
+    """The envelope source fields of the live lens and SAE readouts.
+
+    ``lens_live`` / ``sae_live`` are the instruments' live configs (``None``
+    while that readout is off).  ``lens`` / ``sae`` gate each family: the
+    aggregate envelope binds a family's source only when it carries that
+    family's readings.  An inactive or gated-off family binds nothing.
+    """
+    lens_cfg = lens_live if lens and isinstance(lens_live, Mapping) else None
+    sae_cfg = sae_live if sae and isinstance(sae_live, Mapping) else None
+    layer = sae_cfg.get("layer") if sae_cfg is not None else None
+    return {
+        "lens_source": lens_cfg.get("source") if lens_cfg is not None else None,
+        "sae_source": sae_cfg.get("source") if sae_cfg is not None else None,
+        "sae_layer": int(layer) if layer is not None else None,
+    }
+
+
 __all__ = [
     "DepthSummaryDict",
     "GeometryChannel",
@@ -361,6 +395,7 @@ __all__ = [
     "LensReadout",
     "LensReadoutLayer",
     "LensReadoutToken",
+    "LiveSources",
     "MEASUREMENTS_VERSION",
     "MeasurementBinding",
     "MeasurementProvenance",
@@ -373,4 +408,5 @@ __all__ = [
     "SaeReadout",
     "ScalarReadingDict",
     "build_measurements",
+    "live_sources",
 ]

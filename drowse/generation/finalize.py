@@ -14,7 +14,7 @@ from drowse.readout.types import (
     as_probe_reading,
     reading_axis0,
 )
-from drowse.readout.measurements import build_measurements
+from drowse.readout.measurements import build_measurements, live_sources
 from drowse.generation.results import GenerationResult, ProbeReading
 
 if TYPE_CHECKING:
@@ -217,24 +217,14 @@ def finalize_generation(
     manifold_aggregates: dict[str, Any] = {
         **geometry_aggregates, **lens_aggregates, **sae_aggregates,
     }
-    live_lens = session.lens.live
-    live_sae = session.sae.live
     measurement_envelope = build_measurements(
         scope="aggregate",
         geometry_readings=geometry_aggregates or None,
         lens_readings=lens_aggregates or None,
         sae_readings=sae_aggregates or None,
-        lens_source=(
-            live_lens.get("source")
-            if lens_aggregates and isinstance(live_lens, dict) else None
-        ),
-        sae_source=(
-            live_sae.get("source")
-            if sae_aggregates and isinstance(live_sae, dict) else None
-        ),
-        sae_layer=(
-            live_sae.get("layer")
-            if sae_aggregates and isinstance(live_sae, dict) else None
+        **live_sources(
+            session.lens.live, session.sae.live,
+            lens=bool(lens_aggregates), sae=bool(sae_aggregates),
         ),
         steering=applied_steering,
     )
