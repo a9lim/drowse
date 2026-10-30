@@ -62,7 +62,7 @@ def _fit_noop(
     hyperparams: dict[str, object] | None = None,
 ) -> Any:
     """The weight-free proof that this fit is already exact, or ``None``."""
-    from drowse.store.manifold_preflight import preflight_manifold_fit_noop
+    from drowse.fit.preflight import preflight_manifold_fit_noop
 
     if args.force or not (folder / "manifold.json").exists():
         return None

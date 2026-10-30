@@ -19,7 +19,8 @@ import torch
 
 from drowse.fit.capture import _LENGTH_DIRECTIVE
 from drowse.generation.decode import GenerationState
-from drowse.session.session import _SessionStopCriteria, _role_for, _system_for
+from drowse.fit.corpus import CorpusGenerator, role_for, system_for
+from drowse.session.session import _SessionStopCriteria
 from tests.support.sessions import TinySessionFactory
 
 _TURN = re.compile(
@@ -76,19 +77,19 @@ def test_corpus_stop_criteria_accepts_transformers_score_shapes(score_kind: str)
 
 
 def test_system_for_abstract_vs_concrete() -> None:
-    assert _system_for("happy", "abstract") == (
+    assert system_for("happy", "abstract") == (
         "You are someone happy. Respond exactly as someone happy would."
     )
-    assert _system_for("alien", "concrete") == (
+    assert system_for("alien", "concrete") == (
         "You are an alien. Respond exactly as an alien would."
     )
     # default kind is abstract
-    assert _system_for("happy", None).startswith("You are someone happy")
+    assert system_for("happy", None).startswith("You are someone happy")
 
 
 def test_role_for_abstract_vs_concrete() -> None:
-    assert _role_for("happy", "abstract") == "someone_happy"
-    assert _role_for("pirate", "concrete") == "pirate"
+    assert role_for("happy", "abstract") == "someone_happy"
+    assert role_for("pirate", "concrete") == "pirate"
 
 
 # --- generate_responses ---------------------------------------------------
@@ -122,6 +123,23 @@ def test_kind_drives_system_and_role(make_tiny_session: TinySessionFactory) -> N
     abstract = _Answerer()
     _session(make_tiny_session, abstract).generate_responses(["happy"], ["abstract"])
     assert abstract.calls[0]["role"] == "someone happy"
+
+
+def test_slug_concept_is_humanized_in_the_system_prompt_and_label(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    answerer = _Answerer()
+    out = _session(make_tiny_session, answerer).generate_responses(
+        ["artificial_intelligence"], ["abstract"],
+    )
+    assert out["artificial_intelligence"] == ["resp::P0", "resp::P1", "resp::P2"]
+    # The slug is the identifier; the model reads it with spaces, both in the
+    # persona system prompt and in the ``someone_<slug>`` assistant label.
+    assert {c["system"] for c in answerer.calls} == {
+        f"{_LENGTH_DIRECTIVE} You are someone artificial intelligence. "
+        "Respond exactly as someone artificial intelligence would."
+    }
+    assert {c["role"] for c in answerer.calls} == {"someone artificial intelligence"}
 
 
 def test_explicit_role_overrides_kind(make_tiny_session: TinySessionFactory) -> None:
@@ -159,6 +177,42 @@ def test_blank_row_is_retried_in_place_with_same_elicitation_frame(
     p1_calls = [c for c in answerer.calls if c["prompt"] == "P1"]
     assert p1_calls == [{**frame, "prompt": "P1"}] * 2
     assert [c["prompt"] for c in answerer.calls] == ["P0", "P1", "P2", "P1"]
+
+
+def test_blank_row_retry_decodes_greedily_with_an_eos_floor(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    """Only the blank row is re-decoded: greedy, with ``min_new_tokens`` set.
+
+    Scripted one-hot logits make greedy and sampled decoding agree, so the
+    retry's decode settings are observed on the ``generate`` call itself.
+    """
+    session = _session(make_tiny_session, _Answerer(blank=("P1",)))
+    calls: list[dict[str, Any]] = []
+
+    def generate(input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        calls.append({
+            "rows": int(input_ids.shape[0]),
+            **{key: kwargs.get(key) for key in (
+                "do_sample", "min_new_tokens", "temperature", "top_p",
+            )},
+        })
+        return session.model.generate(input_ids, **kwargs)
+
+    corpus = CorpusGenerator(
+        generate, session.tokenizer, device=session.device,
+        traits=session.chat_traits, scene=lambda: session.scene_grammar,
+        model_type=session.model.config.model_type,
+    )
+    assert corpus.responses(["sad"], ["abstract"]) == {
+        "sad": ["resp::P0", "resp::P1", "resp::P2"],
+    }
+    assert calls == [
+        {"rows": 3, "do_sample": True, "min_new_tokens": None,
+         "temperature": 1.0, "top_p": 0.9},
+        {"rows": 1, "do_sample": False, "min_new_tokens": 8,
+         "temperature": None, "top_p": None},
+    ]
 
 
 def test_blank_deterministic_retry_fails_before_authoring(

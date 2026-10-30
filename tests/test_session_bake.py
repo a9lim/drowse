@@ -15,6 +15,7 @@ import torch
 from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.session.session import DrowseSession
 from tests._fakes import make_mock_session
+from tests.support.extraction import make_extraction
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +23,7 @@ from tests._fakes import make_mock_session
 # ---------------------------------------------------------------------------
 
 
-def _mock_session():
+def _mock_session(monkeypatch: pytest.MonkeyPatch):
     # Shared native-API wiring lives in tests/_fakes.py.
     session = make_mock_session()
 
@@ -34,16 +35,21 @@ def _mock_session():
     session._layers = []
     session.events = MagicMock()
     session.events.subscribe = lambda cb: (lambda: None)
-    # Bind the real method so its contract (including the loaded-weight
-    # fingerprint it forwards into the merge) is under test rather than a
-    # mock's return value.
+    # Bind the real method and wire a real Extraction over the mock, so the
+    # contract (including the loaded-weight fingerprint forwarded into the
+    # merge) is under test rather than a mock's return value.
+    session.model = session._model
+    session._extraction = make_extraction(
+        monkeypatch, handle=session,
+        register_profile=session._registry.put_profile,
+    ).extraction
     session.bake = MethodType(DrowseSession.bake, session)
     return session
 
 
 @pytest.fixture
-def session() -> Any:
-    return _mock_session()
+def session(monkeypatch: pytest.MonkeyPatch) -> Any:
+    return _mock_session(monkeypatch)
 
 
 # ---------------------------------------------------------------------------

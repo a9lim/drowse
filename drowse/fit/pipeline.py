@@ -5,7 +5,7 @@ manifold, so concept extraction (``session.extract``) and manifold fitting
 share it.  A fit runs four stages over small values:
 
 1. **inputs** (:class:`FitInputs`) — the authoring snapshot taken under the
-   folder lock (:mod:`drowse.store.fit_publish`), the token-exact
+   folder lock (:mod:`drowse.fit.publish`), the token-exact
    :class:`CaptureIdentity`, the loaded-model fingerprints, the resolved SAE
    backend.  A fitted tensor whose sidecar matches all of it is served as is.
 2. **capture** — per-node centroids (and, for curved fits, response rows) from
@@ -44,7 +44,7 @@ from drowse.model.arch import workspace_layer_indices
 from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.sae.backend import SaeBackend
 from drowse.base.paths import tensor_filename
-from drowse.store.fit_publish import (
+from drowse.fit.publish import (
     AuthoringSnapshot,
     assert_authoring_revision,
     fit_target_lock,
