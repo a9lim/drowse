@@ -316,10 +316,6 @@ class RunSet(list[GenerationResult]):
         self.metrics: dict[str, Any] = dict(metrics or {})
 
     @property
-    def results(self) -> list[GenerationResult]:
-        return list(self)
-
-    @property
     def first(self) -> GenerationResult:
         if not self:
             raise IndexError("RunSet is empty")
