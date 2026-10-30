@@ -15,7 +15,7 @@
   // compare pinning, fan-out, filtering, and cross-branch diff.
 
   import { onMount, tick, untrack } from "svelte";
-  import { loomLiveNode } from "./loomLiveNode";
+  import { createLoomLiveNode, segmentHeightEstimate, segmentWidth } from "./loomMapModel";
   import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
   import { fade, fly, slide } from "svelte/transition";
   import {
@@ -60,10 +60,9 @@
   import {
     layoutLoom,
     loomBranchJunctions,
-    loomMessageWidth,
     type LoomLayoutEdge,
   } from "./loomLayout";
-  import { splitTokenSentences } from "./loomSentences";
+  import { tokenSentences } from "./loomSentences";
   import {
     centerLoomRect,
     fitLoomCamera,
@@ -175,12 +174,12 @@
     return indexed.map((e) => e.id);
   }
 
-  const rows = $derived.by<Row[]>(() => {
+  /** The saved tree in visit order.  Structural only: it never reads the
+   *  streaming turn, so a token frame does not re-walk the tree. */
+  const treeRows = $derived.by<Row[]>(() => {
     const out: Row[] = [];
     if (!loomTree.root_id) return out;
     const matching = filterState.matchingIds;
-    const liveTurn = genStatus.active && chatLog.pendingIndex !== null
-      ? chatLog.turns[chatLog.pendingIndex] : null;
     // Touch the sort key so $derived re-runs when it flips.  Reading
     // ``loomUiState.siblingSort`` happens inside ``_orderedChildren``
     // already; this is the Svelte 5 idiom for keeping the dependency
@@ -191,10 +190,8 @@
     ];
     while (stack.length) {
       const { id, depth, deadAncestor } = stack.pop()!;
-      const savedNode = loomTree.nodes.get(id);
-      if (!savedNode) continue;
-      const node = liveTurn && loomTree.pendingNodeId === id
-        ? loomLiveNode(savedNode, liveTurn) : savedNode;
+      const node = loomTree.nodes.get(id);
+      if (!node) continue;
       const onActive = activePathSet.has(id);
       const isDead = deadAncestor || !onActive;
       // Skip the synthetic root system node from the visible list —
@@ -222,50 +219,41 @@
     }
     return out;
   });
+  const treeRowById = $derived(new Map(treeRows.map((row) => [row.node.id, row])));
 
-  const rowById = $derived(new Map(rows.map((row) => [row.node.id, row])));
+  // The streaming reply, overlaid on its saved node only while the loom is
+  // on screen.  The overlay converts just the tokens that arrived since the
+  // previous frame.
+  const liveOverlay = createLoomLiveNode();
+  const liveNode = $derived.by<LoomNodeJSON | null>(() => {
+    if (!active || !genStatus.active || chatLog.pendingIndex === null || !loomTree.pendingNodeId) return null;
+    const saved = loomTree.nodes.get(loomTree.pendingNodeId);
+    const turn = chatLog.turns[chatLog.pendingIndex];
+    if (!saved || !turn || !treeRowById.has(saved.id)) return null;
+    const node = liveOverlay(saved, turn);
+    return node === saved ? null : node;
+  });
+  /** Visit-order rows with the live reply's content.  Views that show node
+   *  content read these; structure, focus, and search read ``treeRows``. */
+  const rows = $derived(liveNode === null ? treeRows : treeRows.map((row) =>
+    row.node.id === liveNode.id ? { ...row, node: liveNode } : row));
+  const rowById = $derived(liveNode === null ? treeRowById : new Map(rows.map((row) => [row.node.id, row])));
   const coarsePointer = new MediaQuery("(pointer: coarse)");
-  function nodeCardHeight(node: LoomNodeJSON, width: number): number {
-    if (node.tokens && node.tokens.length > 0) {
-      const availableWidth = width - 60;
-      const sentences = splitTokenSentences(node.tokens);
-      let rows = 0;
-      for (const sentence of sentences) {
-        rows += 1;
-        let usedWidth = 0;
-        for (const token of node.tokens.slice(sentence.start, sentence.end + 1)) {
-          const label = (token.text || "∅").replace(/\s/g, " ");
-          const tokenWidth = Math.min(availableWidth, Math.max(coarsePointer.current ? 24 : 18, 16 + label.length * 7));
-          if (usedWidth > 0 && usedWidth + 3 + tokenWidth > availableWidth) {
-            rows += 1;
-            usedWidth = tokenWidth;
-          } else {
-            usedWidth += (usedWidth > 0 ? 3 : 0) + tokenWidth;
-          }
-        }
-      }
-      return coarsePointer.current
-        ? 120 + rows * 47 + sentences.length * 56
-        : 105 + rows * 27 + sentences.length * 38;
-    }
-    const textLength = (node.text ?? "").trim().length;
-    const lines = Math.min(6, Math.max(1, Math.ceil(textLength / Math.max(1, (width - 40) / 7))));
-    return 98 + lines * 18;
-  }
 
-  const segments = $derived(segmentLoom(rows.map(row => row.node), activePathSet));
+  /** The map projection (segments, sizes, layout) runs only while the map
+   *  is on screen; hidden pages keep their last measured card heights. */
+  const mapActive = $derived(active && loomUiState.view === "map");
+  const segments = $derived(mapActive ? segmentLoom(rows.map(row => row.node), activePathSet) : []);
   const measuredHeights = new SvelteMap<string, number>();
   $effect(() => {
+    if (!mapActive) return;
     const ids = new Set(segments.map(segment => segment.id));
     for (const id of measuredHeights.keys()) {
       if (!ids.has(id)) measuredHeights.delete(id);
     }
   });
   const segmentById = $derived(new Map(segments.map(segment => [segment.id, segment])));
-  const segmentWidths = $derived(new Map(segments.map(segment => {
-    const tokens = segment.node.tokens?.slice(segment.start, segment.end);
-    return [segment.id, loomMessageWidth(tokens?.length ? tokens.map(token => token.text).join("") : segment.node.text ?? "", tokens?.length ?? 0)];
-  })));
+  const segmentWidths = $derived(new Map(segments.map(segment => [segment.id, segmentWidth(segment)])));
   const mapRowById = $derived(new Map(segments.map(segment => [segment.id, {
     ...rowById.get(segment.node.id)!,
     depth: segment.depth,
@@ -280,7 +268,7 @@
     width: segmentWidths.get(segment.id),
     height: compactMap ? 168 : measuredHeights.has(segment.id)
       ? measuredHeights.get(segment.id)!
-      : nodeCardHeight({ ...segment.node, tokens: segment.node.tokens?.slice(segment.start, segment.end) ?? null }, segmentWidths.get(segment.id)!),
+      : segmentHeightEstimate(segment, segmentWidths.get(segment.id)!, coarsePointer.current),
   }))));
   const branchPointCount = $derived(loomBranchJunctions(graph).length);
   const visibleTokenCount = $derived(segments.reduce(
@@ -292,7 +280,7 @@
   $effect(() => {
     if (!active || loomUiState.view !== "map" || genStatus.active) return;
     void loomTree.rev;
-    const currentRows = rows;
+    const currentRows = treeRows;
     untrack(() => {
       for (const row of currentRows) {
         if (row.node.parent_id && row.node.recipe !== null) {
@@ -385,7 +373,7 @@
   let searchNodeId = $state<string | null>(null);
   let searchSegmentId = $state<string | null>(null);
   let searchRootId = $state(loomTree.root_id);
-  const searchResults = $derived(filterState.matchingIds === null ? [] : rows.filter(row => !row.filteredOut && (loomUiState.view !== "saved" || row.node.starred)));
+  const searchResults = $derived(filterState.matchingIds === null ? [] : treeRows.filter(row => !row.filteredOut && (loomUiState.view !== "saved" || row.node.starred)));
   const searchIndex = $derived(searchResults.findIndex(row => row.node.id === searchNodeId));
   const searchResult = $derived(searchResults[Math.max(0, searchIndex)]?.node ?? null);
   const searchExcerpt = $derived(searchResult ? loomSearchExcerpt(searchResult.text ?? "", filterState.mode === "text" ? filterState.expr : "") : null);
@@ -500,7 +488,7 @@
     const snippets: PathSnippet[] = [];
     for (const row of activePathRows) {
       const node = row.node;
-      const sentences = splitTokenSentences(node.tokens ?? []);
+      const sentences = node.tokens ? tokenSentences(node.tokens) : [];
       if (sentences.length === 0) {
         snippets.push({
           key: node.id,
@@ -534,7 +522,7 @@
       .map((id) => loomTree.nodes.get(id))
       .filter((child): child is LoomNodeJSON => child != null);
   });
-  const savedRows = $derived(rows.filter((row) => row.node.starred && !row.filteredOut));
+  const savedRows = $derived(treeRows.filter((row) => row.node.starred && !row.filteredOut));
   let viewportEl: HTMLDivElement | null = $state(null);
   let lastViewportSize = $state({ width: 0, height: 0 });
   let camera: LoomCamera = $state({ x: 0, y: 0, zoom: 1 });
@@ -831,16 +819,16 @@
   // no manual focus selected yet).
   $effect(() => {
     const activeId = loomTree.active_node_id;
-    const activeIsVisible = activeId !== null && rows.some((row) => row.node.id === activeId);
-    const focusedIsVisible = focusedId !== null && rows.some((row) => row.node.id === focusedId);
+    const activeIsVisible = activeId !== null && treeRowById.has(activeId);
+    const focusedIsVisible = focusedId !== null && treeRowById.has(focusedId);
     if (!focusedIsVisible) {
-      focusedId = activeIsVisible ? activeId : (rows[0]?.node.id ?? null);
+      focusedId = activeIsVisible ? activeId : (treeRows[0]?.node.id ?? null);
     }
   });
 
   function focusedIndex(): number {
     if (!focusedId) return -1;
-    return rows.findIndex((r) => r.node.id === focusedId);
+    return treeRows.findIndex((r) => r.node.id === focusedId);
   }
 
   async function focusNode(nodeId: string, scroll = true): Promise<void> {
@@ -909,14 +897,14 @@
 
   function moveVisible(dir: -1 | 1): void {
     const index = focusedIndex();
-    const next = rows[index + dir];
+    const next = treeRows[index + dir];
     if (next) void focusNode(next.node.id);
   }
 
   function moveParent(): void {
     if (!focusedId) return;
     const parentId = loomTree.nodes.get(focusedId)?.parent_id;
-    if (parentId && rows.some((row) => row.node.id === parentId)) {
+    if (parentId && treeRows.some((row) => row.node.id === parentId)) {
       void focusNode(parentId);
     }
   }
@@ -924,7 +912,7 @@
   function moveFirstChild(): void {
     if (!focusedId) return;
     const firstChild = _orderedChildren(focusedId)[0];
-    if (firstChild && rows.some((row) => row.node.id === firstChild)) {
+    if (firstChild && treeRows.some((row) => row.node.id === firstChild)) {
       void focusNode(firstChild);
     }
   }
@@ -1246,9 +1234,9 @@
     void tick().then(() => {
       if (trigger?.isConnected) trigger.focus({ preventScroll: true });
       else {
-        const fallback = focusedId && rows.some((row) => row.node.id === focusedId)
+        const fallback = focusedId && treeRows.some((row) => row.node.id === focusedId)
           ? focusedId
-          : (loomTree.active_node_id ?? rows[0]?.node.id ?? null);
+          : (loomTree.active_node_id ?? treeRows[0]?.node.id ?? null);
         if (fallback) void focusNode(fallback, false);
       }
     });
@@ -1652,14 +1640,14 @@
       moveFirstChild();
       return;
     }
-    if (k === "Home" && rows.length > 0) {
+    if (k === "Home" && treeRows.length > 0) {
       ev.preventDefault();
-      void focusNode(rows[0].node.id);
+      void focusNode(treeRows[0].node.id);
       return;
     }
-    if (k === "End" && rows.length > 0) {
+    if (k === "End" && treeRows.length > 0) {
       ev.preventDefault();
-      void focusNode(rows[rows.length - 1].node.id);
+      void focusNode(treeRows[treeRows.length - 1].node.id);
       return;
     }
     if (k === "ContextMenu" || (k === "F10" && ev.shiftKey)) {
@@ -1857,8 +1845,8 @@
   }
 
   onMount(() => {
-    const initialId = focusedId ?? loomTree.active_node_id ?? rows[0]?.node.id;
-    if (initialId && rows.some((row) => row.node.id === initialId)) {
+    const initialId = focusedId ?? loomTree.active_node_id ?? treeRows[0]?.node.id;
+    if (initialId && treeRows.some((row) => row.node.id === initialId)) {
       void focusNode(initialId, false);
     }
     void tick().then(focusInitialView);
@@ -2134,7 +2122,7 @@
       <button type="button" onclick={fullRefresh}>retry</button>
     </div>
   {:else if loomUiState.view !== "weave"}
-  {#if rows.length === 0}
+  {#if treeRows.length === 0}
     <div class="empty">
       <p>No branches yet</p>
       <p>Send a message in Conversation to create the first path.</p>
@@ -2143,7 +2131,7 @@
     <div class="loom-map-bar">
       <div class="loom-map-summary">
         <strong>Conversation map</strong>
-        <span><MorphText text={rows.length} /> {rows.length === 1 ? "turn" : "turns"}</span>
+        <span><MorphText text={treeRows.length} /> {treeRows.length === 1 ? "turn" : "turns"}</span>
         <span class="map-separator" aria-hidden="true">·</span>
         <span><MorphText text={branchPointCount} /> {branchPointCount === 1 ? "fork" : "forks"}</span>
         {#if visibleTokenCount > 0}

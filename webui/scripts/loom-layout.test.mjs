@@ -19,7 +19,8 @@ try {
     tokens: words.map((text, raw_index) => ({ text, raw_index, token_id: text.charCodeAt(0), logprob: -0.2 })),
   });
   const prompt = { ...makeReply("prompt", ["Prompt"], null), role: "user", recipe: null };
-  const { loomLiveNode } = await server.ssrLoadModule("/src/panels/loom/loomLiveNode.ts");
+  const { createLoomLiveNode, segmentWidth, segmentHeightEstimate } = await server.ssrLoadModule("/src/panels/loom/loomMapModel.ts");
+  const loomLiveNode = (node, turn) => createLoomLiveNode()(node, turn);
   const pending = { ...makeReply("pending", ["A"]), finish_reason: null };
   const pendingSaved = JSON.stringify(pending);
   const stream = { nodeId: "pending", text: "AB", tokens: [
@@ -36,6 +37,44 @@ try {
   assert.equal(loomLiveNode(settled, stream), settled, "settled nodes always use the authoritative record");
   assert.equal(loomLiveNode(pending, { ...stream, tokens: [stream.tokens[0], { ...stream.tokens[1], rawIndex: 3 }] }).raw_token_ids, null,
     "hidden control-token gaps must not invent raw token identities");
+
+  // Streaming is incremental: each frame converts only the new tokens, the
+  // rows already converted keep their identity, and a gap that later fills
+  // restores the exact raw ids.
+  const incremental = createLoomLiveNode();
+  const growing = { nodeId: "pending", text: "", tokens: [], thinkingTokens: [] };
+  let previousFrame = null;
+  for (const [index, text, thinking] of [[0, "T", true], [2, "B", false], [1, "A", false], [3, "C", false]]) {
+    growing.text += thinking ? "" : text;
+    (thinking ? growing.thinkingTokens : growing.tokens).push({ text, rawIndex: index, tokenId: 60 + index });
+    const frame = incremental(pending, growing);
+    const fresh = loomLiveNode(pending, growing);
+    assert.deepEqual(frame, fresh, `incremental frame at raw index ${index} matches a from-scratch overlay`);
+    if (previousFrame?.tokens?.length) {
+      assert.notEqual(frame.tokens, previousFrame.tokens, "each frame hands out a fresh token array");
+      assert.equal(frame.tokens[0], previousFrame.tokens[0], "converted rows are reused across frames");
+    }
+    previousFrame = frame;
+  }
+  assert.deepEqual(previousFrame.raw_token_ids, [60, 61, 62, 63]);
+  assert.equal(previousFrame.thinking_text, "T");
+  assert.equal(previousFrame.text, "BAC");
+
+  // Segmentation keys every token once per node identity: re-segmenting an
+  // unchanged tree with one grown live reply stringifies only the new tokens.
+  const bulk = [prompt, ...Array.from({ length: 30 }, (_, n) =>
+    makeReply(`bulk${n}`, Array.from({ length: 200 }, (_, i) => String.fromCharCode(66 + ((i * 31 + n * 17) % 50)))))];
+  segmentLoom(bulk, new Set());
+  const stringify = JSON.stringify;
+  let calls = 0;
+  JSON.stringify = (...args) => { calls += 1; return stringify(...args); };
+  try {
+    segmentLoom([...bulk, makeReply("tail", ["Q", "R"])], new Set());
+  } finally { JSON.stringify = stringify; }
+  assert.ok(calls < 200, `re-segmenting 6000 saved tokens stringified ${calls} keys`);
+  const sizedSegment = segmentLoom(bulk, new Set()).find(part => part.id === "bulk3");
+  assert.equal(segmentWidth(sizedSegment), segmentWidth({ ...sizedSegment }));
+  assert.ok(segmentHeightEstimate(sizedSegment, segmentWidth(sizedSegment), false) > 105);
   const source = [prompt, makeReply("a", ["A", "B", "C"]), makeReply("b", ["A", "B", "D"]),
     makeReply("c", ["A", "E"]), makeReply("next", ["Next"], "b")];
   const saved = JSON.stringify(source);
