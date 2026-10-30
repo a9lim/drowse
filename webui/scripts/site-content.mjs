@@ -264,6 +264,7 @@ export const sitePages = [
   { path: "/credits", title: "Credits · Drowse", description: "The people behind Drowse, a local workbench for exploring language models." },
   { path: "/contact", title: "Contact us · Drowse", description: "Get in touch with the Drowse team. Ask for help, share feedback, or discuss working together." },
   { path: "/contribute", title: "Contribute to Drowse", description: "Help build Drowse: report a bug, improve the code, add a model or pack, teach with it, or support the project." },
+  { path: "/neurons", title: "Neurons of Qwen3-8B · Drowse", description: "Explore the clearest of Qwen3-8B's 442,368 MLP neurons: what drives each one, what it writes, and the real text it fires on, read through four lenses." },
   { path: "/third-party-licenses", title: "Third-party licenses · Drowse", description: "Licenses and notices for the open-source software, fonts, and icons that ship with the Drowse website." },
 ];
 

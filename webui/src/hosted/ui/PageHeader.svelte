@@ -2,7 +2,7 @@
   import ThemeToggle from "../../lib/ui/ThemeToggle.svelte";
   import type { Snippet } from "svelte";
 
-  type Current = "home" | "chats" | "models" | "credits" | "contact" | "learn" | "privacy" | "about" | "contribute" | "workbench";
+  type Current = "home" | "chats" | "models" | "credits" | "contact" | "learn" | "privacy" | "about" | "contribute" | "neurons" | "workbench";
 
   let { current, variant, onChats, onModels, showChats = true, siteNavigation = true, homeHref = "/", compact = false, actions, leading }: {
     current?: Current;
@@ -44,6 +44,7 @@
         <a href="/app?choose=1" aria-current={current === "models" ? "page" : undefined} onclick={(event) => navigate(event, onModels)}>Models</a>
       {:else}
         <a href="/learn" aria-current={learnCurrent}>Learn</a>
+        <a href="/neurons" aria-current={current === "neurons" ? "page" : undefined}>Neurons</a>
         <a href="/app?choose=1" aria-current={current === "models" ? "page" : undefined} onclick={(event) => navigate(event, onModels)}>Models</a>
         <a href="/credits" aria-current={current === "credits" ? "page" : undefined}>Credits</a>
         <a href="/contribute" aria-current={current === "contribute" ? "page" : undefined}>Contribute</a>

@@ -17,6 +17,10 @@ build/
 webui/node_modules/
 webui/dist/
 webui/dist-hosted/
+webui/dist-local/
+# /neurons explorer data, built by webui/scripts/neurons/build-neuron-catalog.py from the
+# private neuron-lens catalog. Publish it only with the catalog owner's permission.
+/webui/public-hosted/neurons-data/
 .playwright-mcp/
 
 # Browser-runtime compiler scratch directories are local feasibility outputs.

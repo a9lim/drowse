@@ -23,6 +23,7 @@ export const prerenderedComponents = {
   learn: ui("pages/Learn.svelte"),
   "learn-guide": ui("pages/LearnGuide.svelte"),
   contribute: ui("pages/Contribute.svelte"),
+  neurons: ui("pages/Neurons.svelte"),
   "third-party-licenses": ui("pages/ThirdPartyLicenses.svelte"),
 };
 

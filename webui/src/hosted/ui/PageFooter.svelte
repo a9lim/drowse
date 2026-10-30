@@ -2,7 +2,7 @@
   import { CONTACT_ADDRESS } from "../../lib/contact";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
 
-  type Current = "home" | "credits" | "contact" | "learn" | "privacy" | "about" | "contribute";
+  type Current = "home" | "credits" | "contact" | "learn" | "privacy" | "about" | "contribute" | "neurons";
   let { current, hosted = true, compact = false }: { current?: Current; hosted?: boolean; compact?: boolean } = $props();
 
   const releaseBuild = typeof __DROWSE_HOSTED_RELEASE__ !== "undefined" && __DROWSE_HOSTED_RELEASE__;
@@ -20,6 +20,7 @@
       { label: "Open Drowse", href: `${site}/app` },
       { label: "Models", href: `${site}/app?choose=1` },
       { label: "Learn", href: `${site}/learn`, page: "learn" },
+      { label: "Neurons", href: `${site}/neurons`, page: "neurons" },
     ] },
     { title: "Project", links: [
       { label: "Credits", href: `${site}/credits`, page: "credits" },

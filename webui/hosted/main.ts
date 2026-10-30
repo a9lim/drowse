@@ -107,6 +107,9 @@ try {
   } else if (path === "/contribute") {
     component = (await import("../src/hosted/ui/pages/Contribute.svelte")).default;
     prerenderedKey = "contribute";
+  } else if (path === "/neurons") {
+    component = (await import("../src/hosted/ui/pages/Neurons.svelte")).default;
+    prerenderedKey = "neurons";
   } else if (path === "/third-party-licenses") {
     component = (await import("../src/hosted/ui/pages/ThirdPartyLicenses.svelte")).default;
     prerenderedKey = "third-party-licenses";
