@@ -515,12 +515,19 @@ async function main() {
   }
   assertChannelHtml(rootHtml, options.channel, options.revision);
   assertChannelHtml(appHtml, options.channel, options.revision);
-  for (const path of ["/app/", "/app/routing-probe", "/credits", "/credits/", "/contact", "/contact/"]) {
+  for (const path of ["/app/", "/credits", "/contact"]) {
     const response = await fetchRoute(origin, path, headers);
     assertMime(response, "text/html");
     assertSecurityHeaders(response, distributionLock);
     assertRobotsHeader(response, options.channel);
     assertChannelHtml(await response.text(), options.channel, options.revision);
+  }
+  // Pages are canonical without a trailing slash, and unknown app paths are real 404s, not the shell.
+  for (const [path, status, location] of [["/credits/", 301, "/credits"], ["/contact/", 301, "/contact"], ["/app/routing-probe", 404, null]]) {
+    const response = await fetch(new URL(path, origin), { cache: "no-store", credentials: "omit", headers, redirect: "manual", signal: AbortSignal.timeout(20_000) });
+    assert.equal(response.status, status, `${path} returned HTTP ${response.status}, expected ${status}`);
+    if (location) assert.equal(new URL(response.headers.get("location") ?? "", origin).pathname, location, `${path} must redirect to ${location}`);
+    else assertSecurityHeaders(response, distributionLock);
   }
   assertRobotsFile(robots, options.channel);
   await assertPwaAssets(origin, headers, rootHtml);

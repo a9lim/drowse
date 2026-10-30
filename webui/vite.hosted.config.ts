@@ -377,13 +377,17 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 1024 * 1024,
         // Hashed assets/ files are keyed by URL (revision null). Only unhashed scripts are pinned to the
         // source revision; stamping hashed chunks made every release refetch all JavaScript.
+        // The shell file itself is a deliberate 404 (only /app serves it, through a rewrite), so it is
+        // precached under /app; precaching the bare file failed the worker's install.
         manifestTransforms: [async (entries) => ({
-          manifest: entries.map((entry) => entry.url.endsWith(".js") && !entry.url.startsWith("assets/")
-            ? { ...entry, revision: artifactSourceRevision }
-            : entry),
+          manifest: entries.map((entry) => entry.url === "app-shell.html"
+            ? { ...entry, url: "app" }
+            : entry.url.endsWith(".js") && !entry.url.startsWith("assets/")
+              ? { ...entry, revision: artifactSourceRevision }
+              : entry),
           warnings: [],
         })],
-        navigateFallback: "/app-shell.html",
+        navigateFallback: "/app",
         navigateFallbackAllowlist: [/^\/app\/?(?:\?.*)?$/],
         navigateFallbackDenylist: [/[?&]app-recovery=/],
         runtimeCaching: [
@@ -398,7 +402,7 @@ export default defineConfig({
               networkTimeoutSeconds: 5,
               expiration: { maxEntries: 16, purgeOnQuotaError: true },
               cacheableResponse: { statuses: [200] },
-              precacheFallback: { fallbackURL: "/app-shell.html" },
+              precacheFallback: { fallbackURL: "/app" },
             },
           },
           {

@@ -148,7 +148,10 @@ assert.equal(new Set(precacheUrls).size, precacheUrls.length, "service worker pr
 for (const url of precacheUrls) {
   assert.doesNotMatch(url, /^icons\/tab-|^assets\/gemma-.*\.json$|^recordings\//, `${url} must load on demand, not in the precache`);
 }
-const precacheBytes = (await Promise.all(precacheUrls.map(url => stat(resolve(root, url))))).reduce((sum, file) => sum + file.size, 0);
+// /app is precached in place of the shell file it rewrites to (the file's own URL is a 404).
+const precacheFile = url => url === "app" ? "app-shell.html" : url;
+assert.ok(precacheUrls.includes("app") && !precacheUrls.includes("app-shell.html"), "the app shell must be precached as /app");
+const precacheBytes = (await Promise.all(precacheUrls.map(url => stat(resolve(root, precacheFile(url)))))).reduce((sum, file) => sum + file.size, 0);
 assert.ok(precacheBytes < 2.2 * 1024 * 1024, `service worker precache grew to ${precacheBytes} bytes`);
 assert.doesNotMatch(serviceWorker, /url:"assets\/[^"]+",revision:"/, "content-hashed assets must not carry a revision");
 for (const cache of ["drowse-hosted-on-demand-assets-v1", "drowse-hosted-landing-shader-v1", "drowse-hosted-on-demand-wasm-v2", "drowse-hosted-tab-icons-v1", "drowse-hosted-sae-descriptions-v1"]) {
