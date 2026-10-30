@@ -57,6 +57,7 @@ from drowse.lens.jlens import (
     resolve_word_token,
     token_readout_stats,
     token_readout_stats_from_probabilities,
+    transport_rows,
 )
 
 if TYPE_CHECKING:
@@ -617,7 +618,10 @@ class LensInstrument:
     def probe_hash(self, name: str) -> str | None:
         """Readout-channel identity digest (no baked tensor exists).
 
-        v4 includes output bias, projection, scaling, and final soft-capping.
+        The channel is the resident lens read through the model's readout
+        (output bias, projection, scaling, final soft-capping), so the digest
+        folds in the lens artifact's identity: the same word read through a
+        different lens — another source, a re-fit — is a different probe.
         """
         with self.state_lock:
             spec = self.probes.get(name)
@@ -626,9 +630,10 @@ class LensInstrument:
             return hashlib.sha256(
                 repr(
                     (
-                        "jlens-readout-v4", self._session.model_id,
+                        "jlens-readout-v5", self._session.model_id,
                         spec["word"], spec["token_id"],
                         tuple(spec["layers"]),
+                        getattr(self._session, "_jlens_identity", None),
                     )
                 ).encode("utf-8")
             ).hexdigest()
@@ -911,8 +916,6 @@ class LensInstrument:
         from drowse.model.loading import LogitReadout
 
         session = self._session
-        if session._device.type == "cuda":
-            torch.set_float32_matmul_precision("high")
 
         # One lens-state transaction: the lens read and the live-state
         # rebuild must be consistent (adoption calls this while holding
@@ -1095,7 +1098,7 @@ class LensInstrument:
         buckets = session._capture.per_layer_buckets()
         layers_present: list[int] = []
         hidden_rows: list[torch.Tensor] = []
-        transport_rows: list[int] = []
+        stack_rows: list[int] = []
         layer_rows: dict[int, int] = state["layer_rows"]
         for layer in state["layers"]:
             bucket = buckets.get(layer)
@@ -1107,7 +1110,7 @@ class LensInstrument:
             # rows, so it should not pay a dtype/device conversion just to
             # discard them.
             hidden_rows.append(bucket[-1])
-            transport_rows.append(layer_rows[layer])
+            stack_rows.append(layer_rows[layer])
         if not layers_present:
             return None
         stash = self.step_stash
@@ -1144,7 +1147,7 @@ class LensInstrument:
             missing = [
                 (layer, hidden, transport_row)
                 for layer, hidden, transport_row in zip(
-                    layers_present, hidden_rows, transport_rows, strict=True,
+                    layers_present, hidden_rows, stack_rows, strict=True,
                 )
                 if layer not in cached_logits
             ]
@@ -1162,9 +1165,8 @@ class LensInstrument:
                         for _layer, hidden, _row in missing
                     ],
                     dim=0,
-                ).to(J.device)
-                transported = torch.bmm(J, H.unsqueeze(-1)).squeeze(-1)
-                computed = state["readout"](transported)
+                )
+                computed = state["readout"](transport_rows(J, H))
                 if not cached_logits and len(missing) == len(layers_present):
                     logits = computed
                 else:

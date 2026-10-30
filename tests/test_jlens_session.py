@@ -2712,3 +2712,48 @@ def test_score_probes_entries_are_disjoint_and_guarded() -> None:
             layers=layers, logits=logits,
             probabilities=readout_probabilities(logits),
         )
+
+
+def test_lens_probe_hash_tracks_the_resident_lens_identity() -> None:
+    """The same word read through a different lens is a different probe.
+
+    Transcripts and loom recipes compare probe hashes to decide whether a
+    recorded reading is reproducible; a lens swap or re-fit must show up.
+    """
+    s = _StubSession()
+    s.fit_jlens(_PROMPTS)
+    name = s._add_lens_probe("jlens/g", as_name=None)
+    first = s._lens_instrument.probe_hash(name)
+    assert first is not None
+    assert s._lens_instrument.probe_hash(name) == first
+
+    s._jlens_identity = ("another", "lens")
+    assert s._lens_instrument.probe_hash(name) != first
+
+
+def test_cuda_transport_scopes_tf32_to_the_matmul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabling the live lens must not flip process-global matmul precision."""
+    from drowse.lens.jlens import _scoped_tf32
+
+    before = torch.get_float32_matmul_precision()
+    with _scoped_tf32(torch.device("cuda")):
+        assert torch.get_float32_matmul_precision() == "high"
+    assert torch.get_float32_matmul_precision() == before
+    with _scoped_tf32(torch.device("cpu")):
+        assert torch.get_float32_matmul_precision() == before
+
+    set_calls: list[str] = []
+    monkeypatch.setattr(torch, "set_float32_matmul_precision", set_calls.append)
+    s = _StubSession()
+    s.fit_jlens(_PROMPTS)
+    s._device = torch.device("cuda")  # the stack itself still lands on CPU
+    monkeypatch.setattr(
+        s, "_jlens_transport_stack",
+        lambda lens, layers, _device: DrowseSession._jlens_transport_stack(
+            s, lens, layers, torch.device("cpu"),
+        ),
+    )
+    s._lens_instrument.enable_live()
+    assert set_calls == []

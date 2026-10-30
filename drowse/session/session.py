@@ -3122,11 +3122,10 @@ class DrowseSession:
             J_unique,
             [layer_to_row[layer] for layer, _ in rows],
         )
-        H = torch.stack([
-            hidden.detach().to(torch.float32) for _, hidden in rows
-        ]).to(device)
-        transported = torch.bmm(J_rows, H.unsqueeze(-1)).squeeze(-1)
-        return readout(transported)
+        from drowse.lens.jlens import transport_rows
+
+        H = torch.stack([hidden.detach() for _, hidden in rows])
+        return readout(transport_rows(J_rows, H))
 
     def _jlens_aggregate_rows(
         self,

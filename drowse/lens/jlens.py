@@ -30,7 +30,8 @@ and the layer aggregate are all apples-to-apples.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -344,6 +345,39 @@ def lens_logits(
             normed = final_norm(transported.to(unembed.dtype))
             out[layer] = softcap_logits(normed.to(unembed.dtype) @ unembed.T, logit_softcap).float()
     return out
+
+
+@contextmanager
+def _scoped_tf32(device: torch.device) -> Iterator[None]:
+    """TF32 matmuls for one CUDA transport, restoring the caller's precision.
+
+    The lens transport is a ``[L, d, d] @ [L, d]`` bmm whose output feeds a
+    softmax readout, so TF32 costs nothing visible and buys a large CUDA
+    speedup.  The precision setting is process-global, so it is scoped to the
+    call: a model loaded or fitted beside the readout keeps full fp32.
+    """
+    if device.type != "cuda":
+        yield
+        return
+    previous = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("high")
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(previous)
+
+
+def transport_rows(
+    jacobian_rows: torch.Tensor, hidden_rows: torch.Tensor,
+) -> torch.Tensor:
+    """Batched transport ``J_l h_l`` for ``[R, d, d]`` matrices, ``[R, d]`` rows.
+
+    The one front half of every readout surface (live step, gate, probe,
+    replay, ``lens top``): rows land fp32 on the matrices' device.
+    """
+    hidden = hidden_rows.to(device=jacobian_rows.device, dtype=torch.float32)
+    with _scoped_tf32(jacobian_rows.device):
+        return torch.bmm(jacobian_rows, hidden.unsqueeze(-1)).squeeze(-1)
 
 
 def topk_probabilities(
