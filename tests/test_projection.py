@@ -19,7 +19,7 @@ import pytest
 import torch
 
 from drowse.events import EventBus
-from drowse.geometry.whitener import WhitenerError
+from drowse.errors import WhitenerError
 from drowse.session.session import (
     DrowseSession, ProfileNotRegisteredError,
 )

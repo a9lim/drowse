@@ -8,7 +8,7 @@ import torch
 
 from drowse.steering.hooks import _lower_affine_subspaces
 from drowse.geometry.whitener import LayerWhitener
-from drowse.geometry.manifold import synthesize_subspace
+from drowse.geometry.inject import synthesize_subspace
 
 
 FIXTURE = json.loads(

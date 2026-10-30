@@ -8,13 +8,9 @@ import pytest
 import torch
 
 from drowse.lens.jlens import JacobianLens
-from drowse.geometry.manifold import (
-    BoxAxis,
-    BoxDomain,
-    LayerSubspace,
-    SphereDomain,
-    subspace_inject,
-)
+from drowse.geometry.domains import BoxAxis, BoxDomain, SphereDomain
+from drowse.geometry.subspace import LayerSubspace
+from drowse.geometry.inject import subspace_inject
 from drowse.sae.backend import LocalSaeBackend
 from drowse.steering.grammar import parse_expr
 from drowse.steering.triggers import TriggerContext

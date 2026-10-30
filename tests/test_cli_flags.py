@@ -476,7 +476,7 @@ def test_sae_revision_flag_is_not_advertised(argv: list[str]) -> None:
 def test_fit_smoothing_override_is_delegated_to_fit_transaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.geometry.manifold import CustomDomain
+    from drowse.geometry.domains import CustomDomain
     from drowse.store.manifold_authoring import create_discover_manifold_folder
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
@@ -555,7 +555,7 @@ def test_no_dls_reaches_session_construction(
             return "happy.sad", object()
 
         def fit(self, *_args: Any, **_kwargs: Any) -> Any:
-            from drowse.geometry.manifold import CustomDomain
+            from drowse.geometry.domains import CustomDomain
             return SimpleNamespace(
                 name="happy.sad", layers={0: object()},
                 node_labels=["happy", "sad"], domain=CustomDomain(1),

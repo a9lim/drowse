@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from drowse.geometry.whitener import WhitenerError
+from drowse.errors import WhitenerError
 
 if TYPE_CHECKING:
     from drowse.geometry.manifold import Manifold
@@ -233,18 +233,6 @@ class _LayerWhiten:
 # cache — the read-side peer of the steering split (one subspace_inject kernel,
 # SteeringManager.{subspaces, manifolds}).
 # ----------------------------------------------------------------------------
-
-
-def _probe_is_affine_for_manifold(manifold: "Manifold") -> bool:
-    """True iff a manifold's fit is flat (affine) — batched coordinate readout.
-
-    A manifold's layers are uniformly affine (``pca`` / 2-node concept) or
-    curved (``spectral`` / ``authored``), so the first fitted layer decides.
-    An empty manifold is treated as affine (it scores to nothing anyway).
-    """
-    from drowse.geometry.manifold import manifold_is_affine
-
-    return manifold_is_affine(manifold)
 
 
 def _affine_coord_map(
@@ -479,7 +467,7 @@ def _attach_manifold_probe(
         name=name,
         manifold=manifold,
         top_n=int(top_n),
-        is_affine=_probe_is_affine_for_manifold(manifold),
+        is_affine=manifold.is_affine,
         inject_neutral=inject_neutral,
         candidate_labels=candidate_labels,
         label_to_candidate_idx=label_to_candidate_idx,

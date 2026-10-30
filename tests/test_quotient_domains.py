@@ -1,15 +1,21 @@
 from pathlib import Path
-from drowse.geometry.manifold import ManifoldDomain
+from drowse.geometry.domains import ManifoldDomain
 import math
 
 import pytest
 import torch
 
-from drowse.geometry.manifold import (
-    KleinBottleDomain, ProjectivePlaneDomain, SphereDomain, Manifold,
-    domain_from_spec, fit_layer_subspace, fit_sigma_field, subspace_inject,
-    invert_parameterization,
+from drowse.geometry.domains import (
+    KleinBottleDomain,
+    ProjectivePlaneDomain,
+    SphereDomain,
+    domain_from_spec,
 )
+from drowse.geometry.manifold import Manifold
+from drowse.geometry.subspace import fit_curved_subspace
+from drowse.geometry.invert import invert_parameterization
+from drowse.geometry.inject import subspace_inject
+from drowse.geometry.tube import fit_sigma_field
 from drowse.store.manifold_tensors import save_manifold, load_manifold
 from drowse.readout.monitor import _mean_coordinate_space, _mean_domain_coordinates
 
@@ -35,6 +41,11 @@ def test_quotient_embedding_and_canonicalization(domain: ManifoldDomain):
     torch.testing.assert_close(domain.clamp_position(twin), domain.clamp_position(points), atol=1e-12, rtol=1e-12)
 
 
+def _path(domain: ManifoldDomain, a: torch.Tensor, b: torch.Tensor, fraction):
+    """With the foot at the origin, ``translate_foot`` traces the geodesic."""
+    return domain.translate_foot(a, a, b, fraction)
+
+
 def test_quotient_jacobian(domain: ManifoldDomain):
     points = torch.tensor([[0.7, 1.2], [2 * math.pi - 1e-6, 2.3], [1.1, 4.3]], dtype=torch.float64)
     analytic = domain.embed_jacobian(points)
@@ -50,8 +61,8 @@ def test_paths_and_transport_ignore_choice_of_representative(domain: ManifoldDom
     origin = torch.tensor([0.3, 0.7], dtype=torch.float64)
     target = torch.tensor([2.9, 4.8], dtype=torch.float64)
     points = torch.tensor([[0.1, 0.5], [3.2, 2.2], [6.2, 4.4]], dtype=torch.float64)
-    path = domain.geodesic(origin, target, fraction)
-    twin_path = domain.geodesic(equivalent(domain, origin), equivalent(domain, target), fraction)
+    path = _path(domain, origin, target, fraction)
+    twin_path = _path(domain, equivalent(domain, origin), equivalent(domain, target), fraction)
     torch.testing.assert_close(domain.embed(path), domain.embed(twin_path), atol=1e-12, rtol=1e-12)
     moved = domain.translate_foot(points, origin, target, fraction)
     twin_moved = domain.translate_foot(equivalent(domain, points), equivalent(domain, origin), equivalent(domain, target), fraction)
@@ -64,7 +75,7 @@ def test_klein_crosses_twisted_seam_continuously():
     domain = KleinBottleDomain()
     origin = torch.tensor([2 * math.pi - 0.2, 0.8], dtype=torch.float64)
     target = torch.tensor([0.2, -0.8], dtype=torch.float64)
-    points = domain.geodesic(origin, target, torch.linspace(0, 1, 101, dtype=torch.float64)[:, None])
+    points = _path(domain, origin, target, torch.linspace(0, 1, 101, dtype=torch.float64)[:, None])
     assert torch.linalg.vector_norm(torch.diff(domain.embed(points), dim=0), dim=-1).max() < 0.02
     torch.testing.assert_close(points[-1], domain.clamp_position(target))
     assert points[0, 1] < 1
@@ -75,7 +86,7 @@ def test_projective_crosses_antipodal_chart_seam_continuously():
     domain = ProjectivePlaneDomain()
     origin = torch.tensor([0.9, 0.7], dtype=torch.float64)
     target = equivalent(domain, origin + torch.tensor([0.1, 0.1], dtype=torch.float64))
-    points = domain.geodesic(origin, target, torch.linspace(0, 1, 101, dtype=torch.float64)[:, None])
+    points = _path(domain, origin, target, torch.linspace(0, 1, 101, dtype=torch.float64)[:, None])
     assert torch.linalg.vector_norm(torch.diff(domain.embed(points), dim=0), dim=-1).max() < 0.004
     torch.testing.assert_close(domain.embed(points[-1]), domain.embed(target), atol=1e-12, rtol=1e-12)
 
@@ -87,7 +98,7 @@ def test_projective_poles_and_cut_locus_stay_finite():
         result = domain.translate_foot(points, points[0], points[2], fraction)
         assert torch.isfinite(result).all()
         assert torch.isfinite(domain.embed(result)).all()
-    torch.testing.assert_close(domain.embed(domain.geodesic(points[0], points[2], 1)), domain.embed(points[2]))
+    torch.testing.assert_close(domain.embed(_path(domain, points[0], points[2], 1)), domain.embed(points[2]))
 
 
 def test_projective_solver_frame_remains_full_rank_at_poles():
@@ -133,7 +144,7 @@ def fitted(domain: ManifoldDomain, nonlinear: bool=False):
     embedded = domain.embed(coords)
     values = torch.cat((embedded, 0.2 * embedded * embedded.roll(1, -1)), -1) if nonlinear else embedded
     centroids = torch.cat((values, torch.zeros(len(coords), 3)), -1) + 20
-    sub, _ = fit_layer_subspace(centroids, embedded, n_components=values.shape[1])
+    sub = fit_curved_subspace(centroids, embedded, n_components=values.shape[1]).subspace
     fit_sigma_field({0: sub}, domain, coords, [{0: 0.01 * torch.eye(sub.rank)} for _ in coords], smoothing=0.)
     return coords, sub
 
@@ -151,7 +162,7 @@ def test_fitted_steering_and_serialization_preserve_seams(domain: ManifoldDomain
     h = sub.eval_at(domain.embed(origin))
     for fraction in [0., 0.5, 1.]:
         out, _ = subspace_inject(h, sub, domain, target, origin, fraction, 0., origin=origin, gn_steps=10)
-        expected = sub.eval_at(domain.embed(domain.geodesic(origin, target, fraction)))
+        expected = sub.eval_at(domain.embed(_path(domain, origin, target, fraction)))
         torch.testing.assert_close(out, expected, atol=2e-3, rtol=1e-5)
         restored_out, _ = subspace_inject(h, restored.layers[0], restored.domain, equivalent(domain, target), equivalent(domain, origin), fraction, 0., origin=equivalent(domain, origin), gn_steps=10)
         torch.testing.assert_close(restored_out, out, atol=2e-3, rtol=1e-5)
@@ -207,7 +218,7 @@ def test_nonlinearly_fitted_surface_steers_through_the_seam(domain: ManifoldDoma
     h = sub.eval_at(domain.embed(origin))
     for fraction in [0.25, 0.5, 1.]:
         out, _ = subspace_inject(h, sub, domain, target, origin, fraction, 0., origin=origin, gn_steps=10)
-        expected = sub.eval_at(domain.embed(domain.geodesic(origin, target, fraction)))
+        expected = sub.eval_at(domain.embed(_path(domain, origin, target, fraction)))
         torch.testing.assert_close(out, expected, atol=3e-3, rtol=1e-5)
 
 

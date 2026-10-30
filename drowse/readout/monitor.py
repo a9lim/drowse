@@ -7,10 +7,13 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 
 from drowse.readout.types import parse_gate_ref
-from drowse.geometry.manifold import (
-    BoxDomain, SphereDomain, KleinBottleDomain, ProjectivePlaneDomain,
-    invert_parameterization,
+from drowse.geometry.domains import (
+    BoxDomain,
+    SphereDomain,
+    KleinBottleDomain,
+    ProjectivePlaneDomain,
 )
+from drowse.geometry.invert import invert_parameterization
 from drowse.readout.monitor_attach import (
     DEFAULT_NEAREST_TOP_N,
     NEUTRAL_LABEL,

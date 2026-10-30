@@ -206,8 +206,7 @@ def test_promoted_names_not_imported_by_old_underscore_form() -> None:
     offenders = _find_promoted_old_name_imports()
     assert not offenders, (
         "Frontend code imports a now-public name by its old underscore form.\n"
-        "Use the public name (manifold_is_affine / export_gguf_manifold / "
-        "all_concepts / sanitize_hyperparams) instead.\n\n"
+        "Use the public name (export_gguf_manifold) instead.\n\n"
         + "\n".join(offenders)
     )
 

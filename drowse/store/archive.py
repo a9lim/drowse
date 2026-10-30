@@ -473,7 +473,7 @@ def _validate_fitted_tensor(
     *,
     resolved_template_sha256: str | None = None,
 ) -> None:
-    from drowse.geometry.manifold import domain_from_spec
+    from drowse.geometry.domains import domain_from_spec
     from drowse.base.paths import decode_release_id, parse_tensor_filename
 
     parsed_filename = parse_tensor_filename(path.name)

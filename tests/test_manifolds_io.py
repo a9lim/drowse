@@ -634,9 +634,9 @@ def test_manifold_sidecar_topology_provenance_round_trips(tmp_path: Path):
     extraction tests stayed green while the round-trip lost them.
     """
     import torch
-    from drowse.geometry.manifold import (
-        BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
-    )
+    from drowse.geometry.domains import BoxAxis, BoxDomain
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.subspace import fit_curved_subspace
     from drowse.store.manifold_tensors import load_manifold, save_manifold
 
     g = torch.Generator().manual_seed(0)
@@ -645,7 +645,7 @@ def test_manifold_sidecar_topology_provenance_round_trips(tmp_path: Path):
     embedded = domain.embed(coords)
     layers = {}
     for layer in (4, 5):
-        sub, _ev_ratio = fit_layer_subspace(torch.randn(3, 6, generator=g), embedded)
+        sub = fit_curved_subspace(torch.randn(3, 6, generator=g), embedded).subspace
         layers[layer] = sub
         man = Manifold(
             name="autotopo", domain=domain, node_labels=["a", "b", "c"],
@@ -694,15 +694,15 @@ def test_save_manifold_rejects_unknown_metadata_key(tmp_path: Path):
     load → transfer → save round-trip still works.
     """
     import torch
-    from drowse.geometry.manifold import (
-        BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
-    )
+    from drowse.geometry.domains import BoxAxis, BoxDomain
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.subspace import fit_curved_subspace
     from drowse.store.manifold_tensors import load_manifold, save_manifold
 
     g = torch.Generator().manual_seed(0)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
     coords = torch.tensor([[0.0], [0.5], [1.0]])
-    sub, _ = fit_layer_subspace(torch.randn(3, 6, generator=g), domain.embed(coords))
+    sub = fit_curved_subspace(torch.randn(3, 6, generator=g), domain.embed(coords)).subspace
     man = Manifold(
         name="unknownmeta", domain=domain, node_labels=["a", "b", "c"],
         node_coords=coords, layers={4: sub}, mahalanobis_share={4: 1.0},
@@ -2154,10 +2154,10 @@ def test_rectangular_affine_transfer_preserves_points_frame_and_steering(
     tmp_path: Path,
 ) -> None:
     import torch
-    from drowse.geometry.manifold import (
-        CustomDomain, LayerSubspace, Manifold,
-        transfer_manifold_subspaces,
-    )
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.subspace import LayerSubspace
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.transfer import transfer_manifold_subspaces
     from drowse.store.manifold_tensors import load_manifold, save_manifold
     from drowse.store.alignment import LayerAlignment
 
@@ -2219,9 +2219,10 @@ def test_rectangular_affine_transfer_preserves_points_frame_and_steering(
 
 
 def test_monopolar_affine_transfer_rebakes_positive_world_direction_share() -> None:
-    from drowse.geometry.manifold import (
-        CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
-    )
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.subspace import LayerSubspace
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.transfer import transfer_manifold_subspaces
     from drowse.store.alignment import LayerAlignment
 
     basis = torch.tensor([[1.0, 0.0, 0.0]])
@@ -2253,10 +2254,11 @@ def test_monopolar_affine_transfer_rebakes_positive_world_direction_share() -> N
 def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
     import torch
     from dataclasses import replace
-    from drowse.geometry.manifold import (
-        BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
-        fit_rbf_interpolant, transfer_manifold_subspaces,
-    )
+    from drowse.geometry.domains import BoxAxis, BoxDomain
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.rbf import RbfFitPlan
+    from drowse.geometry.subspace import fit_curved_subspace
+    from drowse.geometry.transfer import transfer_manifold_subspaces
     from drowse.store.alignment import LayerAlignment
 
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -2267,11 +2269,9 @@ def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
         [0.8, 0.4, 0.3, -0.2],
         [0.1, 1.2, -0.5, 0.5],
     ])
-    sub, _ = fit_layer_subspace(centroids, embedded)
+    sub = fit_curved_subspace(centroids, embedded).subspace
     assert sub.node_params is not None
-    sigma_rw, sigma_pc = fit_rbf_interpolant(
-        sub.node_params, torch.zeros(3, 1),
-    )
+    sigma_rw, sigma_pc = RbfFitPlan.build(sub.node_params).solve(torch.zeros(3, 1), 0.0)
     sub = replace(sub, sigma_rbf_weights=sigma_rw, sigma_poly_coeffs=sigma_pc)
     source = Manifold(
         name="rect-curve", domain=domain, node_labels=["a", "b", "c"],
@@ -2297,7 +2297,10 @@ def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
 
 def test_rectangular_transfer_rejects_collapsed_subspace_rank() -> None:
     import torch
-    from drowse.geometry.manifold import CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.subspace import LayerSubspace
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.transfer import transfer_manifold_subspaces
     from drowse.store.alignment import LayerAlignment
 
     source = Manifold(
@@ -2322,9 +2325,10 @@ def test_rectangular_transfer_rejects_collapsed_subspace_rank() -> None:
 def test_rectangular_transfer_rejects_oblique_rank_collapse() -> None:
     """Rank detection uses singular values, not unpivoted QR diagonals."""
     import torch
-    from drowse.geometry.manifold import (
-        CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
-    )
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.subspace import LayerSubspace
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.transfer import transfer_manifold_subspaces
     from drowse.store.alignment import LayerAlignment
 
     source = Manifold(
@@ -2372,10 +2376,10 @@ def _fit_real_manifold(folder: Path, model_id: str, *, dim: int = 6, seed: int =
     """
     import torch
     from dataclasses import replace
-    from drowse.geometry.manifold import (
-        MANIFOLD_FIT_POLICY_VERSION, BoxAxis, BoxDomain, Manifold,
-        fit_layer_subspace, fit_rbf_interpolant,
-    )
+    from drowse.geometry.domains import BoxAxis, BoxDomain
+    from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION, Manifold
+    from drowse.geometry.rbf import RbfFitPlan
+    from drowse.geometry.subspace import fit_curved_subspace
     from drowse.store.manifold_tensors import save_manifold
 
     g = torch.Generator().manual_seed(seed)
@@ -2386,11 +2390,9 @@ def _fit_real_manifold(folder: Path, model_id: str, *, dim: int = 6, seed: int =
     origins = {}
     for layer in (4, 5, 6):
         centroids = torch.randn(3, dim, generator=g)
-        sub, _ev_ratio = fit_layer_subspace(centroids, embedded)
+        sub = fit_curved_subspace(centroids, embedded).subspace
         assert sub.node_params is not None
-        sigma_rw, sigma_pc = fit_rbf_interpolant(
-            sub.node_params, torch.zeros(3, 1),
-        )
+        sigma_rw, sigma_pc = RbfFitPlan.build(sub.node_params).solve(torch.zeros(3, 1), 0.0)
         sub = replace(
             sub,
             sigma_rbf_weights=sigma_rw,
@@ -2849,7 +2851,7 @@ def test_transfer_manifold_refuses_overwrite_without_force(
         source_model_fingerprint="fp:src/m", target_layer_means=w.layer_means,
         target_model_fingerprint="fp:tgt/m",
     )
-    import drowse.geometry.manifold as manifold_mod
+    import drowse.geometry.transfer as manifold_mod
 
     real_transfer = manifold_mod.transfer_manifold_subspaces
     monkeypatch.setattr(
@@ -3071,9 +3073,9 @@ def test_manifold_fit_summary_surfaces_auto_topology_evidence(tmp_path: Path):
     they were written and schema-validated but no reader lifted them.
     """
     import torch
-    from drowse.geometry.manifold import (
-        BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
-    )
+    from drowse.geometry.domains import BoxAxis, BoxDomain
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.subspace import fit_curved_subspace
     from drowse.store.manifold_folder import ManifoldSidecar
     from drowse.store.manifold_tensors import save_manifold
     from drowse.store.manifolds import manifold_fit_summary
@@ -3081,7 +3083,7 @@ def test_manifold_fit_summary_surfaces_auto_topology_evidence(tmp_path: Path):
     g = torch.Generator().manual_seed(0)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
     coords = torch.tensor([[0.0], [0.5], [1.0]])
-    sub, _ = fit_layer_subspace(torch.randn(3, 6, generator=g), domain.embed(coords))
+    sub = fit_curved_subspace(torch.randn(3, 6, generator=g), domain.embed(coords)).subspace
     man = Manifold(
         name="autotopo2", domain=domain, node_labels=["a", "b", "c"],
         node_coords=coords, layers={4: sub}, mahalanobis_share={4: 1.0},

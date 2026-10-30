@@ -1646,9 +1646,9 @@ class TestAnalyticsMultiNodeProbe:
         import torch
 
         from drowse.geometry.whitener import LayerWhitener
-        from drowse.geometry.manifold import (
-            CustomDomain, LayerSubspace, Manifold,
-        )
+        from drowse.geometry.domains import CustomDomain
+        from drowse.geometry.subspace import LayerSubspace
+        from drowse.geometry.manifold import Manifold
         from drowse.session.session import DrowseSession
         from drowse.fit.capture import fold_directions_to_subspace
 

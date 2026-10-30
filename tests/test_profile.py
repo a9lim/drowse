@@ -224,7 +224,7 @@ def test_cosine_similarity_empty_intersection_raises():
 
 def test_cosine_similarity_missing_whitener_raises():
     """Mahalanobis-only: a missing / non-covering whitener is a hard error."""
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
 
     tensors = _mk(layers=(0, 1), dim=8)
     a = Profile(tensors)

@@ -25,7 +25,7 @@ import torch
 
 from drowse.base.atomic import write_json_atomic
 from drowse.errors import ManifoldExistsError, ManifoldNotFoundError, DrowseError
-from drowse.geometry.manifold import domain_from_spec
+from drowse.geometry.domains import domain_from_spec
 from drowse.store.manifold_folder import (
     BakedManifoldError,
     ManifoldFolder,
@@ -964,7 +964,7 @@ def _transfer_manifold_locked(
     caller computed it) rides into the sidecar provenance.
 
     The subspace re-mapping + target-space share re-bake is the pure-tensor
-    :func:`drowse.geometry.manifold.transfer_manifold_subspaces`; this function only
+    :func:`drowse.geometry.transfer.transfer_manifold_subspaces`; this function only
     loads the source tensor, calls it, and writes the transferred tensor +
     sidecar.  (It used to do the tensor math inline, which is why it lazily
     reached into ``core`` for ``LayerSubspace`` / ``eval_rbf`` / ``subspace_share``
@@ -991,7 +991,7 @@ def _transfer_manifold_locked(
     fitted layer, :class:`FileExistsError` when a transferred tensor
     already exists and ``force`` is ``False``.
     """
-    from drowse.geometry.manifold import transfer_manifold_subspaces
+    from drowse.geometry.transfer import transfer_manifold_subspaces
     from drowse.store.manifold_tensors import load_manifold, save_manifold
 
     folder = Path(folder)

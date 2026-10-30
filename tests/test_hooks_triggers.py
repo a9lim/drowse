@@ -14,12 +14,9 @@ import torch
 import torch.nn as nn
 
 from drowse.steering.hooks import SteeringHook, SteeringManager
-from drowse.geometry.manifold import (
-    CustomDomain,
-    LayerSubspace,
-    subspace_inject,
-    synthesize_subspace,
-)
+from drowse.geometry.domains import CustomDomain
+from drowse.geometry.subspace import LayerSubspace
+from drowse.geometry.inject import subspace_inject, synthesize_subspace
 from drowse.steering.triggers import Trigger, TriggerContext
 from tests._whitener import isotropic_whitener
 

@@ -1005,11 +1005,11 @@ def fold_directions_to_subspace(
     caller's layer set folds verbatim. No origin store (coord 0, §2).
     Neutral means and a covering whitener are mandatory.
     """
-    from drowse.geometry.manifold import (
-        CustomDomain, LayerSubspace, Manifold,
-    )
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.subspace import LayerSubspace
+    from drowse.geometry.manifold import Manifold
 
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
 
     present = sorted(directions)
     if not present:
@@ -1168,7 +1168,7 @@ def project_profile(
     missing or non-covering whitener raises :class:`WhitenerError`.
     Result tensors are cast back to the source dtype of ``base``.
     """
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
 
     if operator not in ("~", "|"):
         raise ValueError(f"unknown projection operator: {operator!r}")

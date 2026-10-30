@@ -12,7 +12,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "DrowseError": ("drowse.errors", "DrowseError"),
     "GenState": ("drowse.session.session", "GenState"),
     "LayerWhitener": ("drowse.geometry.whitener", "LayerWhitener"),
-    "WhitenerError": ("drowse.geometry.whitener", "WhitenerError"),
+    "WhitenerError": ("drowse.errors", "WhitenerError"),
     "Profile": ("drowse.geometry.profile", "Profile"),
     "ProfileError": ("drowse.geometry.profile", "ProfileError"),
     "SamplingConfig": ("drowse.generation.sampling", "SamplingConfig"),
@@ -233,7 +233,8 @@ if TYPE_CHECKING:
         steering_delta as steering_delta,
         text_diff as text_diff,
     )
-    from drowse.geometry.whitener import LayerWhitener as LayerWhitener, WhitenerError as WhitenerError
+    from drowse.geometry.whitener import LayerWhitener as LayerWhitener
+    from drowse.errors import WhitenerError as WhitenerError
     from drowse.geometry.manifold import Manifold as Manifold
     from drowse.geometry.profile import Profile as Profile, ProfileError as ProfileError
     from drowse.generation.results import (

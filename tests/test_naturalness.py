@@ -3,17 +3,21 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
 
 from tests.conftest import CharTokenizer, FakeLogitsModel
-from drowse.geometry.manifold import BoxAxis, BoxDomain
+from drowse.geometry.domains import BoxAxis, BoxDomain
 from drowse.fit.naturalness import (
+    NaturalnessError,
     bhattacharyya_distance,
-    compute_node_behavior_centroid,
-    compute_trajectory_distributions,
+    evaluate,
     fit_behavior_manifold,
+    node_behavior_centroid,
+    response_distributions,
     to_hellinger,
     trajectory_naturalness,
 )
@@ -45,12 +49,14 @@ def test_to_hellinger_round_trip():
     assert torch.allclose(to_hellinger(p) ** 2, p, atol=1e-6)
 
 
-def test_bhattacharyya_identical_is_zero():
+@pytest.mark.parametrize("seed", range(8))
+def test_bhattacharyya_identical_is_zero(seed: int):
+    # Regression: fp32 roundoff made sum(sqrt(p*p)) exceed 1 on some draws,
+    # yielding a negative distance.
+    torch.manual_seed(seed)
     p = torch.softmax(torch.randn(32), dim=-1)
-    assert bhattacharyya_distance(p, p).item() == abs(
-        bhattacharyya_distance(p, p).item()
-    )
-    assert bhattacharyya_distance(p, p).item() < 1e-5
+    d = bhattacharyya_distance(p, p).item()
+    assert 0.0 <= d < 1e-5
 
 
 def test_bhattacharyya_disjoint_is_large():
@@ -109,11 +115,11 @@ def test_off_manifold_trajectory_scores_higher():
 
 # -------------------------------------------------------- mock-model path ---
 #
-# The behavior reads (centroid / trajectory) only care that the model returns a
-# per-position ``.logits``; the shared ``FakeLogitsModel`` (conftest) supplies
-# that wrapper, parametrized by a seeded-random ``logits_fn`` so the trajectory
-# stays deterministic per token sequence.  ``CharTokenizer(mod=13)`` reproduces
-# the old whitespace-free char-code tokenizer.
+# The behavior reads only care that the model returns a per-position
+# ``.logits``; the shared ``FakeLogitsModel`` (conftest) supplies that wrapper,
+# parametrized by a seeded-random ``logits_fn`` so the reads stay deterministic
+# per token sequence.  ``CharTokenizer`` has no chat template, so rendering
+# takes the raw ``system\nprompt\nresponse`` fallback (one token per char).
 
 
 def _MockModel(vocab: int) -> FakeLogitsModel:
@@ -122,8 +128,6 @@ def _MockModel(vocab: int) -> FakeLogitsModel:
         torch.manual_seed(int(input_ids.sum()))
         return torch.randn(1, seq, vocab)
 
-    # No ``parameters()`` consumer on this path (the behavior reads pass an
-    # explicit device), so keep the stub minimal.
     return FakeLogitsModel(_logits, with_parameters=False)
 
 
@@ -131,49 +135,150 @@ def _MockTok() -> CharTokenizer:
     return CharTokenizer(mod=13)
 
 
-def test_compute_node_behavior_centroid_is_distribution():
+def test_response_distributions_cover_exactly_the_response_tokens():
     model = _MockModel(24)
-    centroid = compute_node_behavior_centroid(
-        model, _MockTok(), torch.device("cpu"),
-        ["calm one", "calm two", "calm three"],
+    traj = response_distributions(
+        model, _MockTok(), torch.device("cpu"), "a prompt", "steered",
     )
-    assert centroid.shape == (24,)
-    assert centroid.sum().item() == __import__("pytest").approx(1.0, abs=1e-4)
-    assert torch.all(centroid >= 0)
-
-
-def test_compute_trajectory_distributions_shape():
-    model = _MockModel(24)
-    traj = compute_trajectory_distributions(
-        model, _MockTok(), torch.device("cpu"), "a steered sentence",
-    )
-    assert traj.shape[1] == 24
-    assert traj.shape[0] > 0
-    # Every row is a valid distribution.
+    # One distribution per response token (chars), predicted from the
+    # position before it — prompt and system positions are not scored.
+    assert traj.shape == (len("steered"), 24)
     assert torch.allclose(traj.sum(dim=-1), torch.ones(traj.shape[0]), atol=1e-4)
 
 
+def test_response_distributions_are_conditioned_on_the_prompt():
+    model = _MockModel(24)
+    a = response_distributions(model, _MockTok(), torch.device("cpu"), "first", "same")
+    b = response_distributions(model, _MockTok(), torch.device("cpu"), "second", "same")
+    assert a.shape == b.shape
+    assert not torch.allclose(a, b)
+
+
+def test_node_behavior_centroid_is_distribution():
+    centroid = node_behavior_centroid(
+        _MockModel(24), _MockTok(), torch.device("cpu"),
+        [("p1", "calm one"), ("p2", "calm two"), ("p3", "calm three")],
+    )
+    assert centroid.shape == (24,)
+    assert centroid.sum().item() == pytest.approx(1.0, abs=1e-4)
+    assert torch.all(centroid >= 0)
+
+
 def test_naturalness_end_to_end_mock():
-    # Fit a behavior manifold, score a trajectory drawn from the same
-    # mock model — exercises the full metric path without a real LM.
     model = _MockModel(24)
     tok = _MockTok()
-    groups = [["calm a", "calm b", "calm c"],
-              ["warm a", "warm b", "warm c"],
-              ["hot a", "hot b", "hot c"],
-              ["cold a", "cold b", "cold c"]]
+    groups = [
+        [("p", "calm a"), ("q", "calm b")],
+        [("p", "warm a"), ("q", "warm b")],
+        [("p", "hot a"), ("q", "hot b")],
+        [("p", "cold a"), ("q", "cold b")],
+    ]
     centroids = torch.stack([
-        compute_node_behavior_centroid(model, tok, torch.device("cpu"), g)
-        for g in groups
+        node_behavior_centroid(model, tok, torch.device("cpu"), g) for g in groups
     ])
     domain, coords, params = _loop_domain(len(groups))
     behavior = fit_behavior_manifold(centroids, params)
-    traj = compute_trajectory_distributions(
-        model, tok, torch.device("cpu"), "some generated text here",
+    traj = response_distributions(
+        model, tok, torch.device("cpu"), "p", "some generated text here",
     )
     scores = trajectory_naturalness(traj, behavior, domain, coords)
     assert scores.shape[0] == traj.shape[0]
     assert torch.all(scores >= 0)
+
+
+# ------------------------------------------------------------- evaluate() ---
+
+
+class _FakeSession:
+    """The slice of ``DrowseSession`` :func:`evaluate` touches."""
+
+    def __init__(self, fitted: Any = None) -> None:
+        self.model = _MockModel(24)
+        self.tokenizer = _MockTok()
+        self.device = torch.device("cpu")
+        self.fitted = fitted
+        self.fit_calls: list[Path] = []
+        self.generated: list[str | None] = []
+
+    def fit(self, folder: Path) -> Any:
+        self.fit_calls.append(Path(folder))
+        return self.fitted
+
+    def generate(self, prompt: str, *, steering: str | None, sampling: Any) -> Any:
+        self.generated.append(steering)
+        return SimpleNamespace(first=SimpleNamespace(text=f"reply under {steering}"))
+
+
+def _discover_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nodes: int) -> Path:
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    return create_discover_manifold_folder(
+        "local", "moods", "", fit_mode="auto",
+        node_corpora={
+            f"mood{i}": [f"response {i} one", f"response {i} two"]
+            for i in range(nodes)
+        },
+    )
+
+
+def test_evaluate_discover_manifold_uses_the_fitted_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: discover folders store no domain/coords, so the behavior
+    chart must come from the per-model fitted manifold (this crashed with
+    ``unknown manifold domain type None``)."""
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.manifold import Manifold
+
+    folder = _discover_folder(tmp_path, monkeypatch, nodes=4)
+    fitted = Manifold(
+        name="moods", domain=CustomDomain(2),
+        node_labels=[f"mood{i}" for i in range(4)],
+        node_coords=torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]),
+        layers={},
+    )
+    session = _FakeSession(fitted)
+    report = evaluate(session, folder, "how are you?", "0.5 moods%mood1")  # type: ignore[arg-type]
+
+    assert session.fit_calls == [folder]
+    assert session.generated == ["0.5 moods%mood1"]
+    (score,) = report.scores
+    assert score.label == "manifold"
+    assert len(score.per_step) == len("reply under 0.5 moods%mood1")
+    assert all(d >= 0 for d in score.per_step)
+    payload = report.to_dict()
+    assert payload["results"][0]["mean_bhattacharyya"] == pytest.approx(score.mean)
+
+
+def test_evaluate_rejects_a_two_node_manifold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.manifold import Manifold
+
+    folder = _discover_folder(tmp_path, monkeypatch, nodes=2)
+    fitted = Manifold(
+        name="moods", domain=CustomDomain(1), node_labels=["mood0", "mood1"],
+        node_coords=torch.tensor([[1.0], [-1.0]]), layers={},
+    )
+    with pytest.raises(NaturalnessError, match="at least 3"):
+        evaluate(_FakeSession(fitted), folder, "p", "0.5 mood0")  # type: ignore[arg-type]
+
+
+def test_evaluate_rejects_a_folder_that_is_not_a_manifold(tmp_path: Path) -> None:
+    with pytest.raises(NaturalnessError, match="neither a manifold folder"):
+        evaluate(_FakeSession(), tmp_path / "missing", "p", "0.5 x")  # type: ignore[arg-type]
+
+
+def test_evaluate_compare_linear_requires_a_single_manifold_term(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = _discover_folder(tmp_path, monkeypatch, nodes=4)
+    with pytest.raises(NaturalnessError, match="single manifold term"):
+        evaluate(  # type: ignore[arg-type]
+            _FakeSession(), folder, "p", "0.5 formal.casual", compare_linear=True,
+        )
 
 
 def test_naturalness_preflight_does_not_hash_fitted_payloads(

@@ -10,16 +10,10 @@ from typing import Any, cast
 
 import torch
 
-from drowse.geometry.manifold import (
-    BoxDomain,
-    CustomDomain,
-    LayerSubspace,
-    Manifold,
-    ManifoldDomain,
-    SynthesizedSubspace,
-    _ortho_basis,
-    subspace_inject,
-)
+from drowse.geometry.domains import BoxDomain, CustomDomain, ManifoldDomain
+from drowse.geometry.subspace import LayerSubspace
+from drowse.geometry.manifold import Manifold
+from drowse.geometry.inject import SynthesizedSubspace, _ortho_basis, subspace_inject
 from drowse.steering.triggers import Trigger, TriggerContext
 
 
@@ -1186,7 +1180,7 @@ def _orthogonalize_affine_against(
     cb = curved_basis.to(torch.float32)              # (Rc, D)
     delta = basis.T @ target.to(torch.float32)       # (D,) world push displacement
     residual = basis - (basis @ cb.T) @ cb           # (R, D) rows ⟂ curved span
-    new_basis, _kept = _ortho_basis(list(residual))
+    new_basis, _kept = _ortho_basis(residual)
     if new_basis.shape[0] == 0:
         return None
     delta_perp = delta - (delta @ cb.T) @ cb         # drop the curved-span part

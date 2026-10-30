@@ -14,15 +14,11 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.geometry.manifold import (
-    BoxAxis,
-    BoxDomain,
-    CustomDomain,
-    LayerSubspace,
-    Manifold,
-    SphereDomain,
-    fit_layer_subspace as _fit_layer_subspace_with_ev,
-)
+from drowse.geometry.domains import BoxAxis, BoxDomain, CustomDomain, SphereDomain
+from drowse.geometry.subspace import LayerSubspace
+from drowse.geometry.manifold import Manifold
+from drowse.geometry.rbf import RbfFitPlan
+from drowse.geometry.subspace import fit_curved_subspace
 from drowse.readout.monitor import (
     DEFAULT_NEAREST_TOP_N,
     NEUTRAL_LABEL,
@@ -36,7 +32,7 @@ from drowse.generation.results import ProbeReading
 
 def fit_layer_subspace(*args: Any, **kwargs: Any) -> Any:
     """Test helper: drop the EV ratio for callers that don't care."""
-    sub, _ev = _fit_layer_subspace_with_ev(*args, **kwargs)
+    sub = fit_curved_subspace(*args, **kwargs).subspace
     return sub
 
 
@@ -130,9 +126,8 @@ def _toy_manifold(
         centroids = centroids + 0.01 * torch.stack([
             -e2, torch.zeros(dim), e2,
         ])
-        sub, ev_ratio = _fit_layer_subspace_with_ev(
-            centroids, domain.embed(coords),
-        )
+        fit = fit_curved_subspace(centroids, domain.embed(coords))
+        sub, ev_ratio = fit.subspace, fit.explained_variance
         sub.sigma_rbf_weights = torch.zeros(coords.shape[0], 1)
         sub.sigma_poly_coeffs = torch.zeros(domain.embed(coords).shape[1] + 1, 1)
         layers[layer_idx] = sub
@@ -468,19 +463,18 @@ def test_flat_scalars_emits_assignment_and_membership():
 
 def _attach_const_sigma(m: "Manifold", value: float) -> None:
     """Attach a constant-σ field to every curved layer of ``m`` (test helper)."""
-    from drowse.geometry.manifold import fit_rbf_smoothed
     for sub in m.layers.values():
         np_, _, _ = sub.rbf_params()
         K = np_.shape[0]
         log_sigma = torch.full((K, 1), math.log(value))
-        w, c, _ = fit_rbf_smoothed(np_, log_sigma, smoothing=0.0)
+        fit = RbfFitPlan.build(np_).fit(log_sigma)
+        w, c = fit.weights, fit.poly
         sub.sigma_rbf_weights = w
         sub.sigma_poly_coeffs = c
 
 
 def _attach_per_node_sigma(m: "Manifold", sigmas: list[float]) -> None:
     """Attach a σ-field interpolating the given per-node thicknesses (test helper)."""
-    from drowse.geometry.manifold import fit_rbf_smoothed
     for sub in m.layers.values():
         np_, _, _ = sub.rbf_params()
         K = np_.shape[0]
@@ -488,7 +482,8 @@ def _attach_per_node_sigma(m: "Manifold", sigmas: list[float]) -> None:
         log_sigma = torch.tensor(
             [[math.log(s)] for s in sigmas], dtype=torch.float32,
         )
-        w, c, _ = fit_rbf_smoothed(np_, log_sigma, smoothing=0.0)
+        fit = RbfFitPlan.build(np_).fit(log_sigma)
+        w, c = fit.weights, fit.poly
         sub.sigma_rbf_weights = w
         sub.sigma_poly_coeffs = c
 
@@ -514,7 +509,8 @@ def _curved_toy(dim: int = 8, seed: int = 0) -> "Manifold":
     for layer_idx in range(2):
         s = 1.0 + 0.5 * layer_idx
         centroids = s * (u.unsqueeze(1) * e1 + (u ** 2).unsqueeze(1) * e2)
-        sub, ev_ratio = _fit_layer_subspace_with_ev(centroids, domain.embed(coords))
+        fit = fit_curved_subspace(centroids, domain.embed(coords))
+        sub, ev_ratio = fit.subspace, fit.explained_variance
         sub.sigma_rbf_weights = torch.zeros(coords.shape[0], 1)
         sub.sigma_poly_coeffs = torch.zeros(domain.embed(coords).shape[1] + 1, 1)
         layers[layer_idx] = sub

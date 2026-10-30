@@ -41,17 +41,11 @@ Cost per ``Σ^{-1} v``: ``O(N D)`` (one ``X v`` matvec, one ``X^T (Kx)``
 matvec).  Storage cost: ``X`` already on disk; ``K`` is ``N × N`` (tens of
 KB per layer at these N), held in memory only.
 
-Intended consumers (Mahalanobis-only as of 4.0 — there is no Euclidean
-fallback path):
-
-* :meth:`drowse.geometry.profile.Profile.cosine_similarity` — the whitened
-  cosine metric.
-* :func:`drowse.fit.capture.project_profile` — LEACE-flavored ``|`` / ``~``
-  projection.
-
-Both call sites **require** a :class:`LayerWhitener` covering every shared /
-projected layer and raise :class:`WhitenerError` on a missing or
-non-covering whitener.
+Every activation-space metric in drowse is this one — the Fisher subspace
+fit and share bake, steering synthesis, ``~``/``|`` projection, monitor
+reads, transfer, and ``manifold compare``.  Consumers require a whitener
+covering every layer they touch (:meth:`LayerWhitener.covers_all`) and raise
+:class:`~drowse.errors.WhitenerError` otherwise; there is no Euclidean path.
 """
 
 from __future__ import annotations
@@ -62,10 +56,7 @@ from typing import Any, Iterable, Mapping
 
 import torch
 
-# ``WhitenerError`` is defined in :mod:`drowse.errors` (the single home
-# for the engine's error taxonomy) and re-exported here so
-# ``from drowse.geometry.whitener import WhitenerError`` keeps working.
-from drowse.errors import WhitenerError as WhitenerError
+from drowse.errors import WhitenerError
 
 log = logging.getLogger(__name__)
 
@@ -82,20 +73,6 @@ _NEAR_ZERO_DENOM = 1e-12
 # Σ extrapolates badly along null-space directions).  Tunable via
 # :meth:`LayerWhitener.from_neutral_activations`.
 DEFAULT_RIDGE_SCALE = 1.0
-
-
-def _require_fp32_neutral_cache(
-    model_id: str,
-    acts_raw: Mapping[Any, torch.Tensor],
-) -> None:
-    if any(v.dtype != torch.float32 for v in acts_raw.values()):
-        raise WhitenerError(
-            f"neutral activations cache for {model_id} is a legacy "
-            f"non-fp32 (bf16/fp16) store; drowse requires fp32 for "
-            f"reproducible whitening. Repopulate by running any "
-            f"session-level extract on this model (it rewrites the cache "
-            f"as fp32), then retry."
-        )
 
 
 class LayerWhitener:
@@ -297,29 +274,12 @@ class LayerWhitener:
                 f"whitener cache for {model_id} is stale, corrupt, or legacy; "
                 "load the model once to regenerate neutral activations"
             ) from exc
-        # Refuse a legacy non-fp32 neutral-activation store (the pre-fp32
-        # bf16/fp16 cache).  Unlike ``load_or_compute_neutral_activations``,
-        # which invalidates + recomputes such a cache, ``from_cache`` has no
-        # model to recompute with — and a bf16-sourced whitener would diverge
-        # from a fresh session whitener, reopening the precision seam the fp32
-        # store closes.  Fail loud with a repopulate hint rather than silently
-        # building a reduced-precision metric.  Checks the RAW on-disk dtype,
-        # before the ``.float()`` promotion below would mask it.
-        _require_fp32_neutral_cache(model_id, acts_raw)
-        # ``load_validated_neutral_cache`` hands back an already-decoded
-        # ``{layer_idx: tensor}`` map, stored fp32; the ``.float()`` below is a
-        # defensive no-op promotion of any legacy in-memory dtype, since the
-        # small N×N inverse doesn't tolerate a reduced-precision condition
-        # number.
-        # ``from_neutral_activations`` skips any layer whose values come back
-        # non-finite (a legacy fp16 cache that overflowed on an extreme-
-        # activation channel) rather than poisoning the inverse, leaving that
-        # layer uncovered — so a corrupt cache makes ``covers_all`` False and
-        # consumers raise (no Euclidean path), it doesn't silently degrade.
-        acts = {layer: tensor.float() for layer, tensor in acts_raw.items()}
-        means = {layer: tensor.mean(dim=0) for layer, tensor in acts.items()}
+        # ``load_validated_neutral_cache`` already rejects a non-fp32 or
+        # non-finite store (re-raised above as ``WhitenerError``), so the
+        # decoded map is the exact fp32 neutral corpus.
+        means = {layer: tensor.mean(dim=0) for layer, tensor in acts_raw.items()}
         return cls.from_neutral_activations(
-            acts, means, ridge_scale=ridge_scale,
+            acts_raw, means, ridge_scale=ridge_scale,
         )
 
     # ---- introspection -------------------------------------------------
@@ -328,9 +288,6 @@ class LayerWhitener:
     def layers(self) -> set[int]:
         """Layer indices the whitener covers."""
         return set(self._X)
-
-    def covers(self, layer: int) -> bool:
-        return layer in self._X
 
     def covers_all(self, layers: "Iterable[int]") -> bool:
         """True iff every layer in ``layers`` is covered.
@@ -348,9 +305,23 @@ class LayerWhitener:
 
     def ridge(self, layer: int) -> float:
         """Per-layer regularization parameter ``λ_L``."""
-        if layer not in self._lambda:
-            raise WhitenerError(f"whitener does not cover layer {layer}")
+        self._require(layer)
         return self._lambda[layer]
+
+    def _require(self, layer: int, *widths: int) -> int:
+        """Return ``layer``'s hidden dim; raise ``WhitenerError`` if uncovered.
+
+        ``widths`` are input last-dims to check against it.
+        """
+        dim = self._dim.get(layer)
+        if dim is None:
+            raise WhitenerError(f"whitener does not cover layer {layer}")
+        if any(width != dim for width in widths):
+            raise WhitenerError(
+                f"layer {layer}: input dims {list(widths)} do not match "
+                f"whitener dim {dim}"
+            )
+        return dim
 
     def __contains__(self, layer: object) -> bool:
         return layer in self._X
@@ -382,20 +353,14 @@ class LayerWhitener:
         can whiten several directions with one ``X``/``K`` pass. Output
         matches ``v``'s original dtype and shape.
         """
-        if layer not in self._X:
-            raise WhitenerError(f"whitener does not cover layer {layer}")
+        dim = self._require(layer, int(v.shape[-1]))
         v_in_dtype = v.dtype
         v32 = v.to(dtype=torch.float32, device="cpu")
-        if v32.shape[-1] != self._dim[layer]:
-            raise WhitenerError(
-                f"layer {layer}: input dim {v32.shape[-1]} does not match "
-                f"whitener dim {self._dim[layer]}"
-            )
         X = self._X[layer]
         K = self._K[layer]
         lam = self._lambda[layer]
         original_shape = v32.shape
-        rows = v32.reshape(-1, self._dim[layer])
+        rows = v32.reshape(-1, dim)
         # X v  ∈ ℝ^N ; K (X v)  ∈ ℝ^N ; X^T (K X v)  ∈ ℝ^D.
         # Batched as rows @ X.T so a rank-R fit whitens R directions with
         # one BLAS call per Woodbury leg instead of R Python calls.
@@ -420,8 +385,7 @@ class LayerWhitener:
         fp32 CPU and reshapes to 1-D.  ``apply_inv`` stays the canonical
         analysis-time entry point; this is its hot-path companion.
         """
-        if layer not in self._X:
-            raise WhitenerError(f"whitener does not cover layer {layer}")
+        self._require(layer)
         X = self._X[layer].to(device=device, dtype=dtype)
         K = self._K[layer].to(device=device, dtype=dtype)
         return X, K, float(self._lambda[layer])
@@ -453,13 +417,12 @@ class LayerWhitener:
 
         Promoted to fp32 on CPU; this is fit-time setup, not a hot path.
         """
-        if layer not in self._X:
-            raise WhitenerError(f"whitener does not cover layer {layer}")
+        dim = self._require(layer)
         B = basis.to(dtype=torch.float32, device="cpu")
-        if B.dim() != 2 or B.shape[1] != self._dim[layer]:
+        if B.dim() != 2 or B.shape[1] != dim:
             raise WhitenerError(
                 f"layer {layer}: basis shape {tuple(B.shape)} does not match "
-                f"whitener dim {self._dim[layer]}"
+                f"whitener dim {dim}"
             )
         X = self._X[layer]      # (N, D)
         K = self._K[layer]      # (N, N)
@@ -478,19 +441,26 @@ class LayerWhitener:
     ) -> float:
         """Return the scalar ``u^T Σ_L^{-1} v``."""
         u32 = u.to(dtype=torch.float32, device="cpu").reshape(-1)
-        if u32.shape[0] != self._dim[layer]:
+        self._require(layer, int(u32.shape[0]))
+        return float(torch.dot(u32, self.apply_inv(layer, v).float().reshape(-1)).item())
+
+    def mahalanobis_norms(self, layer: int, rows: torch.Tensor) -> torch.Tensor:
+        """Row norms ``sqrt(vᵢᵀ Σ_L⁻¹ vᵢ)`` of ``rows`` ``(B, D)`` in one apply.
+
+        Returns a CPU fp32 ``(B,)`` tensor.  Finite-precision drift below zero
+        on near-zero rows clamps to ``0``.
+        """
+        rows32 = rows.to(dtype=torch.float32, device="cpu")
+        if rows32.ndim != 2:
             raise WhitenerError(
-                f"layer {layer}: input dim {u32.shape[0]} does not match "
-                f"whitener dim {self._dim[layer]}"
+                f"mahalanobis_norms expects (B, D) rows, got {tuple(rows32.shape)}"
             )
-        return float(torch.dot(u32, self.apply_inv(layer, v).float()).item())
+        quad = (rows32 * self.apply_inv(layer, rows32)).sum(dim=-1)
+        return quad.clamp_min(0.0).sqrt()
 
     def mahalanobis_norm(self, layer: int, v: torch.Tensor) -> float:
         """Return ``sqrt(v^T Σ_L^{-1} v)``."""
-        sq = self.mahalanobis_dot(layer, v, v)
-        # Tiny negative drift from finite-precision can leak in for
-        # near-zero vectors; clamp before sqrt.
-        return math.sqrt(max(sq, 0.0))
+        return float(self.mahalanobis_norms(layer, v.reshape(1, -1))[0])
 
     def mahalanobis_cosine(
         self, layer: int, u: torch.Tensor, v: torch.Tensor,
@@ -500,17 +470,10 @@ class LayerWhitener:
         Returns ``0.0`` when either argument has near-zero Mahalanobis
         norm — same convention as plain cosine on near-zero vectors.
         """
-        if layer not in self._X:
-            raise WhitenerError(f"whitener does not cover layer {layer}")
         u32 = u.to(dtype=torch.float32, device="cpu").reshape(-1)
         v32 = v.to(dtype=torch.float32, device="cpu").reshape(-1)
-        if u32.shape[0] != self._dim[layer] or v32.shape[0] != self._dim[layer]:
-            raise WhitenerError(
-                f"layer {layer}: input dims {u32.shape[0]}, {v32.shape[0]} "
-                f"do not match whitener dim {self._dim[layer]}"
-            )
-        si_u = self.apply_inv(layer, u32).float()
-        si_v = self.apply_inv(layer, v32).float()
+        self._require(layer, int(u32.shape[0]), int(v32.shape[0]))
+        si_u, si_v = self.apply_inv(layer, torch.stack((u32, v32)))
         uu = float(torch.dot(u32, si_u).item())
         vv = float(torch.dot(v32, si_v).item())
         if uu < _NEAR_ZERO_DENOM or vv < _NEAR_ZERO_DENOM:
@@ -544,16 +507,10 @@ class LayerWhitener:
         """
         if operator not in ("~", "|"):
             raise ValueError(f"unknown projection operator: {operator!r}")
-        if layer not in self._X:
-            raise WhitenerError(f"whitener does not cover layer {layer}")
         base_dtype = base.dtype
         base32 = base.to(dtype=torch.float32, device="cpu").reshape(-1)
         onto32 = onto.to(dtype=torch.float32, device="cpu").reshape(-1)
-        if base32.shape[0] != self._dim[layer] or onto32.shape[0] != self._dim[layer]:
-            raise WhitenerError(
-                f"layer {layer}: input dims {base32.shape[0]}, {onto32.shape[0]} "
-                f"do not match whitener dim {self._dim[layer]}"
-            )
+        self._require(layer, int(base32.shape[0]), int(onto32.shape[0]))
         onto_inv = self.apply_inv(layer, onto32).float()
         m_oo = float(torch.dot(onto32, onto_inv).item())
         if m_oo < _NEAR_ZERO_DENOM:
@@ -575,5 +532,4 @@ class LayerWhitener:
 __all__ = [
     "DEFAULT_RIDGE_SCALE",
     "LayerWhitener",
-    "WhitenerError",
 ]

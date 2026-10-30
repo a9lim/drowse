@@ -23,15 +23,11 @@ from drowse.steering.hooks import (
     SteeringHook,
     SteeringManager,
 )
-from drowse.geometry.manifold import (
-    BoxAxis,
-    BoxDomain,
-    Manifold,
-    decompose,
-    eval_rbf,
-    fit_layer_subspace,
-    invert_parameterization,
-)
+from drowse.geometry.domains import BoxAxis, BoxDomain
+from drowse.geometry.rbf import eval_rbf
+from drowse.geometry.manifold import Manifold
+from drowse.geometry.subspace import fit_curved_subspace
+from drowse.geometry.invert import invert_parameterization
 from drowse.errors import (
     ManifoldArityError,
     OverlappingManifoldError,
@@ -41,9 +37,13 @@ from drowse.steering.triggers import Trigger, TriggerContext
 
 
 def fit_layer_subspace_only(*args: Any, **kwargs: Any) -> Any:
-    """Drop the EV ratio for tests that don't care about it."""
-    sub, _ev = fit_layer_subspace(*args, **kwargs)
-    return sub
+    """The fitted curved ``LayerSubspace`` alone."""
+    return fit_curved_subspace(*args, **kwargs).subspace
+
+
+def _perp(h: torch.Tensor, mean: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
+    centered = h - mean
+    return centered - (centered @ basis.T) @ basis
 
 
 _DIM = 8
@@ -272,10 +272,10 @@ def test_hook_keeps_off_subspace_residual_verbatim():
     hook = SteeringHook()
     _recompose_manifold(hook, manifold, 0, along=1.0, onto=1.0)
     hidden = torch.randn(1, 4, _DIM) + sub.mean
-    _, h_perp_before = decompose(hidden, sub.mean, sub.basis)
+    h_perp_before = _perp(hidden, sub.mean, sub.basis)
     perp_before = h_perp_before.clone()
     hook.hook_fn(None, None, hidden)
-    _, h_perp_after = decompose(hidden, sub.mean, sub.basis)
+    h_perp_after = _perp(hidden, sub.mean, sub.basis)
     assert torch.allclose(h_perp_after, perp_before, atol=1e-4)
 
 

@@ -22,7 +22,8 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-from drowse.geometry.whitener import LayerWhitener, WhitenerError
+from drowse.geometry.whitener import LayerWhitener
+from drowse.errors import WhitenerError
 from drowse.store.alignment import (
     _neutral_acts_paths,
     load_validated_neutral_cache,

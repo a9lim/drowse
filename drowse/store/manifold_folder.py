@@ -48,7 +48,7 @@ from typing import Any, Optional
 import torch
 
 from drowse.errors import DrowseError
-from drowse.geometry.manifold import BoxDomain, domain_from_spec
+from drowse.geometry.domains import BoxDomain, domain_from_spec
 from drowse.model.role_templates import _ROLE_SLUG_RE
 from drowse.base.atomic import write_json_atomic
 from drowse.base.integrity import NAME_REGEX, hash_file, verify_integrity
@@ -473,7 +473,7 @@ def validate_manifold_sidecar_payload(
     if not isinstance(data, dict) or set(data) != MANIFOLD_SIDECAR_FIELDS:
         raise ManifoldFormatError(f"{location} does not match the current exact schema")
     validate_manifold_format_version(data["format_version"], location=location)
-    from drowse.geometry.manifold import validate_domain_spec
+    from drowse.geometry.domains import validate_domain_spec
 
     validate_domain_spec(data["domain"])
     for key in ("name", "method", "drowse_version", "feature_space", "fit_mode"):

@@ -585,7 +585,7 @@ def test_target_fit_lock_name_is_bounded_for_long_valid_inputs(
 def test_reader_stays_available_and_authoring_cas_rejects_stale_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.geometry.manifold as manifold_module
+    import drowse.geometry.subspace as subspace_module
     from drowse.fit.pipeline import ManifoldAuthoringChangedError
     from drowse.store.manifold_tensors import load_manifold
     from drowse.base.paths import tensor_filename
@@ -596,7 +596,7 @@ def test_reader_stays_available_and_authoring_cas_rejects_stale_fit(
     target = folder / tensor_filename("stub-model")
     entered = threading.Event()
     release = threading.Event()
-    real_fit = manifold_module.fit_layer_subspace
+    real_fit = subspace_module.fit_curved_subspace
     first = True
 
     def _blocking_fit(*args: Any, **kwargs: Any) -> Any:
@@ -607,7 +607,7 @@ def test_reader_stays_available_and_authoring_cas_rejects_stale_fit(
             assert release.wait(timeout=5)
         return real_fit(*args, **kwargs)
 
-    monkeypatch.setattr(manifold_module, "fit_layer_subspace", _blocking_fit)
+    monkeypatch.setattr(subspace_module, "fit_curved_subspace", _blocking_fit)
     errors: list[BaseException] = []
 
     def _run() -> None:
@@ -1425,7 +1425,7 @@ def test_fitted_cache_hit_ignores_capture_journal_scan_error(
 def test_missing_whitener_fails_before_manifold_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
 
     folder = _author_manifold(tmp_path)
     handle = _Handle()
@@ -1890,11 +1890,12 @@ def test_curved_fit_releases_centroid_rosters_before_covariance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The retained-row pass must not overlap the K x D centroid rosters."""
-    import drowse.geometry.manifold as manifold_module
+    import drowse.fit.node_stats as node_stats_module
+    import drowse.geometry.subspace as subspace_module
 
     folder = _author_manifold(tmp_path)
-    real_fit = manifold_module.fit_layer_subspace
-    real_covariances = manifold_module.compute_store_reduced_covariances
+    real_fit = subspace_module.fit_curved_subspace
+    real_covariances = node_stats_module.compute_store_reduced_covariances
     stack_refs: list[weakref.ReferenceType[torch.Tensor]] = []
     whitened_refs: list[weakref.ReferenceType[torch.Tensor]] = []
     gram_refs: list[weakref.ReferenceType[torch.Tensor]] = []
@@ -1918,9 +1919,9 @@ def test_curved_fit_releases_centroid_rosters_before_covariance(
         assert all(ref() is None for ref in gram_refs)
         return real_covariances(*args, **kwargs)
 
-    monkeypatch.setattr(manifold_module, "fit_layer_subspace", track_fit)
+    monkeypatch.setattr(subspace_module, "fit_curved_subspace", track_fit)
     monkeypatch.setattr(
-        manifold_module, "compute_store_reduced_covariances", check_lifetime,
+        node_stats_module, "compute_store_reduced_covariances", check_lifetime,
     )
 
     ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
@@ -2041,7 +2042,7 @@ def test_fit_sae_no_coverage_raises_before_pooling(
     )
 
     # Pooling must never run on the no-coverage path.
-    from drowse.geometry import manifold as M
+    from drowse.fit import node_stats as M
     def _explode(*_a: Any, **_k: Any) -> None:
         raise AssertionError(
             "compute_manifold_node_stats called before SAE-coverage check"
@@ -2054,7 +2055,7 @@ def test_fit_sae_no_coverage_raises_before_pooling(
 
 
 def test_fit_natural_manifold(tmp_path: Path) -> None:
-    from drowse.geometry.manifold import BoxDomain
+    from drowse.geometry.domains import BoxDomain
     folder = _author_manifold(tmp_path, periodic=False)
     manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
     assert manifold.domain.intrinsic_dim == 1
@@ -2166,7 +2167,7 @@ def test_discover_pca_produces_custom_domain(tmp_path: Path) -> None:
     manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
 
     # CustomDomain with identity embedding — intrinsic_dim == embed_dim.
-    from drowse.geometry.manifold import CustomDomain
+    from drowse.geometry.domains import CustomDomain
     assert isinstance(manifold.domain, CustomDomain)
     assert manifold.domain.intrinsic_dim == manifold.domain.embed_dim
     assert 1 <= manifold.domain.intrinsic_dim <= 4
@@ -2283,7 +2284,7 @@ def test_discover_cache_hit_skips_forward_passes(
     # never reach a model forward.
     def _explode(*_a: Any, **_k: Any) -> None:
         raise AssertionError("compute_manifold_node_stats called on cache hit")
-    from drowse.geometry import manifold as M
+    from drowse.fit import node_stats as M
     monkeypatch.setattr(M, "compute_manifold_node_stats", _explode)
 
     manifold = ManifoldExtractionPipeline(handle, EventBus()).fit(folder)
@@ -2337,7 +2338,7 @@ def test_discover_cache_invalidates_on_fit_mode_change(tmp_path: Path) -> None:
 
 def test_discover_round_trip_through_load_manifold(tmp_path: Path) -> None:
     """A fitted discover manifold loads back with the same domain + coords."""
-    from drowse.geometry.manifold import CustomDomain
+    from drowse.geometry.domains import CustomDomain
     from drowse.store.manifold_tensors import load_manifold
     folder = _discover_folder(
         tmp_path, fit_mode="pca", hyperparams={"max_dim": 4},
@@ -2367,7 +2368,7 @@ def test_discover_subspace_inject_translates_by_target(tmp_path: Path) -> None:
     reduced coords land at exactly ``h_in + target``; the affine path is
     intentionally uncapped.
     """
-    from drowse.geometry.manifold import subspace_inject
+    from drowse.geometry.inject import subspace_inject
     # Seed the global RNG before the fit: the stub encoder perturbs each
     # layer's centroid with a generator-less ``torch.randn``, so without
     # this the fitted subspace jitters with test order.
@@ -2494,7 +2495,7 @@ def test_affine_push_coord_form_interpolates_between_nodes(tmp_path: Path) -> No
     targets — distinct from either endpoint, and the layout's two nearest nodes
     carry the dominant cardinal weight.
     """
-    from drowse.geometry.manifold import rbf_cardinal_weights
+    from drowse.geometry.rbf import rbf_cardinal_weights
     from drowse.session.session import _affine_manifold_push
 
     folder = _discover_folder(
@@ -2609,7 +2610,7 @@ def test_auto_detects_circle_as_periodic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``auto`` on loop-structured centroids resolves a periodic BoxDomain."""
-    from drowse.geometry.manifold import BoxDomain
+    from drowse.geometry.domains import BoxDomain
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _circle_encoder_batch)
     folder = _discover_folder(
         tmp_path, name="autocircle", fit_mode="auto",

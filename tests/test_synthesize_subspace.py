@@ -20,12 +20,11 @@ import pytest
 import torch
 
 from drowse.geometry.whitener import LayerWhitener
-from drowse.geometry.manifold import (
-    CustomDomain,
-    LayerSubspace,
+from drowse.geometry.domains import CustomDomain
+from drowse.geometry.subspace import LayerSubspace
+from drowse.geometry.inject import (
     SynthesizedSubspace,
     _ortho_basis,
-    decompose,
     subspace_inject,
     synthesize_subspace as _synthesize_subspace,
 )
@@ -62,7 +61,7 @@ def _row(v: torch.Tensor) -> torch.Tensor:
 def test_ortho_basis_orthonormal_and_ordered():
     torch.manual_seed(0)
     a, b = torch.randn(12), torch.randn(12)
-    basis, kept = _ortho_basis([a, b])
+    basis, kept = _ortho_basis(torch.stack([a, b]))
     assert basis.shape == (2, 12)
     assert kept == [0, 1]
     # rows orthonormal
@@ -74,13 +73,13 @@ def test_ortho_basis_orthonormal_and_ordered():
 
 def test_ortho_basis_drops_parallel():
     a = torch.randn(8)
-    basis, kept = _ortho_basis([a, 2.5 * a, a])  # all colinear
+    basis, kept = _ortho_basis(torch.stack([a, 2.5 * a, a]))  # all colinear
     assert basis.shape == (1, 8)
     assert kept == [0]
 
 
 def test_ortho_basis_all_degenerate_empty():
-    basis, kept = _ortho_basis([torch.zeros(5)])
+    basis, kept = _ortho_basis(torch.zeros(1, 5))
     assert basis.shape == (0, 5)
     assert kept == []
 
@@ -191,7 +190,7 @@ def test_rank8_push_fragment():
     reconstructed world target match the fragment's coeff-scaled displacement."""
     torch.manual_seed(8)
     D = 32
-    B8, _kept = _ortho_basis(list(torch.randn(8, D)))   # (8, D) orthonormal
+    B8, _kept = _ortho_basis(torch.randn(8, D))   # (8, D) orthonormal
     assert B8.shape == (8, D)
     coords = torch.randn(8)
     neutral = 5.0 + torch.randn(D)
@@ -251,7 +250,7 @@ def test_pure_ablation_zero_target_basis_spans():
 # --------------------------------------------------------------- layer gating ---
 
 def test_rejects_layer_without_neutral():
-    from drowse.geometry.whitener import WhitenerError
+    from drowse.errors import WhitenerError
     u = _unit(torch.randn(8))
     with pytest.raises(WhitenerError, match=r"missing \[7\]"):
         synthesize_subspace(
@@ -315,7 +314,8 @@ def test_synthesized_subspace_drives_subspace_inject():
     # the pushed direction is translated (grew by coeff·coord = 0.5), not collapsed
     assert float((out - sub.mean) @ uh) == pytest.approx(0.7 + 0.5, abs=1e-3)
     # off-subspace residual preserved (kept verbatim)
-    _, perp_out = decompose(out, sub.mean, sub.basis)
+    centered = out - sub.mean
+    perp_out = centered - (centered @ sub.basis.T) @ sub.basis
     assert torch.allclose(perp_out, perp, atol=1e-4)
 
 
@@ -324,7 +324,7 @@ def test_rank8_synthesized_drives_subspace_inject():
     reduced coords by the target under a full along slide (κ=0, pure push)."""
     torch.manual_seed(9)
     D = 24
-    B8, _kept = _ortho_basis(list(torch.randn(8, D)))
+    B8, _kept = _ortho_basis(torch.randn(8, D))
     coords = torch.randn(8)
     neutral = 3.0 + torch.randn(D)
     synth = synthesize_subspace(

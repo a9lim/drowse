@@ -42,14 +42,14 @@ def _whitener(layers: list[int], dim: int):
 def test_folded_directions_rejects_curved():
     """A curved (RBF-fitted, non-affine) manifold has no single direction —
     the view must refuse it."""
-    from drowse.geometry.manifold import (
-        BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
-    )
+    from drowse.geometry.domains import BoxAxis, BoxDomain
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.subspace import fit_curved_subspace
     torch.manual_seed(0)
     K, dim = 5, 10
     centroids = torch.randn(K, dim)
     node_params = torch.linspace(0.0, 1.0, K).reshape(K, 1)
-    curved, _ev = fit_layer_subspace(centroids, node_params)
+    curved = fit_curved_subspace(centroids, node_params).subspace
     assert not curved.is_affine
     mfld = Manifold(
         name="m",
@@ -71,9 +71,9 @@ def test_is_foldable_vector_manifold_rejects_multinode_affine():
     """A flat *rank-R>1* fit (the ``personas`` fan shape) is affine but has no
     single direction — the predicate must reject it so the direction-cosine
     analytics (correlation / pairwise) skip it instead of folding to a 500."""
-    from drowse.geometry.manifold import (
-        CustomDomain, LayerSubspace, Manifold,
-    )
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.subspace import LayerSubspace
+    from drowse.geometry.manifold import Manifold
     torch.manual_seed(0)
     K, R, dim = 4, 3, 8           # 4 nodes, rank-3 affine subspace
     basis, _ = torch.linalg.qr(torch.randn(dim, R))
@@ -97,7 +97,8 @@ def test_is_foldable_vector_manifold_rejects_multinode_affine():
 
 def test_is_foldable_vector_manifold_accepts_r1_and_rejects_empty():
     """The R=1 fold output is foldable; a layerless manifold is not."""
-    from drowse.geometry.manifold import CustomDomain, Manifold
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.manifold import Manifold
 
     d = 6
     directions = {0: torch.randn(d), 3: torch.randn(d)}

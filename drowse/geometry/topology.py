@@ -24,9 +24,9 @@ Two layers:
   single-cycle fallback for rings too thin for PH's hole-size threshold.
 
 Everything here is pure tensor math on the ``(K, K)`` node scatter — no
-model, no IO.  It depends on :mod:`drowse.geometry.manifold` for the domain
-types and the per-layer fit primitives, never the other way round;
-``extraction.py::_fit_locked`` is the one production consumer.
+model, no IO.  It depends on :mod:`drowse.geometry.domains`,
+:mod:`drowse.geometry.rbf` and :mod:`drowse.geometry.subspace`, never the other
+way round; the fit pipeline is the one production consumer.
 """
 from __future__ import annotations
 
@@ -37,18 +37,9 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from drowse.geometry.manifold import (
-    BoxAxis,
-    BoxDomain,
-    CustomDomain,
-    ManifoldDomain,
-    RbfFitPlan,
-    _gcv_select_lambda,
-    _pca_basis,
-    _rbf_poised,
-    _rbf_smoother_matrix,
-    prepare_rbf_fit_plan,
-)
+from drowse.geometry.domains import BoxAxis, BoxDomain, CustomDomain, ManifoldDomain
+from drowse.geometry.rbf import RbfFitPlan
+from drowse.geometry.subspace import pca_basis
 
 if TYPE_CHECKING:
     from drowse.geometry.whitener import LayerWhitener
@@ -655,47 +646,22 @@ def _ols_gcv_score(coords: torch.Tensor, targets: dict[int, torch.Tensor]) -> fl
 
 
 def _rbf_gcv_score(
-    node_params: torch.Tensor,
+    plan: RbfFitPlan,
     targets: dict[int, torch.Tensor],
     *,
     smoothing: float | str,
-    plan: RbfFitPlan | None = None,
 ) -> float:
-    """Summed GCV of the penalized RBF surface over a layout.
+    """Summed GCV of the penalized RBF surface over a planned layout.
 
-    The curved candidates (``spectral`` / ``S^n`` / ``T^d``) fit an ``r**3``
-    RBF to the (unit-box-normalized) embedded coordinates.  Each layer's ``λ``
-    is GCV-selected (:func:`_gcv_select_lambda` returns its GCV directly), and
-    the score sums those per-layer GCVs — so every candidate is judged at its
-    own best smoothing, the standard model-selection comparison.  Raises
-    (propagating poisedness) if the layout can't carry an RBF — the caller
-    marks that candidate non-viable.
+    The curved candidates (``spectral`` / ``T^d``) fit an ``r**3`` RBF to the
+    unit-box-normalized embedded coordinates.  ``"auto"`` judges every layer at
+    its own GCV-selected ``λ`` (the standard model-selection comparison); a
+    fixed smoothing scores every layer at that ``λ``.
     """
-    _rbf_poised(node_params)
-    lo = node_params.min(dim=0).values
-    hi = node_params.max(dim=0).values
-    norm = (node_params - lo) / (hi - lo).clamp(min=1e-9)
-    K = norm.shape[0]
-    plan = plan or prepare_rbf_fit_plan(norm, smoothing=smoothing)
-    E, Q = plan.E, plan.Q
-    fixed_smoother: torch.Tensor | None = None
-    fixed_edf = 0.0
-    if smoothing != "auto":
-        denom_e = K * K - K
-        e_scale = float(E.abs().sum() / denom_e) if denom_e > 0 else 1.0
-        lam = float(smoothing) * (e_scale if e_scale > 0.0 else 1.0)
-        fixed_smoother = _rbf_smoother_matrix(E, Q, lam)
-        fixed_edf = float(fixed_smoother.diagonal().sum().item())
-    total = 0.0
-    for y in targets.values():
-        if smoothing == "auto":
-            _lam, _edf, gcv = _gcv_select_lambda(E, Q, y, plan=plan)
-        else:
-            assert fixed_smoother is not None
-            rss = float((y - fixed_smoother @ y).pow(2).sum().item())
-            gcv = _gcv_value(rss, fixed_edf, K)
-        total += gcv
-    return total
+    if smoothing == "auto":
+        return sum(plan.select_lambda(y)[2] for y in targets.values())
+    lam = float(smoothing) * plan.e_scale
+    return sum(plan.gcv(y, lam) for y in targets.values())
 
 
 _HARMONIC_COHERENCE = 0.80        # |⟨z_new, z_acc^m⟩| above this ⇒ a harmonic, not a new axis
@@ -1309,7 +1275,7 @@ def select_topology(
     for L in fit_layers:
         X = stacks[L].to(torch.float32)
         X = X - X.mean(dim=0, keepdim=True)
-        basis, _ev = _pca_basis(
+        basis, _ev = pca_basis(
             X, n_components=R, whitener=whitener, layer=L,
             whitened_gram=layer_grams[L],
             whitened_rows=(
@@ -1358,13 +1324,10 @@ def select_topology(
         k_spec = int(coords_spec.shape[1])
         if (2 * k_spec + 1) > K:
             raise ValueError(f"poisedness floor 2n+1={2 * k_spec + 1} exceeds K={K}")
-        spec_plan = prepare_rbf_fit_plan(
+        spec_plan = RbfFitPlan.build(
             coords_spec.to(torch.float32), smoothing=smoothing,
         )
-        gcv_curved = _rbf_gcv_score(
-            coords_spec.to(torch.float32), targets, smoothing=smoothing,
-            plan=spec_plan,
-        )
+        gcv_curved = _rbf_gcv_score(spec_plan, targets, smoothing=smoothing)
         curved = (coords_spec, CustomDomain(k_spec), spec_plan)
         candidates.append(TopologyCandidate("spectral", "spectral", k_spec, gcv_curved, True))
     except (ValueError, RuntimeError) as e:  # _LinAlgError ⊂ RuntimeError
@@ -1404,13 +1367,8 @@ def select_topology(
                 ]
                 p_domain = BoxDomain(axes)
                 p_params = p_domain.embed(p_coords).to(torch.float32)
-                periodic_plan = prepare_rbf_fit_plan(
-                    p_params, smoothing=smoothing,
-                )
-                gcv_p = _rbf_gcv_score(
-                    p_params, targets, smoothing=smoothing,
-                    plan=periodic_plan,
-                )
+                periodic_plan = RbfFitPlan.build(p_params, smoothing=smoothing)
+                gcv_p = _rbf_gcv_score(periodic_plan, targets, smoothing=smoothing)
                 null_score = sum(_gcv_value(float((y - y.mean(0)).square().sum()), 1.0, K)
                                  for y in targets.values())
                 viable = math.isfinite(gcv_p) and null_score > 0 and gcv_p <= null_score

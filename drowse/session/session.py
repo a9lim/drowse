@@ -636,7 +636,7 @@ def _affine_manifold_push(
     node label instead.
     """
     from drowse.steering.grammar import SteeringExprError
-    from drowse.geometry.manifold import rbf_cardinal_weights
+    from drowse.geometry.rbf import rbf_cardinal_weights
 
     weights: "torch.Tensor | None" = None
     idx = 0

@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.geometry.manifold import eval_rbf, fit_rbf_smoothed, prepare_rbf_fit_plan
+from drowse.geometry.rbf import RbfFitPlan, eval_rbf
 from drowse.geometry.whitener import LayerWhitener
-from drowse.geometry.manifold import CustomDomain
+from drowse.geometry.domains import CustomDomain
 from drowse.geometry.topology import (
     SpectralDiagnostics,
     derive_spectral_coords,
@@ -53,21 +53,11 @@ def test_browser_topology_rbf_fixture_matches_python_source_of_truth() -> None:
         )
         assert float(distance) == pytest.approx(pair["distance"], abs=1e-6)
 
-    plan = prepare_rbf_fit_plan(coordinates, smoothing=selection["smoothing"])
-    weights, polynomial, info = fit_rbf_smoothed(
-        plan.node_params,
-        targets,
-        smoothing=selection["smoothing"],
-        plan=plan,
-    )
-    evaluated = eval_rbf(
-        plan.node_params,
-        weights,
-        polynomial,
-        plan.node_params,
-    )
-    assert info["lambda"] == pytest.approx(expected["lambda"], abs=1e-6)
-    assert info["edf"] == pytest.approx(
+    plan = RbfFitPlan.build(coordinates, smoothing=selection["smoothing"])
+    fit = plan.fit(targets, smoothing=selection["smoothing"])
+    evaluated = eval_rbf(plan.node_params, fit.weights, fit.poly, plan.node_params)
+    assert fit.lam == pytest.approx(expected["lambda"], abs=1e-6)
+    assert fit.edf == pytest.approx(
         expected["effectiveDegreesOfFreedom"], abs=1e-5,
     )
     assert evaluated.flatten().tolist() == pytest.approx(

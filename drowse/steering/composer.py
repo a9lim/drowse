@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 
 from drowse.events import SteeringApplied, SteeringCleared
-from drowse.geometry.manifold import manifold_is_affine
 from drowse.session.session import (
     ConcurrentGenerationError,
     GenState,
@@ -953,7 +952,7 @@ class SteeringComposer:
         neutral-anchored origin (coord 0 = mean-replacement).  The neutral
         anchor is :attr:`layer_means`; a layer with no anchor is skipped.
         """
-        from drowse.geometry.manifold import synthesize_subspace
+        from drowse.geometry.inject import synthesize_subspace
 
         session = self._session
         steering = session._steering
@@ -1003,7 +1002,7 @@ class SteeringComposer:
                     raise ManifoldNotRegisteredError(
                         f"No manifold registered for '{entry.manifold}'"
                     )
-                if manifold_is_affine(manifold):
+                if manifold.is_affine:
                     # Affine ``%`` joins the merged subspace as a rank-R push
                     # toward the position's per-layer coords — a node's real
                     # coords for label form (``personas%pirate``) or the cardinal

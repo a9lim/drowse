@@ -37,7 +37,7 @@ from drowse.store.manifold_folder import (
     validate_manifold_format_version,
     min_nodes,
 )
-from drowse.geometry.manifold import domain_from_spec
+from drowse.geometry.domains import domain_from_spec
 from drowse.base.integrity import NAME_REGEX
 from drowse.base.paths import manifold_dir, manifolds_dir
 # Every authoring entry point that changes the installed manifold roster drops
@@ -260,7 +260,7 @@ def create_manifold_folder(
     """
     _validate_ns_name(namespace, name)
     try:
-        from drowse.geometry.manifold import normalize_domain_spec
+        from drowse.geometry.domains import normalize_domain_spec
 
         domain = domain_from_spec(normalize_domain_spec(domain_spec))
     except (ValueError, KeyError) as e:

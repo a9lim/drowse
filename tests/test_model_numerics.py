@@ -123,7 +123,8 @@ def test_final_residual_identity_lens_matches_model_logits(model: Any):
 @pytest.mark.parametrize("ablate", [False, True])
 def test_steering_manager_matches_independent_block_intervention(model: Any, ablate: bool):
     from drowse.steering.hooks import SteeringManager
-    from drowse.geometry.manifold import LayerSubspace, SynthesizedSubspace
+    from drowse.geometry.subspace import LayerSubspace
+    from drowse.geometry.inject import SynthesizedSubspace
 
     ids = torch.tensor([[1, 7, 11, 13, 19]])
     layers = get_layers(model)

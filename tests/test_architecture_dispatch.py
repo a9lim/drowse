@@ -48,7 +48,7 @@ from drowse.model.loading import (
     get_layers,
 )
 from drowse.steering.hooks import HiddenCapture, SteeringManager
-from drowse.geometry.manifold import synthesize_subspace
+from drowse.geometry.inject import synthesize_subspace
 from tests._whitener import isotropic_whitener
 from drowse.steering.triggers import Trigger
 

@@ -11,12 +11,9 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.geometry.manifold import (
-    MANIFOLD_FIT_POLICY_VERSION,
-    CustomDomain,
-    LayerSubspace,
-    Manifold,
-)
+from drowse.geometry.domains import CustomDomain
+from drowse.geometry.subspace import LayerSubspace
+from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION, Manifold
 from drowse.store.manifold_authoring import (
     create_discover_manifold_folder,
     create_manifold_folder,

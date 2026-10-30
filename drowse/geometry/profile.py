@@ -551,7 +551,7 @@ class Profile:
 
         Raises :class:`ProfileError` when no layers are shared.
         """
-        from drowse.geometry.whitener import WhitenerError
+        from drowse.errors import WhitenerError
 
         shared = sorted(set(self._tensors) & set(other._tensors))
         if not shared:
