@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any
 import sys
 
 import drowse.cli.runners as _pkg
@@ -41,7 +42,7 @@ def _load_sae_training_corpus(args: argparse.Namespace) -> tuple[list[str], str]
             sys.exit(2)
         return docs, f"file:{path.name}"
     from drowse.lens.jlens import JacobianLensError
-    from drowse.lens.store import DEFAULT_LENS_CORPUS, stream_lens_corpus
+    from drowse.lens.corpus import DEFAULT_LENS_CORPUS, stream_lens_corpus
 
     print(f"Streaming {target_docs} documents from {DEFAULT_LENS_CORPUS}...")
     try:
@@ -110,17 +111,20 @@ def _run_sae_fetch(args: argparse.Namespace) -> None:
     """
     import json
     from drowse.sae.backend import (
-        load_sae_backend, select_runtime_layer, validate_residual_width,
+        load_sae_backend, sae_binding, select_runtime_layer,
+        validate_residual_width,
     )
-    from drowse.sae.sources import save_sae_metadata
+    from drowse.sae.sources import SAE_SOURCES, save_sae_metadata
 
-    if not args.source.startswith("saelens:"):
+    try:
+        ref = SAE_SOURCES.parse(args.source)
+    except ValueError as exc:
+        print(f"sae fetch: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if ref.local:
         print("sae fetch: source must be saelens:RELEASE", file=sys.stderr)
         sys.exit(2)
-    release = args.source[len("saelens:"):]
-    if not release:
-        print("sae fetch: release must not be empty", file=sys.stderr)
-        sys.exit(2)
+    release = ref.name
     try:
         n_layers, hidden_dim = _model_shape_from_config(args.model)
     except (OSError, ValueError) as exc:
@@ -144,15 +148,7 @@ def _run_sae_fetch(args: argparse.Namespace) -> None:
         print(f"sae fetch: release {release!r} has no features", file=sys.stderr)
         sys.exit(1)
     validate_residual_width(backend, selected, hidden_dim)
-    save_sae_metadata(args.model, release, {
-        "layer": selected,
-        "width": width,
-        "revision": backend.revision,
-        "fingerprint": backend.fingerprint,
-        "sae_id": backend.sae_ids_by_layer.get(str(selected)),
-        "repo_id": backend.repo_id,
-        "neuronpedia_id": backend.neuronpedia_ids_by_layer.get(str(selected)),
-    })
+    save_sae_metadata(args.model, release, sae_binding(backend, selected, width))
     if args.json_output:
         print(json.dumps({
             "model": args.model,
@@ -186,51 +182,37 @@ def _run_sae_ls(args: argparse.Namespace) -> None:
         print(f"{marker} {row['source']}  L{row['layer']}  {row['features']} features")
 
 
-def _resolve_active_sae_source(model: str, source: str | None) -> str | None:
-    if source is not None:
-        return source
-    from drowse.sae.sources import load_active_sae_source
+def _resolve_sae_source(model: str, source: str | None) -> "Any":
+    """The named source, or the active one; exits on bad grammar / none."""
+    from drowse.sae.sources import SAE_SOURCES
 
-    active = load_active_sae_source(model)
-    if active is None:
-        return None
-    return (
-        f"local:{active['name']}"
-        if active["kind"] == "local"
-        else f"saelens:{active['name']}"
-    )
+    if source is None:
+        ref = SAE_SOURCES.active(model)
+        if ref is None:
+            print(f"no SAE source for {model}", file=sys.stderr)
+            sys.exit(1)
+        return ref
+    try:
+        return SAE_SOURCES.parse(source)
+    except ValueError as exc:
+        print(f"sae: {exc}", file=sys.stderr)
+        sys.exit(2)
 
 
 def _run_sae_show(args: argparse.Namespace) -> None:
     import json
-    from drowse.sae.sources import load_active_sae_source, load_sae_metadata
-    from drowse.sae.store import load_local_sae_manifest
+    from drowse.sae.sources import SAE_SOURCES, load_sae_source
 
-    source = _resolve_active_sae_source(args.model, args.source)
-    if source is None:
-        print(f"no SAE source for {args.model}", file=sys.stderr)
-        sys.exit(1)
-    if source.startswith("local:"):
-        payload = load_local_sae_manifest(args.model, source[6:])
-    elif source.startswith("saelens:"):
-        payload = load_sae_metadata(args.model, source[len("saelens:"):])
-    else:
-        print("sae show: source must be local:NAME or saelens:RELEASE", file=sys.stderr)
-        sys.exit(2)
+    ref = _resolve_sae_source(args.model, args.source)
+    source = SAE_SOURCES.format(ref)
+    payload = load_sae_source(args.model, ref)
     if payload is None:
         print(f"no SAE source {source} for {args.model}", file=sys.stderr)
         sys.exit(1)
-    active = load_active_sae_source(args.model)
     out = {
         "model": args.model,
         "source": source,
-        "active": bool(
-            active is not None
-            and (
-                (source.startswith("local:") and active["kind"] == "local" and active["name"] == source[6:])
-                or (source.startswith("saelens:") and active["kind"] == "saelens" and active["name"] == source[len("saelens:"):])
-            )
-        ),
+        "active": SAE_SOURCES.active(args.model) == ref,
         **payload,
     }
     if args.json_output:
@@ -239,7 +221,7 @@ def _run_sae_show(args: argparse.Namespace) -> None:
     print(f"SAE {source} for {args.model}{' (active)' if out['active'] else ''}")
     print(f"  layer:    {payload['layer']}")
     print(f"  features: {payload.get('d_sae', payload.get('width'))}")
-    if source.startswith("local:"):
+    if ref.local:
         print(f"  tokens:   {payload['tokens_trained']}")
         print(f"  corpus:   {payload['corpus_spec']}")
     else:
@@ -255,30 +237,20 @@ def _run_sae_use(args: argparse.Namespace) -> None:
 
 
 def _run_sae_rm(args: argparse.Namespace) -> None:
-    from drowse.sae.sources import remove_sae_binding
-    from drowse.sae.store import remove_local_sae
+    from drowse.sae.sources import SAE_SOURCES, remove_sae_source
 
-    source = _resolve_active_sae_source(args.model, args.source)
-    if source is None:
-        print(f"no SAE source for {args.model}", file=sys.stderr)
-        sys.exit(1)
+    ref = _resolve_sae_source(args.model, args.source)
+    source = SAE_SOURCES.format(ref)
     if not args.yes:
-        action = "Remove local artifact" if source.startswith("local:") else "Forget external binding"
+        action = "Remove local artifact" if ref.local else "Forget external binding"
         answer = input(f"{action} {source}? [y/N] ").strip().lower()
         if answer not in {"y", "yes"}:
             print("Aborted.")
             return
-    if source.startswith("local:"):
-        removed = remove_local_sae(args.model, source[6:])
-    elif source.startswith("saelens:"):
-        removed = remove_sae_binding(args.model, source[len("saelens:"):])
-    else:
-        print("sae rm: source must be local:NAME or saelens:RELEASE", file=sys.stderr)
-        sys.exit(2)
-    if not removed:
+    if not remove_sae_source(args.model, ref):
         print(f"no SAE source {source} for {args.model}", file=sys.stderr)
         sys.exit(1)
-    if source.startswith("local:"):
+    if ref.local:
         print(f"Removed Drowse-owned SAE {source}.")
     else:
         print("Forgot SAELens binding; Hugging Face cache was not modified.")

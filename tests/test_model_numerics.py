@@ -10,15 +10,9 @@ import torch
 import transformers
 
 from drowse.fit.capture import _capture_all_hidden_states
-from drowse.lens.jlens import JacobianLens, lens_logits
+from drowse.lens.jlens import JacobianLens, transport_rows
 from drowse.model.arch import get_layers
-from drowse.model.readout import (
-    LogitReadout,
-    get_final_norm,
-    get_logit_softcap,
-    get_output_projection,
-    get_unembedding,
-)
+from drowse.model.readout import LogitReadout, get_output_projection, get_unembedding
 
 
 @pytest.fixture(params=["llama", "qwen2", "qwen3", "qwen3_5_text", "gemma2", "gemma3_text", "gpt2", "gpt_neox", "opt",
@@ -110,6 +104,17 @@ def test_cached_logits_match_full_prefix(model: Any):
             cache = cached.past_key_values
 
 
+def _identity_readout(
+    model: Any, lens: JacobianLens, layer: int, hidden: torch.Tensor,
+) -> torch.Tensor:
+    """The production lens readout: ``LogitReadout(transport_rows(J, h))``."""
+    dim = hidden.shape[-1]
+    rows = hidden.reshape(-1, dim)
+    J = lens.jacobians[layer].to(rows.device)
+    out = LogitReadout(model)(transport_rows(J.expand(rows.shape[0], dim, dim), rows))
+    return out.reshape(*hidden.shape[:-1], -1)
+
+
 def test_final_residual_identity_lens_matches_model_logits(model: Any):
     layers = get_layers(model)
     last = len(layers) - 1
@@ -118,11 +123,7 @@ def test_final_residual_identity_lens_matches_model_logits(model: Any):
     lens = JacobianLens({last: torch.eye(hidden[last].shape[-1])}, n_prompts=1, d_model=hidden[last].shape[-1])
     with torch.inference_mode():
         expected = model(ids, use_cache=False).logits
-        actual = lens_logits(
-            lens, hidden, unembed=get_unembedding(model), final_norm=get_final_norm(model),
-            logit_softcap=get_logit_softcap(model),
-            readout=LogitReadout(model),
-        )[last]
+        actual = _identity_readout(model, lens, last, hidden[last])
     torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
     torch.testing.assert_close(actual.softmax(-1), expected.softmax(-1), atol=1e-7, rtol=1e-5)
 
@@ -254,8 +255,7 @@ def test_identity_lens_preserves_native_bfloat16_normalization(model: Any, devic
     hidden = _capture_all_hidden_states(model, layers, ids, layer_indices=[last])
     lens = JacobianLens({last: torch.eye(hidden[last].shape[-1])}, n_prompts=1, d_model=hidden[last].shape[-1])
     with torch.inference_mode():
-        actual = lens_logits(lens, hidden, unembed=get_unembedding(model), final_norm=get_final_norm(model),
-                             logit_softcap=get_logit_softcap(model), readout=LogitReadout(model))[last]
+        actual = _identity_readout(model, lens, last, hidden[last]).float()
         expected = model(ids, use_cache=False).logits.float()
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
 

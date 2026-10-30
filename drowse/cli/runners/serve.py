@@ -103,13 +103,18 @@ def _enable_serve_live_sae_if_available(session: Any) -> bool:
                 list_sae_sources(session.model_id),
                 key=lambda row: (not bool(row.get("active")), row.get("kind") != "local"),
             )
+            from drowse.sae.sources import SAE_SOURCES, sae_release
+
             for row in rows:
                 source = row.get("source")
                 if not isinstance(source, str) or not source:
                     continue
-                release = source.removeprefix("saelens:")
+                release = sae_release(SAE_SOURCES.parse(source))
                 try:
-                    info = session.load_sae(release)
+                    info = session.load_sae(
+                        release, layer=row.get("layer"),
+                        revision=row.get("revision"),
+                    )
                 except Exception:  # noqa: BLE001 — try the next cached source
                     continue
                 break

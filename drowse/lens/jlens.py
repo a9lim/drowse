@@ -11,15 +11,14 @@ d-vector with the same shape contract as any drowse steering direction, which
 is what lets a ``jlens/<word>`` term ride the ordinary profile registry.
 
 This module holds everything on a runtime path: the :class:`JacobianLens`
-artifact (transport, token directions, merge/union), the readout math every
-probe / live-workspace / token-replay surface calls per decode step, and the
-J-space decomposition.  It imports nothing beyond torch and the error
-taxonomy, so a per-step import costs a ``sys.modules`` lookup.
+artifact (transport, token directions, select/union) and the readout math
+every probe / live-workspace / token-replay surface calls per decode step.
+The J-space decomposition lives in :mod:`drowse.lens.decompose`.  It imports
+nothing beyond torch and the error taxonomy, so a per-step import costs a
+``sys.modules`` lookup.
 
-The **estimator** — the only backward-pass code in drowse — lives in
-:mod:`drowse.lens.fit`.  ``fit_jacobian_lens`` remains reachable as
-``drowse.lens.jlens.fit_jacobian_lens`` through a lazy module ``__getattr__``,
-so importing this module never drags the estimator in.
+The **estimator** — the only backward pass through the language model — lives
+in :mod:`drowse.lens.fit`; importing this module never drags it in.
 
 One unit runs through every readout surface: the per-layer softmax probability
 ``p_l(v)``.  ``readout_probabilities`` is the single calibration primitive; a
@@ -30,13 +29,15 @@ and the layer aggregate are all apples-to-apples.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import torch
-from torch import nn
 
 from drowse.errors import DrowseError
+from drowse.lens.decompose import token_atom_norms
+from drowse.lens.key import LensKey
 
 #: Positions before this index are excluded from the Jacobian average — early
 #: positions act as attention sinks with atypical residual statistics.  Part of
@@ -147,10 +148,12 @@ def resolve_word_token(tokenizer: Any, word: str) -> int:
 
 
 class JacobianLens:
-    """Fitted per-layer ``J_l`` matrices plus the readout primitives.
+    """One lens's fitted per-layer matrices plus the readout primitives.
 
-    ``jacobians`` maps source layer index → ``[d_model, d_model]`` fp32
-    matrix transporting that layer's residual into the final-layer basis.
+    ``jacobians`` maps layer index → ``[d_model, d_model]`` fp32 matrix.
+    ``key`` names what they are (:class:`~drowse.lens.key.LensKey`): for an
+    output-side kind (J/R) each matrix transports that layer's residual into
+    the final-layer basis, which every readout surface below assumes.
     """
 
     def __init__(
@@ -159,11 +162,13 @@ class JacobianLens:
         *,
         n_prompts: int,
         d_model: int,
+        key: LensKey = LensKey("J"),
     ) -> None:
         self.jacobians = {int(l): j.to(torch.float32) for l, j in jacobians.items()}
         self.source_layers = sorted(self.jacobians)
         self.n_prompts = int(n_prompts)
         self.d_model = int(d_model)
+        self.key = key
         self._atom_norm_cache: dict[tuple[int, str, str, int, tuple[int, ...]], torch.Tensor] = {}
 
     def __repr__(self) -> str:
@@ -173,7 +178,8 @@ class JacobianLens:
             else "[]"
         )
         return (
-            f"JacobianLens(d_model={self.d_model}, n_prompts={self.n_prompts}, "
+            f"JacobianLens({self.key.label}, d_model={self.d_model}, "
+            f"n_prompts={self.n_prompts}, "
             f"source_layers={span} ({len(self.source_layers)} layers))"
         )
 
@@ -231,6 +237,7 @@ class JacobianLens:
             {layer: self.jacobians[layer] for layer in requested},
             n_prompts=self.n_prompts,
             d_model=self.d_model,
+            key=self.key,
         )
 
     def atom_norms(self, layer: int, unembed: torch.Tensor) -> torch.Tensor:
@@ -250,7 +257,7 @@ class JacobianLens:
         cached = self._atom_norm_cache.get(key)
         if cached is not None:
             return cached
-        norms = _atom_norms(
+        norms = token_atom_norms(
             self.jacobians[layer].to(device=unembed.device, dtype=torch.float32),
             unembed,
         )
@@ -258,71 +265,11 @@ class JacobianLens:
         return norms
 
     @classmethod
-    def merge(cls, lenses: Sequence["JacobianLens"]) -> "JacobianLens":
-        """Combine lenses fitted on disjoint prompt subsets
-        (``n_prompts``-weighted mean)."""
-        if not lenses:
-            raise ValueError("merge() needs at least one lens")
-        first = lenses[0]
-        for other in lenses[1:]:
-            if (
-                other.source_layers != first.source_layers
-                or other.d_model != first.d_model
-            ):
-                raise ValueError("lenses disagree on source_layers / d_model")
-        total = sum(lens.n_prompts for lens in lenses)
-        if total <= 0:
-            raise ValueError("merge() needs lenses with n_prompts > 0")
-        merged: dict[int, torch.Tensor] = {}
-        for layer in first.source_layers:
-            acc = first.jacobians[layer].clone().mul_(first.n_prompts / total)
-            for lens in lenses[1:]:
-                acc.add_(lens.jacobians[layer], alpha=lens.n_prompts / total)
-            merged[layer] = acc
-        return cls(merged, n_prompts=total, d_model=first.d_model)
-
-    @classmethod
-    def merge_into(
-        cls, lenses: Sequence["JacobianLens"], *, target: int = -1,
-    ) -> "JacobianLens":
-        """Prompt-weighted merge using one caller-owned lens as the destination.
-
-        Resume fitting owns the newly fitted tail, so allocating another complete
-        fp32 artifact at final merge only multiplies peak RAM.  This explicit
-        mutating variant preserves :meth:`merge`'s non-mutating public behavior
-        while letting orchestration recycle that tail in place.
-        """
-        if not lenses:
-            raise ValueError("merge_into() needs at least one lens")
-        first = lenses[0]
-        for other in lenses[1:]:
-            if (
-                other.source_layers != first.source_layers
-                or other.d_model != first.d_model
-            ):
-                raise ValueError("lenses disagree on source_layers / d_model")
-        total = sum(lens.n_prompts for lens in lenses)
-        if total <= 0:
-            raise ValueError("merge_into() needs lenses with n_prompts > 0")
-        owner = lenses[target]
-        owner_weight = owner.n_prompts / total
-        for layer in owner.source_layers:
-            dst = owner.jacobians[layer]
-            dst.mul_(owner_weight)
-            for lens in lenses:
-                if lens is owner:
-                    continue
-                dst.add_(lens.jacobians[layer], alpha=lens.n_prompts / total)
-        owner.n_prompts = total
-        owner._atom_norm_cache.clear()
-        return owner
-
-    @classmethod
     def union_layers(cls, lenses: Sequence["JacobianLens"]) -> "JacobianLens":
         """Combine same-corpus lenses that cover different source layers.
 
-        Unlike :meth:`merge`, this is not a prompt-weighted average; every input
-        must describe the same prompt set and ``d_model``.  Later inputs replace
+        This is not a prompt-weighted average; every input must describe the
+        same prompt set, ``d_model``, and key.  Later inputs replace
         duplicate layers, which lets a missing-layer top-up overwrite a stale
         partial layer cleanly.
         """
@@ -330,50 +277,52 @@ class JacobianLens:
             raise ValueError("union_layers() needs at least one lens")
         first = lenses[0]
         for other in lenses[1:]:
-            if other.n_prompts != first.n_prompts or other.d_model != first.d_model:
-                raise ValueError("lenses disagree on n_prompts / d_model")
+            if (
+                other.n_prompts != first.n_prompts
+                or other.d_model != first.d_model
+                or other.key != first.key
+            ):
+                raise ValueError("lenses disagree on n_prompts / d_model / key")
         union: dict[int, torch.Tensor] = {}
         for lens in lenses:
             union.update(lens.jacobians)
-        return cls(union, n_prompts=first.n_prompts, d_model=first.d_model)
+        return cls(
+            union, n_prompts=first.n_prompts, d_model=first.d_model,
+            key=first.key,
+        )
 
 
-def softcap_logits(logits: torch.Tensor, cap: float | None) -> torch.Tensor:
-    if cap is None:
-        return logits
-    return (logits / cap).tanh() * cap
+@contextmanager
+def _scoped_tf32(device: torch.device) -> Iterator[None]:
+    """TF32 matmuls for one CUDA transport, restoring the caller's precision.
 
-
-def lens_logits(
-    lens: JacobianLens,
-    hidden_per_layer: Mapping[int, torch.Tensor],
-    *,
-    unembed: torch.Tensor,
-    final_norm: nn.Module,
-    logit_softcap: float | None = None,
-    layers: Sequence[int] | None = None,
-    readout: nn.Module | None = None,
-) -> dict[int, torch.Tensor]:
-    """Full-vocabulary lens readout ``W_U · norm(J_l h)`` per requested layer.
-
-    ``hidden_per_layer`` maps layer index → residual ``[..., d]``. The matvec
-    runs in the unembedding's own dtype (a fp32 copy of a ~256k-row W_U would
-    be gigabytes); ranking precision matches the model's own logit path.
-    Returns fp32 logits ``[..., vocab]`` per layer, on the unembed's device.
-    Pass ``LogitReadout(model)`` as ``readout`` for model-specific bias,
-    projection, and calibration; the default is the supplied matrix/norm path.
+    The lens transport is a ``[L, d, d] @ [L, d]`` bmm whose output feeds a
+    softmax readout, so TF32 costs nothing visible and buys a large CUDA
+    speedup.  The precision setting is process-global, so it is scoped to the
+    call: a model loaded or fitted beside the readout keeps full fp32.
     """
-    requested = list(layers) if layers is not None else lens.source_layers
-    out: dict[int, torch.Tensor] = {}
-    for layer in requested:
-        h = hidden_per_layer[layer]
-        transported = lens.transport(h.to(unembed.device), layer)
-        if readout is not None:
-            out[layer] = readout(transported).float()
-        else:
-            normed = final_norm(transported.to(unembed.dtype))
-            out[layer] = softcap_logits(normed.to(unembed.dtype) @ unembed.T, logit_softcap).float()
-    return out
+    if device.type != "cuda":
+        yield
+        return
+    previous = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("high")
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(previous)
+
+
+def transport_rows(
+    jacobian_rows: torch.Tensor, hidden_rows: torch.Tensor,
+) -> torch.Tensor:
+    """Batched transport ``J_l h_l`` for ``[R, d, d]`` matrices, ``[R, d]`` rows.
+
+    The one front half of every readout surface (live step, gate, probe,
+    replay, ``lens top``): rows land fp32 on the matrices' device.
+    """
+    hidden = hidden_rows.to(device=jacobian_rows.device, dtype=torch.float32)
+    with _scoped_tf32(jacobian_rows.device):
+        return torch.bmm(jacobian_rows, hidden.unsqueeze(-1)).squeeze(-1)
 
 
 def topk_probabilities(
@@ -414,6 +363,32 @@ def pack_readout_rows_to_host(*rows: torch.Tensor) -> torch.Tensor:
     return torch.cat([row.float() for row in rows], dim=0).detach().cpu()
 
 
+def _check_rows(values: torch.Tensor, depths: "Sequence[float]", what: str) -> None:
+    """A readout matrix is ``[layers, columns]`` with one depth per layer."""
+    if values.ndim != 2 or values.shape[0] == 0:
+        raise ValueError(
+            f"{what} expects a [layers, columns] matrix, got shape "
+            f"{tuple(values.shape)}"
+        )
+    if len(depths) != values.shape[0]:
+        raise ValueError(
+            f"{what}: {values.shape[0]} rows but {len(depths)} depths"
+        )
+
+
+def _depth_moments(
+    p: torch.Tensor, d: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Probability-weighted depth center of mass and spread per column.
+
+    ``p`` is ``[L, K]`` per-layer probability, ``d`` the ``[L, 1]`` depths.
+    """
+    mass = p.sum(dim=0).clamp_min(1e-12)                        # [K]
+    com = (p * d).sum(dim=0) / mass                             # [K]
+    var = (p * (d - com.unsqueeze(0)) ** 2).sum(dim=0) / mass
+    return com, var.clamp_min(0.0).sqrt()
+
+
 def aggregate_readout_from_probabilities(
     probabilities: torch.Tensor,
     depths: "Sequence[float]",
@@ -428,16 +403,6 @@ def aggregate_readout_from_probabilities(
     columns first preserves the exact statistic while avoiding full-vocabulary
     depth tensors.
     """
-    if probabilities.ndim != 2 or probabilities.shape[0] == 0:
-        raise ValueError(
-            "aggregate_readout_from_probabilities expects [layers, vocab] "
-            f"probabilities, got shape {tuple(probabilities.shape)}"
-        )
-    if len(depths) != probabilities.shape[0]:
-        raise ValueError(
-            "aggregate_readout_from_probabilities: "
-            f"{probabilities.shape[0]} probability rows but {len(depths)} depths"
-        )
     idxs, stats = aggregate_readout_tensors_from_probabilities(
         probabilities,
         depths,
@@ -471,16 +436,7 @@ def aggregate_readout_tensors_from_probabilities(
     per-layer and aggregate payloads into one GPU-to-host synchronization per
     token.
     """
-    if probabilities.ndim != 2 or probabilities.shape[0] == 0:
-        raise ValueError(
-            "aggregate_readout_tensors_from_probabilities expects "
-            f"[layers, vocab] probabilities, got shape {tuple(probabilities.shape)}"
-        )
-    if len(depths) != probabilities.shape[0]:
-        raise ValueError(
-            "aggregate_readout_tensors_from_probabilities: "
-            f"{probabilities.shape[0]} probability rows but {len(depths)} depths"
-        )
+    _check_rows(probabilities, depths, "aggregate readout")
     strength = probabilities.mean(dim=0)                       # [V]
     k = min(max(int(top_k), 0), int(strength.shape[-1]))
     vals, idxs = strength.topk(k)
@@ -491,10 +447,7 @@ def aggregate_readout_tensors_from_probabilities(
         rows=int(probabilities.shape[0]),
         depth_tensor=depth_tensor,
     )                                                           # [L, 1]
-    mass = p.sum(dim=0).clamp_min(1e-12)                        # [K]
-    com = (p * d).sum(dim=0) / mass                             # [K]
-    var = (p * (d - com.unsqueeze(0)) ** 2).sum(dim=0) / mass
-    spread = var.clamp_min(0.0).sqrt()
+    com, spread = _depth_moments(p, d)
     return idxs, torch.stack([vals, com, spread])
 
 
@@ -508,7 +461,7 @@ def aggregate_readout(
     """Layer-aggregate a per-layer lens readout into one ranked token list.
 
     ``logits`` is ``[L, vocab]`` — one full-vocabulary lens readout row per
-    layer (:func:`lens_logits` output stacked); ``depths`` the matching
+    layer (``LogitReadout(model)(transport_rows(J, h))``); ``depths`` the matching
     normalized layer depths in ``[0, 1]`` (``layer / (n_layers − 1)``).
     Returns ``[(vocab_id, strength, com, spread), ...]`` sorted by
     descending strength.
@@ -536,16 +489,7 @@ def aggregate_readout(
     per-layer top-k union would miss a token that ranks mid-pack at every
     layer but top at none.
     """
-    if logits.ndim != 2 or logits.shape[0] == 0:
-        raise ValueError(
-            f"aggregate_readout expects [layers, vocab] logits, got shape "
-            f"{tuple(logits.shape)}"
-        )
-    if len(depths) != logits.shape[0]:
-        raise ValueError(
-            f"aggregate_readout: {logits.shape[0]} logit rows but "
-            f"{len(depths)} depths"
-        )
+    _check_rows(logits, depths, "aggregate readout")
     return aggregate_readout_from_probabilities(
         readout_probabilities(logits),
         depths,
@@ -563,16 +507,7 @@ def token_readout_stats_from_probabilities(
     depth_tensor: torch.Tensor | None = None,
 ) -> list[tuple[float, float, float, list[float]]]:
     """Per-token statistics from already-calibrated readout probabilities."""
-    if probabilities.ndim != 2 or probabilities.shape[0] == 0:
-        raise ValueError(
-            "token_readout_stats_from_probabilities expects [layers, vocab] "
-            f"probabilities, got shape {tuple(probabilities.shape)}"
-        )
-    if len(depths) != probabilities.shape[0]:
-        raise ValueError(
-            "token_readout_stats_from_probabilities: "
-            f"{probabilities.shape[0]} probability rows but {len(depths)} depths"
-        )
+    _check_rows(probabilities, depths, "token readout stats")
     if not token_ids:
         return []
     ids = _token_id_tensor(
@@ -666,16 +601,7 @@ def _token_readout_stats_from_probability_columns(
     depth_tensor: torch.Tensor | None = None,
 ) -> list[tuple[float, float, float, list[float]]]:
     """Shared stats body for selected token probability columns ``[L, K]``."""
-    if p.ndim != 2 or p.shape[0] == 0:
-        raise ValueError(
-            "token readout stats expect [layers, tokens] probabilities, "
-            f"got shape {tuple(p.shape)}"
-        )
-    if len(depths) != p.shape[0]:
-        raise ValueError(
-            f"token readout stats: {p.shape[0]} probability rows but "
-            f"{len(depths)} depths"
-        )
+    _check_rows(p, depths, "token readout stats")
     if p.shape[1] == 0:
         return []
     strength = p.mean(dim=0)                                    # [K]
@@ -685,10 +611,7 @@ def _token_readout_stats_from_probability_columns(
         rows=int(p.shape[0]),
         depth_tensor=depth_tensor,
     )                                                           # [L, 1]
-    mass = p.sum(dim=0).clamp_min(1e-12)                        # [K]
-    com = (p * d).sum(dim=0) / mass                             # [K]
-    var = (p * (d - com.unsqueeze(0)) ** 2).sum(dim=0) / mass
-    spread = var.clamp_min(0.0).sqrt()
+    com, spread = _depth_moments(p, d)
     # one batched host transfer: 3 aggregate rows + the per-layer block
     host = torch.cat(
         [torch.stack([strength, com, spread]), p], dim=0,
@@ -735,16 +658,7 @@ def token_readout_stats(
     Returns one ``(strength, com, spread, per_layer)`` tuple per requested
     id, with a single batched host transfer.
     """
-    if logits.ndim != 2 or logits.shape[0] == 0:
-        raise ValueError(
-            f"token_readout_stats expects [layers, vocab] logits, got shape "
-            f"{tuple(logits.shape)}"
-        )
-    if len(depths) != logits.shape[0]:
-        raise ValueError(
-            f"token_readout_stats: {logits.shape[0]} logit rows but "
-            f"{len(depths)} depths"
-        )
+    _check_rows(logits, depths, "token readout stats")
     if not token_ids:
         return []
     return _token_readout_stats_from_probability_columns(
@@ -754,151 +668,3 @@ def token_readout_stats(
         depths,
         depth_tensor=depth_tensor,
     )
-
-
-class JSpaceDecomposition:
-    """One layer's sparse nonnegative split of a direction against the J-lens
-    dictionary: ``share`` = fraction of the direction's variance carried by
-    the selected atoms, ``tokens`` = ``[(vocab_id, coeff), ...]`` sorted by
-    descending coefficient."""
-
-    __slots__ = ("layer", "share", "tokens")
-
-    def __init__(self, layer: int, share: float, tokens: list[tuple[int, float]]) -> None:
-        self.layer = layer
-        self.share = share
-        self.tokens = tokens
-
-    def __repr__(self) -> str:
-        return (
-            f"JSpaceDecomposition(layer={self.layer}, share={self.share:.3f}, "
-            f"k={len(self.tokens)})"
-        )
-
-
-def sparse_nonneg_decompose(
-    target: torch.Tensor,
-    jacobian: torch.Tensor,
-    unembed: torch.Tensor,
-    *,
-    layer: int,
-    k: int = 16,
-    nnls_iters: int = 200,
-    atom_norms: torch.Tensor | None = None,
-) -> JSpaceDecomposition:
-    """Greedy sparse nonnegative pursuit of ``target`` against the J-lens
-    dictionary ``D = W_U @ J_l`` (the paper's gradient-pursuit decomposition).
-
-    The dictionary is never materialized (``[vocab, d]`` would be gigabytes
-    on a real model): atom scores are the composed matvec
-    ``W_U @ (J_l @ residual)``, normalized by chunk-computed atom norms
-    (unnormalized inner products would bias selection toward large-norm
-    atoms), and only the ≤k selected rows are formed. After each selection
-    the coefficients re-solve as a k-dim nonnegative least squares
-    (projected gradient with the exact Lipschitz step — the problem is
-    tiny). Selection stops early when no atom correlates positively with
-    the residual.
-    """
-    device = unembed.device
-    J = jacobian.to(device=device, dtype=torch.float32)
-    t = target.detach().to(device=device, dtype=torch.float32)
-    t_norm_sq = float(t.pow(2).sum())
-    if t_norm_sq == 0.0:
-        return JSpaceDecomposition(layer, 0.0, [])
-    norms = (
-        _atom_norms(J, unembed)
-        if atom_norms is None
-        else atom_norms.to(device=device, dtype=torch.float32)
-    )
-    norms = norms.clamp(min=1e-12)
-
-    selected: list[int] = []
-    rows: list[torch.Tensor] = []
-    coeffs = torch.zeros(0, device=device)
-    residual = t.clone()
-    for _ in range(k):
-        # normalized correlation over the vocabulary, D never materialized
-        scores = (unembed @ (J @ residual).to(unembed.dtype)).float() / norms
-        if selected:
-            scores[torch.tensor(selected, device=device)] = -torch.inf
-        best = int(scores.argmax())
-        if float(scores[best]) <= 0.0:
-            break
-        selected.append(best)
-        rows.append(unembed[best].float() @ J)
-        A = torch.stack(rows)  # [s, d]
-        gram = A @ A.T
-        b = A @ t
-        c = torch.cat([coeffs, coeffs.new_zeros(1)])
-        solved = _try_unconstrained_nonnegative(gram, b, device=device)
-        if solved is None:
-            # CPU hop: eigvalsh is unimplemented on MPS, and the gram is ≤ k×k.
-            lipschitz = float(torch.linalg.eigvalsh(gram.cpu())[-1].clamp(min=1e-12))
-            for _ in range(nnls_iters):
-                c = torch.clamp(c - (gram @ c - b) / lipschitz, min=0.0)
-        else:
-            c = solved
-        coeffs = c
-        residual = t - A.T @ coeffs
-
-    share = max(0.0, 1.0 - float(residual.pow(2).sum()) / t_norm_sq)
-    pairs = sorted(
-        ((tok, float(cf)) for tok, cf in zip(selected, coeffs) if float(cf) > 0.0),
-        key=lambda p: -p[1],
-    )
-    return JSpaceDecomposition(layer, share, pairs)
-
-
-def _try_unconstrained_nonnegative(
-    gram: torch.Tensor,
-    b: torch.Tensor,
-    *,
-    device: torch.device,
-    tol: float = 1e-7,
-) -> torch.Tensor | None:
-    """Exact tiny least-squares solve when its coefficients are already >= 0.
-
-    The greedy J-space step solves ``min ||A^T c - t||²`` over the selected
-    atoms.  If the unconstrained normal-equation solution is nonnegative, it is
-    also the NNLS optimum, so the 200-step projected-gradient loop is pure
-    overhead.  If any coefficient is negative or the tiny system is singular, the
-    caller keeps the existing PGD fallback.
-    """
-    g_cpu = gram.detach().to("cpu", torch.float32)
-    b_cpu = b.detach().to("cpu", torch.float32)
-    eye = torch.eye(g_cpu.shape[0], dtype=torch.float32)
-    try:
-        sol = torch.linalg.solve(g_cpu + 1e-7 * eye, b_cpu)
-    except RuntimeError:
-        return None
-    if not bool(torch.isfinite(sol).all()):
-        return None
-    if bool((sol < -tol).any()):
-        return None
-    return sol.clamp(min=0.0).to(device=device, dtype=torch.float32)
-
-
-def _atom_norms(
-    jacobian: torch.Tensor, unembed: torch.Tensor, *, chunk: int = 8192
-) -> torch.Tensor:
-    """Per-atom norms ``‖W_U[v] @ J‖`` for the whole vocabulary, computed in
-    chunks so the ``[vocab, d]`` dictionary never exists in full."""
-    norms = torch.empty(unembed.shape[0], device=unembed.device)
-    for start in range(0, unembed.shape[0], chunk):
-        block = unembed[start : start + chunk].float() @ jacobian
-        norms[start : start + chunk] = block.norm(dim=-1)
-    return norms
-
-
-def __getattr__(name: str) -> Any:
-    """Lazy compatibility alias for the estimator entry point.
-
-    ``fit_jacobian_lens`` moved to :mod:`drowse.lens.fit`; resolving it
-    on demand keeps ``from drowse.lens.jlens import fit_jacobian_lens``
-    working without importing the estimator when only the readout is wanted.
-    """
-    if name == "fit_jacobian_lens":
-        from drowse.lens.fit import fit_jacobian_lens
-
-        return fit_jacobian_lens
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

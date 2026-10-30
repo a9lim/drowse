@@ -99,7 +99,6 @@ from drowse.cli.runners.config import (
     _run_config_validate,
 )
 from drowse.cli.runners.lens import (
-    _LENS_DOC_CHARS,
     _LENS_RUNNERS,
     _load_lens_corpus,
     _lens_fit_source_preflight_matches,
@@ -119,7 +118,7 @@ from drowse.cli.runners.lens import (
 from drowse.cli.runners.sae import (
     _SAE_RUNNERS,
     _load_sae_training_corpus,
-    _resolve_active_sae_source,
+    _resolve_sae_source,
     _run_sae,
     _run_sae_fetch,
     _run_sae_ls,

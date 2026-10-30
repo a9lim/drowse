@@ -41,12 +41,12 @@ from drowse.session.session import (
 )
 from drowse.steering.composer import SteeringComposer
 from drowse.lens.store import (
-    lens_checkpoint_paths,
-    lens_paths,
+    LensProvenance,
+    lens_manifest_path,
     load_lens,
     load_lens_checkpoint,
     remove_lens,
-    save_lens_checkpoint_accumulator,
+    save_lens_checkpoint,
 )
 from tests._jlens_toys import CharTokenizer, frozen_toy
 
@@ -54,25 +54,33 @@ _MODEL_ID = "toy/jlens-model"
 
 
 def _save_checkpoint(
-    partial: JacobianLens, model_id: str, *, base_n_prompts: int, **kwargs: Any,
+    partial: JacobianLens, model_id: str, **kwargs: Any,
 ) -> Path:
     """Publish a self-contained current checkpoint from estimator sums."""
-    assert base_n_prompts == 0
     sums = {
         layer: matrix * partial.n_prompts
         for layer, matrix in partial.jacobians.items()
     }
-    kwargs.setdefault(
+    consumed = kwargs.pop(
         "consumed_prefix_sha256",
         hashlib.sha256(json.dumps({
             "corpus_sha256": kwargs.get("corpus_sha256"),
             "n_prompts": partial.n_prompts,
         }, sort_keys=True).encode()).hexdigest(),
     )
-    return save_lens_checkpoint_accumulator(
+    return save_lens_checkpoint(
         sums, partial.n_prompts, partial.d_model, model_id,
-        base=None, **kwargs,
+        LensProvenance(**kwargs), kind=partial.key.kind,
+        consumed_prefix_sha256=consumed,
     )
+
+
+def _first_shard(model_id: str, *, checkpoint: bool = False) -> Path:
+    """The lowest layer's ``out`` shard named by the local J-lens pointer."""
+    pointer = lens_manifest_path(model_id, "j", checkpoint=checkpoint)
+    site = json.loads(pointer.read_text())["sites"]["out"]
+    first = min(site["layers"])
+    return pointer.parent / site["tensor_files"][str(first)]
 
 
 class _StubSession:
@@ -269,7 +277,7 @@ def test_terminal_checkpoint_is_promoted_without_second_tensor_write(
     assert writes == len(fitted.source_layers)
     assert hashes == 0
     assert load_lens(_MODEL_ID) is not None
-    assert load_lens_checkpoint(_MODEL_ID) is None
+    assert load_lens_checkpoint(_MODEL_ID, "j") is None
 
 
 def test_refit_rebuilds_live_lens_probes_and_evicts_directions() -> None:
@@ -299,7 +307,7 @@ def test_refit_rebuilds_live_lens_probes_and_evicts_directions() -> None:
 def test_jlens_property_rejects_legacy_sidecar_without_weight_identity() -> None:
     fitted = _StubSession()
     fitted.fit_jlens(_PROMPTS)
-    _, sidecar_path = lens_paths(_MODEL_ID)
+    sidecar_path = lens_manifest_path(_MODEL_ID, "j")
     sidecar = json.loads(sidecar_path.read_text())
     sidecar.pop("model_fingerprint")
     sidecar_path.write_text(json.dumps(sidecar))
@@ -448,21 +456,21 @@ def test_exact_noop_reaps_checkpoint_left_after_final_publication() -> None:
     assert loaded is not None
     sidecar = loaded[1]
     _save_checkpoint(
-        full, _MODEL_ID, base_n_prompts=0,
+        full, _MODEL_ID,
         corpus_spec=str(sidecar["corpus_spec"]),
         corpus_sha256=str(sidecar["corpus_sha256"]),
         corpus_hash_kind=str(sidecar["corpus_hash_kind"]),
         seq_len=int(sidecar["seq_len"]),
         dim_batch=int(sidecar["dim_batch"]),
-        skip_first=int(sidecar["skip_first_positions"]),
+        skip_first=int(sidecar["estimator_policy"]["skip_first_positions"]),
         model_fingerprint=str(sidecar["model_fingerprint"]),
     )
-    assert load_lens_checkpoint(_MODEL_ID) is not None
+    assert load_lens_checkpoint(_MODEL_ID, "j") is not None
 
     selected = s.fit_jlens(_PROMPTS)
 
     assert selected.source_layers == full.source_layers
-    assert load_lens_checkpoint(_MODEL_ID) is None
+    assert load_lens_checkpoint(_MODEL_ID, "j") is None
 
 
 def test_resident_noop_does_not_reap_checkpoint_when_final_payload_corrupt() -> None:
@@ -472,16 +480,16 @@ def test_resident_noop_does_not_reap_checkpoint_when_final_payload_corrupt() -> 
     assert loaded is not None
     sidecar = loaded[1]
     _save_checkpoint(
-        full, _MODEL_ID, base_n_prompts=0,
+        full, _MODEL_ID,
         corpus_spec=str(sidecar["corpus_spec"]),
         corpus_sha256=str(sidecar["corpus_sha256"]),
         corpus_hash_kind=str(sidecar["corpus_hash_kind"]),
         seq_len=int(sidecar["seq_len"]),
         dim_batch=int(sidecar["dim_batch"]),
-        skip_first=int(sidecar["skip_first_positions"]),
+        skip_first=int(sidecar["estimator_policy"]["skip_first_positions"]),
         model_fingerprint=str(sidecar["model_fingerprint"]),
     )
-    final_tensor, _ = lens_paths(_MODEL_ID)
+    final_tensor = _first_shard(_MODEL_ID)
     payload = bytearray(final_tensor.read_bytes())
     payload[-1] ^= 1
     final_tensor.write_bytes(payload)
@@ -491,7 +499,7 @@ def test_resident_noop_does_not_reap_checkpoint_when_final_payload_corrupt() -> 
     selected = s.fit_jlens(_PROMPTS)
 
     assert selected.source_layers == full.source_layers
-    assert load_lens_checkpoint(_MODEL_ID) is not None
+    assert load_lens_checkpoint(_MODEL_ID, "j") is not None
 
 
 def test_overlapping_topup_keeps_preserved_extra_layer_resident() -> None:
@@ -546,7 +554,7 @@ def test_jlens_property_refreshes_and_evicts_after_external_lifecycle() -> None:
             refreshed.jacobians[layer], disk_b.jacobians[layer], atol=2e-3,
         )
 
-    assert remove_lens(_MODEL_ID)
+    assert remove_lens(_MODEL_ID, "j")
     assert not session_a.has_compatible_jlens()
     assert session_a.jlens is None
     assert "jlens/example" not in session_a._profiles
@@ -607,7 +615,7 @@ def test_generation_boundary_refreshes_external_lens_once() -> None:
 
     # An external deletion is likewise observed before the next generation,
     # and the validated missing state is pinned (no per-token retry loop).
-    assert remove_lens(_MODEL_ID)
+    assert remove_lens(_MODEL_ID, "j")
     DrowseSession._begin_capture(
         cast(Any, session_a), ReadDemand(final_probe_aggregate=True),
     )
@@ -1180,7 +1188,6 @@ def test_fresh_fit_does_not_promote_stale_incompatible_checkpoint() -> None:
     )
     _save_checkpoint(
         stale, _MODEL_ID,
-        base_n_prompts=0,
         corpus_spec="stale",
         corpus_sha256=corpus_sha,
         corpus_hash_kind="token_ids_v1",
@@ -1263,12 +1270,9 @@ def test_fit_jlens_tops_up_a_hub_corpus_by_prefix(
     """A larger read of the same pinned Hub corpus fits only the new rows."""
     import datasets
 
-    import drowse.lens.jlens as jlens_module
-    from drowse.lens.store import (
-        HfLensCorpus,
-        _collect_lens_corpus,
-        load_lens_sidecar,
-    )
+    import drowse.lens.fit as jlens_module
+    from drowse.lens.corpus import HfLensCorpus, _collect_lens_corpus
+    from drowse.lens.store import load_lens_sidecar
 
     rows = [{"text": ""}, *({"text": p} for p in _PROMPTS)]
     monkeypatch.setattr(
@@ -1305,13 +1309,13 @@ def test_fit_jlens_tops_up_a_corpus_mix_by_prefix(
     """Growing a fit on a weighted mix fits only the newly scheduled rows."""
     import datasets
 
-    import drowse.lens.jlens as jlens_module
-    from drowse.lens.store import (
+    import drowse.lens.fit as jlens_module
+    from drowse.lens.corpus import (
         HfLensCorpus,
         LensCorpusMix,
         _collect_lens_corpus,
-        load_lens_sidecar,
     )
+    from drowse.lens.store import load_lens_sidecar
 
     rows = {"en/web": [_PROMPTS[0], _PROMPTS[2]], "zh/web": [_PROMPTS[1], _PROMPTS[3]]}
     monkeypatch.setattr(
@@ -1347,7 +1351,7 @@ def test_fit_jlens_tops_up_a_corpus_mix_by_prefix(
 def test_fit_jlens_changed_prefix_restarts_from_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_module
+    import drowse.lens.fit as jlens_module
 
     _StubSession().fit_jlens(_PROMPTS[:2], force=True)
     changed = ["a changed first prompt that is long enough", *_PROMPTS[1:]]
@@ -1367,7 +1371,7 @@ def test_fit_jlens_changed_prefix_restarts_from_zero(
 def test_fit_jlens_loaded_weight_change_invalidates_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_module
+    import drowse.lens.fit as jlens_module
 
     first = _StubSession()
     first.fit_jlens(_PROMPTS)
@@ -1553,8 +1557,8 @@ def test_jlens_property_rechecks_loaded_pointer_fingerprint(
     live_fp = loaded_model_fingerprint(session._model, _MODEL_ID)
     lens = JacobianLens({0: torch.eye(6)}, n_prompts=1, d_model=6)
     compatible = {
-        "model_fingerprint": live_fp, "source_layers": [0],
-        "n_prompts": 1, "tensor_sha256": "a" * 64,
+        "model_fingerprint": live_fp, "sites": {"out": {"layers": [0]}},
+        "n_prompts": 1,
     }
     replaced = {**compatible, "model_fingerprint": "different-weights"}
     monkeypatch.setattr(lens_io, "load_lens_sidecar", lambda _model: compatible)
@@ -1572,8 +1576,8 @@ def test_has_compatible_jlens_rechecks_loaded_pointer_fingerprint(
     live_fp = loaded_model_fingerprint(session._model, _MODEL_ID)
     lens = JacobianLens({0: torch.eye(6)}, n_prompts=1, d_model=6)
     compatible = {
-        "model_fingerprint": live_fp, "source_layers": [0],
-        "n_prompts": 1, "tensor_sha256": "a" * 64,
+        "model_fingerprint": live_fp, "sites": {"out": {"layers": [0]}},
+        "n_prompts": 1,
     }
     replaced = {**compatible, "model_fingerprint": "different-weights"}
     session._jlens = lens
@@ -1588,8 +1592,7 @@ def test_fit_jlens_extends_real_prefix_checkpoint_without_full_artifact() -> Non
     full = _StubSession().fit_jlens(_PROMPTS, force=True)
     head_session = _StubSession()
     head = head_session.fit_jlens(_PROMPTS[:2], force=True)
-    for path in lens_paths(_MODEL_ID):
-        path.unlink()
+    lens_manifest_path(_MODEL_ID, "j").unlink()
     consumed_prefix = [
         [int(tok) for tok in head_session._tokenizer(
             p, return_tensors="pt",
@@ -1601,7 +1604,6 @@ def test_fit_jlens_extends_real_prefix_checkpoint_without_full_artifact() -> Non
     ).hexdigest()
     _save_checkpoint(
         head, _MODEL_ID,
-        base_n_prompts=0,
         corpus_spec="test",
         # This is the real identity an interrupted two-prompt request owns,
         # not the future four-prompt corpus hash.
@@ -1626,13 +1628,13 @@ def test_fit_jlens_extends_real_prefix_checkpoint_without_full_artifact() -> Non
             resumed.jacobians[layer], full.jacobians[layer], atol=2e-3,
         )
     assert load_lens(_MODEL_ID) is not None
-    assert not any(path.exists() for path in lens_checkpoint_paths(_MODEL_ID))
+    assert not lens_manifest_path(_MODEL_ID, "j", checkpoint=True).exists()
 
 
 def test_fit_jlens_checkpoint_survives_two_interruptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
     import drowse.lens.store as lens_io
 
     full = _StubSession().fit_jlens(_PROMPTS, force=True)
@@ -1647,7 +1649,6 @@ def test_fit_jlens_checkpoint_survives_two_interruptions(
     corpus_sha = hashlib.sha256(repr(consumed).encode("utf-8")).hexdigest()
     _save_checkpoint(
         head, _MODEL_ID,
-        base_n_prompts=0,
         corpus_spec="test",
         corpus_sha256=corpus_sha,
         corpus_hash_kind="token_ids_v1",
@@ -1673,10 +1674,9 @@ def test_fit_jlens_checkpoint_survives_two_interruptions(
     with pytest.raises(RuntimeError, match="second interruption"):
         _StubSession().fit_jlens(_PROMPTS)
 
-    checkpoint = load_lens_checkpoint(_MODEL_ID)
+    checkpoint = load_lens_checkpoint(_MODEL_ID, "j")
     assert checkpoint is not None
     assert checkpoint[0].n_prompts == 3
-    assert checkpoint[1]["base_n_prompts"] == 0
 
     monkeypatch.setattr(jlens_mod, "fit_jacobian_lens", real_fit)
     monkeypatch.setattr(
@@ -1700,7 +1700,7 @@ def test_fit_jlens_checkpoint_survives_two_interruptions(
 def test_corrupt_farther_checkpoint_falls_back_to_durable_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
 
     session = _StubSession()
     durable = session.fit_jlens(_PROMPTS[:2], force=True)
@@ -1716,7 +1716,7 @@ def test_corrupt_farther_checkpoint_falls_back_to_durable_prefix(
         n_prompts=3, d_model=durable.d_model,
     )
     _save_checkpoint(
-        farther, _MODEL_ID, base_n_prompts=0,
+        farther, _MODEL_ID,
         corpus_spec="test", corpus_sha256=corpus_sha,
         corpus_hash_kind="token_ids_v1", seq_len=128, dim_batch=8,
         skip_first=16,
@@ -1724,7 +1724,7 @@ def test_corrupt_farther_checkpoint_falls_back_to_durable_prefix(
             session._model, _MODEL_ID,
         ),
     )
-    checkpoint_tensor, _checkpoint_sidecar = lens_checkpoint_paths(_MODEL_ID)
+    checkpoint_tensor = _first_shard(_MODEL_ID, checkpoint=True)
     payload = bytearray(checkpoint_tensor.read_bytes())
     payload[-1] ^= 1
     checkpoint_tensor.write_bytes(payload)
@@ -1770,7 +1770,7 @@ def test_matching_checkpoint_evicts_incompatible_resident_before_load(
         for prompt in changed
     ]
     _save_checkpoint(
-        checkpoint, _MODEL_ID, base_n_prompts=0,
+        checkpoint, _MODEL_ID,
         corpus_spec="test",
         corpus_sha256=hashlib.sha256(repr(consumed).encode("utf-8")).hexdigest(),
         corpus_hash_kind="token_ids_v1", seq_len=128, dim_batch=8,
@@ -1797,7 +1797,7 @@ def test_matching_checkpoint_evicts_incompatible_resident_before_load(
 def test_resident_prefix_is_reloaded_after_resume_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS[:2], force=True)
@@ -1832,7 +1832,7 @@ def test_subset_resume_releases_unrequested_resident_matrices(
     import gc
     import weakref
 
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS[:2], force=True, source_layers=[0, 1])
@@ -1899,7 +1899,7 @@ def test_finalization_failure_rebuilds_evicted_resident(
 def test_fit_jlens_missing_layer_topup_resumes_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.jlens as jlens_mod
+    import drowse.lens.fit as jlens_mod
     import drowse.lens.store as lens_io
     from drowse.base import integrity
     full = _StubSession().fit_jlens(
@@ -1921,7 +1921,7 @@ def test_fit_jlens_missing_layer_topup_resumes_checkpoint(
     with pytest.raises(RuntimeError, match="topup interruption"):
         _StubSession().fit_jlens(_PROMPTS, source_layers=[0, 1])
 
-    checkpoint = load_lens_checkpoint(_MODEL_ID)
+    checkpoint = load_lens_checkpoint(_MODEL_ID, "j")
     assert checkpoint is not None
     assert checkpoint[0].source_layers == [1]
     assert checkpoint[0].n_prompts == 2
@@ -2711,3 +2711,48 @@ def test_score_probes_entries_are_disjoint_and_guarded() -> None:
             layers=layers, logits=logits,
             probabilities=readout_probabilities(logits),
         )
+
+
+def test_lens_probe_hash_tracks_the_resident_lens_identity() -> None:
+    """The same word read through a different lens is a different probe.
+
+    Transcripts and loom recipes compare probe hashes to decide whether a
+    recorded reading is reproducible; a lens swap or re-fit must show up.
+    """
+    s = _StubSession()
+    s.fit_jlens(_PROMPTS)
+    name = s._add_lens_probe("jlens/g", as_name=None)
+    first = s._lens_instrument.probe_hash(name)
+    assert first is not None
+    assert s._lens_instrument.probe_hash(name) == first
+
+    s._jlens_identity = ("another", "lens")
+    assert s._lens_instrument.probe_hash(name) != first
+
+
+def test_cuda_transport_scopes_tf32_to_the_matmul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabling the live lens must not flip process-global matmul precision."""
+    from drowse.lens.jlens import _scoped_tf32
+
+    before = torch.get_float32_matmul_precision()
+    with _scoped_tf32(torch.device("cuda")):
+        assert torch.get_float32_matmul_precision() == "high"
+    assert torch.get_float32_matmul_precision() == before
+    with _scoped_tf32(torch.device("cpu")):
+        assert torch.get_float32_matmul_precision() == before
+
+    set_calls: list[str] = []
+    monkeypatch.setattr(torch, "set_float32_matmul_precision", set_calls.append)
+    s = _StubSession()
+    s.fit_jlens(_PROMPTS)
+    s._device = torch.device("cuda")  # the stack itself still lands on CPU
+    monkeypatch.setattr(
+        s, "_jlens_transport_stack",
+        lambda lens, layers, _device: DrowseSession._jlens_transport_stack(
+            s, lens, layers, torch.device("cpu"),
+        ),
+    )
+    s._lens_instrument.enable_live()
+    assert set_calls == []

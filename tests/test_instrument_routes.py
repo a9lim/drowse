@@ -307,14 +307,14 @@ class TestSources:
         monkeypatch.setattr(
             "drowse.lens.sources.list_lens_sources",
             lambda _m: [{
-                "source": "local:default", "kind": "local", "name": "default",
+                "source": "local:j", "kind": "local", "name": "j",
                 "active": True, "path": "/tmp/x.json",
             }],
         )
         resp = client.get(f"{_BASE}/lens/sources")
         assert resp.status_code == 200
         rows = resp.json()["sources"]
-        assert rows[0]["source"] == "local:default"
+        assert rows[0]["source"] == "local:j"
         assert "path" not in rows[0]  # path stripped
 
     def test_sae_merges_prepared_and_releases(
@@ -440,7 +440,7 @@ class TestPreparations:
 
         session.fit_jlens.side_effect = _blocking_fit
         monkeypatch.setattr(
-            "drowse.lens.store.stream_lens_corpus",
+            "drowse.lens.corpus.stream_lens_corpus",
             lambda _n, _corpus, *, cancel_event=None: (
                 ["a long enough prompt."], "spec",
             ),
@@ -475,7 +475,7 @@ class TestPreparations:
     def test_lens_fit_streams_the_requested_hub_corpus(
         self, session_and_client: Any, monkeypatch: Any,
     ) -> None:
-        from drowse.lens.store import HfLensCorpus, LensCorpusMix
+        from drowse.lens.corpus import HfLensCorpus, LensCorpusMix
 
         session, client = session_and_client
         streamed: list[tuple[int, Any]] = []
@@ -486,7 +486,7 @@ class TestPreparations:
             streamed.append((n, corpus))
             return ["a long enough prompt."], "hf:org/data/cfg@sha"
 
-        monkeypatch.setattr("drowse.lens.store.stream_lens_corpus", _stream)
+        monkeypatch.setattr("drowse.lens.corpus.stream_lens_corpus", _stream)
         resp = client.post(
             f"{_BASE}/lens/preparations",
             json={
@@ -544,7 +544,7 @@ class TestPreparations:
             "runtime": {}, "metrics": {"tokens_trained": 100}, "source": "local:s",
         }
         monkeypatch.setattr(
-            "drowse.lens.store.stream_lens_corpus",
+            "drowse.lens.corpus.stream_lens_corpus",
             lambda _n, **_k: (["p"], "spec"),
         )
         resp = client.post(

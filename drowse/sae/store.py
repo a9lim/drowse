@@ -16,18 +16,11 @@ from safetensors.torch import load_file, save_file
 import torch
 
 from drowse.base.atomic import artifact_lock, fsync_directory, write_json_atomic
-from drowse.base.integrity import NAME_REGEX, hash_file
-from drowse.base.paths import ensure_within, model_dir
-from drowse.sae.sources import (
-    LOCAL_SOURCE_PREFIX,
-    SAE_SOURCES,
-    load_active_sae_source,
-    sae_runtime_dir,
-    set_active_sae_source,
-)
+from drowse.base.integrity import hash_file, verify_integrity
+from drowse.base.source_registry import LOCAL, SourceRef
+from drowse.sae.sources import SAE_SOURCES, sae_release
 
 LOCAL_SAE_FORMAT_VERSION = 1
-_LOCAL_NAME_RE = NAME_REGEX
 _MANIFEST_FIELDS = {
     "format_version",
     "kind",
@@ -53,33 +46,8 @@ _MANIFEST_FIELDS = {
 }
 
 
-def is_local_sae_release(value: str) -> bool:
-    """True iff ``value`` names a Drowse-trained artifact rather than a provider
-    release — the one place the source grammar's ``local:`` prefix is tested."""
-    return value.strip().startswith(LOCAL_SOURCE_PREFIX)
-
-
-def normalize_local_sae_name(value: str) -> str:
-    value = value.strip().removeprefix(LOCAL_SOURCE_PREFIX)
-    if _LOCAL_NAME_RE.fullmatch(value) is None:
-        raise ValueError(f"local SAE name must match {_LOCAL_NAME_RE.pattern}")
-    return value
-
-
-def local_sae_release(name: str) -> str:
-    return f"{LOCAL_SOURCE_PREFIX}{normalize_local_sae_name(name)}"
-
-
-def local_sae_root(model_id: str) -> Path:
-    return model_dir(model_id) / "sae" / "local"
-
-
-def local_sae_dir(model_id: str, name: str) -> Path:
-    return ensure_within(local_sae_root(model_id), normalize_local_sae_name(name))
-
-
 def local_sae_manifest_path(model_id: str, name: str) -> Path:
-    return local_sae_dir(model_id, name) / "manifest.json"
+    return SAE_SOURCES.local_dir(model_id, name) / "manifest.json"
 
 
 def _validate_manifest(
@@ -87,14 +55,13 @@ def _validate_manifest(
     model_id: str,
     name: str,
 ) -> dict[str, Any]:
-    name = normalize_local_sae_name(name)
     if not isinstance(payload, dict) or set(payload) != _MANIFEST_FIELDS:
         raise ValueError("local SAE manifest has an invalid schema")
     if (
         payload.get("format_version") != LOCAL_SAE_FORMAT_VERSION
         or payload.get("kind") != "local"
         or payload.get("name") != name
-        or payload.get("release") != local_sae_release(name)
+        or payload.get("release") != sae_release(SourceRef(LOCAL, name))
         or payload.get("model_id") != model_id
         or payload.get("activation") != "relu"
     ):
@@ -138,13 +105,21 @@ def _validate_manifest(
 
 
 def load_local_sae_manifest(model_id: str, name: str) -> dict[str, Any] | None:
+    """The validated manifest of a trained SAE, or ``None``.
+
+    Metadata-only: the schema and the payload's safetensors header (keys,
+    shapes, dtype) are checked, but the multi-GB payload is not hashed —
+    listing and selection run on every dashboard refresh.  The digest is
+    verified where the bytes are actually used, in
+    :func:`load_local_sae_tensors`.
+    """
     path = local_sae_manifest_path(model_id, name)
     if not path.exists():
         return None
     try:
         payload = _validate_manifest(json.loads(path.read_text()), model_id, name)
         tensor_path = path.parent / payload["tensor_file"]
-        if not tensor_path.exists() or hash_file(tensor_path) != payload["tensor_sha256"]:
+        if not tensor_path.exists():
             return None
         expected = {
             "W_enc": (payload["d_model"], payload["d_sae"]),
@@ -168,10 +143,21 @@ def load_local_sae_tensors(
     model_id: str,
     name: str,
 ) -> tuple[dict[str, torch.Tensor], dict[str, Any]] | None:
+    """Load a trained SAE's weights after verifying their recorded digest.
+
+    The digest check rides :func:`verify_integrity`'s stat-identity cache,
+    so a warm reload of an unchanged payload does not re-hash it.
+    """
     manifest = load_local_sae_manifest(model_id, name)
     if manifest is None:
         return None
-    tensors = load_file(str(local_sae_dir(model_id, name) / manifest["tensor_file"]))
+    root = SAE_SOURCES.local_dir(model_id, name)
+    ok, _bad = verify_integrity(
+        root, {manifest["tensor_file"]: manifest["tensor_sha256"]},
+    )
+    if not ok:
+        return None
+    tensors = load_file(str(root / manifest["tensor_file"]))
     if any(not torch.isfinite(value).all() for value in tensors.values()):
         return None
     return tensors, manifest
@@ -199,10 +185,9 @@ def save_local_sae(
     """Publish a Drowse-trained SAE and (by default) make it the active source.
 
     ``activate=False`` writes the artifact without selecting it — the same
-    opt-out ``fetch_neuronpedia_lens`` and ``save_sae_metadata`` have, for a
+    opt-out ``fetch_lens_source`` and ``save_sae_metadata`` have, for a
     caller that trains one SAE while another stays resident.
     """
-    name = normalize_local_sae_name(name)
     required = {"W_enc", "W_dec", "b_enc", "b_dec"}
     if set(tensors) != required:
         raise ValueError(f"local SAE tensors must be exactly {sorted(required)}")
@@ -224,7 +209,8 @@ def save_local_sae(
             raise ValueError(f"local SAE tensor {key} is invalid")
         clean[key] = value
 
-    root = local_sae_dir(model_id, name)
+    ref = SourceRef(LOCAL, name)
+    root = SAE_SOURCES.local_dir(model_id, name)
     manifest_path = root / "manifest.json"
     with artifact_lock(manifest_path):
         if manifest_path.exists() and not force:
@@ -242,7 +228,7 @@ def save_local_sae(
             "format_version": LOCAL_SAE_FORMAT_VERSION,
             "kind": "local",
             "name": name,
-            "release": local_sae_release(name),
+            "release": sae_release(ref),
             "model_id": model_id,
             "model_fingerprint": model_fingerprint,
             "model_source_fingerprint": model_source_fingerprint,
@@ -268,14 +254,13 @@ def save_local_sae(
                 old.unlink(missing_ok=True)
         fsync_directory(root)
     if activate:
-        set_active_sae_source(model_id, "local", name)
+        SAE_SOURCES.select(model_id, ref)
     return manifest_path
 
 
 def remove_local_sae(model_id: str, name: str) -> bool:
     """Delete a Drowse-trained SAE, unpublishing it if it was selected."""
-    name = normalize_local_sae_name(name)
-    root = local_sae_dir(model_id, name)
+    root = SAE_SOURCES.local_dir(model_id, name)
     manifest = root / "manifest.json"
     with artifact_lock(manifest):
         removed = root.exists()
@@ -288,29 +273,26 @@ def remove_local_sae(model_id: str, name: str) -> bool:
             except OSError:
                 pass
     # Unpublish after the artifact is gone, so the selection can never outlive
-    # what it points at.  The registry owns the payload shape.
-    SAE_SOURCES.clear_if_active(
-        sae_runtime_dir(model_id), model_id, "local", name,
-    )
+    # what it points at.
+    SAE_SOURCES.clear_if_active(model_id, SourceRef(LOCAL, name))
     return removed
 
 
 def list_local_saes(model_id: str) -> list[dict[str, Any]]:
-    active = load_active_sae_source(model_id)
+    active = SAE_SOURCES.active(model_id)
     rows: list[dict[str, Any]] = []
-    for root in sorted(local_sae_root(model_id).glob("*")):
-        if not root.is_dir():
-            continue
-        manifest = load_local_sae_manifest(model_id, root.name)
+    for name in SAE_SOURCES.local_names(model_id):
+        manifest = load_local_sae_manifest(model_id, name)
         if manifest is None:
             continue
+        ref = SourceRef(LOCAL, name)
         rows.append(
             {
-                "source": f"local:{root.name}",
-                "kind": "local",
-                "name": root.name,
-                "active": bool(active is not None and active["kind"] == "local" and active["name"] == root.name),
-                "path": str(root / "manifest.json"),
+                "source": SAE_SOURCES.format(ref),
+                "kind": LOCAL,
+                "name": name,
+                "active": active == ref,
+                "path": str(local_sae_manifest_path(model_id, name)),
                 "layer": manifest["layer"],
                 "features": manifest["d_sae"],
             }

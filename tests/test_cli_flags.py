@@ -116,9 +116,9 @@ def test_lens_layers_named_modes_parse() -> None:
 def test_lens_fit_pins_a_hub_corpus_once_for_preflight_and_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.lens.store as lens_io
+    import drowse.lens.corpus as lens_io
     from drowse.cli.runners import lens as lens_runner
-    from drowse.lens.store import HfLensCorpus, LensCorpusMix
+    from drowse.lens.corpus import HfLensCorpus, LensCorpusMix
 
     pinned = LensCorpusMix((
         HfLensCorpus("org/data", "default", "a" * 40, "body"),
@@ -699,8 +699,9 @@ def test_serve_attaches_best_sae_and_enables_live(
         def __init__(self) -> None:
             self.sae = _Sae()
 
-        def load_sae(self, release: str) -> dict[str, Any]:
+        def load_sae(self, release: str, **kwargs: Any) -> dict[str, Any]:
             self.loaded = release
+            self.load_kwargs = kwargs
             return {"release": release, "layer": 22, "width": 16_384}
 
     monkeypatch.setattr(
@@ -737,15 +738,20 @@ def test_serve_prefers_cached_sae_over_registry_default(
         def __init__(self) -> None:
             self.sae = _Sae()
 
-        def load_sae(self, release: str) -> dict[str, Any]:
+        def load_sae(self, release: str, **kwargs: Any) -> dict[str, Any]:
             self.loaded = release
+            self.load_kwargs = kwargs
             return {"release": release, "layer": 22, "width": 16_384}
 
     monkeypatch.setattr(
         "drowse.sae.sources.list_sae_sources",
-        lambda _model: [{
-            "source": "local:cached", "kind": "local", "active": False,
-        }],
+        lambda _model: [
+            {"source": "local:cached", "kind": "local", "active": False},
+            {
+                "source": "saelens:prov", "kind": "saelens", "active": True,
+                "layer": 9, "revision": "c" * 40,
+            },
+        ],
     )
     monkeypatch.setattr(
         "drowse.sae.backend.list_sae_releases",
@@ -755,7 +761,9 @@ def test_serve_prefers_cached_sae_over_registry_default(
     )
     session = _Session()
     assert cli_runners._enable_serve_live_sae_if_available(session)
-    assert session.loaded == "local:cached"
+    # The active provider binding wins, reloaded at its pinned commit/layer.
+    assert session.loaded == "prov"
+    assert session.load_kwargs == {"layer": 9, "revision": "c" * 40}
 
 
 def test_config_vectors_register_on_a_model_backed_surface(

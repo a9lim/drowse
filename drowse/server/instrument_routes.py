@@ -71,7 +71,7 @@ from drowse.server.response_models import (
 )
 
 if TYPE_CHECKING:
-    from drowse.lens.store import LensCorpus
+    from drowse.lens.corpus import LensCorpus
 
 log = logging.getLogger(__name__)
 
@@ -660,17 +660,12 @@ def register_instrument_routes(app: FastAPI) -> None:
     # =====================================================================
 
     async def _lens_fetch_body(body: LensFetchRequest) -> None:
-        from drowse.lens.sources import (
-            NEURONPEDIA_BINDING,
-            WORKSPACE_ARMS,
-            fetch_lens_source,
-        )
+        from drowse.lens.sources import LENS_PROVIDERS, fetch_lens_source
 
         st = lens_fetch_job.state
-        if body.source != NEURONPEDIA_BINDING and body.source not in WORKSPACE_ARMS:
+        if body.source not in LENS_PROVIDERS:
             raise ValueError(
-                "J-lens source must be one of "
-                + ", ".join([NEURONPEDIA_BINDING, *sorted(WORKSPACE_ARMS)])
+                "J-lens source must be one of " + ", ".join(sorted(LENS_PROVIDERS))
             )
         st["message"] = "fetching external lens into the Hugging Face cache…"
         binding = await run_in_thread(
@@ -683,7 +678,8 @@ def register_instrument_routes(app: FastAPI) -> None:
         st["message"] = "activating…"
         st["live_layers"] = await _activate_lens_source(binding.name)
         st["message"] = (
-            f"active: {binding.name} ({len(binding.source_layers)} layers)"
+            f"active: {binding.name} "
+            f"({len(binding.files[binding.key].layers)} layers)"
         )
         st["error"] = None
 
@@ -705,7 +701,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         source_layers: "list[int] | str",
         corpus: "LensCorpus",
     ) -> None:
-        from drowse.lens.store import stream_lens_corpus
+        from drowse.lens.corpus import stream_lens_corpus
 
         st = lens_fit_job.state
         st["message"] = f"streaming {body.prompts} documents from {corpus}…"
@@ -767,7 +763,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         st["message"] = "load failed"
 
     async def _sae_train_body(body: SaeTrainRequest, layer: int) -> None:
-        from drowse.lens.store import stream_lens_corpus
+        from drowse.lens.corpus import stream_lens_corpus
 
         st = sae_train_job.state
         n_docs = max(1, math.ceil(body.tokens / body.seq_len))
@@ -820,7 +816,7 @@ def register_instrument_routes(app: FastAPI) -> None:
 
     def _start_lens_fit(fields: dict[str, Any]) -> PreparationStatusJSON:
         from drowse.lens.jlens import JacobianLensCancelled
-        from drowse.lens.store import parse_lens_corpus
+        from drowse.lens.corpus import parse_lens_corpus
 
         body = LensFitRequest(**fields)
         try:

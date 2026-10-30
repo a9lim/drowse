@@ -975,11 +975,11 @@ def _build_lens_fit(p: argparse.ArgumentParser) -> None:
     estimator.add_argument(
         "--relp", dest="relp", action="store_true",
         help="Fit the R-lens (default): the same estimator through the "
-             "LRP-modified backward graph. Lands at local:relp.",
+             "LRP-modified backward graph. Lands at local:r.",
     )
     estimator.add_argument(
         "--standard", dest="relp", action="store_false",
-        help="Fit the standard Jacobian lens at local:default instead of the "
+        help="Fit the standard Jacobian lens at local:j instead of the "
              "default RelP R-lens.",
     )
     p.set_defaults(relp=True)
@@ -1089,7 +1089,8 @@ _LENS_DESCRIPTIONS: dict[str, str] = {
         "first-order effect of each layer's residual on the final-layer "
         "residual over a web-text corpus. One forward + ceil(d_model/dim_batch) "
         "backward passes per document — the only backward passes in drowse. "
-        "The artifact lands under ~/.drowse/models/<model>/jlens/local/default "
+        "The artifact lands under ~/.drowse/models/<model>/lens/local/r "
+        "(local/j with --standard) "
         "as an atomic manifest plus fp32 per-layer shards (~1-3 GB total) "
         "and backs `lens top`, `lens decompose`, the "
         "jlens/<word> steering atoms, and @when:jlens/<word> gates. "

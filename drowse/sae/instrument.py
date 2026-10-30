@@ -692,14 +692,11 @@ class SaeInstrument:
 
     def enable_live(self) -> dict[str, Any]:
         """Enable the one-matvec live feature readout at the resident layer."""
+        from drowse.sae.sources import SAE_SOURCES, parse_sae_release
+
         session = self._session
         backend, layer, _width = session._require_sae()
-        release = str(backend.release)
-        source = (
-            release
-            if release.startswith(("local:", "saelens:"))
-            else f"saelens:{release}"
-        )
+        source = SAE_SOURCES.format(parse_sae_release(str(backend.release)))
         with self.state_lock:
             self.live = {
                 "layer": layer,
@@ -723,17 +720,15 @@ class SaeInstrument:
         Residency is the source here: an SAE with no weights loaded has no
         active source, and ``sae_info`` is the one place that identity lives.
         """
+        from drowse.sae.sources import SAE_SOURCES, parse_sae_release
+
         info = self._session.sae_info
         if not info:
             return None
         release = info.get("release")
         if not release:
             return None
-        text = str(release)
-        return (
-            text if text.startswith(("local:", "saelens:"))
-            else f"saelens:{text}"
-        )
+        return SAE_SOURCES.format(parse_sae_release(str(release)))
 
     @property
     def live_state(self) -> SaeLiveState:

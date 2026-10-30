@@ -1,7 +1,6 @@
 """DrowseSession — unified backend for drowse's programmatic and server APIs."""
 from __future__ import annotations
 import asyncio
-import json
 import logging
 import queue
 import threading
@@ -679,22 +678,11 @@ class _SteeringContext:
 _PROFILE_ABSENT = object()
 
 
-def _jlens_sidecar_identity(sidecar: "Mapping[str, Any] | None") -> tuple[Any, ...] | None:
+def _jlens_sidecar_identity(sidecar: "Mapping[str, Any] | None") -> str | None:
     """Stable identity binding a resident fp32 lens to its disk artifact."""
-    if sidecar is None:
-        return None
-    return (
-        sidecar.get("tensor_sha256"),
-        sidecar.get("corpus_sha256"),
-        sidecar.get("corpus_hash_kind"),
-        sidecar.get("model_fingerprint"),
-        int(sidecar.get("n_prompts", 0)),
-        int(sidecar.get("d_model", 0)),
-        tuple(int(layer) for layer in sidecar.get("source_layers", [])),
-        int(sidecar.get("seq_len", 0)),
-        sidecar.get("estimator_policy"),
-        json.dumps(sidecar.get("_source"), sort_keys=True, default=str),
-    )
+    from drowse.lens.store import lens_identity
+
+    return lens_identity(sidecar)
 
 
 def _jlens_matches_loaded_model(
@@ -719,12 +707,14 @@ def _jlens_matches_loaded_model(
     )
     if not isinstance(live_commit, str) or live_commit != source.get("model_revision"):
         return False
+    from drowse.lens.store import lens_layers
+
     text_config = getattr(config, "text_config", config)
     hidden = getattr(text_config, "hidden_size", getattr(text_config, "n_embd", None))
     n_layers = getattr(
         text_config, "num_hidden_layers", getattr(text_config, "n_layer", None),
     )
-    layers = sidecar.get("source_layers", [])
+    layers = lens_layers(sidecar)
     return bool(
         isinstance(hidden, int)
         and not isinstance(hidden, bool)
@@ -1363,29 +1353,35 @@ class DrowseSession:
         # profile mutation.
         self._prefix_cache: PrefixCacheEntry | None = None
 
-        # An explicit ``sae use`` selection persists across sessions. Provider
-        # payloads are expected to be present in their own cache already;
-        # failure is non-fatal so an offline cache eviction cannot prevent the
-        # model itself from starting.
+        self._restore_active_sae()
+
+    def _restore_active_sae(self) -> None:
+        """Make an explicit ``sae use`` selection resident again at startup.
+
+        ``load_active_sae`` owns the source grammar and reads the provider
+        binding only when there is one.  A provider binding pins the commit
+        it was fetched at and the last explicitly selected hook layer, so the
+        restore lands exactly that measurement surface — offline from the
+        provider cache, and never silently moved to upstream HEAD.  Failure
+        is non-fatal so a cache eviction cannot keep the model from starting.
+        """
         from drowse.sae.sources import load_active_sae
 
-        # ``load_active_sae`` owns the source grammar: it renders the
-        # selection into the public ``local:<name>`` / bare-release form and
-        # reads the provider binding only when there is one.  Provider
-        # bindings remember the last explicitly selected hook layer, so the
-        # restore lands that exact measurement surface rather than silently
-        # returning to the release's automatic default.
         active_sae = load_active_sae(self.model_id)
-        if active_sae is not None:
-            release, metadata = active_sae
-            layer = metadata.get("layer") if metadata is not None else None
-            try:
-                self.load_sae(release, layer=layer)
-            except Exception as exc:
-                _log.warning(
-                    "could not restore active SAE %s for %s: %s",
-                    release, self.model_id, exc,
-                )
+        if active_sae is None:
+            return
+        release, metadata = active_sae
+        try:
+            self.load_sae(
+                release,
+                layer=None if metadata is None else metadata["layer"],
+                revision=None if metadata is None else metadata["revision"],
+            )
+        except Exception as exc:
+            _log.warning(
+                "could not restore active SAE %s for %s: %s",
+                release, self.model_id, exc,
+            )
 
     # -- ModelHandle protocol surface (consumed by ManifoldExtractionPipeline) --
 
@@ -2047,9 +2043,8 @@ class DrowseSession:
 
         ``backward_rules="relp"`` fits the R-lens: the same estimator run
         through the LRP-modified backward graph (``lens.relp``), landing at
-        ``local/relp`` beside the standard ``local/default`` artifact so a
-        matched J/R pair coexists per model (switch with
-        ``lens use <model> local:relp``).
+        ``local:r`` beside the standard ``local:j`` artifact so a matched
+        J/R pair coexists per model (switch with ``lens use <model> local:r``).
         """
         from drowse.lens.store import cleanup_lens_artifacts, lens_fit_lock
 
@@ -2057,7 +2052,7 @@ class DrowseSession:
             raise ValueError(
                 f"backward_rules must be 'standard' or 'relp', got {backward_rules!r}"
             )
-        lens_name = "relp" if backward_rules == "relp" else "default"
+        lens_name = "r" if backward_rules == "relp" else "j"
         with lens_fit_lock(self.model_id, lens_name):
             cleanup_lens_artifacts(self.model_id, lens_name)
             if cancel_event is not None and cancel_event.is_set():
@@ -2122,27 +2117,27 @@ class DrowseSession:
             JacobianLens,
             JacobianLensCancelled,
             JacobianLensError,
-            fit_jacobian_lens,
         )
+        from drowse.lens.fit import fit_jacobian_lens
         from drowse.lens.store import (
-            LENS_FORMAT_VERSION,
-            load_local_lens as load_lens,
-            load_local_lens_sidecar as load_lens_sidecar,
-            save_lens,
-        )
-        from drowse.lens.store import (
+            LensProvenance,
             _load_lens_verified,
             lens_estimator_policy,
+            lens_layers,
             load_lens_checkpoint,
             load_lens_checkpoint_sidecar,
+            load_local_lens as load_lens,
+            load_local_lens_sidecar as load_lens_sidecar,
             promote_lens_checkpoint,
             remove_lens_checkpoint,
             remove_subsumed_lens_checkpoint,
-            save_lens_checkpoint_accumulator,
+            save_lens,
+            save_lens_checkpoint,
         )
 
-        lens_name = "relp" if backward_rules == "relp" else "default"
-        expected_policy = lens_estimator_policy(backward_rules=backward_rules)
+        lens_kind = "R" if backward_rules == "relp" else "J"
+        lens_name = lens_kind.lower()
+        expected_policy = lens_estimator_policy(lens_kind)
         dim_batch = dim_batch or DEFAULT_DIM_BATCH
         seq_len = seq_len or DEFAULT_SEQ_LEN
         checkpoint_every = checkpoint_every or DEFAULT_CHECKPOINT_EVERY
@@ -2169,15 +2164,9 @@ class DrowseSession:
             fit_layers = list(get_layers(fit_model))
 
             def _run_estimator(*args: "Any", **kwargs: "Any") -> "Any":
-                if backward_rules == "relp":
-                    from drowse.lens.relp import relp_backward_rules
-
-                    with relp_backward_rules(fit_layers):
-                        return fit_jacobian_lens(
-                            fit_model, self._tokenizer, *args, **kwargs,
-                        )
                 return fit_jacobian_lens(
-                    fit_model, self._tokenizer, *args, **kwargs,
+                    fit_model, self._tokenizer, *args, kind=lens_kind,
+                    **kwargs,
                 )
             model_fingerprint = loaded_model_fingerprint(
                 fit_model, self.model_id,
@@ -2227,20 +2216,29 @@ class DrowseSession:
                 return hashlib.sha256(repr(list(rows)).encode("utf-8")).hexdigest()
 
             def _checkpoint_progress(sidecar: "Mapping[str, Any] | None") -> int:
-                if sidecar is None:
-                    return -1
-                try:
-                    return int(sidecar.get("base_n_prompts", 0)) + int(
-                        sidecar.get("n_prompts", -1)
-                    )
-                except (TypeError, ValueError):
-                    return -1
+                return -1 if sidecar is None else int(sidecar["n_prompts"])
 
             corpus_hash_kind = "token_ids_v1"
+
+            def _provenance(usable_prompt_count: int) -> "Any":
+                return LensProvenance(
+                    corpus_spec=corpus_spec,
+                    corpus_sha256=corpus_sha,
+                    corpus_hash_kind=corpus_hash_kind,
+                    seq_len=seq_len,
+                    dim_batch=dim_batch,
+                    skip_first=SKIP_FIRST_POSITIONS,
+                    raw_corpus_sha256=raw_corpus_sha,
+                    raw_prompt_count=raw_prompt_count,
+                    usable_prompt_count=usable_prompt_count,
+                    model_layer_count=len(fit_layers),
+                    model_fingerprint=model_fingerprint,
+                    model_source_fingerprint=model_source_fp,
+                )
+
             base: Any = None
             checkpoint_sidecar = None
             checkpoint_meta_matches = False
-            checkpoint_base_n = -1
             checkpoint_n = -1
             resident_evicted_early = False
             pre_evicted_live: dict[str, Any] | None = None
@@ -2269,17 +2267,11 @@ class DrowseSession:
                     and checkpoint_sidecar.get("seq_len") == seq_len
                     and checkpoint_sidecar.get("model_fingerprint")
                     == model_fingerprint
-                    and [
-                        int(l)
-                        for l in checkpoint_sidecar.get("source_layers", [])
-                    ] == expected_sources
+                    and lens_layers(checkpoint_sidecar) == expected_sources
                 )
                 if checkpoint_meta_matches:
                     assert checkpoint_sidecar is not None
-                    checkpoint_base_n = int(
-                        checkpoint_sidecar.get("base_n_prompts", -1)
-                    )
-                    checkpoint_n = int(checkpoint_sidecar.get("n_prompts", -1))
+                    checkpoint_n = int(checkpoint_sidecar["n_prompts"])
                 sidecar = load_lens_sidecar(self.model_id, lens_name)
                 saved_n = 0
                 if (
@@ -2297,9 +2289,7 @@ class DrowseSession:
                         and saved_sha == _token_rows_sha(consumed_ids[:saved_n])
                     )
                     if corpus_matches or prefix_matches:
-                        durable_sources = {
-                            int(layer) for layer in sidecar.get("source_layers", [])
-                        }
+                        durable_sources = set(lens_layers(sidecar))
                         if (
                             saved_n < len(usable)
                             and bool(durable_sources - expected_set)
@@ -2320,9 +2310,7 @@ class DrowseSession:
                                 "replace it with the requested subset."
                             )
                         prefer_checkpoint = bool(
-                            checkpoint_meta_matches
-                            and checkpoint_base_n == 0
-                            and checkpoint_n > saved_n
+                            checkpoint_meta_matches and checkpoint_n > saved_n
                         )
                         existing_payload_verified = False
                         resident = self._jlens
@@ -2354,8 +2342,7 @@ class DrowseSession:
                             # A resident stamped with the durable pointer must
                             # represent that whole artifact, not merely the
                             # selected return view from an earlier subset call.
-                            and resident_layers
-                            == {int(layer) for layer in sidecar["source_layers"]}
+                            and resident_layers == set(lens_layers(sidecar))
                             and resident_layers >= expected_set
                             and self._jlens_identity
                             == _jlens_sidecar_identity(sidecar)
@@ -2371,8 +2358,6 @@ class DrowseSession:
                                 if (
                                     saved_n >= len(usable)
                                     and durable_sources >= expected_set
-                                    and int(sidecar.get("format_version", 0))
-                                    == LENS_FORMAT_VERSION
                                 )
                                 else None
                             )
@@ -2419,10 +2404,7 @@ class DrowseSession:
                                 ),
                             )
                             selected = lens.select_layers(expected_sources)
-                            durable_set = {
-                                int(layer)
-                                for layer in sidecar.get("source_layers", [])
-                            }
+                            durable_set = set(lens_layers(sidecar))
                             if existing_set == durable_set:
                                 DrowseSession._adopt_fitted_jlens(
                                     self, lens, sidecar=sidecar,
@@ -2469,9 +2451,7 @@ class DrowseSession:
                             == model_fingerprint
                             and topup_sidecar.get("estimator_policy")
                             == expected_policy
-                            and topup_sidecar.get("base_n_prompts") == 0
-                            and [int(l) for l in topup_sidecar.get("source_layers", [])]
-                            == missing_sources
+                            and lens_layers(topup_sidecar) == missing_sources
                         )
                         topup_ckpt = (
                             load_lens_checkpoint(self.model_id, lens_name)
@@ -2498,25 +2478,12 @@ class DrowseSession:
                             completed: int,
                             d_model: int,
                         ) -> None:
-                            save_lens_checkpoint_accumulator(
+                            # ``fit_jacobian_lens`` owns/mutates the prefix
+                            # as part of this raw accumulator.
+                            save_lens_checkpoint(
                                 sums, completed, d_model, self.model_id,
-                                # ``fit_jacobian_lens`` owns/mutates the prefix
-                                # as part of this raw accumulator.
-                                name=lens_name,
-                                backward_rules=backward_rules,
-                                base=None,
-                                corpus_spec=corpus_spec,
-                                corpus_sha256=corpus_sha,
-                                corpus_hash_kind=corpus_hash_kind,
-                                seq_len=seq_len,
-                                dim_batch=dim_batch,
-                                skip_first=SKIP_FIRST_POSITIONS,
-                                raw_corpus_sha256=raw_corpus_sha,
-                                raw_prompt_count=raw_prompt_count,
-                                usable_prompt_count=len(consumed_ids),
-                                model_layer_count=len(fit_layers),
-                                model_fingerprint=model_fingerprint,
-                                model_source_fingerprint=model_source_fp,
+                                _provenance(len(consumed_ids)),
+                                kind=lens_kind,
                                 consumed_prefix_sha256=_token_rows_sha(
                                     all_consumed_ids[:completed]
                                 ),
@@ -2545,18 +2512,7 @@ class DrowseSession:
                         merged = JacobianLens.union_layers([lens, missing])
                         save_lens(
                             merged, self.model_id,
-                            name=lens_name, backward_rules=backward_rules,
-                            corpus_spec=corpus_spec, corpus_sha256=corpus_sha,
-                            corpus_hash_kind=corpus_hash_kind,
-                            seq_len=seq_len, dim_batch=dim_batch,
-                            skip_first=SKIP_FIRST_POSITIONS,
-                            durable=True,
-                            raw_corpus_sha256=raw_corpus_sha,
-                            raw_prompt_count=raw_prompt_count,
-                            usable_prompt_count=len(consumed_ids),
-                            model_layer_count=len(fit_layers),
-                            model_fingerprint=model_fingerprint,
-                            model_source_fingerprint=model_source_fp,
+                            _provenance(len(consumed_ids)),
                             reuse_layers=existing_set,
                             _verified_reuse_proof=existing_reuse_proof,
                         )
@@ -2573,21 +2529,10 @@ class DrowseSession:
                         base = None
                 load_checkpoint_payload = bool(
                     checkpoint_meta_matches
-                    and (
-                        (
-                            checkpoint_base_n == 0
-                            and (base is None or checkpoint_n > base.n_prompts)
-                        )
-                        or (
-                            checkpoint_base_n > 0
-                            and base is not None
-                            and checkpoint_base_n == base.n_prompts
-                        )
-                    )
+                    and (base is None or checkpoint_n > base.n_prompts)
                 )
                 if (
                     load_checkpoint_payload
-                    and checkpoint_base_n == 0
                     and self._jlens is not None
                     and not resident_evicted_early
                 ):
@@ -2624,31 +2569,18 @@ class DrowseSession:
                             sidecar = fallback_sidecar
                             base = fallback_lens.select_layers(expected_sources)
                 if ckpt is not None:
-                    partial, ckpt_sidecar = ckpt
-                    if checkpoint_meta_matches:
-                        ckpt_base_n = int(ckpt_sidecar.get("base_n_prompts", -1))
-                        if ckpt_base_n == 0 and (
-                            base is None or partial.n_prompts >= base.n_prompts
-                        ):
-                            # New checkpoints are self-contained.  Prefer the
-                            # furthest durable accumulator even when an older
-                            # full artifact is also present; otherwise a second
-                            # interruption would silently rewind to that artifact.
-                            base = partial
-                            if on_progress is not None:
-                                on_progress(
-                                    "resuming from checkpoint at "
-                                    f"{base.n_prompts} prompts"
-                                )
-                        elif base is not None and ckpt_base_n == base.n_prompts:
-                            base = JacobianLens.merge_into(
-                                [base, partial], target=-1,
+                    partial, _ckpt_sidecar = ckpt
+                    if base is None or partial.n_prompts >= base.n_prompts:
+                        # Checkpoints are self-contained.  Prefer the furthest
+                        # accumulator even when an older full artifact is also
+                        # present; otherwise a second interruption would
+                        # silently rewind to that artifact.
+                        base = partial
+                        if on_progress is not None:
+                            on_progress(
+                                "resuming from checkpoint at "
+                                f"{base.n_prompts} prompts"
                             )
-                            if on_progress is not None:
-                                on_progress(
-                                    "resuming from checkpoint at "
-                                    f"{base.n_prompts} prompts"
-                                )
                 if base is not None:
                     base_n_prompts = base.n_prompts
                     usable = usable[base_n_prompts:]
@@ -2676,18 +2608,7 @@ class DrowseSession:
             def _save_full(lens: "Any") -> "Any":
                 save_lens(
                     lens, self.model_id,
-                    name=lens_name, backward_rules=backward_rules,
-                    corpus_spec=corpus_spec, corpus_sha256=corpus_sha,
-                    corpus_hash_kind=corpus_hash_kind,
-                    seq_len=seq_len, dim_batch=dim_batch,
-                    skip_first=SKIP_FIRST_POSITIONS,
-                    durable=True,
-                    raw_corpus_sha256=raw_corpus_sha,
-                    raw_prompt_count=raw_prompt_count,
-                    usable_prompt_count=len(consumed_ids) + prompt_base,
-                    model_layer_count=len(fit_layers),
-                    model_fingerprint=model_fingerprint,
-                    model_source_fingerprint=model_source_fp,
+                    _provenance(len(consumed_ids) + prompt_base),
                 )
                 remove_lens_checkpoint(self.model_id, lens_name)
                 return lens
@@ -2702,25 +2623,12 @@ class DrowseSession:
             ) -> None:
                 nonlocal checkpoint_written, checkpoint_proof
                 proof_out: list[Any] = []
-                save_lens_checkpoint_accumulator(
+                # The prefix is already folded into ``sums`` by the
+                # single-accumulator resume path.
+                save_lens_checkpoint(
                     sums, completed, d_model, self.model_id,
-                    # The prefix is already folded into ``sums`` by the
-                    # single-accumulator resume path.
-                    name=lens_name,
-                    backward_rules=backward_rules,
-                    base=None,
-                    corpus_spec=corpus_spec,
-                    corpus_sha256=corpus_sha,
-                    corpus_hash_kind=corpus_hash_kind,
-                    seq_len=seq_len,
-                    dim_batch=dim_batch,
-                    skip_first=SKIP_FIRST_POSITIONS,
-                    raw_corpus_sha256=raw_corpus_sha,
-                    raw_prompt_count=raw_prompt_count,
-                    usable_prompt_count=len(consumed_ids) + prompt_base,
-                    model_layer_count=len(fit_layers),
-                    model_fingerprint=model_fingerprint,
-                    model_source_fingerprint=model_source_fp,
+                    _provenance(len(consumed_ids) + prompt_base),
+                    kind=lens_kind,
                     consumed_prefix_sha256=_token_rows_sha(
                         all_consumed_ids[:completed]
                     ),
@@ -3015,11 +2923,10 @@ class DrowseSession:
             J_unique,
             [layer_to_row[layer] for layer, _ in rows],
         )
-        H = torch.stack([
-            hidden.detach().to(torch.float32) for _, hidden in rows
-        ]).to(device)
-        transported = torch.bmm(J_rows, H.unsqueeze(-1)).squeeze(-1)
-        return readout(transported)
+        from drowse.lens.jlens import transport_rows
+
+        H = torch.stack([hidden.detach() for _, hidden in rows])
+        return readout(transport_rows(J_rows, H))
 
     def _jlens_aggregate_rows(
         self,
@@ -3580,14 +3487,14 @@ class DrowseSession:
         """Train and persist a Drowse-owned residual-post SAE."""
         import hashlib
 
+        from drowse.base.source_registry import LOCAL, SourceRef
+        from drowse.sae.sources import SAE_SOURCES, sae_release
         from drowse.sae.training import train_residual_sae
-        from drowse.sae.store import (
-            local_sae_release,
-            normalize_local_sae_name,
-            save_local_sae,
-        )
+        from drowse.sae.store import save_local_sae
 
-        local_name = normalize_local_sae_name(name)
+        local_name = name.strip()
+        SAE_SOURCES.local_dir(self.model_id, local_name)  # validates the name
+        release = sae_release(SourceRef(LOCAL, local_name))
         docs = list(documents)
         if not docs:
             raise ValueError("SAE training needs at least one corpus document")
@@ -3637,34 +3544,40 @@ class DrowseSession:
                 dead_feature_threshold=dead_feature_threshold,
                 force=force,
             )
-        runtime = self.load_sae(local_sae_release(local_name), layer=layer)
+        runtime = self.load_sae(release, layer=layer)
         return {
-            "source": local_sae_release(local_name),
+            "source": release,
             "artifact": str(manifest),
             "metrics": metrics,
             "runtime": runtime,
         }
 
-    def load_sae(self, release: str, *, layer: int | None = None) -> dict[str, Any]:
+    def load_sae(
+        self, release: str, *, layer: int | None = None,
+        revision: str | None = None,
+    ) -> dict[str, Any]:
         """Load one local or SAELens source as the session's resident SAE.
 
         Provider registry resolution stays eager while the selected layer's
         weights are made resident here; local artifacts resolve directly from
         Drowse storage. The deterministic default is the covered layer nearest
-        65% model depth, preferring the workspace band.
+        65% model depth, preferring the workspace band.  ``revision`` pins a
+        provider release (a binding's recorded commit); ``None`` resolves the
+        release's current Hub head.
         """
         from drowse.sae.backend import (
             LocalSaeBackend,
             load_sae_backend,
+            sae_binding,
             select_runtime_layer,
             validate_residual_width,
         )
         from drowse.sae.sources import (
+            SAE_SOURCES,
             load_sae_feature_meta,
+            parse_sae_release,
             save_sae_metadata,
-            set_active_sae_source,
         )
-        from drowse.sae.store import normalize_local_sae_name
 
         release = release.strip()
         if not release:
@@ -3673,8 +3586,8 @@ class DrowseSession:
             "load_sae called while another model operation is in flight; retry shortly"
         ):
             backend = load_sae_backend(
-                release, model_id=self.model_id, device=self._device,
-                dtype=self._dtype, warn_on_multiple=False,
+                release, revision=revision, model_id=self.model_id,
+                device=self._device, dtype=self._dtype, warn_on_multiple=False,
             )
             if (
                 isinstance(backend, LocalSaeBackend)
@@ -3696,13 +3609,7 @@ class DrowseSession:
             validate_residual_width(
                 backend, selected, int(self._model_info["hidden_dim"]),
             )
-            source_info = {
-                "layer": selected, "width": width,
-                "revision": backend.revision, "fingerprint": backend.fingerprint,
-                "sae_id": backend.sae_ids_by_layer.get(str(selected)),
-                "repo_id": backend.repo_id,
-                "neuronpedia_id": backend.neuronpedia_ids_by_layer.get(str(selected)),
-            }
+            source_info = sae_binding(backend, selected, width)
             feature_meta = (
                 {} if isinstance(backend, LocalSaeBackend)
                 else load_sae_feature_meta(self.model_id, release, source=source_info)
@@ -3713,9 +3620,7 @@ class DrowseSession:
             # while ``sae_loaded`` was nevertheless true for the half-adopted
             # provider backend.
             if isinstance(backend, LocalSaeBackend):
-                set_active_sae_source(
-                    self.model_id, "local", normalize_local_sae_name(release),
-                )
+                SAE_SOURCES.select(self.model_id, parse_sae_release(release))
             else:
                 save_sae_metadata(self.model_id, release, source_info)
             # Feature ids belong to the resident release; changing it evicts
@@ -3765,16 +3670,9 @@ class DrowseSession:
         width = self._sae_width
         if backend is None or layer is None or width is None:
             return None
-        return {
-            "release": backend.release,
-            "revision": backend.revision,
-            "fingerprint": backend.fingerprint,
-            "layer": int(layer),
-            "width": int(width),
-            "sae_id": backend.sae_ids_by_layer.get(str(layer)),
-            "repo_id": backend.repo_id,
-            "neuronpedia_id": backend.neuronpedia_ids_by_layer.get(str(layer)),
-        }
+        from drowse.sae.backend import sae_binding
+
+        return {"release": backend.release, **sae_binding(backend, layer, width)}
 
     def _require_sae(self) -> tuple[Any, int, int]:
         from drowse.errors import SaeNotLoadedError
@@ -4327,7 +4225,7 @@ class DrowseSession:
         is typical for concept vectors, most of whose variance lies outside
         the workspace).
         """
-        from drowse.lens.jlens import sparse_nonneg_decompose
+        from drowse.lens.decompose import TokensOut, sparse_decompose
         from drowse.model.readout import get_output_projection, get_unembedding
 
         lens = self._require_jlens()
@@ -4348,16 +4246,22 @@ class DrowseSession:
             jacobian = lens.jacobians[layer]
             if projection is not None:
                 jacobian = projection.detach().to(device=jacobian.device, dtype=torch.float32) @ jacobian
-            dec = sparse_nonneg_decompose(
-                directions[layer], jacobian, unembed,
+            dec = sparse_decompose(
+                directions[layer],
+                TokensOut(
+                    jacobian, unembed,
+                    atom_norms=(
+                        lens.atom_norms(layer, unembed)
+                        if projection is None else None
+                    ),
+                ),
                 layer=layer, k=k,
-                atom_norms=lens.atom_norms(layer, unembed) if projection is None else None,
             )
             out[layer] = (
                 dec.share,
                 [
                     (str(self._tokenizer.decode([tok])), coeff)
-                    for tok, coeff in dec.tokens
+                    for tok, coeff in dec.atoms
                 ],
             )
         return out

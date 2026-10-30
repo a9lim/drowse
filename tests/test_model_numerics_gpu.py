@@ -9,15 +9,10 @@ import torch
 
 from drowse.fit.capture import _capture_all_hidden_states
 from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
-from drowse.lens.jlens import JacobianLens, lens_logits
+from drowse.lens.jlens import JacobianLens, transport_rows
 from drowse.model.arch import get_layers
 from drowse.model.load import load_model
-from drowse.model.readout import (
-    LogitReadout,
-    get_final_norm,
-    get_logit_softcap,
-    get_unembedding,
-)
+from drowse.model.readout import LogitReadout
 from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(
@@ -48,8 +43,9 @@ def test_native_identity_readout_matches_real_output_head(loaded: tuple[Any, Any
     lens = JacobianLens({last: torch.eye(dim, device=device)}, n_prompts=1, d_model=dim)
     with torch.inference_mode():
         expected = model(ids, use_cache=False).logits[0, -1].float()
-        actual = lens_logits(lens, captured, unembed=get_unembedding(model), final_norm=get_final_norm(model),
-                             logit_softcap=get_logit_softcap(model), readout=LogitReadout(model))[last]
+        row = captured[last].reshape(1, dim)
+        J = lens.jacobians[last].to(device).unsqueeze(0)
+        actual = LogitReadout(model)(transport_rows(J, row))[0].float()
     # The fused LM head and the lens readout run different kernels; on MPS
     # half-precision the two differ by a few ulps on a handful of logits.
     torch.testing.assert_close(actual, expected, atol=2e-2, rtol=1e-2)

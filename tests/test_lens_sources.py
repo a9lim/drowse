@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -8,11 +10,44 @@ import pytest
 import torch
 
 from drowse.base.atomic import write_json_atomic
+from drowse.base.source_registry import SourceRef
+from drowse.lens.jlens import JacobianLens
+from drowse.lens.key import LensKey
+from drowse.lens.store import LensProvenance, save_lens
+
+_PROV = LensProvenance(
+    corpus_spec="test", corpus_sha256="a" * 64, seq_len=8, dim_batch=1,
+)
 
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "drowse"))
+
+
+def _neuronpedia_binding(config: Path, checkpoint: Path) -> Any:
+    from drowse.lens import sources
+
+    return sources.LensBinding(
+        name="neuronpedia",
+        model_id="org/model",
+        model_revision="model-commit",
+        repo_id="neuronpedia/jacobian-lens",
+        repo_revision="lens-commit",
+        files={LensKey("J"): sources.BoundLensFile(
+            "model/lens.pt", hashlib.sha256(checkpoint.read_bytes()).hexdigest(), (0,),
+        )},
+        d_model=4,
+        n_prompts=12,
+        corpus="Salesforce/wikitext:wikitext-103-raw-v1:train",
+        seq_len=128,
+        skip_first=0,
+        provenance={
+            "config_file": "model/config.yaml",
+            "config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+            "dim_batch": 8,
+        },
+    )
 
 
 def test_external_lens_stays_in_provider_cache(
@@ -36,29 +71,13 @@ def test_external_lens_stays_in_provider_cache(
         },
         checkpoint,
     )
-    import hashlib
-
-    binding = sources.ExternalLensBinding(
-        name="neuronpedia",
-        model_id="org/model",
-        model_revision="model-commit",
-        repo_id="neuronpedia/jacobian-lens",
-        repo_revision="lens-commit",
-        checkpoint="model/lens.pt",
-        config_file="model/config.yaml",
-        config_sha256=hashlib.sha256(config.read_bytes()).hexdigest(),
-        corpus="Salesforce/wikitext:wikitext-103-raw-v1:train",
-        n_prompts=12,
-        seq_len=128,
-        dim_batch=8,
-        d_model=4,
-        source_layers=(0,),
-    )
+    binding = _neuronpedia_binding(config, checkpoint)
     write_json_atomic(
-        sources.lens_binding_path("org/model", "neuronpedia"),
+        sources.LENS_SOURCES.binding_path("org/model", "neuronpedia"),
         binding.to_json(),
     )
-    sources.set_active_lens_source("org/model", "huggingface", "neuronpedia")
+    assert sources.load_external_lens_binding("org/model", "neuronpedia") == binding
+    sources.use_lens_source("org/model", "neuronpedia")
 
     def download(_repo: str, filename: str, **_kwargs: object) -> str:
         return str(config if filename.endswith("config.yaml") else checkpoint)
@@ -66,53 +85,86 @@ def test_external_lens_stays_in_provider_cache(
     monkeypatch.setattr(sources, "_hf_hub_download", download)
     sidecar = load_lens_sidecar("org/model")
     assert sidecar is not None and sidecar["_source"]["provider"] == "neuronpedia"
+    assert sidecar["kind"] == "J" and sidecar["sites"] == {"out": {"layers": [0]}}
     loaded = load_lens("org/model")
     assert loaded is not None
     lens, _ = loaded
-    assert lens.source_layers == [0]
+    assert lens.source_layers == [0] and lens.key == LensKey("J")
     assert lens.jacobians[0].dtype == torch.float32
     assert not list((tmp_path / "drowse").rglob("*.safetensors"))
     assert checkpoint.exists()
     rows = sources.list_lens_sources("org/model")
     assert rows[0]["source"] == "neuronpedia"
     assert rows[0]["repo_id"] == "neuronpedia/jacobian-lens"
-    assert sources.remove_external_lens_binding("org/model")
+    assert rows[0]["lens"] == "J" and rows[0]["active"]
+    assert sources.remove_lens_source(
+        "org/model", SourceRef("huggingface", "neuronpedia"),
+    )
+    assert sources.LENS_SOURCES.active("org/model", "output") is None
     assert checkpoint.exists()  # provider cache ownership is preserved
 
 
-def test_local_lens_layout_and_source_selection() -> None:
-    from drowse.lens.jlens import JacobianLens
-    from drowse.lens.store import lens_paths, save_lens
-    from drowse.lens.sources import list_lens_sources, load_active_lens_source
+def test_pre_v7_binding_reads_as_absent(tmp_path: Path) -> None:
+    from drowse.lens import sources
 
-    save_lens(
-        JacobianLens({0: torch.eye(3)}, n_prompts=2, d_model=3),
-        "org/model",
-        corpus_spec="test",
-        corpus_sha256="a" * 64,
-        seq_len=8,
-        dim_batch=1,
-        skip_first=0,
+    config = tmp_path / "config.yaml"
+    config.write_text("x")
+    checkpoint = tmp_path / "lens.pt"
+    checkpoint.write_bytes(b"x")
+    payload = _neuronpedia_binding(config, checkpoint).to_json()
+    payload["format_version"] = 1
+    write_json_atomic(
+        sources.LENS_SOURCES.binding_path("org/model", "neuronpedia"), payload,
     )
-    _tensor, manifest = lens_paths("org/model")
-    assert manifest.parts[-4:] == ("jlens", "local", "default", "manifest.json")
-    assert load_active_lens_source("org/model") == {
-        "format_version": 1,
+    assert sources.load_external_lens_binding("org/model", "neuronpedia") is None
+
+
+def test_local_lens_layout_and_source_selection() -> None:
+    from drowse.lens.sources import LENS_SOURCES, list_lens_sources
+    from drowse.lens.store import lens_manifest_path
+
+    save_lens(JacobianLens({0: torch.eye(3)}, n_prompts=2, d_model=3), "org/model", _PROV)
+    manifest = lens_manifest_path("org/model", "j")
+    assert manifest.parts[-4:] == ("lens", "local", "j", "manifest.json")
+    assert json.loads(LENS_SOURCES.active_path("org/model").read_text()) == {
+        "format_version": 2,
         "model_id": "org/model",
-        "kind": "local",
-        "name": "default",
+        "output": {"kind": "local", "name": "j"},
+        "input": None,
     }
     rows = list_lens_sources("org/model")
-    assert len(rows) == 1 and rows[0]["source"] == "local:default" and rows[0]["active"]
+    assert len(rows) == 1 and rows[0]["source"] == "local:j" and rows[0]["active"]
+
+
+def test_selection_is_per_side_so_output_and_input_lenses_coexist() -> None:
+    """An R-lens and an S-lens read opposite sides of a unit: both stay active."""
+    from drowse.lens.sources import LENS_SOURCES, remove_lens_source, use_lens_source
+
+    for kind in ("R", "S", "J"):
+        save_lens(
+            JacobianLens({0: torch.eye(3)}, n_prompts=2, d_model=3, key=LensKey(kind)),
+            "org/model", _PROV,
+        )
+    # The last publication of each side wins its own slot only.
+    assert LENS_SOURCES.active("org/model", "output") == SourceRef("local", "j")
+    assert LENS_SOURCES.active("org/model", "input") == SourceRef("local", "s")
+    use_lens_source("org/model", "local:r")
+    assert LENS_SOURCES.active("org/model", "output") == SourceRef("local", "r")
+    assert LENS_SOURCES.active("org/model", "input") == SourceRef("local", "s")
+
+    assert remove_lens_source("org/model", SourceRef("local", "s"))
+    assert LENS_SOURCES.active("org/model", "input") is None
+    assert LENS_SOURCES.active("org/model", "output") == SourceRef("local", "r")
 
 
 def test_lens_source_default_preference_order() -> None:
     from drowse.lens.sources import lens_source_preference_key
 
     shuffled = [
-        "local:default",
+        "local:j-chat",
+        "local:j",
         "workspace-j",
-        "local:relp",
+        "local:r",
         "neuronpedia",
         "workspace-r",
     ]
@@ -120,26 +172,18 @@ def test_lens_source_default_preference_order() -> None:
         "workspace-r",
         "neuronpedia",
         "workspace-j",
-        "local:relp",
-        "local:default",
+        "local:r",
+        "local:j",
+        "local:j-chat",
     ]
 
 
 def test_lens_registry_requires_an_active_source() -> None:
-    from drowse.lens.jlens import JacobianLens
-    from drowse.lens.store import load_lens, save_lens
-    from drowse.lens.sources import lens_active_path
+    from drowse.lens.sources import LENS_SOURCES
+    from drowse.lens.store import load_lens
 
-    save_lens(
-        JacobianLens({0: torch.eye(3)}, n_prompts=2, d_model=3),
-        "org/model",
-        corpus_spec="test",
-        corpus_sha256="a" * 64,
-        seq_len=8,
-        dim_batch=1,
-        skip_first=0,
-    )
-    lens_active_path("org/model").unlink()
+    save_lens(JacobianLens({0: torch.eye(3)}, n_prompts=2, d_model=3), "org/model", _PROV)
+    LENS_SOURCES.active_path("org/model").unlink()
     assert load_lens("org/model") is None
 
 
@@ -206,11 +250,18 @@ def test_neuronpedia_fetch_pins_the_resolved_model_commit(
         lambda _repo, _filename, **_kwargs: str(checkpoint),
     )
 
-    binding = sources.fetch_neuronpedia_lens("org/model")
+    binding = sources.fetch_lens_source("org/model", "neuronpedia")
     assert binding.model_revision == commit
     assert binding.repo_revision == "lens-commit"
+    assert binding.key == LensKey("J")
+    bound = binding.files[LensKey("J")]
+    assert bound.path == "model/jlens/Salesforce-wikitext/model_jacobian_lens.pt"
+    assert bound.sha256 == hashlib.sha256(checkpoint.read_bytes()).hexdigest()
     assert config_reads == [{"trust_remote_code": False, "revision": commit}]
     assert sources.load_external_lens_binding("org/model", "neuronpedia") == binding
+    assert sources.LENS_SOURCES.active("org/model", "output") == SourceRef(
+        "huggingface", "neuronpedia",
+    )
 
 
 def test_external_lens_identity_binds_model_commit_and_shape() -> None:
@@ -226,7 +277,7 @@ def test_external_lens_identity_binds_model_commit_and_shape() -> None:
     sidecar = {
         "model_fingerprint": None,
         "d_model": 4,
-        "source_layers": [0, 1],
+        "sites": {"out": {"layers": [0, 1]}},
         "_source": {
             "kind": "huggingface",
             "model_id": "org/model",
@@ -241,8 +292,6 @@ def test_external_lens_identity_binds_model_commit_and_shape() -> None:
 def _workspace_payload(
     estimator: str = "relp", model_id: str = "org/model",
 ) -> dict[str, Any]:
-    import json
-
     config: dict[str, Any] = {"estimator": estimator}
     if estimator == "relp":
         config["rules"] = {
@@ -306,42 +355,51 @@ def test_workspace_lens_fetch_binds_loads_and_switches(
     checkpoint = _mock_workspace_hub(
         monkeypatch, tmp_path, _workspace_payload("relp"),
     )
-    binding = sources.fetch_workspace_lens("org/model", "workspace-r")
-    assert isinstance(binding, sources.WorkspaceLensBinding)
-    assert binding.arm == "r-lens" and binding.estimator == "relp"
+    binding = sources.fetch_lens_source("org/model", "workspace-r")
+    assert binding.key == LensKey("R") and binding.provider == "workspace-lenses"
+    assert binding.files[LensKey("R")].path == "model/r-lens/lens.pt"
+    assert len(binding.files[LensKey("R")].sha256) == 64
     assert binding.corpus == "NeelNanda/pile-10k"
     assert binding.seq_len == 128 and binding.skip_first == 4
-    assert binding.target_layer == 2
-    assert len(binding.checkpoint_sha256) == 64
-    assert "ln_rule" in binding.rules_json
+    assert binding.provenance["estimator"] == "relp"
+    assert binding.provenance["target_layer"] == 2
+    assert "ln_rule" in binding.provenance["rules_json"]
+    assert sources.LENS_SOURCES.binding_path("org/model", "workspace-r").exists()
+    on_disk = json.loads(
+        sources.LENS_SOURCES.binding_path("org/model", "workspace-r").read_text(),
+    )
+    assert set(on_disk["files"]) == {"R:out"}
 
     sidecar = load_lens_sidecar("org/model")
     assert sidecar is not None
-    assert sidecar["method"] == "workspace_relp"
+    assert sidecar["kind"] == "R"
     assert sidecar["_source"]["provider"] == "workspace-lenses"
-    assert sidecar["_source"]["arm"] == "r-lens"
+    assert sidecar["_source"]["files"]["R:out"]["path"] == "model/r-lens/lens.pt"
     loaded = load_lens("org/model")
     assert loaded is not None
     lens, _ = loaded
-    assert lens.source_layers == [0, 1, 2]
+    assert lens.source_layers == [0, 1, 2] and lens.key == LensKey("R")
     assert not list((tmp_path / "drowse").rglob("*.safetensors"))
     assert checkpoint.exists()
 
     torch.save(_workspace_payload("standard"), checkpoint)
-    j_binding = sources.fetch_workspace_lens("org/model", "workspace-j")
-    assert j_binding.estimator == "standard"
+    j_binding = sources.fetch_lens_source("org/model", "workspace-j")
+    assert j_binding.provenance["estimator"] == "standard"
     rows = sources.list_lens_sources("org/model")
     by_name = {row["source"]: row for row in rows}
     assert by_name["workspace-r"]["provider"] == "workspace-lenses"
-    assert by_name["workspace-r"]["estimator"] == "relp"
+    assert by_name["workspace-r"]["lens"] == "R"
     assert by_name["workspace-j"]["active"]
     assert not by_name["workspace-r"]["active"]
 
     sources.use_lens_source("org/model", "workspace-r")
-    active = sources.load_active_lens_source("org/model")
-    assert active is not None and active["name"] == "workspace-r"
+    assert sources.LENS_SOURCES.active("org/model", "output") == SourceRef(
+        "huggingface", "workspace-r",
+    )
 
-    assert sources.remove_external_lens_binding("org/model", "workspace-j")
+    assert sources.remove_lens_source(
+        "org/model", SourceRef("huggingface", "workspace-j"),
+    )
     assert checkpoint.exists()  # provider cache ownership is preserved
 
 
@@ -352,7 +410,7 @@ def test_workspace_fetch_rejects_arm_estimator_mismatch(
     from drowse.lens import sources
     _mock_workspace_hub(monkeypatch, tmp_path, _workspace_payload("standard"))
     with pytest.raises(ValueError, match="estimator"):
-        sources.fetch_workspace_lens("org/model", "workspace-r")
+        sources.fetch_lens_source("org/model", "workspace-r")
 
 
 def test_workspace_fetch_rejects_model_mismatch(
@@ -365,7 +423,7 @@ def test_workspace_fetch_rejects_model_mismatch(
         _workspace_payload("relp", model_id="org/other-model"),
     )
     with pytest.raises(ValueError, match="not the requested model"):
-        sources.fetch_workspace_lens("org/model", "workspace-r")
+        sources.fetch_lens_source("org/model", "workspace-r")
 
 
 def test_workspace_fetch_reports_published_models_on_miss(
@@ -378,12 +436,16 @@ def test_workspace_fetch_reports_published_models_on_miss(
         files=["gemma-3-27b-it/r-lens/lens.pt"],
     )
     with pytest.raises(FileNotFoundError, match="gemma-3-27b-it"):
-        sources.fetch_workspace_lens("org/model", "workspace-r")
+        sources.fetch_lens_source("org/model", "workspace-r")
 
 
 def test_fetch_lens_source_dispatch_and_use_rejection() -> None:
     from drowse.lens import sources
-    with pytest.raises(ValueError, match="unknown J-lens fetch source"):
+    with pytest.raises(ValueError, match="unknown lens fetch source"):
         sources.fetch_lens_source("org/model", "nonsense")
-    with pytest.raises(ValueError, match="local:NAME"):
+    with pytest.raises(FileNotFoundError, match="not prepared"):
         sources.use_lens_source("org/model", "workspace-r")  # nothing fetched
+    with pytest.raises(ValueError, match="local:NAME"):
+        sources.use_lens_source("org/model", "nonsense")
+    with pytest.raises(ValueError, match="invalid local lens name"):
+        sources.use_lens_source("org/model", "local:default")
