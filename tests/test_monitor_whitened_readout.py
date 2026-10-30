@@ -1,4 +1,4 @@
-"""Whitening surfaces added in the tier-1/tier-2 sweep.
+"""Whitened Monitor readout checked against the definitional formulas.
 
 Pure-CPU verification of the Mahalanobis integration points, all
 checked against the *definitional* formula (not just "runs"):
