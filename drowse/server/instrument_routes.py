@@ -346,7 +346,7 @@ def register_instrument_routes(app: FastAPI) -> None:
     # -- preparations ---------------------------------------------------------
 
     async def lens_fetch_body(body: LensFetchRequest) -> None:
-        from drowse.lens.sources import NEURONPEDIA_BINDING, WORKSPACE_ARMS, fetch_lens_source
+        from drowse.lens.sources import fetch_lens_source
 
         lens_fetch.report("fetching external lens into the Hugging Face cache…")
         binding = await run_in_thread(
